@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from textual.app import App
+from textual.widgets import Static
 
 from deepagents_code.notifications import (
     ActionId,
@@ -16,8 +17,10 @@ from deepagents_code.tui.widgets.notification_center import (
     NotificationActionRequested,
     NotificationActionResult,
     NotificationCenterScreen,
+    NotificationSettingsRequested,
     NotificationSuppressRequested,
     _NotificationRow,
+    _NotificationSettingsRow,
 )
 from deepagents_code.tui.widgets.notification_detail import NotificationDetailScreen
 from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
@@ -89,6 +92,22 @@ class TestNotificationCenterScreen:
                 "dep:ripgrep",
                 "update:available",
             ]
+            assert len(screen.query(_NotificationSettingsRow)) == 1
+
+    async def test_empty_center_shows_settings_destination(self) -> None:
+        """An empty hub stays useful by selecting warning preferences."""
+        app = App()
+        screen = NotificationCenterScreen([])
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert not list(screen.query(_NotificationRow))
+            assert len(screen.query(_NotificationSettingsRow)) == 1
+            assert "No pending notifications" in str(
+                screen.query_one(".nc-empty", Static).content
+            )
+            assert screen._selected == 0
 
     async def test_widget_ids_are_collision_free_across_duplicate_keys(self) -> None:
         """Enumerated widget ids survive keys that would sanitize identically."""
@@ -121,6 +140,28 @@ class TestNotificationCenterScreen:
             await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, UpdateAvailableScreen)
+
+    async def test_enter_on_settings_posts_request_without_dismissing(self) -> None:
+        """The settings destination delegates loading preferences to the app."""
+        messages: list[NotificationSettingsRequested] = []
+
+        class _App(App):
+            def on_notification_settings_requested(
+                self, message: NotificationSettingsRequested
+            ) -> None:
+                messages.append(message)
+
+        app = _App()
+        screen = NotificationCenterScreen([])
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.screen is screen
+
+        assert len(messages) == 1
 
     async def test_detail_action_dismisses_center_with_result(self) -> None:
         """Selecting an action in the detail dismisses the center with it."""
@@ -254,8 +295,8 @@ class TestNotificationCenterScreen:
             ]
             assert screen._selected == 0
 
-    async def test_reload_with_empty_list_dismisses_center(self) -> None:
-        """`reload([])` closes the center with None."""
+    async def test_reload_with_empty_list_keeps_settings_reachable(self) -> None:
+        """`reload([])` retains the hub with the settings row selected."""
         results: list[NotificationActionResult | None] = []
         app = App()
 
@@ -269,7 +310,12 @@ class TestNotificationCenterScreen:
             await screen.reload([])
             await pilot.pause()
 
-        assert results == [None]
+            assert app.screen is screen
+            assert not list(screen.query(_NotificationRow))
+            assert len(screen.query(_NotificationSettingsRow)) == 1
+            assert screen._selected == 0
+
+        assert results == []
 
     async def test_detail_esc_returns_to_center(self) -> None:
         """Esc in the detail modal keeps the notification center open."""
@@ -297,8 +343,8 @@ class TestNotificationCenterScreen:
             assert screen._selected == 1
 
     @pytest.mark.parametrize("key", ["up", "k"])
-    async def test_up_or_k_wraps_to_last_row(self, key: str) -> None:
-        """Navigating up from row 0 wraps to the last notification."""
+    async def test_up_or_k_wraps_to_settings_row(self, key: str) -> None:
+        """Navigating up from row 0 wraps to notification settings."""
         app = App()
         screen = NotificationCenterScreen([_dep_entry(), _update_entry()])
         async with app.run_test() as pilot:
@@ -306,7 +352,7 @@ class TestNotificationCenterScreen:
             await pilot.pause()
             await pilot.press(key)
             await pilot.pause()
-            assert screen._selected == 1
+            assert screen._selected == 2
 
     async def test_escape_dismisses_with_none(self) -> None:
         """Esc on the center (no detail open) returns `None`."""

@@ -1,7 +1,8 @@
-"""Notification center modal for pending actionable notices.
+"""Notification hub for pending notices and warning preferences.
 
-Surfaces a list of `PendingNotification` entries as single-line rows.
-Selecting a row drills into a dedicated detail modal
+Surfaces `PendingNotification` entries as single-line rows plus a persistent
+settings destination, including when no notices are pending. Selecting a notice
+drills into a dedicated detail modal
 (`UpdateAvailableScreen` for update entries, `NotificationDetailScreen`
 otherwise) stacked on top of the center. When the detail modal
 dismisses with a terminal action (one that closes the center) the
@@ -90,6 +91,10 @@ class NotificationSuppressRequested(Message):
         """
         super().__init__()
         self.key = key
+
+
+class NotificationSettingsRequested(Message):
+    """Posted when the user opens settings from the notification center."""
 
 
 IN_PLACE_ACTIONS: frozenset[ActionId] = frozenset({ActionId.ENTER_API_KEY})
@@ -188,14 +193,58 @@ class _NotificationRow(Static):
         self.post_message(NotificationRowClicked(self._notification.key))
 
 
-class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
-    """Modal listing pending notifications with drill-in details.
+class _NotificationSettingsRow(Static):
+    """Selectable row that opens notification warning preferences."""
 
-    Each `PendingNotification` is a single row. Up/Down (or j/k)
-    moves the cursor; Enter or click pushes a detail modal for the
-    highlighted entry. The detail modal carries the action list and
-    dismisses with an `ActionId` or `None`. Esc on the center returns
-    `None`.
+    def __init__(self, index: int) -> None:
+        """Initialize the settings row.
+
+        Args:
+            index: Position in the center's selectable rows.
+        """
+        super().__init__(id="nc-settings", classes="nc-row")
+        self._index = index
+        self._is_selected = False
+        self.update(self._render())
+
+    @property
+    def index(self) -> int:
+        """Row index in the center's selectable rows."""
+        return self._index
+
+    def set_selected(self, selected: bool) -> None:
+        """Toggle selection styling.
+
+        Args:
+            selected: Whether this row is currently under the cursor.
+        """
+        if self._is_selected == selected:
+            return
+        self._is_selected = selected
+        self.set_class(selected, "-selected")
+        self.update(self._render())
+
+    def _render(self) -> Content:
+        glyphs = get_glyphs()
+        cursor = glyphs.cursor if self._is_selected else " "
+        return Content.assemble(
+            f"{cursor} ",
+            ("Notification settings", "bold"),
+        )
+
+    def on_click(self, event: Click) -> None:
+        """Request notification settings when clicked."""
+        event.stop()
+        self.post_message(NotificationSettingsRequested())
+
+
+class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
+    """Shared hub for pending notifications and warning preferences.
+
+    Each `PendingNotification` is a single row followed by a persistent
+    settings row. Up/Down (or j/k) moves the cursor; Enter or click opens
+    the highlighted destination. Notification details carry an `ActionId`
+    or `None`, while settings stay stacked over the hub. Esc returns `None`.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -235,6 +284,24 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         max-height: 24;
     }
 
+    NotificationCenterScreen .nc-section {
+        height: 1;
+        color: $text-muted;
+        text-style: bold;
+        margin-top: 1;
+    }
+
+    NotificationCenterScreen .nc-section-first {
+        margin-top: 0;
+    }
+
+    NotificationCenterScreen .nc-empty {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+        text-style: italic;
+    }
+
     NotificationCenterScreen .nc-row {
         height: 1;
         padding: 0 1;
@@ -267,24 +334,48 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         super().__init__()
         self._notifications = notifications
         self._selected: int = 0
-        self._rows: list[_NotificationRow] = []
+        self._rows: list[_NotificationRow | _NotificationSettingsRow] = []
         self._drilling = False
+
+    def _build_list(self) -> list[Static]:
+        """Build list widgets and refresh the selectable row index.
+
+        Returns:
+            Static widgets for the notification hub's scrollable list.
+        """
+        widgets: list[Static] = [
+            Static("Pending", classes="nc-section nc-section-first")
+        ]
+        rows: list[_NotificationRow | _NotificationSettingsRow] = []
+        if self._notifications:
+            for idx, notification in enumerate(self._notifications):
+                row = _NotificationRow(notification, idx)
+                rows.append(row)
+                widgets.append(row)
+        else:
+            widgets.append(Static("No pending notifications.", classes="nc-empty"))
+        settings = _NotificationSettingsRow(len(rows))
+        rows.append(settings)
+        widgets.extend(
+            [
+                Static("Preferences", classes="nc-section"),
+                settings,
+            ]
+        )
+        self._rows = rows
+        return widgets
 
     def compose(self) -> ComposeResult:
         """Compose the modal layout.
 
         Yields:
-            The title widget, one row per pending notification, and a
-            help footer.
+            Pending notifications, the settings row, and navigation help.
         """
         glyphs = get_glyphs()
         with Vertical():
             yield Static("Notifications", classes="nc-title")
             with VerticalScroll():
-                for idx, notif in enumerate(self._notifications):
-                    row = _NotificationRow(notif, idx)
-                    self._rows.append(row)
-                    yield row
+                yield from self._build_list()
             help_text = (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate "
                 f"{glyphs.bullet} Enter open "
@@ -331,11 +422,14 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         self._set_selected((self._selected + 1) % len(self._rows))
 
     def action_activate(self) -> None:
-        """Drill into the highlighted notification."""
+        """Open the highlighted notification or settings destination."""
         if not self._rows:
-            self.dismiss(None)
             return
-        self._drill_into(self._notifications[self._selected])
+        row = self._rows[self._selected]
+        if isinstance(row, _NotificationSettingsRow):
+            self.post_message(NotificationSettingsRequested())
+            return
+        self._drill_into(row.notification)
 
     def action_cancel(self) -> None:
         """Close without firing any action."""
@@ -397,37 +491,48 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
             raise
 
     async def reload(self, notifications: list[PendingNotification]) -> None:
-        """Rebuild the row list from a refreshed snapshot.
+        """Rebuild the hub from a refreshed notification snapshot.
 
-        Preserves cursor position by key when possible; falls back to
-        clamping the previous index into the new bounds. Dismisses the
-        screen with `None` when the list is empty.
+        Preserves a notification selection by key and keeps the settings row
+        selected across refreshes. When a selected notification disappears,
+        the cursor clamps to the remaining notification rows before falling
+        back to settings.
 
         Args:
             notifications: Current pending entries to display.
         """
-        if not notifications:
-            self.dismiss(None)
-            return
         prev_key: str | None = None
-        if self._notifications and 0 <= self._selected < len(self._notifications):
-            prev_key = self._notifications[self._selected].key
-        new_selected = next(
-            (i for i, n in enumerate(notifications) if n.key == prev_key),
-            min(self._selected, len(notifications) - 1) if prev_key else 0,
-        )
+        settings_selected = False
+        if self._rows and 0 <= self._selected < len(self._rows):
+            selected_row = self._rows[self._selected]
+            if isinstance(selected_row, _NotificationSettingsRow):
+                settings_selected = True
+            else:
+                prev_key = selected_row.notification.key
 
+        self._notifications = notifications
         scroll = self.query_one(VerticalScroll)
         await scroll.remove_children()
-        new_rows = [
-            _NotificationRow(notif, idx) for idx, notif in enumerate(notifications)
-        ]
-        await scroll.mount(*new_rows)
-        self._rows = new_rows
-        self._notifications = notifications
+        await scroll.mount(*self._build_list())
+
+        if settings_selected:
+            new_selected = len(self._rows) - 1
+        elif prev_key is not None:
+            new_selected = next(
+                (
+                    i
+                    for i, notification in enumerate(notifications)
+                    if notification.key == prev_key
+                ),
+                min(self._selected, len(notifications) - 1)
+                if notifications
+                else len(self._rows) - 1,
+            )
+        else:
+            new_selected = 0
         self._selected = new_selected
-        new_rows[new_selected].set_selected(selected=True)
-        new_rows[new_selected].scroll_visible()
+        self._rows[new_selected].set_selected(selected=True)
+        self._rows[new_selected].scroll_visible()
 
     @staticmethod
     def _detail_screen_for(

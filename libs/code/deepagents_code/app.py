@@ -1109,6 +1109,7 @@ if TYPE_CHECKING:
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
         NotificationActionRequested,
+        NotificationSettingsRequested,
         NotificationSuppressRequested,
     )
     from deepagents_code.tui.widgets.restart_prompt import RestartChoice
@@ -15430,7 +15431,7 @@ class DeepAgentsApp(App):
         elif cmd == "/theme":
             await self._show_theme_selector()
         elif cmd == "/notifications":
-            await self._show_notification_settings()
+            self._open_notification_center()
         elif cmd == "/effort" or cmd.startswith("/effort "):
             await self._handle_effort_command(command)
         elif cmd == "/model" or cmd.startswith("/model "):
@@ -23012,13 +23013,14 @@ class DeepAgentsApp(App):
                     logger.exception("Failed to restore pending goal review")
 
     async def _show_notification_settings(self) -> None:
-        """Show notification settings modal."""
+        """Show notification settings over the current notification surface."""
         from deepagents_code.model_config import is_warning_suppressed
         from deepagents_code.tui.widgets.notification_settings import (
             WARNING_TOGGLES,
             NotificationSettingsScreen,
         )
 
+        return_to_modal = isinstance(self.screen, ModalScreen)
         suppressed: set[str] = set()
         try:
             for key, _ in WARNING_TOGGLES:
@@ -23035,7 +23037,7 @@ class DeepAgentsApp(App):
             )
 
         def handle_result(_result: None) -> None:
-            if self._chat_input:
+            if not return_to_modal and self._chat_input:
                 self._chat_input.focus_input()
 
         screen = NotificationSettingsScreen(suppressed=suppressed)
@@ -23394,7 +23396,7 @@ class DeepAgentsApp(App):
         ]
 
     def _open_notification_center(self) -> None:
-        """Push the notification center modal, or toast when empty."""
+        """Push the shared notification center and settings hub."""
         from deepagents_code.tui.widgets.notification_center import (
             NotificationActionResult,
             NotificationCenterScreen,
@@ -23413,15 +23415,6 @@ class DeepAgentsApp(App):
             return
 
         pending = self._notice_registry.list_all()
-        if not pending:
-            self.notify(
-                "No pending notifications.",
-                severity="information",
-                timeout=2,
-                markup=False,
-            )
-            return
-
         self._dismiss_registered_toasts()
 
         def handle_result(result: NotificationActionResult | None) -> None:
@@ -23456,6 +23449,14 @@ class DeepAgentsApp(App):
             self._unnotify(notif, refresh=False)
             self._notice_registry.unbind_toast(notif.identity)
         self._refresh_notifications()
+
+    async def on_notification_settings_requested(
+        self,
+        message: NotificationSettingsRequested,
+    ) -> None:
+        """Open warning preferences without dismissing the notification hub."""
+        message.stop()
+        await self._show_notification_settings()
 
     async def on_notification_suppress_requested(
         self,
@@ -23499,8 +23500,8 @@ class DeepAgentsApp(App):
 
         The action's follow-up modal (e.g. the API-key prompt) stacks on
         top of the center so Esc returns to it. Once the action resolves,
-        the center is reloaded so any handled entry drops out; reloading an
-        empty list dismisses the center.
+        the center is reloaded so any handled entry drops out while settings
+        remain reachable.
         """
         await self._dispatch_notification_action(key, action_id)
         await self._refresh_open_center()

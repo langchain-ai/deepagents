@@ -54,6 +54,7 @@ from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
+    ForkedSubAgent,
     SubAgent,
     SubAgentMiddleware,
 )
@@ -271,7 +272,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
-    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
+    subagents: Sequence[SubAgent | ForkedSubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
@@ -408,17 +409,22 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagents via `subagents=`. Async subagents are unaffected.
         subagents: Subagent specs available to the main agent.
 
-            This collection supports three forms:
+            This collection supports four forms:
 
-            - [`SubAgent`][deepagents.middleware.subagents.SubAgent]: A declarative synchronous subagent spec.
+            - [`SubAgent`][deepagents.middleware.subagents.SubAgent]: An isolated declarative synchronous subagent spec.
+            - [`ForkedSubAgent`][deepagents.middleware.subagents.ForkedSubAgent]: A declarative spec that inherits parent context.
             - [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]: A pre-compiled runnable subagent.
             - [`AsyncSubAgent`][deepagents.middleware.async_subagents.AsyncSubAgent]: A remote/background subagent spec.
 
             `SubAgent` entries are invoked through the `task` tool. They should
-            provide `name`, `description`, and `system_prompt`, and may also
-            override `tools`, `model`, `middleware`, `interrupt_on`, `skills`,
-            `permissions`, and `response_format`. See `interrupt_on` below for
-            inheritance and override behavior.
+            provide `name` and `description`, and may also override
+            `system_prompt`, `tools`, `model`, `middleware`, `interrupt_on`,
+            `skills`, `permissions`, and `response_format`. See `interrupt_on`
+            below for inheritance and override behavior.
+
+            `ForkedSubAgent` is experimental. It requires `mode="fork"`, inherits
+            the parent's effective message history and exact system prompt, and
+            cannot define its own `system_prompt`.
 
             `CompiledSubAgent` entries are also exposed through the `task` tool,
             but provide a pre-built `runnable` instead of a declarative prompt
@@ -628,6 +634,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     backend = backend if backend is not None else StateBackend()
 
+    base_prompt = _apply_profile_prompt(_profile, "")
+    if system_prompt is None:
+        final_system_prompt: str | SystemMessage = base_prompt
+    elif isinstance(system_prompt, SystemMessage):
+        if base_prompt:
+            final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{base_prompt}"}])
+        else:
+            final_system_prompt = system_prompt
+    else:
+        final_system_prompt = system_prompt + (f"\n\n{base_prompt}" if base_prompt else "")
+
     # The built-in tool-usage guidance prose duplicates the tools' own schema
     # descriptions, so the deepagents-owned middleware (filesystem / subagent /
     # async-subagent) default to emitting none of it; only the essential dynamic
@@ -641,7 +658,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # auto-add the default general-purpose subagent can factor in an explicit
     # override, and so its middleware stack (including any factory-based
     # `extra_middleware`) isn't built and then discarded.
-    inline_subagents: list[SubAgent | CompiledSubAgent] = []
+    inline_subagents: list[SubAgent | ForkedSubAgent | CompiledSubAgent] = []
     async_subagents: list[AsyncSubAgent] = []
     for spec in subagents or []:
         if "graph_id" in spec:
@@ -652,7 +669,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # CompiledSubAgent - use as-is
             inline_subagents.append(spec)
         else:
-            # SubAgent - fill in defaults and prepend base middleware
+            # Declarative subagent - fill in defaults and prepend base middleware
+            is_forked = spec.get("mode") == "fork"
             raw_subagent_model = spec.get("model", model)
             subagent_model = resolve_model(raw_subagent_model)
 
@@ -681,6 +699,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
 
             append_prompt_caching_middleware(subagent_middleware)
+            if is_forked and memory is not None:
+                subagent_middleware.append(
+                    MemoryMiddleware(
+                        backend=backend,
+                        sources=memory,
+                        add_cache_control=True,
+                    )
+                )
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -730,16 +756,20 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 _subagent_profile.tool_description_overrides,
             )
 
-            processed_spec: SubAgent = {
+            processed: dict[str, Any] = {
                 **spec,
                 "model": subagent_model,
                 "tools": subagent_tools or [],
                 "middleware": subagent_middleware,
             }
-            processed_spec["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec["system_prompt"])
+            if not is_forked:
+                processed["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec.get("system_prompt", ""))
             if subagent_interrupt_on is not None:
-                processed_spec["interrupt_on"] = subagent_interrupt_on
-            inline_subagents.append(processed_spec)
+                processed["interrupt_on"] = subagent_interrupt_on
+            if is_forked:
+                inline_subagents.append(cast("ForkedSubAgent", processed))
+            else:
+                inline_subagents.append(cast("SubAgent", processed))
 
     # Auto-add the default general-purpose subagent unless the harness profile
     # disables it or the caller already supplied their own — an explicit spec
@@ -835,6 +865,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # template. Stale keys silently no-op if the tool is renamed.
             task_description=_profile.tool_description_overrides.get("task"),
             state_schema=state_schema,
+            parent_system_prompt=final_system_prompt,
         )
         deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
@@ -906,17 +937,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
         required_names=_REQUIRED_MIDDLEWARE_NAMES,
     )
-
-    base_prompt = _apply_profile_prompt(_profile, "")
-    if system_prompt is None:
-        final_system_prompt: str | SystemMessage = base_prompt
-    elif isinstance(system_prompt, SystemMessage):
-        if base_prompt:
-            final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{base_prompt}"}])
-        else:
-            final_system_prompt = system_prompt
-    else:
-        final_system_prompt = system_prompt + (f"\n\n{base_prompt}" if base_prompt else "")
 
     return create_agent(
         model,

@@ -4,35 +4,25 @@
 
 ## [0.1.59](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.58...deepagents-code==0.1.59) (2026-08-20)
 
-
 ### Features
 
-* **code:** `managed_config.toml` ([#5604](https://github.com/langchain-ai/deepagents/issues/5604)) ([d419122](https://github.com/langchain-ai/deepagents/commit/d419122bfb748a823d1fa7cfd7207c428f4fbcab))
-* **code:** encode multi-select `ask_user` answers as JSON arrays ([#5660](https://github.com/langchain-ai/deepagents/issues/5660)) ([fc70294](https://github.com/langchain-ai/deepagents/commit/fc70294bcf9ac134c21646bcbe8546aab001442d))
-* **code:** make teardown usage stats configurable ([#5696](https://github.com/langchain-ai/deepagents/issues/5696)) ([c1d965a](https://github.com/langchain-ai/deepagents/commit/c1d965aa0db93f923ec17947fab34a5300c19141))
-* **code:** open footer pickers on click ([#5674](https://github.com/langchain-ai/deepagents/issues/5674)) ([4f65325](https://github.com/langchain-ai/deepagents/commit/4f65325ed322ce1c650152b31532b219bfa3850c))
-* **code:** replace Gemini 3.6 Flash with 3.7 Flash ([#5681](https://github.com/langchain-ai/deepagents/issues/5681)) ([9446182](https://github.com/langchain-ai/deepagents/commit/94461821d8d7e1ef1f1cd29bc0212c731c195ae5))
+- Added support for `managed_config.toml` configuration ([#5604](https://github.com/langchain-ai/deepagents/issues/5604))
+- Multi-select `ask_user` answers are now encoded as JSON arrays ([#5660](https://github.com/langchain-ai/deepagents/issues/5660))
+- Made teardown usage stats configurable ([#5696](https://github.com/langchain-ai/deepagents/issues/5696))
+- Footer pickers now open on click ([#5674](https://github.com/langchain-ai/deepagents/issues/5674))
+- Replaced Gemini 3.6 Flash with Gemini 3.7 Flash ([#5681](https://github.com/langchain-ai/deepagents/issues/5681))
 
+### Bug fixes
 
-### Bug Fixes
-
-* **code:** clarify Auto mode file-edit example ([#5685](https://github.com/langchain-ai/deepagents/issues/5685)) ([50dedf0](https://github.com/langchain-ai/deepagents/commit/50dedf086bb923ec71f585d907ac3920d0442754))
-* **code:** clarify line number toggle message ([#5694](https://github.com/langchain-ai/deepagents/issues/5694)) ([bb75e96](https://github.com/langchain-ai/deepagents/commit/bb75e96192f30ffccb193f2ccdc349a0227ca1af))
-* **code:** drop `Muse Spark 1.1` recommendation ([#5683](https://github.com/langchain-ai/deepagents/issues/5683)) ([fa2e8ab](https://github.com/langchain-ai/deepagents/commit/fa2e8abb4da1f07163cb5ee3daff4d57ea97fe9f))
-* **code:** hide onboarding Tavily cancel hint ([#5684](https://github.com/langchain-ai/deepagents/issues/5684)) ([b91da61](https://github.com/langchain-ai/deepagents/commit/b91da61716253dbcf1805c6dede589ec41a09ec5))
-* **code:** hide thread IDs when tracing is disabled ([#5692](https://github.com/langchain-ai/deepagents/issues/5692)) ([1680237](https://github.com/langchain-ai/deepagents/commit/1680237e69bf27740001df7a7f67de5a053536c1))
-* **code:** keep installed providers visible in `/auth` ([#5689](https://github.com/langchain-ai/deepagents/issues/5689)) ([f0854e8](https://github.com/langchain-ai/deepagents/commit/f0854e82ed8cedd8a8455539eef596d1433eb68e))
-* **code:** make tool arg validation errors recoverable ([#5659](https://github.com/langchain-ai/deepagents/issues/5659)) ([a7027ed](https://github.com/langchain-ai/deepagents/commit/a7027edc6449e9a7dbf0e082b8747d0999125ca2))
-* **code:** preload auth UI before notification handoff ([#5697](https://github.com/langchain-ai/deepagents/issues/5697)) ([57c0678](https://github.com/langchain-ai/deepagents/commit/57c0678c4994b8b253c5f7edf11b7a558ece7df9))
-* **code:** ranked durable-mask config resolver ([#5672](https://github.com/langchain-ai/deepagents/issues/5672)) ([9f24b9f](https://github.com/langchain-ai/deepagents/commit/9f24b9fcaf7ed399b7888b2f0f9d13363939ea87))
-* **code:** remove review failure approval copy ([#5687](https://github.com/langchain-ai/deepagents/issues/5687)) ([b6a4146](https://github.com/langchain-ai/deepagents/commit/b6a41461d1834f673795e39a8928649de142d976))
-* **code:** rename OpenAI subscription login label ([#5680](https://github.com/langchain-ai/deepagents/issues/5680)) ([14b09aa](https://github.com/langchain-ai/deepagents/commit/14b09aa18567de9325bbf7fa083fe339c90fce0e))
-* **code:** separate YOLO exit hint ([#5688](https://github.com/langchain-ai/deepagents/issues/5688)) ([5d604ee](https://github.com/langchain-ai/deepagents/commit/5d604eed6d7ff567bb6c2c3046e385fc8d987698))
-* **code:** show Auto first-enable notice as pre-confirmation ([#5686](https://github.com/langchain-ai/deepagents/issues/5686)) ([32f565f](https://github.com/langchain-ai/deepagents/commit/32f565f46519d9c35919640bdf9374506d0572d2))
-* **code:** simplify classifier notice copy ([#5691](https://github.com/langchain-ai/deepagents/issues/5691)) ([c23c960](https://github.com/langchain-ai/deepagents/commit/c23c960459e931631842f1a7214b98a2d383f72a))
-* **code:** simplify empty `/tokens` message ([#5693](https://github.com/langchain-ai/deepagents/issues/5693)) ([8a4fc3a](https://github.com/langchain-ai/deepagents/commit/8a4fc3a3104ab5131bedec0ca1f76289285d5efa))
-* **code:** skip background sync in Apple Terminal ([#5666](https://github.com/langchain-ai/deepagents/issues/5666)) ([a2782ff](https://github.com/langchain-ai/deepagents/commit/a2782ff36efd5e9c9ebd9abb17b6fb51a2f01e8b))
-* **code:** stream tool-call args in linear time ([#5712](https://github.com/langchain-ai/deepagents/issues/5712)) ([57bfa6b](https://github.com/langchain-ai/deepagents/commit/57bfa6bdc57056265047744dc32f3337a964ddc8))
+- Made tool argument validation errors recoverable ([#5659](https://github.com/langchain-ai/deepagents/issues/5659))
+- Improved streaming performance for tool-call arguments to run in linear time ([#5712](https://github.com/langchain-ai/deepagents/issues/5712))
+- Fixed durable-mask config resolution with ranked resolver behavior ([#5672](https://github.com/langchain-ai/deepagents/issues/5672))
+- Skipped background sync in Apple Terminal ([#5666](https://github.com/langchain-ai/deepagents/issues/5666))
+- Hid thread IDs when tracing is disabled ([#5692](https://github.com/langchain-ai/deepagents/issues/5692))
+- Kept installed providers visible in `/auth` ([#5689](https://github.com/langchain-ai/deepagents/issues/5689))
+- Preloaded the auth UI before notification handoff ([#5697](https://github.com/langchain-ai/deepagents/issues/5697))
+- Updated and clarified UI copy across Auto mode, YOLO hints, classifier notices, `/tokens`, line-number toggles, review failures, onboarding Tavily cancellation, and OpenAI subscription login labels ([#5685](https://github.com/langchain-ai/deepagents/issues/5685), [#5694](https://github.com/langchain-ai/deepagents/issues/5694), [#5684](https://github.com/langchain-ai/deepagents/issues/5684), [#5687](https://github.com/langchain-ai/deepagents/issues/5687), [#5680](https://github.com/langchain-ai/deepagents/issues/5680), [#5688](https://github.com/langchain-ai/deepagents/issues/5688), [#5686](https://github.com/langchain-ai/deepagents/issues/5686), [#5691](https://github.com/langchain-ai/deepagents/issues/5691), [#5693](https://github.com/langchain-ai/deepagents/issues/5693))
+- Removed the `Muse Spark 1.1` recommendation ([#5683](https://github.com/langchain-ai/deepagents/issues/5683))
 
 ## [0.1.58](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.57...deepagents-code==0.1.58) (2026-08-19)
 

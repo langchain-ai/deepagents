@@ -87,6 +87,7 @@ from deepagents_code.update_check import (
     is_installed_version_at_least,
     is_update_available,
     is_update_cache_fresh,
+    is_update_check_enabled,
     is_valid_extra_name,
     is_valid_package_name,
     mark_auto_update_default_acknowledged,
@@ -5729,6 +5730,57 @@ class TestIsAutoUpdateEnabled:
 
         with patch("deepagents_code.config._is_editable_install", return_value=False):
             assert is_auto_update_enabled() is True
+
+
+class TestUpdateCheckEnvPresence:
+    @pytest.fixture
+    def config_path(self, tmp_path):
+        """Override DEFAULT_CONFIG_PATH to use a temporary file."""
+        path = tmp_path / "config.toml"
+        with patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", path):
+            yield path
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param("1", False, id="set"),
+            pytest.param("", True, id="empty"),
+        ],
+    )
+    def test_presence_env_opts_out_when_declared(
+        self,
+        config_path,
+        monkeypatch: pytest.MonkeyPatch,
+        raw: str,
+        expected: bool,
+    ) -> None:
+        """A declared presence variable disables checks; a blank one does not."""
+        config_path.write_text("", encoding="utf-8")
+        monkeypatch.setenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raw)
+
+        assert is_update_check_enabled() is expected
+
+    def test_whitespace_only_opt_out_is_rejected_loudly(
+        self,
+        config_path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unusable opt-out must not be discarded without saying so.
+
+        The runtime reader once took the raw string's truthiness, so a variable
+        that degraded to whitespace disabled checks silently. Resolution now
+        treats it as unset, which only stays safe if the rejection is surfaced.
+        """
+        config_path.write_text("", encoding="utf-8")
+        monkeypatch.setenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", "   ")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"):
+            assert is_update_check_enabled() is True
+
+        assert any("whitespace-only" in record.message for record in caplog.records), (
+            "an ignored opt-out must be reported"
+        )
 
 
 class TestAutoUpdateDefaultMigration:

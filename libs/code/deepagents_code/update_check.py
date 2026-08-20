@@ -3740,15 +3740,17 @@ def _managed_update_failure(
             key,
         )
         return True
-    if not isinstance(resolved.tier_health[MANAGED_RANK], Invalid):
+    managed = resolved.tier_health.get(MANAGED_RANK)
+    if not isinstance(managed, Invalid):
         return False
 
-    section = sources.managed.data.get("update")
-    value = section.get(key) if isinstance(section, dict) else None
+    # Report the provider's own rejection. Re-deriving one from the raw table
+    # cannot describe a malformed `[update]` section, which has no value to
+    # name, and can only disagree with what the resolver actually saw.
     logger.error(
-        "Managed [update].%s is %s, not a bool; disabling it until it is repaired",
+        "Disabling [update].%s until managed policy is repaired: %s",
         key,
-        type(value).__name__,
+        managed.reason,
     )
     return True
 
@@ -3811,6 +3813,7 @@ def is_update_check_enabled() -> bool:
     sources, _, resolved = _resolve_update_setting("update.no_update_check")
     if _managed_update_failure("check", sources, resolved):
         return False
+    _warn_invalid_update_environment(resolved)
     if _user_update_unreadable(sources):
         logger.warning("Could not read [update] config — using defaults")
     return not bool(resolved.value)

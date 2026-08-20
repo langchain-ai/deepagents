@@ -5017,7 +5017,7 @@ def load_mcp_server_trust_lists(
         resolve_ranked,
     )
     from deepagents_code.configuration.service import get_config_sources
-    from deepagents_code.configuration.types import Found, Invalid
+    from deepagents_code.configuration.types import Invalid
 
     # `None` on the default path: that is what includes managed policy.
     sources = get_config_sources(user_path=None if is_default else config_path)
@@ -5169,9 +5169,11 @@ def load_mcp_server_trust_lists(
     resolved_approval_rows = cast(
         "list[McpProjectServerApproval]", approval_value.get("approvals", [])
     )
-    managed_approval_invalid = isinstance(managed_section.result, Found) and isinstance(
-        managed_approvals.result, Invalid
-    )
+    # `_ranked_mcp_approvals` propagates a shadowing `[mcp]` root into its own
+    # result, so this covers both a wrong-typed approvals list and a malformed
+    # `[mcp]` root. Requiring the section itself to be `Found` would let a
+    # corrupt managed file convert a suppression into a permit.
+    managed_approval_invalid = isinstance(managed_approvals.result, Invalid)
     enabled = frozenset(
         ()
         if not managed_status.usable or managed_approval_invalid

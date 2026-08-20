@@ -1615,7 +1615,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ```
     """
 
-    state_schema: type[FilesystemState] = FilesystemState
+    state_schema: type[FilesystemState]
 
     def __init__(
         self,

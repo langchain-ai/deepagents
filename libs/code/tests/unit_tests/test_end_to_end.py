@@ -466,10 +466,9 @@ class TestDeepAgentsCLIEndToEnd:
     async def test_ask_user_argument_error_is_recoverable(self, tmp_path: Path) -> None:
         """A malformed `ask_user` call must not abort the run.
 
-        This is the only test that drives the composed graph. The unit tests
-        exercise the schema and `handle_validation_error` directly, so they
-        cannot catch a regression in how `ToolNode` surfaces the
-        `ValidationError` on the real execution path.
+        The unit tests exercise the schema and `_format_validation_error`
+        directly, so they cannot catch a regression in how the tool's
+        `handle_validation_error` surfaces on the real execution path.
         """
         with mock_settings(tmp_path):
             model = FixedGenericFakeChatModel(
@@ -514,3 +513,69 @@ class TestDeepAgentsCLIEndToEnd:
 
             # The run continued instead of halting.
             assert result["messages"][-1].content == "Recovered."
+
+    async def test_ask_user_interrupt_reaches_the_client(self, tmp_path: Path) -> None:
+        """A well-formed `ask_user` call must interrupt the run.
+
+        The counterpart to `test_ask_user_argument_error_is_recoverable`: that
+        one pins the recoverable path, this one pins that a valid call still
+        reaches `interrupt()` and surfaces as `__interrupt__`. Registering
+        `handle_validation_error` on the tool puts an error-handling layer
+        between the model and the interrupt, and `GraphBubbleUp` escapes it
+        only because it is not a `ValidationError`. Setting `handle_tool_error`
+        on the tool would break that silently, and the tool would become a
+        no-op.
+        """
+        with mock_settings(tmp_path):
+            model = FixedGenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="Let me ask.",
+                            tool_calls=[
+                                {
+                                    "name": "ask_user",
+                                    "args": {
+                                        "questions": [
+                                            {
+                                                "question": "Rebase or merge?",
+                                                "type": "multiple_choice",
+                                                "choices": [
+                                                    {"value": "rebase"},
+                                                    {"value": "merge"},
+                                                ],
+                                            }
+                                        ]
+                                    },
+                                    "id": "call_1",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="Unreached."),
+                    ]
+                )
+            )
+
+            agent, _ = create_cli_agent(
+                model=model,
+                assistant_id="test-agent",
+                tools=[],
+                checkpointer=InMemorySaver(),
+                enable_ask_user=True,
+            )
+
+            result = await agent.ainvoke(
+                {"messages": [HumanMessage(content="Ask me something")]},
+                {"configurable": {"thread_id": str(uuid.uuid4())}},
+            )
+
+            interrupts = result["__interrupt__"]
+            assert len(interrupts) == 1
+            payload = interrupts[0].value
+            assert payload["type"] == "ask_user"
+            assert payload["tool_call_id"] == "call_1"
+            assert payload["questions"][0]["question"] == "Rebase or merge?"
+
+            # The run paused rather than continuing past the tool.
+            assert not [m for m in result["messages"] if m.type == "tool"]

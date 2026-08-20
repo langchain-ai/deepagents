@@ -79,6 +79,15 @@ When using `ask_user`:
 - Never ask questions you can answer yourself from the available context"""  # noqa: E501
 
 
+_MODEL_AUTHORED_ASK_USER_ARGS = frozenset({"questions"})
+"""`ask_user` arguments the model authors, and can therefore be told to fix.
+
+Every other field on the tool's `args_schema` — `tool_call_id` and `runtime` —
+is harness-injected. A `ValidationError` naming one of those is a wiring fault,
+not bad model output.
+"""
+
+
 def _format_validation_error(exc: ValidationError | ValidationErrorV1) -> str:
     """Format a tool-call `ValidationError` for the model to correct.
 
@@ -86,21 +95,63 @@ def _format_validation_error(exc: ValidationError | ValidationErrorV1) -> str:
     not the multi-error pydantic dump — is what lands in the error
     `ToolMessage`. Only the first error is named: the model fixes one thing and
     retries, and the rejected arguments are already visible on its own tool
-    call, so echoing `input_value` here would duplicate them.
+    call, so echoing the input here would duplicate them. The log line carries
+    the full list for whoever is debugging.
+
+    Errors that name no model-authored argument are re-raised, which keeps them
+    fatal. Two distinct cases reach here that way, and neither is something the
+    model can act on:
+
+    - A harness-injected argument failed to validate. `tool_call_id` and
+      `runtime` sit on the same `args_schema` as `questions`, so pydantic
+      reports them the same way, but the model does not write them. Telling it
+      to "fix the input and retry" would loop until the recursion limit.
+      LangGraph strips these itself in `_filter_validation_errors`, which
+      setting `handle_validation_error` bypasses — hence the filter here.
+    - The tool body raised a `ValidationError` after parsing succeeded.
+      `BaseTool.run` runs `self._run` inside the same `try` as argument
+      parsing, so a body fault lands in this handler too. Reporting one to the
+      model would discard answers the user already gave and blame the model for
+      an internal defect.
 
     The v1 arm of the union exists only to satisfy the `handle_validation_error`
     signature; the schema here is pydantic v2, so a v1 error never arrives.
 
     Args:
-        exc: The validation failure, with one entry per violated rule.
+        exc: The validation failure. Carries one entry per rule that pydantic
+            reached — an inner field failure short-circuits the outer
+            validators, so this is not necessarily every rule the input
+            violates.
 
     Returns:
         A message locating the failing field and naming the validation detail.
-    """
-    error = exc.errors()[0]
+
+    Raises:
+        ValidationError: If no error names a model-authored argument, so the
+            run halts instead of asking the model to fix something it does not
+            control.
+    """  # noqa: DOC502 - `exc` itself is re-raised; its type is the union above
+    errors = exc.errors()
+    model_errors = [
+        error
+        for error in errors
+        if error["loc"] and error["loc"][0] in _MODEL_AUTHORED_ASK_USER_ARGS
+    ]
+    if not model_errors:
+        raise exc
+    # The run survives this, so the log is the only record that the model sent
+    # bad arguments. Without it a retry loop is invisible: the handled error
+    # means `BaseTool.run` reports the call to the callback layer as a success.
+    logger.warning(
+        "Rejected ask_user tool call: %s",
+        "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            for error in model_errors
+        ),
+    )
+    error = model_errors[0]
     loc = ".".join(str(part) for part in error["loc"])
-    detail = f"{loc}: {error['msg']}" if loc else error["msg"]
-    return f"`ask_user` failed: {detail}. Fix the input and retry."
+    return f"`ask_user` failed: {loc}: {error['msg']}. Fix the input and retry."
 
 
 def _context_string(context: object, name: str) -> str | None:
@@ -382,12 +433,13 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.
             """
-            # Malformed arguments never reach here: the schema rejects them with
-            # a pydantic `ValidationError` (an unknown `type`, a non-boolean
-            # `required`, blank choice values, an empty list, and the
-            # cross-field rules on `ValidatedQuestion`), which `ToolNode`
-            # converts to an error `ToolMessage` the model can correct and
-            # retry from.
+            # Malformed arguments never reach here: the schema rejects them
+            # with a pydantic `ValidationError` (an empty list, blank question
+            # text, an unknown `type`, a non-boolean `required`, blank choice
+            # values, and the cross-field `choices` rules on
+            # `ValidatedQuestion`). `_format_validation_error`, registered as
+            # this tool's `handle_validation_error`, turns that into an error
+            # `ToolMessage` the model can correct and retry from.
             ask_request = AskUserRequest(
                 type="ask_user",
                 questions=questions,

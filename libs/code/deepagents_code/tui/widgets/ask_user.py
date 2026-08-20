@@ -715,11 +715,12 @@ class _QuestionWidget(Vertical):
         self._q_type: QuestionType = question_type
         self._choices: list[Choice] = question.get("choices", [])
         if self._q_type in CHOICE_QUESTION_TYPES and not self._choices:
-            # This one is a real gap: `choices` is `NotRequired`, so the adapter
-            # accepts a choice question with none and only `_validate_questions`
-            # rejects it. Degrade `_q_type` too, not just the rendering, so it
-            # stays a true discriminant — otherwise the help footer advertises
-            # "Space toggle" for what is actually a text box.
+            # A defensive degrade, not a live gap: `choices` is `NotRequired`,
+            # but `AskUserRequest.questions` is `list[ValidatedQuestion]`, so
+            # the adapter rejects a choice question with none before this runs.
+            # Degrade `_q_type` too, not just the rendering, so it stays a true
+            # discriminant — otherwise the help footer advertises "Space toggle"
+            # for what is actually a text box.
             logger.warning(
                 "ask_user %s question %d has no choices; rendering as text",
                 self._q_type,

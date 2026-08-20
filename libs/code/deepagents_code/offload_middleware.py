@@ -38,6 +38,7 @@ from deepagents_code.hooks.server_middleware import (
     _require_decision,
     _session_gate,
 )
+from deepagents_code.secret_redaction import redact_secrets
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -78,6 +79,32 @@ Only the *prefix position* is load-bearing; wording after it is free to change.
 """
 
 _OFFLOAD_SEED_ID_PREFIX = "offload-seed-"
+
+
+def _redact_message_content(content: object) -> tuple[object, tuple[object, ...]]:
+    """Redact string content while preserving non-text content blocks."""  # noqa: DOC201
+    if isinstance(content, str):
+        return redact_secrets(content)
+    if not isinstance(content, list):
+        return content, ()
+    changed = False
+    hits: list[object] = []
+    blocks: list[Any] = []
+    for block in content:
+        if isinstance(block, str):
+            redacted, block_hits = redact_secrets(block)
+            changed = changed or redacted != block
+            hits.extend(block_hits)
+            blocks.append(redacted)
+        elif isinstance(block, dict) and isinstance(block.get("text"), str):
+            text = cast("str", block.get("text"))
+            redacted, block_hits = redact_secrets(text)
+            changed = changed or redacted != text
+            hits.extend(block_hits)
+            blocks.append({**block, "text": redacted})
+        else:
+            blocks.append(block)
+    return (blocks if changed else content), tuple(hits)
 
 
 class _AutoCompactionBlockedError(Exception):
@@ -554,7 +581,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         """
         if (rejection := self._offload_rejection(request)) is not None:
             return rejection
-        return handler(request)
+        return self._redact_tool_result(request, handler(request))
 
     async def awrap_tool_call(
         self,
@@ -572,7 +599,54 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         """
         if (rejection := self._offload_rejection(request)) is not None:
             return rejection
-        return await handler(request)
+        return self._redact_tool_result(request, await handler(request))
+
+    @staticmethod
+    def _redact_tool_result(
+        request: ToolCallRequest,
+        result: ToolMessage | Command[Any],
+    ) -> ToolMessage | Command[Any]:
+        """Redact secrets from text in a tool result before it enters state."""  # noqa: DOC201
+        tool = request.tool
+        metadata = getattr(tool, "metadata", None) or {}
+        is_mcp = metadata.get("_deepagents_code_mcp") is True
+        if not is_mcp:
+            from deepagents_code.config import redact_builtin_tool_results_enabled
+
+            if not redact_builtin_tool_results_enabled():
+                return result
+        if isinstance(result, ToolMessage):
+            redacted, _ = _redact_message_content(result.content)
+            if redacted == result.content:
+                return result
+            return result.model_copy(update={"content": redacted})
+        update = result.update
+        if not isinstance(update, dict):
+            return result
+        messages = update.get("messages")
+        if not isinstance(messages, list):
+            return result
+        changed = False
+        redacted_messages: list[Any] = []
+        for message in messages:
+            if isinstance(message, ToolMessage):
+                redacted, _ = _redact_message_content(message.content)
+                changed = changed or redacted != message.content
+                redacted_messages.append(
+                    message.model_copy(update={"content": redacted})
+                )
+            else:
+                redacted_messages.append(message)
+        if not changed:
+            return result
+        new_update = dict(update)
+        new_update["messages"] = redacted_messages
+        return Command(
+            graph=result.graph,
+            update=new_update,
+            resume=result.resume,
+            goto=result.goto,
+        )
 
     def _create_compact_tool(self) -> StructuredTool:
         """Create the CLI variant of `compact_conversation`.

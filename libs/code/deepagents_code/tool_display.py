@@ -363,5 +363,11 @@ def format_tool_message_content(content: Any) -> str:  # noqa: ANN401  # Content
                     parts.append(json.dumps(item, ensure_ascii=False))
                 except (TypeError, ValueError):
                     parts.append(str(item))
-        return "\n".join(parts)
-    return str(content)
+        rendered = "\n".join(parts)
+    else:
+        rendered = str(content)
+    redaction_count = rendered.count("[REDACTED_SECRET ")
+    if redaction_count:
+        noun = "secret" if redaction_count == 1 else "secrets"
+        rendered += f"\n[{redaction_count} {noun} redacted from result]"
+    return rendered

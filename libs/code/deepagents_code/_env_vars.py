@@ -444,6 +444,9 @@ request. Also the escape hatch for hosts embedding this package that manage
 process, so an embedder that starts its own would otherwise race this one.
 """
 
+REDACT_BUILTIN_TOOL_RESULTS = "DEEPAGENTS_CODE_REDACT_BUILTIN_TOOL_RESULTS"
+"""Toggle redaction for results from built-in tools; enabled by default."""
+
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
 

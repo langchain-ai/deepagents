@@ -29,6 +29,8 @@ from deepagents_code._env_vars import (
     DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
+    REDACT_BUILTIN_TOOL_RESULTS,
+    classify_env_bool,
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
@@ -45,6 +47,16 @@ from deepagents_code.config_manifest import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def redact_builtin_tool_results_enabled() -> bool:
+    """Return whether built-in tool results should be redacted."""
+    raw = os.environ.get(REDACT_BUILTIN_TOOL_RESULTS)
+    if raw is None:
+        return True
+    value = classify_env_bool(raw)
+    return True if value is None else value
+
 
 # ---------------------------------------------------------------------------
 # Lazy bootstrap: dotenv loading, LANGSMITH_PROJECT override, and start-path

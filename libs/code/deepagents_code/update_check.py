@@ -30,10 +30,10 @@ import tomllib
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, TextIO
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TextIO
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
@@ -45,6 +45,11 @@ from deepagents_code.model_config import (
     DEFAULT_STATE_DIR,
     default_cache_dir,
 )
+
+if TYPE_CHECKING:
+    from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.resolver import ResolvedValue
+    from deepagents_code.configuration.service import ConfigSources
 
 logger = logging.getLogger(__name__)
 
@@ -3671,8 +3676,105 @@ async def perform_install_package(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_update_setting(
+    option_key: str,
+) -> tuple[ConfigSources, ConfigOption, ResolvedValue[object]]:
+    """Resolve one update option from one managed/user snapshot generation.
+
+    Returns:
+        Sources, manifest declaration, and ranked resolution.
+
+    Raises:
+        RuntimeError: If `option_key` is missing from the manifest.
+    """
+    from deepagents_code.config_manifest import get_option, resolve_ranked_scalar
+    from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.service import (
+        ConfigSources,
+        get_managed_snapshot,
+    )
+
+    option = get_option(option_key)
+    if option is None:
+        msg = f"missing update option: {option_key}"
+        raise RuntimeError(msg)
+    resolver_option = (
+        replace(option, empty_env_is_false=True)
+        if option_key == "update.auto_update"
+        else option
+    )
+    sources = ConfigSources(
+        managed=get_managed_snapshot(),
+        user=TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load(),
+    )
+    resolved = resolve_ranked_scalar(
+        resolver_option,
+        toml_data=sources.user.data,
+        managed_toml_data=sources.managed.data,
+        managed_status=sources.managed.status,
+        user_status=sources.user.status,
+    )
+    return sources, option, resolved
+
+
+def _managed_update_failure(
+    key: str,
+    sources: ConfigSources,
+    resolved: ResolvedValue[object],
+) -> bool:
+    """Apply the update subsystem's fail-closed policy to ranked health.
+
+    Returns:
+        Whether managed provider health or coercion forces the setting off.
+    """
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+    from deepagents_code.configuration.types import Invalid
+
+    status = sources.managed.status
+    if not status.usable:
+        logger.error(
+            "Managed config %s is %s (%s); disabling [update].%s until it is repaired",
+            status.path,
+            status.health.value,
+            status.detail or "no detail",
+            key,
+        )
+        return True
+    managed = resolved.tier_health.get(MANAGED_RANK)
+    if not isinstance(managed, Invalid):
+        return False
+
+    # Report the provider's own rejection. Re-deriving one from the raw table
+    # cannot describe a malformed `[update]` section, which has no value to
+    # name, and can only disagree with what the resolver actually saw.
+    logger.error(
+        "Disabling [update].%s until managed policy is repaired: %s",
+        key,
+        managed.reason,
+    )
+    return True
+
+
+def _warn_invalid_update_environment(resolved: ResolvedValue[object]) -> None:
+    """Emit the legacy warning carried by an invalid environment provider."""
+    from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
+    from deepagents_code.configuration.types import Invalid
+
+    result = resolved.tier_health[ENVIRONMENT_RANK]
+    if isinstance(result, Invalid):
+        logger.warning("%s", result.reason)
+
+
+def _user_update_unreadable(sources: ConfigSources) -> bool:
+    """Return whether the user provider cannot yield an `[update]` table."""
+    section = sources.user.data.get("update")
+    return not sources.user.status.usable or (
+        section is not None and not isinstance(section, dict)
+    )
+
+
 def _managed_update_value(key: str) -> tuple[bool, bool]:
-    """Return one managed update boolean, failing closed on any policy error.
+    """Return one managed update boolean from the ranked provider result.
 
     An unreadable or corrupt managed file, or a present value that is not a
     boolean, reports `(True, False)`, which turns the setting off. Policy that
@@ -3684,36 +3786,18 @@ def _managed_update_value(key: str) -> tuple[bool, bool]:
     Returns:
         Whether managed config decides the value, and the value.
     """
-    from deepagents_code.configuration.service import get_managed_snapshot
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+    from deepagents_code.configuration.types import Found
 
-    snapshot = get_managed_snapshot()
-    if not snapshot.status.usable:
-        logger.error(
-            "Managed config %s is %s (%s); disabling [update].%s until it is repaired",
-            snapshot.status.path,
-            snapshot.status.health.value,
-            snapshot.status.detail or "no detail",
-            key,
-        )
+    option_key = "update.no_update_check" if key == "check" else f"update.{key}"
+    sources, _, resolved = _resolve_update_setting(option_key)
+    if _managed_update_failure(key, sources, resolved):
         return True, False
-    section = snapshot.data.get("update")
-    if not isinstance(section, dict) or key not in section:
+    managed = resolved.tier_health[MANAGED_RANK]
+    if not isinstance(managed, Found):
         return False, False
-    value = section[key]
-    if isinstance(value, bool):
-        return True, value
-    # Fail closed, exactly as the unreadable-file branch above does. Returning
-    # "managed config does not decide" handed the choice back to the user's env
-    # var and `config.toml`, so an administrator who typed `auto_update =
-    # "false"` on a locked-down fleet silently kept the permissive default —
-    # while *deleting* the file correctly forced the feature off. A present but
-    # unreadable value is a policy error, not an absent policy.
-    logger.error(
-        "Managed [update].%s is %s, not a bool; disabling it until it is repaired",
-        key,
-        type(value).__name__,
-    )
-    return True, False
+    value = bool(managed.value)
+    return True, not value if key == "check" else value
 
 
 def is_update_check_enabled() -> bool:
@@ -3726,14 +3810,13 @@ def is_update_check_enabled() -> bool:
 
     Defaults to enabled.
     """
-    from deepagents_code._env_vars import NO_UPDATE_CHECK
-
-    managed, value = _managed_update_value("check")
-    if managed:
-        return value
-    if os.environ.get(NO_UPDATE_CHECK):
+    sources, _, resolved = _resolve_update_setting("update.no_update_check")
+    if _managed_update_failure("check", sources, resolved):
         return False
-    return _read_update_config().get("check", True)
+    _warn_invalid_update_environment(resolved)
+    if _user_update_unreadable(sources):
+        logger.warning("Could not read [update] config — using defaults")
+    return not bool(resolved.value)
 
 
 def is_auto_update_enabled() -> bool:
@@ -3755,41 +3838,23 @@ def is_auto_update_enabled() -> bool:
     a corrupt file may hold an explicit opt-out, so it is not treated as the
     permissive default. A genuinely absent config falls through to `True`.
     """
-    from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
     from deepagents_code.config import _is_editable_install
+    from deepagents_code.configuration.resolver import USER_RANK
 
     if _is_editable_install():
         return False
-    managed, value = _managed_update_value("auto_update")
-    if managed:
-        return value
-    if AUTO_UPDATE in os.environ:
-        raw = os.environ[AUTO_UPDATE]
-        classified = classify_env_bool(raw)
-        if classified is not None:
-            return classified
-        # Unrecognized boolean token: warn and fall through to the config read
-        # below (which itself fails closed on a corrupt config), mirroring
-        # `config_manifest._coerce_env`. With the opt-out default an absent or
-        # default config leaves auto-update on, so an ignored disable attempt
-        # (e.g. a typo like `ture`) must be surfaced rather than swallowed.
-        logger.warning("Ignoring %s=%r (expected bool)", AUTO_UPDATE, raw)
-    try:
-        config = _read_update_config_strict()
-    except _ConfigReadError:
-        # The config exists but cannot be parsed. Fail *closed* here even though
-        # the default is opt-out: a corrupt file may hold an explicit
-        # `auto_update = false`, and silently re-enabling auto-update (which
-        # upgrades and re-execs the process) against an unreadable opt-out is
-        # worse than skipping the upgrade. A genuinely absent config still
-        # falls through to the opt-out default below.
+    sources, _, resolved = _resolve_update_setting("update.auto_update")
+    if _managed_update_failure("auto_update", sources, resolved):
+        return False
+    _warn_invalid_update_environment(resolved)
+    if _user_update_unreadable(sources) and not any(
+        rank < USER_RANK for rank in resolved.ranks
+    ):
         logger.warning(
-            "Could not read [update] config; disabling auto-update until it is "
-            "readable",
-            exc_info=True,
+            "Could not read [update] config; disabling auto-update until it is readable"
         )
         return False
-    return config.get("auto_update", True)
+    return bool(resolved.value)
 
 
 def set_auto_update(enabled: bool) -> None:
@@ -3820,51 +3885,6 @@ def set_auto_update(enabled: bool) -> None:
         raise OSError(result.error or f"could not update {DEFAULT_CONFIG_PATH}")
 
 
-class _ConfigReadError(Exception):
-    """Internal: `config.toml` exists but could not be read or parsed.
-
-    Lets callers that care about the difference (e.g. `is_auto_update_enabled`,
-    which fails closed) distinguish a corrupt config from a genuinely absent
-    one. A missing file is *not* an error and returns an empty config.
-    """
-
-
-def _read_update_config_strict() -> dict[str, bool]:
-    """Read `[update]` section from `config.toml`, surfacing read errors.
-
-    Returns:
-        A dict of boolean config values; empty when the file is absent.
-
-    Raises:
-        _ConfigReadError: When the file exists but cannot be opened or parsed.
-    """
-    if not DEFAULT_CONFIG_PATH.exists():
-        return {}
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise _ConfigReadError from exc
-    section = data.get("update", {})
-    if not isinstance(section, dict):
-        msg = "[update] config must be a table"
-        raise _ConfigReadError(msg)
-    return {k: v for k, v in section.items() if isinstance(v, bool)}
-
-
-def _read_update_config() -> dict[str, bool]:
-    """Read `[update]` section from `config.toml`.
-
-    Returns:
-        A dict of boolean config values, empty on missing/unreadable file.
-    """
-    try:
-        return _read_update_config_strict()
-    except _ConfigReadError:
-        logger.warning("Could not read [update] config — using defaults", exc_info=True)
-        return {}
-
-
 def is_auto_update_explicitly_set() -> bool:
     """Return whether an explicit auto-update preference is in force.
 
@@ -3878,17 +3898,18 @@ def is_auto_update_explicitly_set() -> bool:
     the implicit default was in force on a machine where an administrator had
     set the value.
     """
-    from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
+    from deepagents_code.configuration.resolver import (
+        ENVIRONMENT_RANK,
+        MANAGED_RANK,
+        USER_RANK,
+    )
+    from deepagents_code.configuration.types import Found, Invalid
 
-    managed, _ = _managed_update_value("auto_update")
-    if managed:
+    sources, _, resolved = _resolve_update_setting("update.auto_update")
+    managed = resolved.tier_health[MANAGED_RANK]
+    if not sources.managed.status.usable or isinstance(managed, (Found, Invalid)):
         return True
-    if (
-        AUTO_UPDATE in os.environ
-        and classify_env_bool(os.environ[AUTO_UPDATE]) is not None
-    ):
-        return True
-    return "auto_update" in _read_update_config()
+    return any(rank in resolved.ranks for rank in (ENVIRONMENT_RANK, USER_RANK))
 
 
 def should_announce_auto_update_default() -> bool:

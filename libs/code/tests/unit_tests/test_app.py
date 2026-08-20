@@ -20065,6 +20065,11 @@ class TestTerminalBackgroundSync:
 
     @pytest.fixture(autouse=True)
     def _clear_terminal_program(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Drop the inherited `TERM_PROGRAM`.
+
+        Without this, the Apple Terminal guard short-circuits the other tests
+        in this class when the suite runs inside Terminal.app.
+        """
         monkeypatch.delenv("TERM_PROGRAM", raising=False)
 
     def test_initial_theme_sync_sets_terminal_background(
@@ -20216,7 +20221,8 @@ class TestTerminalBackgroundSync:
     def test_sync_terminal_background_skips_apple_terminal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from deepagents_code import terminal_escape
+        """A non-ANSI theme, so an empty `calls` proves the guard fired."""
+        from deepagents_code import terminal_escape, theme
 
         calls: list[str] = []
         monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
@@ -20226,11 +20232,54 @@ class TestTerminalBackgroundSync:
             lambda color: calls.append(color) or True,
         )
 
+        # `calls` is not cleared after construction, so this also covers the
+        # implicit sync in `DeepAgentsApp.__init__`.
         app = DeepAgentsApp()
-        app.theme = "langchain"
+        app.theme = theme.DEFAULT_THEME
         app.sync_terminal_background()
 
         assert calls == []
+
+    def test_sync_terminal_background_skips_padded_apple_terminal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A padded `TERM_PROGRAM` groups with its unpadded form."""
+        from deepagents_code import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setenv("TERM_PROGRAM", " Apple_Terminal ")
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        app.theme = theme.DEFAULT_THEME
+        app.sync_terminal_background()
+
+        assert calls == []
+
+    def test_sync_terminal_background_runs_on_other_terminals(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only Apple Terminal is skipped; other terminals still sync."""
+        from deepagents_code import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+        app = DeepAgentsApp()
+        calls.clear()
+
+        app.theme = theme.DEFAULT_THEME
+        app.sync_terminal_background()
+
+        assert calls == [theme.get_registry()[theme.DEFAULT_THEME].colors.background]
 
     def test_exit_resets_terminal_background(
         self, monkeypatch: pytest.MonkeyPatch

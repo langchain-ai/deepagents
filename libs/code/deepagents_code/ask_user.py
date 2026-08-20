@@ -28,7 +28,6 @@ from deepagents_code._ask_user_types import (
     ASK_USER_CANCELLED_ANSWER,
     CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
-    MULTI_SELECT_FORBIDDEN_IN_VALUE,
     QUESTION_TYPES,
     AskUserAuthorizationReceipt,
     AskUserRequest,
@@ -51,7 +50,7 @@ Each question can be one of:
 
 For "multiple_choice" and "multi_select" questions, provide a list of choices, each with a non-empty "value". For "multiple_choice" the user picks one option or types a custom answer via the "Other" option; for "multi_select" the user toggles one or more of the provided options and may also add one or more custom free-form Other values among the selected values.
 
-A "multi_select" answer is returned as the selected values joined with ", " (an optional question the user leaves untouched returns an empty string). Because of that joining, "multi_select" choice values and custom Other text must not themselves contain a comma.
+A "multi_select" answer is returned as a JSON array of the selected values, e.g. ["a", "b"] (an optional question the user leaves untouched returns []). "multi_select" choice values and custom Other text may themselves contain commas, quotes, and newlines. A "multiple_choice" value is returned on its own with no escaping, so keep that one to a single line.
 
 By default all questions are required. Set "required" to false for optional questions that the user can skip. Do not include "(required)", "(optional)", "- optional", or similar annotations in the question text — the UI renders that separately based on the "required" field.
 
@@ -86,19 +85,15 @@ def _validate_choices(
     """Validate the choice list of a choice-type question.
 
     Rejects blank values, which would otherwise render as an unlabelled option
-    the user can select but whose answer reads as "no answer". For
-    `multi_select`, also rejects values containing
-    `MULTI_SELECT_FORBIDDEN_IN_VALUE`, since a value carrying the punctuation
-    that separates selections would make the joined answer ambiguous.
+    the user can select but whose answer reads as "no answer".
 
     Args:
         choices: Candidate `choices` value from a question definition.
         question_text: Question text, for error messages.
-        question_type: Question type. Selects the `multi_select`-only
-            forbidden-substring check, and names the type in error messages.
+        question_type: Question type. Names the type in error messages.
 
     Raises:
-        ToolArgumentError: If any choice is malformed, blank, or ambiguous.
+        ToolArgumentError: If any choice is malformed or blank.
     """
     # On the tool path pydantic has already parsed `choices` into `list[Choice]`,
     # so the shape checks below are redundant there. They are kept — and the
@@ -110,13 +105,6 @@ def _validate_choices(
             msg = (
                 f"{question_type} question {question_text!r} has a choice with a "
                 f"missing or blank 'value': {choice!r}"
-            )
-            raise ToolArgumentError(msg)
-        if question_type == "multi_select" and MULTI_SELECT_FORBIDDEN_IN_VALUE in value:
-            msg = (
-                f"multi_select question {question_text!r} has a choice value "
-                f"containing {MULTI_SELECT_FORBIDDEN_IN_VALUE!r}, which would "
-                f"make the joined answer ambiguous: {value!r}"
             )
             raise ToolArgumentError(msg)
 
@@ -464,6 +452,12 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.
             """
+            # A malformed payload raises `ToolArgumentError` out of
+            # `_validate_questions`. `ToolErrorMiddleware` (wired in
+            # `create_cli_agent`) turns it into a recoverable error
+            # `ToolMessage` the model retries against, so the turn survives it,
+            # and `_tool_arg_validation_on_error` logs the rejection with
+            # `exc_info`. Do not add a second log here.
             _validate_questions(questions)
             ask_request = AskUserRequest(
                 type="ask_user",

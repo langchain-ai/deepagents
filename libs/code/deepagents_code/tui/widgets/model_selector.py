@@ -88,8 +88,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "fireworks:accounts/fireworks/models/kimi-k3": "Kimi K3",
     "fireworks:accounts/fireworks/models/minimax-m3": "MiniMax-M3",
     "fireworks:accounts/fireworks/models/qwen3p7-plus": "Qwen 3.7 Plus",
-    "google_genai:gemini-3.6-flash": "Gemini 3.6 Flash",
-    "meta:muse-spark-1.1": "Muse Spark 1.1",
+    "google_genai:gemini-3.7-flash": "Gemini 3.7 Flash",
     "meta:muse-spark-1.2": "Muse Spark 1.2",
     "ollama:deepseek-v4-flash:cloud": "DeepSeek V4 Flash",
     "ollama:deepseek-v4-pro:cloud": "DeepSeek V4 Pro",
@@ -107,7 +106,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:deepseek/deepseek-v4-flash:free": "DeepSeek V4 Flash (free)",
     "openrouter:deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
     "openrouter:deepseek/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
-    "openrouter:google/gemini-3.6-flash": "Gemini 3.6 Flash",
+    "openrouter:google/gemini-3.7-flash": "Gemini 3.7 Flash",
     "openrouter:moonshotai/kimi-k3": "Kimi K3",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra 550B A55B",
     "openrouter:openrouter/fusion": "OpenRouter Fusion",
@@ -1331,7 +1330,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         # Resolve friendly provider labels via the shared helper so headers
         # match the `/auth` and install UIs (e.g. `openai_codex` renders as
-        # "OpenAI Codex (ChatGPT login)"). Load config once; the helper reads a
+        # "OpenAI (Subscription login)"). Load config once; the helper reads a
         # user-configured `display_name` before the built-in map.
         from deepagents_code.tui.widgets.auth import provider_display_name
 

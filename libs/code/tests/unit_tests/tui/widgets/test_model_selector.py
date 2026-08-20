@@ -2938,7 +2938,7 @@ class TestCuratedModelSelection:
             ("anthropic:claude-sonnet-4-5", "anthropic"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -2948,7 +2948,7 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.6-luna", "openai"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 

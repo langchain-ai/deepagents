@@ -2938,9 +2938,58 @@ class TestCodexAuthInManager:
             await pilot.pause()
         assert CodexSignedInScreen in pushed
 
+    async def test_codex_expired_token_shows_sign_in_and_pushes_oauth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An expired ChatGPT token exposes and launches the sign-in action."""
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.model_config import clear_caches
+        from deepagents_code.tui.widgets.codex_auth import (
+            CodexAuthScreen,
+            CodexSignedInScreen,
+        )
+
+        path = tmp_path / "auth.json"
+        self._write_token(path, expired=True)
+        monkeypatch.setattr(codex_integration, "default_store_path", lambda: path)
+
+        async def _fake_run(  # noqa: RUF029  # async signature dictated by protocol
+            *_args: object, **_kwargs: object
+        ) -> codex_integration.CodexAuthStatus:
+            return codex_integration.CodexAuthStatus(logged_in=False, store_path=path)
+
+        monkeypatch.setattr(codex_integration, "run_browser_login", _fake_run)
+        clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            target_index = next(
+                i
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "openai_codex"
+            )
+            options.highlighted = target_index
+            await pilot.pause()
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            assert "Enter sign in " in str(help_text.content)
+            pushed: list[type] = []
+            original = app.push_screen
+
+            def _capture(screen, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                pushed.append(type(screen))
+                return original(screen, *args, **kwargs)
+
+            monkeypatch.setattr(app, "push_screen", _capture)
+            await pilot.press("enter")
+            await pilot.pause()
+        assert CodexAuthScreen in pushed
+        assert CodexSignedInScreen not in pushed
+
     @staticmethod
-    def _write_token(path: Path) -> None:
-        """Plant a valid (unexpired) token bundle at `path` with 0600 perms."""
+    def _write_token(path: Path, *, expired: bool = False) -> None:
+        """Plant a ChatGPT token bundle at `path` with 0600 permissions."""
         import json
         from datetime import datetime, timedelta
 
@@ -2950,7 +2999,9 @@ class TestCodexAuthInManager:
                 {
                     "access_token": "fake",
                     "refresh_token": "fake",
-                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "expires_at": (
+                        datetime.now(UTC) + timedelta(hours=-1 if expired else 1)
+                    ).isoformat(),
                     "account_id": "acct",
                     "plan_type": "plus",
                     "user_id": "u",

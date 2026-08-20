@@ -1669,14 +1669,20 @@ class AuthManagerScreen(ModalScreen[None]):
 
         status = self._auth_statuses.get(provider)
         if provider == CODEX_PROVIDER:
-            if status is not None and status.state == ProviderAuthState.CONFIGURED:
-                return "manage"
-            return "sign in"
+            return "manage" if self._codex_session_is_active() else "sign in"
         if status is not None and status.source == ProviderAuthSource.STORED:
             return "replace/delete"
         if status is not None and status.state == ProviderAuthState.CONFIGURED:
             return "replace"
         return "add"
+
+    @staticmethod
+    def _codex_session_is_active() -> bool:
+        """Return whether ChatGPT selection opens account management."""
+        from deepagents_code.integrations import openai_codex
+
+        status = openai_codex.get_status()
+        return status.logged_in and not status.is_expired
 
     def _build_description(self) -> Content:
         """Build the description line with an inline docs hyperlink.
@@ -1823,14 +1829,12 @@ class AuthManagerScreen(ModalScreen[None]):
         sign out before launching a fresh sign-in flow. Otherwise just run
         the sign-in worker.
         """
-        from deepagents_code.integrations import openai_codex
         from deepagents_code.tui.widgets.codex_auth import (
             CodexAuthScreen,
             CodexSignedInScreen,
         )
 
-        status = openai_codex.get_status()
-        if status.logged_in and not status.is_expired:
+        if self._codex_session_is_active():
             self.app.push_screen(
                 CodexSignedInScreen(),
                 self._on_codex_signed_in_closed,

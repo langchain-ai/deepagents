@@ -53,10 +53,6 @@ OpenInference attributes. When validating this integration, disable
 `LANGSMITH_OTEL_ENABLED` and `LANGSMITH_OTEL_ONLY` to avoid duplicate,
 partially parsed spans in the same Phoenix instance.
 
-Completed spans are exported immediately because dcode's bundled agent server
-is short-lived. Delayed batch export can otherwise lose the final model and root
-spans when the local server shuts down.
-
 ## 🤔 What is this?
 
 The fastest way to start using Deep Agents. `deepagents-code` is a pre-built coding agent in your terminal — similar to Claude Code or Cursor — powered by any LLM that supports tool calling. One install command and you're up and running, no code required.

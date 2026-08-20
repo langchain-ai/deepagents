@@ -62,7 +62,7 @@ def test_disabled_does_not_import_optional_packages(
 def test_enabled_registers_and_instruments_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Enabled tracing should immediately export LangChain spans to Phoenix once."""
+    """Enabled tracing should batch-export LangChain spans to Phoenix once."""
     register, instrument, provider = _stub_dependencies(monkeypatch)
     monkeypatch.setenv(PHOENIX_TRACING, "true")
     monkeypatch.setenv("PHOENIX_PROJECT_NAME", "dcode-debug")
@@ -73,13 +73,29 @@ def test_enabled_registers_and_instruments_once(
     register.assert_called_once_with(
         project_name="dcode-debug",
         protocol="http/protobuf",
-        batch=False,
+        batch=True,
         auto_instrument=False,
         verbose=False,
     )
     instrument.assert_called_once_with(tracer_provider=provider)
     assert phoenix_tracing._provider is provider
     assert os.environ["PHOENIX_DISCOVER_CONFIG"] == "false"
+
+
+def test_flush_exports_queued_spans(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Server shutdown should flush the configured batch exporter."""
+    provider = MagicMock()
+    provider.force_flush.return_value = True
+    monkeypatch.setattr(phoenix_tracing, "_provider", provider)
+
+    assert phoenix_tracing.flush_phoenix_tracing(timeout_millis=1_000) is True
+
+    provider.force_flush.assert_called_once_with(timeout_millis=1_000)
+
+
+def test_flush_without_provider_is_successful() -> None:
+    """Disabled tracing has no queued spans and needs no optional imports."""
+    assert phoenix_tracing.flush_phoenix_tracing(timeout_millis=1_000) is True
 
 
 def test_enabled_uses_default_project(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -3,11 +3,37 @@
 from __future__ import annotations
 
 import os
+from typing import Protocol
 
 from deepagents_code._env_vars import PHOENIX_TRACING, is_env_truthy
 
 _DEFAULT_PROJECT_NAME = "deepagents-code"
-_provider: object | None = None
+
+
+class _FlushableTracerProvider(Protocol):
+    """Subset of the OpenTelemetry provider used by this optional integration."""
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        """Export ended spans that are still queued."""
+        ...
+
+
+_provider: _FlushableTracerProvider | None = None
+
+
+def flush_phoenix_tracing(*, timeout_millis: int) -> bool:
+    """Flush queued Phoenix spans before the ephemeral agent server exits.
+
+    Args:
+        timeout_millis: Maximum time to wait for the batch exporter.
+
+    Returns:
+        `True` when tracing is inactive or queued spans were exported before
+        the timeout, otherwise `False`.
+    """
+    if _provider is None:
+        return True
+    return _provider.force_flush(timeout_millis=timeout_millis)
 
 
 def configure_phoenix_tracing() -> bool:
@@ -55,12 +81,7 @@ def configure_phoenix_tracing() -> bool:
     provider = register(
         project_name=project,
         protocol="http/protobuf",
-        # The bundled LangGraph server is an ephemeral child process. A batch
-        # processor's default five-second export interval can outlive server
-        # teardown, leaving only the early child spans in Phoenix while the
-        # final model and root agent spans remain queued. Export completed spans
-        # immediately so every normally completed dcode invocation is intact.
-        batch=False,
+        batch=True,
         auto_instrument=False,
         verbose=False,
     )

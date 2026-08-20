@@ -2,7 +2,7 @@
 
 This file contains repository-wide rules for agents and contributors. Use these sources for details instead of duplicating them here:
 
-- [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md) — setup, commands, pre-commit, the edit-test-lint loop, testing, and benchmarks.
+- [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md) — repository layout, setup, commands, pre-commit, the edit-test-lint loop, testing, and benchmarks.
 - [`libs/ARCHITECTURE.md`](libs/ARCHITECTURE.md) — runtime structure and SDK starting points.
 - [`.github/RELEASING.md`](.github/RELEASING.md) — releases, version lines, fan-out, CI labels, and troubleshooting.
 - [LangChain contributing guide](https://docs.langchain.com/oss/python/contributing/overview) — general contribution policy.
@@ -15,7 +15,7 @@ Do not add dependencies unless required. When adding one, justify its maintenanc
 
 ### Suppressing ruff rules
 
-Use inline `# noqa: RULE` with a justification for individual exceptions. Reserve `[tool.ruff.lint.per-file-ignores]` for categorical policies that apply to a whole class of files, such as tests not requiring docstrings. Do not hide a single violation with a file-wide ignore.
+Use inline `# noqa: RULE` with a justification for individual exceptions. Reserve `[tool.ruff.lint.per-file-ignores]` for categorical policies that apply to a whole class of files, such as tests not requiring docstrings. Do not hide a single violation with a file-wide ignore. If you cannot justify a suppression, the code is probably the problem. See [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md#suppressing-ruff-rules) for worked examples.
 
 ## PR conventions
 
@@ -29,7 +29,7 @@ Follow Conventional Commits and include a scope. Allowed types and scopes are de
 - For version-branch syncs, use `chore(repo): sync main into vX.Y`; `release` is a type, not a scope.
 - Keep each bump-worthy PR to one releasable component. Put cross-package dependency or lockfile churn in a separate `chore(deps):` PR. See [multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [lockfile churn fan-out](.github/RELEASING.md#lockfile-churn-fan-out).
 
-### Branches
+### Branch naming
 
 Name branches `<github-username>/<scope>/<short-description>`, where the description is brief kebab-case. Use the same scope as the PR title, except documentation-only branches may use the branch-only `docs` scope.
 
@@ -56,12 +56,12 @@ Preserve exported function signatures, argument positions, and names. Before cha
 
 ### Code and documentation
 
-- Add type hints and return types to Python code. Avoid `Any` where a precise type is practical, and follow local patterns.
-- Use Google-style docstrings for public functions. Put types in signatures, not docstrings; do not repeat defaults unless post-processing or conditional behavior changes them.
+- Add type hints and return types to Python code. Avoid `Any`; use a precise type and follow local patterns.
+- Use Google-style docstrings for public functions ([template](libs/DEVELOPMENT.md#docstrings)). Put types in signatures, not docstrings; do not repeat defaults unless post-processing or conditional behavior changes them.
 - Document public parameters, return values, and exceptions concisely, focusing on why rather than restating code.
 - Use American English and single backticks for inline code; do not use Sphinx-style double backticks.
-- Use descriptive variable names, preferring single words where they read clearly.
-- Break up functions longer than roughly 20 lines into smaller focused ones where it helps.
+- Use descriptive variable names. Prefer a single word when it reads clearly.
+- Keep functions under about 20 lines. Split a longer one into focused helpers.
 - Build error text in a `msg` variable and raise with it, matching the surrounding code.
 - Remove unreachable or commented-out code before committing.
 
@@ -84,6 +84,8 @@ Keep this heading stable: package `pyproject.toml` comments cite it by name.
 - Scope an expected warning to the test with `@pytest.mark.filterwarnings`; reserve package-level entries for categorical or third-party warnings and justify them.
 - Prefer `default::` to `ignore::` for warnings such as `PytestUnhandledThreadExceptionWarning` and `PytestUnraisableExceptionWarning`, so failures remain visible.
 - Warning filter message fields in ini files are unescaped regexes. Escape literal metacharacters and stop message prefixes before warning-text colons.
+- Keep a message-scoped prefix narrow enough that it cannot swallow an adjacent warning.
+- A filter may be version-specific, such as one that only fires on Python 3.14. A filter that matches nothing is harmless.
 
 ### Security and resources
 
@@ -103,6 +105,9 @@ Avoid broad repository searches during normal SDK work. Target these paths:
 - Coding agent: `libs/code`
 - Deployment CLI: `libs/cli`
 - ACP: `libs/acp`
+- Talon: `libs/talon`
+- Evals: `libs/evals`
+- Partner packages: `libs/partners/<partner>`
 
 Exclude package `.venv` directories, hidden worktrees, `deepagents.egg-info`, generated metadata, benchmark results, and scratch files unless needed. For dependency internals, find the exact environment file instead of searching all of `site-packages`.
 
@@ -113,6 +118,7 @@ Exclude package `.venv` directories, hidden worktrees, `deepagents.egg-info`, ge
 - [`libs/partners/AGENTS.md`](libs/partners/AGENTS.md) — partner-package CI and release wiring.
 - [`libs/code/DEVELOPMENT.md`](libs/code/DEVELOPMENT.md) — coding-agent setup and local development.
 - [`libs/cli/DEVELOPMENT.md`](libs/cli/DEVELOPMENT.md) — deployment-CLI setup and package layout.
+- [`.github/LAYOUT.md`](.github/LAYOUT.md) — map of CI workflows, composite actions, and labeling.
 
 `deepagents-code` is the terminal coding agent launched by `dcode`. `deepagents-cli` contains the `init`, `deploy`, `agents`, and `mcp-servers` deployment commands.
 
@@ -122,7 +128,7 @@ Benchmarks live in `deepagents`, `code`, and `partners/quickjs`; other packages 
 
 ## CI and releases
 
-Use [`.github/RELEASING.md`](.github/RELEASING.md) for release-please behavior, version branches, changelog overrides, reverts, and release troubleshooting. Workflow files are authoritative for linting and labeling behavior.
+Use [`.github/RELEASING.md`](.github/RELEASING.md) for release-please behavior, version branches, changelog overrides, reverts, and release troubleshooting, including the CI guardrails that gate a release. Use [`.github/LAYOUT.md`](.github/LAYOUT.md) to find a workflow by what it does. Workflow files are authoritative for linting and labeling behavior.
 
 Pin GitHub Actions to full-length commit SHAs; a tag reference is rejected. Verify whether a tag is annotated and dereference it before using its commit. Use the `gh` CLI to resolve one.
 

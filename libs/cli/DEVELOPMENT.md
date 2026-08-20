@@ -12,7 +12,7 @@ Run the CLI from a checkout:
 
 ```bash
 uv run python -m deepagents_cli init my-agent
-uv run python -m deepagents_cli deploy --config my-agent/deepagents.toml --dry-run
+uv run python -m deepagents_cli deploy --dir my-agent --dry-run
 ```
 
 ## Tests
@@ -22,7 +22,7 @@ make test       # unit tests (no network)
 make lint       # ruff + ty
 ```
 
-Integration tests in `tests/integration_tests/` exercise the LangSmith Hub seeding path and require `LANGSMITH_API_KEY` to be set.
+`tests/integration_tests/` is a scaffold: it holds only `conftest.py`, which sets up an optional LangSmith client. There are no integration tests in this package today.
 
 ## Package layout
 
@@ -33,4 +33,4 @@ Integration tests in `tests/integration_tests/` exercise the LangSmith Hub seedi
 - `deepagents_cli/model_config.py` — slim `resolve_env_var` helper for the `DEEPAGENTS_CLI_` env-var prefix.
 - `deepagents_cli/_version.py` — `__version__` (managed by release-please).
 
-Bare `deepagents` invocations print a deprecation notice pointing at `deepagents-code` and exit non-zero. Everything from the old interactive REPL (Textual widgets, MCP, skills, sandbox bootstrap, slash commands, the drift tests) moved to `libs/code/` in `deepagents-cli==0.1.0`.
+Bare `deepagents` invocations print a deprecation notice pointing at `deepagents-code` and exit non-zero. Everything from the old interactive REPL (Textual widgets, the REPL's MCP tool loading, skills, sandbox bootstrap, slash commands, the drift tests) moved to `libs/code/` in `deepagents-cli==0.1.0`. The `mcp-servers` subcommand here is a different surface: it registers and inspects servers for a managed agent (`list`, `add`, `tools`).

@@ -103,10 +103,13 @@ For long-term memory and backend routing patterns, use the [Memory](https://docs
 
 ## Common starting points
 
-- Agent construction, middleware ordering, prompt assembly, default model behavior: `graph.py`. `create_deep_agent()` builds the middleware stack and delegates to `langchain.agents.create_agent()`; the call currently sits near the end of the function, followed by `.with_config(...)` for Deep Agents metadata and recursion config.
+Paths in this section are relative to the SDK package root, `libs/deepagents/deepagents/`.
+
+- Agent construction, middleware ordering, prompt assembly, default model behavior: `graph.py`. `create_deep_agent()` assembles the middleware stack, delegates to `langchain.agents.create_agent()`, then applies `.with_config(...)` for Deep Agents metadata and recursion config.
 - Tool visibility, prompt injection, and request-time behavior: `middleware/`. Feature-specific modules include `subagents.py` (subagent middleware and nested `create_agent` use), `filesystem.py`, `skills.py`, `memory.py`, `permissions.py`, and `summarization.py`.
 - Filesystem persistence, shell support, and route behavior: `backends/`.
 - Provider- or model-specific harness changes: `profiles/`.
 - Public imports and compatibility expectations: `__init__.py` plus the API reference.
+- Existing coverage and usage examples for any of the above: `../tests/`.
 
 When in doubt, trace from the public argument on `create_deep_agent()` to the middleware or backend it installs, then follow how that component participates during execution.

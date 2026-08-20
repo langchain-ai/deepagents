@@ -35,7 +35,7 @@ This is a monorepo of independently versioned packages under `libs/`:
 libs/
 ├── deepagents/     # Core SDK — create_deep_agent, middleware, backends
 ├── acp/            # Agent Client Protocol integration
-├── cli/            # Deployment CLI (init / dev / deploy)
+├── cli/            # Deployment CLI (init / deploy / agents / mcp-servers)
 ├── evals/          # Evaluation suite and Harbor integration
 ├── code/           # Prebuilt coding agent for interactive and headless use
 ├── talon/          # Local runtime host for long-running agents
@@ -59,6 +59,13 @@ uv sync --all-groups      # install the package + all dependency groups
 ```
 
 Prefer the package's `make` targets for standard workflows; use `uv run ...` for direct one-off commands.
+
+Four rules for this monorepo:
+
+- Install dependencies explicitly with `uv sync` (add `--group <name>` or `--all-groups` as needed). Never let them install implicitly.
+- Do not create a virtual environment outside the package directory.
+- Do not mix environments within one session.
+- Each package sets its own supported Python range in `pyproject.toml`. Do not pin a global Python version; defer to the package's `requires-python`.
 
 ## Common commands
 
@@ -93,6 +100,50 @@ Run these from `libs/` to fan out across packages:
 | `make lock-check` | Verify all lockfiles are up to date |
 | `make lock-bump DEP=<pkg>` | Bump one dependency across all lockfiles |
 
+## Docstrings
+
+Google-style, with an `Args` section, for every public function. The rules are in the root [`AGENTS.md`](../AGENTS.md#code-and-documentation); this is the shape they produce:
+
+```python
+def send_email(to: str, msg: str, *, priority: str = "normal") -> bool:
+    """Send an email to a recipient with specified priority.
+
+    Any additional context about the function can go here.
+
+    Args:
+        to: The email address of the recipient.
+        msg: The message body to send.
+        priority: Email priority level.
+
+    Returns:
+        `True` if email was sent successfully, `False` otherwise.
+
+    Raises:
+        InvalidEmailError: If the email address format is invalid.
+        SMTPConnectionError: If unable to connect to email server.
+    """
+```
+
+## Suppressing ruff rules
+
+`per-file-ignores` silences a rule for the *entire* file. Add it for one violation and every future violation of that rule in that file is silently ignored. Inline `# noqa` is precise to the line, self-documenting, and keeps the safety net intact for the rest of the file. Justify every suppression in a comment. If you cannot justify it, the code is probably the problem.
+
+Reserve `per-file-ignores` for categorical policy that applies to a whole class of files. Those are not exceptions; they are different rules for a different context.
+
+```toml
+# GOOD - categorical policy in pyproject.toml
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D1", "S101"]
+
+# BAD - single-line exception buried in pyproject.toml
+"deepagents_cli/agent.py" = ["PLR2004"]
+```
+
+```python
+# GOOD - precise, self-documenting inline suppression
+timeout = 30  # noqa: PLR2004  # default HTTP timeout, not arbitrary
+```
+
 ## Pre-commit hooks
 
 The repo uses [`pre-commit`](https://pre-commit.com/) for formatting, linting, lockfile checks, and Conventional Commit message validation:
@@ -126,11 +177,11 @@ The hook is a local convenience and can be skipped with `git push --no-verify` o
 
 ## Testing
 
-Test files mirror the source layout: tests for `deepagents/middleware/foo.py` live in `tests/unit_tests/middleware/test_foo.py`. Write tests against real behavior and avoid mocks where practical.
+Test files mirror the source layout: tests for `deepagents/middleware/foo.py` live in `tests/unit_tests/middleware/test_foo.py`. Write tests against real behavior and avoid mocks where practical. When the conventions for a case are unclear, read the nearby existing tests first.
 
 ### Warnings fail the suite
 
-Every package puts `"error"` first in its pytest `filterwarnings`. Any warning the repo has not explicitly accepted fails the run. The entries after `"error"` are the reviewed allowlist. Fix actionable warnings first and treat an allowlist entry as the last resort. For the filter mechanics, see the root [`AGENTS.md`](../AGENTS.md#warnings-are-errors).
+Every package puts `"error"` first in its pytest `filterwarnings`. Any warning the repo has not explicitly accepted fails the run. The entries after `"error"` are the reviewed allowlist. Fix actionable warnings first and treat an allowlist entry as the last resort. The rules for writing a filter entry live in the root [`AGENTS.md`](../AGENTS.md#warnings-are-errors).
 
 How a stray warning surfaces depends on when it is raised:
 
@@ -166,15 +217,24 @@ make -C libs/deepagents benchmark
 
 `bench-memory` runs the `memory_benchmark`-marked subset. In CI it is gated behind the `has-memory-benchmarks` input on `_benchmark.yml`, which defaults to `false`. No caller sets it today, so memory benchmarks are effectively local-only; wire the flag in if you add one to the sweep.
 
-Results land on the [CodSpeed dashboard](https://codspeed.io/langchain-ai/deepagents), with a separate view per package via the upper-left selector. Regression thresholds are managed in the dashboard (currently 10% global); tighten per-benchmark thresholds for benches whose noise floor is well below that, since a wide threshold masks real regressions in tight code.
+Results land on the [CodSpeed dashboard](https://codspeed.io/langchain-ai/deepagents), with a separate view per package via the upper-left selector. Regression thresholds are managed in the dashboard, not in this repo, so a value quoted here will drift (10% global at the time of writing); tighten per-benchmark thresholds for benches whose noise floor is well below that, since a wide threshold masks real regressions in tight code.
 
-`.github/workflows/_benchmark_nightly.yml` runs on a daily cron without path gating, so baselines for unchanged packages do not drift. It covers `libs/deepagents` and `libs/code` only — `libs/partners/quickjs` defines benchmark targets but is not in the sweep. Use `workflow_dispatch` on that workflow for an ad-hoc run before bumping `pytest-codspeed` or the `CodSpeedHQ/action` SHA.
+`.github/workflows/_benchmark_nightly.yml` is the only caller of `_benchmark.yml`; there is no per-PR benchmark job. It runs on a daily cron over every package in its list, so baselines for unchanged packages do not drift. It covers `libs/deepagents` and `libs/code` only — `libs/partners/quickjs` defines benchmark targets but is not in the sweep. Use `workflow_dispatch` on that workflow for an ad-hoc run before bumping `pytest-codspeed` or the `CodSpeedHQ/action` SHA.
 
 ## Contributing conventions
 
 The full conventions live in [`AGENTS.md`](../AGENTS.md) at the repo root. The points most likely to trip up a first PR:
 
-- **Conventional Commits with a mandatory scope.** Titles look like `type(scope): description` — e.g. `fix(cli): resolve type hinting issue`. Allowed types and scopes are defined in `.github/workflows/pr_lint.yml`.
+- **Conventional Commits with a mandatory scope.** Titles look like `type(scope): description`. Allowed types and scopes are defined in `.github/workflows/pr_lint.yml`. Keep the title short and descriptive; save detail for the body.
+
+  ```txt
+  feat(sdk): add new chat completion feature
+  fix(cli): resolve type hinting issue
+  chore(evals): update infrastructure dependencies
+  test(cli): missing unit tests for `_git`
+  feat(cli): `--startup-cmd` flag
+  style(cli): strip trailing annotations from `ask_user` questions
+  ```
 - **Branch naming:** `<github-username>/<scope>/<short-description>` (e.g. `mdrxy/docs/architecture-guide`).
 - **Tests required.** Every feature or bugfix needs unit tests under `tests/unit_tests/` (no network); integration tests go in `tests/integration_tests/`.
 - **Stable public interfaces.** Avoid breaking exported signatures; add new parameters as keyword-only with defaults.

@@ -22,6 +22,7 @@ from textual.message import Message
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.selection import Selection
+from textual.strip import Strip
 from textual.style import Style as TStyle
 from textual.widgets import Static
 
@@ -83,9 +84,12 @@ if TYPE_CHECKING:
         RenderResult,
     )
     from textual.app import ComposeResult
+    from textual.content import _FormattedLine
+    from textual.css.styles import RulesMap
     from textual.css.types import PointerShape
     from textual.events import MouseMove
     from textual.timer import Timer
+    from textual.visual import RenderOptions
     from textual.widget import Widget
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
@@ -480,6 +484,132 @@ def _truncate_for_display(text: str) -> str:
     return _collapse_user_message(text).text
 
 
+class _UserMessageContent(Content):
+    """Content visual that wraps prompt bodies beside a fixed two-cell gutter."""
+
+    _PREFIX_WIDTH = 2
+
+    @classmethod
+    def from_content(cls, content: Content) -> _UserMessageContent:
+        """Promote styled content without changing its text or spans.
+
+        Returns:
+            Hanging-indent content with the same text and spans.
+        """
+        return cls(
+            content.plain,
+            list(content.spans),
+            strip_control_codes=False,
+        )
+
+    @classmethod
+    def _body_selection(cls, selection: Selection | None) -> Selection | None:
+        """Translate selection offsets after removing the first-line prefix.
+
+        Returns:
+            Selection expressed in body-relative coordinates.
+        """
+        if selection is None:
+            return None
+
+        def translate(offset: Offset | None) -> Offset | None:
+            if offset is None or offset.y != 0:
+                return offset
+            return Offset(max(0, offset.x - cls._PREFIX_WIDTH), 0)
+
+        return Selection(translate(selection.start), translate(selection.end))
+
+    def _render_lines(
+        self,
+        width: int,
+        options: RenderOptions,
+        selection: Selection | None,
+    ) -> list[_FormattedLine]:
+        """Wrap this content with the active widget rendering options.
+
+        Returns:
+            Formatted physical lines ready for strip rendering.
+        """
+        get_rule = options.rules.get
+        return super()._wrap_and_format(
+            width,
+            align=get_rule("text_align", "left"),
+            overflow=get_rule("text_overflow", "fold"),
+            no_wrap=get_rule("text_wrap", "wrap") == "nowrap",
+            line_pad=get_rule("line_pad", 0),
+            tab_size=8,
+            selection=selection,
+            selection_style=options.selection_style,
+            post_style=options.post_style,
+            get_style=options.get_style,
+        )
+
+    def _measure_lines(self, width: int, rules: RulesMap) -> list[_FormattedLine]:
+        """Wrap unstyled content for auto-height measurement.
+
+        Returns:
+            Formatted lines used to derive the widget height.
+        """
+        get_rule = rules.get
+        return super()._wrap_and_format(
+            width,
+            overflow=get_rule("text_overflow", "fold"),
+            no_wrap=get_rule("text_wrap", "wrap") == "nowrap",
+            line_pad=get_rule("line_pad", 0),
+        )
+
+    def get_height(self, rules: RulesMap, width: int) -> int:
+        """Measure body wrapping at the width left beside the prompt gutter.
+
+        Returns:
+            Number of rendered lines required at `width`.
+        """
+        if width <= self._PREFIX_WIDTH:
+            return super().get_height(rules, width)
+        body = type(self)(self.plain[self._PREFIX_WIDTH :])
+        return len(body._measure_lines(width - self._PREFIX_WIDTH, rules))
+
+    def render_strips(
+        self,
+        width: int,
+        height: int | None,
+        style: TStyle,
+        options: RenderOptions,
+    ) -> list[Strip]:
+        """Render the prefix once and reserve its gutter on subsequent lines.
+
+        Returns:
+            Rendered strips with a fixed prompt gutter.
+        """
+        if width <= self._PREFIX_WIDTH:
+            return super().render_strips(width, height, style, options)
+
+        prefix = type(self).from_content(self[: self._PREFIX_WIDTH])
+        body = type(self).from_content(self[self._PREFIX_WIDTH :])
+        prefix_lines = prefix._render_lines(
+            self._PREFIX_WIDTH,
+            options,
+            options.selection,
+        )
+        body_lines = body._render_lines(
+            width - self._PREFIX_WIDTH,
+            options,
+            self._body_selection(options.selection),
+        )
+        for line in body_lines:
+            if line.y == 0:
+                line.x += self._PREFIX_WIDTH
+
+        prefix_strip = Strip(*prefix_lines[0].to_strip(style))
+        body_strips = [Strip(*line.to_strip(style)) for line in body_lines]
+        indent = Strip.blank(self._PREFIX_WIDTH, style.background_style.rich_style)
+        strips = [
+            Strip.join((prefix_strip, body_strips[0])),
+            *(Strip.join((indent, line)) for line in body_strips[1:]),
+        ]
+        return strips if height is None else strips[:height]
+
+
 class UserMessage(Static):
     """Widget displaying a user message.
 
@@ -825,12 +955,12 @@ class UserMessage(Static):
 
         if isinstance(collapse, _UserMessageFull):
             self._append_highlighted_body(parts, body, colors=colors)
-            return Content.assemble(*parts)
+            return _UserMessageContent.from_content(Content.assemble(*parts))
 
         if self._expanded:
             self._append_highlighted_body(parts, body, colors=colors)
             parts.extend(("\n", self._expand_hint_content()))
-            return Content.assemble(*parts)
+            return _UserMessageContent.from_content(Content.assemble(*parts))
 
         # Collapsed: head + clickable elision line + tail. The middle marker is
         # the affordance (not a second trailing line) so the collapse stays
@@ -840,7 +970,7 @@ class UserMessage(Static):
         self._append_highlighted_body(parts, collapse.head, colors=colors)
         parts.extend(("\n", self._collapse_hint_content(collapse), "\n"))
         self._append_highlighted_body(parts, collapse.tail, colors=colors)
-        return Content.assemble(*parts)
+        return _UserMessageContent.from_content(Content.assemble(*parts))
 
     def on_mouse_move(self, event: MouseMove) -> None:
         """Match the pointer shape to the cell under the mouse."""

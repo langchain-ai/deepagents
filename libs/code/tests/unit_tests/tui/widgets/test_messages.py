@@ -5362,6 +5362,48 @@ class TestUserMessageAppearance:
             assert message.styles.padding.bottom == 1
             assert message.styles.padding.left == 0
 
+    @pytest.mark.parametrize(
+        ("content", "prefix", "body"),
+        [
+            (
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+                "> ",
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "!0123456789abcdefghijklmnopqrstuvwxyz",
+                "$ ",
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "/0123456789abcdefghijklmnopqrstuvwxyz",
+                "/ ",
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+            ),
+        ],
+    )
+    async def test_wrapped_body_keeps_prompt_gutter(
+        self,
+        content: str,
+        prefix: str,
+        body: str,
+    ) -> None:
+        """Every continuation starts beneath the body, never beneath its glyph."""
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield UserMessage(content)
+
+        async with _Harness().run_test(size=(18, 12)) as pilot:
+            message = pilot.app.query_one(UserMessage)
+            lines = [
+                message.render_line(y).text for y in range(message.content_size.height)
+            ]
+            assert len(lines) > 1
+            assert lines[0].startswith(prefix)
+            assert all(line.startswith("  ") for line in lines[1:])
+            assert lines[0][2:] + "".join(line[2:] for line in lines[1:]) == body
+
 
 class TestUserMessageCancelled:
     """`set_cancelled` dims a prompt whose turn was interrupted."""

@@ -197,7 +197,7 @@ _DEFERRED_START_NOTICE = (
 
 _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
     "anthropic:claude-haiku-4-5": "Claude Haiku 4.5",
-    "google_genai:gemini-3.6-flash": "Gemini 3.6 Flash",
+    "google_genai:gemini-3.7-flash": "Gemini 3.7 Flash",
     "openai:gpt-5.6-luna": "GPT-5.6 Luna",
 }
 """Lower-latency models recommended for repeated Auto action reviews."""
@@ -15312,7 +15312,7 @@ class DeepAgentsApp(App):
             await self._toggle_diff_line_numbers()
             label = "shown" if self._show_diff_line_numbers else "hidden"
             self.notify(
-                f"Diff line numbers {label} for new diffs.",
+                f"Line numbers {label} for new diffs.",
                 severity="information",
                 timeout=5,
                 markup=False,

@@ -13673,6 +13673,10 @@ class TestAutoClassifierModelCommand:
 
         screen = push.call_args.args[0]
         assert screen._recommended_models == _AUTO_CLASSIFIER_RECOMMENDED_MODELS
+        assert screen._recommended_models["google_genai:gemini-3.7-flash"] == (
+            "Gemini 3.7 Flash"
+        )
+        assert "google_genai:gemini-3.6-flash" not in screen._recommended_models
         assert screen._include_recent_models is False
 
     async def test_auto_model_selector_persists_to_auto_classifier_key(self) -> None:
@@ -16088,10 +16092,7 @@ class TestDiffLineNumbersCommand:
             assert app._ui_adapter is not None
             assert app._ui_adapter._show_diff_line_numbers is False
             notify_mock.assert_called_once()
-            assert (
-                notify_mock.call_args.args[0]
-                == "Diff line numbers hidden for new diffs."
-            )
+            assert notify_mock.call_args.args[0] == "Line numbers hidden for new diffs."
             assert notify_mock.call_args.kwargs.get("severity") == "information"
             assert notify_mock.call_args.kwargs.get("markup") is False
 
@@ -16102,10 +16103,7 @@ class TestDiffLineNumbersCommand:
             assert app._show_diff_line_numbers is True
             assert app._ui_adapter._show_diff_line_numbers is True
             notify_mock.assert_called_once()
-            assert (
-                notify_mock.call_args.args[0]
-                == "Diff line numbers shown for new diffs."
-            )
+            assert notify_mock.call_args.args[0] == "Line numbers shown for new diffs."
 
 
 class TestDebugConsoleClickToCopyPreference:

@@ -36,8 +36,8 @@ without updating this value would silently drop the disclosure — hence the
 
 AUTO_MODE_NOTICE_BODY = (
     "You switched to **Auto**. The agent can approve **routine gated actions** "
-    "without asking first — for example ordinary source edits and read-only "
-    "Git commands.\n\n"
+    "without asking first — for example, file edits and read-only Git "
+    "commands.\n\n"
     "Anything uncertain is reviewed by "
     f"{AUTO_MODE_NOTICE_MODEL_ANCHOR}. If review keeps failing, you're asked "
     "to approve.\n\n"

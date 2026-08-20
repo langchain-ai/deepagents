@@ -469,6 +469,11 @@ try:
     # file on disk is CRLF. Try old as sent, then a CRLF variant, then an LF
     # variant. The first match reveals the file line-ending style in that
     # region; apply the same transform to new so the file style is preserved.
+    # An empty old string matches at every character boundary; replacing it
+    # would corrupt the whole file (issue #5589). Reject it up front.
+    if old == '':
+        print(json.dumps({{'error': 'empty_old_string'}}))
+        sys.exit(0)
     old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
     old_lf = old.replace('\\r\\n', '\\n')
     new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
@@ -562,6 +567,11 @@ try:
         sys.exit(0)
 
     # Match-driven CRLF handling -- see _EDIT_COMMAND_TEMPLATE and issue #2880.
+    # Reject an empty old string (issue #5589): it matches everywhere and would
+    # corrupt the whole file.
+    if old == '':
+        print(json.dumps({{'error': 'empty_old_string'}}))
+        sys.exit(0)
     old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
     old_lf = old.replace('\\r\\n', '\\n')
     new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
@@ -1101,6 +1111,7 @@ def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:
         "not_a_file": f"Error: '{file_path}' is not a regular file",
         "not_a_text_file": f"Error: File '{file_path}' is not a text file",
         "string_not_found": f"Error: String not found in file: '{old_string}'",
+        "empty_old_string": "Error: old_string cannot be empty. Provide the exact text to replace.",
         "multiple_occurrences": (f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."),
     }
     return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"))

@@ -488,6 +488,18 @@ class TestPerformStringReplacement:
         assert "not found" in result
         assert "old_string ends with a newline" not in result
 
+    def test_empty_old_string_returns_error_without_modifying(self) -> None:
+        """An empty `old_string` must error, never rewrite the file (#5589)."""
+        result = perform_string_replacement("abc", "", "X")
+        assert isinstance(result, str)
+        assert "cannot be empty" in result
+
+    def test_empty_old_string_with_replace_all_returns_error(self) -> None:
+        """`replace_all=True` must not turn 'abc' into 'XaXbXcX' (#5589)."""
+        result = perform_string_replacement("abc", "", "X", replace_all=True)
+        assert isinstance(result, str)
+        assert "cannot be empty" in result
+
 
 class TestSliceReadResponse:
     """`slice_read_response` must round-trip the file's trailing-newline state.

@@ -516,6 +516,13 @@ def perform_string_replacement(
     Returns:
         Tuple of `(new_content, occurrences)` on success, or error message string
     """
+    # Reject an empty `old_string`. `str.count("")` matches at every character
+    # boundary and `str.replace("", new_string)` would insert `new_string`
+    # around every character, silently corrupting the file (issue #5589).
+    # An empty search string is never a meaningful edit.
+    if old_string == "":
+        return "Error: old_string cannot be empty. Provide the exact text to replace."
+
     occurrences = content.count(old_string)
 
     if occurrences == 0:

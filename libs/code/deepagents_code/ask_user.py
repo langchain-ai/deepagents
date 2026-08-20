@@ -37,6 +37,7 @@ from deepagents_code._ask_user_types import (
     format_ask_user_error_answer,
     format_ask_user_transcript,
 )
+from deepagents_code._tool_errors import ToolArgumentError
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def _validate_choices(
             forbidden-substring check, and names the type in error messages.
 
     Raises:
-        ValueError: If any choice is malformed, blank, or ambiguous.
+        ToolArgumentError: If any choice is malformed, blank, or ambiguous.
     """
     # On the tool path pydantic has already parsed `choices` into `list[Choice]`,
     # so the shape checks below are redundant there. They are kept — and the
@@ -110,14 +111,14 @@ def _validate_choices(
                 f"{question_type} question {question_text!r} has a choice with a "
                 f"missing or blank 'value': {choice!r}"
             )
-            raise ValueError(msg)
+            raise ToolArgumentError(msg)
         if question_type == "multi_select" and MULTI_SELECT_FORBIDDEN_IN_VALUE in value:
             msg = (
                 f"multi_select question {question_text!r} has a choice value "
                 f"containing {MULTI_SELECT_FORBIDDEN_IN_VALUE!r}, which would "
                 f"make the joined answer ambiguous: {value!r}"
             )
-            raise ValueError(msg)
+            raise ToolArgumentError(msg)
 
 
 def _validate_questions(questions: list[Question]) -> None:
@@ -127,22 +128,23 @@ def _validate_questions(questions: list[Question]) -> None:
         questions: Question definitions provided to the `ask_user` tool.
 
     Raises:
-        ValueError: If the questions list or an individual question is invalid.
+        ToolArgumentError: If the questions list or an individual question is
+            invalid.
     """
     if not questions:
         msg = "ask_user requires at least one question"
-        raise ValueError(msg)
+        raise ToolArgumentError(msg)
 
     for q in questions:
         question_text = q.get("question")
         if not isinstance(question_text, str) or not question_text.strip():
             msg = "ask_user questions must have non-empty 'question' text"
-            raise ValueError(msg)
+            raise ToolArgumentError(msg)
 
         question_type = q.get("type")
         if question_type not in QUESTION_TYPES:
             msg = f"unsupported ask_user question type: {question_type!r}"
-            raise ValueError(msg)
+            raise ToolArgumentError(msg)
 
         # Belt-and-braces: on the tool path `Question.required` is `strict=True`,
         # so pydantic has already rejected a non-boolean before this runs. This
@@ -157,7 +159,7 @@ def _validate_questions(questions: list[Question]) -> None:
                 f"ask_user question {question_text!r} has a non-boolean "
                 f"'required': {required!r}"
             )
-            raise ValueError(msg)
+            raise ToolArgumentError(msg)
 
         if question_type in CHOICE_QUESTION_TYPES:
             choices = q.get("choices")
@@ -167,7 +169,7 @@ def _validate_questions(questions: list[Question]) -> None:
                     f"{q.get('question')!r} requires a "
                     f"non-empty 'choices' list"
                 )
-                raise ValueError(msg)
+                raise ToolArgumentError(msg)
             _validate_choices(
                 choices,
                 question_text=question_text,
@@ -181,7 +183,7 @@ def _validate_questions(questions: list[Question]) -> None:
             msg = (
                 f"{question_type} question {question_text!r} must not define 'choices'"
             )
-            raise ValueError(msg)
+            raise ToolArgumentError(msg)
 
 
 def _context_string(context: object, name: str) -> str | None:

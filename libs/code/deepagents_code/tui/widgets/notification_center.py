@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.notifications import ActionId, UpdateAvailablePayload
+from deepagents_code.tui.key_hints import modal_navigation_hint
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +251,7 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
     }
 
     NotificationCenterScreen .nc-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -286,7 +287,7 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
                     self._rows.append(row)
                     yield row
             help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate "
+                f"{modal_navigation_hint(glyphs)} "
                 f"{glyphs.bullet} Enter open "
                 f"{glyphs.bullet} Esc close"
             )

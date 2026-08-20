@@ -18,6 +18,7 @@ from deepagents_code import theme
 from deepagents_code.approval_mode import YOLO_WARNING_KEY
 from deepagents_code.cold_cache import COLD_CACHE_WARNING_KEY
 from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.tui.key_hints import modal_navigation_hint
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ class NotificationSettingsScreen(ModalScreen[None]):
     }
 
     NotificationSettingsScreen .ns-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -117,7 +118,7 @@ class NotificationSettingsScreen(ModalScreen[None]):
                     id=f"ns-{key}",
                 )
             help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate"
+                f"{modal_navigation_hint(glyphs)}"
                 f" {glyphs.bullet} Space/Enter toggle"
                 f" {glyphs.bullet} Esc close"
             )

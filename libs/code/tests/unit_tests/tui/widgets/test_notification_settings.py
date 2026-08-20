@@ -68,6 +68,7 @@ async def test_help_footer_documents_both_toggle_keys() -> None:
 
         help_text = str(screen.query_one(".ns-help", Static).content)
 
+        assert "Tab/Shift+Tab navigate" in help_text
         assert "Space/Enter toggle" in help_text
         assert "Esc close" in help_text
 

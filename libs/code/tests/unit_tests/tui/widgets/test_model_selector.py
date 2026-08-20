@@ -280,6 +280,7 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
+            assert "Shift+Tab navigate" in str(help_text.content)
             assert "Tab autocomplete" in str(help_text.content)
             assert "Esc skip setup" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)

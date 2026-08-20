@@ -40110,6 +40110,50 @@ class TestColdCacheWarningFlow:
             assert screen._selected == len(screen._options) - 1
             assert app._approval_mode is ApprovalMode.MANUAL
 
+    async def test_shift_tab_reverse_navigates_the_effort_selector(self) -> None:
+        """The app routes Shift+Tab to the effort selector's previous option."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = EffortSelectorScreen(
+                model_spec="anthropic:claude-sonnet-4-5",
+                efforts=("low", "medium", "high"),
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            options = screen.query_one("#effort-options", OptionList)
+            assert options.highlighted == 0
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+
+            assert options.highlighted == 2
+            assert app._approval_mode is ApprovalMode.MANUAL
+
+    async def test_shift_tab_reverse_navigates_goal_preference(self) -> None:
+        """The app routes Shift+Tab to the launch preference's previous option."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = LaunchGoalCriteriaPreferenceScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            options = screen.query_one(OptionList)
+            assert options.highlighted == 0
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+
+            assert options.highlighted == 1
+            assert app._approval_mode is ApprovalMode.MANUAL
+
     async def test_shift_tab_reverse_navigates_the_model_selector(self) -> None:
         """`_SupportsReverseNav` enrolls any modal exposing `action_move_up`.
 

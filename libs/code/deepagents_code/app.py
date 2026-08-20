@@ -20793,6 +20793,10 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
         from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+        from deepagents_code.tui.widgets.launch_init import (
+            LaunchGoalCriteriaPreferenceScreen,
+        )
         from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
         from deepagents_code.tui.widgets.notification_settings import (
             NotificationSettingsScreen,
@@ -20805,7 +20809,13 @@ class DeepAgentsApp(App):
             return
         if isinstance(
             self.screen,
-            (ThemeSelectorScreen, AgentSelectorScreen, AuthManagerScreen),
+            (
+                ThemeSelectorScreen,
+                AgentSelectorScreen,
+                AuthManagerScreen,
+                EffortSelectorScreen,
+                LaunchGoalCriteriaPreferenceScreen,
+            ),
         ):
             self.screen.action_cursor_up()
             return

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 from deepagents_code import theme
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_code.model_config import clear_default_agent, save_default_agent
+from deepagents_code.tui.key_hints import modal_navigation_hint
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +211,7 @@ class AgentSelectorScreen(ModalScreen[str | None]):
             Two-line help string describing the available key bindings.
         """
         return (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab switch"
+            f"{modal_navigation_hint(glyphs)}"
             f" {glyphs.bullet} Enter select\n"
             f"Ctrl+S set default {glyphs.bullet} Esc cancel"
         )

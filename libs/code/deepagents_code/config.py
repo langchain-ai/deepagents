@@ -3494,10 +3494,7 @@ def get_langsmith_project_name() -> str | None:
     langsmith_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
         "LANGCHAIN_API_KEY"
     )
-    langsmith_tracing = resolve_env_var("LANGSMITH_TRACING") or resolve_env_var(
-        "LANGCHAIN_TRACING_V2"
-    )
-    if not (langsmith_key and langsmith_tracing):
+    if not (langsmith_key and _tracing_enabled()):
         return None
 
     return (

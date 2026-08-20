@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import logging
 import os
 import signal
 import sys
@@ -38,6 +39,7 @@ from deepagents_code.main import (
     _handle_termination_signal,
     _install_termination_signal_handlers,
     _is_managed_ripgrep_path,
+    _print_session_stats,
     _render_teardown_thread_hints,
     _restart_current_process,
     _ripgrep_install_hint,
@@ -1866,6 +1868,62 @@ class TestResumeHintLogic:
 
         show = bool(thread_id) and return_code == 0 and has_checkpoints
         assert not show, "No hint when thread_exists returns False"
+
+
+class TestPrintSessionStats:
+    """Test configurable usage statistics at TUI teardown."""
+
+    @pytest.mark.parametrize(
+        ("toml_data", "expected_visible"),
+        [
+            ({}, True),
+            ({"ui": {"show_usage_stats": True}}, True),
+            ({"ui": {"show_usage_stats": False}}, False),
+        ],
+    )
+    def test_respects_show_usage_stats(
+        self,
+        toml_data: dict[str, object],
+        expected_visible: bool,
+    ) -> None:
+        """`[ui].show_usage_stats` controls teardown table rendering."""
+        from deepagents_code._session_stats import SessionStats
+
+        stats = SessionStats(wall_time_seconds=2.0)
+        stats.record_request("test-model", 100, 50)
+        buffer = StringIO()
+        console = Console(file=buffer, width=200)
+
+        with patch(
+            "deepagents_code.config_manifest.load_config_toml",
+            return_value=toml_data,
+        ):
+            _print_session_stats(stats, console)
+
+        assert ("test-model" in buffer.getvalue()) is expected_visible
+
+    def test_config_failure_preserves_stats(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unexpected config failures must not suppress stats or break teardown."""
+        from deepagents_code._session_stats import SessionStats
+
+        stats = SessionStats(wall_time_seconds=2.0)
+        stats.record_request("test-model", 100, 50)
+        buffer = StringIO()
+        console = Console(file=buffer, width=200)
+
+        with (
+            patch(
+                "deepagents_code.config_manifest.load_config_toml",
+                side_effect=RuntimeError("boom"),
+            ),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code.main"),
+        ):
+            _print_session_stats(stats, console)
+
+        assert "test-model" in buffer.getvalue()
+        assert "Could not resolve usage stats preference on teardown" in caplog.text
 
 
 class TestTeardownThreadCheckpointLookup:

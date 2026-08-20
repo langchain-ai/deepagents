@@ -178,6 +178,7 @@ def test_no_hand_rolled_ui_config_readers() -> None:
     ("key", "toml_keys"),
     [
         ("display.show_message_timestamps", ("ui", "show_message_timestamps")),
+        ("display.show_usage_stats", ("ui", "show_usage_stats")),
         ("display.themes", ("themes",)),
         ("display.terminal_themes", ("ui", "terminal_themes")),
         ("models.providers", ("models", "providers")),

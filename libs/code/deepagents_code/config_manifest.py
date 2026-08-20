@@ -1583,6 +1583,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "show_message_timestamps"),
     ),
     ConfigOption(
+        key="display.show_usage_stats",
+        group="Display",
+        summary="Show session usage statistics when the TUI exits.",
+        kind=OptionKind.BOOL,
+        default=True,
+        toml_keys=("ui", "show_usage_stats"),
+    ),
+    ConfigOption(
         key="display.themes",
         group="Display",
         summary=(

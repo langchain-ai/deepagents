@@ -66,6 +66,7 @@ from deepagents.middleware.rubric import (
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     CompiledSubAgent,
+    ForkedSubAgent,
     SubAgent,
     SubAgentMiddleware,
 )
@@ -88,6 +89,7 @@ __all__ = [
     "CriterionPass",
     "FilesystemMiddleware",
     "FilesystemPermission",
+    "ForkedSubAgent",
     "GraderResponse",
     "GraderVerdict",
     "MemoryMiddleware",

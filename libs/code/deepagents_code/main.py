@@ -3288,15 +3288,41 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
 
 
 def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
-    """Print a session-level usage stats table to the console on TUI exit.
+    """Print the session usage stats table on TUI exit, unless it is disabled.
+
+    Gated by `[ui].show_usage_stats`, so this may print nothing. The payload
+    type guard stays ahead of that lookup: `stats` is typed `Any`, and a caller
+    passing something other than `SessionStats` should not trigger config I/O
+    to decide to print nothing.
+
+    That guard is unreachable as long as callers respect
+    `AppResult.session_stats`'s declared type — a dataclass annotation, not
+    runtime enforcement, which is exactly what `stats: Any` lets slip. If it
+    fires, something upstream is broken rather than merely disabled, so it
+    warns instead of returning silently: that keeps the two otherwise
+    indistinguishable empty outputs apart.
+
+    An exception escaping `usage_table_enabled` here would be caught by the
+    top-level handler that rewrites a clean exit into `1` plus a traceback,
+    which is why that call fails open.
 
     Args:
         stats: The cumulative session stats from the Textual app.
         console: Rich console for output.
     """
-    from deepagents_code._session_stats import SessionStats, print_usage_table
+    from deepagents_code._session_stats import (
+        SessionStats,
+        print_usage_table,
+        usage_table_enabled,
+    )
 
     if not isinstance(stats, SessionStats):
+        logger.warning(
+            "Skipping session stats table: expected SessionStats, got %s",
+            type(stats).__name__,
+        )
+        return
+    if not usage_table_enabled():
         return
     print_usage_table(stats, stats.wall_time_seconds, console)
 

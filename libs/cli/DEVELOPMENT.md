@@ -35,3 +35,14 @@ langgraph dev --port 2024 --allow-blocking
 ```
 
 The bundle is self-contained — re-running `langgraph dev` from the build directory reproduces the failure without re-bundling.
+
+## Package layout
+
+- Entry points: the `deepagents` and `deepagents-cli` console scripts dispatch through `deepagents_cli.cli_main`.
+- `deepagents_cli/main.py` — argparse wiring and `cli_main` dispatch.
+- `deepagents_cli/deploy/` — the entire deploy/dev/init pipeline (`commands.py`, `bundler.py`, `config.py`, `templates.py`, `context_hub.py`, `frontend_dist/`).
+- `deepagents_cli/config.py` — slim `_load_dotenv` helper used by deploy/dev.
+- `deepagents_cli/model_config.py` — slim `resolve_env_var` helper for the `DEEPAGENTS_CLI_` env-var prefix.
+- `deepagents_cli/_version.py` — `__version__` (managed by release-please).
+
+Bare `deepagents` invocations print a deprecation notice pointing at `deepagents-code` and exit non-zero. Everything from the old interactive REPL (Textual widgets, MCP, skills, sandbox bootstrap, slash commands, the drift tests) moved to `libs/code/` in `deepagents-cli==0.1.0`.

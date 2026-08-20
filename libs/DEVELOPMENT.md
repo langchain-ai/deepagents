@@ -124,6 +124,49 @@ Protected branches (`main`, `master`, `vX.Y`), automation branches (`release-ple
 
 The hook is a local convenience and can be skipped with `git push --no-verify` or `SKIP=branch-name git push`. Two cases it cannot catch, both consequences of running through pre-commit rather than as a raw git hook: pushing several refs at once validates only one of them, and pushing a branch that carries no new commits runs no hooks at all. `.github/workflows/branch_name_check.yml` covers both, as a non-blocking warning on the PR head branch — note that CI deliberately does not check the username segment against the PR author, so on that one point it is looser than the local hook.
 
+## Testing
+
+Test files mirror the source layout: tests for `deepagents/middleware/foo.py` live in `tests/unit_tests/middleware/test_foo.py`. Write tests against real behavior and avoid mocks where practical.
+
+### Warnings fail the suite
+
+Every package puts `"error"` first in its pytest `filterwarnings`, so any warning the repo has not explicitly accepted fails the run. The entries after `"error"` are the reviewed allowlist; fix actionable warnings first and treat an allowlist entry as the last resort. The filter mechanics live in the root [`AGENTS.md`](../AGENTS.md#warning-filters); the operational notes below live here.
+
+How a stray warning surfaces depends on when it is raised:
+
+- Inside a test: that test fails.
+- During module import: collection of that file fails.
+- While pytest is still configuring (typically from a plugin): the run aborts with `INTERNALERROR`, which is the hardest to read from CI output. Warnings emitted while pytest loads plugins, before the ini filters are installed, are not caught at all — a clean run does not prove a dependency is warning-free.
+
+#### `bypass-warnings-check` label
+
+Maintainers can apply the `bypass-warnings-check` PR label and re-run failed jobs to demote warnings from errors. This is an escape hatch for landing fixes under time pressure, not a permanent fix: merge-queue runs enforce the policy again, so the warning must still be addressed or allowlisted. Two limits on its reach:
+
+- It applies only to jobs that go through `_test.yml`. The `test-quickjs-sdk-smoke` job in `ci.yml` invokes pytest directly and has no bypass path.
+- Release runs (`release.yml`) always enforce, so a warning that only appears against the built wheel cannot be labeled past.
+
+## Benchmarks
+
+Each package's `Makefile` defines `bench` (walltime) and `bench-memory` (heap) targets that are the single source of truth for the benchmark invocation — both local runs and the reusable CI workflow (`../../.github/workflows/_benchmark.yml`) call these targets. To change how benchmarks run, edit the Makefile; CI inherits the change.
+
+```bash
+# Single package (same target CI invokes):
+make -C libs/deepagents bench
+
+# All benched packages in one go:
+make -C libs bench-all
+
+# Plain pytest-benchmark without CodSpeed instrumentation — faster, for
+# ad-hoc local tuning:
+make -C libs/deepagents benchmark
+```
+
+`bench-memory` runs the `memory_benchmark`-marked subset and is gated in CI behind `has-memory-benchmarks: true` on the workflow input — currently set by `libs/partners/quickjs`.
+
+Results land on the [CodSpeed dashboard](https://codspeed.io/langchain-ai/deepagents), with a separate view per package via the upper-left selector. Regression thresholds are managed in the dashboard (currently 10% global); tighten per-benchmark thresholds for benches whose noise floor is well below that, since a wide threshold masks real regressions in tight code.
+
+`.github/workflows/_benchmark_nightly.yml` runs every benched package on a daily cron without path gating so baselines for unchanged packages do not drift. Use `workflow_dispatch` on that workflow for an ad-hoc full sweep before bumping `pytest-codspeed` or the `CodSpeedHQ/action` SHA.
+
 ## Contributing conventions
 
 The full conventions live in [`AGENTS.md`](../AGENTS.md) at the repo root. The points most likely to trip up a first PR:

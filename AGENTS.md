@@ -2,9 +2,9 @@
 
 This file contains repository-wide rules for agents and contributors. Use these sources for details instead of duplicating them here:
 
-- [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md) — setup, commands, pre-commit, and the edit-test-lint loop.
-- [`libs/ARCHITECTURE.md`](libs/ARCHITECTURE.md) — runtime structure and SDK starting points.
-- [`.github/RELEASING.md`](.github/RELEASING.md) — releases, version lines, fan-out, and troubleshooting.
+- [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md) — setup, commands, pre-commit, the edit-test-lint loop, testing, and benchmarks.
+- [`libs/ARCHITECTURE.md`](libs/ARCHITECTURE.md) — runtime structure, SDK starting points, and code-style conventions.
+- [`.github/RELEASING.md`](.github/RELEASING.md) — releases, version lines, fan-out, CI labels, and troubleshooting.
 - [LangChain contributing guide](https://docs.langchain.com/oss/python/contributing/overview) — general contribution policy.
 
 ## Development workflow
@@ -111,7 +111,7 @@ Exclude package `.venv` directories, hidden worktrees, `deepagents.egg-info`, ge
 
 ### Benchmarks
 
-Use each package's `bench` and `bench-memory` Make targets; they are the source of truth for local and CI invocation. Run all packages with `make -C libs bench-all`. View results in the [CodSpeed dashboard](https://codspeed.io/langchain-ai/deepagents).
+Use each package's `bench` and `bench-memory` Make targets; they are the source of truth for local and CI invocation. Run all packages with `make -C libs bench-all`. View results in the [CodSpeed dashboard](https://codspeed.io/langchain-ai/deepagents). See [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md#benchmarks) for thresholds and the nightly sweep.
 
 ## CI and releases
 
@@ -121,7 +121,7 @@ Pin GitHub Actions to full-length commit SHAs. Verify whether a tag is annotated
 
 ## Additional resources
 
-- [Deep Agents documentation](https://docs.langchain.com/oss/python/deepagents/overview)
+- [Deep Agents documentation](https://docs.langchain.com/oss/python/deepagents/overview) — source lives in the `langchain-ai/docs` repo; a local checkout supports file search, and the docs MCP server is configured in `.mcp.json`
 - [Contributing guide](https://docs.langchain.com/oss/python/contributing/overview)
 
 <!-- OPENWIKI:START -->

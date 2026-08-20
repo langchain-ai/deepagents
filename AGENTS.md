@@ -3,7 +3,7 @@
 This file contains repository-wide rules for agents and contributors. Use these sources for details instead of duplicating them here:
 
 - [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md) — setup, commands, pre-commit, the edit-test-lint loop, testing, and benchmarks.
-- [`libs/ARCHITECTURE.md`](libs/ARCHITECTURE.md) — runtime structure, SDK starting points, and code-style conventions.
+- [`libs/ARCHITECTURE.md`](libs/ARCHITECTURE.md) — runtime structure and SDK starting points.
 - [`.github/RELEASING.md`](.github/RELEASING.md) — releases, version lines, fan-out, CI labels, and troubleshooting.
 - [LangChain contributing guide](https://docs.langchain.com/oss/python/contributing/overview) — general contribution policy.
 

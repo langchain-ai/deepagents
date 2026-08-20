@@ -16307,39 +16307,6 @@ class TestDebugConsoleClickToCopyPreference:
         assert result.message is not None
 
 
-@pytest.mark.parametrize(
-    ("key", "fallback"),
-    [
-        ("display.cursor_blink", True),
-        ("display.terminal_progress", True),
-        ("display.show_message_timestamps", False),
-        ("display.show_scrollbar", False),
-        ("display.debug_console_click_to_copy", False),
-        ("display.show_diff_line_numbers", True),
-        ("display.show_usage_stats", True),
-    ],
-)
-def test_bool_display_preference_keys_match_the_manifest(
-    key: str, fallback: bool
-) -> None:
-    """Every `_load_bool_display_preference` key must exist and be a bool option.
-
-    The `fallback` argument duplicates the manifest default, and a mistyped key
-    silently resolves to it — with both in agreement that produces no symptom at
-    all until someone actually sets the option. Pinning existence, kind, and
-    default here is what makes the duplication safe.
-    """
-    from deepagents_code.config_manifest import OptionKind, get_option
-
-    option = get_option(key)
-    assert option is not None, f"{key} is not in the manifest"
-    assert option.kind is OptionKind.BOOL
-    assert option.default is fallback, (
-        f"{key} default {option.default!r} disagrees with the loader fallback "
-        f"{fallback!r}; they must match or the fallback path changes behavior"
-    )
-
-
 class TestAppBlurPausesCursorBlink:
     """Test the chat input cursor stops drawing when the terminal is blurred."""
 

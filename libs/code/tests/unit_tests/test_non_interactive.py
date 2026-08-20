@@ -4072,6 +4072,10 @@ class TestHeadlessUsageStats:
 
         Returns:
             How many times the teardown rendered the usage table.
+
+        Raises:
+            AssertionError: If the run did not reach teardown, which would let a
+                zero count mean "never got there" rather than "suppressed".
         """
         config_path = tmp_path / "config.toml"
         config_path.write_text(config_toml, encoding="utf-8")
@@ -4109,8 +4113,11 @@ class TestHeadlessUsageStats:
             mock_settings.has_tavily = False
             mock_settings.model_name = None
 
-            await run_non_interactive(message="test", quiet=False)
+            return_code = await run_non_interactive(message="test", quiet=False)
 
+        assert return_code == 0, (
+            "run must reach teardown for the count to mean anything"
+        )
         return mock_table.call_count
 
     async def test_shown_by_default(

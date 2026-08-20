@@ -1932,11 +1932,13 @@ class TestPrintSessionStats:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A non-bool value falls through to the default instead of hiding stats.
+        """A wrong-typed TOML value falls through to the default, not to `False`.
 
         TOML has no truthy strings, so `show_usage_stats = "no"` is the likeliest
         way to get this wrong -- and reading it as `bool("no")` would suppress
-        the table for a user who meant to keep it.
+        the table for a user who meant to keep it. The rejection happens in
+        `_coerce_toml`, one layer below the `OptionKind` guard; that guard is
+        covered directly in `test_config_manifest.py`.
         """
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
             output = self._render(
@@ -1972,8 +1974,10 @@ class TestPrintSessionStats:
     ) -> None:
         """A non-`SessionStats` payload short-circuits before config resolution.
 
-        `main` passes `result.session_stats`, which can be `None`, so the type
-        guard must come first.
+        `stats` is typed `Any`, so nothing stops a caller from passing something
+        else; deciding to print nothing must not cost a config read. `main`
+        itself always passes a real `SessionStats` (`AppResult.session_stats`
+        has a `default_factory`), which is why only the type guard enforces this.
         """
 
         def _fail() -> bool:

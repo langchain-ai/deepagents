@@ -969,6 +969,23 @@ def _recorded_cost(cost_usd: float, priced_request_count: int) -> str:
     return format_cost(cost_usd) if priced_request_count else "—"
 
 
+def usage_table_enabled() -> bool:
+    """Return whether the session usage table should be rendered.
+
+    Controlled by `[ui].show_usage_stats`; the option declares no env var. Both
+    the TUI teardown and the headless run call this rather than resolving the
+    option themselves, so the key and its fallback exist in exactly one place —
+    a second copy is invisible to tests, because the fallback only fires when
+    the manifest key is missing or not a bool.
+
+    Returns:
+        Whether to render the table.
+    """
+    from deepagents_code.config_manifest import load_bool_display_preference
+
+    return load_bool_display_preference("display.show_usage_stats", fallback=True)
+
+
 def print_usage_table(
     stats: SessionStats,
     wall_time: float,

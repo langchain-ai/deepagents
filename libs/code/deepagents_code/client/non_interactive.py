@@ -48,6 +48,7 @@ from deepagents_code._session_stats import (
     finalize_recorded_requests,
     print_usage_table,
     record_message_usage,
+    usage_table_enabled,
 )
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
@@ -71,7 +72,6 @@ from deepagents_code.config import (
     is_shell_command_allowed,
     settings,
 )
-from deepagents_code.config_manifest import load_bool_display_preference
 from deepagents_code.file_ops import FileOpTracker, record_display_caveat
 from deepagents_code.hooks import (
     dispatch_hook,
@@ -1701,7 +1701,7 @@ async def _run_agent_loop(
             )
             console.print(link_text)
         console.print("[green]✓ Task completed[/green]")
-        if load_bool_display_preference("display.show_usage_stats", fallback=True):
+        if usage_table_enabled():
             print_usage_table(state.stats, wall_time, console)
 
     notification_stop: ClientHookStopError | None = None

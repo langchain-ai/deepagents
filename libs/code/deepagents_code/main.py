@@ -3287,29 +3287,25 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
             )
 
 
-def _should_print_session_stats() -> bool:
-    """Resolve whether teardown should print session usage statistics.
-
-    Preset with `[ui].show_usage_stats`; there is no env var for this option.
-
-    Returns:
-        Whether the teardown usage table should be rendered.
-    """
-    from deepagents_code.config_manifest import load_bool_display_preference
-
-    return load_bool_display_preference("display.show_usage_stats", fallback=True)
-
-
 def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
     """Print a session-level usage stats table to the console on TUI exit.
+
+    Gated by `[ui].show_usage_stats`. The payload type guard must stay ahead of
+    that lookup: `stats` is typed `Any`, and a caller passing something other
+    than `SessionStats` should not trigger config I/O to decide to print
+    nothing.
 
     Args:
         stats: The cumulative session stats from the Textual app.
         console: Rich console for output.
     """
-    from deepagents_code._session_stats import SessionStats, print_usage_table
+    from deepagents_code._session_stats import (
+        SessionStats,
+        print_usage_table,
+        usage_table_enabled,
+    )
 
-    if not isinstance(stats, SessionStats) or not _should_print_session_stats():
+    if not isinstance(stats, SessionStats) or not usage_table_enabled():
         return
     print_usage_table(stats, stats.wall_time_seconds, console)
 

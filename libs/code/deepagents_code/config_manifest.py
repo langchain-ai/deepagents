@@ -957,19 +957,21 @@ def resolve_scalar(
 def load_bool_display_preference(key: str, *, fallback: bool) -> bool:
     """Resolve a boolean `Display` option through the config manifest.
 
-    Precedence follows `resolve_scalar`: the option's `DEEPAGENTS_CODE_*` env
-    var wins, then its `[ui]` key in `~/.deepagents/config.toml`, then the
-    option's declared default. Resolution is intentionally forgiving — an
+    Precedence follows `resolve_scalar`: managed config wins, then the option's
+    `DEEPAGENTS_CODE_*` env var if it declares one — several `Display` options
+    deliberately do not — then its `[ui]` key in `~/.deepagents/config.toml`,
+    then the declared default. Resolution is intentionally forgiving — an
     unreadable config, a non-table `[ui]`, or a wrong-typed value is logged by
     the resolver and falls through, so a typo in a cosmetic setting never
-    breaks startup.
+    breaks startup. Those log records reach the debug buffer, not the terminal.
 
     Args:
         key: Manifest key of the option, e.g. `"display.cursor_blink"`.
         fallback: Value to use when `key` is not in the manifest at all, or is
             not a `BOOL` option — both mean a caller and the manifest disagree.
-            `test_bool_display_preference_keys_match_the_manifest` pins it to
-            each option's declared default so the two cannot drift.
+            `test_bool_display_preference_fallbacks_match_the_manifest` pins
+            every key it knows of to that option's declared default, so add new
+            keys there.
 
     Returns:
         The resolved value.

@@ -32,6 +32,7 @@ from deepagents_code.config_manifest import (
     get_config_options,
     get_option,
     is_provider_package_installed,
+    load_bool_display_preference,
     option_keys,
     options_with_key_prefix,
     provider_install_extra,
@@ -172,6 +173,107 @@ def test_no_hand_rolled_ui_config_readers() -> None:
         "Register the option in config_manifest.py and resolve it with "
         "`resolve_scalar` instead of parsing config.toml by hand."
     )
+
+
+def test_bool_display_preference_fallbacks_match_the_manifest() -> None:
+    """Every `load_bool_display_preference` call site must agree with the manifest.
+
+    The `fallback` argument duplicates the option's declared default, and a
+    mistyped key silently resolves to that fallback — with both in agreement
+    that produces no symptom at all until someone actually sets the option.
+
+    This walks the call sites instead of listing them, because a hand-kept list
+    is exactly how the drift gets in: the key can be added to the list while a
+    second call site with a different fallback goes unnoticed, or a new caller
+    can skip the list entirely.
+    """
+    import ast
+    from pathlib import Path
+
+    from deepagents_code import config_manifest
+
+    package_root = Path(config_manifest.__file__).parent
+    call_sites: list[tuple[str, str, object]] = []
+    for source in sorted(package_root.rglob("*.py")):
+        text = source.read_text(encoding="utf-8")
+        if "load_bool_display_preference(" not in text:
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else getattr(func, "id", None)
+            )
+            if name not in {
+                "load_bool_display_preference",
+                "_load_bool_display_preference",
+            }:
+                continue
+            keys = [
+                arg.value
+                for arg in node.args
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            ]
+            fallbacks = [
+                kw.value.value
+                for kw in node.keywords
+                if kw.arg == "fallback" and isinstance(kw.value, ast.Constant)
+            ]
+            # The `app.py` wrapper forwards `key`/`fallback` variables rather
+            # than literals; only literal pairs are checkable here.
+            if keys and fallbacks:
+                call_sites.append((source.name, keys[0], fallbacks[0]))
+
+    assert call_sites, "found no literal call sites; did the helper get renamed?"
+    for filename, key, fallback in call_sites:
+        option = get_option(key)
+        assert option is not None, f"{filename}: {key} is not in the manifest"
+        assert option.kind is OptionKind.BOOL, (
+            f"{filename}: {key} is {option.kind.value}, not a bool"
+        )
+        assert option.default is fallback, (
+            f"{filename}: {key} default {option.default!r} disagrees with the "
+            f"call-site fallback {fallback!r}; they must match or the fallback "
+            "path changes behavior"
+        )
+
+
+def test_bool_display_preference_unknown_key_falls_back(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unmapped key returns the fallback and says so in the log.
+
+    Nothing else exercises this branch: every real call site names a key that
+    is in the manifest, so the guard only ever fires after a rename. The
+    fallback is returned as given, not coerced, in both directions.
+    """
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert (
+            load_bool_display_preference("display.no_such_key", fallback=False) is False
+        )
+        assert (
+            load_bool_display_preference("display.no_such_key", fallback=True) is True
+        )
+
+    assert "display.no_such_key" in caplog.text
+
+
+def test_bool_display_preference_non_bool_key_falls_back(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A key naming a non-bool option returns the fallback rather than coercing.
+
+    Without the kind check, `display.charset` (a `STR` option) would resolve to
+    `bool("unicode")` — permanently `True`, with no warning at all.
+    """
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert load_bool_display_preference("display.charset", fallback=False) is False
+
+    assert "display.charset" in caplog.text
+    assert "not a bool" in caplog.text
 
 
 @pytest.mark.parametrize(

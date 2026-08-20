@@ -210,7 +210,7 @@ class AutoModeNoticeScreen(ModalScreen[bool]):
                 open_links=False,
             )
             yield Static(
-                "Enter to keep Auto · Esc for Manual",
+                "Enter switch to Auto · Esc keep Manual",
                 classes="auto-mode-notice-help",
                 markup=False,
             )

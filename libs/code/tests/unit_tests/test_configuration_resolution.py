@@ -11,8 +11,10 @@ snapshot. New behavior belongs in new named tests here, not snapshots.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import patch
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -383,3 +385,115 @@ def test_preview_reload_does_not_swap_the_process_snapshot(
     runtime.preview_reload_from_environment(start_path=tmp_path)
     assert service.get_managed_snapshot().data["shell"]["allow_list"] == ["ls"]
     service.invalidate_config_sources()
+
+
+# One representative option per coercion kind whose resolution runs through
+# the ranked scalar engine with all of managed, env, and user tiers. Kinds
+# that intentionally read only a subset of tiers (log level is env-only,
+# themes read the user file) are covered by their own targeted tests instead.
+_MATRIX_ENV_VARS = {
+    "display.show_scrollbar": "DEEPAGENTS_CODE_SHOW_SCROLLBAR",
+    "runtime.recursion_limit": "DEEPAGENTS_CODE_RECURSION_LIMIT",
+    "shell.allow_list": "DEEPAGENTS_CODE_SHELL_ALLOW_LIST",
+}
+
+_MATRIX_MANAGED_VALUES = {
+    "display.show_scrollbar": True,
+    "runtime.recursion_limit": 3000,
+    "shell.allow_list": ["managed-command"],
+}
+_MATRIX_USER_VALUES = {
+    "display.show_scrollbar": True,
+    "runtime.recursion_limit": 2000,
+    "shell.allow_list": ["user-command"],
+}
+_MATRIX_ENV_VALUES = {
+    "display.show_scrollbar": "true",
+    "runtime.recursion_limit": "4000",
+    "shell.allow_list": "env-command",
+}
+
+# The env tier coerces to the option's typed domain, so the expected resolved
+# value is not always the raw string above.
+_MATRIX_EXPECTED_ENV = {
+    "display.show_scrollbar": True,
+    "runtime.recursion_limit": 4000,
+    "shell.allow_list": ["env-command"],
+}
+
+# Env values that the option's coercer rejects. Every tier falls through, so
+# the expectation is always the user value and the warning text is not
+# asserted here; per-kind rejection messages have their own targeted tests.
+_MATRIX_INVALID_ENV_VALUES = {
+    "display.show_scrollbar": "maybe",
+    "runtime.recursion_limit": "not-an-int",
+    "shell.allow_list": "all, env-command",
+}
+
+
+def _resolve_in_stack(
+    option_key: str,
+    *,
+    managed: str,
+    env: str,
+    user: str,
+) -> tuple[Any, str]:
+    """Resolve one option in a synthetic managed/env/user stack.
+
+    `managed` is `present` or `absent`; `env` is `set`, `unset`, or `invalid`;
+    `user` is `set` or `unset`. A set tier supplies the per-kind valid (or
+    invalid) value from the matrices above.
+    """
+    option = get_option(option_key)
+    assert option is not None
+    managed_data = (
+        _at_path(option.toml_keys, _MATRIX_MANAGED_VALUES[option_key])
+        if managed == "present"
+        else {}
+    )
+    user_data = (
+        _at_path(option.toml_keys, _MATRIX_USER_VALUES[option_key])
+        if user == "set"
+        else {}
+    )
+    env_name = _MATRIX_ENV_VARS[option_key]
+    environ: dict[str, str] = {}
+    if env == "set":
+        environ[env_name] = _MATRIX_ENV_VALUES[option_key]
+    elif env == "invalid":
+        environ[env_name] = _MATRIX_INVALID_ENV_VALUES[option_key]
+    with patch.dict(os.environ, environ, clear=True):
+        return resolve_scalar(
+            option, toml_data=user_data, managed_toml_data=managed_data
+        )
+
+
+@pytest.mark.parametrize("option_key", sorted(_MATRIX_ENV_VARS))
+@pytest.mark.parametrize("user", ["set", "unset"])
+@pytest.mark.parametrize("env", ["set", "unset", "invalid"])
+@pytest.mark.parametrize("managed", ["present", "absent"])
+def test_option_kind_matrix_resolves_ranked_precedence(
+    option_key: str, managed: str, env: str, user: str
+) -> None:
+    """Every option kind honors managed > env > user in a full tier stack.
+
+    This is the named replacement for the retired golden matrix: one
+    representative option per coercion kind, asserting the correct precedence
+    rather than recorded output, so a future option that mis-wires its
+    coercion or rank fails here instead of passing silently.
+    """
+    value, source = _resolve_in_stack(option_key, managed=managed, env=env, user=user)
+
+    expected_user = _MATRIX_USER_VALUES[option_key]
+    if managed == "present":
+        assert (value, source) == (_MATRIX_MANAGED_VALUES[option_key], "managed config")
+    elif env == "set":
+        assert (value, source) == (
+            _MATRIX_EXPECTED_ENV[option_key],
+            f"env ({_MATRIX_ENV_VARS[option_key]})",
+        )
+    elif user == "set":
+        # An invalid env tier falls through without reversing precedence.
+        assert (value, source) == (expected_user, "config.toml")
+    else:
+        assert source == "default"

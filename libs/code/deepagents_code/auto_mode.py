@@ -124,6 +124,7 @@ _MAX_PENDING_EVENT_SCOPES = 32
 _MAX_CLASSIFIER_MODEL_CACHE = 4
 _MAX_ARGUMENT_DEPTH = 4
 _MIN_COMMAND_PARTS = 2
+_MIN_MOVE_OPERANDS = 2
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
@@ -138,6 +139,11 @@ _MCP_MARKER_KEY = "_deepagents_code_mcp"
 _TEMP_ARTIFACT_STATE_KEY = "_auto_temp_artifacts"
 _TEMP_ARTIFACT_PREFIX = "dcode-scratch-"
 _TEMP_ARTIFACT_SUFFIX_RE = re.compile(r"(?:\.[A-Za-z0-9][A-Za-z0-9._-]{0,31})?")
+_UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+_SHELL_COMMAND_SEPARATORS = frozenset({";", "&&", "||", "|"})
 
 
 class _ClassifierDeadlineExceededError(TimeoutError):
@@ -278,6 +284,7 @@ class AutoModeCounters(TypedDict):
     last_turn_id: str | None
     last_mode: str
     classifier_config_failed_spec: str | None
+    denied_effects: dict[str, dict[str, object]]
     """Spec of a classifier model that failed to build, once seen before.
 
     A bad spec or missing credential never fixes itself, so retrying it forever
@@ -674,6 +681,7 @@ def _default_counters(mode: ApprovalMode) -> AutoModeCounters:
         "last_turn_id": None,
         "last_mode": mode.value,
         "classifier_config_failed_spec": None,
+        "denied_effects": {},
     }
 
 
@@ -723,7 +731,30 @@ def _validate_counters(value: object) -> AutoModeCounters | None:
         "last_turn_id": last_turn_id,
         "last_mode": last_mode,
         "classifier_config_failed_spec": failed_spec,
+        "denied_effects": _validate_denied_effects(value.get("denied_effects")),
     }
+
+
+def _validate_denied_effects(value: object) -> dict[str, dict[str, object]]:
+    if not isinstance(value, Mapping):
+        return {}
+    effects: dict[str, dict[str, object]] = {}
+    for effect_key, raw_entry in value.items():
+        if not isinstance(effect_key, str) or not effect_key:
+            continue
+        if not isinstance(raw_entry, Mapping):
+            continue
+        category = raw_entry.get("category")
+        count = raw_entry.get("count")
+        if (
+            isinstance(category, str)
+            and category in {item.value for item in AutoDecisionCategory}
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and count > 0
+        ):
+            effects[effect_key] = {"category": category, "count": count}
+    return effects
 
 
 def _counter_key(thread_key: str) -> str:
@@ -1470,7 +1501,8 @@ _CLASSIFIER_POLICY = (
     "source-control workflow; disabling logging, safeguards, verification, hooks, "
     "or permission controls; persistence through startup files, SSH keys, schedulers, "
     "or services; production/shared-resource changes; outside-worktree changes other "
-    "than the managed scratch lifecycle above; inferred destructive targets; and "
+    "than the managed scratch lifecycle above; inferred destructive targets; execute "
+    "commands that delete, move over, clean, or truncate a tracked path; and "
     "scope escalation beyond the requested task.\n\n"
     "Judge real-world effects, not tool names. Classify siblings independently. "
     "Use a concise reason for every denial. For allows, use category other_policy "
@@ -1822,6 +1854,132 @@ def _narrow_configured_command_allowed(
     except Exception:
         logger.debug("Could not apply configured Auto shell allow rules", exc_info=True)
         return False
+
+
+def _resolved_effect_path(root: Path, raw_path: object) -> str | None:
+    path = _resolve_path(root, raw_path)
+    return str(path) if path is not None else None
+
+
+def _shell_effect_paths(root: Path, command: object) -> set[str]:
+    if not isinstance(command, str):
+        return set()
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return set()
+    paths: set[str] = set()
+    index = 0
+    while index < len(parts):
+        command_part = parts[index]
+        if command_part in _SHELL_COMMAND_SEPARATORS:
+            index += 1
+            continue
+        if command_part in {"rm", "rmdir"}:
+            index += 1
+            while index < len(parts) and parts[index].startswith("-"):
+                index += 1
+            while index < len(parts) and parts[index] not in _SHELL_COMMAND_SEPARATORS:
+                path = _resolved_effect_path(root, parts[index])
+                if path is not None:
+                    paths.add(path)
+                index += 1
+            continue
+        if (
+            command_part == "git"
+            and index + 1 < len(parts)
+            and parts[index + 1] == "rm"
+        ):
+            index += 2
+            while index < len(parts) and parts[index].startswith("-"):
+                index += 1
+            while index < len(parts) and parts[index] not in _SHELL_COMMAND_SEPARATORS:
+                path = _resolved_effect_path(root, parts[index])
+                if path is not None:
+                    paths.add(path)
+                index += 1
+            continue
+        if (
+            command_part == "git"
+            and index + 1 < len(parts)
+            and parts[index + 1] == "clean"
+        ):
+            if any(
+                part == "-f" or part.startswith("-f") for part in parts[index + 2 :]
+            ):
+                paths.add(str(root))
+            index += 2
+            continue
+        if command_part == "mv":
+            index += 1
+            operands: list[str] = []
+            while index < len(parts) and parts[index] not in _SHELL_COMMAND_SEPARATORS:
+                if not parts[index].startswith("-"):
+                    operands.append(parts[index])
+                index += 1
+            if len(operands) >= _MIN_MOVE_OPERANDS:
+                path = _resolved_effect_path(root, operands[-1])
+                if path is not None:
+                    paths.add(path)
+            continue
+        index += 1
+    for match in re.finditer(r"(?:>|>>)[ \t]*([^ \t;|&]+)", command):
+        path = _resolved_effect_path(root, match.group(1))
+        if path is not None:
+            paths.add(path)
+    return paths
+
+
+def _external_effect_identifiers(value: object, prefix: str = "") -> set[str]:
+    identifiers: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            identifiers.update(_external_effect_identifiers(item, f"{prefix}{key}."))
+        return identifiers
+    if isinstance(value, list):
+        for item in value:
+            identifiers.update(_external_effect_identifiers(item, prefix))
+        return identifiers
+    if isinstance(value, str):
+        identifiers.update(f"uuid={match.lower()}" for match in _UUID_RE.findall(value))
+        if (
+            prefix.rstrip(".")
+            .lower()
+            .endswith(
+                (
+                    "id",
+                    "identifier",
+                    "tenant_id",
+                    "workspace_id",
+                    "org_id",
+                    "customer_id",
+                )
+            )
+        ):
+            identifiers.add(f"{prefix.rstrip('.')}={value.strip().lower()}")
+    return identifiers
+
+
+def _effect_keys(root: Path, call: ToolCall, tool: BaseTool | None) -> set[str]:
+    name = call["name"]
+    args = call.get("args", {})
+    if name == "delete":
+        path = _resolved_effect_path(root, args.get("file_path"))
+        return {f"path:{path}"} if path is not None else set()
+    if name in {"write_file", "edit_file"}:
+        path = _resolved_effect_path(root, args.get("file_path"))
+        return {f"path:{path}"} if path is not None else set()
+    if name == "execute":
+        return {
+            f"path:{path}" for path in _shell_effect_paths(root, args.get("command"))
+        }
+    if tool is not None and is_mcp_tool(tool):
+        metadata = dict(tool.metadata or {})
+        server = str(metadata.get("_deepagents_code_mcp_server") or name)
+        identifiers = _external_effect_identifiers(args)
+        if identifiers:
+            return {f"external:{server}:{'|'.join(sorted(identifiers))}"}
+    return set()
 
 
 def _deterministic_allow(
@@ -2541,9 +2699,37 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         tools = _resolved_tools(request)
         review_calls: list[ToolCall] = []
         deterministic_dispositions: dict[str, str] = {}
+        effect_keys_by_id: dict[str, set[str]] = {}
         trusted_compaction_seen = False
+        denied_effects = counter_context[1]["denied_effects"] if counter_context else {}
         for call in gated_calls:
             tool = tools.get(call["name"])
+            effect_keys = await asyncio.to_thread(
+                _effect_keys, self._worktree_root, call, tool
+            )
+            effect_keys_by_id[_tool_call_id(call)] = effect_keys
+            matching_denial = next(
+                (
+                    denied_effects[effect_key]
+                    for effect_key in effect_keys
+                    if effect_key in denied_effects
+                ),
+                None,
+            )
+            if matching_denial is not None:
+                plan["decisions"].append(
+                    {
+                        "tool_call_id": _tool_call_id(call),
+                        "disposition": "require_human",
+                        "category": cast("str", matching_denial["category"]),
+                        "reason": (
+                            "This effect was previously denied by Auto mode; "
+                            "explicit human approval is required."
+                        ),
+                        "path": "fallback",
+                    }
+                )
+                continue
             is_trusted_compaction = (
                 call["name"] == "compact_conversation"
                 and tool is not None
@@ -2822,6 +3008,13 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     "path": "classifier",
                 }
             )
+            for effect_key in effect_keys_by_id[_tool_call_id(call)]:
+                entry = counters["denied_effects"].setdefault(
+                    effect_key,
+                    {"category": decision.category.value, "count": 0},
+                )
+                entry["category"] = decision.category.value
+                entry["count"] = cast("int", entry["count"]) + 1
         counters["last_batch_id"] = batch_id
         if not await _write_counters(request.runtime.store, thread_key, counters):
             for decision in plan["decisions"]:

@@ -5718,3 +5718,106 @@ async def test_headless_guard_rejects_gated_mcp_without_execution() -> None:
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
     assert not executed
+
+
+async def test_denied_delete_escalates_git_rm_to_human_approval(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "src" / "secret.py"
+    store = _Store()
+    model = _StructuredModel(
+        _deny_result(
+            category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+            reason="The requested deletion is destructive.",
+        )
+    )
+    middleware = _middleware(tmp_path)
+    delete_request, store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": str(target)},
+        store=store,
+    )
+
+    first_plan = await _plan(
+        middleware,
+        delete_request,
+        tool_name="delete",
+        args={"file_path": str(target)},
+    )
+    assert first_plan["decisions"][0]["disposition"] == "policy_deny"
+
+    execute_request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={"command": f"git rm {target.relative_to(tmp_path)}"},
+        store=store,
+    )
+    second_plan = await _plan(
+        middleware,
+        execute_request,
+        tool_name="execute",
+        args={"command": f"git rm {target.relative_to(tmp_path)}"},
+        call_id="git-rm-call",
+    )
+
+    assert second_plan["decisions"][0]["disposition"] == "require_human"
+    assert len(model.calls) == 1
+
+
+async def test_denied_external_identifier_escalates_reworded_request(
+    tmp_path: Path,
+) -> None:
+    tenant_id = "4a322f6a-86c2-4f11-b84f-50af060d25ec"
+    tool = _tool(
+        "mcp_mutate",
+        metadata={
+            "_deepagents_code_mcp": True,
+            "_deepagents_code_mcp_server": "hex",
+        },
+    )
+    model = _StructuredModel(
+        _deny_result(
+            category=AutoDecisionCategory.EXTERNAL_SHARING,
+            reason="The tenant identifier must not leave the organization.",
+        )
+    )
+    middleware = _middleware(tmp_path)
+    first_args = {"prompt": f"Identify tenant_id {tenant_id} in Hex."}
+    first_request, store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="mcp_mutate",
+        args=first_args,
+        tools=[tool],
+    )
+
+    first_plan = await _plan(
+        middleware,
+        first_request,
+        tool_name="mcp_mutate",
+        args=first_args,
+    )
+    assert first_plan["decisions"][0]["disposition"] == "policy_deny"
+
+    second_args = {"prompt": f"Look up recent activity for {tenant_id}."}
+    second_request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="mcp_mutate",
+        args=second_args,
+        tools=[tool],
+        store=store,
+    )
+    second_plan = await _plan(
+        middleware,
+        second_request,
+        tool_name="mcp_mutate",
+        args=second_args,
+        call_id="reworded-call",
+    )
+
+    assert second_plan["decisions"][0]["disposition"] == "require_human"
+    assert len(model.calls) == 1

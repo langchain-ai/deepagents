@@ -1895,7 +1895,10 @@ class AuthManagerScreen(ModalScreen[None]):
         # surface it whenever `openai` is available) rather than on
         # `PROVIDER_API_KEY_ENV`, since it has no env var of its own.
         codex_installed = (
-            {CODEX_PROVIDER} if "openai" in well_known_installed else set()
+            {CODEX_PROVIDER}
+            if "openai" in well_known_installed
+            and config.is_provider_enabled(CODEX_PROVIDER)
+            else set()
         )
 
         shown = well_known_installed | codex_installed | stored | config_providers

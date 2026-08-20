@@ -2671,6 +2671,34 @@ class TestCodexAuthInManager:
             }
         assert "openai_codex" in ids
 
+    async def test_disabled_codex_option_hidden(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disabled `openai_codex` provider stays out of the auth manager."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai_codex]
+enabled = false
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
+        )
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = {
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            }
+
+        assert "openai" in ids
+        assert "openai_codex" not in ids
+
     async def test_codex_badge_reflects_signed_out_state(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

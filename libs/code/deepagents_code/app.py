@@ -16190,13 +16190,25 @@ class DeepAgentsApp(App):
         """Check whether the current thread has at least one human message.
 
         Returns:
-            `True` if the conversation contains a `HumanMessage`, `False`
+            `True` if the conversation contains a `HumanMessage` or a local user
+                turn is still in flight (its worker has started), `False`
                 otherwise. On transient errors (network, corrupt state) returns
                 `True` so callers do not block or warn based on an unreliable
                 empty-thread check.
         """
         if not self._agent or not self._lc_thread_id:
             return False
+        # `_agent_turn_started` (not just `_agent_running`) is required: a
+        # message that failed to send (agent unavailable) leaves
+        # `_active_user_message` mounted, and a later non-message operation
+        # such as goal-criteria generation also sets `_agent_running`. Only a
+        # turn whose worker actually started means the prompt is in flight.
+        if (
+            self._agent_running
+            and self._agent_turn_started
+            and self._active_user_message is not None
+        ):
+            return True
         try:
             # Use the shared helper so the thread is registered first
             # (`aensure_thread`, remote agents only) in server mode — otherwise

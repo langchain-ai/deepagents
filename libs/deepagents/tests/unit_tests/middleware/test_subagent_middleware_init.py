@@ -1,15 +1,17 @@
 """Unit tests for SubAgentMiddleware initialization and configuration."""
 
 import json
+from collections.abc import Callable
 from typing import Any, get_type_hints
 from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.agents.structured_output import AutoStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatResult
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
@@ -195,6 +197,52 @@ class TestSubagentMiddlewareInit:
         assert forked["system_prompt"] == "PARENT_PROMPT"
         assert any(isinstance(middleware, MemoryMiddleware) for middleware in forked["middleware"])
         assert not any(isinstance(middleware, MemoryMiddleware) for middleware in isolated["middleware"])
+
+    def test_forked_subagent_inherits_dynamic_parent_prompt(self) -> None:
+        class _AppendPromptMiddleware(AgentMiddleware):
+            def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+                message = request.system_message
+                content = "DYNAMIC_PROMPT" if message is None else f"{message.text}\n\nDYNAMIC_PROMPT"
+                return handler(request.override(system_message=SystemMessage(content=content)))
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "continue", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+        agent = create_deep_agent(
+            model=parent_model,
+            system_prompt="PARENT_PROMPT",
+            middleware=[_AppendPromptMiddleware()],
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues with context.",
+                    "model": worker_model,
+                    "mode": "fork",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="start")]})
+
+        worker_system_message = worker_model.call_history[0]["messages"][0]
+        assert worker_system_message.text == "PARENT_PROMPT\n\nDYNAMIC_PROMPT"
+        assert "_deepagents_parent_system_message" not in result
 
     def test_create_sub_agent_compiles_declarative_spec(self) -> None:
         """The public helper should compile and invoke declarative specs."""
@@ -486,6 +534,50 @@ class TestSubagentMiddlewareInit:
 
         assert captured["messages"] == [summary, after_cutoff, HumanMessage(content="new task")]
         assert "_summarization_event" not in captured
+
+    def test_duplicate_name_uses_winning_handoff_mode(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _Runnable:
+            def with_config(self, config: dict[str, object]) -> "_Runnable":
+                del config
+                return self
+
+            def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
+                del config
+                captured.update(state)
+                return {"messages": [AIMessage(content="done")]}
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Forked registration.",
+                    "runnable": _Runnable(),
+                    "mode": "fork",
+                },
+                {
+                    "name": "worker",
+                    "description": "Winning isolated registration.",
+                    "runnable": _Runnable(),
+                },
+            ],
+        )
+        task_tool = middleware.tools[0]
+        runtime = ToolRuntime(
+            state={"messages": [HumanMessage(content="parent history")]},
+            context={},
+            config={"configurable": {}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id="call_worker",
+            store=None,
+        )
+
+        task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
+
+        assert captured["messages"] == [HumanMessage(content="new task")]
 
     def test_handoff_subagent_receives_only_task_description(self) -> None:
         captured: dict[str, object] = {}

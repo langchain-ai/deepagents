@@ -131,6 +131,8 @@ def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
         return colors.mode_bash
     if mode == "command":
         return colors.mode_command
+    if mode == "skill":
+        return colors.skill
     logger.warning("Missing color for mode '%s'; falling back to primary.", mode)
     return colors.primary
 

@@ -1,7 +1,7 @@
-"""Autocomplete system for @ mentions and / commands.
+"""Autocomplete system for @ mentions, / commands, and $ skills.
 
 This is a custom implementation that handles trigger-based completion
-for slash commands (/) and file mentions (@).
+for slash commands (/), skills ($), and file mentions (@).
 """
 
 from __future__ import annotations
@@ -34,6 +34,8 @@ def _get_git_executable() -> str | None:
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from textual import events
 
     from deepagents_code.command_registry import CommandEntry
@@ -130,12 +132,13 @@ class SlashCommandController:
         self._commands = commands
         self._view = view
         self._suggestions: list[tuple[str, str]] = []
-        # Machine names aligned by index with `_suggestions`. The popup shows
-        # each suggestion's label, but completion inserts the machine name so a
-        # plugin skill shown as `/skill:review` still inserts its full
-        # `/skill:my-plugin:review`.
+        # Completion values aligned by index with `_suggestions`. Controllers may
+        # show a friendly label while inserting a different dispatch value.
         self._suggestion_names: list[str] = []
         self._selected_index = 0
+        self._completion_start = 0
+        self._completion_end = 0
+        self._replace_full_token = False
 
     def update_commands(self, commands: list[CommandEntry]) -> None:
         """Replace the commands list and reset suggestions.
@@ -148,6 +151,25 @@ class SlashCommandController:
         """
         self._commands = commands
         self.reset()
+
+    @staticmethod
+    def _display_label(entry: CommandEntry) -> str:
+        """Return the suggestion label shown in the popup."""
+        return entry.label()
+
+    @staticmethod
+    def _completion_value(entry: CommandEntry) -> str:
+        """Return the value inserted when a suggestion is selected."""
+        return entry.name
+
+    @staticmethod
+    def _completion_context(
+        text: str, cursor_index: int
+    ) -> tuple[int, int, str] | None:
+        """Return the replacement range and query for slash completion."""
+        if cursor_index < 0 or cursor_index > len(text) or not text.startswith("/"):
+            return None
+        return 0, cursor_index, text[1:cursor_index].lower()
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004  # Required by AutocompleteProvider interface
@@ -164,16 +186,17 @@ class SlashCommandController:
             self._suggestions.clear()
             self._suggestion_names.clear()
             self._selected_index = 0
+            self._completion_start = 0
+            self._completion_end = 0
             self._view.clear_completion_suggestions()
 
     def name_prefix_matches(self, text: str, cursor_index: int) -> list[CommandEntry]:
         """Return commands whose names start with the current slash query."""
-        if cursor_index < 0 or cursor_index > len(text):
-            return []
-        if not self.can_handle(text, cursor_index):
+        context = self._completion_context(text, cursor_index)
+        if context is None or not self.can_handle(text, cursor_index):
             return []
 
-        search = text[1:cursor_index].lower()
+        _, _, search = context
         if not search or " " in search:
             return []
 
@@ -226,16 +249,12 @@ class SlashCommandController:
 
     def on_text_changed(self, text: str, cursor_index: int) -> None:
         """Update suggestions when text changes."""
-        if cursor_index < 0 or cursor_index > len(text):
+        context = self._completion_context(text, cursor_index)
+        if context is None or not self.can_handle(text, cursor_index):
             self.reset()
             return
 
-        if not self.can_handle(text, cursor_index):
-            self.reset()
-            return
-
-        # Get the search string (text after /)
-        search = text[1:cursor_index].lower()
+        completion_start, completion_end, search = context
 
         # Space means the user finished picking a command — dismiss popup
         if " " in search:
@@ -264,10 +283,14 @@ class SlashCommandController:
 
         if selected:
             self._suggestions = [
-                (entry.label(), entry.description) for entry in selected
+                (self._display_label(entry), entry.description) for entry in selected
             ]
-            self._suggestion_names = [entry.name for entry in selected]
+            self._suggestion_names = [
+                self._completion_value(entry) for entry in selected
+            ]
             self._selected_index = 0
+            self._completion_start = completion_start
+            self._completion_end = completion_end
             self._view.render_completion_suggestions(
                 self._suggestions, self._selected_index
             )
@@ -325,12 +348,42 @@ class SlashCommandController:
         if not self._suggestions:
             return False
 
-        # Insert the machine name (aligned by index), not the displayed label.
-        command = self._suggestion_names[self._selected_index]
-        # Replace from start to cursor with the command
-        self._view.replace_completion_range(0, cursor_index, command)
+        command = self.completion_value_at(self._selected_index)
+        if command is None:
+            return False
+        replacement_end = (
+            self._completion_end if self._replace_full_token else cursor_index
+        )
+        self._view.replace_completion_range(
+            self._completion_start, replacement_end, command
+        )
         self.reset()
         return True
+
+    def completion_value_at(self, index: int) -> str | None:
+        """Return the canonical insertion value at a suggestion index.
+
+        Popup labels may be friendlier than the command value accepted by the
+        input, so click handlers must use this value rather than the label.
+
+        Args:
+            index: Index of the visible completion suggestion.
+
+        Returns:
+            The canonical completion value, or `None` for an invalid index.
+        """
+        if 0 <= index < len(self._suggestion_names):
+            return self._suggestion_names[index]
+        return None
+
+    def completion_range(self, cursor_index: int) -> tuple[int, int] | None:
+        """Return the active replacement range for click completion."""
+        if not self._suggestions:
+            return None
+        replacement_end = (
+            self._completion_end if self._replace_full_token else cursor_index
+        )
+        return self._completion_start, replacement_end
 
     def apply_name_prefix_completion(
         self, match: CommandEntry, cursor_index: int
@@ -343,6 +396,100 @@ class SlashCommandController:
         """
         self._view.replace_completion_range(0, cursor_index, match.name)
         self.reset()
+
+
+class SkillCommandController(SlashCommandController):
+    """Controller for inline `$` skill completion."""
+
+    def __init__(
+        self,
+        commands: list[CommandEntry],
+        view: CompletionView,
+        *,
+        should_submit_completion: Callable[[], bool] | None = None,
+    ) -> None:
+        """Initialize skill completion with optional dedicated-mode submission."""
+        super().__init__(commands, view)
+        self._replace_full_token = True
+        self._should_submit_completion = should_submit_completion
+
+    @staticmethod
+    def _completion_context(
+        text: str, cursor_index: int
+    ) -> tuple[int, int, str] | None:
+        """Return the latest valid `$` fragment and its full replacement range."""
+        if cursor_index <= 0 or cursor_index > len(text):
+            return None
+        before_cursor = text[:cursor_index]
+        trigger_index = before_cursor.rfind("$")
+        if trigger_index < 0:
+            return None
+        if trigger_index > 0:
+            previous = text[trigger_index - 1]
+            if previous.isalnum() or previous in "_$":
+                return None
+        fragment = before_cursor[trigger_index + 1 :]
+        if any(
+            not (character.isalnum() or character in "-_:") for character in fragment
+        ):
+            return None
+        completion_end = cursor_index
+        while completion_end < len(text):
+            character = text[completion_end]
+            if not (character.isalnum() or character in "-_:"):
+                break
+            completion_end += 1
+        return trigger_index, completion_end, fragment.lower()
+
+    @staticmethod
+    def can_handle(text: str, cursor_index: int) -> bool:
+        """Return whether the cursor follows an active `$` skill fragment."""
+        return (
+            SkillCommandController._completion_context(text, cursor_index) is not None
+        )
+
+    @staticmethod
+    def _display_label(entry: CommandEntry) -> str:
+        """Return a bare skill name for the popup."""
+        return entry.label().removeprefix("/skill:")
+
+    @staticmethod
+    def _completion_value(entry: CommandEntry) -> str:
+        """Return the canonical inline skill reference."""
+        return f"${entry.name.removeprefix('/skill:')}"
+
+    def on_key(
+        self, event: events.Key, _text: str, cursor_index: int
+    ) -> CompletionResult:
+        """Select inline skills without submitting surrounding prompt text.
+
+        Returns:
+            Whether the event was ignored, handled, or should submit the draft.
+        """
+        should_submit = self._should_submit_completion
+        in_dedicated_mode = should_submit is not None and should_submit()
+        if event.key == "space" and self._suggestions and not in_dedicated_mode:
+            self.reset()
+            return CompletionResult.IGNORED
+        if event.key == "enter" and self._suggestions:
+            if self._apply_selected_completion(cursor_index):
+                return (
+                    CompletionResult.SUBMIT
+                    if in_dedicated_mode
+                    else CompletionResult.HANDLED
+                )
+            return CompletionResult.HANDLED
+        return super().on_key(event, _text, cursor_index)
+
+    @staticmethod
+    def _score_command(search: str, cmd: str, desc: str, keywords: str = "") -> float:
+        """Score a canonical skill command against its short skill name.
+
+        Returns:
+            Match score where higher values indicate stronger matches.
+        """
+        skill_name = cmd.removeprefix("/skill:")
+        return SlashCommandController._score_command(search, skill_name, desc, keywords)
 
 
 # ============================================================================

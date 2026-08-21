@@ -778,6 +778,7 @@ def get_css_variable_defaults(
         "mode-bash": c.mode_bash,
         "mode-command": c.mode_command,
         "mode-incognito": c.mode_incognito,
+        "mode-skill": c.skill,
         "skill": c.skill,
         "skill-hover": c.skill_hover,
         "tool": c.tool,

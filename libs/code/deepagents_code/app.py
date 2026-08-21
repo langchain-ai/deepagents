@@ -4560,8 +4560,11 @@ class DeepAgentsApp(App):
             )
 
             cmds = build_skill_commands(self._discovered_skills)
+            skill_cmds = build_skill_commands(
+                self._discovered_skills, include_static_aliases=True
+            )
             merged = list(get_slash_commands()) + cmds
-            self._chat_input.update_slash_commands(merged)
+            self._chat_input.update_slash_commands(merged, skill_commands=skill_cmds)
 
         self._status_bar.set_approval_mode(self._approval_mode.value)
         if self._approval_mode.value == "auto":
@@ -5426,9 +5429,14 @@ class DeepAgentsApp(App):
         self._skill_allowed_roots = roots
         if skills:
             skill_commands = build_skill_commands(skills)
+            all_skill_commands = build_skill_commands(
+                skills, include_static_aliases=True
+            )
             if self._chat_input:
                 merged = list(get_slash_commands()) + skill_commands
-                self._chat_input.update_slash_commands(merged)
+                self._chat_input.update_slash_commands(
+                    merged, skill_commands=all_skill_commands
+                )
             else:
                 logger.debug(
                     "Skill discovery completed (%d skills) but chat input "
@@ -9891,7 +9899,16 @@ class DeepAgentsApp(App):
         elif mode == "command":
             await self._handle_command(value)
         elif mode == "normal":
-            await self._handle_user_message(value)
+            from deepagents_code.skills.invocation import find_inline_skill_reference
+
+            skill_name = find_inline_skill_reference(
+                value,
+                (skill["name"] for skill in self._discovered_skills),
+            )
+            if skill_name is None:
+                await self._handle_user_message(value)
+            else:
+                await self._invoke_skill(skill_name, value)
         else:
             # Fail safe: never default to the agent dispatch path on an
             # unrecognized mode, since that would silently leak `!!`/`!`

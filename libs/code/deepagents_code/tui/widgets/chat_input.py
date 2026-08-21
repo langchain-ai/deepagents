@@ -51,6 +51,7 @@ from deepagents_code.tui.widgets.autocomplete import (
     CompletionResult,
     FuzzyFileController,
     MultiCompletionManager,
+    SkillCommandController,
     SlashCommandController,
 )
 from deepagents_code.tui.widgets.history import HistoryManager
@@ -1945,7 +1946,7 @@ class ChatInput(Vertical):
     - Multi-line input with TextArea
     - Enter to submit, modifier key for newlines (see `config.newline_shortcut`)
     - Up/Down arrows for command history at input boundaries (start/end of text)
-    - Autocomplete for @ (files) and / (commands)
+    - Autocomplete for @ (files), / (commands), and $ (skills)
     - Drag the top border to resize the composer; double-click it to expand to
       the maximum height, or to drop a manual height back to content-driven
       sizing
@@ -1972,6 +1973,10 @@ class ChatInput(Vertical):
 
     ChatInput.mode-command #input-box {
         border: solid $mode-command;
+    }
+
+    ChatInput.mode-skill #input-box {
+        border: solid $mode-skill;
     }
 
     ChatInput.mode-shell-incognito #input-box {
@@ -2028,6 +2033,10 @@ class ChatInput(Vertical):
 
     ChatInput.mode-command .input-prompt {
         color: $mode-command;
+    }
+
+    ChatInput.mode-skill .input-prompt {
+        color: $mode-skill;
     }
 
     ChatInput.mode-shell-incognito .input-prompt {
@@ -2125,6 +2134,7 @@ class ChatInput(Vertical):
         self._completion_manager: MultiCompletionManager | None = None
         self._completion_view: _CompletionViewAdapter | None = None
         self._slash_controller: SlashCommandController | None = None
+        self._skill_controller: SkillCommandController | None = None
 
         # Collapsed paste storage: paste_id → full content.  When a large paste
         # arrives, the full text is stored here and a compact
@@ -2153,7 +2163,7 @@ class ChatInput(Vertical):
         self._skip_media_sync_events = 0
 
         # Number of virtual prefix characters currently injected for
-        # completion controller calls (0 for normal, 1 for shell/command).
+        # completion controller calls.
         self._completion_prefix_len = 0
 
         # Guard flag: set while replacing a dropped path payload with an
@@ -2244,9 +2254,15 @@ class ChatInput(Vertical):
         self._slash_controller = SlashCommandController(
             get_slash_commands(), self._completion_view
         )
+        self._skill_controller = SkillCommandController(
+            [],
+            self._completion_view,
+            should_submit_completion=lambda: self.mode == "skill",
+        )
         self._completion_manager = MultiCompletionManager(
             [
                 self._slash_controller,
+                self._skill_controller,
                 self._file_controller,
             ]  # ty: ignore[invalid-argument-type]  # Controller types are compatible at runtime
         )
@@ -2290,6 +2306,7 @@ class ChatInput(Vertical):
         mode_colors = {
             "shell": colors.mode_bash,
             "command": colors.mode_command,
+            "skill": colors.skill,
             "shell_incognito": colors.mode_incognito,
         }
         if self.mode != "normal" and self.mode not in mode_colors:
@@ -2395,21 +2412,32 @@ class ChatInput(Vertical):
             file_controller.set_cwd(self._cwd)
             self._warm_file_cache()
 
-    def update_slash_commands(self, commands: list[CommandEntry]) -> None:
-        """Update the slash command controller's command list.
+    def update_slash_commands(
+        self,
+        commands: list[CommandEntry],
+        *,
+        skill_commands: list[CommandEntry] | None = None,
+    ) -> None:
+        """Update slash-command and skill completion entries.
 
         Called by the app after discovering skills to merge static
         commands with dynamic `/skill:` entries.
 
         Args:
-            commands: Full list of `CommandEntry` instances.
+            commands: Full list of slash autocomplete entries.
+            skill_commands: Complete skill-only entries for `$` autocomplete.
         """
-        if self._slash_controller:
+        if self._slash_controller and self._skill_controller:
             self._slash_controller.update_commands(commands)
+            if skill_commands is None:
+                skill_commands = [
+                    entry for entry in commands if entry.name.startswith("/skill:")
+                ]
+            self._skill_controller.update_commands(skill_commands)
             self._rebuild_argument_hints(commands)
         else:
             logger.warning(
-                "Cannot update slash commands: controller not initialized "
+                "Cannot update command completions: controllers not initialized "
                 "(widget not yet mounted)"
             )
 
@@ -2723,8 +2751,13 @@ class ChatInput(Vertical):
         """Switch input mode for a mode trigger typed at the start of the input.
 
         Handles the switch before `TextArea` inserts the character so the
-        trigger (`!`, `!!`, `/`) never flashes on screen for a frame before the
-        change handler would strip it.
+        trigger (`!`, `!!`, `/`, `$`) never flashes on screen for a frame
+        before the change handler would strip it.
+
+        This is also the only entry point for triggers in
+        `KEYSTROKE_ONLY_MODES` (`$`): a deliberate key press at the start of
+        the input is unambiguous, whereas the text-change path also sees
+        pastes and history recall, where a leading `$` is ordinary text.
 
         Returns:
             True if the keystroke was consumed as a mode selector without
@@ -2738,10 +2771,12 @@ class ChatInput(Vertical):
             self.suppress_next_prefix_detection()
             return False
 
-        detected_prefix = detect_mode_prefix(char)
+        detected_prefix = detect_mode_prefix(char, allow_keystroke_only=True)
         if detected_prefix is None:
             return False
         prefix, raw_detected = detected_prefix
+        if raw_detected == "skill" and self._text_area and self._text_area.text:
+            return False
         detected, strip_length = self._resolve_prefix_mode(prefix, raw_detected)
         if not strip_length:
             # An extra `!` inside an incognito command body is literal text.
@@ -2897,6 +2932,10 @@ class ChatInput(Vertical):
             detected = detect_mode_prefix(value)
             if detected is not None:
                 _, mode = detected
+
+        if mode == "skill":
+            value = f"/skill:{value.removeprefix('/skill:')}"
+            mode = "command"
 
         # Prepend mode prefix so the app layer receives the original trigger
         # form (e.g. "!ls", "/help"). The value may already contain the prefix
@@ -3399,7 +3438,9 @@ class ChatInput(Vertical):
             )
 
         def _apply() -> None:
-            self.remove_class("mode-shell", "mode-command", "mode-shell-incognito")
+            self.remove_class(
+                "mode-shell", "mode-command", "mode-skill", "mode-shell-incognito"
+            )
             if glyph:
                 class_name = (
                     "mode-shell-incognito"
@@ -3584,7 +3625,7 @@ class ChatInput(Vertical):
             self._text_area._notify_app_focus()
 
     def exit_mode(self) -> bool:
-        """Exit the current input mode (command/shell) back to normal.
+        """Exit the current input mode back to normal.
 
         Returns:
             True if mode was non-normal and has been reset.
@@ -3661,10 +3702,31 @@ class ChatInput(Vertical):
         text = self._text_area.text
         cursor = self._get_cursor_offset()
 
-        # Determine replacement range based on completion type.
-        # Slash completions use completion-space coordinates and are translated
+        # Determine replacement range based on completion type. Command and
+        # skill completions use completion-space coordinates and are translated
         # through the completion view adapter.
-        if label.startswith("/"):
+        completion_cursor = self._completion_text_and_cursor()[1]
+        skill_completion = (
+            self._skill_controller.completion_value_at(index)
+            if self._skill_controller is not None
+            else None
+        )
+        skill_range = (
+            self._skill_controller.completion_range(completion_cursor)
+            if self._skill_controller is not None
+            else None
+        )
+        if skill_completion is not None and skill_range is not None:
+            if self._completion_view is None:
+                logger.warning(
+                    "Skill completion clicked before its view was initialized; "
+                    "this indicates a widget lifecycle issue."
+                )
+                return
+            self._completion_view.replace_completion_range(
+                skill_range[0], skill_range[1], skill_completion
+            )
+        elif label.startswith("/"):
             if self._completion_view is None:
                 logger.warning(
                     "Slash completion clicked but _completion_view is not "

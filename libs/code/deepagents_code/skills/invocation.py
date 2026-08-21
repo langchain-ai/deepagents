@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
     from deepagents_code.skills.load import ExtendedSkillMetadata
@@ -23,6 +24,44 @@ class SkillInvocationEnvelope:
 
     prompt: str
     message_kwargs: dict[str, Any]
+
+
+def _is_skill_name_character(character: str) -> bool:
+    """Return whether a character can continue a canonical skill name."""
+    return character.isalnum() or character in "-_:"
+
+
+def find_inline_skill_reference(text: str, skill_names: Iterable[str]) -> str | None:
+    """Resolve the first exact `$<name>` reference in prompt text.
+
+    Args:
+        text: User prompt that may contain an inline skill reference.
+        skill_names: Canonical discovered skill names eligible for invocation.
+
+    Returns:
+        The referenced canonical name, or `None` when no exact token matches.
+    """
+    candidates = sorted(
+        {name for name in skill_names if name},
+        key=len,
+        reverse=True,
+    )
+    for trigger_index, character in enumerate(text):
+        if character != "$":
+            continue
+        if trigger_index > 0:
+            previous = text[trigger_index - 1]
+            if previous.isalnum() or previous in "_$":
+                continue
+        name_start = trigger_index + 1
+        for name in candidates:
+            name_end = name_start + len(name)
+            if text[name_start:name_end].casefold() != name.casefold():
+                continue
+            if name_end < len(text) and _is_skill_name_character(text[name_end]):
+                continue
+            return name
+    return None
 
 
 def discover_skills_and_roots(

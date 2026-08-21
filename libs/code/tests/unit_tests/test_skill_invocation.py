@@ -13,7 +13,8 @@ from deepagents_code.command_registry import (
     build_skill_commands,
     parse_skill_command,
 )
-from deepagents_code.skills.load import load_skill_content
+from deepagents_code.skills.invocation import find_inline_skill_reference
+from deepagents_code.skills.load import ExtendedSkillMetadata, load_skill_content
 
 
 class TestLoadSkillContent:
@@ -162,7 +163,7 @@ class TestBuildSkillCommands:
 
     def test_excludes_static_skill_aliases(self) -> None:
         """Skills with names matching static aliases are excluded."""
-        skills = [
+        skills: list[ExtendedSkillMetadata] = [
             {
                 "name": "remember",
                 "description": "Update memory",
@@ -194,12 +195,19 @@ class TestBuildSkillCommands:
                 "source": "user",
             },
         ]
-        result = build_skill_commands(skills)  # ty: ignore
+        result = build_skill_commands(skills)
         names = [r[0] for r in result]
         assert "/skill:remember" not in names
         assert "/skill:skill-creator" not in names
         assert "/skill:custom-skill" in names
         assert len(result) == 1
+
+        all_result = build_skill_commands(skills, include_static_aliases=True)
+        assert [entry.name for entry in all_result] == [
+            "/skill:remember",
+            "/skill:skill-creator",
+            "/skill:custom-skill",
+        ]
 
     def test_non_alias_command_names_not_suppressed(self) -> None:
         """Skills named after non-alias commands are NOT excluded."""
@@ -269,6 +277,49 @@ class TestBuildSkillCommands:
         assert entry.name == "/skill:web-research"
         assert entry.label() == "/skill:web-research"
         assert entry.description == "Research topics"
+
+
+class TestInlineSkillReference:
+    """Test exact inline `$<name>` resolution against discovered skills."""
+
+    _NAMES = ("review", "review-long", "my-plugin:deploy")
+
+    def test_mid_prompt_reference(self) -> None:
+        assert (
+            find_inline_skill_reference("Use $review before release", self._NAMES)
+            == "review"
+        )
+
+    def test_namespaced_reference(self) -> None:
+        assert (
+            find_inline_skill_reference(
+                "Use $my-plugin:deploy now",
+                self._NAMES,
+            )
+            == "my-plugin:deploy"
+        )
+
+    def test_case_insensitive_reference(self) -> None:
+        assert find_inline_skill_reference("Use $REVIEW", self._NAMES) == "review"
+
+    @pytest.mark.parametrize("suffix", [", then wait", ".", ")", "!"])
+    def test_punctuation_terminates_reference(self, suffix: str) -> None:
+        assert find_inline_skill_reference(f"Use $review{suffix}", self._NAMES) == (
+            "review"
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Use $unknown",
+            "Use $review-longer",
+            "Use $review_extra",
+            "price$review",
+            "Use $$review",
+        ],
+    )
+    def test_non_exact_tokens_remain_plain_text(self, text: str) -> None:
+        assert find_inline_skill_reference(text, self._NAMES) is None
 
 
 class TestSkillCommandParsing:

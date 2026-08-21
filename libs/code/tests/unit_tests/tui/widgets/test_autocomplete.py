@@ -18,6 +18,7 @@ from deepagents_code.tui.widgets.autocomplete import (
     CompletionResult,
     FuzzyFileController,
     MultiCompletionManager,
+    SkillCommandController,
     SlashCommandController,
     _fuzzy_score,
     _fuzzy_search,
@@ -389,6 +390,164 @@ class TestSlashCommandController:
         event.key = "space"
         result = controller.on_key(event, "/zzz", 4)
         assert result == CompletionResult.IGNORED
+
+
+class TestSkillCommandController:
+    """Tests for `$` skill completion."""
+
+    @pytest.fixture
+    def mock_view(self):
+        """Create a mock CompletionView."""
+        return MagicMock()
+
+    @pytest.fixture
+    def controller(self, mock_view):
+        """Create a controller with discovered skill entries."""
+        commands = [
+            CommandEntry("/skill:web-research", "Research the web", "web-research", ""),
+            CommandEntry("/skill:review", "Review a change", "review", ""),
+            CommandEntry(
+                "/skill:my-plugin:deploy",
+                "Deploy through a plugin",
+                "deploy",
+                "",
+                "/skill:deploy",
+            ),
+        ]
+
+        return SkillCommandController(commands, mock_view)
+
+    def test_handles_only_dollar_prefix(self, controller) -> None:
+        """The skill picker activates only for `$` input."""
+        assert controller.can_handle("$", 1) is True
+        assert controller.can_handle("$web", 4) is True
+        assert controller.can_handle("Use $web", 8) is True
+        assert controller.can_handle("/web", 4) is False
+
+    def test_filters_on_short_skill_name(self, controller, mock_view) -> None:
+        """Queries match the skill name without requiring `skill:`."""
+        controller.on_text_changed("$web", 4)
+
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions == [("web-research", "Research the web")]
+
+    def test_completion_inserts_bare_skill_name(self, controller, mock_view) -> None:
+        """Selecting a `$` suggestion keeps the skill mode draft concise."""
+        controller.on_text_changed("$rev", 4)
+        event = MagicMock()
+        event.key = "tab"
+
+        result = controller.on_key(event, "$rev", 4)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once_with(0, 4, "$review")
+
+    def test_namespaced_completion_keeps_canonical_name(
+        self, controller, mock_view
+    ) -> None:
+        """Bare plugin labels still insert their full namespaced skill name."""
+        controller.on_text_changed("$dep", 4)
+        event = MagicMock()
+        event.key = "tab"
+
+        result = controller.on_key(event, "$dep", 4)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once_with(
+            0, 4, "$my-plugin:deploy"
+        )
+
+    def test_inline_completion_replaces_only_active_fragment(
+        self, controller, mock_view
+    ) -> None:
+        """Selecting a skill preserves prompt text around the `$` fragment."""
+        controller.on_text_changed("Use $rev before release", 8)
+        event = MagicMock()
+        event.key = "tab"
+
+        result = controller.on_key(event, "Use $rev before release", 8)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once_with(4, 8, "$review")
+
+    def test_mid_fragment_completion_replaces_full_skill_token(
+        self, controller, mock_view
+    ) -> None:
+        """Completion removes the untyped suffix when the cursor is mid-token."""
+        controller.on_text_changed("Use $review later", 8)
+        event = MagicMock()
+        event.key = "tab"
+
+        result = controller.on_key(event, "Use $review later", 8)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once_with(4, 11, "$review")
+
+    def test_inline_enter_selects_without_submitting(
+        self, controller, mock_view
+    ) -> None:
+        """Enter should select an inline skill without submitting the draft."""
+        controller.on_text_changed("Use $rev", 8)
+        event = MagicMock()
+        event.key = "enter"
+
+        result = controller.on_key(event, "Use $rev", 8)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once_with(4, 8, "$review")
+
+    def test_root_enter_selects_and_submits(self, controller, mock_view) -> None:
+        """Enter keeps the dedicated root skill mode's submit shortcut."""
+        submitting_controller = SkillCommandController(
+            controller._commands,
+            mock_view,
+            should_submit_completion=lambda: True,
+        )
+        submitting_controller.on_text_changed("$rev", 4)
+        event = MagicMock()
+        event.key = "enter"
+
+        result = submitting_controller.on_key(event, "$rev", 4)
+
+        assert result == CompletionResult.SUBMIT
+        mock_view.replace_completion_range.assert_called_once_with(0, 4, "$review")
+
+    def test_root_enter_outside_dedicated_mode_does_not_submit(
+        self, controller, mock_view
+    ) -> None:
+        """Root inline completion should not submit when skill mode is inactive."""
+        controller.on_text_changed("$rev", 4)
+        event = MagicMock()
+        event.key = "enter"
+
+        result = controller.on_key(event, "$rev", 4)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once_with(0, 4, "$review")
+
+    def test_double_dollar_does_not_activate(self, controller) -> None:
+        """Shell-style `$$` text should not be offered skill completions."""
+        assert controller.can_handle("Use $$", 6) is False
+
+    def test_inline_space_does_not_apply_a_suggestion(
+        self, controller, mock_view
+    ) -> None:
+        """A space after inline `$` remains literal prompt text."""
+        controller.on_text_changed("Use $", 5)
+        event = MagicMock()
+        event.key = "space"
+
+        result = controller.on_key(event, "Use $", 5)
+
+        assert result == CompletionResult.IGNORED
+        mock_view.replace_completion_range.assert_not_called()
+
+    def test_fragment_ends_after_whitespace(self, controller, mock_view) -> None:
+        """Whitespace after a skill reference dismisses its picker."""
+        controller.on_text_changed("Use $rev now", 12)
+
+        mock_view.clear_completion_suggestions.assert_not_called()
+        assert controller.can_handle("Use $rev now", 12) is False
 
 
 class TestScoreCommand:

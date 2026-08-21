@@ -33,7 +33,7 @@ _TIPS: dict[str, int] = {
     "Use /model to switch models mid-conversation": 2,
     "Use /effort to change the current model's reasoning effort": 1,
     _TIP_EXTERNAL_EDITOR: 1,
-    "Use /skill:<name> to invoke a skill directly": 1,
+    "Type $ anywhere in a prompt to select and invoke a skill": 1,
     "Use /theme to customize the TUI's colors": 1,
     "Use /skill-creator to build reusable agent skills": 1,
     "Ask for a workflow to fan work out to subagents in parallel": 3,

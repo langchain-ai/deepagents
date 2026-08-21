@@ -850,7 +850,7 @@ class TestChatInputResize:
             await pilot.pause()
 
             colors: dict[str, object] = {}
-            for mode in ("normal", "shell", "command", "shell_incognito"):
+            for mode in ("normal", "shell", "command", "skill", "shell_incognito"):
                 chat_input.mode = mode
                 await pilot.pause()
                 await pilot.pause()
@@ -1510,6 +1510,19 @@ class TestPromptIndicator:
             assert _prompt_text(prompt) == "/"
             assert chat_input.has_class("mode-command")
 
+    async def test_prompt_shows_dollar_in_skill_mode(self) -> None:
+        """Skill mode should use its own `$` prompt styling."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            prompt = chat_input.query_one("#prompt", Static)
+
+            chat_input.mode = "skill"
+            await pilot.pause()
+
+            assert _prompt_text(prompt) == "$"
+            assert chat_input.has_class("mode-skill")
+
     async def test_prompt_reverts_to_default_on_normal_mode(self) -> None:
         """Resetting mode to 'normal' should revert indicator and classes."""
         app = _ChatInputTestApp()
@@ -1528,6 +1541,7 @@ class TestPromptIndicator:
             assert chat_input.border_title is None
             assert not chat_input.has_class("mode-shell")
             assert not chat_input.has_class("mode-command")
+            assert not chat_input.has_class("mode-skill")
 
     async def test_mode_change_posts_message(self) -> None:
         """Setting mode should post a ModeChanged message."""
@@ -2479,6 +2493,66 @@ class TestModePrefixStripping:
             assert chat.mode == "command"
             assert chat._text_area.text == ""
 
+    async def test_typing_dollar_enters_skill_mode_without_inserting_it(self) -> None:
+        """Pressing `$` on an empty input should enter skill mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._text_area.focus()
+            await pilot.pause()
+
+            await pilot.press("$")
+            await _pause_for_strip(pilot)
+            for char in "review":
+                await pilot.press(char)
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "skill"
+            assert chat._text_area.text == "review"
+
+    async def test_dollar_at_start_of_existing_draft_stays_inline(self) -> None:
+        """A `$` at cursor zero enters skill mode only when the draft is empty."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._text_area.insert("existing text")
+            chat._text_area.move_cursor((0, 0))
+
+            await pilot.press("$")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "$existing text"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "$5k budget - what's the plan?",
+            "$ npm install",
+            "$HOME/bin is not on PATH, fix it",
+        ],
+    )
+    async def test_dollar_leading_text_change_stays_normal(self, text: str) -> None:
+        """Regression guard: `$` text arriving as content is never a trigger.
+
+        Only a deliberate keystroke opens skill mode. Pastes, history recall,
+        and programmatic assignment all reach `on_text_area_changed`, where a
+        leading `$` must survive verbatim instead of being stripped and
+        rewritten into a skill command.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = text
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == text
+
     async def test_handle_mode_prefix_keystroke_switches_without_text_change(
         self,
     ) -> None:
@@ -2932,6 +3006,25 @@ class TestModePrefixStripping:
 
             assert len(app.submitted) == 1
             assert app.submitted[0].value == "/help"
+            assert app.submitted[0].mode == "command"
+
+    async def test_skill_submission_routes_as_canonical_command(self) -> None:
+        """Skill mode should submit through the existing command dispatch path."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.mode = "skill"
+            chat._text_area.insert("review explain this")
+            await pilot.pause()
+            chat.dismiss_completion()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "/skill:review explain this"
             assert app.submitted[0].mode == "command"
 
     async def test_mode_resets_after_submission(self) -> None:
@@ -4893,6 +4986,155 @@ class TestChatInputTypingBubble:
             assert app.chat_input_typing_count == 2
 
 
+class TestSkillCompletion:
+    """Test skill-only completion wiring."""
+
+    async def test_click_completion_inserts_canonical_namespaced_skill(self) -> None:
+        """Clicking a skill popup option should use its canonical name."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.update_slash_commands(
+                get_slash_commands(),
+                skill_commands=[
+                    CommandEntry(
+                        "/skill:my-plugin:deploy",
+                        "Deploy through a plugin",
+                        "deploy",
+                        "",
+                        "/skill:deploy",
+                    )
+                ],
+            )
+
+            chat._text_area.focus()
+            await pilot.pause()
+            await pilot.press("$")
+            await _pause_for_strip(pilot)
+            for char in "dep":
+                await pilot.press(char)
+            await _pause_for_strip(pilot)
+
+            chat.on_completion_popup_option_clicked(
+                CompletionPopup.OptionClicked(index=0)
+            )
+            await pilot.pause()
+
+            assert chat._text_area.text == "my-plugin:deploy "
+
+    async def test_inline_click_preserves_surrounding_prompt(self) -> None:
+        """Clicking an inline skill replaces only the active `$` fragment."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.update_slash_commands(
+                get_slash_commands(),
+                skill_commands=[
+                    CommandEntry(
+                        "/skill:my-plugin:deploy",
+                        "Deploy through a plugin",
+                        "deploy",
+                        "",
+                        "/skill:deploy",
+                    )
+                ],
+            )
+
+            chat._text_area.insert("Use $deploy before release")
+            chat._text_area.move_cursor((0, 8))
+            assert chat._completion_manager is not None
+            chat._completion_manager.on_text_changed("Use $deploy before release", 8)
+            await pilot.pause()
+
+            chat.on_completion_popup_option_clicked(
+                CompletionPopup.OptionClicked(index=0)
+            )
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "Use $my-plugin:deploy before release"
+
+    async def test_inline_tab_preserves_surrounding_prompt(self) -> None:
+        """Tab selection inserts a canonical inline skill reference."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.update_slash_commands(
+                get_slash_commands(),
+                skill_commands=[
+                    CommandEntry("/skill:review", "Review a change", "review", "")
+                ],
+            )
+
+            chat._text_area.insert("Use $rev")
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "Use $review "
+
+    async def test_inline_enter_selects_without_submitting(self) -> None:
+        """Enter selects an inline skill but leaves the prompt editable."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.update_slash_commands(
+                get_slash_commands(),
+                skill_commands=[
+                    CommandEntry("/skill:review", "Review a change", "review", "")
+                ],
+            )
+
+            chat._text_area.insert("Use $rev")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.submitted == []
+            assert chat._text_area.text == "Use $review "
+
+    async def test_update_commands_keeps_dollar_picker_skill_only(self) -> None:
+        """`$` receives skills while `/` retains every command."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            commands = [
+                *get_slash_commands(),
+                CommandEntry("/skill:review", "Review a change", "review", ""),
+            ]
+            skill_commands = [
+                CommandEntry("/skill:remember", "Update memory", "remember", ""),
+                commands[-1],
+            ]
+
+            chat.update_slash_commands(commands, skill_commands=skill_commands)
+
+            assert chat._slash_controller is not None
+            assert chat._skill_controller is not None
+            slash_names = [entry.name for entry in chat._slash_controller._commands]
+            assert "/help" in slash_names
+            assert "/skill:remember" not in slash_names
+            assert [entry.name for entry in chat._skill_controller._commands] == [
+                "/skill:remember",
+                "/skill:review",
+            ]
+
+
 class TestArgumentHints:
     """Test inline argument-hint ghost text for slash commands."""
 
@@ -6352,6 +6594,20 @@ class TestPasteBurstPromotion:
 
 class TestPasteCollapseHelpers:
     """Unit tests for the paste_collapse module helpers."""
+
+    def test_dollar_leading_paste_still_collapses(self) -> None:
+        """Regression guard: a `$`-leading paste must not skip collapsing.
+
+        `_should_collapse_chat_paste` short-circuits on any detected mode
+        prefix. A pasted shell transcript starts with `$`, which would
+        otherwise dump verbatim into the composer instead of becoming a
+        `[Pasted text #N]` placeholder.
+        """
+        from deepagents_code.tui.widgets.chat_input import _should_collapse_chat_paste
+
+        assert _should_collapse_chat_paste("$ " + "x" * 900) is True
+        # Genuine mode prefixes keep their existing exemption.
+        assert _should_collapse_chat_paste("/" + "x" * 900) is False
 
     def test_should_collapse_short_text(self) -> None:
         """Short single-line text should not be collapsed."""

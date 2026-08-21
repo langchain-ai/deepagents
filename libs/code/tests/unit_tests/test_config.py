@@ -6932,6 +6932,45 @@ class TestDetectModePrefix:
         """Regression guard: `!!` must beat `!` even if iteration order changes."""
         assert detect_mode_prefix("!!whoami") == ("!!", "shell_incognito")
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "$review",
+            "$",
+            "$5k budget - what's the plan?",
+            "$ npm install",
+            "$HOME/bin is not on PATH",
+            "$(git rev-parse HEAD)",
+        ],
+    )
+    def test_dollar_is_not_matched_when_scanning_content(self, text: str) -> None:
+        """Regression guard: `$` must never be claimed by a content scan.
+
+        `detect_mode_prefix` is applied to whole drafts, pastes, and stored
+        transcript text. Matching a leading `$` there rewrites shell
+        transcripts, prices, and env vars into bogus skill invocations.
+        """
+        assert detect_mode_prefix(text) is None
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("$review", ("$", "skill")),
+            ("$", ("$", "skill")),
+        ],
+    )
+    def test_dollar_matches_for_deliberate_keystrokes(
+        self, text: str, expected: tuple[str, str]
+    ) -> None:
+        assert detect_mode_prefix(text, allow_keystroke_only=True) == expected
+
+    def test_keystroke_only_opt_in_does_not_change_other_prefixes(self) -> None:
+        """The opt-in only adds `$`; it must not perturb `!`, `!!`, or `/`."""
+        for text in ("!!ls", "!ls", "/help", "plain text"):
+            assert detect_mode_prefix(text) == detect_mode_prefix(
+                text, allow_keystroke_only=True
+            )
+
 
 class TestInterpreterSettings:
     """Tests for `[interpreter]` config.toml loading and validation."""

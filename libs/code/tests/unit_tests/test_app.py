@@ -30243,6 +30243,35 @@ class TestLiveApprovalModeWrites:
 
         save_recent.assert_not_called()
 
+    @pytest.mark.parametrize("mode_value", ["auto", "manual"])
+    async def test_set_approval_mode_skips_persist_when_live_write_fails(
+        self, mode_value: str
+    ) -> None:
+        """A rejected live write must not arm the mode for the next launch."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        target = ApprovalMode(mode_value)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch(
+                    "deepagents_code.model_config.save_recent_startup_mode",
+                    return_value=True,
+                ) as save_recent,
+                patch.object(app, "_warn_live_approval_mode_unavailable"),
+                patch.object(app, "_force_interrupt_active_work"),
+            ):
+                assert await app._set_approval_mode(target) is False
+
+            save_recent.assert_not_called()
+
     async def test_switch_to_manual_from_fallback_persists_manual(self) -> None:
         """The live fallback's Manual switch updates the next bare launch."""
         from deepagents_code.approval_mode import ApprovalMode

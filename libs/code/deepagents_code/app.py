@@ -9571,8 +9571,11 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(ApprovalMode.AUTO.value)
         if self._session_state:
             self._session_state.approval_mode = ApprovalMode.AUTO
-        await self._persist_startup_approval_mode(ApprovalMode.AUTO)
+        # Notify before the awaits below. State is already committed above, so
+        # the classifier notice must be attempted before a suspension point that
+        # can raise or be cancelled.
         self._notify_auto_classifier_active()
+        await self._persist_startup_approval_mode(ApprovalMode.AUTO)
         await self._auto_accept_pending_goal_rubric()
         return True
 
@@ -20901,7 +20904,6 @@ class DeepAgentsApp(App):
             self._session_state.approval_mode = target
         if self._status_bar:
             self._status_bar.set_approval_mode(target.value)
-        await self._persist_startup_approval_mode(target)
         if target is ApprovalMode.AUTO:
             self._notify_auto_classifier_active()
             if should_persist_live:
@@ -20916,6 +20918,9 @@ class DeepAgentsApp(App):
             self._warn_yolo_active(timeout=8)
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
+        # Persist last: the durable preference must never outrank a rejected live
+        # write, and must never displace the mode notices above.
+        await self._persist_startup_approval_mode(target)
         return True
 
     def _auto_classifier_display_spec(self) -> str | None:

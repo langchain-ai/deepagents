@@ -2,14 +2,31 @@
 
 `modal_navigation_hint` is long enough to wrap once a modal narrows. Wrapping
 is the intended behavior -- the alternative is truncating the trailing hints --
-but a footer that grows inside a `height: auto` container capped by
-`max-height` gets laid out past the modal's bottom edge, where the compositor
-never paints it. These tests assert the footer's *region* stays inside the
-modal, which is the only thing that distinguishes "wrapped and visible" from
-"wrapped and silently clipped"; asserting the string is set cannot see it.
+but the extra row has to come from somewhere, and there are three distinct ways
+for it not to. Each assertion below covers one, because passing any two of them
+still leaves a footer the user cannot act on:
 
-`(50, 20)` and `(60, 20)` are sizes where the hint wraps. They mirror the
-existing guard at `tui/widgets/test_mcp_viewer.py::test_footer_hints_stay_on_screen`.
+1. The row is laid out past the container's content region and never painted.
+2. The row is painted *over* a sibling -- `dock: bottom` does not reserve space
+   inside a `height: auto` container, because the docked child is excluded from
+   the parent's auto-height, so it lands on top of the last siblings.
+3. The container itself outgrows the viewport, carrying an in-container footer
+   off-screen with it.
+
+Containment inside the container is therefore necessary but not sufficient; the
+overlap and viewport checks are what make this test able to fail.
+
+`(60, 20)` and `(50, 20)` are sizes where the hint wraps. They mirror the guard
+at `tui/widgets/test_mcp_viewer.py::test_footer_hints_stay_on_screen`.
+
+`ColdCacheWarningScreen` and `LaunchGoalCriteriaPreferenceScreen` are absent on
+purpose: their body text grows as the window narrows (the cold-cache body alone
+wants seven rows at any width, and ten at 50 columns), so there is no room for a
+second hint row without hiding cost or policy text the user needs more than the
+hint. Both keep a single-row footer that clips sideways instead, which is what
+they did before the shared hint landed. Capping their body height was tried and
+rejected: `max-height` applies at every window size, so it hid two rows of the
+warning even on a large terminal.
 """
 
 from __future__ import annotations
@@ -19,6 +36,7 @@ from typing import TYPE_CHECKING
 import pytest
 from textual.app import App
 from textual.containers import Vertical, VerticalGroup
+from textual.geometry import Region
 from textual.widgets import Static
 
 if TYPE_CHECKING:
@@ -27,11 +45,6 @@ if TYPE_CHECKING:
     from textual.screen import ModalScreen
     from textual.widget import Widget
 
-from deepagents_code.cold_cache import (
-    ColdCacheWarning,
-    PromptCachePolicy,
-    RewarmEstimate,
-)
 from deepagents_code.notifications import (
     ActionId,
     MissingDepPayload,
@@ -39,12 +52,8 @@ from deepagents_code.notifications import (
     PendingNotification,
     UpdateAvailablePayload,
 )
-from deepagents_code.tui.modals.cold_cache import ColdCacheWarningScreen
 from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
 from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
-from deepagents_code.tui.widgets.launch_init import (
-    LaunchGoalCriteriaPreferenceScreen,
-)
 from deepagents_code.tui.widgets.notification_center import NotificationCenterScreen
 from deepagents_code.tui.widgets.notification_detail import NotificationDetailScreen
 from deepagents_code.tui.widgets.notification_settings import (
@@ -89,29 +98,8 @@ def _dep_entry() -> PendingNotification:
     )
 
 
-def _cold_cache_warning() -> ColdCacheWarning:
-    return ColdCacheWarning(
-        policy=PromptCachePolicy(
-            provider_name="OpenAI",
-            window_seconds=1800,
-            confidence="may_be_cold",
-            minimum_tokens=1024,
-            write_bucket="generic",
-        ),
-        estimate=RewarmEstimate(cold_cost_usd=0.35, incremental_cost_usd=0.25),
-        context_tokens=50_000,
-        age_seconds=3600,
-        reason="idle",
-    )
-
-
 # (id, screen factory, footer selector)
 FOOTER_CASES: list[tuple[str, Callable[[], ModalScreen], str]] = [
-    (
-        "cold_cache",
-        lambda: ColdCacheWarningScreen(_cold_cache_warning()),
-        ".cold-cache-help",
-    ),
     (
         "notification_center",
         lambda: NotificationCenterScreen([_dep_entry(), _update_entry()]),
@@ -131,11 +119,6 @@ FOOTER_CASES: list[tuple[str, Callable[[], ModalScreen], str]] = [
         "update_available",
         lambda: UpdateAvailableScreen(_update_entry()),
         ".ua-help",
-    ),
-    (
-        "launch_goal_preference",
-        LaunchGoalCriteriaPreferenceScreen,
-        ".launch-init-help",
     ),
     (
         "theme_selector",
@@ -169,6 +152,11 @@ def _modal_container(screen: ModalScreen) -> Widget:
     return screen.query_one(VerticalGroup)
 
 
+def _overlaps(a: Region, b: Region) -> bool:
+    """Report whether two regions share at least one cell."""
+    return not (a.right <= b.x or b.right <= a.x or a.bottom <= b.y or b.bottom <= a.y)
+
+
 @pytest.mark.parametrize("size", FOOTER_SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
 @pytest.mark.parametrize(
     ("factory", "selector"),
@@ -180,13 +168,7 @@ async def test_navigation_footer_stays_inside_the_modal(
     factory: Callable[[], ModalScreen],
     selector: str,
 ) -> None:
-    """Every hint row renders inside the modal, however narrow the window.
-
-    The bug guarded here is a complete footer string laid out below the
-    modal's bottom edge: `height: auto` lets the hint wrap, and without
-    `dock: bottom` the wrapped row is pushed out of the container's content
-    region and never painted.
-    """
+    """Every hint row is painted, in the modal, and over nothing else."""
     screen = factory()
     app: App[None] = App()
     async with app.run_test(size=size) as pilot:
@@ -196,9 +178,31 @@ async def test_navigation_footer_stays_inside_the_modal(
 
         footer = screen.query_one(selector, Static)
         container = _modal_container(screen)
+        viewport = Region(0, 0, *size)
 
-        assert footer in app.screen._compositor.visible_widgets
+        # 1. Painted at all.
+        assert footer in app.screen._compositor.visible_widgets, (
+            f"footer {footer.region} is not painted at {size}"
+        )
+
+        # 2. Inside the modal.
         assert container.content_region.contains_region(footer.region), (
             f"footer {footer.region} escapes {container.content_region} at {size}"
         )
-        assert container.region.y >= 0
+
+        # 3. Not on top of a sibling. A docked footer inside a `height: auto`
+        #    container is excluded from the parent's auto-height, so it lands
+        #    over the last children instead of pushing them up.
+        collisions = [
+            " ".join(sibling.classes) or type(sibling).__name__
+            for sibling in container.children
+            if sibling is not footer and _overlaps(footer.region, sibling.region)
+        ]
+        assert not collisions, (
+            f"footer {footer.region} paints over {collisions} at {size}"
+        )
+
+        # 4. The container cannot carry an in-container footer off-screen.
+        assert viewport.contains_region(container.region), (
+            f"modal {container.region} escapes the {size} viewport"
+        )

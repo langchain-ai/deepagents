@@ -71,8 +71,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     ThemeSelectorScreen > Vertical {
         width: 50;
         max-width: 90%;
-        height: auto;
-        max-height: 80%;
+        height: 80%;
         background: $surface;
         border: solid $primary;
         padding: 1 2;
@@ -86,8 +85,8 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     }
 
     ThemeSelectorScreen OptionList {
-        height: auto;
-        max-height: 16;
+        height: 1fr;
+        min-height: 3;
         background: $background;
     }
 

@@ -315,7 +315,9 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
 
     Returns:
         Environment mapping with project and global dotenv values applied using
-        the same first-write-wins precedence as `_load_dotenv`.
+        the same first-write-wins precedence as `_load_dotenv`. The project
+        `.env` is skipped when `startup.read_project_dotenv` resolves false, so
+        a preview never reports a value a real reload would not load.
     """
     import dotenv
 
@@ -354,21 +356,30 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 continue
             env[key] = value
 
-    project_dotenv: Path | None = None
-    try:
-        project_dotenv = (
-            _find_dotenv_from_start_path(start_path)
-            if start_path is not None
-            else _find_dotenv_from_start_path(Path.cwd())
-        )
-    except OSError:
-        logger.warning(
-            "Could not inspect project dotenv at %s; previewed project env vars may "
-            "be incomplete",
+    from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+    if resolve_read_project_dotenv():
+        project_dotenv: Path | None = None
+        try:
+            project_dotenv = (
+                _find_dotenv_from_start_path(start_path)
+                if start_path is not None
+                else _find_dotenv_from_start_path(Path.cwd())
+            )
+        except OSError:
+            logger.warning(
+                "Could not inspect project dotenv at %s; previewed project env "
+                "vars may be incomplete",
+                start_path or "cwd",
+                exc_info=True,
+            )
+        apply_dotenv(project_dotenv, is_project=True)
+    else:
+        logger.debug(
+            "Skipping project dotenv preview at %s: startup.read_project_dotenv "
+            "is false",
             start_path or "cwd",
-            exc_info=True,
         )
-    apply_dotenv(project_dotenv, is_project=True)
 
     try:
         global_dotenv = _GLOBAL_DOTENV_PATH if _GLOBAL_DOTENV_PATH.is_file() else None

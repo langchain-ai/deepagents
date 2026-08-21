@@ -610,6 +610,33 @@ class TestReloadFromEnvironment:
 
         assert os.environ["PROJECT_ONLY_KEY"] == "project-value"
 
+    def test_preview_dotenv_skipped_when_read_project_dotenv_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Preview mirrors the loader: a disabled project `.env` is not reported.
+
+        The preview drives the user-facing cwd-switch prompt
+        (`_preview_project_settings_change`); if it still read the project file
+        while the runtime loader skipped it, the app would warn about settings
+        changes that a real reload would never apply.
+        """
+        from deepagents_code.config import _preview_dotenv_environ
+
+        (tmp_path / ".env").write_text("PROJECT_ONLY_KEY=project-value\n")
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda: False,
+        )
+
+        env = _preview_dotenv_environ(start_path=tmp_path)
+
+        assert "PROJECT_ONLY_KEY" not in env
+
     def test_project_dotenv_cannot_set_mcp_trust_lists(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

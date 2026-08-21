@@ -2187,6 +2187,31 @@ def test_diagnostics_report_an_unenforceable_managed_policy(
         service.invalidate_config_sources()
 
 
+def test_project_dotenv_path_reports_disabled_when_reading_off() -> None:
+    """A skipped project `.env` must not read as a live `ok` config source.
+
+    `dcode config path` lists the project `.env` whether or not it is loaded;
+    with `startup.read_project_dotenv` off the file exists but is skipped at
+    bootstrap, so the row says `disabled` instead of `ok`.
+    """
+    from deepagents_code.client.commands.config import _config_path_status
+
+    assert (
+        _config_path_status("project .env", exists=True, project_dotenv_enabled=False)
+        == "disabled"
+    )
+    # Enabled and missing cases are unaffected.
+    assert (
+        _config_path_status("project .env", exists=True, project_dotenv_enabled=True)
+        == "ok"
+    )
+    assert (
+        _config_path_status("project .env", exists=False, project_dotenv_enabled=False)
+        == "disabled"
+    )
+    assert _config_path_status("global .env", exists=True) == "ok"
+
+
 def test_a_guessed_managed_path_is_not_a_clean_missing_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

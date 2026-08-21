@@ -2178,6 +2178,52 @@ api_key_env = "MY_GATEWAY_API_KEY"
             after = current_ids()
         assert after.index("openai") < after.index("anthropic")
 
+    async def test_refresh_options_updates_footer_for_resorted_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rebuild rewrites the footer for whatever row the cursor now sits on.
+
+        `_refresh_options` preserves the highlighted *index*, and saving a key
+        re-floats its provider, so the provider under an unmoved cursor
+        changes. The footer has to follow the row rather than the index, or it
+        promises an action Enter will not perform. Asserted before any
+        `pilot.pause()` so the rebuild's own footer write is what satisfies
+        it, not the re-posted `OptionHighlighted` a frame later.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            # Unconfigured `anthropic` sorts first, so the cursor starts on a
+            # provider with no key.
+            assert options.highlighted == 0
+            assert options.get_option_at_index(0).id == "anthropic"
+            assert "Enter add " in str(help_text.content)
+
+            auth_store.set_stored_key("openai", "k")
+            screen = cast("AuthManagerScreen", app.screen)
+            screen._refresh_options()
+            # Index 0 is now `openai`, which has a stored key to replace.
+            assert options.get_option_at_index(0).id == "openai"
+            assert "Enter replace/delete " in str(help_text.content)
+
     async def test_configured_group_preserves_alphabetical_order(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2693,7 +2739,15 @@ enabled = false
     async def test_footer_tracks_highlighted_action(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Footer names the action exposed by the highlighted provider row."""
+        """Footer names the action exposed by the highlighted provider row.
+
+        Pins all four non-codex branches of `_action_for_provider`: a stored
+        key offers replace/delete, an env-only key offers replace, a known
+        service with neither offers add, and an uninstalled provider offers
+        install. The `set_stored_key`/`setenv` split is what separates the
+        first two — scrubbing the env vars first keeps an ambient key from
+        turning `tavily` or `openai` into a false pass.
+        """
         for var in (
             "OPENAI_API_KEY",
             "DEEPAGENTS_CODE_OPENAI_API_KEY",
@@ -2720,6 +2774,12 @@ enabled = false
             await pilot.pause()
             options = app.screen.query_one("#auth-manager-options", OptionList)
             help_text = app.screen.query_one("#auth-manager-help", Static)
+            # Assert the mount-time footer before navigating, so deleting the
+            # highlight handler can't be masked by dict ordering below.
+            initial = str(help_text.content)
+            assert "Enter replace " in initial, initial
+            assert "Esc close" in initial, initial
+            assert "navigate" in initial, initial
             expected_actions = {
                 "openai": "replace/delete",
                 "anthropic": "replace",
@@ -2733,8 +2793,44 @@ enabled = false
                     if options.get_option_at_index(i).id == provider
                 )
                 options.highlighted = index
+                assert options.highlighted == index
                 await pilot.pause()
                 assert f"Enter {action} " in str(help_text.content)
+
+    async def test_footer_uses_stored_snapshot_for_custom_providers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stored custom keys expose replace/delete regardless of auth status."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.managed_provider]
+class_path = "example.models:ManagedChat"
+models = ["managed-model"]
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        auth_store.set_stored_key("unknown_provider", "test-key")
+        auth_store.set_stored_key("managed_provider", "test-key")
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            for provider in ("unknown_provider", "managed_provider"):
+                index = next(
+                    i
+                    for i in range(options.option_count)
+                    if options.get_option_at_index(i).id == provider
+                )
+                options.highlighted = index
+                await pilot.pause()
+                assert "Enter replace/delete " in str(help_text.content)
 
     async def test_corrupt_store_surfaces_warning_banner(
         self, fake_state_dir: Path
@@ -2938,10 +3034,16 @@ class TestCodexAuthInManager:
             await pilot.pause()
         assert CodexSignedInScreen in pushed
 
-    async def test_codex_expired_token_shows_sign_in_and_pushes_oauth(
+    async def test_codex_expired_token_shows_manage_and_pushes_signed_in(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An expired ChatGPT token exposes and launches the sign-in action."""
+        """An expired access token is still a session: manage, not sign in.
+
+        The row badges an expired token as `[chatgpt]` because the saved
+        refresh token renews it on use, so the footer has to agree — and
+        sign-out has to stay reachable, which only the signed-in overlay
+        offers.
+        """
         from deepagents_code.integrations import openai_codex as codex_integration
         from deepagents_code.model_config import clear_caches
         from deepagents_code.tui.widgets.codex_auth import (
@@ -2973,7 +3075,7 @@ class TestCodexAuthInManager:
             options.highlighted = target_index
             await pilot.pause()
             help_text = app.screen.query_one("#auth-manager-help", Static)
-            assert "Enter sign in " in str(help_text.content)
+            assert "Enter manage " in str(help_text.content)
             pushed: list[type] = []
             original = app.push_screen
 
@@ -2984,12 +3086,15 @@ class TestCodexAuthInManager:
             monkeypatch.setattr(app, "push_screen", _capture)
             await pilot.press("enter")
             await pilot.pause()
-        assert CodexAuthScreen in pushed
-        assert CodexSignedInScreen not in pushed
+        assert CodexSignedInScreen in pushed
+        assert CodexAuthScreen not in pushed
 
     @staticmethod
     def _write_token(path: Path, *, expired: bool = False) -> None:
-        """Plant a ChatGPT token bundle at `path` with 0600 permissions."""
+        """Write a ChatGPT token bundle at `path` with 0600 permissions.
+
+        The token is unexpired unless `expired` is true.
+        """
         import json
         from datetime import datetime, timedelta
 
@@ -3015,7 +3120,12 @@ class TestCodexAuthInManager:
     async def test_signout_dispatch_deletes_token(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """`SIGN_OUT` from the overlay deletes the stored token on disk."""
+        """`SIGN_OUT` from the overlay deletes the token and re-labels the row.
+
+        The footer reads the status cached when the option list was built, so
+        signing out only re-labels the row if the dispatch invalidates that
+        cache — this fails if either `clear_caches` or the refresh is dropped.
+        """
         from deepagents_code.integrations import openai_codex as codex_integration
         from deepagents_code.model_config import clear_caches
         from deepagents_code.tui.widgets.codex_auth import CodexSignedInAction
@@ -3028,9 +3138,29 @@ class TestCodexAuthInManager:
         async with app.run_test() as pilot:
             app.show_manager()
             await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            options.highlighted = next(
+                i
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "openai_codex"
+            )
+            await pilot.pause()
+            assert "Enter manage " in str(help_text.content)
+
             manager = cast("AuthManagerScreen", app.screen)
             manager._on_codex_signed_in_closed(CodexSignedInAction.SIGN_OUT)
             await pilot.pause()
+            # Signing out drops the row out of the configured block, so the
+            # cursor's index now points at a different provider; re-find the
+            # ChatGPT row rather than assuming the cursor followed it.
+            options.highlighted = next(
+                i
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "openai_codex"
+            )
+            await pilot.pause()
+            assert "Enter sign in " in str(help_text.content)
         assert not path.exists()
 
     async def test_reauth_dispatch_pushes_oauth_screen(

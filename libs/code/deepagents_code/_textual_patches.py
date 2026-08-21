@@ -47,6 +47,17 @@ upstream.
     of a drag-selected range. The patch preserves the original selection anchor
     and applies the click as its new end. No upstream issue tracks this yet.
 
+    Known terminal limitation: this only works when the terminal delivers the
+    modified click to the app. Ghostty binds Shift+click to its own selection
+    and never forwards the event while mouse reporting is active, so
+    Shift+click is a no-op there (users can `keybind = shift+click=unbind` to
+    opt out). iTerm2, kitty, and WezTerm forward it with the shift modifier
+    bit set, which is what the patch keys on. If Shift+click "does nothing"
+    for a user, check terminal delivery first — e.g. run
+    `printf '\e[?1003h\e[?1006h'; cat -v` and confirm Shift+click prints a
+    `^[[<;...;4M`-style sequence (the `4` is the shift bit) — before digging
+    into this patch.
+
 5. Detached-widget hit filtering. The compositor keeps reporting a widget as
     visible for a few event-loop iterations after it leaves the DOM, which
     `Markdown.update` (and therefore the `MarkdownStream` that drives every
@@ -465,6 +476,12 @@ except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
 else:
 
     def _shift_click_anchor(screen: Screen, event: Event) -> SelectState | None:
+        # When this returns None the press falls through to stock Textual,
+        # which starts a fresh selection — indistinguishable from the event
+        # never arriving. Before debugging the branches below, confirm the
+        # terminal forwarded a shift-modified click at all (see the module
+        # docstring's patch 4 note); terminals like Ghostty consume Shift+click
+        # locally, so `event.shift` never becomes True here.
         if (
             not isinstance(event, _shift_events.MouseDown)
             or not event.shift
@@ -492,6 +509,17 @@ else:
             anchor.start,
             SelectEnd(click.container, click.content_widget, click.content_offset),
         )
+        # A Shift+click after a completed drag rebuilds a SelectState whose
+        # field values match the finished selection, and Textual reactives
+        # skip the watcher on equal assignment — so the visible highlight
+        # (`screen.selections`, recomputed by `_watch__select_state`) would
+        # never update. Invoke the watcher directly, as `Screen._update_select`
+        # does. The word-select patch above replaces that watcher with a
+        # coroutine, and `_forward_event` is synchronous, so hand the
+        # awaitable to the running loop instead of dropping it.
+        result = screen._watch__select_state(screen._select_state)
+        if isawaitable(result):
+            screen.run_worker(result, name="shift-click select", group="selection")
 
     def _forward_event_with_shift_select(self: Screen, event: Event) -> None:
         shift_anchor = _shift_click_anchor(self, event)

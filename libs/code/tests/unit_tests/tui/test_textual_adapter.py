@@ -1212,6 +1212,7 @@ class TestBuildStreamConfig:
             patch("deepagents_code.config._get_deepagents_version", return_value=None),
         ):
             config = build_stream_config("t-ver", assistant_id=None)
+        assert config["metadata"]["editable"] is False
         assert config["metadata"]["lc_versions"] == {"deepagents-code": __version__}
 
     def test_versions_marks_editable_cli_version(self) -> None:
@@ -1223,6 +1224,7 @@ class TestBuildStreamConfig:
             patch("deepagents_code.config._get_deepagents_version", return_value=None),
         ):
             config = build_stream_config("t-editable", assistant_id=None)
+        assert config["metadata"]["editable"] is True
         assert config["metadata"]["lc_versions"] == {
             "deepagents-code": f"{__version__}+editable"
         }

@@ -230,16 +230,9 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
     return {"input": _strip_undefined(raw)}
 
 
-def _synth_tool_call_id(tool_name: str) -> str:
-    """Mint a synthetic tool_call_id for a PTC-driven tool invocation.
-
-    Tools like `task` require a non-empty `tool_call_id` to stamp
-    into their emitted `ToolMessage`. The real call_id lives on the
-    outer `eval` tool call; we synthesise a child id so downstream
-    state (checkpointer, tracing) can correlate the PTC sub-call back
-    to the REPL cell that issued it.
-    """
-    return f"ptc_{tool_name}_{uuid.uuid4().hex[:8]}"
+def _synth_tool_call_id() -> str:
+    """Mint a synthetic tool_call_id for a PTC-driven tool invocation."""
+    return str(uuid.uuid4())
 
 
 def _inject_tool_args_for_ptc(
@@ -305,49 +298,12 @@ def _inject_tool_args_for_ptc(
 
 
 def _tool_uses_injected_tool_call_id(tool: Any) -> bool:
-    """Return whether *tool* declares an `InjectedToolCallId` parameter.
-
-    PTC invokes tools with an args dict via `BaseTool.arun`. Tools that
-    declare `InjectedToolCallId` need `tool_call_id` passed as a kwarg
-    so `BaseTool._parse_input`'s built-in injection runs. Detect via the
-    same combination of schema annotations and `get_type_hints` that
-    langgraph's `_get_all_injected_args` uses.
-
-    Trade-off: passing `tool_call_id` as a kwarg makes
-    `BaseTool._format_output` wrap the result in a `ToolMessage` with
-    string-coerced `.content` (unless the tool returns a `ToolOutputMixin`
-    such as `Command`). For tools without this annotation we pass
-    `tool_call_id=None` and recover the native return value.
-    """
+    """Return whether a tool declares an injected tool call ID."""
     try:
-        from typing import get_type_hints  # noqa: PLC0415
-
-        from langchain_core.tools.base import (  # noqa: PLC0415
-            InjectedToolCallId,
-            _is_injected_arg_type,
-            get_all_basemodel_annotations,
-        )
-    except ImportError:  # pragma: no cover — both deps are required at runtime
+        from langgraph.prebuilt.tool_node import _get_all_injected_args  # noqa: PLC0415
+    except ImportError:  # pragma: no cover — langgraph always present
         return False
-
-    try:
-        schema_annotations = get_all_basemodel_annotations(tool.get_input_schema())
-    except Exception:  # noqa: BLE001 — schema introspection is best-effort
-        schema_annotations = {}
-    func = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
-    try:
-        func_annotations = (
-            get_type_hints(func, include_extras=True) if func is not None else {}
-        )
-    except Exception:  # noqa: BLE001 — type-hint resolution is best-effort
-        func_annotations = {}
-
-    # Match langgraph's merge order: schema annotations override func ones.
-    all_annotations = {**func_annotations, **schema_annotations}
-    return any(
-        _is_injected_arg_type(type_, injected_type=InjectedToolCallId)
-        for type_ in all_annotations.values()
-    )
+    return "tool_call_id" in _get_all_injected_args(tool).all_injected_keys
 
 
 def _bridge_symbol_name(tool_name: str) -> str:
@@ -658,23 +614,26 @@ class _ThreadREPL:
         tool: BaseTool,
         tool_call: dict[str, Any],
         *,
+        outer_runtime: ToolRuntime | None,
         outer_loop: asyncio.AbstractEventLoop | None,
     ) -> Any:
-        """Run the tool on the outer runtime's loop when available.
-
-        Uses `BaseTool.arun(args, tool_call_id=...)` rather than
-        `ainvoke(envelope)` so the result is the tool's native return
-        value rather than a string-coerced `ToolMessage`. We only pass
-        `tool_call_id` when the tool declares `InjectedToolCallId` —
-        otherwise `_format_output` would wrap the result anyway.
-        """
+        """Run the tool with the outer runtime's loop and config when available."""
         args = tool_call["args"]
-        tool_call_id = (
-            tool_call.get("id") if _tool_uses_injected_tool_call_id(tool) else None
-        )
 
         async def _call() -> Any:
-            return await tool.arun(args, tool_call_id=tool_call_id)
+            config = outer_runtime.config if outer_runtime is not None else None
+            return await tool.arun(
+                args,
+                callbacks=config.get("callbacks") if config is not None else None,
+                tags=config.get("tags") if config is not None else None,
+                metadata=config.get("metadata") if config is not None else None,
+                run_name=config.get("run_name") if config is not None else None,
+                run_id=uuid.UUID(tool_call["id"]),
+                config=config,
+                tool_call_id=(
+                    tool_call["id"] if _tool_uses_injected_tool_call_id(tool) else None
+                ),
+            )
 
         if outer_loop is None:
             return await _call()
@@ -717,19 +676,18 @@ class _ThreadREPL:
             )
             self._ptc_state = state
             payload = _normalize_tool_input(raw_input)
-            call_id = _synth_tool_call_id(tool.name)
-            # Inject runtime/state/store ourselves; `InjectedToolCallId`
-            # is handled inside `_ainvoke_tool_on_outer_loop` via
-            # `tool.arun(..., tool_call_id=...)`. The bridge intentionally
-            # avoids the tool-call envelope path because it wraps the
-            # result in a `ToolMessage` and string-coerces `.content`,
-            # destroying native return types (lists, dicts, numbers).
+            call_id = _synth_tool_call_id()
+            # Inject runtime/state/store ourselves. The bridge uses `arun`
+            # rather than the tool-call envelope path so the result can be
+            # unwrapped back to native JS-visible values after the standard
+            # tool lifecycle callbacks have fired.
             args = _inject_tool_args_for_ptc(
                 tool, payload, state.outer_runtime, call_id
             )
             result = await self._ainvoke_tool_on_outer_loop(
                 tool,
                 {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
+                outer_runtime=state.outer_runtime,
                 outer_loop=state.outer_loop,
             )
             return coerce_tool_output_for_ptc(result)

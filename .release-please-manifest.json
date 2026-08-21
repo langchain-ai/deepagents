@@ -3,7 +3,7 @@
   "libs/deepagents": "0.7.8",
   "libs/acp": "0.0.10",
   "libs/code": "0.1.59",
-  "libs/talon": "0.0.3",
+  "libs/talon": "0.0.4",
   "libs/partners/daytona": "0.0.8",
   "libs/partners/modal": "0.0.6",
   "libs/partners/runloop": "0.0.7",

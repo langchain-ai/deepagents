@@ -357,7 +357,8 @@ def test_system_prompt_with_memory_and_skills(snapshots_dir: Path, *, update_sna
     # usage prose does not.
     agent = create_deep_agent(
         model=model,
-        memory=["/memory/AGENTS.md", "/memory/user/AGENTS.md"],
+        memory=["/memory/AGENTS.md"],
+        writable_memory=["/memory/user/MEMORY.md"],
         skills=["/skills/user/", "/skills/project/"],
     )
 
@@ -405,7 +406,7 @@ description: Systematic code review process following best practices and style g
         "/skills/user/web-research/SKILL.md": create_file_data(user_skill_content),
         "/skills/project/code-review/SKILL.md": create_file_data(project_skill_content),
         "/memory/AGENTS.md": create_file_data(memory_content),
-        "/memory/user/AGENTS.md": create_file_data(user_memory_content),
+        "/memory/user/MEMORY.md": create_file_data(user_memory_content),
     }
 
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")], "files": files})

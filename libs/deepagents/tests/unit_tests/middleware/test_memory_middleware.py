@@ -8,18 +8,19 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.constants import CONF
+from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import CONFIG_KEY_RUNTIME, Runtime, ServerInfo
 
 if TYPE_CHECKING:
@@ -88,6 +89,30 @@ def create_store_memory_item(content: str) -> dict:
     }
 
 
+def _tool_request(tool_name: str, file_path: str, **args: Any) -> ToolCallRequest:
+    """Build a filesystem tool request for ownership-boundary tests."""
+    return ToolCallRequest(
+        runtime=cast("Any", None),
+        tool_call={
+            "id": "memory-call",
+            "name": tool_name,
+            "args": {"file_path": file_path, **args},
+        },
+        state={},
+        tool=None,
+    )
+
+
+def _tool_success(name: str) -> ToolMessage:
+    """Return a successful filesystem tool result."""
+    return ToolMessage(
+        content="ok",
+        name=name,
+        tool_call_id="memory-call",
+        status="success",
+    )
+
+
 def test_memory_system_prompt_trust_and_investigation_balance() -> None:
     """Prompt warns that memory files are untrusted data and avoids memory-before-all-tools wording."""
     formatted = MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
@@ -102,6 +127,157 @@ def test_memory_system_prompt_trust_and_investigation_balance() -> None:
     assert "FIRST, IMMEDIATE" not in formatted
     assert "before doing anything else" not in formatted
     assert "MAIN PRIORITIES" not in formatted
+
+
+def test_memory_system_prompt_separates_source_ownership() -> None:
+    """The default prompt distinguishes instructions from generated memory."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/project/AGENTS.md"],
+        writable_sources=["/memory/MEMORY.md"],
+    )
+
+    formatted = middleware._format_agent_memory(
+        {
+            "/project/AGENTS.md": "Never skip tests.",
+            "/memory/MEMORY.md": "The user prefers concise answers.",
+        }
+    )
+
+    assert "/project/AGENTS.md (read-only)" in formatted
+    assert "/memory/MEMORY.md (writable)" in formatted
+    assert "Persist new knowledge only in those writable destinations" in formatted
+
+
+@pytest.mark.parametrize(
+    ("contents", "status"),
+    [({}, "Not created yet"), ({"/memory/MEMORY.md": ""}, "Empty")],
+)
+def test_writable_memory_destination_is_visible_without_content(contents: dict[str, str], status: str) -> None:
+    """The prompt identifies a writable destination before it has content."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[],
+        writable_sources=["/memory/MEMORY.md"],
+    )
+
+    formatted = middleware._format_agent_memory(contents)
+
+    assert "/memory/MEMORY.md (writable)" in formatted
+    assert f"({status})" in formatted
+
+
+def test_memory_source_cannot_have_conflicting_ownership() -> None:
+    """A path cannot be configured as both an instruction and writable memory."""
+    with pytest.raises(ValueError, match="both read-only and writable"):
+        MemoryMiddleware(
+            backend=None,  # type: ignore[arg-type]
+            sources=["/memory/shared.md"],
+            writable_sources=["/memory/shared.md"],
+        )
+
+
+def test_equivalent_memory_paths_cannot_have_conflicting_ownership() -> None:
+    """Equivalent relative and virtual paths cannot receive different roles."""
+    with pytest.raises(ValueError, match="both read-only and writable"):
+        MemoryMiddleware(
+            backend=None,  # type: ignore[arg-type]
+            sources=["./memory/shared.md"],
+            writable_sources=["/memory/shared.md"],
+        )
+
+
+@pytest.mark.parametrize("tool_name", ["write_file", "edit_file"])
+def test_read_only_memory_source_rejects_file_mutation(tool_name: str) -> None:
+    """Filesystem write tools cannot mutate user-owned instruction sources."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/project/AGENTS.md"],
+        writable_sources=["/memory/MEMORY.md"],
+    )
+    called = False
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        nonlocal called
+        called = True
+        return _tool_success(tool_name)
+
+    result = middleware.wrap_tool_call(_tool_request(tool_name, "/project/AGENTS.md"), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert "read-only" in str(result.content)
+    assert called is False
+
+
+def test_read_only_memory_source_rejects_parent_delete() -> None:
+    """Deleting a directory containing an instruction source is rejected."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/project/.deepagents/AGENTS.md"],
+    )
+
+    result = middleware.wrap_tool_call(
+        _tool_request("delete", "/project"),
+        lambda _request: _tool_success("delete"),
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+
+
+def test_read_only_relative_source_rejects_virtual_path_mutation() -> None:
+    """Relative sources match the equivalent backend-visible absolute path."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["./project/AGENTS.md"],
+    )
+
+    result = middleware.wrap_tool_call(
+        _tool_request("edit_file", "/project/AGENTS.md"),
+        lambda _request: _tool_success("edit_file"),
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+
+
+def test_writable_memory_source_allows_mutation() -> None:
+    """Dedicated generated-memory paths remain writable."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/project/AGENTS.md"],
+        writable_sources=["/memory/MEMORY.md"],
+    )
+    sentinel = _tool_success("edit_file")
+
+    result = middleware.wrap_tool_call(
+        _tool_request("edit_file", "/memory/MEMORY.md"),
+        lambda _request: sentinel,
+    )
+
+    assert result is sentinel
+
+
+async def test_async_read_only_memory_source_rejects_mutation() -> None:
+    """The asynchronous tool wrapper enforces the same ownership boundary."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/project/AGENTS.md"],
+        writable_sources=["/memory/MEMORY.md"],
+    )
+    called = False
+
+    async def handler(_request: ToolCallRequest) -> ToolMessage:
+        nonlocal called
+        called = True
+        return _tool_success("edit_file")
+
+    result = await middleware.awrap_tool_call(_tool_request("edit_file", "/project/AGENTS.md"), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert called is False
 
 
 def test_format_agent_memory_empty() -> None:
@@ -824,6 +1000,79 @@ def test_create_deep_agent_with_memory_default_backend() -> None:
     assert "/user/.deepagents/AGENTS.md" in state_values["files"]
     assert "memory_contents" in state_values
     assert "/user/.deepagents/AGENTS.md" in state_values["memory_contents"]
+
+
+def test_create_deep_agent_enforces_memory_source_ownership() -> None:
+    """The public constructor blocks instructions while allowing generated memory."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {
+                                "file_path": "/project/AGENTS.md",
+                                "old_string": "Never skip tests.",
+                                "new_string": "Tests are optional.",
+                            },
+                            "id": "edit-instructions",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {
+                                "file_path": "/memory/MEMORY.md",
+                                "old_string": "Concise answers.",
+                                "new_string": "Concise answers with examples.",
+                            },
+                            "id": "edit-memory",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        model=model,
+        backend=StateBackend(),
+        memory=["/project/AGENTS.md"],
+        writable_memory=["/memory/MEMORY.md"],
+    )
+
+    result = agent.invoke(
+        {
+            "messages": [HumanMessage(content="Update your memory")],
+            "files": {
+                "/project/AGENTS.md": {
+                    "content": "Never skip tests.",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "modified_at": "2026-01-01T00:00:00+00:00",
+                },
+                "/memory/MEMORY.md": {
+                    "content": "Concise answers.",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "modified_at": "2026-01-01T00:00:00+00:00",
+                },
+            },
+        }
+    )
+
+    assert result["files"]["/project/AGENTS.md"]["content"] == "Never skip tests."
+    assert result["files"]["/memory/MEMORY.md"]["content"] == "Concise answers with examples."
+    tool_messages = [message for message in result["messages"] if message.type == "tool"]
+    instruction_result = next(message for message in tool_messages if message.tool_call_id == "edit-instructions")
+    memory_result = next(message for message in tool_messages if message.tool_call_id == "edit-memory")
+    assert instruction_result.status == "error"
+    assert memory_result.status == "success"
 
 
 def test_memory_middleware_order_matters(tmp_path: Path) -> None:

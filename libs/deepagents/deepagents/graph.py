@@ -274,6 +274,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
+    writable_memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
     backend: BackendProtocol | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
@@ -451,6 +452,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Display names are automatically derived from paths.
 
             Memory is loaded at agent startup and added into the system prompt.
+            These sources are treated as user- or team-owned and read-only to
+            the agent's filesystem tools.
+        writable_memory: List of dedicated agent-generated memory file paths to
+            load after `memory`. These are identified as writable destinations
+            in the memory prompt and are not blocked by `MemoryMiddleware`.
         permissions: List of `FilesystemPermission` rules for the main agent
             and its subagents.
 
@@ -858,13 +864,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Anthropic prompt cache prefix.
     deepagent_middleware.extend(_profile.materialize_extra_middleware())
     append_prompt_caching_middleware(deepagent_middleware)
-    if memory is not None:
+    if memory is not None or writable_memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the
         # request model is Anthropic, making it safe to enable unconditionally.
         deepagent_middleware.append(
             MemoryMiddleware(
                 backend=backend,
-                sources=memory,
+                sources=memory or [],
+                writable_sources=writable_memory,
                 add_cache_control=True,
             )
         )

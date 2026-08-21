@@ -3,38 +3,50 @@
 import contextlib
 import dataclasses
 import json
-from collections.abc import Awaitable, Callable, Generator, Sequence
-from typing import Any, NotRequired, TypedDict, cast
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
+from typing import Annotated, Any, Literal, Never, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
+    ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
+    OmitFromSchema,
     ResponseT,
 )
 from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field
+from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemPermission
+from deepagents.middleware.summarization import SummarizationEvent, _apply_summarization_event
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
+_PARENT_SYSTEM_MESSAGE_KEY = "_deepagents_parent_system_message"
 
-class SubAgent(TypedDict):
-    """Specification for an agent.
+
+class _ParentSystemMessageState(TypedDict):
+    """Private state used to carry the parent's effective system message."""
+
+    _deepagents_parent_system_message: NotRequired[Annotated[SystemMessage | None, OmitFromSchema(input=False, output=True)]]
+
+
+class _SubAgentBase(TypedDict):
+    """Fields shared by declarative subagent specifications.
 
     When using `create_deep_agent`, subagents automatically receive
     a default middleware stack before any custom `middleware` specified in
@@ -48,10 +60,6 @@ class SubAgent(TypedDict):
 
             Be specific and action-oriented. The main agent uses this
             to decide when to delegate.
-        system_prompt: Instructions for the subagent.
-
-            Include tool usage guidance and output format requirements.
-
     Optional fields:
         tools: Tools the subagent can use.
 
@@ -89,9 +97,6 @@ class SubAgent(TypedDict):
     The main agent uses this to decide when to delegate.
     """
 
-    system_prompt: str
-    """Instructions for the subagent."""
-
     tools: NotRequired[Sequence[BaseTool | Callable | dict[str, Any]]]
     """Tools the subagent can use.
 
@@ -111,7 +116,8 @@ class SubAgent(TypedDict):
     """Configure human-in-the-loop for specific tools."""
 
     skills: NotRequired[list[str]]
-    """Skill source paths for `SkillsMiddleware`."""
+    """Skill source paths for `SkillsMiddleware`. Forbidden on
+    [`ForkedSubAgent`][deepagents.middleware.subagents.ForkedSubAgent]."""
 
     permissions: NotRequired[list[FilesystemPermission]]
     """List of `FilesystemPermission` rules for this subagent.
@@ -162,6 +168,40 @@ class SubAgent(TypedDict):
         }
         ```
     """
+
+
+class SubAgent(_SubAgentBase):
+    """Specification for an isolated declarative subagent.
+
+    The subagent receives only the delegated task description. Use
+    [`ForkedSubAgent`][deepagents.middleware.subagents.ForkedSubAgent] to inherit
+    the parent's conversation and system prompt.
+    """
+
+    system_prompt: NotRequired[str]
+    """Instructions for the subagent. Uses an empty prompt when omitted."""
+
+    mode: NotRequired[Literal["handoff"]]
+    """Context mode. Declarative `SubAgent` instances are always isolated."""
+
+
+class ForkedSubAgent(_SubAgentBase):
+    """Specification for a subagent that inherits its parent's context.
+
+    !!! warning "Experimental"
+
+        Forked subagents are experimental and may change in a future release.
+
+    A forked subagent receives the parent's effective conversation history and
+    exact system prompt. It cannot define a separate `system_prompt` or
+    `skills`, since either would diverge from the parent's exact message.
+    """
+
+    mode: Literal["fork"]
+    """Required discriminator that enables conversation forking."""
+
+    system_prompt: NotRequired[Never]
+    """Forked subagents always use the parent's system prompt."""
 
 
 class CompiledSubAgent(TypedDict):
@@ -243,6 +283,57 @@ class CompiledSubAgent(TypedDict):
     results back to the main agent.
     """
 
+    mode: NotRequired[Literal["handoff", "fork"]]
+    """Use `fork` to inherit parent history without changing the runnable prompt."""
+
+
+_SubAgentSpec = SubAgent | ForkedSubAgent | CompiledSubAgent
+
+
+def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
+    """Reject unsupported context modes before a subagent can run."""
+    mode = spec.get("mode")
+    if mode not in (None, "handoff", "fork"):
+        msg = f"SubAgent '{spec['name']}' has invalid mode '{mode}'; expected 'handoff' or 'fork'"
+        raise ValueError(msg)
+    if mode == "fork" and spec.get("system_prompt") is not None:
+        msg = f"ForkedSubAgent '{spec['name']}' cannot set system_prompt; it always inherits the parent's."
+        raise ValueError(msg)
+    if mode == "fork" and spec.get("skills"):
+        msg = f"ForkedSubAgent '{spec['name']}' cannot set skills; the parent's system message would discard it."
+        raise ValueError(msg)
+
+
+def _validate_unique_subagent_names(subagents: Sequence[_SubAgentSpec]) -> None:
+    """Reject subagent specs that share a name.
+
+    The model selects a subagent purely by name, so a collision has no
+    coherent meaning — it would otherwise silently resolve to whichever
+    spec happens to be last.
+    """
+    seen: set[str] = set()
+    for spec in subagents:
+        name = spec["name"]
+        if name in seen:
+            msg = f"Duplicate subagent name '{name}'; each subagent must have a unique name."
+            raise ValueError(msg)
+        seen.add(name)
+
+
+def _is_forked_subagent(spec: _SubAgentSpec) -> TypeIs[ForkedSubAgent]:
+    """Return whether a subagent inherits parent conversation history."""
+    return spec.get("mode") == "fork"
+
+
+def _fork_messages(state: Mapping[str, object], description: str) -> list[AnyMessage]:
+    """Build fork input without replaying the in-flight tool-call message."""
+    messages = list(cast("Sequence[AnyMessage]", state.get("messages", [])))
+    if messages and isinstance(messages[-1], AIMessage) and messages[-1].tool_calls:
+        messages.pop()
+    event = cast("SummarizationEvent | None", state.get("_summarization_event"))
+    effective_messages = _apply_summarization_event(messages, event)
+    return [*effective_messages, HumanMessage(content=description)]
+
 
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
 
@@ -253,6 +344,7 @@ _EXCLUDED_STATE_KEYS = {
     "messages",
     "todos",
     "structured_response",
+    _PARENT_SYSTEM_MESSAGE_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.
@@ -304,6 +396,56 @@ GENERAL_PURPOSE_SUBAGENT: SubAgent = {
     "system_prompt": DEFAULT_SUBAGENT_PROMPT,
 }
 """Base spec for general-purpose subagent (caller adds model, tools, middleware)."""
+
+
+class _ParentSystemMessageMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+    state_schema = _ParentSystemMessageState
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ExtendedModelResponse[ResponseT]:
+        response = handler(request)
+        return ExtendedModelResponse(
+            model_response=response,
+            command=Command(update={_PARENT_SYSTEM_MESSAGE_KEY: request.system_message}),
+        )
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ExtendedModelResponse[ResponseT]:
+        response = await handler(request)
+        return ExtendedModelResponse(
+            model_response=response,
+            command=Command(update={_PARENT_SYSTEM_MESSAGE_KEY: request.system_message}),
+        )
+
+
+class _ForkSystemMessageMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+    state_schema = _ParentSystemMessageState
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
+        parent_message = request.state.get(_PARENT_SYSTEM_MESSAGE_KEY)
+        if parent_message is not None:
+            request = request.override(system_message=parent_message)
+        return handler(request)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
+        parent_message = request.state.get(_PARENT_SYSTEM_MESSAGE_KEY)
+        if parent_message is not None:
+            request = request.override(system_message=parent_message)
+        return await handler(request)
 
 
 @contextlib.contextmanager
@@ -373,7 +515,7 @@ def create_sub_agent(
 
     selected_response_format = response_format if response_format is not None else spec.get("response_format")
     create_agent_kwargs: dict[str, Any] = {
-        "system_prompt": spec["system_prompt"],
+        "system_prompt": spec.get("system_prompt", ""),
         "tools": spec["tools"],
         "middleware": middleware,
         "name": spec["name"],
@@ -400,11 +542,12 @@ def _get_subagent_response_format(
 
 
 def _build_task_tool(  # noqa: C901, PLR0915
-    subagents: Sequence[SubAgent | CompiledSubAgent],
+    subagents: Sequence[_SubAgentSpec],
     task_description: str | None = None,
     *,
     private_state_keys: frozenset[str] = frozenset(),
     state_schema: type | None = None,
+    parent_system_prompt: str | SystemMessage | None = None,
 ) -> BaseTool:
     """Create a task tool from subagent specs.
 
@@ -415,13 +558,26 @@ def _build_task_tool(  # noqa: C901, PLR0915
         private_state_keys: State keys marked with `PrivateStateAttr` that
             should be stripped from parent state before invoking subagents.
         state_schema: Base graph state schema forwarded to raw subagent specs.
+        parent_system_prompt: Static prompt inherited by declarative forked subagents.
 
     Returns:
         A StructuredTool that can invoke subagents by type.
     """
+    _validate_unique_subagent_names(subagents)
+    for spec in subagents:
+        _validate_subagent_mode(spec)
+
+    def _resolved_declarative_spec(spec: SubAgent | ForkedSubAgent) -> SubAgent:
+        """Resolve the inherited prompt for a declarative fork."""
+        if not _is_forked_subagent(spec):
+            return spec
+        resolved = {key: value for key, value in spec.items() if key not in {"mode", "system_prompt"}}
+        resolved["system_prompt"] = parent_system_prompt if parent_system_prompt is not None else ""
+        resolved["middleware"] = [*spec.get("middleware", []), _ForkSystemMessageMiddleware()]
+        return cast("SubAgent", resolved)
 
     def _compile_spec(
-        spec: SubAgent | CompiledSubAgent,
+        spec: _SubAgentSpec,
         *,
         response_format: ResponseFormat[Any] | type | dict[str, Any] | None = None,
     ) -> CompiledSubAgent:
@@ -431,8 +587,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 msg = f'response_schema cannot be used with compiled subagent "{spec["name"]}"; dynamic schemas require a raw SubAgent spec.'
                 raise ValueError(msg)
 
-            # Use with_config (not attribute mutation) so the original runnable is
-            # untouched and a shared instance can be registered under multiple names.
             compiled = cast("CompiledSubAgent", spec)
             runnable = compiled["runnable"].with_config(
                 {
@@ -449,7 +603,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             "name": spec["name"],
             "description": spec["description"],
             "runnable": create_sub_agent(
-                spec,
+                _resolved_declarative_spec(spec),
                 state_schema=state_schema,
                 response_format=response_format,
             ),
@@ -457,6 +611,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
 
     compiled_subagents = [_compile_spec(spec) for spec in subagents]
     subagents_by_name = {spec["name"]: spec for spec in subagents}
+    fork_mode_names = {name for name, spec in subagents_by_name.items() if _is_forked_subagent(spec)}
 
     # Build the graphs dict and descriptions from the unified spec list
     subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in compiled_subagents}
@@ -530,13 +685,19 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_type: str,
         description: str,
         runtime: ToolRuntime,
+        effective_system_message: SystemMessage | None,
     ) -> tuple[Runnable, dict]:
         """Prepare state for invocation."""
         subagent = _select_subagent(subagent_type, runtime)
-        # Create a new state dict to avoid mutating the original
+        forked = subagent_type in fork_mode_names
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
         subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
-        subagent_state["messages"] = [HumanMessage(content=description)]
+        if forked and "runnable" not in subagents_by_name[subagent_type] and effective_system_message is not None:
+            subagent_state[_PARENT_SYSTEM_MESSAGE_KEY] = effective_system_message
+        if forked:
+            subagent_state["messages"] = _fork_messages(runtime.state, description)
+        else:
+            subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
     def task(
@@ -550,10 +711,12 @@ def _build_task_tool(  # noqa: C901, PLR0915
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
+        effective_system_message = runtime.state.get(_PARENT_SYSTEM_MESSAGE_KEY)
         subagent, subagent_state = _validate_and_prepare_state(
             subagent_type,
             description,
             runtime,
+            effective_system_message,
         )
         # The parent's callbacks, tags and configurable reach the subagent
         # automatically: langgraph's `ensure_config` seeds each run from the
@@ -578,10 +741,12 @@ def _build_task_tool(  # noqa: C901, PLR0915
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
+        effective_system_message = runtime.state.get(_PARENT_SYSTEM_MESSAGE_KEY)
         subagent, subagent_state = _validate_and_prepare_state(
             subagent_type,
             description,
             runtime,
+            effective_system_message,
         )
         # The parent's callbacks, tags and configurable reach the subagent
         # automatically: langgraph's `ensure_config` seeds each run from the
@@ -635,6 +800,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             Leave unset to use `create_agent`'s default. `CompiledSubAgent`
             entries are unaffected — callers own those runnables' schemas.
+        parent_system_prompt: Prompt inherited by declarative `ForkedSubAgent`
+            entries. Compiled subagents keep their own prompt.
 
     Example:
         ```python
@@ -662,15 +829,18 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     """
 
+    state_schema = _ParentSystemMessageState
+
     def __init__(
         self,
         *,
         backend: BackendProtocol,
-        subagents: Sequence[SubAgent | CompiledSubAgent],
+        subagents: Sequence[SubAgent | ForkedSubAgent | CompiledSubAgent],
         system_prompt: str | None = None,
         task_description: str | None = None,
         private_state_keys: frozenset[str] | None = None,
         state_schema: type | None = None,
+        parent_system_prompt: str | SystemMessage | None = None,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
@@ -683,6 +853,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._private_state_keys = private_state_keys or frozenset()
         self._task_description = task_description
         self._state_schema = state_schema
+        self._parent_system_prompt = parent_system_prompt
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
@@ -692,6 +863,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             task_description,
             private_state_keys=self._private_state_keys,
             state_schema=self._state_schema,
+            parent_system_prompt=self._parent_system_prompt,
         )
 
         # Build system prompt with available agents
@@ -716,6 +888,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             task_description=self._task_description,
             private_state_keys=value,
             state_schema=self._state_schema,
+            parent_system_prompt=self._parent_system_prompt,
         )
         self.tools = [task_tool]
 
@@ -727,7 +900,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
             new_system_message = append_to_system_message(request.system_message, self.system_prompt)
-            return handler(request.override(system_message=new_system_message))
+            request = request.override(system_message=new_system_message)
         return handler(request)
 
     async def awrap_model_call(
@@ -738,5 +911,5 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
             new_system_message = append_to_system_message(request.system_message, self.system_prompt)
-            return await handler(request.override(system_message=new_system_message))
+            request = request.override(system_message=new_system_message)
         return await handler(request)

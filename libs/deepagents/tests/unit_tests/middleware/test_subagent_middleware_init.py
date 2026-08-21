@@ -1,21 +1,28 @@
 """Unit tests for SubAgentMiddleware initialization and configuration."""
 
 import json
+from collections.abc import Callable
 from typing import Any, get_type_hints
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.agents.structured_output import AutoStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatResult
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 from langgraph.graph import START, MessagesState, StateGraph
 
 from deepagents.backends.state import StateBackend
+from deepagents.graph import create_deep_agent
+from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
+    _PARENT_SYSTEM_MESSAGE_KEY,
     GENERAL_PURPOSE_SUBAGENT,
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
     SubAgentMiddleware,
@@ -106,6 +113,240 @@ class TestSubagentMiddlewareInit:
         assert "state_schema" in hints
         assert "state_schema" in create_hints
         assert "return" in create_hints
+
+    def test_create_sub_agent_defaults_to_empty_system_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_create_agent(model: object, **kwargs: object) -> object:
+            captured["model"] = model
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr("deepagents.middleware.subagents.create_agent", fake_create_agent)
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+
+        create_sub_agent(
+            {
+                "name": "worker",
+                "description": "Does work.",
+                "model": model,
+                "tools": [],
+            }
+        )
+
+        assert captured["system_prompt"] == ""
+
+    def test_rejects_invalid_subagent_mode(self) -> None:
+        invalid_spec: Any = {
+            "name": "worker",
+            "description": "Does work.",
+            "runnable": RunnableLambda(lambda _state: {"messages": [AIMessage(content="done")]}),
+            "mode": "dynamic",
+        }
+
+        with pytest.raises(ValueError, match="invalid mode 'dynamic'"):
+            SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
+
+    def test_rejects_system_prompt_on_forked_subagent(self) -> None:
+        invalid_spec: Any = {
+            "name": "worker",
+            "description": "Does work.",
+            "mode": "fork",
+            "system_prompt": "You are a SQL expert.",
+        }
+
+        with pytest.raises(ValueError, match="cannot set system_prompt"):
+            SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
+
+    def test_rejects_skills_on_forked_subagent(self) -> None:
+        invalid_spec: Any = {
+            "name": "worker",
+            "description": "Does work.",
+            "mode": "fork",
+            "skills": ["/skills/fork-only/"],
+        }
+
+        with pytest.raises(ValueError, match="cannot set skills"):
+            SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
+
+    def test_forked_subagent_inherits_prompt_and_skips_memory_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: list[dict[str, Any]] = []
+        runnable = self._make_echo_graph()
+
+        def fake_create_sub_agent(
+            spec: dict[str, Any],
+            *,
+            state_schema: type | None = None,
+            response_format: object = None,
+        ) -> object:
+            del state_schema, response_format
+            captured.append(spec)
+            return runnable
+
+        monkeypatch.setattr("deepagents.middleware.subagents.create_sub_agent", fake_create_sub_agent)
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with patch("deepagents.graph.create_agent", return_value=fake_agent):
+            create_deep_agent(
+                model=model,
+                system_prompt="PARENT_PROMPT",
+                memory=["/memory.md"],
+                subagents=[
+                    {
+                        "name": "forked-worker",
+                        "description": "Continues with context.",
+                        "model": worker_model,
+                        "mode": "fork",
+                    },
+                    {
+                        "name": "isolated-worker",
+                        "description": "Starts fresh.",
+                        "system_prompt": "ISOLATED_PROMPT",
+                    },
+                ],
+            )
+
+        forked = next(spec for spec in captured if spec["name"] == "forked-worker")
+        isolated = next(spec for spec in captured if spec["name"] == "isolated-worker")
+        assert forked["system_prompt"] == "PARENT_PROMPT"
+        # No mirrored MemoryMiddleware for the fork: the captured parent
+        # message already carries the parent's own memory content, so a
+        # second instance would only reload files to build a prompt
+        # fragment that _ForkSystemMessageMiddleware immediately discards.
+        assert not any(isinstance(middleware, MemoryMiddleware) for middleware in forked["middleware"])
+        assert not any(isinstance(middleware, MemoryMiddleware) for middleware in isolated["middleware"])
+
+    def test_isolated_subagent_keeps_its_own_skills_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: list[dict[str, Any]] = []
+        runnable = self._make_echo_graph()
+
+        def fake_create_sub_agent(
+            spec: dict[str, Any],
+            *,
+            state_schema: type | None = None,
+            response_format: object = None,
+        ) -> object:
+            del state_schema, response_format
+            captured.append(spec)
+            return runnable
+
+        monkeypatch.setattr("deepagents.middleware.subagents.create_sub_agent", fake_create_sub_agent)
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with patch("deepagents.graph.create_agent", return_value=fake_agent):
+            create_deep_agent(
+                model=model,
+                system_prompt="PARENT_PROMPT",
+                subagents=[
+                    {
+                        "name": "isolated-worker",
+                        "description": "Starts fresh.",
+                        "system_prompt": "ISOLATED_PROMPT",
+                        "skills": ["/skills/isolated/"],
+                    },
+                ],
+            )
+
+        isolated = next(spec for spec in captured if spec["name"] == "isolated-worker")
+        assert any(isinstance(middleware, SkillsMiddleware) for middleware in isolated["middleware"])
+
+    def test_forked_subagent_inherits_dynamic_parent_prompt(self) -> None:
+        class _AppendPromptMiddleware(AgentMiddleware):
+            def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+                message = request.system_message
+                content = "DYNAMIC_PROMPT" if message is None else f"{message.text}\n\nDYNAMIC_PROMPT"
+                return handler(request.override(system_message=SystemMessage(content=content)))
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "continue", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+        agent = create_deep_agent(
+            model=parent_model,
+            system_prompt="PARENT_PROMPT",
+            middleware=[_AppendPromptMiddleware()],
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues with context.",
+                    "model": worker_model,
+                    "mode": "fork",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="start")]})
+
+        worker_system_message = worker_model.call_history[0]["messages"][0]
+        assert worker_system_message.text == "PARENT_PROMPT\n\nDYNAMIC_PROMPT"
+        assert _PARENT_SYSTEM_MESSAGE_KEY not in result
+
+    def test_forked_subagent_replaces_repeated_prompt_updates(self) -> None:
+        class _AppendPromptMiddleware(AgentMiddleware):
+            def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+                message = request.system_message
+                content = "MEMORY" if message is None else f"{message.text}\n\nMEMORY"
+                return handler(request.override(system_message=SystemMessage(content=content)))
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "continue", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+        agent = create_deep_agent(
+            model=parent_model,
+            system_prompt="PARENT_PROMPT",
+            middleware=[_AppendPromptMiddleware()],
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues with context.",
+                    "model": worker_model,
+                    "middleware": [_AppendPromptMiddleware()],
+                    "mode": "fork",
+                }
+            ],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="start")]})
+
+        worker_system_message = worker_model.call_history[0]["messages"][0]
+        assert worker_system_message.text == "PARENT_PROMPT\n\nMEMORY"
+        assert worker_system_message.text.count("MEMORY") == 1
 
     def test_create_sub_agent_compiles_declarative_spec(self) -> None:
         """The public helper should compile and invoke declarative specs."""
@@ -330,6 +571,181 @@ class TestSubagentMiddlewareInit:
             tool_call_id=tool_call_id,
             store=None,
         )
+
+    def test_forked_compiled_subagent_receives_effective_parent_history(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _Runnable:
+            def with_config(self, config: dict[str, object]) -> "_Runnable":
+                del config
+                return self
+
+            def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
+                del config
+                captured.update(state)
+                return {"messages": [AIMessage(content="done")]}
+
+        summary = HumanMessage(content="summary")
+        after_cutoff = HumanMessage(content="after cutoff")
+        in_flight = AIMessage(
+            content="must not leak",
+            tool_calls=[
+                {
+                    "name": "task",
+                    "args": {},
+                    "id": "call_task",
+                    "type": "tool_call",
+                },
+                {
+                    "name": "get_weather",
+                    "args": {},
+                    "id": "call_weather",
+                    "type": "tool_call",
+                },
+            ],
+        )
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues with context.",
+                    "runnable": _Runnable(),
+                    "mode": "fork",
+                }
+            ],
+            private_state_keys=frozenset({"_summarization_event"}),
+        )
+        task_tool = middleware.tools[0]
+        runtime = ToolRuntime(
+            state={
+                "messages": [HumanMessage(content="old"), after_cutoff, in_flight],
+                "_summarization_event": {
+                    "cutoff_index": 1,
+                    "summary_message": summary,
+                    "file_path": None,
+                },
+            },
+            context={},
+            config={"configurable": {}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id="call_worker",
+            store=None,
+        )
+
+        task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
+
+        assert captured["messages"] == [summary, after_cutoff, HumanMessage(content="new task")]
+        assert "_summarization_event" not in captured
+
+    def test_compiled_fork_does_not_receive_parent_prompt_state(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _Runnable:
+            def with_config(self, config: dict[str, object]) -> "_Runnable":
+                del config
+                return self
+
+            def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
+                del config
+                captured.update(state)
+                return {"messages": [AIMessage(content="done")]}
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues with context.",
+                    "runnable": _Runnable(),
+                    "mode": "fork",
+                }
+            ],
+        )
+        task_tool = middleware.tools[0]
+        runtime = ToolRuntime(
+            state={
+                "messages": [HumanMessage(content="parent history")],
+                _PARENT_SYSTEM_MESSAGE_KEY: SystemMessage(content="SESSION_PROMPT"),
+            },
+            context={},
+            config={"configurable": {}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id="call_worker",
+            store=None,
+        )
+
+        task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
+
+        assert _PARENT_SYSTEM_MESSAGE_KEY not in captured
+
+    def test_rejects_duplicate_subagent_names(self) -> None:
+        class _Runnable:
+            def with_config(self, config: dict[str, object]) -> "_Runnable":
+                del config
+                return self
+
+            def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
+                del state, config
+                return {"messages": [AIMessage(content="done")]}
+
+        with pytest.raises(ValueError, match="Duplicate subagent name 'worker'"):
+            SubAgentMiddleware(
+                backend=StateBackend(),
+                subagents=[
+                    {
+                        "name": "worker",
+                        "description": "Forked registration.",
+                        "runnable": _Runnable(),
+                        "mode": "fork",
+                    },
+                    {
+                        "name": "worker",
+                        "description": "Second registration.",
+                        "runnable": _Runnable(),
+                    },
+                ],
+            )
+
+    def test_handoff_subagent_receives_only_task_description(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _Runnable:
+            def with_config(self, config: dict[str, object]) -> "_Runnable":
+                del config
+                return self
+
+            def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
+                del config
+                captured.update(state)
+                return {"messages": [AIMessage(content="done")]}
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Starts fresh.",
+                    "runnable": _Runnable(),
+                }
+            ],
+        )
+        task_tool = middleware.tools[0]
+        runtime = ToolRuntime(
+            state={"messages": [HumanMessage(content="parent history")]},
+            context={},
+            config={"configurable": {}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id="call_worker",
+            store=None,
+        )
+
+        task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
+
+        assert captured["messages"] == [HumanMessage(content="new task")]
 
     def test_compiled_subagent_name_propagated_via_config(self) -> None:
         """CompiledSubAgent.name is forwarded into metadata.lc_agent_name and run_name."""

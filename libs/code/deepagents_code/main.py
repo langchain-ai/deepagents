@@ -3647,8 +3647,7 @@ def _select_trust_action(
     Falls back to a text prompt when the inline picker cannot run. Every failure
     mode resolves to a decision the caller can act on without knowing which
     input path produced it: an unavailable picker degrades to text, and EOF on
-    the text prompt denies rather than aborting, so a non-interactive launch
-    fails closed instead of hanging.
+    the text prompt selects the caller's default action.
 
     Args:
         console: Console used by the text fallback.
@@ -3658,18 +3657,16 @@ def _select_trust_action(
         deny_label: Label for the refuse option.
         refresh_label: Label for an explicit environment refresh, when offered.
         deny_first: Forwarded to the picker to list the deny option first.
-        abort_on_deny: When `True`, a deny answer is reported as `CANCELLED`
-            on every input path (picker, typed answer, and EOF), so prompts
-            whose refuse option aborts the launch report exactly one outcome
-            and callers cannot mistake a deny for a decision to proceed.
+        abort_on_deny: When `True`, a `DENY` decision is reported as
+            `CANCELLED`, including blank or EOF input when `DENY` is the
+            default, so callers cannot mistake a deny for a decision to proceed.
         default_action: Action a bare Enter selects and the picker highlights
             first. Defaults to `DENY` so opt-in prompts fail closed; opt-out
             prompts (whose safe default is to proceed) pass `ALLOW_ONCE`.
 
     Returns:
-        The selected trust action, `CANCELLED` when the user presses Esc or
-        Ctrl+D (or denies with `abort_on_deny`), or `INTERRUPTED` when the
-        user presses Ctrl+C.
+        The selected trust action, `CANCELLED` when the picker is aborted or a
+        deny is mapped by `abort_on_deny`, or `INTERRUPTED` on Ctrl+C.
     """
     if default_action is None:
         default_action = _TrustAction.DENY
@@ -3693,29 +3690,44 @@ def _select_trust_action(
     # rest of the prompt already went; passing the question to `input()`
     # instead would split it onto stdout, so `dcode 2>log` would show a bare
     # question with all of its context redirected away.
+    allow_token = "Y" if default_action is _TrustAction.ALLOW_ONCE else "y"
+    remember_token = "R" if default_action is _TrustAction.REMEMBER else "r"
+    refresh_token = "U" if default_action is _TrustAction.REFRESH else "u"
+    deny_token = "N" if default_action is _TrustAction.DENY else "n"
     if refresh_label is None:
-        choices = f"{allow_label} [y] · {remember_label} [r] · {deny_label} [N]"
-        prompt = "Choose [y/r/N]: "
+        choices = (
+            f"{allow_label} [{allow_token}] · "
+            f"{remember_label} [{remember_token}] · {deny_label} [{deny_token}]"
+        )
+        prompt = f"Choose [{allow_token}/{remember_token}/{deny_token}]: "
     elif deny_first:
         choices = (
-            f"{deny_label} [N] · {refresh_label} [u] · "
-            f"{allow_label} [y] · {remember_label} [r]"
+            f"{deny_label} [{deny_token}] · {refresh_label} [{refresh_token}] · "
+            f"{allow_label} [{allow_token}] · "
+            f"{remember_label} [{remember_token}]"
         )
-        prompt = "Choose [N/u/y/r]: "
+        prompt = (
+            f"Choose [{deny_token}/{refresh_token}/{allow_token}/{remember_token}]: "
+        )
     else:
         choices = (
-            f"{allow_label} [y] · {remember_label} [r] · "
-            f"{refresh_label} [u] · {deny_label} [N]"
+            f"{allow_label} [{allow_token}] · "
+            f"{remember_label} [{remember_token}] · "
+            f"{refresh_label} [{refresh_token}] · {deny_label} [{deny_token}]"
         )
-        prompt = "Choose [y/r/u/N]: "
-    console.print(f"[dim]{choices}[/dim]", highlight=False)
-    console.print(prompt, end="", highlight=False)
+        prompt = (
+            f"Choose [{allow_token}/{remember_token}/{refresh_token}/{deny_token}]: "
+        )
+    console.print(choices, style="dim", highlight=False, markup=False)
+    console.print(prompt, end="", highlight=False, markup=False)
     try:
         answer = input().strip().lower()
     except KeyboardInterrupt:
         return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
-        return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
+        if default_action is _TrustAction.DENY and abort_on_deny:
+            return _TrustPromptOutcome.CANCELLED
+        return default_action
     if answer in {"y", "yes"}:
         return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
@@ -3724,7 +3736,7 @@ def _select_trust_action(
         return _TrustAction.REFRESH
     # A blank answer selects the default action: DENY for opt-in prompts (fail
     # closed), the caller-chosen default for opt-out prompts (fail open).
-    if not answer and not abort_on_deny:
+    if not answer and not (default_action is _TrustAction.DENY and abort_on_deny):
         return default_action
     return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
 

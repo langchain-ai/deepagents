@@ -6301,6 +6301,46 @@ class TestSelectProjectMcpTrustAction:
 
         assert result is _TrustAction.REFRESH
 
+    def test_text_fallback_advertises_allow_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The uppercase fallback token matches the action selected by Enter."""
+        from deepagents_code.main import _select_trust_action, _TrustAction
+
+        output = StringIO()
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+        result = _select_trust_action(
+            Console(file=output), default_action=_TrustAction.ALLOW_ONCE
+        )
+
+        assert result is _TrustAction.ALLOW_ONCE
+        assert "Allow once [Y]" in output.getvalue()
+        assert "Deny [n]" in output.getvalue()
+        assert "Choose [Y/r/n]" in output.getvalue()
+
+    def test_text_fallback_eof_uses_allow_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """EOF selects the same opt-out default as Enter."""
+        from deepagents_code.main import _select_trust_action, _TrustAction
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=EOFError))
+
+        result = _select_trust_action(
+            Console(file=StringIO()), default_action=_TrustAction.ALLOW_ONCE
+        )
+
+        assert result is _TrustAction.ALLOW_ONCE
+
 
 class TestCheckMcpProjectTrustDedupe:
     """Regression tests for the project MCP approval prompt deduplication.

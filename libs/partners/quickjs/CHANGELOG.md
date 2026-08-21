@@ -2,6 +2,13 @@
 
 # Changelog
 
+## [0.3.6](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.5...langchain-quickjs==0.3.6) (2026-08-21)
+
+
+### Features
+
+* **quickjs:** add hmac check to snapshot bytes ([#5601](https://github.com/langchain-ai/deepagents/issues/5601)) ([749b386](https://github.com/langchain-ai/deepagents/commit/749b386f97ed7b920acfd5936b01f8c425976d92))
+
 ## [0.3.5](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.4...langchain-quickjs==0.3.5) (2026-07-29)
 
 ### Bug Fixes

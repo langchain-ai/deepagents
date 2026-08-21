@@ -1216,11 +1216,15 @@ def resolve_startup_mode_with_source(
 ) -> tuple[str, str]:
     """Resolve the effective startup approval mode and its source for display.
 
-    Mirrors `model_config.load_startup_mode`: an explicit `[startup].mode` (or
-    managed/env override) wins; otherwise the app-managed `[startup].recent`
-    value restores `manual` or notice-approved `auto`, so
-    `dcode config get startup.mode` reports the mode the next bare launch will
-    actually use instead of the bare default.
+    Mirrors `model_config.load_startup_mode`. An explicit `[startup].mode`
+    wins, from the user file or from managed policy. Otherwise the app-managed
+    `[startup].recent` value restores `manual` or notice-approved `auto`. So
+    `dcode config get startup.mode` reports the mode the next bare launch reads
+    from configuration, instead of the manifest default.
+
+    `startup.mode` declares no environment variable, so no env tier applies
+    here. The `--auto-approve` flag outranks configuration at launch and is out
+    of scope for this function.
 
     Args:
         toml_data: Parsed `config.toml`; loaded automatically when omitted.
@@ -1229,7 +1233,9 @@ def resolve_startup_mode_with_source(
 
     Returns:
         `(mode, source)`. `source` credits the managed or user configuration
-        layer that supplied either the explicit mode or recent fallback.
+        layer that supplied either the explicit mode or the recent fallback,
+        and is `"default"` when nothing resolves and when an invalid explicit
+        mode fails closed.
     """
     from deepagents_code.model_config import is_recent_startup_mode_restorable
 
@@ -1249,8 +1255,11 @@ def resolve_startup_mode_with_source(
     if source != "default":
         return value, source
 
-    # No explicit/managed/env mode resolved. An invalid user mode is fail-closed
-    # in `load_startup_mode`, so introspection must not consult `recent` either.
+    # No explicit mode resolved. An invalid user mode is fail-closed in
+    # `load_startup_mode`, so introspection must not consult `recent` either.
+    # Only the user layer is probed: `merge_managed_over_user` drops a managed
+    # leaf that fails its manifest kind, so a present-but-invalid mode can only
+    # come from the user file, and the loader cannot see one that this misses.
     startup = data.get("startup")
     if isinstance(startup, dict) and startup.get("mode") is not None:
         return value, source
@@ -2388,7 +2397,10 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="startup.recent",
         group="Startup",
-        summary="Most recently selected Manual or Auto mode (managed by the app).",
+        summary=(
+            "Most recently selected Manual or Auto mode (managed by the app; "
+            "only `manual` and `auto` are restored)."
+        ),
         kind=OptionKind.STR,
         toml_keys=("startup", "recent"),
     ),

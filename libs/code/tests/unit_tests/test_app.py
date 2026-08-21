@@ -30206,6 +30206,7 @@ class TestLiveApprovalModeWrites:
     async def test_set_approval_mode_persists_safe_startup_mode(
         self, mode_value: str
     ) -> None:
+        """A user-selected Manual or Auto becomes the next launch's mode."""
         from deepagents_code.approval_mode import ApprovalMode
 
         app = DeepAgentsApp()
@@ -30224,6 +30225,7 @@ class TestLiveApprovalModeWrites:
     async def test_set_approval_mode_warns_when_startup_mode_save_fails(
         self,
     ) -> None:
+        """The session change stands; only the durable record is reported lost."""
         from deepagents_code.approval_mode import ApprovalMode
 
         app = DeepAgentsApp()
@@ -30244,6 +30246,7 @@ class TestLiveApprovalModeWrites:
         )
 
     async def test_set_approval_mode_does_not_persist_yolo_as_recent(self) -> None:
+        """YOLO stays opt-in every launch, so it is never recorded."""
         from deepagents_code.approval_mode import ApprovalMode
 
         app = DeepAgentsApp()

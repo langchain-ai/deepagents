@@ -9460,7 +9460,14 @@ class DeepAgentsApp(App):
         return True
 
     async def _persist_startup_approval_mode(self, mode: ApprovalMode) -> None:
-        """Persist a safe app-selected mode for the next bare launch."""
+        """Persist a safe app-selected mode for the next bare launch.
+
+        YOLO returns before any await, so callers that must warn before
+        suspending are unaffected when they select it.
+
+        Args:
+            mode: Mode the user just selected.
+        """
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.model_config import save_recent_startup_mode
 
@@ -9617,6 +9624,10 @@ class DeepAgentsApp(App):
 
     async def _switch_to_manual_from_fallback(self) -> bool:
         """Persist Manual before asking again about a fallback action.
+
+        Manual also becomes the next launch's startup mode, replacing a stored
+        Auto. The user chose Manual at this prompt, so the preference follows
+        the choice.
 
         Returns:
             `True` when Manual is active.
@@ -20903,6 +20914,11 @@ class DeepAgentsApp(App):
 
     async def _set_approval_mode(self, target: ApprovalMode) -> bool:
         """Apply an approval-mode change after optional live Store acknowledgement.
+
+        On success this also records Manual or Auto as the startup preference
+        for the next launch, and can warn that the record could not be written.
+        YOLO is never recorded. A rejected live write returns early, so nothing
+        durable is written for a mode the session did not enter.
 
         Args:
             target: Mode to select.

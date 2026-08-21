@@ -8573,7 +8573,11 @@ class TestAddEnabledProjectMcpServers:
 
 
 class TestLoadStartupMode:
-    """Tests for `load_startup_mode` reading `[startup].mode` from config.toml."""
+    """Tests for the `[startup]` approval-mode read and its recent-mode write.
+
+    Covers `load_startup_mode` over both `mode` and `recent`, and
+    `save_recent_startup_mode`.
+    """
 
     def test_missing_file_returns_default(self, tmp_path: Path) -> None:
         """A nonexistent config file falls back to the default mode."""
@@ -8593,6 +8597,7 @@ class TestLoadStartupMode:
         monkeypatch: pytest.MonkeyPatch,
         mode: str,
     ) -> None:
+        """A stored recent mode is restored on a bare launch."""
         from deepagents_code.approval_mode import save_auto_mode_notice
 
         monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path / ".state")
@@ -8676,6 +8681,7 @@ class TestLoadStartupMode:
         assert consume_recent_auto_not_restored_notice() is None
 
     def test_explicit_mode_outranks_recent(self, tmp_path: Path) -> None:
+        """An explicit mode is an intentional default and wins."""
         config = tmp_path / "config.toml"
         config.write_text("[startup]\nmode = 'manual'\nrecent = 'auto'\n")
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
@@ -8687,6 +8693,7 @@ class TestLoadStartupMode:
         caplog: pytest.LogCaptureFixture,
         recent: str,
     ) -> None:
+        """Only Manual and Auto restore; anything else warns and fails closed."""
         config = tmp_path / "config.toml"
         config.write_text(f"[startup]\nrecent = '{recent}'\n")
         with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
@@ -8717,6 +8724,7 @@ class TestLoadStartupMode:
         monkeypatch: pytest.MonkeyPatch,
         mode: str,
     ) -> None:
+        """A saved mode reloads, and neighbouring config keys survive the write."""
         from deepagents_code.approval_mode import save_auto_mode_notice
 
         monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path / ".state")
@@ -8733,6 +8741,11 @@ class TestLoadStartupMode:
         assert load_startup_mode(config) == mode
 
     def test_save_recent_startup_mode_rejects_yolo(self, tmp_path: Path) -> None:
+        """YOLO must never be restored implicitly, so it cannot be stored.
+
+        The guard is the write-side half of `RECENT_STARTUP_MODES`; the read
+        side is covered above.
+        """
         with pytest.raises(ValueError, match="Invalid recent startup mode"):
             save_recent_startup_mode(STARTUP_MODE_YOLO, tmp_path / "config.toml")
 
@@ -8758,7 +8771,7 @@ class TestLoadStartupMode:
         config.write_text("[startup]\nmode = 'dangerously-auto'\n")
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
 
-    def test_invalid_value_returns_default(
+    def test_invalid_explicit_mode_ignores_recent(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """An invalid explicit mode fails closed instead of restoring recent Auto."""
@@ -8766,7 +8779,10 @@ class TestLoadStartupMode:
         config.write_text("[startup]\nmode = 'hands-off'\nrecent = 'auto'\n")
         with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
             assert load_startup_mode(config) == STARTUP_MODE_MANUAL
-        assert any("startup" in r.getMessage().lower() for r in caplog.records)
+        # Assert on the `mode` warning specifically: matching bare "startup"
+        # would also pass on the `recent` warning, which must not fire here.
+        assert any("[startup].mode" in r.getMessage() for r in caplog.records)
+        assert not any("[startup].recent" in r.getMessage() for r in caplog.records)
 
     def test_malformed_startup_table_returns_default(self, tmp_path: Path) -> None:
         """A non-table `startup` value does not crash and falls back."""

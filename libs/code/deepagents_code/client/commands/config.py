@@ -296,10 +296,10 @@ def _resolve(
         return source != "default", source, timeout
 
     if option.key == "startup.mode":
-        # The bare `resolve_scalar` default ignores the app-managed
-        # `[startup].recent` fallback that `load_startup_mode` restores on a
-        # bare launch; report the effective mode so introspection matches the
-        # next session's actual startup behavior.
+        # The manifest default that `resolve_scalar` returns ignores the
+        # app-managed `[startup].recent` fallback that `load_startup_mode`
+        # restores on a bare launch. Report the effective mode instead, so
+        # introspection matches what the next bare launch reads from the file.
         mode, source = resolve_startup_mode_with_source(
             toml_data=toml_data,
             managed_toml_data=managed_toml_data,

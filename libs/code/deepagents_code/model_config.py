@@ -5613,9 +5613,6 @@ STARTUP_MODE_AUTO = "auto"
 STARTUP_MODE_YOLO = "yolo"
 """Startup approval mode that executes gated actions without review."""
 
-STARTUP_MODE_DANGEROUSLY_AUTO = "dangerously-auto"
-"""Rejected legacy spelling retained only for migration diagnostics."""
-
 VALID_STARTUP_MODES = frozenset(
     {STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO, STARTUP_MODE_YOLO}
 )
@@ -5644,26 +5641,33 @@ def consume_recent_auto_not_restored_notice() -> str | None:
 
 
 DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
-"""Fallback startup mode when `[startup]` has no valid configured mode."""
+"""Fail-closed startup mode.
+
+Returned when no mode resolves, when `[startup]` is absent or is not a table,
+when the config is unreadable, and when a stored recent Auto is not restorable.
+"""
 
 
 def is_recent_startup_mode_restorable(mode: str) -> bool:
-    """Return whether an app-managed recent mode may be restored silently.
+    """Return whether an app-managed recent mode may be restored.
 
     Auto restoration requires the current versioned education notice. Manual
-    remains safe to restore without one.
+    remains safe to restore without one. No caller prompts: `False` means the
+    caller falls back to `manual`.
 
     Args:
         mode: Candidate value from `[startup].recent`.
 
     Returns:
-        Whether startup may apply the mode without prompting.
+        Whether startup may restore the mode.
     """
     if mode not in RECENT_STARTUP_MODES:
         return False
     if mode != STARTUP_MODE_AUTO:
         return True
 
+    # Function-local: `approval_mode` imports this module, so a module-level
+    # import would close the cycle.
     from deepagents_code.approval_mode import has_auto_mode_notice
 
     return has_auto_mode_notice()
@@ -5672,10 +5676,11 @@ def is_recent_startup_mode_restorable(mode: str) -> bool:
 def load_startup_mode(config_path: Path | None = None) -> str:
     """Load the startup approval mode from config.toml.
 
-    An explicit `[startup].mode` remains the intentional default and outranks the
-    app-managed `[startup].recent` value. Recent mode restores `manual`, or
-    classifier-backed `auto` after the current notice has been shown;
-    unrestricted `yolo` must remain explicitly configured.
+    An explicit `[startup].mode` outranks the app-managed `[startup].recent`
+    value. An invalid explicit mode fails closed to `manual` and never consults
+    `recent`. `recent` restores `manual`, or classifier-backed `auto` once the
+    current notice has been shown. Unrestricted `yolo` must stay explicitly
+    configured.
 
     Args:
         config_path: Path to config file.
@@ -5693,6 +5698,10 @@ def load_startup_mode(config_path: Path | None = None) -> str:
         startup = data.get("startup")
         if not isinstance(startup, dict):
             return DEFAULT_STARTUP_MODE
+        # TOML values carry any type. The isinstance guards here and on
+        # `recent` below keep an array or table out of the frozenset membership
+        # tests, which would raise `TypeError: unhashable type` — uncaught by
+        # the handler below — and crash startup.
         value = startup.get("mode")
         if isinstance(value, str) and value in VALID_STARTUP_MODES:
             return value
@@ -5743,7 +5752,8 @@ def save_recent_startup_mode(mode: str, config_path: Path | None = None) -> bool
         `True` when the preference was saved, otherwise `False`.
 
     Raises:
-        ValueError: If `mode` is not eligible for implicit startup restoration.
+        ValueError: If `mode` is not `"manual"` or `"auto"`. `yolo` must stay
+            explicitly configured, so it is never stored as a recent mode.
     """
     if mode not in RECENT_STARTUP_MODES:
         msg = f"Invalid recent startup mode: {mode!r}"

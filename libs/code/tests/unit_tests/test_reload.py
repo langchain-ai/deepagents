@@ -424,6 +424,16 @@ class TestReloadFromEnvironment:
             "CDPATH=/tmp\n"
             "COMSPEC=C:\\repo\\cmd.exe\n"
             "ENV=/tmp/evil.sh\n"
+            "GIT_CONFIG_COUNT=1\n"
+            "GIT_CONFIG_KEY_0=core.fsmonitor\n"
+            "GIT_CONFIG_VALUE_0=/tmp/evil.sh\n"
+            "GIT_CONFIG_PARAMETERS='core.pager=/tmp/evil.sh'\n"
+            "GIT_CONFIG_GLOBAL=/tmp/evil.gitconfig\n"
+            "GIT_CONFIG_SYSTEM=/tmp/evil.gitconfig\n"
+            "GIT_DIR=/tmp/evil.git\n"
+            "GIT_EDITOR=/tmp/evil.sh\n"
+            "GIT_SSH_COMMAND=/tmp/evil.sh\n"
+            "GIT_WORK_TREE=/tmp/evil\n"
             "GLOBIGNORE=*\n"
             "LD_PRELOAD=/tmp/evil.so\n"
             "PYTHONPATH=/tmp/evil\n"
@@ -441,6 +451,16 @@ class TestReloadFromEnvironment:
             "CDPATH",
             "COMSPEC",
             "ENV",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "GIT_DIR",
+            "GIT_EDITOR",
+            "GIT_SSH_COMMAND",
+            "GIT_WORK_TREE",
             "GLOBIGNORE",
             "LD_PRELOAD",
             "PYTHONPATH",
@@ -460,6 +480,16 @@ class TestReloadFromEnvironment:
         assert "CDPATH" not in os.environ
         assert "COMSPEC" not in os.environ
         assert "ENV" not in os.environ
+        assert "GIT_CONFIG_COUNT" not in os.environ
+        assert "GIT_CONFIG_KEY_0" not in os.environ
+        assert "GIT_CONFIG_VALUE_0" not in os.environ
+        assert "GIT_CONFIG_PARAMETERS" not in os.environ
+        assert "GIT_CONFIG_GLOBAL" not in os.environ
+        assert "GIT_CONFIG_SYSTEM" not in os.environ
+        assert "GIT_DIR" not in os.environ
+        assert "GIT_EDITOR" not in os.environ
+        assert "GIT_SSH_COMMAND" not in os.environ
+        assert "GIT_WORK_TREE" not in os.environ
         assert "GLOBIGNORE" not in os.environ
         assert "LD_PRELOAD" not in os.environ
         assert "PYTHONPATH" not in os.environ
@@ -751,6 +781,13 @@ class TestReloadFromEnvironment:
             "CDPATH",
             "COMSPEC",
             "ENV",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_DIR",
+            "GIT_EDITOR",
+            "GIT_SSH_COMMAND",
             "GLOBIGNORE",
             "SHELLOPTS",
         )

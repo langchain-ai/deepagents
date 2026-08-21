@@ -30806,6 +30806,35 @@ class TestLiveApprovalModeWrites:
         )
         mount.assert_awaited_once()
 
+    async def test_server_manual_fallback_clears_recent_auto(self) -> None:
+        """The server's safety decision must survive the session boundary."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        app._approval_mode = ApprovalMode.AUTO
+        event = {
+            "event": "fallback",
+            "mode": "manual",
+            "reason": "Auto control state was unavailable; using Manual approval.",
+        }
+
+        with (
+            patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=True,
+            ) as save_recent,
+            patch.object(app, "_mount_message", new=AsyncMock()),
+            patch.object(app, "notify"),
+        ):
+            await app._on_auto_mode_event(event)
+
+        save_recent.assert_called_once_with(ApprovalMode.MANUAL.value)
+
     @pytest.mark.parametrize("kind", ["denial", "unavailable"])
     async def test_tool_outcome_auto_event_is_not_mounted(self, kind: str) -> None:
         app = DeepAgentsApp()

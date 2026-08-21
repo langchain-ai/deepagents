@@ -20770,6 +20770,12 @@ class DeepAgentsApp(App):
 
                 persisted = await self._write_live_approval_mode(ApprovalMode.MANUAL)
                 self._on_approval_mode_fallback(ApprovalMode.MANUAL.value)
+                # A stored `[startup].recent = "auto"` would otherwise put the
+                # next launch straight back into the mode the server just
+                # refused, discarding this safety decision at the session
+                # boundary. The user is told about the fallback below, so the
+                # startup preference has to follow it.
+                await self._persist_startup_approval_mode(ApprovalMode.MANUAL)
                 if not persisted:
                     logger.warning("Could not persist server-requested Manual fallback")
                 text = f"Auto fell back to Manual: {reason}"

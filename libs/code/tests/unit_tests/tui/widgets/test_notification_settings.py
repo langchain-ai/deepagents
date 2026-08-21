@@ -71,6 +71,7 @@ async def test_help_footer_documents_both_toggle_keys_when_expanded() -> None:
 
         help_text = str(screen.query_one(".nc-help", Static).content)
 
+        assert "Tab/Shift+Tab navigate" in help_text
         assert "Space/Enter toggle" in help_text
         assert "Esc collapse" in help_text
 

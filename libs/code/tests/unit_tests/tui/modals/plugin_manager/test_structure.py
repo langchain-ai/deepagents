@@ -506,6 +506,8 @@ async def test_plugin_search_and_footer_fit_standard_terminal() -> None:
         assert search.display is True
         assert options.region.height >= 5
         assert options.region.bottom <= container.content_region.bottom
+        assert "Left/Right or Tab/Shift+Tab tabs" in str(help_text.content)
+        assert "Esc close" in str(help_text.content)
         assert help_text.region.height >= 1
         assert help_text.region.bottom <= container.content_region.bottom
 

@@ -280,6 +280,12 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
+            # Deliberately not the shared `modal_navigation_hint` copy: Tab
+            # autocompletes here, so advertising "Tab/Shift+Tab navigate"
+            # would misdescribe it. Shift+Tab still works via
+            # `_SupportsReverseNav`; it is simply unadvertised.
+            assert "navigate" in str(help_text.content)
+            assert "Tab/Shift+Tab navigate" not in str(help_text.content)
             assert "Tab autocomplete" in str(help_text.content)
             assert "Esc skip setup" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)

@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.notifications import ActionId, UpdateAvailablePayload
+from deepagents_code.tui.key_hints import modal_navigation_hint
 from deepagents_code.tui.widgets.notification_settings import WARNING_TOGGLES
 
 logger = logging.getLogger(__name__)
@@ -411,7 +412,8 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
     }
 
     NotificationCenterScreen .nc-help {
-        height: 1;
+        dock: bottom;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -566,12 +568,12 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         glyphs = get_glyphs()
         if self._settings_expanded:
             return (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate "
+                f"{modal_navigation_hint(glyphs)} "
                 f"{glyphs.bullet} Space/Enter toggle "
                 f"{glyphs.bullet} Esc collapse"
             )
         return (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate "
+            f"{modal_navigation_hint(glyphs)} "
             f"{glyphs.bullet} Enter open "
             f"{glyphs.bullet} Esc close"
         )

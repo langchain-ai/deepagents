@@ -30260,6 +30260,43 @@ class TestLiveApprovalModeWrites:
 
         save_recent.assert_not_called()
 
+    async def test_set_approval_mode_persists_before_goal_rubric_can_raise(
+        self,
+    ) -> None:
+        """An accepted mode is recorded even if goal-rubric cleanup fails.
+
+        The rubric helper is cancellable and can raise. If it ran first, the
+        session would sit in Auto while the next launch reverted to the old
+        mode, undoing a selection that actually succeeded.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(
+                    app,
+                    "_auto_accept_pending_goal_rubric",
+                    new=AsyncMock(side_effect=RuntimeError("boom")),
+                ),
+                patch(
+                    "deepagents_code.model_config.save_recent_startup_mode",
+                    return_value=True,
+                ) as save_recent,
+                patch.object(app, "_notify_auto_classifier_active"),
+                pytest.raises(RuntimeError),
+            ):
+                await app._set_approval_mode(ApprovalMode.AUTO)
+
+            save_recent.assert_called_once_with(ApprovalMode.AUTO.value)
+
     async def test_persist_startup_mode_skips_duplicate_write(self) -> None:
         """One confirmation must not write, or fail, twice.
 

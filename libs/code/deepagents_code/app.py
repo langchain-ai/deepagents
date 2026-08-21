@@ -20974,21 +20974,26 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
             self._notify_auto_classifier_active()
-            if should_persist_live:
-                await self._auto_accept_pending_goal_rubric()
         elif target is ApprovalMode.YOLO:
-            # Warn before the await below. State is already committed above,
+            # Warn before the awaits below. State is already committed above,
             # so if goal-rubric auto-accept raises, YOLO is active and the "no
             # review" warning has already been attempted. AUTO notifies before
-            # its await for the same reason. Both can legitimately no-op — the
+            # its awaits for the same reason. Both can legitimately no-op — the
             # YOLO toast when suppressed, the AUTO notice after its first run —
             # so this ordering guarantees the attempt, not the delivery.
             self._warn_yolo_active(timeout=8)
-            if should_persist_live:
-                await self._auto_accept_pending_goal_rubric()
-        # Persist last: the durable preference must never outrank a rejected live
-        # write, and must never displace the mode notices above.
+        # Persist after the live-write gate and the notices, but before the
+        # goal-rubric await: that helper is cancellable and can raise, which
+        # would otherwise commit the mode for this session while leaving
+        # `[startup].recent` on the previous one, so the next bare launch would
+        # revert a selection that succeeded. `_on_auto_approve_enabled` orders
+        # these the same way.
         await self._persist_startup_approval_mode(target)
+        if should_persist_live and target in {
+            ApprovalMode.AUTO,
+            ApprovalMode.YOLO,
+        }:
+            await self._auto_accept_pending_goal_rubric()
         return True
 
     def _auto_classifier_display_spec(self) -> str | None:

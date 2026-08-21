@@ -9,6 +9,7 @@ numeric ranks.
 
 from __future__ import annotations
 
+import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -17,8 +18,13 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
+    from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.provider import ConfigProvider
+    from deepagents_code.configuration.types import TomlSnapshot
+
 from deepagents_code.configuration.types import (
     Found,
+    ProviderHealth,
     ProviderResult,
     ProviderStatus,
 )
@@ -69,6 +75,211 @@ class ResolvedValue[T]:
     def ranks(self) -> tuple[int, ...]:
         """Contributing ranks in precedence order."""
         return self.selected_ranks or tuple(sorted(self.provenance))
+
+
+type ConfigKey = str
+"""Canonical dotted manifest key."""
+
+
+class ConfigResolver:
+    """Resolve manifest options through an ordered provider chain."""
+
+    def __init__(self, providers: Sequence[ConfigProvider]) -> None:
+        """Build a resolver with providers sorted by precedence.
+
+        Args:
+            providers: Configuration providers with unique numeric ranks.
+
+        Raises:
+            ValueError: If two providers declare the same rank.
+        """
+        ordered = tuple(sorted(providers, key=lambda provider: provider.rank))
+        ranks = tuple(provider.rank for provider in ordered)
+        if len(set(ranks)) != len(ranks):
+            msg = "config providers must have unique ranks"
+            raise ValueError(msg)
+        self._providers = ordered
+        self._lock = threading.RLock()
+
+    def get(self, option: ConfigOption) -> ResolvedValue[object]:
+        """Resolve one option through every provider.
+
+        Args:
+            option: Manifest option to resolve.
+
+        Returns:
+            Resolved value with rank-keyed provenance and health.
+        """
+        with self._lock:
+            return self._resolve(option, self._providers)
+
+    @staticmethod
+    def _resolve(
+        option: ConfigOption,
+        providers: Sequence[ConfigProvider],
+    ) -> ResolvedValue[object]:
+        """Resolve one option against a lock-held provider generation.
+
+        Args:
+            option: Manifest option to resolve.
+            providers: Providers frozen to one generation.
+
+        Returns:
+            Resolved value with rank-keyed provenance and health.
+
+        Raises:
+            RuntimeError: If no provider returns a value.
+        """
+        values = tuple(provider.get(option) for provider in providers)
+        strategy = option.merge_strategy.value
+        effective_values = (
+            tuple(value for value in values if value.rank != DEFAULT_RANK)
+            if strategy in {"union", "deep_merge"}
+            else values
+        )
+        resolved = resolve_ranked(effective_values, strategy=strategy)
+        if resolved is None:
+            fallback = RankedProviderValue(
+                DEFAULT_RANK,
+                True,
+                ProviderStatus("default", None, ProviderHealth.OK),
+                Found(option.default),
+            )
+            without_default = tuple(
+                value for value in values if value.rank != DEFAULT_RANK
+            )
+            resolved = resolve_ranked(
+                (*without_default, fallback),
+                strategy=strategy,
+            )
+        if resolved is None:
+            msg = f"fallback provider was unset for {option.key}"
+            raise RuntimeError(msg)
+        return resolved
+
+    def resolve_all(self) -> Mapping[ConfigKey, ResolvedValue[object]]:
+        """Resolve the full manifest against one provider generation.
+
+        Returns:
+            Immutable mapping from canonical option key to resolved value.
+        """
+        from deepagents_code.config_manifest import get_config_options
+
+        with self._lock:
+            resolved = {
+                option.key: self._resolve(option, self._providers)
+                for option in get_config_options()
+            }
+        return MappingProxyType(resolved)
+
+    def reload(self) -> None:
+        """Propagate a source refresh to every provider."""
+        with self._lock:
+            for provider in self._providers:
+                provider.reload()
+
+    def provider_statuses(self) -> Mapping[int, ProviderStatus]:
+        """Return immutable provider health keyed by precedence rank."""
+        with self._lock:
+            statuses = {
+                provider.rank: provider.status() for provider in self._providers
+            }
+        return MappingProxyType(statuses)
+
+
+def resolver_from_snapshots(
+    managed: TomlSnapshot,
+    user: TomlSnapshot,
+    *,
+    managed_loader: Callable[[], TomlSnapshot] | None = None,
+    user_loader: Callable[[], TomlSnapshot] | None = None,
+) -> ConfigResolver:
+    """Build the standard provider chain from one file-snapshot generation.
+
+    Args:
+        managed: Managed TOML snapshot.
+        user: User TOML snapshot.
+        managed_loader: Optional managed reload operation.
+        user_loader: Optional user reload operation.
+
+    Returns:
+        Resolver containing managed, environment, user, and default providers.
+    """
+    from pathlib import Path
+
+    from deepagents_code.configuration.providers import (
+        DefaultProvider,
+        EnvProvider,
+        TomlFileProvider,
+    )
+
+    managed_path = managed.status.path or Path("managed_config.toml")
+    user_path = user.status.path or Path("config.toml")
+    return ConfigResolver(
+        (
+            TomlFileProvider(
+                managed.status.name,
+                managed_path,
+                MANAGED_RANK,
+                True,
+                managed,
+                managed_loader,
+            ),
+            EnvProvider(),
+            TomlFileProvider(
+                user.status.name,
+                user_path,
+                USER_RANK,
+                True,
+                user,
+                user_loader,
+            ),
+            DefaultProvider(),
+        )
+    )
+
+
+@dataclass(slots=True)
+class _ResolverCache:
+    """Mutable process resolver cache guarded by one lifecycle lock."""
+
+    key: tuple[object, ...] | None = None
+    resolver: ConfigResolver | None = None
+
+
+_resolver_cache_lock = threading.RLock()
+_resolver_cache = _ResolverCache()
+
+
+def get_config_resolver(*, refresh_managed: bool = False) -> ConfigResolver:
+    """Return the shared process resolver for the active config paths.
+
+    Args:
+        refresh_managed: Re-read all providers on an existing matching resolver.
+
+    Returns:
+        Resolver shared by consumers of the active managed and user paths.
+    """
+    from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.service import get_managed_snapshot
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    managed = get_managed_snapshot(refresh=refresh_managed)
+    key = (DEFAULT_CONFIG_PATH, managed.status.path, id(get_managed_snapshot))
+    with _resolver_cache_lock:
+        if _resolver_cache.resolver is None or _resolver_cache.key != key:
+            user_provider = TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH)
+            user = user_provider.load()
+            _resolver_cache.resolver = resolver_from_snapshots(
+                managed,
+                user,
+                managed_loader=lambda: get_managed_snapshot(refresh=True),
+                user_loader=user_provider.load,
+            )
+            _resolver_cache.key = key
+        elif refresh_managed:
+            _resolver_cache.resolver.reload()
+        return _resolver_cache.resolver
 
 
 def resolve_ranked[T](

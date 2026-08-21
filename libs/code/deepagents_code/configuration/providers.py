@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, assert_never, cast
 
 from deepagents_code._env_vars import classify_env_bool
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.resolver import RankedProviderValue
 
+from deepagents_code.configuration.resolver import (
+    DEFAULT_RANK,
+    ENVIRONMENT_RANK,
+    USER_RANK,
+)
 from deepagents_code.configuration.types import (
     Found,
     Invalid,
@@ -355,8 +361,11 @@ def ranked_theme_toml_value(
     Returns:
         Ranked theme result with the selected TOML path in its display status.
     """
-    from deepagents_code.app import _resolve_terminal_mapping, _resolve_theme_name
     from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.theme_resolution import (
+        resolve_terminal_mapping,
+        resolve_theme_name,
+    )
 
     if not status.usable:
         return RankedProviderValue(rank, durable, status, Unset())
@@ -370,7 +379,7 @@ def ranked_theme_toml_value(
         )
         return RankedProviderValue(rank, durable, status, result)
 
-    resolved = _resolve_terminal_mapping(ui)
+    resolved = resolve_terminal_mapping(ui)
     if resolved is not None:
         import os
 
@@ -382,7 +391,7 @@ def ranked_theme_toml_value(
         return RankedProviderValue(rank, durable, selected, Found(resolved))
 
     saved = ui.get("theme")
-    resolved = _resolve_theme_name(saved)
+    resolved = resolve_theme_name(saved)
     if resolved is not None:
         selected = replace(status, name=f"{status.name} [ui.theme]")
         return RankedProviderValue(rank, durable, selected, Found(resolved))
@@ -405,14 +414,14 @@ def ranked_theme_environment_value(
         Ranked theme result with the concrete variable name in its status.
     """
     from deepagents_code._env_vars import THEME
-    from deepagents_code.app import _resolve_theme_name
     from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.theme_resolution import resolve_theme_name
 
     status = ProviderStatus(f"env ({THEME})", None, ProviderHealth.OK)
     raw = environ.get(THEME)
     if raw is None:
         return RankedProviderValue(rank, False, status, Unset())
-    resolved = _resolve_theme_name(raw)
+    resolved = resolve_theme_name(raw)
     if resolved is not None:
         return RankedProviderValue(rank, False, status, Found(resolved))
     return RankedProviderValue(
@@ -459,12 +468,37 @@ def ranked_default_value(
     return RankedProviderValue(rank, True, status, Found(value))
 
 
+@dataclass(slots=True)
+class _TomlSnapshotState:
+    """Mutable snapshot cell owned by a frozen provider."""
+
+    value: TomlSnapshot | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class TomlFileProvider:
-    """Provider that parses one local TOML file per `load` call."""
+    """Ranked provider backed by one local TOML file snapshot."""
 
     name: str
     path: Path
+    rank: int = USER_RANK
+    durable: bool = True
+    snapshot: TomlSnapshot | None = field(default=None, repr=False, compare=False)
+    loader: Callable[[], TomlSnapshot] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _state: _TomlSnapshotState = field(
+        default_factory=_TomlSnapshotState,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Seed the mutable snapshot cell when a generation is supplied."""
+        self._state.value = self.snapshot
 
     def load(self) -> TomlSnapshot:
         """Parse the file and classify missing, unreadable, or corrupt states.
@@ -521,3 +555,122 @@ class TomlFileProvider:
             data,
             ProviderStatus(self.name, self.path, ProviderHealth.OK),
         )
+
+    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+        """Read one option from the current file snapshot.
+
+        Args:
+            option: Manifest option to read.
+
+        Returns:
+            Ranked and coerced provider result.
+        """
+        from deepagents_code.config_manifest import OptionKind
+
+        snapshot = self._current_snapshot()
+        if option.kind is OptionKind.THEME_DELEGATE:
+            return ranked_theme_toml_value(
+                snapshot.data,
+                rank=self.rank,
+                durable=self.durable,
+                status=snapshot.status,
+            )
+        return ranked_toml_value(
+            option,
+            snapshot.data,
+            rank=self.rank,
+            durable=self.durable,
+            status=snapshot.status,
+        )
+
+    def status(self) -> ProviderStatus:
+        """Return health for the current file snapshot."""
+        return self._current_snapshot().status
+
+    def reload(self) -> None:
+        """Replace the current snapshot with a fresh file read."""
+        snapshot = self.loader() if self.loader is not None else self.load()
+        self._state.value = snapshot
+
+    def _current_snapshot(self) -> TomlSnapshot:
+        """Return the cached snapshot, loading it on first access.
+
+        Returns:
+            Current parsed file snapshot.
+
+        Raises:
+            RuntimeError: If a reload produces no snapshot.
+        """
+        if self._state.value is None:
+            self.reload()
+        snapshot = self._state.value
+        if snapshot is None:
+            msg = f"{self.name} reload produced no snapshot"
+            raise RuntimeError(msg)
+        return snapshot
+
+
+@dataclass(frozen=True, slots=True)
+class EnvProvider:
+    """Live process-environment configuration provider."""
+
+    name: str = "environment"
+    rank: int = ENVIRONMENT_RANK
+    durable: bool = False
+    environ: Mapping[str, str] = field(
+        default_factory=lambda: os.environ,
+        repr=False,
+        compare=False,
+    )
+
+    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+        """Read one option from the live environment.
+
+        Args:
+            option: Manifest option to read.
+
+        Returns:
+            Ranked and coerced provider result.
+        """
+        from deepagents_code.config_manifest import OptionKind
+
+        if option.kind is OptionKind.THEME_DELEGATE:
+            return ranked_theme_environment_value(self.environ, rank=self.rank)
+        return ranked_environment_value(option, self.environ, rank=self.rank)
+
+    def status(self) -> ProviderStatus:
+        """Return the always-healthy environment provider status."""
+        return ProviderStatus(self.name, None, ProviderHealth.OK)
+
+    def reload(self) -> None:
+        """Keep reading the live environment without cached state."""
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultProvider:
+    """Typed manifest-default configuration provider."""
+
+    name: str = "default"
+    rank: int = DEFAULT_RANK
+    durable: bool = True
+
+    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+        """Return one option's manifest default.
+
+        Args:
+            option: Manifest option whose default should be returned.
+
+        Returns:
+            Ranked default provider result.
+        """
+        ranked = ranked_default_value(option, rank=self.rank)
+        if isinstance(ranked.result, Unset):
+            return replace(ranked, result=Found(option.default))
+        return ranked
+
+    def status(self) -> ProviderStatus:
+        """Return the always-healthy default provider status."""
+        return ProviderStatus(self.name, None, ProviderHealth.OK)
+
+    def reload(self) -> None:
+        """Retain immutable manifest defaults without cached state."""

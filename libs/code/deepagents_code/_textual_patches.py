@@ -1,6 +1,6 @@
 r"""Runtime patches over Textual internals, imported for side effect.
 
-This module hosts five independent best-effort patches over private Textual
+This module hosts six independent best-effort patches over private Textual
 APIs. Each guards its own import/assignment and degrades to stock Textual
 behavior (logging a warning) if the targeted internals move, so they have
 separate lifecycles — do not delete the whole file when only one lands
@@ -42,7 +42,23 @@ upstream.
     drag) to word boundaries. No upstream issue tracks this yet, so it has
     no removal criterion — it stays until Textual grows native word select.
 
-4. Detached-widget hit filtering. The compositor keeps reporting a widget as
+4. Shift-click selection extension. Stock Textual replaces an existing text
+    selection on every mouse press, so Shift+click cannot move the active end
+    of a drag-selected range. The patch preserves the original selection anchor
+    and applies the click as its new end. No upstream issue tracks this yet.
+
+    Known terminal limitation: this only works when the terminal delivers the
+    modified click to the app. Ghostty binds Shift+click to its own selection
+    and never forwards the event while mouse reporting is active, so
+    Shift+click is a no-op there (users can `keybind = shift+click=unbind` to
+    opt out). iTerm2, kitty, and WezTerm forward it with the shift modifier
+    bit set, which is what the patch keys on. If Shift+click "does nothing"
+    for a user, check terminal delivery first — e.g. run
+    `printf '\e[?1003h\e[?1006h'; cat -v` and confirm Shift+click prints a
+    `^[[<;...;4M`-style sequence (the `4` is the shift bit) — before digging
+    into this patch.
+
+5. Detached-widget hit filtering. The compositor keeps reporting a widget as
     visible for a few event-loop iterations after it leaves the DOM, which
     `Markdown.update` (and therefore the `MarkdownStream` that drives every
     streaming assistant message) does constantly. `Screen._forward_event`
@@ -51,7 +67,7 @@ upstream.
     crashes the app with `AttributeError: 'NoneType' object has no attribute
     'region'`. Tracked in Textualize/textual#6643; remove when that lands.
 
-5. Diff-gutter exclusion from selections. Textual paints the selection
+6. Diff-gutter exclusion from selections. Textual paints the selection
     highlight from the geometry stored in `Screen.selections`, so excluding
     a diff row's decorative gutter (line number, `+`/`-` marker) only in
     `Widget.get_selection` would copy the right text while still highlighting
@@ -442,6 +458,97 @@ else:
     except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
         logger.warning(
             "Textual word-selection patch assignment rejected (textual %s): %s",
+            _textual_version,
+            exc,
+        )
+
+
+try:
+    from textual import events as _shift_events
+    from textual.screen import Screen as _ShiftScreen
+    from textual.selection import SelectEnd, SelectStart, SelectState
+
+    _original_forward_event_with_shift = _ShiftScreen._forward_event
+except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
+    logger.warning(
+        "Textual Shift+click selection patch skipped (textual %s): %s",
+        _textual_version,
+        exc,
+    )
+else:
+
+    def _shift_click_anchor(screen: Screen, event: Event) -> SelectState | None:
+        # When this returns None the press falls through to stock Textual,
+        # which starts a fresh selection — indistinguishable from the event
+        # never arriving. Before debugging the branches below, confirm the
+        # terminal forwarded a shift-modified click at all (see the module
+        # docstring's patch 4 note); terminals like Ghostty consume Shift+click
+        # locally, so `event.shift` never becomes True here.
+        if (
+            not isinstance(event, _shift_events.MouseDown)
+            or not event.shift
+            or screen.app.mouse_captured
+            or not screen.selections
+        ):
+            return None
+        select_state = screen._select_state
+        if select_state is None or select_state.end is None:
+            return None
+        content_widget = select_state.start.content_widget
+        if content_widget is not None and not content_widget.is_attached:
+            return None
+        return select_state if select_state.is_attached_to_dom() else None
+
+    def _rebase_anchor_scroll(anchor_start: SelectStart) -> SelectStart:
+        # `SelectStart.pointer_start_offset` adds the scroll travelled since
+        # the drag began, which tracks the viewport rather than the anchored
+        # text. That is harmless mid-drag, but a Shift+click can arrive many
+        # rows after the container scrolled — the transcript auto-scrolls while
+        # a message streams — leaving the anchor pointing at whatever text now
+        # occupies its old screen row. Fold the drift into the pointer delta
+        # and re-base against the current scroll offset, so the anchor stays on
+        # its original text.
+        container = anchor_start.container
+        drift = container.scroll_offset - anchor_start.container_initial_scroll_offset
+        return SelectStart(
+            container,
+            anchor_start.container_pointer_delta - drift,
+            anchor_start.container_initial_offset,
+            container.scroll_offset,
+            content_widget=anchor_start.content_widget,
+            content_offset=anchor_start.content_offset,
+        )
+
+    def _extend_selection_to_click(
+        screen: Screen,
+        anchor: SelectState | None,
+        event: _shift_events.MouseDown,
+    ) -> None:
+        click_state = screen._select_state
+        if anchor is None or click_state is None:
+            return
+        click = click_state.start
+        # Stock Textual clears the selection when a MouseUp lands on the
+        # offset of its MouseDown. Forget the offset so the Shift+click's own
+        # MouseUp leaves the extension we install below alone.
+        screen._mouse_down_offset = None
+        screen._select_state = SelectState(
+            event.screen_offset,
+            _rebase_anchor_scroll(anchor.start),
+            SelectEnd(click.container, click.content_widget, click.content_offset),
+        )
+
+    def _forward_event_with_shift_select(self: Screen, event: Event) -> None:
+        shift_anchor = _shift_click_anchor(self, event)
+        _original_forward_event_with_shift(self, event)
+        if isinstance(event, _shift_events.MouseDown):
+            _extend_selection_to_click(self, shift_anchor, event)
+
+    try:
+        _ShiftScreen._forward_event = _forward_event_with_shift_select  # ty: ignore[invalid-assignment]
+    except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "Textual Shift+click selection patch assignment rejected (textual %s): %s",
             _textual_version,
             exc,
         )

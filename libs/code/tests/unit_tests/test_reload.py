@@ -392,12 +392,12 @@ class TestReloadFromEnvironment:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         original_dotenv_values = _dotenv_module.dotenv_values
-        call_count = 0
+        global_calls = 0
 
         def _fail_on_global(*, dotenv_path: Path) -> dict[str, str | None]:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
+            nonlocal global_calls
+            if dotenv_path == global_env:
+                global_calls += 1
                 msg = "read error"
                 raise OSError(msg)
             return dict(original_dotenv_values(dotenv_path=dotenv_path))
@@ -407,7 +407,9 @@ class TestReloadFromEnvironment:
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             settings.reload_from_environment(start_path=tmp_path)
 
-        assert call_count == 2
+        # The global file is read once for the trusted `read_project_dotenv`
+        # pre-check and once for its remaining values; both hit the failure.
+        assert global_calls == 2
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
         assert any("Could not read global dotenv" in r.message for r in caplog.records)
 
@@ -424,6 +426,16 @@ class TestReloadFromEnvironment:
             "CDPATH=/tmp\n"
             "COMSPEC=C:\\repo\\cmd.exe\n"
             "ENV=/tmp/evil.sh\n"
+            "GIT_CONFIG_COUNT=1\n"
+            "GIT_CONFIG_KEY_0=core.fsmonitor\n"
+            "GIT_CONFIG_VALUE_0=/tmp/evil.sh\n"
+            "GIT_CONFIG_PARAMETERS='core.pager=/tmp/evil.sh'\n"
+            "GIT_CONFIG_GLOBAL=/tmp/evil.gitconfig\n"
+            "GIT_CONFIG_SYSTEM=/tmp/evil.gitconfig\n"
+            "GIT_DIR=/tmp/evil.git\n"
+            "GIT_EDITOR=/tmp/evil.sh\n"
+            "GIT_SSH_COMMAND=/tmp/evil.sh\n"
+            "GIT_WORK_TREE=/tmp/evil\n"
             "GLOBIGNORE=*\n"
             "LD_PRELOAD=/tmp/evil.so\n"
             "PYTHONPATH=/tmp/evil\n"
@@ -441,6 +453,16 @@ class TestReloadFromEnvironment:
             "CDPATH",
             "COMSPEC",
             "ENV",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "GIT_DIR",
+            "GIT_EDITOR",
+            "GIT_SSH_COMMAND",
+            "GIT_WORK_TREE",
             "GLOBIGNORE",
             "LD_PRELOAD",
             "PYTHONPATH",
@@ -460,6 +482,16 @@ class TestReloadFromEnvironment:
         assert "CDPATH" not in os.environ
         assert "COMSPEC" not in os.environ
         assert "ENV" not in os.environ
+        assert "GIT_CONFIG_COUNT" not in os.environ
+        assert "GIT_CONFIG_KEY_0" not in os.environ
+        assert "GIT_CONFIG_VALUE_0" not in os.environ
+        assert "GIT_CONFIG_PARAMETERS" not in os.environ
+        assert "GIT_CONFIG_GLOBAL" not in os.environ
+        assert "GIT_CONFIG_SYSTEM" not in os.environ
+        assert "GIT_DIR" not in os.environ
+        assert "GIT_EDITOR" not in os.environ
+        assert "GIT_SSH_COMMAND" not in os.environ
+        assert "GIT_WORK_TREE" not in os.environ
         assert "GLOBIGNORE" not in os.environ
         assert "LD_PRELOAD" not in os.environ
         assert "PYTHONPATH" not in os.environ
@@ -471,6 +503,208 @@ class TestReloadFromEnvironment:
         # smuggle a PYTHONPATH into agent `execute` commands through it.
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_project_dotenv_denies_lowercase_git_config_keys(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Denied keys are matched case-insensitively for Windows env semantics.
+
+        On Windows `os.environ` keys are case-insensitive and Python normalizes
+        assigned keys to uppercase, so a lowercase `git_config_key_0` in a
+        committed `.env` would otherwise pass a case-sensitive check and become
+        an active `GIT_CONFIG_KEY_0` for the `git` commands dcode runs during
+        startup detection. On POSIX the lowercase spelling is inert (git reads
+        only the canonical case), so denying it there is harmless.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "git_config_count=1\n"
+            "git_config_key_0=core.fsmonitor\n"
+            "Git_Config_Value_0=/tmp/evil.sh\n"
+            "git_dir=/tmp/evil.git\n"
+            "OPENAI_API_KEY=sk-ok\n"
+        )
+        # On POSIX the lowercase names are distinct env vars; ensure neither the
+        # lowercase spelling nor its uppercase normalization is already set.
+        for key in (
+            "git_config_count",
+            "git_config_key_0",
+            "Git_Config_Value_0",
+            "git_dir",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_DIR",
+            "OPENAI_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        _load_dotenv(start_path=tmp_path)
+
+        for key in (
+            "git_config_count",
+            "git_config_key_0",
+            "Git_Config_Value_0",
+            "git_dir",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_DIR",
+        ):
+            assert key not in os.environ
+        assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_project_dotenv_skipped_when_read_project_dotenv_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`startup.read_project_dotenv = false` skips the project `.env`.
+
+        The project file must not apply its values, while the global
+        `~/.deepagents/.env` still loads — disabling is scoped to the untrusted,
+        repo-traveling file, not the user's own global defaults.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text("GIT_CONFIG_COUNT=1\nPROJECT_ONLY_KEY=project-value\n")
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text("GLOBAL_ONLY_KEY=global-value\n")
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        for key in ("GIT_CONFIG_COUNT", "PROJECT_ONLY_KEY", "GLOBAL_ONLY_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
+
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda **_kw: False,
+        )
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert "GIT_CONFIG_COUNT" not in os.environ
+        assert "PROJECT_ONLY_KEY" not in os.environ
+        assert os.environ["GLOBAL_ONLY_KEY"] == "global-value"
+
+    def test_project_dotenv_loads_when_read_project_dotenv_default(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Default (`startup.read_project_dotenv` true) still loads the project file."""
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text("PROJECT_ONLY_KEY=project-value\n")
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda **_kw: True,
+        )
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert os.environ["PROJECT_ONLY_KEY"] == "project-value"
+
+    def test_project_dotenv_cannot_set_read_project_dotenv(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A project `.env` cannot inject the toggle that skips it.
+
+        `DEEPAGENTS_CODE_READ_PROJECT_DOTENV` is denied from every `.env` (the
+        `_DOTENV_DENIED_ENV_KEYS` set), so a hostile project file cannot pin it
+        true and block the trusted global file from opting out via
+        first-write-wins.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "DEEPAGENTS_CODE_READ_PROJECT_DOTENV=1\nPROJECT_ONLY_KEY=project-value\n"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert "DEEPAGENTS_CODE_READ_PROJECT_DOTENV" not in os.environ
+        assert os.environ["PROJECT_ONLY_KEY"] == "project-value"
+
+    def test_global_dotenv_read_project_dotenv_false_protects_startup(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The trusted global `.env` opt-out is honored for the current startup.
+
+        The toggle is read from the global file *before* the project file is
+        touched, so `DEEPAGENTS_CODE_READ_PROJECT_DOTENV=false` in
+        `~/.deepagents/.env` skips the untrusted project `.env` even though the
+        global file is otherwise loaded after it.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".env").write_text("PROJECT_ONLY_KEY=project-value\n")
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        (global_dir / ".env").write_text(
+            "DEEPAGENTS_CODE_READ_PROJECT_DOTENV=false\nGLOBAL_ONLY_KEY=global-value\n"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH", global_dir / ".env"
+        )
+        for key in (
+            "DEEPAGENTS_CODE_READ_PROJECT_DOTENV",
+            "PROJECT_ONLY_KEY",
+            "GLOBAL_ONLY_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        _load_dotenv(start_path=project_dir)
+
+        assert "PROJECT_ONLY_KEY" not in os.environ
+        # The toggle's env var is denied from every `.env`, so the global file's
+        # own copy is consumed for the decision but not injected into os.environ.
+        assert "DEEPAGENTS_CODE_READ_PROJECT_DOTENV" not in os.environ
+        # The global file's other values still load.
+        assert os.environ["GLOBAL_ONLY_KEY"] == "global-value"
+
+    def test_preview_dotenv_skipped_when_read_project_dotenv_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Preview mirrors the loader: a disabled project `.env` is not reported.
+
+        The preview drives the user-facing cwd-switch prompt
+        (`_preview_project_settings_change`); if it still read the project file
+        while the runtime loader skipped it, the app would warn about settings
+        changes that a real reload would never apply.
+        """
+        from deepagents_code.config import _preview_dotenv_environ
+
+        (tmp_path / ".env").write_text("PROJECT_ONLY_KEY=project-value\n")
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda **_kw: False,
+        )
+
+        env = _preview_dotenv_environ(start_path=tmp_path)
+
+        assert "PROJECT_ONLY_KEY" not in env
 
     def test_project_dotenv_cannot_set_mcp_trust_lists(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -751,6 +985,13 @@ class TestReloadFromEnvironment:
             "CDPATH",
             "COMSPEC",
             "ENV",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_DIR",
+            "GIT_EDITOR",
+            "GIT_SSH_COMMAND",
             "GLOBIGNORE",
             "SHELLOPTS",
         )

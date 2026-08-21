@@ -1015,7 +1015,7 @@ class TestPickerTargetRegistries:
 
 
 class TestModelLabelClickTargets:
-    """Tests for the model and effort status-bar Ctrl+click targets."""
+    """Tests for the model and effort status-bar click targets."""
 
     @staticmethod
     def _offset_for_target(label: ModelLabel, target: str) -> Offset:
@@ -1045,12 +1045,36 @@ class TestModelLabelClickTargets:
         msg = f"No painted cell at x={x}"
         raise AssertionError(msg)
 
+    @classmethod
+    def _app_mouse_event(
+        cls,
+        event_type: type[events.MouseDown | events.MouseUp],
+        label: ModelLabel,
+        offset: Offset,
+    ) -> events.MouseDown | events.MouseUp:
+        """Build an app-level mouse event that follows Textual's real input path."""
+        target = label.content_region.offset + offset
+        return event_type(
+            None,
+            x=target.x,
+            y=target.y,
+            delta_x=0,
+            delta_y=0,
+            button=1,
+            shift=False,
+            meta=False,
+            ctrl=False,
+            screen_x=target.x,
+            screen_y=target.y,
+            style=cls._style_at(label, offset.x),
+        )
+
     @staticmethod
     def _rendered_targets(label: ModelLabel) -> dict[str, tuple[str, bool]]:
         """Collect picker targets from painted output, not from `render`.
 
         Reading `render_line` is what makes the assertions fail if
-        `_ctrl_hint_target` ever stops repainting the widget.
+        `_hovered_target` ever stops repainting the widget.
         """
         targets: dict[str, tuple[str, bool]] = {}
         for segment in label.render_line(0):
@@ -1084,8 +1108,8 @@ class TestModelLabelClickTargets:
                 "high": ("effort", False),
             }
 
-    async def test_clicks_require_ctrl_and_dispatch_distinct_app_actions(self) -> None:
-        """Ordinary clicks should be inert while Ctrl+click opens each picker."""
+    async def test_clicks_dispatch_distinct_app_actions(self) -> None:
+        """Ordinary clicks should open the picker represented by each span."""
         app = StatusBarApp()
         async with app.run_test(size=(150, 24)) as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
@@ -1098,20 +1122,12 @@ class TestModelLabelClickTargets:
             effort_offset = self._offset_for_target(label, "effort")
             await pilot.click(label, offset=model_offset)
             await pilot.click(label, offset=effort_offset)
-            assert app.opened_pickers == []
-
-            await pilot.click(label, offset=model_offset, control=True)
-            await pilot.click(label, offset=effort_offset, control=True)
             await pilot.pause()
 
             assert app.opened_pickers == ["model", "effort"]
 
-    async def test_plain_clicks_bubble_but_picker_clicks_do_not(self) -> None:
-        """Only a Ctrl+click on a target should be consumed by the label.
-
-        The real app handler refocuses the chat input, which must not race the
-        picker; a plain click has to keep reaching it.
-        """
+    async def test_picker_clicks_do_not_bubble(self) -> None:
+        """A target click must not race the app's chat-input refocus handler."""
         app = StatusBarApp()
         async with app.run_test(size=(150, 24)) as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
@@ -1123,14 +1139,54 @@ class TestModelLabelClickTargets:
             model_offset = self._offset_for_target(label, "model")
             await pilot.click(label, offset=model_offset)
             await pilot.pause()
-            assert app.unhandled_clicks == 1
 
-            await pilot.click(label, offset=model_offset, control=True)
-            await pilot.pause()
-            assert app.unhandled_clicks == 1
+            assert app.unhandled_clicks == 0
             assert app.opened_pickers == ["model"]
 
-    async def test_ctrl_click_ignores_non_left_buttons(self) -> None:
+    async def test_slow_click_that_refocuses_app_is_inert(self) -> None:
+        """A focus-restoring press stays inert even when its release is delayed."""
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            await pilot.pause()
+            offset = self._offset_for_target(label, "model")
+
+            app.post_message(events.AppBlur())
+            await pilot.pause()
+            app.post_message(events.AppFocus())
+            app.post_message(self._app_mouse_event(events.MouseDown, label, offset))
+            await pilot.pause(0.25)
+            app.post_message(self._app_mouse_event(events.MouseUp, label, offset))
+            await pilot.pause()
+
+            assert app.opened_pickers == []
+            assert app.unhandled_clicks == 0
+
+            await pilot.click(label, offset=offset)
+            await pilot.pause()
+            assert app.opened_pickers == ["model"]
+
+    async def test_keyboard_refocus_does_not_block_click(self) -> None:
+        """A refocus without an adjacent mouse press must not consume a later click."""
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            await pilot.pause()
+
+            app.post_message(events.AppBlur())
+            await pilot.pause()
+            app.post_message(events.AppFocus())
+            await pilot.pause()
+            await pilot.click(label, offset=self._offset_for_target(label, "model"))
+            await pilot.pause()
+
+            assert app.opened_pickers == ["model"]
+
+    async def test_click_ignores_non_left_buttons(self) -> None:
         """Textual reports a Click for any button, so only the left one counts."""
         app = StatusBarApp()
         async with app.run_test(size=(150, 24)) as pilot:
@@ -1152,7 +1208,7 @@ class TestModelLabelClickTargets:
                     button=3,
                     shift=False,
                     meta=False,
-                    ctrl=True,
+                    ctrl=False,
                     screen_x=target.x,
                     screen_y=target.y,
                     style=self._style_at(label, offset.x),
@@ -1162,7 +1218,7 @@ class TestModelLabelClickTargets:
 
             assert app.opened_pickers == []
 
-    async def test_ctrl_double_click_opens_one_picker(self) -> None:
+    async def test_double_click_opens_one_picker(self) -> None:
         """A chained click should not stack a second picker on the first."""
         app = StatusBarApp()
         async with app.run_test(size=(150, 24)) as pilot:
@@ -1173,15 +1229,15 @@ class TestModelLabelClickTargets:
             await pilot.pause()
 
             offset = self._offset_for_target(label, "model")
-            await pilot.click(label, offset=offset, control=True, times=2)
+            await pilot.click(label, offset=offset, times=2)
             await pilot.pause()
 
             assert app.opened_pickers == ["model"]
             assert app.unhandled_clicks == 0
 
     @pytest.mark.parametrize("target", ["model", "effort"])
-    async def test_ctrl_hover_underlines_only_the_target(self, target: str) -> None:
-        """A Ctrl-modified pointer move should expose the target affordance."""
+    async def test_hover_underlines_only_the_target(self, target: str) -> None:
+        """An ordinary pointer move should expose the target affordance."""
         async with StatusBarApp().run_test(size=(150, 24)) as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "openai"
@@ -1197,14 +1253,7 @@ class TestModelLabelClickTargets:
             }
             assert label.styles.pointer == "pointer"
 
-            # Moving over the same span without Ctrl drops the hint again.
-            await self._move(pilot, label, offset, ctrl=False)
-            assert self._rendered_targets(label) == {
-                "openai:gpt-5.5": ("model", False),
-                "high": ("effort", False),
-            }
-
-    async def test_ctrl_hover_moves_the_underline_between_targets(self) -> None:
+    async def test_hover_moves_the_underline_between_targets(self) -> None:
         """Sliding from the model span to the effort span should move the hint.
 
         Both spans set the same pointer shape, so this transition changes no CSS
@@ -1226,7 +1275,7 @@ class TestModelLabelClickTargets:
             }
             assert label.styles.pointer == "pointer"
 
-    async def test_ctrl_hover_off_target_clears_the_underline(self) -> None:
+    async def test_hover_off_target_clears_the_underline(self) -> None:
         """Moving onto the separator should drop the previous target's hint."""
         async with StatusBarApp().run_test(size=(150, 24)) as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
@@ -1273,13 +1322,8 @@ class TestModelLabelClickTargets:
         pilot: Pilot[None],
         label: ModelLabel,
         offset: Offset,
-        *,
-        ctrl: bool = True,
     ) -> None:
-        """Post a mouse move at `offset` within `label`, optionally Ctrl-modified.
-
-        `Pilot.hover` accepts no modifiers, so build the event directly.
-        """
+        """Post a mouse move at `offset` within `label`."""
         target = label.content_region.offset + offset
         label.post_message(
             events.MouseMove(
@@ -1291,7 +1335,7 @@ class TestModelLabelClickTargets:
                 button=0,
                 shift=False,
                 meta=False,
-                ctrl=ctrl,
+                ctrl=False,
                 screen_x=target.x,
                 screen_y=target.y,
                 style=cls._style_at(label, offset.x),

@@ -807,6 +807,34 @@ def test_non_table_managed_mcp_section_fails_closed(
         service.invalidate_config_sources()
 
 
+def test_non_table_managed_mcp_section_revokes_the_env_escape_hatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Corrupting managed policy must not convert a suppression into a permit."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('mcp = "locked"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setenv(
+        model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+        "evil-server",
+    )
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    try:
+        trust = model_config.load_mcp_server_trust_lists()
+        assert trust.enabled == frozenset()
+        assert trust.approvals == frozenset()
+        assert trust.read_error is not None
+    finally:
+        service.invalidate_config_sources()
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -2157,6 +2185,31 @@ def test_diagnostics_report_an_unenforceable_managed_policy(
         assert _config_path_status(_MANAGED_PATH_LABEL, exists=True) == "rejected"
     finally:
         service.invalidate_config_sources()
+
+
+def test_project_dotenv_path_reports_disabled_when_reading_off() -> None:
+    """A skipped project `.env` must not read as a live `ok` config source.
+
+    `dcode config path` lists the project `.env` whether or not it is loaded;
+    with `startup.read_project_dotenv` off the file exists but is skipped at
+    bootstrap, so the row says `disabled` instead of `ok`.
+    """
+    from deepagents_code.client.commands.config import _config_path_status
+
+    assert (
+        _config_path_status("project .env", exists=True, project_dotenv_enabled=False)
+        == "disabled"
+    )
+    # Enabled and missing cases are unaffected.
+    assert (
+        _config_path_status("project .env", exists=True, project_dotenv_enabled=True)
+        == "ok"
+    )
+    assert (
+        _config_path_status("project .env", exists=False, project_dotenv_enabled=False)
+        == "disabled"
+    )
+    assert _config_path_status("global .env", exists=True) == "ok"
 
 
 def test_a_guessed_managed_path_is_not_a_clean_missing_file(

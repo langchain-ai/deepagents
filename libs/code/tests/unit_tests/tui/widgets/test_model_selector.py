@@ -1693,7 +1693,7 @@ class TestRecentModelsSection:
                 str(h.content)
                 for h in screen.query(".model-provider-header").results(Static)
             ]
-            assert any("OpenAI Codex (ChatGPT login)" in h for h in headers)
+            assert any("OpenAI (Subscription login)" in h for h in headers)
             assert not any("openai_codex" in h for h in headers)
 
     async def test_recent_row_shows_name_and_provider_tag(
@@ -1756,7 +1756,7 @@ class TestRecentModelsSection:
             text = str(recent.content)
             assert "(OpenAI Codex)" in text
             # The verbose auth label must not leak into the compact tag.
-            assert "ChatGPT login" not in text
+            assert "Subscription login" not in text
 
     async def test_recent_entries_appear_in_provider_section_too(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2476,10 +2476,10 @@ class TestModelSelectorFuzzyMatching:
     def test_fuzzy_matches_provider_friendly_label(self) -> None:
         """The provider display label — not just the key — is searchable.
 
-        Searches "chatgpt", which appears in neither the spec
+        Searches "subscription", which appears in neither the spec
         (`openai_codex:gpt-5.2`), the friendly model name ("GPT-5.2"), nor the
         provider key (`openai_codex`) — only in the resolved display label
-        "OpenAI Codex (ChatGPT login)". So a match proves the provider-label
+        "OpenAI (Subscription login)". So a match proves the provider-label
         branch of the haystack is doing the work; there is no other source for
         it. Guards against the label term being silently dropped.
         """
@@ -2493,12 +2493,12 @@ class TestModelSelectorFuzzyMatching:
             screen._filtered_models,
         ):
             models.append(codex)
-        screen._filter_text = "chatgpt"
+        screen._filter_text = "subscription"
         screen._update_filtered_list()
 
         specs = [spec for spec, _ in screen._filtered_models]
         assert specs == ["openai_codex:gpt-5.2"], (
-            f"'chatgpt' should match only via the provider label. Got: {specs}"
+            f"'subscription' should match only via the provider label. Got: {specs}"
         )
 
     async def test_tab_noop_when_no_matches(self) -> None:
@@ -2938,7 +2938,7 @@ class TestCuratedModelSelection:
             ("anthropic:claude-sonnet-4-5", "anthropic"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -2948,7 +2948,7 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.6-luna", "openai"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -3418,7 +3418,6 @@ class TestGetModelDisplayName:
         ("spec", "name"),
         [
             ("fireworks:accounts/fireworks/models/kimi-k3", "Kimi K3"),
-            ("meta:muse-spark-1.1", "Muse Spark 1.1"),
             ("meta:muse-spark-1.2", "Muse Spark 1.2"),
             ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),

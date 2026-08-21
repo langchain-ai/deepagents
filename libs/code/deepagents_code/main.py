@@ -3288,15 +3288,41 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
 
 
 def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
-    """Print a session-level usage stats table to the console on TUI exit.
+    """Print the session usage stats table on TUI exit, unless it is disabled.
+
+    Gated by `[ui].show_usage_stats`, so this may print nothing. The payload
+    type guard stays ahead of that lookup: `stats` is typed `Any`, and a caller
+    passing something other than `SessionStats` should not trigger config I/O
+    to decide to print nothing.
+
+    That guard is unreachable as long as callers respect
+    `AppResult.session_stats`'s declared type — a dataclass annotation, not
+    runtime enforcement, which is exactly what `stats: Any` lets slip. If it
+    fires, something upstream is broken rather than merely disabled, so it
+    warns instead of returning silently: that keeps the two otherwise
+    indistinguishable empty outputs apart.
+
+    An exception escaping `usage_table_enabled` here would be caught by the
+    top-level handler that rewrites a clean exit into `1` plus a traceback,
+    which is why that call fails open.
 
     Args:
         stats: The cumulative session stats from the Textual app.
         console: Rich console for output.
     """
-    from deepagents_code._session_stats import SessionStats, print_usage_table
+    from deepagents_code._session_stats import (
+        SessionStats,
+        print_usage_table,
+        usage_table_enabled,
+    )
 
     if not isinstance(stats, SessionStats):
+        logger.warning(
+            "Skipping session stats table: expected SessionStats, got %s",
+            type(stats).__name__,
+        )
+        return
+    if not usage_table_enabled():
         return
     print_usage_table(stats, stats.wall_time_seconds, console)
 
@@ -4262,13 +4288,13 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
         AssertionError: If managed policy is unusable, which means the startup
             health gate did not run first.
     """
-    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import MANAGED_RANK
     from deepagents_code.configuration.service import (
         get_managed_snapshot,
-        managed_declaration,
         managed_policy_violations,
-        managed_scalar,
+        resolve_managed_option,
     )
+    from deepagents_code.configuration.types import Found, Invalid, Unset
 
     snapshot = get_managed_snapshot()
     if not snapshot.status.usable:
@@ -4287,12 +4313,26 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
     if not managed_data:
         return
 
+    managed_results: dict[str, object] = {}
+
+    def managed_result(key: str) -> object:
+        """Return the managed tier's typed provider result for `key`."""
+        if key not in managed_results:
+            resolved = resolve_managed_option(
+                key,
+                managed_data,
+                status=snapshot.status,
+            )
+            managed_results[key] = (
+                resolved.tier_health.get(MANAGED_RANK, Unset())
+                if resolved is not None
+                else Unset()
+            )
+        return managed_results[key]
+
     def declared(key: str) -> bool:
         """Return whether managed policy sets `key`, valid or not."""
-        option = get_option(key)
-        if option is None or not option.toml_keys:
-            return False
-        return managed_declaration(managed_data, option.toml_keys) is not None
+        return isinstance(managed_result(key), (Found, Invalid))
 
     def managed_value(key: str) -> tuple[bool, object]:
         """Resolve one key against managed policy alone.
@@ -4300,9 +4340,10 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
         Returns:
             Whether managed policy decided the value, and the value.
         """
-        return managed_scalar(key, managed_data)
+        result = managed_result(key)
+        return (True, result.value) if isinstance(result, Found) else (False, None)
 
-    violations = managed_policy_violations(managed_data)
+    violations = managed_policy_violations(managed_data, status=snapshot.status)
     if violations:
         sys.stderr.write(
             "Error: managed config rejects "

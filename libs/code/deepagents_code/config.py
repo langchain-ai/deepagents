@@ -29,6 +29,7 @@ from deepagents_code._env_vars import (
     DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
+    READ_PROJECT_DOTENV,
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
@@ -121,6 +122,14 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "DYLD_LIBRARY_PATH",
         "ENV",
         "GIT_ASKPASS",
+        "GIT_DIR",
+        "GIT_EDITOR",
+        "GIT_EXEC_PATH",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PAGER",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_WORK_TREE",
         "GLOBIGNORE",
         "LD_AUDIT",
         "LD_LIBRARY_PATH",
@@ -135,6 +144,7 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "SSH_ASKPASS",
         "SYSTEMROOT",
         "WINDIR",
+        READ_PROJECT_DOTENV,
         _INHERITED_PYTHONPATH_ENV,
     }
 )
@@ -159,16 +169,74 @@ checking which category it belongs to:
     `execute` commands through non-interactive shells, so these are live vectors.
 - Askpass hijack (`GIT_ASKPASS`, `SSH_ASKPASS`): point credential prompts at an
     attacker-controlled binary.
+- Git config/exec injection (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_OBJECT_DIRECTORY`,
+    `GIT_EXEC_PATH`, `GIT_EDITOR`, `GIT_PAGER`, `GIT_SSH`, `GIT_SSH_COMMAND`):
+    `dcode` runs `git rev-parse`/`git status`/`git for-each-ref` during startup
+    local-context detection (`local_context.build_detect_script`), before any
+    HITL approval. These keys redirect git's object store/exec path or hook its
+    editor/pager/transport helpers into attacker-controlled binaries. The
+    numbered `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` family
+    and the inline `GIT_CONFIG_PARAMETERS` blob are worse: they inject arbitrary
+    config values such as `core.fsmonitor`/`core.pager`/`core.sshCommand`, which
+    git executes. The numbered keys cannot be enumerated in a static set, so
+    they are matched by prefix in `_is_dotenv_denied_env_key`.
 
 `_INHERITED_PYTHONPATH_ENV` is denied so a project `.env` cannot smuggle a
 `PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
 is only meant to relay a value the user set in their launch environment.
 
-Matching is exact and case-sensitive: the protected consumers (the dynamic
-linker, bash, CPython) read these names only in their canonical case, so a
-lowercase `bash_env` injected into the environment is inert. Any future entry
-that some consumer reads case-insensitively would need a different check.
+`READ_PROJECT_DOTENV` is denied from *every* `.env` (not just the project one)
+because it is a trust decision about the loader itself: if a project `.env`
+could set it, first-write-wins would let that file pin it `true` and block the
+trusted global `.env` from opting out, and if the global file set it the
+project file would already have loaded by the time it was read. The option is
+resolved from the trusted global file (read directly, before the project file)
+plus the process env and config.toml, never from dotenv injection.
+
+Matching is case-sensitive on POSIX because the protected consumers (the
+dynamic linker, bash, CPython, git) read these names only in their canonical
+case, so a lowercase `bash_env` injected into the environment is inert there.
+On Windows, however, environment variable names are case-insensitive and
+`os.environ` normalizes assigned keys to uppercase, so a lowercase
+`git_config_key_0` in a `.env` would become an active `GIT_CONFIG_KEY_0` for a
+spawned `git`. `_is_dotenv_denied_env_key` therefore compares the uppercased
+key, which is a superset on POSIX (denied names are already uppercase, so the
+extra denials like `git_config_count` are of otherwise-inert spellings).
 """
+
+_DOTENV_DENIED_ENV_KEY_PREFIXES = (
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_GLOBAL",
+)
+"""Prefixes of env keys that must not be injected from a `.env` file.
+
+`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` are numbered pairs and cannot be listed
+exhaustively; the rest are single keys whose `GIT_CONFIG_` prefix makes them
+unambiguous config-injection vectors. `GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL`
+point git at attacker-controlled config files, which can carry the same
+executable values (`core.fsmonitor`, `core.pager`, ...).
+"""
+
+
+def _is_dotenv_denied_env_key(key: str) -> bool:
+    """Return whether a dotenv key is denied from any `.env` file.
+
+    Combines the exact-match `_DOTENV_DENIED_ENV_KEYS` set with the
+    `_DOTENV_DENIED_ENV_KEY_PREFIXES` family so numbered git config keys
+    (`GIT_CONFIG_KEY_0`, ...) are denied without enumeration. The key is
+    uppercased before both checks so a lowercase or mixed-case spelling cannot
+    slip past on Windows, where `os.environ` assignment would normalize it back
+    to the active uppercase form.
+    """
+    normalized = key.upper()
+    return normalized in _DOTENV_DENIED_ENV_KEYS or normalized.startswith(
+        _DOTENV_DENIED_ENV_KEY_PREFIXES
+    )
+
 
 _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
@@ -257,7 +325,9 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
 
     Returns:
         Environment mapping with project and global dotenv values applied using
-        the same first-write-wins precedence as `_load_dotenv`.
+        the same first-write-wins precedence as `_load_dotenv`. The project
+        `.env` is skipped when `startup.read_project_dotenv` resolves false, so
+        a preview never reports a value a real reload would not load.
     """
     import dotenv
 
@@ -282,7 +352,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
         for key, value in values.items():
             if value is None or key in env:
                 continue
-            if key in _DOTENV_DENIED_ENV_KEYS:
+            if _is_dotenv_denied_env_key(key):
                 # Log the key only — the value is attacker-controlled.
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
@@ -296,21 +366,30 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 continue
             env[key] = value
 
-    project_dotenv: Path | None = None
-    try:
-        project_dotenv = (
-            _find_dotenv_from_start_path(start_path)
-            if start_path is not None
-            else _find_dotenv_from_start_path(Path.cwd())
-        )
-    except OSError:
-        logger.warning(
-            "Could not inspect project dotenv at %s; previewed project env vars may "
-            "be incomplete",
+    from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+    if resolve_read_project_dotenv():
+        project_dotenv: Path | None = None
+        try:
+            project_dotenv = (
+                _find_dotenv_from_start_path(start_path)
+                if start_path is not None
+                else _find_dotenv_from_start_path(Path.cwd())
+            )
+        except OSError:
+            logger.warning(
+                "Could not inspect project dotenv at %s; previewed project env "
+                "vars may be incomplete",
+                start_path or "cwd",
+                exc_info=True,
+            )
+        apply_dotenv(project_dotenv, is_project=True)
+    else:
+        logger.debug(
+            "Skipping project dotenv preview at %s: startup.read_project_dotenv "
+            "is false",
             start_path or "cwd",
-            exc_info=True,
         )
-    apply_dotenv(project_dotenv, is_project=True)
 
     try:
         global_dotenv = _GLOBAL_DOTENV_PATH if _GLOBAL_DOTENV_PATH.is_file() else None
@@ -349,7 +428,8 @@ def _load_dotenv(
 
     Loads in order (first write wins, `override=False`):
 
-    1. Project/CWD `.env` — project-specific values
+    1. Project/CWD `.env` — project-specific values (skipped when
+       `startup.read_project_dotenv` resolves false)
     2. `~/.deepagents/.env` — global user defaults
 
     Both layers use `override=False` (the python-dotenv default) so that
@@ -391,7 +471,7 @@ def _load_dotenv(
         for key, value in values.items():
             if value is None or key in os.environ:
                 continue
-            if key in _DOTENV_DENIED_ENV_KEYS:
+            if _is_dotenv_denied_env_key(key):
                 # Log the key only — the value is attacker-controlled.
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
@@ -410,23 +490,54 @@ def _load_dotenv(
         return applied
 
     # 1. Project/CWD .env — loads first so project values are set before the
-    # global file, which can only fill in vars not already present.
-    dotenv_path: Path | str | None = None
+    # global file, which can only fill in vars not already present. Skipped
+    # entirely when `startup.read_project_dotenv` resolves false. The option's
+    # own env var is denied from *every* `.env` (see `_DOTENV_DENIED_ENV_KEYS`),
+    # so neither file can inject it; but the trusted global `.env` is a
+    # legitimate place to opt out, so read just that key from it *before* the
+    # project file is touched — otherwise a hostile project file would load (and
+    # could pin the var true) before the trusted opt-out was ever seen.
+    from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+    global_toggle: dict[str, str] = {}
     try:
-        if start_path is None:
-            found = dotenv.find_dotenv(usecwd=True)
-            if found:
-                dotenv_path = found
-                loaded = apply_dotenv(Path(found), is_project=True) or loaded
-        else:
-            dotenv_path = _find_dotenv_from_start_path(start_path)
-            if dotenv_path is not None:
-                loaded = apply_dotenv(dotenv_path, is_project=True) or loaded
+        if _GLOBAL_DOTENV_PATH.is_file():
+            raw = dotenv.dotenv_values(dotenv_path=_GLOBAL_DOTENV_PATH).get(
+                READ_PROJECT_DOTENV
+            )
+            if raw is not None:
+                global_toggle[READ_PROJECT_DOTENV] = raw
     except (OSError, ValueError):
         logger.warning(
-            "Could not read project dotenv at %s; project env vars will not be loaded",
-            dotenv_path or start_path or "cwd",
+            "Could not read global dotenv at %s; global defaults will not be applied",
+            _GLOBAL_DOTENV_PATH,
             exc_info=True,
+        )
+
+    read_project = resolve_read_project_dotenv(global_dotenv=global_toggle)
+    dotenv_path: Path | str | None = None
+    if read_project:
+        try:
+            if start_path is None:
+                found = dotenv.find_dotenv(usecwd=True)
+                if found:
+                    dotenv_path = found
+                    loaded = apply_dotenv(Path(found), is_project=True) or loaded
+            else:
+                dotenv_path = _find_dotenv_from_start_path(start_path)
+                if dotenv_path is not None:
+                    loaded = apply_dotenv(dotenv_path, is_project=True) or loaded
+        except (OSError, ValueError):
+            logger.warning(
+                "Could not read project dotenv at %s; project env vars will not "
+                "be loaded",
+                dotenv_path or start_path or "cwd",
+                exc_info=True,
+            )
+    else:
+        logger.debug(
+            "Skipping project dotenv at %s: startup.read_project_dotenv is false",
+            start_path or "cwd",
         )
 
     # 2. Global (~/.deepagents/.env) — fills in any vars not already set by
@@ -3494,10 +3605,7 @@ def get_langsmith_project_name() -> str | None:
     langsmith_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
         "LANGCHAIN_API_KEY"
     )
-    langsmith_tracing = resolve_env_var("LANGSMITH_TRACING") or resolve_env_var(
-        "LANGCHAIN_TRACING_V2"
-    )
-    if not (langsmith_key and langsmith_tracing):
+    if not (langsmith_key and _tracing_enabled()):
         return None
 
     return (

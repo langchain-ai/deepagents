@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from rich.cells import cell_len
 from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual.app import NoScreen
 from textual.color import Color
@@ -626,6 +627,38 @@ class ChatTextArea(PasteBurstTextArea):
         """Clear resolved shell styles when the app theme changes."""
         self._highlighted_lines = None
         super().notify_style_update()
+
+    def _render_line(self, y: int) -> Strip:
+        """Render a line, keeping shell token colors visible on the cursor line.
+
+        `TextArea._render_line` stylizes the whole cursor line with
+        `theme.cursor_line_style`, which resolves to a style carrying the
+        widget's text color. That foreground is painted after (and on top of)
+        the shell syntax spans produced by `get_line`, flattening every token
+        on the cursor line to a single color. Temporarily strip the foreground
+        from `cursor_line_style` while shell highlighting is active so only the
+        cursor-line background tint is applied over the token colors.
+
+        Args:
+            y: Y Coordinate of line relative to the widget region.
+
+        Returns:
+            A rendered line.
+        """
+        theme = self._theme
+        cursor_line_style = theme.cursor_line_style if theme else None
+        if (
+            not self._shell_highlighting
+            or cursor_line_style is None
+            or cursor_line_style.color is None
+        ):
+            return super()._render_line(y)
+
+        theme.cursor_line_style = Style(bgcolor=cursor_line_style.bgcolor)
+        try:
+            return super()._render_line(y)
+        finally:
+            theme.cursor_line_style = cursor_line_style
 
     def get_line(self, line_index: int) -> Text:
         """Return one input line with shell syntax styles when enabled."""

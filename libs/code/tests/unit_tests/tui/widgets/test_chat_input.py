@@ -1626,6 +1626,36 @@ class TestShellSyntaxHighlighting:
                 for span in line.spans
             )
 
+    async def test_cursor_line_keeps_shell_highlight_colors(self) -> None:
+        """Rendered strip on the cursor line should keep token colors.
+
+        Regression test: `TextArea._render_line` stylizes the whole cursor line
+        with `cursor_line_style`, which carries the widget text color. Without
+        the foreground strip in `ChatTextArea._render_line`, that paints over
+        the syntax spans and every rendered token collapses to one color. The
+        other tests in this class only assert on `get_line()`, which runs
+        before the cursor-line style is applied.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            text_area.text = 'FOO="bar" echo "$FOO"'
+            chat_input.mode = "shell"
+            await pilot.pause()
+
+            # Put the cursor on the line being rendered.
+            text_area.move_cursor((0, 0))
+            strip = text_area.render_line(0)
+            colors = {
+                segment.style.color.triplet
+                for segment in strip
+                if segment.text.strip() and segment.style and segment.style.color
+            }
+            # Distinct syntax colors must survive to the rendered strip, not
+            # flatten to the single cursor-line text color.
+            assert len(colors) > 1
+
 
 class TestModeSwitchNoJitter:
     """Regression tests: mode glyph and completion popup update atomically.

@@ -45,8 +45,8 @@ YOLO_MODE_NOTICE_BODY = (
     "You are about to enable **YOLO mode**. The agent may run shell commands, "
     "edit files, make network calls, and use other tools on this machine "
     "**without asking you first**.\n\n"
-    "Only continue if you're comfortable letting it act unsupervised. Leave "
-    "YOLO any time with **Shift+Tab**.\n\n"
+    "Only continue if you're comfortable letting it act unsupervised.\n\n"
+    "Leave YOLO any time with **Shift+Tab**.\n\n"
     "This notice appears **once** on this machine.\n\n"
     f"[Learn more about approval modes]({YOLO_MODE_DOCS_URL})"
 )

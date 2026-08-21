@@ -10,7 +10,7 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, cast
 
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -22,6 +22,7 @@ from textual.message import Message
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.selection import Selection
+from textual.strip import Strip
 from textual.style import Style as TStyle
 from textual.widgets import Static
 
@@ -30,6 +31,8 @@ from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_SUMMARY,
     ASK_USER_FAILED_SUMMARY,
     AskUserRowSummary,
+    Question,
+    render_ask_user_transcript_for_display,
 )
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
@@ -83,8 +86,12 @@ if TYPE_CHECKING:
         RenderResult,
     )
     from textual.app import ComposeResult
+    from textual.content import _FormattedLine
+    from textual.css.styles import RulesMap
+    from textual.css.types import PointerShape
     from textual.events import MouseMove
     from textual.timer import Timer
+    from textual.visual import RenderOptions
     from textual.widget import Widget
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
@@ -93,13 +100,13 @@ if TYPE_CHECKING:
     from deepagents_code.theme import ThemeColors
     from deepagents_code.tui.widgets.message_store import MessageData
 
-    _SummaryCall: TypeAlias = tuple[str, Mapping[str, Any]]
+    type _SummaryCall = tuple[str, Mapping[str, Any]]
     """One tool call as the summary code sees it: `(raw tool name, parsed args)`."""
 
-    _SummaryCacheKey: TypeAlias = tuple[tuple[str, str | None], ...]
+    type _SummaryCacheKey = tuple[tuple[str, str | None], ...]
     """Opaque identity of a summary line's inputs — compare only for equality."""
 
-    _LiveSummaryKey: TypeAlias = tuple[_SummaryCacheKey, _SummaryCacheKey]
+    type _LiveSummaryKey = tuple[_SummaryCacheKey, _SummaryCacheKey]
     """The `(completed, pending)` key pair behind a cached live summary line."""
 
 logger = logging.getLogger(__name__)
@@ -126,6 +133,58 @@ def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
         return colors.mode_command
     logger.warning("Missing color for mode '%s'; falling back to primary.", mode)
     return colors.primary
+
+
+def _event_targets_rendered_text(event: MouseMove) -> bool:
+    """Return whether the hovered cell was rendered from widget content.
+
+    Textual tags every content segment's style with a selection `offset`
+    (`Content.to_strip` via `Style.rich_style_with_offset`) and reads the same
+    key back in `Compositor.get_widget_and_offset_at` to map a screen cell to a
+    text position. Alignment padding and cells past the end of a line carry no
+    such meta, so the key doubles as a rendered-text hit test that agrees
+    exactly with what Textual can resolve to an offset.
+
+    `offset` and both of its producers are private Textual API. Re-verify these
+    names on every Textual bump: if the key moves, every cell reads as blank
+    and the text pointer silently stops appearing.
+
+    This tracks *rendered* text, not *selectable* text — the meta is attached
+    unconditionally, so a widget with `ALLOW_SELECT = False` still reports
+    `True` here.
+
+    Args:
+        event: The Textual mouse-move event to inspect.
+
+    Returns:
+        `True` when the hovered cell holds content-rendered text.
+    """
+    return "offset" in event.style.meta
+
+
+def _pointer_shape_for(event: MouseMove) -> PointerShape:
+    """Return the pointer shape to show for the cell under the mouse.
+
+    Textual applies a widget's pointer across its whole rectangle, so a message
+    declaring `pointer: text` in CSS shows an I-beam over the blank space beside
+    its short lines. Resolving the shape per cell instead keeps the I-beam on
+    text the reader can actually select.
+
+    The result is only accurate as of the last mouse movement: content that
+    grows or scrolls under a stationary pointer leaves the previous shape in
+    place until the mouse moves again.
+
+    Args:
+        event: The Textual mouse-move event to inspect.
+
+    Returns:
+        `'pointer'` over links, `'text'` over rendered text, else `'default'`.
+    """
+    if event_targets_link(event):
+        return "pointer"
+    if _event_targets_rendered_text(event):
+        return "text"
+    return "default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +486,132 @@ def _truncate_for_display(text: str) -> str:
     return _collapse_user_message(text).text
 
 
+class _UserMessageContent(Content):
+    """Content visual that wraps prompt bodies beside a fixed two-cell gutter."""
+
+    _PREFIX_WIDTH = 2
+
+    @classmethod
+    def from_content(cls, content: Content) -> _UserMessageContent:
+        """Promote styled content without changing its text or spans.
+
+        Returns:
+            Hanging-indent content with the same text and spans.
+        """
+        return cls(
+            content.plain,
+            list(content.spans),
+            strip_control_codes=False,
+        )
+
+    @classmethod
+    def _body_selection(cls, selection: Selection | None) -> Selection | None:
+        """Translate selection offsets after removing the first-line prefix.
+
+        Returns:
+            Selection expressed in body-relative coordinates.
+        """
+        if selection is None:
+            return None
+
+        def translate(offset: Offset | None) -> Offset | None:
+            if offset is None or offset.y != 0:
+                return offset
+            return Offset(max(0, offset.x - cls._PREFIX_WIDTH), 0)
+
+        return Selection(translate(selection.start), translate(selection.end))
+
+    def _render_lines(
+        self,
+        width: int,
+        options: RenderOptions,
+        selection: Selection | None,
+    ) -> list[_FormattedLine]:
+        """Wrap this content with the active widget rendering options.
+
+        Returns:
+            Formatted physical lines ready for strip rendering.
+        """
+        get_rule = options.rules.get
+        return super()._wrap_and_format(
+            width,
+            align=get_rule("text_align", "left"),
+            overflow=get_rule("text_overflow", "fold"),
+            no_wrap=get_rule("text_wrap", "wrap") == "nowrap",
+            line_pad=get_rule("line_pad", 0),
+            tab_size=8,
+            selection=selection,
+            selection_style=options.selection_style,
+            post_style=options.post_style,
+            get_style=options.get_style,
+        )
+
+    def _measure_lines(self, width: int, rules: RulesMap) -> list[_FormattedLine]:
+        """Wrap unstyled content for auto-height measurement.
+
+        Returns:
+            Formatted lines used to derive the widget height.
+        """
+        get_rule = rules.get
+        return super()._wrap_and_format(
+            width,
+            overflow=get_rule("text_overflow", "fold"),
+            no_wrap=get_rule("text_wrap", "wrap") == "nowrap",
+            line_pad=get_rule("line_pad", 0),
+        )
+
+    def get_height(self, rules: RulesMap, width: int) -> int:
+        """Measure body wrapping at the width left beside the prompt gutter.
+
+        Returns:
+            Number of rendered lines required at `width`.
+        """
+        if width <= self._PREFIX_WIDTH:
+            return super().get_height(rules, width)
+        body = type(self)(self.plain[self._PREFIX_WIDTH :])
+        return len(body._measure_lines(width - self._PREFIX_WIDTH, rules))
+
+    def render_strips(
+        self,
+        width: int,
+        height: int | None,
+        style: TStyle,
+        options: RenderOptions,
+    ) -> list[Strip]:
+        """Render the prefix once and reserve its gutter on subsequent lines.
+
+        Returns:
+            Rendered strips with a fixed prompt gutter.
+        """
+        if width <= self._PREFIX_WIDTH:
+            return super().render_strips(width, height, style, options)
+
+        prefix = type(self).from_content(self[: self._PREFIX_WIDTH])
+        body = type(self).from_content(self[self._PREFIX_WIDTH :])
+        prefix_lines = prefix._render_lines(
+            self._PREFIX_WIDTH,
+            options,
+            options.selection,
+        )
+        body_lines = body._render_lines(
+            width - self._PREFIX_WIDTH,
+            options,
+            self._body_selection(options.selection),
+        )
+        for line in body_lines:
+            if line.y == 0:
+                line.x += self._PREFIX_WIDTH
+
+        prefix_strip = Strip(*prefix_lines[0].to_strip(style))
+        body_strips = [Strip(*line.to_strip(style)) for line in body_lines]
+        indent = Strip.blank(self._PREFIX_WIDTH, style.background_style.rich_style)
+        strips = [
+            Strip.join((prefix_strip, body_strips[0])),
+            *(Strip.join((indent, line)) for line in body_strips[1:]),
+        ]
+        return strips if height is None else strips[:height]
+
+
 class UserMessage(Static):
     """Widget displaying a user message.
 
@@ -453,11 +638,10 @@ class UserMessage(Static):
     DEFAULT_CSS = """
     UserMessage {
         height: auto;
-        padding: 0 1;
+        padding: 1 1 1 0;
         margin: 0 0 1 0;
-        background: transparent;
+        background: $primary 15%;
         border-left: wide $primary;
-        pointer: text;
         /* The expand affordance carries `@click` meta, which Textual styles as
            a link (underline, and bold on an accent block when hovered).
            Neutralize both so the hint renders as plain inherited-colour dim
@@ -773,12 +957,12 @@ class UserMessage(Static):
 
         if isinstance(collapse, _UserMessageFull):
             self._append_highlighted_body(parts, body, colors=colors)
-            return Content.assemble(*parts)
+            return _UserMessageContent.from_content(Content.assemble(*parts))
 
         if self._expanded:
             self._append_highlighted_body(parts, body, colors=colors)
             parts.extend(("\n", self._expand_hint_content()))
-            return Content.assemble(*parts)
+            return _UserMessageContent.from_content(Content.assemble(*parts))
 
         # Collapsed: head + clickable elision line + tail. The middle marker is
         # the affordance (not a second trailing line) so the collapse stays
@@ -788,7 +972,15 @@ class UserMessage(Static):
         self._append_highlighted_body(parts, collapse.head, colors=colors)
         parts.extend(("\n", self._collapse_hint_content(collapse), "\n"))
         self._append_highlighted_body(parts, collapse.tail, colors=colors)
-        return Content.assemble(*parts)
+        return _UserMessageContent.from_content(Content.assemble(*parts))
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 class QueuedUserMessage(Static):
@@ -805,7 +997,6 @@ class QueuedUserMessage(Static):
         background: transparent;
         border-left: wide $panel;
         opacity: 0.6;
-        pointer: text;
     }
     """
     """Dimmed border + reduced opacity to distinguish queued messages from sent ones."""
@@ -890,6 +1081,14 @@ class QueuedUserMessage(Static):
         content = _truncate_for_display(content)
         return Content.assemble(prefix, (content, colors.muted))
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
+
 
 def _strip_frontmatter(text: str) -> str:
     """Remove YAML frontmatter delimited by `---` markers.
@@ -937,7 +1136,7 @@ class SkillMessage(Vertical):
     DEFAULT_CSS = """
     SkillMessage {
         height: auto;
-        padding: 0 1;
+        padding: 0 1 0 0;
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $skill;
@@ -1198,7 +1397,6 @@ class AssistantMessage(Vertical):
     AssistantMessage Markdown {
         padding: 0;
         margin: 0;
-        pointer: text;
     }
 
     /* Markdown blocks carry a bottom margin for inter-block spacing; drop it
@@ -1258,21 +1456,12 @@ class AssistantMessage(Vertical):
         self._markdown = self.query_one("#assistant-content", Markdown)
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a pointer cursor over markdown links, text cursor elsewhere.
-
-        The pointer is set on the inner `Markdown` widget because it carries a
-        non-default (`text`) pointer in CSS, so the screen resolves its shape
-        before reaching this container.
-        """
-        if self._markdown is not None:
-            self._markdown.styles.pointer = (
-                "pointer" if event_targets_link(event) else "text"
-            )
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
 
     def on_leave(self) -> None:
-        """Reset the markdown pointer shape when the mouse leaves the message."""
-        if self._markdown is not None:
-            self._markdown.styles.pointer = "text"
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
     async def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
         """Open Markdown links with the same toast feedback as style links."""
@@ -1427,7 +1616,7 @@ class ToolCallMessage(Vertical):
     DEFAULT_CSS = """
     ToolCallMessage {
         height: auto;
-        padding: 0 1;
+        padding: 0 1 0 0;
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $tool;
@@ -1612,6 +1801,9 @@ class ToolCallMessage(Vertical):
         # One-shot guard so `_format_ask_user_output` reports unusable `questions`
         # args once per widget rather than on every re-render.
         self._ask_user_args_warned: bool = False
+        # One-shot guard so `_format_ask_user_output` reports a transcript it
+        # could not unpack once per widget rather than on every re-render.
+        self._ask_user_display_warned: bool = False
         # Deferred state for hydration (set by MessageData.to_widget)
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
@@ -3397,7 +3589,9 @@ class ToolCallMessage(Vertical):
         The inline question widget is unmounted once answered, so this row is the
         only place the answers stay visible in the live session — the thread's
         own `ToolMessage` is what a reload re-renders from. Collapsed, the row
-        keeps a one-line summary; expanded, it shows what was sent back.
+        keeps a one-line summary; expanded, it shows what was sent back, except
+        that `multi_select` answers are unpacked from their JSON encoding for
+        legibility.
 
         The summary is derived from the recorded status, never from the answer
         text (the question count only labels the expand affordance). The
@@ -3409,9 +3603,12 @@ class ToolCallMessage(Vertical):
 
         Returns:
             FormattedOutput with the status-derived summary when `is_preview`, or
-                the output rendered literally when expanded. A row holding only a
-                fallback summary advertises no expansion. Falls back to generic
-                formatting when the structured question args are unavailable.
+                the output when expanded — rendered literally unless
+                `render_ask_user_transcript_for_display` can unpack a
+                `multi_select` answer, which rewrites nothing else. A row holding
+                only a fallback summary advertises no expansion. Falls back to
+                generic formatting when the structured question args are
+                unavailable.
         """
         question_count = self._ask_user_question_count()
         if question_count == 0:
@@ -3438,6 +3635,37 @@ class ToolCallMessage(Vertical):
             return FormattedOutput(content=Content.styled(output, "dim"))
 
         if not is_preview:
+            # Unpack `multi_select` JSON arrays for the reader. Anything that
+            # does not parse as exactly these questions falls back to the
+            # authoritative text, so the row is never worse than literal.
+            #
+            # Gating on an actual `multi_select` is what makes the log below
+            # worth emitting: without it every text-only transcript would report
+            # a `None` that means nothing. It still covers two cases — a
+            # transcript that did not parse, and one that parsed but held no
+            # decodable array (a cancelled prompt puts placeholders in every
+            # slot) — so this is debug, not a warning.
+            # `_ask_user_question_count` already proved `questions` is a list of
+            # dicts.
+            questions = self._args.get("questions")
+            if isinstance(questions, list) and any(
+                isinstance(question, dict) and question.get("type") == "multi_select"
+                for question in questions
+            ):
+                display = render_ask_user_transcript_for_display(
+                    cast("list[Question]", questions), output
+                )
+                if display is not None:
+                    return FormattedOutput(content=Content(display))
+                if not self._ask_user_display_warned:
+                    # Once per widget: this runs on every re-render, and the
+                    # condition cannot change without a new `_args` or output.
+                    self._ask_user_display_warned = True
+                    logger.debug(
+                        "ask_user transcript over %d question(s) had no "
+                        "multi_select answer to unpack; rendering it literally",
+                        len(questions),
+                    )
             return FormattedOutput(content=Content(output))
 
         if self._status == "error":
@@ -4931,7 +5159,6 @@ class DiffMessage(Static):
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $panel;
-        pointer: text;
     }
 
     DiffMessage .diff-header {
@@ -5119,6 +5346,14 @@ class DiffMessage(Static):
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.panel)
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
+
 
 class ErrorMessage(Static):
     """Widget displaying an error message."""
@@ -5131,7 +5366,6 @@ class ErrorMessage(Static):
         background: $error-muted;
         color: white;
         border-left: wide $error;
-        pointer: text;
     }
     """
     """Tinted background + left border to visually separate errors from output."""
@@ -5169,6 +5403,14 @@ class ErrorMessage(Static):
         """Open clicked URLs."""
         if event.style.link:
             open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 class _RubricResultToggle(Static):
@@ -5499,7 +5741,6 @@ class AppMessage(Static):
         margin: 0 0 1 0;
         color: $text-muted;
         text-style: italic;
-        pointer: text;
     }
     """
 
@@ -5592,17 +5833,12 @@ class AppMessage(Static):
         open_style_link(event)
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a pointer cursor over embedded links, text cursor elsewhere."""
-        self.styles.pointer = "pointer" if event_targets_link(event) else "text"
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
 
     def on_leave(self) -> None:
-        """Restore the pointer shape when the mouse leaves the message.
-
-        `"text"` restates this widget's CSS default rather than clearing the
-        inline style, so a subclass declaring a different `pointer` would be
-        forced back to `text` on leave.
-        """
-        self.styles.pointer = "text"
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 class SummarizationMessage(AppMessage):
@@ -5617,7 +5853,6 @@ class SummarizationMessage(AppMessage):
         background: $surface;
         border-left: wide $primary;
         text-style: bold;
-        pointer: text;
     }
     """
 

@@ -1,8 +1,16 @@
 ---
 type: Engineering Workflow
 title: Deep Agents Code runtime, approvals, and MCP trust
-description: Maintainer guide to dcode’s Textual client and LangGraph server, human approval modes, experimental Auto policy, sandboxes, and MCP configuration trust.
-tags: [dcode, security, approvals, mcp, workflow]
+description: Maintainer guide to dcode’s Textual transcript client and LangGraph server, user-message rendering and selection, approval modes, experimental Auto policy, sandboxes, and MCP configuration trust.
+tags: [dcode, security, approvals, mcp, workflow, tui, transcript]
+openwiki:
+  roles: [workflow, integration]
+  change_kinds: [ui, transcript, client-server]
+  source_paths: [libs/code/deepagents_code/tui/widgets/messages.py, libs/code/deepagents_code/app.py, libs/code/deepagents_code/server_graph.py]
+  symbols: [UserMessage, QueuedUserMessage, create_cli_agent, make_graph]
+  test_paths: [libs/code/tests/unit_tests/tui/widgets/test_messages.py, libs/code/tests/unit_tests/test_app.py]
+  invariants: ["Sent-prompt continuation lines align under the message body, not the prefix glyph.", "Full-message selection returns submitted text rather than display-truncated content."]
+  validation_commands: ["cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k UserMessageAppearance"]
 ---
 # Deep Agents Code: runtime, approvals, and MCP trust
 
@@ -27,6 +35,39 @@ CLI parsing (`main.py`)
 - Local execution uses `LocalShellBackend` rooted at the working directory; remote execution delegates filesystem and shell operations to the selected sandbox.
 
 `libs/code/ARCHITECTURE.md` and `DEVELOPMENT.md` are the first primary docs to read when changing this path. Changes to the server-side graph construction should also account for the core assembly rules in [Runtime and package architecture](../architecture/overview.md).
+
+## Transcript presentation and selection
+
+Consult this section for interactive dcode transcript changes, not for agent execution semantics. `UserMessage` in `libs/code/deepagents_code/tui/widgets/messages.py` is the sent-prompt widget mounted by `app.py`; it represents client-side input after submission and does not change what the server graph receives. `QueuedUserMessage` is a dimmed, temporary pre-send representation and deliberately retains its separate border/opacity treatment.
+
+```mermaid
+flowchart TD
+    Submit["Client submits prompt"] --> Widget["UserMessage stores original content"]
+    Widget --> Prefix["Render prefix and body"]
+    Prefix --> Long{"Body exceeds display threshold"}
+    Long -->|No| Full["Render full body"]
+    Long -->|Yes| Collapsed["Render head tail and expand hint"]
+    Collapsed --> Toggle["Click or Ctrl+O toggles expanded state"]
+    Toggle --> Expanded["Render full body and collapse hint"]
+    Widget --> Select["Full selection uses original content"]
+```
+
+This flow is local to the Textual client: submitted text is retained for copy/selection even when the transcript render is collapsed.
+
+### Rendering invariants and extension seam
+
+- Sent prompts use a primary-tinted surface with one-cell top/bottom padding, no left padding, one-cell right padding, and one row of external separation. The visual boundary makes user input scannable without adding padding to high-frequency assistant/tool rows.
+- The prompt/mode prefix is exactly two cells (`> `, `$ `, or `/ `). `_UserMessageContent` shifts wrapped lines by that gutter, so soft-wrap and explicit continuation text begins under the body, not under the glyph. Preserve this when changing prefix text, padding, or custom rendering.
+- Long bodies use head-and-tail collapse with a clickable `@click` hint; `Ctrl+O` and click toggle `_expanded`. `get_selection()` must return the original full text for select-all/end selections, while partial selections stay aligned to the displayed render. Mode detection can strip `!`, `!!`, or `/` only when enabled; literal `-m`/`--message` input with a leading path slash remains plain text.
+- `set_cancelled()` only dims an interrupted prompt. It is a client transcript state and must not be mistaken for a server cancellation mechanism.
+
+The focused behavioral suite is `libs/code/tests/unit_tests/tui/widgets/test_messages.py::TestUserMessageAppearance`: it asserts the 15%-alpha background, four padding edges, and the continuation gutter for ordinary, shell, and slash prompts. Run the quiet narrow check from `libs/code`:
+
+```bash
+uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k UserMessageAppearance
+```
+
+Broaden to the surrounding message-widget tests when changing collapse, selection, pointer handling, mode parsing, or queued-message behavior. Do not run server, approval, or integration tests for a CSS/layout-only change unless the edit also crosses the client/server submission boundary.
 
 ## Approval modes are safety policy, not containment
 
@@ -62,6 +103,12 @@ Project-declared MCP configuration is a trust boundary: it can spawn a local com
 
 Runtime discovery uses throwaway sessions; tool wrappers use a lazy process-wide session manager with retry/invalidation for transient/dead/reauth sessions. Loading is bounded-concurrent while output ordering remains deterministic.
 
+### Cached MCP tool failure boundary
+
+`_build_cached_mcp_tool()` in `libs/code/deepagents_code/mcp_tools.py` turns each discovered tool into a LangChain `StructuredTool`. Its coroutine obtains a cached session, retries a transient session failure once after invalidation, and raises a `ToolException` for failures the model must see. `_handle_cached_mcp_tool_error()` is the sole `WARNING`/traceback logging boundary for those recoverable `ToolException`s and returns the tool-local error text. Do not add a second warning in the coroutine: one failed tool call must yield one failure warning, not duplicate diagnostics.
+
+Cleanup warnings are separate: invalidating a failed retry session or closing a session can warn independently because they describe a resource-cleanup problem rather than a duplicate tool failure. Preserve that distinction when changing retries or error handling. Re-raise cancellation, keyboard interrupt, system exit, and existing `ToolException` values unchanged; the wrapper must not turn control flow or actionable MCP errors into a generic retry result.
+
 ## Tests and safe modification sequence
 
 Run from `libs/code`:
@@ -78,6 +125,14 @@ The pytest defaults enforce a 30-second timeout and strict markers/configuration
 - `tests/unit_tests/test_approval_mode.py`: store failures/malformed state fail closed; YOLO acknowledgement behavior.
 - `tests/unit_tests/test_auto_mode.py`: provenance, annotation coherence, path/Git policies, classifier failures, replay/escalation, denials, and headless MCP guards.
 - `tests/unit_tests/test_server_graph.py`: graph cache, startup error handling, MCP discovery, off-loop construction, and no-MCP/read-only conditions.
+- `tests/unit_tests/test_mcp_tools.py::TestCachedSessionProxy::test_repeated_transient_error_surfaces_tool_message`: a second transient failure becomes a model-visible error after one retry and logs exactly one tool-failure warning with traceback.
+- `tests/unit_tests/test_mcp_tools.py::TestCachedSessionProxy::test_generic_oserror_is_not_retried`: a non-transient `OSError` is model-visible without session retry and has the same single-warning contract.
 - `tests/integration_tests/test_auto_approve_remote.py`: actual approved/rejected remote writes, including subagent behavior.
+
+For the cached MCP error seam, use the quiet focused check before broader package checks:
+
+```bash
+cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_mcp_tools.py -k 'repeated_transient_error_surfaces_tool_message or generic_oserror_is_not_retried'
+```
 
 Before changing dcode: identify whether the behavior is client UI, persisted approval state, graph construction, middleware, backend/sandbox, or MCP session lifecycle; make the change at that boundary; then test both failure-to-manual and success paths. For repository-wide CI/release context, see [Evaluation and release](evaluation-and-release.md) and [Operations and testing](../engineering/operations-and-testing.md).

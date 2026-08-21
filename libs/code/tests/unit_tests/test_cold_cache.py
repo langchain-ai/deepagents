@@ -1054,6 +1054,22 @@ def test_load_trusted_cache_endpoints_reads_config_from_disk(
     assert load_trusted_cache_endpoints() == frozenset({"smith.langchain.com"})
 
 
+def test_load_trusted_cache_endpoints_prefers_managed_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed endpoint trust replaces a conflicting user configuration."""
+    monkeypatch.setattr(
+        "deepagents_code.config_manifest.load_config_toml",
+        lambda: {"warnings": {"trusted_cache_endpoints": ["user.example.com"]}},
+    )
+    monkeypatch.setattr(
+        "deepagents_code.config_manifest.load_managed_config_toml",
+        lambda: {"warnings": {"trusted_cache_endpoints": ["managed.example.com"]}},
+    )
+
+    assert load_trusted_cache_endpoints() == frozenset({"managed.example.com"})
+
+
 def test_load_trusted_cache_endpoints_survives_an_undecodable_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

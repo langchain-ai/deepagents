@@ -129,6 +129,7 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
         mock_s.model_provider = _FIXED_MODEL_PROVIDER
         mock_s.model_context_limit = _FIXED_CONTEXT_LIMIT
         mock_s.model_unsupported_modalities = frozenset()
+        mock_s.has_tavily = False
         mock_s.project_root = None
         mock_s.user_langchain_project = None
         mock_s.shell_allow_list = None

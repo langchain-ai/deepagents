@@ -481,7 +481,7 @@ async def _load_mcp_server_info(
         project_context = ProjectContext.from_user_cwd(Path.cwd())
     except (OSError, RuntimeError):
         # `Path.cwd()`/`.resolve()` raise OSError for a missing cwd and
-        # RuntimeError on a symlink loop (3.11-3.12); match the codebase's own
+        # RuntimeError on a symlink loop (3.12 only); match the codebase's own
         # convention in `project_utils` and fall back to no project context.
         logger.warning("Could not determine working directory for MCP discovery")
         project_context = None

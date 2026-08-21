@@ -61,7 +61,6 @@ from deepagents_code.model_config import (
     ProviderAuthState,
     ProviderAuthStatus,
     clear_caches,
-    get_available_models,
     get_base_url_env_var,
     get_base_url_env_vars,
     get_credential_env_var,
@@ -175,7 +174,7 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "mistralai": "Mistral AI",
     "nvidia": "NVIDIA",
     "openai": "OpenAI",
-    "openai_codex": "OpenAI Codex (ChatGPT login)",
+    "openai_codex": "OpenAI (Subscription login)",
     "openrouter": "OpenRouter",
     "perplexity": "Perplexity",
     "together": "Together AI",
@@ -193,7 +192,7 @@ PROVIDER_SHORT_NAMES: dict[str, str] = {
 
 Sparse companion to `PROVIDER_DISPLAY_NAMES`: an entry exists only when the full
 display name carries a parenthetical qualifier that reads badly inside a tag
-(e.g. `"OpenAI Codex (ChatGPT login)"`). Resolved via `provider_short_name`.
+(e.g. `"OpenAI (Subscription login)"`). Resolved via `provider_short_name`.
 """
 
 
@@ -633,6 +632,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         allow_empty_submit: bool = False,
         input_placeholder: str | None = None,
         submit_label: str | None = None,
+        show_cancel_hint: bool = True,
     ) -> None:
         """Initialize the prompt for `provider`.
 
@@ -647,6 +647,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 with `AuthResult.CANCELLED` instead of showing a validation error.
             input_placeholder: Optional placeholder override for the key input.
             submit_label: Optional help-label override for the Enter action.
+            show_cancel_hint: Whether the footer advertises the Escape action.
         """
         super().__init__()
         self._provider = provider
@@ -655,6 +656,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         self._allow_empty_submit = allow_empty_submit
         self._input_placeholder = input_placeholder
         self._submit_label = submit_label
+        self._show_cancel_hint = show_cancel_hint
         # LangSmith is configured as a tracing service: it carries an optional
         # project name and an endpoint chosen from a region selector (US/EU SaaS
         # or a custom self-hosted URL), and saving a key turns tracing on.
@@ -1000,8 +1002,13 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             save_label = self._submit_label or (
                 "Enter replace" if self._has_existing else "Enter save"
             )
+            save_help = (
+                f"{save_label} {glyphs.bullet} Esc cancel"
+                if self._show_cancel_hint
+                else save_label
+            )
             help_parts = [
-                f"{save_label} {glyphs.bullet} Esc cancel",
+                save_help,
                 "F2 advanced",
                 "Ctrl+R reload",
             ]
@@ -1879,19 +1886,28 @@ class AuthManagerScreen(ModalScreen[None]):
             name for name, cfg in config.providers.items() if cfg.get("api_key_env")
         }
 
-        # Only show well-known providers whose LangChain package is actually
-        # installed. `get_available_models` returns providers it could
-        # successfully import profiles for, so it doubles as an install
-        # gate. Stored and config-defined providers are always shown — even
-        # if the package was later uninstalled — so a stale credential can
-        # still be cleaned up and an explicitly-declared provider stays
-        # visible.
-        installed = set(get_available_models().keys())
-        well_known_installed = set(PROVIDER_API_KEY_ENV) & installed
+        # Show well-known providers whenever their LangChain package is
+        # installed, even if none of the package's model profiles pass dcode's
+        # tool-calling filter. Stored and config-defined providers are always
+        # shown too, so stale credentials can still be cleaned up and an
+        # explicitly-declared provider stays visible.
+        from deepagents_code.config_manifest import is_provider_package_installed
+
+        well_known_installed = {
+            provider
+            for provider in PROVIDER_API_KEY_ENV
+            if config.is_provider_enabled(provider)
+            and is_provider_package_installed(provider)
+        }
         # `openai_codex` is gated on `langchain-openai` being installed (we
-        # surface it whenever `openai` was discovered) rather than on
+        # surface it whenever `openai` is available) rather than on
         # `PROVIDER_API_KEY_ENV`, since it has no env var of its own.
-        codex_installed = {CODEX_PROVIDER} if "openai" in installed else set()
+        codex_installed = (
+            {CODEX_PROVIDER}
+            if "openai" in well_known_installed
+            and config.is_provider_enabled(CODEX_PROVIDER)
+            else set()
+        )
 
         shown = well_known_installed | codex_installed | stored | config_providers
         # Surface well-known providers whose package isn't installed yet as

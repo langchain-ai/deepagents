@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from langchain.agents.middleware import ToolErrorMiddleware
+from langchain.agents.middleware.types import ToolCallRequest
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Interrupt
 from pydantic import TypeAdapter, ValidationError
 
 from deepagents_code._ask_user_types import (
@@ -18,6 +22,13 @@ from deepagents_code._ask_user_types import (
     QUESTION_TYPES,
     Question,
     _requires_choices,
+    decode_multi_select_answer,
+    encode_multi_select_answer,
+)
+from deepagents_code._tool_errors import ToolArgumentError
+from deepagents_code.agent import (
+    _TOOL_ARG_VALIDATION_TOOLS,
+    _tool_arg_validation_on_error,
 )
 from deepagents_code.ask_user import (
     AskUserMiddleware,
@@ -48,21 +59,21 @@ class TestValidateQuestions:
     """Tests for `_validate_questions`."""
 
     def test_rejects_empty_questions(self) -> None:
-        with pytest.raises(ValueError, match="at least one question"):
+        with pytest.raises(ToolArgumentError, match="at least one question"):
             _validate_questions([])
 
     def test_rejects_empty_question_text(self) -> None:
-        with pytest.raises(ValueError, match="non-empty 'question'"):
+        with pytest.raises(ToolArgumentError, match="non-empty 'question'"):
             _validate_questions([{"question": "   ", "type": "text"}])
 
     def test_rejects_multiple_choice_without_choices(self) -> None:
-        with pytest.raises(ValueError, match="requires a non-empty 'choices'"):
+        with pytest.raises(ToolArgumentError, match="requires a non-empty 'choices'"):
             _validate_questions(
                 [{"question": "Pick one", "type": "multiple_choice", "choices": []}]
             )
 
     def test_rejects_text_question_with_choices(self) -> None:
-        with pytest.raises(ValueError, match="must not define 'choices'"):
+        with pytest.raises(ToolArgumentError, match="must not define 'choices'"):
             _validate_questions(
                 [
                     {
@@ -74,14 +85,16 @@ class TestValidateQuestions:
             )
 
     def test_rejects_multi_select_without_choices(self) -> None:
-        with pytest.raises(ValueError, match=r"multi_select question .* non-empty"):
+        with pytest.raises(
+            ToolArgumentError, match=r"multi_select question .* non-empty"
+        ):
             _validate_questions(
                 [{"question": "Pick some", "type": "multi_select", "choices": []}]
             )
 
     def test_rejects_blank_choice_value(self) -> None:
         """A blank label would render as a selectable option with no answer."""
-        with pytest.raises(ValueError, match="missing or blank 'value'"):
+        with pytest.raises(ToolArgumentError, match="missing or blank 'value'"):
             _validate_questions(
                 [
                     {
@@ -106,24 +119,23 @@ class TestValidateQuestions:
                 }
             ],
         )
-        with pytest.raises(ValueError, match="missing or blank 'value'"):
+        with pytest.raises(ToolArgumentError, match="missing or blank 'value'"):
             _validate_questions(questions)
 
-    def test_rejects_multi_select_choice_containing_separator(self) -> None:
-        """Commas in values would make the joined answer ambiguous."""
-        with pytest.raises(ValueError, match="would make the joined answer ambiguous"):
-            _validate_questions(
-                [
-                    {
-                        "question": "Where?",
-                        "type": "multi_select",
-                        "choices": [{"value": "Boston, MA"}, {"value": "Austin"}],
-                    }
-                ]
-            )
+    def test_allows_comma_in_multi_select_choice_value(self) -> None:
+        """The JSON-array answer encoding keeps a comma inside a value exact."""
+        _validate_questions(
+            [
+                {
+                    "question": "Where?",
+                    "type": "multi_select",
+                    "choices": [{"value": "Boston, MA"}, {"value": "Austin"}],
+                }
+            ]
+        )
 
     def test_allows_comma_in_multiple_choice_value(self) -> None:
-        """Single-selection answers are unambiguous, so commas are fine there."""
+        """Choice values are returned as-is, so a comma needs no special handling."""
         _validate_questions(
             [
                 {
@@ -137,7 +149,9 @@ class TestValidateQuestions:
     def test_rejects_unknown_question_type(self) -> None:
         """Nothing outside `QuestionType` may reach the interrupt."""
         questions = cast("list[Question]", [{"question": "Q?", "type": "multiselect"}])
-        with pytest.raises(ValueError, match="unsupported ask_user question type"):
+        with pytest.raises(
+            ToolArgumentError, match="unsupported ask_user question type"
+        ):
             _validate_questions(questions)
 
     def test_rejects_non_boolean_required(self) -> None:
@@ -152,7 +166,7 @@ class TestValidateQuestions:
             "list[Question]",
             [{"question": "Q?", "type": "text", "required": "false"}],
         )
-        with pytest.raises(ValueError, match="non-boolean 'required'"):
+        with pytest.raises(ToolArgumentError, match="non-boolean 'required'"):
             _validate_questions(questions)
 
     def test_tool_schema_rejects_non_boolean_required(self) -> None:
@@ -225,7 +239,7 @@ class TestValidateQuestions:
                     }
                 ],
             )
-            with pytest.raises(ValueError, match="must not define 'choices'"):
+            with pytest.raises(ToolArgumentError, match="must not define 'choices'"):
                 _validate_questions(questions)
 
     def test_accepts_valid_question_set(self) -> None:
@@ -361,6 +375,31 @@ class TestParseAnswers:
             "ask-1",
             thread_id=thread_id,
             turn_id=turn_id,
+        )
+
+        assert (
+            ASK_USER_AUTHORIZATION_METADATA_KEY
+            not in _extract_tool_message(cmd).additional_kwargs
+        )
+
+    def test_json_escaping_can_push_an_answer_over_the_receipt_cap(self) -> None:
+        """The per-answer budget is measured on the encoded string.
+
+        Escaping inflates the wire form, so a selection whose decoded content
+        fits can still lose its receipt. Fail-closed, but worth pinning: the
+        units changed when the encoding did.
+        """
+        values = ["\n" * ((MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS // 2) - 1)]
+        answer = encode_multi_select_answer(values)
+        assert len(values[0]) < MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS
+        assert len(answer) > MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS
+
+        cmd = _parse_answers(
+            {"answers": [answer]},
+            [{"question": "Which?", "type": "multi_select", "choices": []}],
+            "ask-1",
+            thread_id="thread-1",
+            turn_id="turn-1",
         )
 
         assert (
@@ -558,6 +597,84 @@ class TestParseAnswers:
         assert "expected 1, got 2" in str(message.content)
 
 
+class TestMultiSelectEncoding:
+    """Tests for the JSON-array encoding of `multi_select` answers on the wire."""
+
+    def test_answer_with_commas_quotes_and_newlines_round_trips(self) -> None:
+        """Punctuation that broke the joined encoding must survive verbatim."""
+        questions: list[Question] = [
+            {
+                "question": "Which constraints apply?",
+                "type": "multi_select",
+                "choices": [
+                    {"value": 'push-to-main — no PR label, always "strict"'},
+                    {"value": "line one\nline two"},
+                ],
+            }
+        ]
+        answer = encode_multi_select_answer(
+            ['push-to-main — no PR label, always "strict"', "line one\nline two"]
+        )
+
+        cmd = _parse_answers(
+            {"answers": [answer]},
+            questions,
+            "tc-1",
+            thread_id="thread-1",
+            turn_id="turn-1",
+        )
+
+        message = _extract_tool_message(cmd)
+        assert message.status == "success"
+        assert f"A: {answer}" in str(message.content)
+        receipt = message.additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY]
+        assert decode_multi_select_answer(receipt["answers"][0]) == [
+            'push-to-main — no PR label, always "strict"',
+            "line one\nline two",
+        ]
+
+    def test_transcript_renders_the_json_array_verbatim(self) -> None:
+        """The model sees the self-delimiting form, not a re-joined string."""
+        questions: list[Question] = [
+            {
+                "question": "Where?",
+                "type": "multi_select",
+                "choices": [{"value": "Boston, MA"}, {"value": "Austin"}],
+            }
+        ]
+        answer = encode_multi_select_answer(["Boston, MA", "Austin"])
+
+        content = _extract_tool_message_content(
+            _parse_answers({"answers": [answer]}, questions, "tc-1")
+        )
+
+        assert content == 'Q: Where?\nA: ["Boston, MA", "Austin"]'
+
+    def test_empty_multi_select_answer_keeps_its_receipt(self) -> None:
+        """`[]` is a real answer — it must not read as a blank `A:` line."""
+        questions: list[Question] = [
+            {
+                "question": "Extras?",
+                "type": "multi_select",
+                "choices": [{"value": "docs"}],
+                "required": False,
+            }
+        ]
+
+        cmd = _parse_answers(
+            {"answers": [encode_multi_select_answer([])]},
+            questions,
+            "tc-1",
+            thread_id="thread-1",
+            turn_id="turn-1",
+        )
+
+        message = _extract_tool_message(cmd)
+        assert "A: []" in str(message.content)
+        receipt = message.additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY]
+        assert decode_multi_select_answer(receipt["answers"][0]) == []
+
+
 def _turn_state(turn_id: str) -> dict[str, object]:
     from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY
 
@@ -720,3 +837,163 @@ class TestWrapModelCall:
         assert system_message.content_blocks[-1]["text"] == "\n\nASK_USER_PROMPT"
         handler.assert_awaited_once_with(overridden_request)
         assert result == "ok"
+
+
+def _make_request(tool_name: str, args: dict[str, Any]) -> ToolCallRequest:
+    """Build a `ToolCallRequest` carrying `tool_name` and `args`."""
+    return ToolCallRequest(
+        tool_call={"name": tool_name, "args": args, "id": f"{tool_name}-1"},
+        tool=None,
+        state={},
+        runtime=cast("Any", None),
+    )
+
+
+class TestToolArgValidationRecovery:
+    """`ToolErrorMiddleware` converts `ToolArgumentError` to error messages."""
+
+    def _middleware(self) -> ToolErrorMiddleware:
+        return ToolErrorMiddleware(
+            _tool_arg_validation_on_error,
+            tools=list(_TOOL_ARG_VALIDATION_TOOLS),
+        )
+
+    def test_value_error_becomes_error_tool_message(self) -> None:
+        """A model-authored `ToolArgumentError` is recoverable, not fatal."""
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            _validate_questions([])
+            msg = "unreachable"
+            raise AssertionError(msg)
+
+        result = middleware.wrap_tool_call(request, handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.tool_call_id == "ask_user-1"
+        assert "`ask_user` failed" in str(result.content)
+        assert "at least one question" in str(result.content)
+
+    def test_rejection_is_logged_once_by_the_handler(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The model retries against the error, so the loop must be visible.
+
+        The tool body deliberately does not log this itself — the handler is the
+        single record, and a second one would say strictly less.
+        """
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            _validate_questions([])
+            msg = "unreachable"
+            raise AssertionError(msg)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.agent"):
+            middleware.wrap_tool_call(request, handler)
+
+        assert "at least one question" in caplog.text
+        assert "ask_user" in caplog.text
+        # One record, not two: the tool body must not log this again.
+        assert len(caplog.records) == 1
+        assert caplog.records[0].exc_info is not None
+
+    def test_blank_choice_value_becomes_error_tool_message(self) -> None:
+        """A blank choice value names the offending field."""
+        middleware = self._middleware()
+        questions = [
+            {
+                "question": "Pick some",
+                "type": "multi_select",
+                "choices": [{"value": "logs"}, {"value": "  "}],
+            }
+        ]
+        request = _make_request("ask_user", {"questions": questions})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            _validate_questions(cast("list[Question]", questions))
+            msg = "unreachable"
+            raise AssertionError(msg)
+
+        result = middleware.wrap_tool_call(request, handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "missing or blank 'value'" in str(result.content)
+
+    def test_plain_value_error_propagates(self) -> None:
+        """Recovery keys off the exception type, not the tool name.
+
+        A bare `ValueError` raised while a scoped tool runs is an internal
+        fault, not model-authored input. It must stay fatal. Middleware inside
+        this one raises that way on purpose.
+        """
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            msg = "client answered a different request"
+            raise ValueError(msg)
+
+        with pytest.raises(ValueError, match="client answered a different request"):
+            middleware.wrap_tool_call(request, handler)
+
+    def test_non_value_error_propagates(self) -> None:
+        """Unexpected errors still halt the run rather than reaching the model."""
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            msg = "unexpected internal failure"
+            raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError, match="unexpected internal failure"):
+            middleware.wrap_tool_call(request, handler)
+
+    def test_interrupt_propagates_unchanged(self) -> None:
+        """`ask_user`'s `interrupt()` control-flow signal must not be converted."""
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            raise GraphInterrupt((Interrupt(value={"kind": "ask_user"}, id="i-1"),))
+
+        with pytest.raises(GraphInterrupt):
+            middleware.wrap_tool_call(request, handler)
+
+    def test_out_of_scope_tool_is_not_converted(self) -> None:
+        """A `ToolArgumentError` outside the scope list still propagates."""
+        middleware = self._middleware()
+        request = _make_request("some_other_tool", {})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            msg = "validation detail"
+            raise ToolArgumentError(msg)
+
+        with pytest.raises(ToolArgumentError, match="validation detail"):
+            middleware.wrap_tool_call(request, handler)
+
+    async def test_async_value_error_becomes_error_tool_message(self) -> None:
+        """Production runs the async path, so it needs the same recovery.
+
+        `read_file` and friends register coroutines, so `awrap_tool_call` is
+        the wrapper that actually runs. It has no `aon_error`, so it falls back
+        to the sync handler; this pins that fallback.
+        """
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        # Must be async: `awrap_tool_call` awaits the handler it is given.
+        async def handler(_: ToolCallRequest) -> ToolMessage:  # noqa: RUF029
+            _validate_questions([])
+            msg = "unreachable"
+            raise AssertionError(msg)
+
+        result = await middleware.awrap_tool_call(request, handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "at least one question" in str(result.content)

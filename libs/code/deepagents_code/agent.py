@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import shutil
-import tomllib
 import warnings
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -50,8 +49,9 @@ if TYPE_CHECKING:
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     InterruptOnConfig,
+    ToolErrorMiddleware,
 )
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain.tools import (
     BaseTool,
     ToolRuntime,  # LangChain inspects this annotation for runtime injection.
@@ -71,6 +71,7 @@ from deepagents_code._repository_bounds import (
     REPOSITORY_TOOL_NAMES,
     RepositoryBounds,
 )
+from deepagents_code._tool_errors import ToolArgumentError
 from deepagents_code.approval_mode import (
     ApprovalMode,
     aread_approval_mode_from_store,
@@ -231,6 +232,47 @@ def _get_harness_tool_descriptions(
         profile = _get_harness_profile(model)
         return dict(profile.tool_description_overrides) if profile is not None else {}
     return dict(_harness_profile_for_model(model, None).tool_description_overrides)
+
+
+# Tools that raise `ToolArgumentError` on model-authored arguments. The name
+# filter is a second gate only: recovery keys off the exception type, so a
+# different error from one of these tools still halts the run.
+#
+# `read_file` is deliberately absent. It catches its own argument errors and
+# returns an error `ToolMessage` already. The only `ValueError`s that escape it
+# come from backend invariants the model cannot fix, and the SDK raises those
+# on purpose to stop a backend from silently skipping unshown source lines.
+_TOOL_ARG_VALIDATION_TOOLS: tuple[str, ...] = ("ask_user",)
+
+
+def _tool_arg_validation_on_error(
+    exc: Exception, request: ToolCallRequest
+) -> str | None:
+    """Convert a `ToolArgumentError` into a model-correctable message.
+
+    `ToolErrorMiddleware` re-raises `GraphBubbleUp` before it calls this, so
+    interrupts and parent commands never arrive here.
+
+    Args:
+        exc: Exception raised during tool execution.
+        request: The tool call request that failed.
+
+    Returns:
+        A message naming the tool and the validation detail, so the model can
+            fix its input and retry. `None` for any other exception, so
+            unexpected errors propagate and halt the run.
+    """
+    if isinstance(exc, ToolArgumentError):
+        # The run no longer fails, so this is the only record that the model
+        # sent bad arguments. `exc_info` keeps the raise site for debugging.
+        logger.warning(
+            "Recovered tool argument error from %s: %s",
+            request.tool_call["name"],
+            exc,
+            exc_info=exc,
+        )
+        return f"`{request.tool_call['name']}` failed: {exc}. Fix the input and retry."
+    return None
 
 
 def _inject_fs_tools_into_subagents(
@@ -1110,30 +1152,45 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     ```
 
     Args:
-        config_path: Path to config file.
+        config_path: Path to config file. Passing a path also excludes
+            managed policy from this read, so production callers must pass
+            `None`.
 
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         List of `AsyncSubAgent` specs (empty if section is absent or invalid).
     """
+    is_default = config_path is None
     if config_path is None:
-        config_path = Path.home() / ".deepagents" / "config.toml"
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
-    if not config_path.exists():
-        return []
+        config_path = DEFAULT_CONFIG_PATH
 
-    try:
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as e:
-        logger.warning("Could not read async subagents from %s: %s", config_path, e)
+    from deepagents_code.configuration.service import get_config_sources
+
+    # `None` on the default path: that is what includes managed policy.
+    sources = get_config_sources(user_path=None if is_default else config_path)
+    if not sources.user.status.usable:
+        detail = sources.user.status.detail or sources.user.status.health.value
+        logger.warning(
+            "Could not read async subagents from %s: %s", config_path, detail
+        )
         console.print(
             f"[bold yellow]Warning:[/bold yellow] Could not read async subagents "
-            f"from {config_path}: {e}",
+            f"from {config_path}: {detail}",
         )
-        return []
-
+        # Managed policy parsed cleanly and must still apply, so keep
+        # going with the merged data (managed-only when the user file
+        # failed) instead of discarding it with the user's file.
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
+        )
+    data, _ = sources.merged()
     section = data.get("async_subagents")
     if not isinstance(section, dict):
         return []
@@ -1433,6 +1490,21 @@ _FS_TOOL_USAGE_INSTRUCTIONS: tuple[tuple[FsToolName, str], ...] = (
 )
 """dcode filesystem-tool preferences included in the generated prompt."""
 
+_WEB_SEARCH_TOOL_GUIDANCE = (
+    "\n\n### Web Search Tool Usage\n\n"
+    "When you use the web_search tool:\n\n"
+    "1. The tool will return search results with titles, URLs, and content excerpts\n"
+    "2. You MUST read and process these results, then respond naturally to the user\n"
+    "3. NEVER show raw JSON or tool results directly to the user\n"
+    "4. Synthesize the information from multiple sources into a coherent answer\n"
+    "5. Cite your sources by mentioning page titles or URLs when relevant\n"
+    "6. If the search doesn't find what you need, explain what you found and ask "
+    "clarifying questions\n\n"
+    "The user only sees your text responses - not tool results. Always provide a "
+    "complete, natural language answer after using web_search."
+)
+"""Usage guidance included only when the Tavily-backed tool is available."""
+
 
 def _build_fs_tool_prompt_guidance(fs_tools: list[FsToolName] | None) -> str:
     """Build dcode prompt guidance for the enabled filesystem tools.
@@ -1586,6 +1658,7 @@ def get_system_prompt(
         unsupported_modalities=settings.model_unsupported_modalities,
     )
     filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
+    web_search_tool_guidance = _WEB_SEARCH_TOOL_GUIDANCE if settings.has_tavily else ""
 
     # Build working directory section (local vs sandbox)
     if sandbox_type:
@@ -1639,6 +1712,7 @@ def get_system_prompt(
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
         .replace("{filesystem_tool_guidance}", filesystem_tool_guidance)
+        .replace("{web_search_tool_guidance}", web_search_tool_guidance)
     )
 
     # Detect unreplaced placeholders (defense-in-depth for template typos)
@@ -2563,6 +2637,9 @@ def create_cli_agent(
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
         hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+        # No `ToolErrorMiddleware` here. `_TOOL_ARG_VALIDATION_TOOLS` covers
+        # `ask_user` only, and subagents never get `AskUserMiddleware`, so an
+        # instance on this stack could never fire.
         middleware.append(
             ServerHooksMiddleware(
                 cwd=hooks_cwd,
@@ -3126,6 +3203,20 @@ def create_cli_agent(
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations
         agent_middleware.append(ReliableRubricMiddleware(**rubric_kwargs))
+
+    # Turn a `ToolArgumentError` into a recoverable error `ToolMessage` instead
+    # of a fatal run error. Any other exception propagates and halts the run.
+    #
+    # This must stay last. `_chain_tool_call_wrappers` composes the list first
+    # to outermost, so anything appended after this would run inside the
+    # handler. `ServerHooksMiddleware` keeps a plain `ValueError` fatal on
+    # purpose: it means the client answered a different request. Catching that
+    # here would report a hook fault to the model as its own bad tool input.
+    agent_middleware.append(
+        ToolErrorMiddleware(
+            _tool_arg_validation_on_error, tools=list(_TOOL_ARG_VALIDATION_TOOLS)
+        )
+    )
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

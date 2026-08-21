@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from importlib import import_module
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -356,6 +357,12 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         self._set_selected(index)
         self._drill_into(self._notifications[index])
 
+    @staticmethod
+    def _preload_follow_up(entry: PendingNotification) -> None:
+        """Load deferred follow-up UI before its detail screen becomes active."""
+        if any(action.action_id == ActionId.ENTER_API_KEY for action in entry.actions):
+            import_module("deepagents_code.tui.widgets.auth")
+
     def _drill_into(self, entry: PendingNotification) -> None:
         """Push a detail modal for *entry*.
 
@@ -367,6 +374,7 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         """
         if self._drilling:
             return
+        self._preload_follow_up(entry)
         detail_screen = self._detail_screen_for(entry)
         self._drilling = True
 

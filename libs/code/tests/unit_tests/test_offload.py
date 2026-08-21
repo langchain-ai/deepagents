@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import stat
 import tempfile
 from contextlib import nullcontext
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
 
 import pytest
 from deepagents.backends.utils import validate_path
+from textual.worker import WorkerCancelled
 
 from deepagents_code import offload
 from deepagents_code._session_stats import format_token_count
-from deepagents_code.app import DeepAgentsApp
+from deepagents_code._tracing import RESUME_TRACE_TAG
+from deepagents_code.app import DeepAgentsApp, QueuedMessage
 from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.offload import (
@@ -24,6 +30,7 @@ from deepagents_code.offload import (
     _offload_fallback_root,
     delete_offloaded_history,
 )
+from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
 
@@ -129,23 +136,69 @@ class TestOffloadGuards:
             msgs = app.query(AppMessage)
             assert any("Nothing to offload" in str(w._content) for w in msgs)
 
-    async def test_agent_running_shows_error(self) -> None:
-        """Should show error when agent is currently running."""
+    async def test_offload_while_busy_queues_instead_of_overlapping(self) -> None:
+        """A `/offload` submitted while busy must queue, not start a second run.
+
+        `_handle_offload` reserves the turn (`_agent_running = True`) before its
+        first await, so by the time a same-tick duplicate submission is
+        processed `_submit_input` already sees the app busy and queues it. The
+        in-flight offload runs exactly once and the queued duplicate drains
+        afterward.
+        """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._agent = MagicMock()
-            app._backend = MagicMock()
-            app._lc_thread_id = "test-thread"
-            app._agent_running = True
+            _setup_server_offload_app(app)
 
-            await app._handle_offload()
-            await pilot.pause()
+            before = _state_values(_make_dict_messages(6))
+            after = _state_values(_make_dict_messages(8), _summary_event(4))
+            drive_started = asyncio.Event()
+            release_drive = asyncio.Event()
+            drive_calls = 0
 
-            msgs = app.query(AppMessage)
-            assert any(
-                "Cannot offload while agent is running" in str(w._content) for w in msgs
-            )
+            async def block_drive(_config: object, _seed_id: object = None) -> None:
+                nonlocal drive_calls
+                drive_calls += 1
+                drive_started.set()
+                await release_drive.wait()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after, before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    side_effect=block_drive,
+                ),
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                # The reservation is already in effect: a duplicate submission
+                # queues instead of entering `_handle_offload` concurrently.
+                assert app._agent_running is True
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await pilot.pause()
+                assert drive_calls == 1
+                assert len(app._pending_messages) == 1
+
+                release_drive.set()
+                worker = app._offload_worker
+                assert worker is not None
+                await worker.wait()
+                await pilot.pause()
+
+            # The queued duplicate drained after the first offload completed;
+            # both ran sequentially, never concurrently.
+            assert drive_calls == 2
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
 
     async def test_nothing_to_compact_noop(self) -> None:
         """Show a no-op message when server-side compaction changed nothing.
@@ -1104,6 +1157,223 @@ class TestAgentRunningGuard:
             assert app._agent_running is False
 
 
+class TestOffloadInterrupt:
+    """Test that Escape can cancel `/offload` through the real App dispatch."""
+
+    async def test_command_reserves_turn_before_worker_starts(self) -> None:
+        """Command dispatch should reserve busy state before scheduling offload."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            worker = MagicMock()
+            scheduled: list[Coroutine[Any, Any, None]] = []
+
+            def defer_worker(
+                work: Coroutine[Any, Any, None], **_kwargs: object
+            ) -> MagicMock:
+                scheduled.append(work)
+                return worker
+
+            with patch.object(app, "run_worker", side_effect=defer_worker):
+                await app._handle_command("/offload")
+
+            assert app._agent_running is True
+            assert app._offload_worker is worker
+            assert app._offload_task_started is False
+            assert len(scheduled) == 1
+
+            coroutine = scheduled[0]
+            try:
+                await app._submit_input("hello", "normal")
+                assert len(app._pending_messages) == 1
+                app._cancel_worker(worker)
+            finally:
+                coroutine.close()
+
+            worker.cancel.assert_called_once_with()
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
+
+    async def test_escape_cancels_offload_worker(self) -> None:
+        """Escape should reach and cancel an offload blocked in its stream."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before = _state_values(_make_dict_messages(6))
+            reconciled = _state_values(_make_dict_messages(6))
+            drive_started = asyncio.Event()
+            drive_cancelled = asyncio.Event()
+
+            async def block_drive(_config: object, _seed_id: object = None) -> None:
+                drive_started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    drive_cancelled.set()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, reconciled],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    side_effect=block_drive,
+                ),
+                patch.object(
+                    app,
+                    "_remove_unanswered_offload_seed",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as cleanup,
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                worker = app._offload_worker
+                assert worker is not None
+                assert app._agent_running is True
+
+                await pilot.press("escape")
+                await asyncio.wait_for(drive_cancelled.wait(), timeout=1)
+                with pytest.raises(WorkerCancelled):
+                    await worker.wait()
+
+            cleanup.assert_awaited_once()
+            assert worker.is_cancelled
+            assert app._agent_running is False
+            assert app._agent_quiescent.is_set()
+            assert app._loading_widget is None
+
+    async def test_offload_blocks_queued_prompt_until_done(self) -> None:
+        """A prompt submitted while offload is reserved must not overlap it.
+
+        Command dispatch sets `_agent_running` before scheduling the worker, so
+        a prompt queued before the worker starts stays queued until the offload
+        finishes and `_run_offload_task` drains the queue.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            # The drive blocks the offload so the reservation window stays
+            # open. It runs on the real loop (not a Mock) because pilot.pause
+            # must be able to yield between message-processing steps below.
+            drive_started = asyncio.Event()
+            release_drive = asyncio.Event()
+
+            async def block_drive(_config: object, _seed_id: object = None) -> None:
+                drive_started.set()
+                await release_drive.wait()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[
+                        _state_values(_make_dict_messages(6)),
+                        _state_values(_make_dict_messages(8), _summary_event(4)),
+                    ],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    side_effect=block_drive,
+                ),
+                # Spy on the queue drain itself: patching `_dispatch_queued_message`
+                # would let the drain's awaited dispatch return instantly, so the
+                # worker could complete before the test's own `pilot.pause()`s
+                # observe the mid-offload state.
+                patch.object(
+                    app,
+                    "_process_next_from_queue",
+                    wraps=app._process_next_from_queue,
+                ) as drain,
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await pilot.pause()
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                # The reservation is already in effect: a prompt submitted now
+                # queues instead of starting an agent turn concurrently.
+                assert app._agent_running is True
+                app.post_message(ChatInput.Submitted("hello", "prompt"))
+                await pilot.pause()
+                assert len(app._pending_messages) == 1
+
+                release_drive.set()
+                worker = app._offload_worker
+                assert worker is not None
+                await worker.wait()
+                await pilot.pause()
+
+            # The worker's teardown drained the queued prompt only after the
+            # offload completed.
+            drain.assert_called()
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
+
+    async def test_escape_before_offload_worker_step_recovers(self) -> None:
+        """Cancelling the worker mid-run releases it for later `Esc` presses.
+
+        `Esc` routes to `_cancel_worker(self._offload_worker)`. If the offload
+        worker then ends without clearing `_offload_worker` (the same wedge
+        `_recover_unstarted_agent_worker` covers for the agent worker when a
+        cancel lands before the worker's first step), every later `Esc` would
+        be consumed re-cancelling the dead worker instead of reaching the
+        double-`Esc` input-clear path.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            # Hold the offload at its first await (the state read) so the
+            # cancel lands while the worker is in flight.
+            hold_state_read = asyncio.Event()
+
+            async def block_state_read(_thread_id: object) -> dict[str, Any]:
+                await hold_state_read.wait()
+                return _state_values(_make_dict_messages(6))
+
+            with patch.object(
+                app,
+                "_get_thread_state_values",
+                side_effect=block_state_read,
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await pilot.pause()
+                worker = app._offload_worker
+                assert worker is not None
+                # Command dispatch reserves the turn before the worker starts,
+                # so it is set even though compaction never got to run.
+                assert app._agent_running is True
+
+                await pilot.press("escape")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert worker.is_cancelled
+                assert app._offload_worker is None
+                assert app._agent_running is False
+
+                # The next `Esc` is no longer consumed by a stale offload
+                # worker: it reaches the double-`Esc` clear-input path.
+                app._chat_input.value = "draft"
+                await pilot.press("escape")
+                assert app._clear_input_pending is True
+
+
 class TestOffloadErrorHandling:
     """Test error handling during offload."""
 
@@ -2048,12 +2318,19 @@ class TestDriveServerSideCompaction:
     @staticmethod
     def _fake_remote_agent(
         tool_content: str,
-    ) -> tuple[Any, list[Any], list[object]]:
+    ) -> tuple[Any, list[Any], list[object], list[Any]]:
         """Build a fake `RemoteAgent` that interrupts then returns a ToolMessage.
 
         First `astream(None)` surfaces a HITL approval interrupt; the resume
         stream (`Command(resume=...)`) yields a `ToolMessage` with the supplied
         content so callers can exercise both the success and failure branches.
+
+        Args:
+            tool_content: Body of the `ToolMessage` the resume stream yields.
+
+        Returns:
+            The agent plus one list per recorded `astream` keyword -- inputs,
+                contexts, and configs -- each appended to in call order.
         """
         from langchain_core.messages import ToolMessage
 
@@ -2061,6 +2338,7 @@ class TestDriveServerSideCompaction:
 
         astream_inputs: list[Any] = []
         astream_contexts: list[object] = []
+        astream_configs: list[Any] = []
 
         class _Interrupt:
             id = "interrupt-1"
@@ -2073,6 +2351,7 @@ class TestDriveServerSideCompaction:
         async def _astream(stream_input: object, **kwargs: object):  # noqa: RUF029, ANN202
             astream_inputs.append(stream_input)
             astream_contexts.append(kwargs.get("context"))
+            astream_configs.append(kwargs.get("config"))
             if stream_input is None:
                 yield ((), "updates", {"__interrupt__": [_Interrupt()]})
             else:
@@ -2086,7 +2365,7 @@ class TestDriveServerSideCompaction:
         agent.aensure_thread = AsyncMock()
         agent.aupdate_state = AsyncMock()
         agent.astream = _astream
-        return agent, astream_inputs, astream_contexts
+        return agent, astream_inputs, astream_contexts, astream_configs
 
     async def test_seeds_tool_call_and_resumes_interrupt(self) -> None:
         """Seeds a forced `compact_conversation` call and approves the interrupt."""
@@ -2097,8 +2376,11 @@ class TestDriveServerSideCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, astream_inputs, astream_contexts = self._fake_remote_agent(
-                "Conversation compacted. Summarized 2 messages into a concise summary."
+            agent, astream_inputs, astream_contexts, astream_configs = (
+                self._fake_remote_agent(
+                    "Conversation compacted. Summarized 2 messages into a "
+                    "concise summary."
+                )
             )
             app._agent = agent
             app._lc_thread_id = "test-thread"
@@ -2141,6 +2423,13 @@ class TestDriveServerSideCompaction:
                 assert isinstance(context, dict)
                 normalized = {str(key): value for key, value in context.items()}
                 assert {key: normalized[key] for key in expected} == expected
+
+            # Only the resume round is tagged, so LangSmith can tell the
+            # continuation apart from the run that opened the turn.
+            initial_config, resume_config = astream_configs
+            assert RESUME_TRACE_TAG not in initial_config.get("tags", [])
+            assert RESUME_TRACE_TAG in resume_config["tags"]
+            assert initial_config["configurable"] == resume_config["configurable"]
 
     async def test_records_summary_and_trailing_usage_in_cost_breakdown(self) -> None:
         """Manual offload usage reconciles by type and serving model."""
@@ -2483,7 +2772,7 @@ class TestDriveServerSideCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, _inputs, _contexts = self._fake_remote_agent(
+            agent, _inputs, _contexts, _configs = self._fake_remote_agent(
                 f"{COMPACTION_FAILURE_PREFIX}: an error occurred during compaction."
             )
             app._agent = agent
@@ -2503,7 +2792,7 @@ class TestDriveServerSideCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, _inputs, contexts = self._fake_remote_agent(
+            agent, _inputs, contexts, _configs = self._fake_remote_agent(
                 "Conversation compacted. Summarized 2 messages."
             )
             app._agent = agent

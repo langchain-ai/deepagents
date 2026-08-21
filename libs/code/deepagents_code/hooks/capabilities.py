@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, Literal, TypeAlias, assert_never
+from typing import TYPE_CHECKING, Final, Literal, assert_never
 
 from deepagents_code.hooks.models.domain import (
     HookEvent,
@@ -78,7 +78,7 @@ class AggregationPolicy(StrEnum):
 
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 600.0
-MatcherField: TypeAlias = Literal[
+type MatcherField = Literal[
     "cause", "tool_name", "notification_type", "agent_name", "trigger"
 ]
 

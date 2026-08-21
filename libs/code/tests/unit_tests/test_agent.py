@@ -1496,6 +1496,32 @@ class TestGetSystemPromptModelIdentity:
         assert "may not be available" not in prompt
 
 
+class TestGetSystemPromptWebSearch:
+    """Tests for conditional web-search guidance."""
+
+    def test_omits_guidance_without_tavily(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.has_tavily = False
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Web Search Tool Usage" not in prompt
+        assert "{web_search_tool_guidance}" not in prompt
+
+    def test_includes_guidance_with_tavily(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.has_tavily = True
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Web Search Tool Usage" in prompt
+        assert "When you use the web_search tool:" in prompt
+
+
 class TestGetSystemPromptNonInteractive:
     """Tests for interactive vs non-interactive system prompt."""
 
@@ -2983,6 +3009,33 @@ class TestEnableAskUser:
         middleware = self._capture_middleware(tmp_path, enable_ask_user=False)
         assert not any(isinstance(mw, AskUserMiddleware) for mw in middleware)
 
+    def test_tool_error_middleware_is_wired_and_scoped(self, tmp_path: Path) -> None:
+        """The agent stack installs `ToolErrorMiddleware` scoped to `ask_user`."""
+        from langchain.agents.middleware import ToolErrorMiddleware
+
+        from deepagents_code.agent import _TOOL_ARG_VALIDATION_TOOLS
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        error_middleware = next(
+            (mw for mw in middleware if isinstance(mw, ToolErrorMiddleware)), None
+        )
+        assert error_middleware is not None
+        assert error_middleware._tool_filter == list(_TOOL_ARG_VALIDATION_TOOLS)
+
+    def test_tool_error_middleware_is_last(self, tmp_path: Path) -> None:
+        """It must wrap only tool execution, not other middleware.
+
+        `_chain_tool_call_wrappers` composes the list first to outermost. Any
+        middleware appended after this one runs inside the handler, so a
+        `ToolArgumentError` it raised would be misreported to the model as the
+        model's own bad tool input.
+        """
+        from langchain.agents.middleware import ToolErrorMiddleware
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        assert len(middleware) > 1
+        assert isinstance(middleware[-1], ToolErrorMiddleware)
+
 
 class TestLoadAsyncSubagents:
     def test_returns_empty_when_no_file(self, tmp_path: Path) -> None:
@@ -3583,6 +3636,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
         must not gain `ConfigurableModelMiddleware`, which would let a runtime
         `/model` switch clobber the pinned model.
         """
+        from langchain.agents.middleware import ToolErrorMiddleware
+
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.cost_tracking import CostTrackingMiddleware
@@ -3649,7 +3704,19 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 ShellAllowListMiddleware,
                 ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
-            assert subagents_by_name[name]["middleware"][-1]._emit_stop is False
+            # Subagents never get `AskUserMiddleware`, and `ask_user` is the
+            # only tool in `_TOOL_ARG_VALIDATION_TOOLS`, so a
+            # `ToolErrorMiddleware` here could never fire.
+            assert not any(
+                isinstance(mw, ToolErrorMiddleware)
+                for mw in subagents_by_name[name]["middleware"]
+            )
+            hooks = next(
+                mw
+                for mw in subagents_by_name[name]["middleware"]
+                if isinstance(mw, ServerHooksMiddleware)
+            )
+            assert hooks._emit_stop is False
             # Nested spend is priced once by the main agent, so a subagent's
             # instance must not also write the shared cost channel.
             assert all(

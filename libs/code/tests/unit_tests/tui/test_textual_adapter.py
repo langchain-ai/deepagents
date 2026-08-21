@@ -33,6 +33,7 @@ from deepagents_code._tool_stream import (
     TOOL_OUTPUT_TRUNCATION_MARKER,
     UNRENDERABLE_TOOL_OUTPUT,
 )
+from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import (
     APPROVAL_MODE_NAMESPACE,
     ApprovalMode,
@@ -684,20 +685,25 @@ class TestInterruptCleanup:
             set_active_message=MagicMock(),
         )
 
-        await _handle_interrupt_cleanup(
-            adapter=adapter,
-            agent=agent,
-            config={"configurable": {"thread_id": "t-1"}},
-            pending_text_by_namespace={(): "partial answer"},
-            captured_input_tokens=10,
-            captured_output_tokens=5,
-            turn_stats=SessionStats(),
-            start_time=0.0,
-        )
+        with patch(
+            "deepagents_code.tui.textual_adapter.get_glyphs",
+            return_value=UNICODE_GLYPHS,
+        ):
+            await _handle_interrupt_cleanup(
+                adapter=adapter,
+                agent=agent,
+                config={"configurable": {"thread_id": "t-1"}},
+                pending_text_by_namespace={(): "partial answer"},
+                captured_input_tokens=10,
+                captured_output_tokens=5,
+                turn_stats=SessionStats(),
+                start_time=0.0,
+            )
 
         assert any(
             isinstance(widget, AppMessage)
-            and str(widget._content) == "Interrupted by user"
+            and str(widget._content)
+            == f"{UNICODE_GLYPHS.square_filled} Interrupted by user"
             for widget in mounted
         )
         assert len(agent.aupdate_state.await_args_list) == 2
@@ -2180,12 +2186,18 @@ class TestExecuteTaskTextualAutoApproveInput:
     ) -> None:
         """Choosing "auto-approve all" mid-turn flips the resuming stream's context.
 
-        The PR's headline behavior: iteration 1 interrupts for approval, the
-        user picks `auto_approve_all`, and the per-iteration context refresh
-        re-reads `session_state.auto_approve` so iteration 2 (the resume)
-        carries `auto_approve=True`. Guards against hoisting the refresh out of
-        the stream loop (which would leave the first-iteration value frozen and
-        keep interrupting the rest of the turn).
+        Iteration 1 interrupts for approval, the user picks `auto_approve_all`,
+        and the per-iteration context refresh re-reads
+        `session_state.auto_approve` so iteration 2 (the resume) carries
+        `auto_approve=True`. Guards against hoisting the refresh out of the
+        stream loop (which would leave the first-iteration value frozen and keep
+        interrupting the rest of the turn).
+
+        Because it is the one test that really drives two stream rounds through
+        `execute_task_textual`, it also owns the TUI call site's resume-trace
+        coverage: the initial round untagged, the resume tagged, and the turn
+        grouping keys identical across both. Keep those assertions here unless
+        they move to a test that also runs two rounds.
 
         Parametrized over an async and a sync `on_auto_approve_enabled` callback
         to cover the `Awaitable[None] | None` union the adapter awaits only when
@@ -2270,6 +2282,17 @@ class TestExecuteTaskTextualAutoApproveInput:
         # Two stream iterations: the initial turn and the resume after the
         # decision. The flag must flip between them, not stay frozen.
         assert len(agent.contexts) == 2
+        initial_config, resume_config = agent.configs
+        assert RESUME_TRACE_TAG not in initial_config.get("tags", [])
+        assert RESUME_TRACE_TAG in resume_config["tags"]
+        initial_metadata = initial_config["metadata"]
+        resume_metadata = resume_config["metadata"]
+        assert initial_metadata["thread_id"] == "thread-1"
+        assert initial_metadata["turn_id"]
+        assert initial_metadata["turn_number"] == 1
+        assert resume_metadata["thread_id"] == initial_metadata["thread_id"]
+        assert resume_metadata["turn_id"] == initial_metadata["turn_id"]
+        assert resume_metadata["turn_number"] == initial_metadata["turn_number"]
         assert agent.contexts[0]["approval_mode"] == "manual"
         assert agent.contexts[1]["approval_mode"] == "auto"
         assert agent.contexts[0]["auto_approve"] is False

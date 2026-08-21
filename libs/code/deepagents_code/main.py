@@ -266,25 +266,42 @@ def _should_check_teardown_thread(
 
 
 def _resume_term_program() -> str | None:
-    """Return a `TERM_PROGRAM` value safe to echo inside the resume hint.
+    """Return the `TERM_PROGRAM` value to echo in the resume hint, if any.
 
-    The value is read from `LAUNCH_TERM_PROGRAM` — the snapshot `cli_main`
-    takes at process entry — rather than live `TERM_PROGRAM`, so only a value
-    the launch environment supplied (inline prefix, terminal export, or shell
-    alias) is echoed back. A `TERM_PROGRAM` that appears later, from a project
-    or global `.env` file, never reaches the hint.
+    Gated on `features.resume_term_program` (off unless the user opts in, on by
+    default in debug or experimental mode), so this reads `config.toml` from
+    disk. The value comes from `LAUNCH_TERM_PROGRAM` -- the snapshot `cli_main`
+    takes at process entry -- so a `TERM_PROGRAM` that only appears later, from
+    a project or global `.env` file, never reaches the hint.
 
     Returns:
-        The launch-time value when it is set and fully printable, else `None`.
+        The printable launch-time value when the feature is enabled, else `None`.
         A value carrying control characters is dropped rather than stripped:
-        stripping would both write raw escape sequences into teardown output
-        and name a terminal the environment never actually contained. Native
-        Windows shells also return `None`: VS Code and WezTerm set
-        `TERM_PROGRAM` on every platform, so its presence under `win32` does
-        not imply a POSIX shell, and the `VAR=value` prefix would be executed
-        as a command by `cmd.exe`/PowerShell. POSIX markers (`SHELL` from
-        git-bash/MSYS, `MSYSTEM`, `WSL_DISTRO_NAME`) restore the prefix there.
+        stripping would both write raw escape sequences into teardown output and
+        name a terminal the environment never actually contained. Native Windows
+        shells also return `None` because they cannot parse the POSIX
+        `VAR=value` prefix. POSIX markers (`SHELL` from git-bash/MSYS,
+        `MSYSTEM`, `WSL_DISTRO_NAME`) restore the prefix there.
     """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("features.resume_term_program")
+    if option is None:
+        # Unreachable unless the manifest key is renamed without updating this
+        # literal; log so that mismatch surfaces instead of silently defaulting.
+        logger.warning(
+            "Unknown config option %r; omitting TERM_PROGRAM from the resume hint",
+            "features.resume_term_program",
+        )
+        return None
+    enabled, _ = resolve_scalar(option, toml_data=load_config_toml())
+    if not enabled:
+        return None
+
     raw = os.environ.get(LAUNCH_TERM_PROGRAM, "").strip()
     if not raw or not raw.isprintable():
         return None
@@ -354,14 +371,18 @@ def _render_teardown_thread_hints(
     resume_command = shlex.join([invoked_name(), "-r", str(thread_id)])
     # A shell alias that exports `TERM_PROGRAM` (to select a theme, say) is
     # invisible to `invoked_name`, since an alias does not change `argv[0]`, so
-    # the bare command would resume without it. Carry the launch-time value as
-    # an env prefix to keep the line pasteable as-is; the launch snapshot (not
-    # the live variable) is what keeps a `.env`-supplied `TERM_PROGRAM` out of
-    # the hint. The prefix uses POSIX syntax, so `_resume_term_program`
-    # withholds it on native Windows, where terminals (VS Code, WezTerm) set
-    # the variable even under `cmd.exe`/PowerShell and those shells cannot
-    # parse a `VAR=value` command prefix.
-    term_program = _resume_term_program()
+    # the bare command would resume without it. Carrying the launch-time value
+    # as an env prefix keeps the line pasteable as-is. Guarded because this
+    # reads `config.toml`: unlike the rest of this function, it can raise, and
+    # an exception here would replace whatever is already unwinding.
+    try:
+        term_program = _resume_term_program()
+    except Exception:
+        logger.debug(
+            "Could not resolve resume TERM_PROGRAM on teardown",
+            exc_info=True,
+        )
+        term_program = None
     if term_program is not None:
         resume_command = f"TERM_PROGRAM={shlex.quote(term_program)} {resume_command}"
     console.print(Text(resume_command, style="cyan"))
@@ -2332,7 +2353,7 @@ def parse_args() -> argparse.Namespace:
         metavar="LIST",
         help="Comma-separated list of shell commands to auto-approve, "
         "'recommended' for safe defaults, or 'all' to allow any command. "
-        "Applies to both -n and interactive modes.",
+        "Applies to both -n and interactive modes. Managed config overrides it.",
     )
     parser.add_argument(
         "--mcp-config",
@@ -3267,15 +3288,41 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
 
 
 def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
-    """Print a session-level usage stats table to the console on TUI exit.
+    """Print the session usage stats table on TUI exit, unless it is disabled.
+
+    Gated by `[ui].show_usage_stats`, so this may print nothing. The payload
+    type guard stays ahead of that lookup: `stats` is typed `Any`, and a caller
+    passing something other than `SessionStats` should not trigger config I/O
+    to decide to print nothing.
+
+    That guard is unreachable as long as callers respect
+    `AppResult.session_stats`'s declared type — a dataclass annotation, not
+    runtime enforcement, which is exactly what `stats: Any` lets slip. If it
+    fires, something upstream is broken rather than merely disabled, so it
+    warns instead of returning silently: that keeps the two otherwise
+    indistinguishable empty outputs apart.
+
+    An exception escaping `usage_table_enabled` here would be caught by the
+    top-level handler that rewrites a clean exit into `1` plus a traceback,
+    which is why that call fails open.
 
     Args:
         stats: The cumulative session stats from the Textual app.
         console: Rich console for output.
     """
-    from deepagents_code._session_stats import SessionStats, print_usage_table
+    from deepagents_code._session_stats import (
+        SessionStats,
+        print_usage_table,
+        usage_table_enabled,
+    )
 
     if not isinstance(stats, SessionStats):
+        logger.warning(
+            "Skipping session stats table: expected SessionStats, got %s",
+            type(stats).__name__,
+        )
+        return
+    if not usage_table_enabled():
         return
     print_usage_table(stats, stats.wall_time_seconds, console)
 
@@ -4031,6 +4078,7 @@ def _check_mcp_project_trust(
             f"[yellow]Warning: {escape(trust_lists.read_error)}; treating "
             "project MCP servers as untrusted.[/yellow]",
             highlight=False,
+            soft_wrap=True,
         )
         return False
 
@@ -4225,6 +4273,206 @@ def _verify_interpreter_or_exit() -> None:
         sys.exit(1)
 
 
+def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
+    """Replace lower-tier runtime arguments with managed values.
+
+    An enforced key whose managed value cannot be applied is not skipped.
+    Skipping leaves the user's flag in force. An administrator typo
+    (`startup.mode = "YOLO"`) would then grant the escalation the policy
+    forbade, and the CLI would report no managed value for the key. Those keys
+    stop the launch, the same way an unparseable managed file does. See
+    `configuration.service.ENFORCED_MANAGED_KEYS`. Keys that cannot grant
+    privilege keep the ordinary ignore-and-fall-through rule.
+
+    Raises:
+        AssertionError: If managed policy is unusable, which means the startup
+            health gate did not run first.
+    """
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_policy_violations,
+        resolve_managed_option,
+    )
+    from deepagents_code.configuration.types import Found, Invalid, Unset
+
+    snapshot = get_managed_snapshot()
+    if not snapshot.status.usable:
+        # `_require_managed_config_or_exit` ran ~35 lines earlier in `cli_main`,
+        # so this is unreachable. Assert it rather than inferring health from an
+        # empty table: an unusable snapshot carries `{}`, so the `if not
+        # managed_data: return` below would read "no policy to apply" and leave
+        # every user flag in force — the exact fail-open this function prevents.
+        # The ordering is a cross-module invariant with nothing else enforcing it.
+        msg = (
+            "managed policy is unusable when runtime policy is applied; the "
+            f"startup gate must run first (health: {snapshot.status.health.value})"
+        )
+        raise AssertionError(msg)
+    managed_data = snapshot.data
+    if not managed_data:
+        return
+
+    managed_results: dict[str, object] = {}
+
+    def managed_result(key: str) -> object:
+        """Return the managed tier's typed provider result for `key`."""
+        if key not in managed_results:
+            resolved = resolve_managed_option(
+                key,
+                managed_data,
+                status=snapshot.status,
+            )
+            managed_results[key] = (
+                resolved.tier_health.get(MANAGED_RANK, Unset())
+                if resolved is not None
+                else Unset()
+            )
+        return managed_results[key]
+
+    def declared(key: str) -> bool:
+        """Return whether managed policy sets `key`, valid or not."""
+        return isinstance(managed_result(key), (Found, Invalid))
+
+    def managed_value(key: str) -> tuple[bool, object]:
+        """Resolve one key against managed policy alone.
+
+        Returns:
+            Whether managed policy decided the value, and the value.
+        """
+        result = managed_result(key)
+        return (True, result.value) if isinstance(result, Found) else (False, None)
+
+    violations = managed_policy_violations(managed_data, status=snapshot.status)
+    if violations:
+        sys.stderr.write(
+            "Error: managed config rejects "
+            f"{', '.join(violations)}. "
+            "Ask your administrator to correct the value.\n"
+        )
+        sys.stderr.flush()
+        sys.exit(78)
+
+    # `models.auto_classifier` is cleared rather than assigned: with the flag
+    # unset, `build_server_config` falls through to
+    # `resolve_auto_classifier_model_with_problem`, which resolves the managed
+    # tier first. Assigning the managed spec onto the flag made the server name
+    # a flag the user never passed, and `--auto-classifier-model` without
+    # `--auto-approve` exits 2 in ACP mode — the same failure the
+    # `startup.mode` block below avoids.
+    if declared("models.auto_classifier") and hasattr(args, "auto_classifier_model"):
+        args.auto_classifier_model = None
+
+    for key, destination in {
+        "models.default": "model",
+        "interpreter.enable_interpreter": "interpreter",
+    }.items():
+        found, value = managed_value(key)
+        if found and hasattr(args, destination):
+            setattr(args, destination, value)
+
+    _apply_managed_sandbox(args, managed_value("sandboxes.default"))
+
+    limit_found, limit = managed_value("runtime.recursion_limit")
+    if limit_found and hasattr(args, "recursion_limit"):
+        args.recursion_limit = limit
+
+    if declared("interpreter.ptc") and hasattr(args, "interpreter_tools"):
+        args.interpreter_tools = None
+
+    if declared("shell.allow_list") and hasattr(args, "shell_allow_list"):
+        args.shell_allow_list = None
+
+    found, startup_mode = managed_value("startup.mode")
+    if found:
+        # Only *revoke*: `_resolve_approval_mode` ends at
+        # `coerce_approval_mode(load_startup_mode())`, which already reads
+        # merged managed policy, so the positive value needs no flag. Setting
+        # the flags positively also breaks every headless launch, because
+        # `--auto-approve` with `--non-interactive-message` exits 2 — naming a
+        # flag the user never passed.
+        if startup_mode != "auto":
+            args.auto_approve = False
+        if startup_mode != "yolo":
+            args.yolo = False
+
+
+def _apply_managed_sandbox(
+    args: argparse.Namespace, resolved: tuple[bool, object]
+) -> None:
+    """Pin the sandbox backend when the launch already uses a sandbox.
+
+    `sandboxes.default` names the backend a bare `--sandbox` selects; omitting
+    the flag runs unsandboxed. Assigning it unconditionally would force every
+    launch into a sandbox, which the key does not mean, so a launch that asked
+    for no sandbox is left alone. A bare `--sandbox` needs no assignment here
+    either: `SandboxRegistry.load` reads merged managed config, so
+    `registry.default` already carries the managed value.
+
+    The value is checked against the registry first. `parse_args` validates
+    `--sandbox`, but it runs before managed policy is applied, so an
+    unavailable managed name would otherwise skip `is_available` and reach the
+    sandbox factory instead of producing a curated error.
+
+    A launch that bypasses a named managed backend prints a note. The key does
+    not force containment, and an administrator who read it as if it did would
+    otherwise see an unsandboxed launch with no diagnostic at all.
+    """
+    found, value = resolved
+    # `--sandbox` defaults to the string `"none"`, so an omitted flag never
+    # leaves `args.sandbox` as `None`. Both spellings mean "no sandbox" to
+    # `_resolve_and_validate_sandbox`, and this must match it: checking only
+    # `None` forces a sandbox onto a launch that asked for none.
+    if not found:
+        return
+    if getattr(args, "sandbox", None) in {None, "none"}:
+        # Policy named a backend and this launch is not using one. That is the
+        # documented meaning of the key, but an administrator who set it
+        # believing it forces containment would otherwise get an unsandboxed
+        # launch, exit 0, and a green `dcode doctor` row.
+        if isinstance(value, str) and value not in {"", "none"}:
+            sys.stderr.write(
+                f"Note: managed config sets [sandboxes].default to '{value}', "
+                "which names the backend for a sandboxed launch. This launch "
+                "asked for no sandbox, so it runs on the host. Pass --sandbox "
+                "to use the managed backend.\n"
+            )
+            sys.stderr.flush()
+        return
+    if not isinstance(value, str) or not value:
+        return
+    if value != "none":
+        from deepagents_code.integrations.sandbox_registry import SandboxRegistry
+
+        registry = SandboxRegistry.load()
+        if not registry.is_available(value):
+            available = ", ".join(registry.available_providers())
+            sys.stderr.write(
+                f"Error: managed config sets [sandboxes].default to '{value}', "
+                "which is not available on this machine.\n"
+                f"Available providers: {available}.\n"
+                "Ask your administrator to correct the value.\n"
+            )
+            sys.stderr.flush()
+            sys.exit(78)
+    args.sandbox = value
+
+
+def _require_managed_config_or_exit() -> None:
+    """Fail an agent launch when present managed policy cannot be enforced."""
+    from deepagents_code.configuration.service import (
+        ManagedConfigError,
+        require_healthy_managed_config,
+    )
+
+    try:
+        require_healthy_managed_config(refresh=True)
+    except ManagedConfigError as exc:
+        sys.stderr.write(f"Error: {exc}\n")
+        sys.stderr.flush()
+        sys.exit(78)
+
+
 def cli_main() -> None:
     """Entry point for console script.
 
@@ -4311,6 +4559,14 @@ def cli_main() -> None:
 
             sys.exit(run_doctor_command(args))
 
+        # Every remaining command can read or act on managed policy, so none
+        # may run while that policy is unenforceable. `config`, `doctor`, and
+        # `auth path` returned above because they are the tools for diagnosing
+        # a broken managed file. Gating them would leave an administrator no way
+        # to see what is wrong. `help` reads no policy.
+        if command != "help":
+            _require_managed_config_or_exit()
+
         if command == "tools":
             from deepagents_code.client.commands.tools import run_tools_command
 
@@ -4341,6 +4597,13 @@ def cli_main() -> None:
         # fast path so neither argparse's `--help`/`-h` exit nor
         # `deepagents <group>` pays the settings bootstrap cost.
         from deepagents_code.config import console, settings
+
+        if command is None:
+            # The health gate already ran above, for every command, so the
+            # violation check inside cannot fire. Kept as defense in depth: it
+            # is the only thing standing between a future entry point that
+            # forgets the gate and a launch that silently ignores policy.
+            _apply_managed_runtime_policy(args)
 
         if command == "auth":
             from deepagents_code.client.commands.auth import run_auth_command
@@ -4883,8 +5146,37 @@ def cli_main() -> None:
                 currently_enabled = is_auto_update_enabled()
                 new_state = not currently_enabled
                 set_auto_update(new_state)
-                label = "enabled" if new_state else "disabled"
-                console.print(f"Auto-updates {label}.")
+                effective_state = is_auto_update_enabled()
+                if effective_state != new_state:
+                    from deepagents_code._env_vars import AUTO_UPDATE
+                    from deepagents_code.configuration.service import (
+                        managed_config_status,
+                    )
+                    from deepagents_code.update_check import _managed_update_value
+
+                    # Managed config is only one of the layers that outrank the
+                    # saved preference. Naming it for an env-var override would
+                    # send the user to an administrator who set no policy. A
+                    # managed file that cannot be parsed also forces the setting
+                    # off, so name the parse failure rather than blaming policy
+                    # the administrator may never have written.
+                    managed_decides, _ = _managed_update_value("auto_update")
+                    if managed_decides and not managed_config_status().usable:
+                        blame = "a managed config file that could not be read"
+                    elif managed_decides:
+                        blame = "managed config"
+                    elif os.environ.get(AUTO_UPDATE) is not None:
+                        blame = AUTO_UPDATE
+                    else:
+                        blame = "a higher-precedence config source"
+                    effective_label = "enabled" if effective_state else "disabled"
+                    console.print(
+                        "Preference saved, but auto-updates remain "
+                        f"{effective_label} due to {blame}."
+                    )
+                else:
+                    label = "enabled" if new_state else "disabled"
+                    console.print(f"Auto-updates {label}.")
             except OSError:
                 logger.warning("--auto-update failed: filesystem error", exc_info=True)
                 console.print(
@@ -5167,9 +5459,8 @@ def cli_main() -> None:
                     )
                 )
             except TimeoutError:
-                # `asyncio.wait_for` raises `asyncio.TimeoutError`, which is
-                # an alias of the builtin on Python >= 3.11 (the project's
-                # minimum).
+                # `asyncio.wait_for` raises `asyncio.TimeoutError`, an alias
+                # of the builtin.
                 from rich.console import Console as _Console
 
                 _Console(stderr=True).print(

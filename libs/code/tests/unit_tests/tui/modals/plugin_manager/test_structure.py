@@ -1,9 +1,10 @@
 """Tests for the plugin manager modal structure."""
 
 import asyncio
+import contextlib
 import inspect
 import re
-import threading
+import time
 from pathlib import Path
 from typing import get_args
 from unittest.mock import AsyncMock, MagicMock
@@ -1033,9 +1034,15 @@ async def test_connection_refresh_waits_for_initial_refresh(
 ) -> None:
     """A settled snapshot cannot be overwritten by the initial loading one."""
     screen = PluginManagerScreen(mcp_connecting=True)
-    initial_started = threading.Event()
-    release_initial = threading.Event()
-    settled_loaded = threading.Event()
+    loop = asyncio.get_running_loop()
+    # `asyncio.Event`s set via `call_soon_threadsafe` (thread-safe on every
+    # supported Python), rather than `threading.Event`s awaited via `to_thread`:
+    # the await side must not depend on the default executor, which the blocked
+    # initial load can starve on a loaded CI runner.
+    initial_started = asyncio.Event()
+    # Read from the load thread and written once on the event loop; a one-element
+    # list acts as the cross-thread release cell (item assignment is atomic).
+    release_initial: list[bool] = []
     snapshots: list[bool] = []
     loading_state = _ManagerState((), (), (), ("loading",))
     settled_state = _ManagerState((), (), (), ("settled",))
@@ -1048,10 +1055,13 @@ async def test_connection_refresh_waits_for_initial_refresh(
     ) -> _ManagerState:
         snapshots.append(mcp_connecting)
         if mcp_connecting:
-            initial_started.set()
-            release_initial.wait(timeout=1)
+            loop.call_soon_threadsafe(initial_started.set)
+            # Block the initial load (not a fixed sleep) so the ordering under
+            # test — connection refresh queued behind it — holds no matter how
+            # long CI takes to schedule the next await.
+            while not release_initial:
+                time.sleep(0.005)
             return loading_state
-        settled_loaded.set()
         return settled_state
 
     monkeypatch.setattr(
@@ -1063,12 +1073,53 @@ async def test_connection_refresh_waits_for_initial_refresh(
     )
     monkeypatch.setattr(screen, "_refresh_view", MagicMock())
 
+    async def wait_for(event: asyncio.Event, what: str) -> None:
+        """Await `event`, failing with context instead of hanging on a bug."""
+        try:
+            async with asyncio.timeout(10):
+                await event.wait()
+        except TimeoutError:
+            msg = f"timed out waiting for {what}; snapshots so far: {snapshots}"
+            raise AssertionError(msg) from None
+
     initial_refresh = asyncio.create_task(screen._refresh_state())
-    await asyncio.wait_for(asyncio.to_thread(initial_started.wait), timeout=1)
-    screen.update_connection_state([], mcp_connecting=False)
-    release_initial.set()
-    await initial_refresh
-    await asyncio.wait_for(asyncio.to_thread(settled_loaded.wait), timeout=1)
+    try:
+        # The initial load has entered `load_state` and is holding the refresh lock.
+        await wait_for(initial_started, "the initial load to start")
+        # Queue the settled connection refresh behind the initial load's lock.
+        screen.update_connection_state([], mcp_connecting=False)
+        # Release the initial load; once it finishes, the queued settled refresh runs.
+        release_initial.append(True)
+        await initial_refresh
+        # Await the connection refresh task itself rather than polling `_state`:
+        # a `sleep(0)` spin can out-poll the resumed `to_thread` continuation on
+        # a starved CI executor, failing even though the refresh would have
+        # applied the settled snapshot moments later.
+        (connection_refresh,) = screen._refresh_tasks
+        try:
+            async with asyncio.timeout(10):
+                await connection_refresh
+        except TimeoutError:
+            msg = (
+                "timed out waiting for the settled refresh; "
+                f"snapshots so far: {snapshots}"
+            )
+            raise AssertionError(msg) from None
+        if screen._state != settled_state:
+            msg = (
+                f"settled load ran but `_state` was not applied; snapshots: {snapshots}"
+            )
+            raise AssertionError(msg)
+    finally:
+        # Release the load thread even when a wait above timed out: a running
+        # `to_thread` callable cannot be cancelled, and an un-released worker
+        # would spin in `load_state` forever, hanging interpreter teardown on
+        # the executor instead of surfacing the assertion.
+        release_initial.append(True)
+        if not initial_refresh.done():
+            initial_refresh.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await initial_refresh
 
     assert snapshots == [True, False]
     assert screen._state == settled_state

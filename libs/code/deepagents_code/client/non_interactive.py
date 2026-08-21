@@ -48,6 +48,7 @@ from deepagents_code._session_stats import (
     finalize_recorded_requests,
     print_usage_table,
     record_message_usage,
+    usage_table_enabled,
 )
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
@@ -61,6 +62,7 @@ from deepagents_code._tool_stream import (
     normalize_tool_status,
     tool_call_buffer_key,
 )
+from deepagents_code._tracing import stream_trace_config
 from deepagents_code._version import __version__
 from deepagents_code.agent import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
@@ -1241,7 +1243,7 @@ async def _stream_agent(
             stream_input,
             stream_mode=["messages", "updates", "custom"],
             subgraphs=True,
-            config=config,
+            config=stream_trace_config(config, stream_input),
             context=context,
             durability="exit",
         ):
@@ -1699,7 +1701,12 @@ async def _run_agent_loop(
             )
             console.print(link_text)
         console.print("[green]✓ Task completed[/green]")
-        print_usage_table(state.stats, wall_time, console)
+        # Inside `if not quiet:` on purpose — `--quiet` suppresses the table
+        # regardless of the option. `usage_table_enabled` fails open rather
+        # than raising here, because an escape would skip the
+        # `AGENT_COMPLETED` notification and the `session.end` hooks below.
+        if usage_table_enabled():
+            print_usage_table(state.stats, wall_time, console)
 
     notification_stop: ClientHookStopError | None = None
     try:

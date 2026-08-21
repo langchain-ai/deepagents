@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import logging
 import os
 import signal
 import sys
@@ -18,7 +19,13 @@ from rich.console import Console
 if TYPE_CHECKING:
     from prompt_toolkit.layout import Layout
 
-from deepagents_code._env_vars import INVOKED_AS, LAUNCH_TERM_PROGRAM
+from deepagents_code._env_vars import (
+    DEBUG,
+    EXPERIMENTAL,
+    INVOKED_AS,
+    LAUNCH_TERM_PROGRAM,
+    RESUME_TERM_PROGRAM,
+)
 from deepagents_code._invocation import invoked_name
 from deepagents_code.app import (
     AppResult,
@@ -32,6 +39,7 @@ from deepagents_code.main import (
     _handle_termination_signal,
     _install_termination_signal_handlers,
     _is_managed_ripgrep_path,
+    _print_session_stats,
     _render_teardown_thread_hints,
     _restart_current_process,
     _ripgrep_install_hint,
@@ -1862,6 +1870,167 @@ class TestResumeHintLogic:
         assert not show, "No hint when thread_exists returns False"
 
 
+class TestPrintSessionStats:
+    """Test configurable usage statistics at session teardown."""
+
+    @staticmethod
+    def _render(
+        config_toml: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> str:
+        """Render the teardown table against a real `config.toml`.
+
+        Args:
+            config_toml: Contents to write to the user config file.
+            tmp_path: Directory to hold the config file.
+            monkeypatch: Fixture used to redirect the config path.
+
+        Returns:
+            Everything the teardown printed to the console.
+        """
+        from deepagents_code._session_stats import SessionStats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(config_toml, encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+
+        stats = SessionStats(wall_time_seconds=2.0)
+        stats.record_request("test-model", 100, 50)
+        buffer = StringIO()
+        _print_session_stats(stats, Console(file=buffer, width=200))
+        return buffer.getvalue()
+
+    @pytest.mark.parametrize(
+        ("config_toml", "expected_visible"),
+        [
+            ("", True),
+            ("[ui]\nshow_usage_stats = true\n", True),
+            ("[ui]\nshow_usage_stats = false\n", False),
+        ],
+    )
+    def test_respects_show_usage_stats(
+        self,
+        config_toml: str,
+        expected_visible: bool,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`[ui].show_usage_stats` controls teardown table rendering."""
+        output = self._render(config_toml, tmp_path, monkeypatch)
+
+        if expected_visible:
+            assert "test-model" in output
+        else:
+            # Nothing at all, not merely a missing model row: a suppressed
+            # table must not leave a header or a stray blank line behind.
+            assert output == ""
+
+    def test_absent_config_file_keeps_stats(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A user with no `config.toml` at all still gets the table.
+
+        The other cases write an empty-but-present file, which exercises a
+        different branch of `load_config_toml` than a missing path does.
+        """
+        from deepagents_code._session_stats import SessionStats
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "does_not_exist.toml",
+        )
+        stats = SessionStats(wall_time_seconds=2.0)
+        stats.record_request("test-model", 100, 50)
+        buffer = StringIO()
+
+        _print_session_stats(stats, Console(file=buffer, width=200))
+
+        assert "test-model" in buffer.getvalue()
+
+    def test_malformed_value_keeps_stats(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A wrong-typed TOML value is rejected rather than coerced.
+
+        TOML has no truthy strings, so `show_usage_stats = "no"` is the
+        likeliest way to get this wrong, and `bool("no")` is `True` — naive
+        coercion would show the table to a user who meant to hide it.
+
+        The default is also `True`, so "rejected, fell through to the default"
+        and "coerced to `True`" render identically; `"test-model" in output`
+        cannot tell them apart. The log assertion is the one carrying the
+        weight here. The rejection happens in `_coerce_toml`, one layer below
+        the `OptionKind` guard; that guard is covered directly in
+        `test_config_manifest.py`.
+        """
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+            output = self._render(
+                '[ui]\nshow_usage_stats = "no"\n', tmp_path, monkeypatch
+            )
+
+        assert "test-model" in output
+        assert "show_usage_stats" in caplog.text
+        assert "expected bool" in caplog.text
+
+    def test_managed_config_overrides_user_preference(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Managed policy outranks the user's `config.toml`.
+
+        The resolver reads the managed tier by default. A refactor that passed
+        an isolated user source would drop admin policy with every other test
+        in this class still green.
+        """
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed_config.toml"
+        managed.write_text("[ui]\nshow_usage_stats = false\n", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+
+        output = self._render("[ui]\nshow_usage_stats = true\n", tmp_path, monkeypatch)
+
+        assert output == ""
+
+    def test_non_stats_payload_warns_and_skips_config(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-`SessionStats` payload warns and never resolves the option.
+
+        `stats` is typed `Any`, so nothing stops a caller from passing something
+        else. `main` itself always passes a real `SessionStats`
+        (`AppResult.session_stats` has a `default_factory`), so if this branch
+        ever fires something upstream is broken — hence the warning, which is
+        what keeps "the payload was wrong" apart from "the user disabled it".
+
+        The spy records rather than raises: `usage_table_enabled` catches
+        exceptions and returns `True`, so a raising stub would make a regressed
+        guard order pass vacuously. `load_config_toml` is the read being
+        trapped; it is evaluated as an argument before `resolve_scalar` runs, so
+        no lookup can slip past it.
+        """
+        calls: list[object] = []
+
+        def _spy() -> dict[str, object]:
+            calls.append(None)
+            return {}
+
+        monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", _spy)
+        buffer = StringIO()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.main"):
+            _print_session_stats(None, Console(file=buffer, width=200))
+
+        assert buffer.getvalue() == ""
+        assert not calls, "config must not be read for a non-stats payload"
+        assert "expected SessionStats" in caplog.text
+
+
 class TestTeardownThreadCheckpointLookup:
     """Test teardown checkpoint lookup guard behavior."""
 
@@ -1918,39 +2087,45 @@ class TestRenderTeardownThreadHints:
         launch_name: str = "dcode",
         term_program: str = "",
         launch_term_program: str | None = None,
+        resume_term_program: bool | None = None,
+        debug: bool = False,
+        experimental: bool = False,
+        toml_data: dict | None = None,
+        toml_error: Exception | None = None,
     ) -> str:
-        """Render the hints with patched dependencies, returning the output.
-
-        `term_program` is the live variable; `launch_term_program` is the
-        launch snapshot the hint actually reads. Passing only `term_program`
-        exercises the no-snapshot path (hint stays bare); passing both
-        exercises the launch-time-carry path.
-        """
+        """Render teardown hints under controlled feature configuration."""
         buffer = StringIO()
         console = Console(file=buffer, width=200)
         # `launch_name` is resolved (and cached) inside the renderer.
         invoked_name.cache_clear()
-        env = {INVOKED_AS: launch_name, "TERM_PROGRAM": term_program}
+        env = {
+            INVOKED_AS: launch_name,
+            "TERM_PROGRAM": term_program,
+            DEBUG: "1" if debug else "0",
+            EXPERIMENTAL: "1" if experimental else "0",
+        }
         if launch_term_program is not None:
             env[LAUNCH_TERM_PROGRAM] = launch_term_program
+        if resume_term_program is not None:
+            env[RESUME_TERM_PROGRAM] = "1" if resume_term_program else "0"
         with (
             patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
             patch(
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
             ),
-            # Always set explicitly: an ambient `TERM_PROGRAM` or launch
-            # snapshot from the developer's or CI runner's shell would
-            # otherwise leak into the rendered command and flake assertions.
+            patch(
+                "deepagents_code.config_manifest.load_config_toml",
+                side_effect=toml_error,
+                return_value={} if toml_data is None else toml_data,
+            ),
             patch.dict(os.environ, env),
-            # These cases describe POSIX behavior; pin the platform so they do
-            # not take the native-Windows path when run on a Windows machine.
             patch.object(sys, "platform", "darwin"),
         ):
-            # `patch.dict` only merges, so drop an inherited launch snapshot
-            # when the case wants no snapshot at all.
             if launch_term_program is None:
                 os.environ.pop(LAUNCH_TERM_PROGRAM, None)
+            if resume_term_program is None:
+                os.environ.pop(RESUME_TERM_PROGRAM, None)
             _render_teardown_thread_hints(console, "test123", return_code=return_code)
         return buffer.getvalue()
 
@@ -1969,6 +2144,45 @@ class TestRenderTeardownThreadHints:
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
 
+    def test_resume_hint_honors_toml_feature_flag(self) -> None:
+        """`[features] resume_term_program` reaches the hint without an env var.
+
+        The helper otherwise stubs `load_config_toml` to `{}`, so without this
+        case the entire config.toml route to the prefix could break with the
+        suite still green.
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            launch_term_program="iTerm.app",
+            toml_data={"features": {"resume_term_program": True}},
+        )
+
+        assert "TERM_PROGRAM=iTerm.app dcode -r test123" in output
+
+    def test_resume_hint_survives_config_read_failure(self) -> None:
+        """A raising config read must not take down the exit path.
+
+        `_render_teardown_thread_hints` runs from a bare `finally` in
+        `cli_main`, so an exception escaping here would replace whatever is
+        already unwinding -- including the `KeyboardInterrupt` that produces
+        exit code 130.
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            launch_term_program="iTerm.app",
+            resume_term_program=True,
+            toml_error=RecursionError("deeply nested TOML"),
+        )
+
+        assert "dcode -r test123" in output
+        assert "TERM_PROGRAM=" not in output
+
     @pytest.mark.parametrize("return_code", [0, 1])
     def test_resume_hint_echoes_launch_command(self, return_code: int) -> None:
         """The hint names the shim the user launched, not a hardcoded `dcode`."""
@@ -1985,13 +2199,10 @@ class TestRenderTeardownThreadHints:
         assert "dcode" not in output
 
     @pytest.mark.parametrize("return_code", [0, 1])
-    def test_resume_hint_carries_term_program(self, return_code: int) -> None:
-        """A launch-time `TERM_PROGRAM` rides along as an env prefix.
-
-        A shell alias that exports the variable cannot be recovered from
-        `argv[0]`, so pasting a bare `dcode -r ...` would drop it (and with it
-        anything keyed off it, such as theme selection).
-        """
+    def test_resume_hint_carries_term_program_when_enabled(
+        self, return_code: int
+    ) -> None:
+        """An enabled launch-time `TERM_PROGRAM` rides along as an env prefix."""
         thread_exists_mock = AsyncMock(return_value=True)
 
         output = self._render(
@@ -2000,9 +2211,60 @@ class TestRenderTeardownThreadHints:
             return_code=return_code,
             term_program="WezTerm",
             launch_term_program="WezTerm",
+            resume_term_program=True,
         )
 
         assert "TERM_PROGRAM=WezTerm dcode -r test123" in output
+
+    def test_resume_hint_omits_term_program_by_default(self) -> None:
+        """An ambient launch value is not echoed without an enabling mode or flag."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="WezTerm",
+            launch_term_program="WezTerm",
+        )
+
+        assert "TERM_PROGRAM" not in output
+        assert "dcode -r test123" in output
+
+    @pytest.mark.parametrize("mode", ["debug", "experimental"])
+    def test_resume_hint_carries_term_program_in_enabled_modes(self, mode: str) -> None:
+        """Debug and experimental mode each enable the prefix by default."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="WezTerm",
+            launch_term_program="WezTerm",
+            debug=mode == "debug",
+            experimental=mode == "experimental",
+        )
+
+        assert "TERM_PROGRAM=WezTerm dcode -r test123" in output
+
+    @pytest.mark.parametrize("mode", ["debug", "experimental"])
+    def test_resume_hint_explicit_disable_overrides_enabled_modes(
+        self, mode: str
+    ) -> None:
+        """The feature flag can suppress the mode-dependent opt-in."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="WezTerm",
+            launch_term_program="WezTerm",
+            resume_term_program=False,
+            debug=mode == "debug",
+            experimental=mode == "experimental",
+        )
+
+        assert "TERM_PROGRAM" not in output
+        assert "dcode -r test123" in output
 
     def test_resume_hint_omits_term_program_without_launch_snapshot(self) -> None:
         """A `TERM_PROGRAM` set only after launch (a `.env` file) stays out."""
@@ -2012,6 +2274,7 @@ class TestRenderTeardownThreadHints:
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
             term_program="WezTerm",
+            resume_term_program=True,
         )
 
         assert "TERM_PROGRAM" not in output
@@ -2021,7 +2284,11 @@ class TestRenderTeardownThreadHints:
         """An unset `TERM_PROGRAM` leaves the command bare, with no empty prefix."""
         thread_exists_mock = AsyncMock(return_value=True)
 
-        output = self._render(thread_exists_mock=thread_exists_mock, thread_url=None)
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            resume_term_program=True,
+        )
 
         assert "dcode -r test123" in output
         assert "TERM_PROGRAM" not in output
@@ -2036,6 +2303,7 @@ class TestRenderTeardownThreadHints:
             thread_url=None,
             term_program=term_program,
             launch_term_program=term_program,
+            resume_term_program=True,
         )
 
         assert "TERM_PROGRAM" not in output
@@ -2049,6 +2317,7 @@ class TestRenderTeardownThreadHints:
             thread_url=None,
             term_program="Wez Term&whoami",
             launch_term_program="Wez Term&whoami",
+            resume_term_program=True,
         )
 
         assert "TERM_PROGRAM='Wez Term&whoami' dcode -r test123" in output
@@ -2066,6 +2335,7 @@ class TestRenderTeardownThreadHints:
             thread_url=None,
             term_program="Wez\x1b\nTerm",
             launch_term_program="Wez\x1b\nTerm",
+            resume_term_program=True,
         )
 
         assert "TERM_PROGRAM" not in output
@@ -2092,6 +2362,7 @@ class TestRenderTeardownThreadHints:
             INVOKED_AS: "dcode",
             "TERM_PROGRAM": "vscode",
             LAUNCH_TERM_PROGRAM: "vscode",
+            RESUME_TERM_PROGRAM: "1",
             **(extra_env or {}),
         }
         with (
@@ -2100,6 +2371,7 @@ class TestRenderTeardownThreadHints:
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=None,
             ),
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
             patch.object(sys, "platform", platform),
             patch.dict(os.environ, env),
         ):

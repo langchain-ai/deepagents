@@ -106,6 +106,7 @@ from deepagents_code._tool_stream import (
     normalize_tool_status,
     tool_call_buffer_key,
 )
+from deepagents_code._tracing import stream_trace_config
 from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker, record_display_caveat
 from deepagents_code.hooks import (
@@ -1542,7 +1543,7 @@ async def execute_task_textual(
                 stream_input,
                 stream_mode=["messages", "updates", "custom"],
                 subgraphs=True,
-                config=config,
+                config=stream_trace_config(config, stream_input),
                 context=context,
                 durability="exit",
             )
@@ -3400,7 +3401,10 @@ async def _handle_interrupt_cleanup(
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
 
     if recover_interrupted_turn:
-        await adapter._mount_message(AppMessage("Interrupted by user"))
+        glyphs = get_glyphs()
+        await adapter._mount_message(
+            AppMessage(f"{glyphs.square_filled} Interrupted by user")
+        )
 
     # Proactively cancel server-side runs before persisting recovery state, so
     # the aupdate_state writes below don't 409 against a still-busy thread. This

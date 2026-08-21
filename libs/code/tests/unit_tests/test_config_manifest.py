@@ -32,6 +32,7 @@ from deepagents_code.config_manifest import (
     get_config_options,
     get_option,
     is_provider_package_installed,
+    load_bool_display_preference,
     option_keys,
     options_with_key_prefix,
     provider_install_extra,
@@ -109,6 +110,299 @@ def test_manifest_covers_every_provider_credential() -> None:
     assert not missing, (
         f"Provider credential env vars without a manifest entry: {sorted(missing)}."
     )
+
+
+_UI_READER_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # Terminal-default inspection and the theme provider retain bespoke
+        # terminal-program mapping semantics.
+        "app.py:_load_terminal_default",
+        "providers.py:ranked_theme_toml_value",
+        # Reads `[ui]` only to repair and rewrite it; not a value reader.
+        "app.py:_replace_malformed_ui",
+    }
+)
+"""Functions permitted to read the `[ui]` table without using the manifest."""
+
+
+def test_no_hand_rolled_ui_config_readers() -> None:
+    """`[ui]` scalars must be read through the manifest, not re-parsed by hand.
+
+    A bespoke loader re-implements env parsing, the `[ui]` lookup, the type
+    check, and the fallback — which is how the app came to read values that
+    `dcode config` did not report, and vice versa.
+    """
+    import ast
+    from pathlib import Path
+
+    from deepagents_code import config_manifest
+
+    package_root = Path(config_manifest.__file__).parent
+    readers: set[str] = set()
+    for source in sorted(package_root.rglob("*.py")):
+        text = source.read_text(encoding="utf-8")
+        if '.get("ui"' not in text:
+            continue
+        hits = [
+            number
+            for number, line in enumerate(text.splitlines(), start=1)
+            if '.get("ui"' in line
+        ]
+        functions = [
+            node
+            for node in ast.walk(ast.parse(text))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        for hit in hits:
+            # Smallest enclosing span, so a nested helper is not attributed to
+            # the function it happens to live in.
+            enclosing = min(
+                (
+                    node
+                    for node in functions
+                    if node.lineno <= hit <= (node.end_lineno or node.lineno)
+                ),
+                key=lambda node: (node.end_lineno or node.lineno) - node.lineno,
+                default=None,
+            )
+            name = enclosing.name if enclosing else "<module>"
+            readers.add(f"{source.name}:{name}")
+
+    assert readers == _UI_READER_ALLOWLIST, (
+        f"Unexpected `[ui]` readers: {sorted(readers - _UI_READER_ALLOWLIST)}. "
+        "Register the option in config_manifest.py and resolve it with "
+        "`resolve_scalar` instead of parsing config.toml by hand."
+    )
+
+
+# Six `app.py` display toggles plus `display.show_usage_stats` in
+# `_session_stats.py`. The `app.py` wrapper forwards variables, not literals,
+# so it is deliberately not counted. Exact, not a floor — see the test.
+_EXPECTED_LITERAL_CALL_SITES = 7
+
+
+def test_bool_display_preference_fallbacks_match_the_manifest() -> None:
+    """Every `load_bool_display_preference` call site must agree with the manifest.
+
+    The `fallback` argument duplicates the option's declared default, and a
+    mistyped key silently resolves to that fallback — with both in agreement
+    that produces no symptom at all until someone actually sets the option.
+
+    This walks the call sites instead of listing them, because a hand-kept list
+    is exactly how the drift gets in: the key can be added to the list while a
+    second call site with a different fallback goes unnoticed, or a new caller
+    can skip the list entirely.
+
+    The walk only sees literal arguments, so a refactor that passed keys or
+    fallbacks as variables would quietly shrink coverage while still passing on
+    whatever literal sites remained. `_EXPECTED_LITERAL_CALL_SITES` is an exact
+    count rather than a floor, so both a shrink and an unreviewed new literal
+    caller are loud — bump it when you add one. The blind spot it cannot close
+    is a *new* caller that passes a variable key: the count stays put and
+    nothing checks that caller's pair.
+    """
+    import ast
+    from pathlib import Path
+
+    from deepagents_code import config_manifest
+
+    package_root = Path(config_manifest.__file__).parent
+    call_sites: list[tuple[str, str, object]] = []
+    for source in sorted(package_root.rglob("*.py")):
+        text = source.read_text(encoding="utf-8")
+        if "load_bool_display_preference(" not in text:
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else getattr(func, "id", None)
+            )
+            if name not in {
+                "load_bool_display_preference",
+                "_load_bool_display_preference",
+            }:
+                continue
+            keys = [
+                arg.value
+                for arg in node.args
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            ] + [
+                kw.value.value
+                for kw in node.keywords
+                if kw.arg == "key"
+                and isinstance(kw.value, ast.Constant)
+                and isinstance(kw.value.value, str)
+            ]
+            fallbacks = [
+                kw.value.value
+                for kw in node.keywords
+                if kw.arg == "fallback" and isinstance(kw.value, ast.Constant)
+            ]
+            # The `app.py` wrapper forwards `key`/`fallback` variables rather
+            # than literals; only literal pairs are checkable here.
+            if keys and fallbacks:
+                call_sites.append((source.name, keys[0], fallbacks[0]))
+
+    assert len(call_sites) == _EXPECTED_LITERAL_CALL_SITES, (
+        f"found {len(call_sites)} literal call sites, expected "
+        f"{_EXPECTED_LITERAL_CALL_SITES}; a caller that stopped passing "
+        "literals is no longer checked here, and a new one has not been "
+        "reviewed — change the count deliberately"
+    )
+    for filename, key, fallback in call_sites:
+        option = get_option(key)
+        assert option is not None, f"{filename}: {key} is not in the manifest"
+        assert option.kind is OptionKind.BOOL, (
+            f"{filename}: {key} is {option.kind.value}, not a bool"
+        )
+        assert option.default is fallback, (
+            f"{filename}: {key} default {option.default!r} disagrees with the "
+            f"call-site fallback {fallback!r}; they must match or the fallback "
+            "path changes behavior"
+        )
+
+
+def test_bool_display_preference_unknown_key_falls_back(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unmapped key returns the fallback and says so in the log.
+
+    Nothing else exercises this branch: every real call site names a key that
+    is in the manifest, so the guard only ever fires after a rename. The
+    fallback is returned as given, not coerced, in both directions.
+    """
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert (
+            load_bool_display_preference("display.no_such_key", fallback=False) is False
+        )
+        assert (
+            load_bool_display_preference("display.no_such_key", fallback=True) is True
+        )
+
+    assert "display.no_such_key" in caplog.text
+
+
+def test_bool_display_preference_non_bool_key_falls_back(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A key naming a non-bool option returns the fallback rather than coercing.
+
+    Without the kind check, `display.charset` (a `STR` option defaulting to
+    `"auto"`) would resolve to `bool("auto")` — permanently `True`, with no
+    warning at all.
+    """
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert load_bool_display_preference("display.charset", fallback=False) is False
+
+    assert "display.charset" in caplog.text
+    assert "not a bool" in caplog.text
+
+
+def test_toml_only_bool_display_options_declare_no_env_var() -> None:
+    """`display.show_diff_line_numbers` is `config.toml`-only, deliberately.
+
+    It is TUI-only and toggled in-app with `/line-numbers`, so `config.toml` is
+    the natural place to preset it — unlike `display.show_usage_stats`, which
+    also gates headless output and therefore does declare an env var.
+
+    The promise lives in `app._load_show_diff_line_numbers` ("There is no env
+    var for this option."), which is what a failure here has to go fix;
+    `load_bool_display_preference` only says that not every option declares
+    one. Adding an `env_var` is a legitimate product change, but it should be a
+    decision rather than a drive-by, so it has to come through this test.
+    """
+    option = get_option("display.show_diff_line_numbers")
+    assert option is not None
+    assert option.env_var is None, (
+        "display.show_diff_line_numbers gained an env var; update the promise in "
+        "`app._load_show_diff_line_numbers`"
+    )
+    assert not option.fallback_env_vars
+
+
+@pytest.mark.parametrize(
+    ("key", "toml_keys"),
+    [
+        ("display.show_message_timestamps", ("ui", "show_message_timestamps")),
+        ("display.show_usage_stats", ("ui", "show_usage_stats")),
+        ("display.themes", ("themes",)),
+        ("display.terminal_themes", ("ui", "terminal_themes")),
+        ("models.providers", ("models", "providers")),
+        ("retries.max_retries", ("retries", "max_retries")),
+        ("agents.default", ("agents", "default")),
+        ("agents.recent", ("agents", "recent")),
+        ("agents.async_subagents", ("async_subagents",)),
+        ("sandboxes.default", ("sandboxes", "default")),
+        ("sandboxes.providers", ("sandboxes", "providers")),
+    ],
+)
+def test_config_toml_sections_are_discoverable(
+    key: str, toml_keys: tuple[str, ...]
+) -> None:
+    """Every `config.toml` section the app reads must be listed by `dcode config`."""
+    option = get_option(key)
+    assert option is not None, f"{key} is missing from the manifest"
+    assert option.toml_keys == toml_keys
+
+
+def test_negative_retry_count_is_not_reported_as_effective(caplog) -> None:
+    """A retry value the runtime rejects must not appear active in `config`."""
+    import logging
+
+    option = get_option("retries.max_retries")
+    assert option is not None
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(option, toml_data={"retries": {"max_retries": -1}}) == (
+            None,
+            "default",
+        )
+    assert any(
+        "[retries].max_retries" in record.getMessage() for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize("key", ["agents.default", "agents.recent"])
+def test_blank_saved_agent_is_not_reported_as_effective(key: str, caplog) -> None:
+    """Blank agent preferences fall through just as the launch loader does."""
+    import logging
+
+    option = get_option(key)
+    assert option is not None
+    field = key.removeprefix("agents.")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(option, toml_data={"agents": {field: "   "}}) == (
+            None,
+            "default",
+        )
+    assert any(f"[agents].{field}" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("key", ["agents.default", "agents.recent"])
+def test_saved_agent_is_trimmed_like_the_launch_loader(key: str) -> None:
+    """The manifest reports the normalized saved-agent value used at launch."""
+    option = get_option(key)
+    assert option is not None
+    field = key.removeprefix("agents.")
+    assert resolve_scalar(option, toml_data={"agents": {field: "  coder  "}}) == (
+        "coder",
+        "config.toml",
+    )
+
+
+def test_show_message_timestamps_env_overrides_config(monkeypatch) -> None:
+    """The env var must outrank a persisted `/timestamps` toggle."""
+    option = get_option("display.show_message_timestamps")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.SHOW_MESSAGE_TIMESTAMPS, "1")
+    value, source = resolve_scalar(
+        option, toml_data={"ui": {"show_message_timestamps": False}}
+    )
+    assert value is True
+    assert source == f"env ({_env_vars.SHOW_MESSAGE_TIMESTAMPS})"
 
 
 def test_option_keys_unique() -> None:
@@ -429,6 +723,109 @@ def test_invalid_goal_auto_accept_env_falls_through(
     assert resolve_scalar(option, toml_data=toml_data) == expected
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [(None, False), (_env_vars.DEBUG, True), (_env_vars.EXPERIMENTAL, True)],
+)
+def test_resume_term_program_resolves_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str | None,
+    expected: bool,
+) -> None:
+    """The resume prefix defaults on only in experimental or debug mode."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.RESUME_TERM_PROGRAM, raising=False)
+    monkeypatch.delenv(_env_vars.DEBUG, raising=False)
+    monkeypatch.delenv(_env_vars.EXPERIMENTAL, raising=False)
+    if mode is not None:
+        monkeypatch.setenv(mode, "1")
+
+    assert resolve_scalar(option, toml_data={}) == (expected, "default")
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("1", True), ("0", False), ("", False)])
+def test_resume_term_program_env_overrides_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+    expected: bool,
+) -> None:
+    """An explicit feature env value wins over mode and TOML values."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.DEBUG, "1")
+    monkeypatch.setenv(_env_vars.EXPERIMENTAL, "1")
+    monkeypatch.setenv(_env_vars.RESUME_TERM_PROGRAM, raw)
+
+    assert resolve_scalar(
+        option,
+        toml_data={"features": {"resume_term_program": not expected}},
+    ) == (expected, f"env ({_env_vars.RESUME_TERM_PROGRAM})")
+
+
+@pytest.mark.parametrize(
+    ("configured", "mode", "expected"),
+    [
+        (True, None, True),
+        (False, _env_vars.DEBUG, False),
+        (False, _env_vars.EXPERIMENTAL, False),
+    ],
+)
+def test_resume_term_program_toml_overrides_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+    configured: bool,
+    mode: str | None,
+    expected: bool,
+) -> None:
+    """An explicit config.toml value wins over the mode-dependent default."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.RESUME_TERM_PROGRAM, raising=False)
+    monkeypatch.delenv(_env_vars.DEBUG, raising=False)
+    monkeypatch.delenv(_env_vars.EXPERIMENTAL, raising=False)
+    if mode is not None:
+        monkeypatch.setenv(mode, "1")
+
+    assert resolve_scalar(
+        option,
+        toml_data={"features": {"resume_term_program": configured}},
+    ) == (expected, "config.toml")
+
+
+def test_resume_term_program_unrecognized_env_falls_through_to_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A typo'd feature flag must not silently defeat debug mode."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.EXPERIMENTAL, raising=False)
+    monkeypatch.setenv(_env_vars.DEBUG, "1")
+    monkeypatch.setenv(_env_vars.RESUME_TERM_PROGRAM, "maybe")
+
+    assert resolve_scalar(option, toml_data={}) == (True, "default")
+
+
+def test_bool_mode_default_rejects_declared_default() -> None:
+    """A declared default is dead for this kind, so it is rejected up front.
+
+    `resolve_scalar` derives the default from debug/experimental mode and
+    returns before reading `default` -- but `dcode config` still renders the
+    declared value, advertising a default that contradicts the real one.
+    """
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    assert option.default is None
+
+    with pytest.raises(TypeError, match="must not declare a default"):
+        ConfigOption(
+            key="features.example",
+            group="Tools",
+            summary="Example.",
+            kind=OptionKind.BOOL_MODE_DEFAULT,
+            default=False,
+        )
+
+
 def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
     """The effective log level follows debug mode when no level is explicit."""
     option = get_option("debug.log_level")
@@ -607,6 +1004,22 @@ def test_display_value_uses_credential_language_for_non_secret_unset() -> None:
         redacted=False,
     )
     assert _display_value(option, is_set=False, value=None) == "not configured"
+
+
+def test_display_value_redacts_structured_table() -> None:
+    """A redacted table never renders its dict, only its presence."""
+    option = ConfigOption(
+        key="agents.async_subagents",
+        group="Agents",
+        summary="",
+        kind=OptionKind.STRUCTURED,
+        redacted=True,
+    )
+    secret = {"researcher": {"headers": {"Authorization": "Bearer sk-secret"}}}
+    rendered = _display_value(option, is_set=True, value=secret)
+    assert rendered == "configured"
+    assert "sk-secret" not in rendered
+    assert _display_value(option, is_set=False, value=None) == "(unset)"
 
 
 def test_missing_extra_hint_checks_provider_dependency(monkeypatch) -> None:
@@ -941,6 +1354,35 @@ def test_run_get_json_non_credential_omits_store_error(stored_auth_dir, capsys):
     assert "store_error" not in payload
 
 
+def test_run_get_pairs_values_and_health_from_one_managed_snapshot(
+    monkeypatch, capsys
+) -> None:
+    """A config invocation refreshes managed provider state exactly once."""
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
+
+    snapshot = TomlSnapshot(
+        {},
+        ProviderStatus("managed config", None, ProviderHealth.MISSING),
+    )
+    calls: list[bool] = []
+
+    def get_snapshot(*, refresh: bool = False, path: object = None) -> TomlSnapshot:
+        assert path is None
+        calls.append(refresh)
+        return snapshot
+
+    monkeypatch.setattr(service, "get_managed_snapshot", get_snapshot)
+
+    assert _run_get("display.show_header", "json") == 0
+    assert calls == [True]
+    capsys.readouterr()
+
+
 def test_run_config_json_flags_unreadable_store(stored_auth_dir, capsys):
     """`config --json` marks credential rows when the store is unreadable."""
     import json
@@ -1271,6 +1713,47 @@ def test_run_config_json_redacts_every_secret(monkeypatch, capsys) -> None:
     rows = json.loads(capsys.readouterr().out)["data"]
     assert any(r["key"] == "credentials.anthropic" and r["set"] for r in rows)
     assert all(r["value"] is None for r in rows if r["redacted"])
+
+
+def test_run_get_json_redacts_credential_bearing_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """`config get --json` reports a credential-bearing table's presence only.
+
+    `[async_subagents]` headers, `[models.providers]`, and
+    `[sandboxes.providers]` can hold tokens, so their rows carry `redacted`
+    and a `None` value instead of the raw table.
+    """
+    from deepagents_code import model_config
+
+    secret = "Bearer sk-secret"
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[async_subagents.researcher]\n"
+        'description = "Research agent"\n'
+        'graph_id = "agent"\n'
+        "headers = { Authorization = '" + secret + "' }\n"
+        "[models.providers.acme]\n"
+        'class_path = "acme.Chat:AcmeChat"\n'
+        'api_key = "sk-secret"\n'
+        "[sandboxes.providers.acme]\n"
+        'class_path = "acme.Sandbox:AcmeSandbox"\n'
+        "params = { token = 'sk-secret' }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config)
+
+    for key, source in (
+        ("agents.async_subagents", "config.toml"),
+        ("models.providers", "config.toml"),
+        ("sandboxes.providers", "config.toml"),
+    ):
+        data = _get_json_object(key, capsys)
+        assert data["redacted"] is True
+        assert data["set"] is True
+        assert data["source"] == source
+        assert data["value"] is None
+    assert "sk-secret" not in capsys.readouterr().out
 
 
 def test_resolve_int_falls_back_to_toml_then_default() -> None:
@@ -1755,6 +2238,35 @@ def test_resolve_structured_passes_value_through() -> None:
         table,
         "config.toml",
     )
+
+
+def test_structured_fallback_preserves_invalid_tier(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A defaultless table fallback retains the rejected provider metadata."""
+    from deepagents_code.config_manifest import resolve_ranked_scalar
+    from deepagents_code.configuration.resolver import USER_RANK
+    from deepagents_code.configuration.types import Invalid
+
+    option = get_option("display.terminal_themes")
+    assert option is not None
+    toml_data = {"ui": "dark"}
+
+    resolved = resolve_ranked_scalar(
+        option,
+        toml_data=toml_data,
+        managed_toml_data={},
+    )
+    assert resolved.value is None
+    assert isinstance(resolved.tier_health[USER_RANK], Invalid)
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(
+            option,
+            toml_data=toml_data,
+            managed_toml_data={},
+        ) == (None, "default")
+    assert any("expected a table" in record.message for record in caplog.records)
 
 
 def test_resolve_malformed_skills_dir_env_falls_back(monkeypatch, caplog) -> None:
@@ -2662,6 +3174,7 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     provider must produce a `credentials.<name>` option after the cache resets.
     """
     from deepagents_code import config_manifest, model_config
+    from deepagents_code.configuration import service
 
     patched = {
         **model_config.PROVIDER_API_KEY_ENV,
@@ -2669,7 +3182,9 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     }
     monkeypatch.setattr(model_config, "PROVIDER_API_KEY_ENV", patched)
     config_manifest.get_config_options.cache_clear()
+    service._managed_table_paths.cache_clear()
     config_manifest._options_by_key.cache_clear()
+    config_manifest._options_by_toml_path.cache_clear()
     try:
         opt = config_manifest.get_option("credentials.synthetic_xyz")
         assert opt is not None
@@ -2679,7 +3194,9 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     finally:
         # Restore the cache so later tests rebuild against the real registry.
         config_manifest.get_config_options.cache_clear()
+        service._managed_table_paths.cache_clear()
         config_manifest._options_by_key.cache_clear()
+        config_manifest._options_by_toml_path.cache_clear()
 
 
 def test_provider_dependency_metadata_is_exhaustive() -> None:
@@ -3122,3 +3639,233 @@ def test_load_config_toml_tolerates_an_undecodable_file(
         assert load_config_toml() == {}
 
     assert "using defaults" in caplog.text
+
+
+def test_whitespace_env_is_ignored_with_a_warning(monkeypatch, caplog) -> None:
+    """A whitespace-only env value falls through and says so.
+
+    Empty is a normal "unset" idiom, but whitespace-only is nearly always an
+    accident (`export X="$UNSET "`). Discarding it without a word was the only
+    unlogged rejection path in `resolve_scalar`, so a user could lose an
+    override with no evidence anywhere.
+    """
+    option = get_option("models.auto_classifier")
+    assert option is not None
+    assert option.env_var is not None
+    monkeypatch.setenv(option.env_var, "   ")
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(
+            option, toml_data={"models": {"auto_classifier": "openai:gpt-5"}}
+        )
+
+    assert (value, source) == ("openai:gpt-5", "config.toml")
+    assert any("whitespace-only" in r.getMessage() for r in caplog.records)
+
+
+def test_whitespace_env_opts_out_when_empty_means_false(monkeypatch) -> None:
+    """`empty_env_is_false` treats whitespace like empty, outranking config.toml.
+
+    The asymmetry with the test above is the resolver's contract, so pin both
+    sides: a blank value is an opt-out only where the option declares one.
+    """
+    option = get_option("display.cursor_blink")
+    assert option is not None
+    assert option.empty_env_is_false is True
+    assert option.env_var is not None
+    monkeypatch.setenv(option.env_var, "  \t ")
+
+    assert resolve_scalar(option, toml_data={"ui": {"cursor_blink": True}}) == (
+        False,
+        f"env ({option.env_var})",
+    )
+
+
+def test_invalid_primary_env_warns_before_valid_fallback(monkeypatch, caplog) -> None:
+    """Alias fall-through retains diagnostics from earlier env candidates."""
+    option = get_option("tracing.langsmith_project")
+    assert option is not None
+    assert option.env_var is not None
+    fallback = option.fallback_env_vars[0]
+    monkeypatch.setenv(option.env_var, "  ")
+    monkeypatch.setenv(fallback, "fallback-project")
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(option, toml_data={})
+
+    assert (value, source) == ("fallback-project", f"env ({fallback})")
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if "whitespace-only" in record.getMessage()
+    ] == [f"Ignoring {option.env_var}='  ' (whitespace-only; treated as unset)"]
+
+
+def test_non_table_toml_section_is_reported_once(caplog) -> None:
+    """A scalar shadowing a whole table is logged, not silently defaulted.
+
+    `ui = "dark"` defaults every `[ui]` option at once; the pre-manifest loaders
+    each warned about it, and dropping that left the user's edited value absent
+    from the output with no explanation. Logged once per path per process
+    because `config` resolves the whole manifest in one pass.
+    """
+    from deepagents_code import config_manifest
+
+    config_manifest._warned_non_table_paths.clear()
+    scrollbar = get_option("display.show_scrollbar")
+    blink = get_option("display.cursor_blink")
+    assert scrollbar is not None
+    assert blink is not None
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(scrollbar, toml_data={"ui": "dark"}) == (False, "default")
+        assert resolve_scalar(blink, toml_data={"ui": "dark"}) == (True, "default")
+
+    warnings = [r for r in caplog.records if "expected a table" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "[ui]" in warnings[0].getMessage()
+    config_manifest._warned_non_table_paths.clear()
+
+
+def test_verbose_provenance_distinguishes_quoted_dotted_keys() -> None:
+    """Display labels retain the resolver's tuple-path distinction."""
+    from deepagents_code.client.commands.config import _option_provenance
+
+    option = get_option("display.themes")
+    assert option is not None
+
+    assert _option_provenance(
+        option,
+        source="managed config + config.toml",
+        toml_data={"themes": {"a": {"b": "user"}, "sibling": 1}},
+        managed_toml_data={"themes": {"a.b": "managed"}},
+    ) == {
+        '"a.b"': "managed config",
+        "a.b": "config.toml",
+        "sibling": "config.toml",
+    }
+
+
+def test_blank_env_auto_classifier_reports_a_problem(monkeypatch) -> None:
+    """A blank env classifier must be described, not just logged.
+
+    The blank value reverts authorization review to the main agent model — the
+    agent grading its own actions. A `logger.warning` lands in the debug log,
+    which is not a surface the user reads, so the caller needs the description.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "openai:gpt-5"}},
+    )
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "   ")
+
+    spec, problem = resolve_auto_classifier_model_with_problem()
+
+    assert spec is None
+    assert problem is not None
+    assert _env_vars.AUTO_CLASSIFIER_MODEL in problem
+    # The message must name the value it overrode; without it the user checks
+    # config.toml, still sees their setting, and learns nothing.
+    assert "openai:gpt-5" in problem
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_config_surface_agrees_with_runtime_on_blank_env_classifier(
+    blank: str, monkeypatch
+) -> None:
+    """`config` must not credit a classifier the runtime refuses to use.
+
+    A blank env var vetoes `config.toml` for this option only, so resolving it
+    with the generic scalar path would report the config.toml model while the
+    runtime inherits the main agent model.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    toml_data = {"models": {"auto_classifier": "openai:gpt-5"}}
+    monkeypatch.setattr(config_manifest, "load_config_toml", lambda: toml_data)
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, blank)
+
+    option = get_option("models.auto_classifier")
+    assert option is not None
+    runtime_spec, _ = resolve_auto_classifier_model_with_problem()
+    is_set, source, displayed = _resolve(option, toml_data=toml_data)
+
+    assert runtime_spec is None
+    assert displayed == runtime_spec
+    assert source == f"env ({_env_vars.AUTO_CLASSIFIER_MODEL})"
+    assert is_set is True
+    assert _display_value(option, is_set=is_set, value=displayed) == "(unset)"
+
+
+def test_usable_env_classifier_is_still_reported(monkeypatch) -> None:
+    """The veto must not swallow a real env value."""
+    from deepagents_code import config_manifest
+
+    toml_data = {"models": {"auto_classifier": "openai:gpt-5"}}
+    monkeypatch.setattr(config_manifest, "load_config_toml", lambda: toml_data)
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "anthropic:claude-haiku-4-5")
+
+    option = get_option("models.auto_classifier")
+    assert option is not None
+    is_set, source, value = _resolve(option, toml_data=toml_data)
+
+    assert (is_set, value) == (True, "anthropic:claude-haiku-4-5")
+    assert source == f"env ({_env_vars.AUTO_CLASSIFIER_MODEL})"
+
+
+def test_config_text_output_redacts_credential_bearing_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """The human-readable surfaces must not print a credential-bearing table.
+
+    The JSON path redacts through `_config_json_row`; the table, `--verbose`,
+    and `config get` text paths go through `_display_value` instead, so they
+    need their own guard against a renderer that forgets.
+    """
+    from deepagents_code import model_config
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[async_subagents.researcher]\n"
+        'description = "Research agent"\n'
+        'graph_id = "agent"\n'
+        "headers = { Authorization = 'Bearer sk-secret' }\n"
+        "[models.providers.acme]\n"
+        'class_path = "acme.Chat:AcmeChat"\n'
+        'api_key = "sk-secret"\n'
+        "[sandboxes.providers.acme]\n"
+        'class_path = "acme.Sandbox:AcmeSandbox"\n'
+        "params = { token = 'sk-secret' }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config)
+
+    for args in (
+        argparse.Namespace(config_command=None, output_format="text", verbose=False),
+        argparse.Namespace(config_command=None, output_format="text", verbose=True),
+        argparse.Namespace(
+            config_command="get",
+            key="agents.async_subagents",
+            output_format="text",
+            verbose=False,
+        ),
+    ):
+        assert run_config_command(args) == 0
+        out = capsys.readouterr().out
+        assert "sk-secret" not in out
+        assert "Authorization" not in out
+    assert "configured" in out
+
+
+def test_empty_redacted_table_reads_as_unset() -> None:
+    """A present-but-empty table has nothing configured, so say so."""
+    option = get_option("agents.async_subagents")
+    assert option is not None
+    assert option.redacted is True
+    assert _display_value(option, is_set=True, value={}) == "(unset)"
+    assert _display_value(option, is_set=True, value={"a": {}}) == "configured"

@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
+    from deepagents_code.extensions import ExtensionRegistry
     from deepagents_code.skills.load import ExtendedSkillMetadata
 
 
@@ -173,6 +174,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
         hidden_keywords="servers oauth authenticate reconnect disable enable",
         argument_hint="[login <server> | reconnect]",
+    ),
+    SlashCommand(
+        name="/extensions",
+        description="List loaded Python extensions and what they registered",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="extension middleware tools commands provenance",
     ),
     SlashCommand(
         name="/plugins",
@@ -560,4 +567,30 @@ def build_skill_commands(
         _skill_command_entry(skill)
         for skill in skills
         if skill["name"] not in _STATIC_SKILL_ALIASES
+    ]
+
+
+def build_extension_commands(registry: ExtensionRegistry) -> list[CommandEntry]:
+    """Build autocomplete entries for extension-registered commands.
+
+    Each entry is tagged with the extension it came from so a user can tell a
+    contributed command from a built-in one.
+
+    Args:
+        registry: Registry populated by the extension loader.
+
+    Returns:
+        Autocomplete entries in load order.
+    """
+    return [
+        CommandEntry(
+            name=f"/{command.name}",
+            description=(
+                registry.command_description(command.name)
+                or f"Command from {command.source.label}"
+            ),
+            hidden_keywords=f"extension {command.source.label}",
+            argument_hint="",
+        )
+        for command in registry.commands
     ]

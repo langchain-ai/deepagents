@@ -1992,6 +1992,36 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         env_var=_env_vars.EXTERNAL_EVENT_SOCKET_PATH,
     ),
+    # --- Extensions ---------------------------------------------------
+    ConfigOption(
+        key="extensions.enabled",
+        group="Extensions",
+        summary="Enable loading local Python extensions.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.EXTENSIONS,
+        toml_keys=("extensions", "enabled"),
+    ),
+    ConfigOption(
+        key="extensions.paths",
+        group="Extensions",
+        summary=(
+            "Additional extension files or directories; the "
+            "DEEPAGENTS_CODE_EXTENSIONS_PATHS override uses the platform path "
+            "separator."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("extensions", "paths"),
+    ),
+    ConfigOption(
+        key="extensions.trust",
+        group="Extensions",
+        summary="Default project-extension trust policy ('ask', 'always', or 'never').",
+        kind=OptionKind.STR,
+        default="ask",
+        env_var=_env_vars.EXTENSIONS_TRUST,
+        toml_keys=("extensions", "trust"),
+    ),
     # --- Goals ----------------------------------------------------------
     ConfigOption(
         key="goals.auto_accept_criteria",
@@ -2421,6 +2451,10 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # Set then popped during the self-update restart handshake (main.py);
         # never user-configured.
         _env_vars.RESTARTED_AFTER_UPDATE,
+        # Env override for the STRUCTURED `[extensions].paths` list. The
+        # dedicated extensions settings loader splits it with `os.pathsep`, so
+        # it intentionally has no scalar `env_var` ConfigOption.
+        _env_vars.EXTENSIONS_PATHS,
         # Env equivalents of the STRUCTURED `[mcp]` lists. They are read by the
         # dedicated `model_config.load_mcp_server_trust_lists` loader (which the
         # `mcp.*` STRUCTURED options describe for discovery), not by the scalar

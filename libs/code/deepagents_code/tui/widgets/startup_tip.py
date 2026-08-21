@@ -34,6 +34,7 @@ _TIPS: dict[str, int] = {
     "Use /effort to change the current model's reasoning effort": 1,
     _TIP_EXTERNAL_EDITOR: 1,
     "Use /skill:<name> to invoke a skill directly": 1,
+    "Drop a Python file in ~/.deepagents/extensions and run /extensions": 1,
     "Use /theme to customize the TUI's colors": 1,
     "Use /skill-creator to build reusable agent skills": 1,
     "Ask for a workflow to fan work out to subagents in parallel": 3,

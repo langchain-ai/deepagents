@@ -2050,6 +2050,9 @@ def build_stream_config(
     `lc_versions["deepagents"]`; for sibling monorepo packages that suffix
     identifies workspace HEAD relative to the pinned published SDK baseline.
 
+    Also records `editable` as an always-present boolean so editable dcode installs
+    can be filtered without parsing the `lc_versions["deepagents-code"]` suffix.
+
     Also records `dcode_experimental=True` when `DEEPAGENTS_CODE_EXPERIMENTAL`
     is enabled, so experimental runs are filterable in trace metadata.
 
@@ -2120,10 +2123,10 @@ def build_stream_config(
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).
+    editable = _is_editable_install()
+    metadata["editable"] = editable
     metadata["lc_versions"] = {
-        "deepagents-code": _format_lc_version(
-            __version__, editable=_is_editable_install()
-        )
+        "deepagents-code": _format_lc_version(__version__, editable=editable)
     }
     deepagents_version = _get_deepagents_version()
     if deepagents_version is not None:

@@ -24615,6 +24615,17 @@ class TestHasConversationMessages:
 
             assert await app._has_conversation_messages() is False
 
+    async def test_returns_true_for_inflight_user_message(self) -> None:
+        """Should detect a submitted user turn before its checkpoint commits."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            app._agent = AsyncMock()
+            app._lc_thread_id = "t1"
+            app._agent_running = True
+            app._active_user_message = UserMessage("hi")
+
+            assert await app._has_conversation_messages() is True
+
     async def test_returns_false_when_only_system_messages(self) -> None:
         """Should return False when messages list has no HumanMessage."""
         from langchain_core.messages import SystemMessage

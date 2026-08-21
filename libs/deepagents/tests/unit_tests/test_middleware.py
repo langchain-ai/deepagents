@@ -1,5 +1,6 @@
 import mimetypes
 import time
+import warnings
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ from langgraph.types import Command
 from pydantic import ValidationError
 
 import deepagents.middleware.filesystem as filesystem_middleware
+from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -3342,6 +3344,51 @@ class TestTooLargeToolMessage:
         assert "/large_tool_results/call_1" in rendered
         assert "lines of the form" in rendered
         assert "lines truncated] ..." in rendered
+
+
+class TestLargeResultTemplateDeprecation:
+    """Legacy public templates keep their released contract while warning."""
+
+    def test_tool_template_import_warns_and_preserves_formatting(self) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            from deepagents.middleware.filesystem import TOO_LARGE_TOOL_MSG  # noqa: PLC0415  # verifies legacy import
+
+        rendered = TOO_LARGE_TOOL_MSG.format(
+            tool_call_id="call_1",
+            file_path="/large_tool_results/call_1",
+            content_sample="preview",
+        )
+
+        assert "call_1" in rendered
+        assert "/large_tool_results/call_1" in rendered
+        assert rendered.endswith("preview\n")
+        self._assert_deprecation(caught, "TOO_LARGE_TOOL_MSG")
+
+    def test_human_template_import_warns_and_preserves_formatting(self) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            from deepagents.middleware.filesystem import TOO_LARGE_HUMAN_MSG  # noqa: PLC0415  # verifies legacy import
+
+        rendered = TOO_LARGE_HUMAN_MSG.format(
+            file_path="/large_tool_results/message_1",
+            content_sample="preview",
+        )
+
+        assert "/large_tool_results/message_1" in rendered
+        assert rendered.endswith("preview\n")
+        self._assert_deprecation(caught, "TOO_LARGE_HUMAN_MSG")
+
+    @staticmethod
+    def _assert_deprecation(caught: list[warnings.WarningMessage], name: str) -> None:
+        deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
+
+        assert len(deprecations) == 1
+        assert deprecations[0].category is LangChainDeprecationWarning
+        assert name in str(deprecations[0].message)
+        assert "deepagents==0.7.7" in str(deprecations[0].message)
+        assert "deepagents==0.9.0" in str(deprecations[0].message)
+        assert deprecations[0].filename == __file__
 
 
 class TestExtractTextFromMessage:

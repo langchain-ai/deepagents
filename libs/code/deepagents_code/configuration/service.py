@@ -310,7 +310,11 @@ def managed_policy_violations(
     Returns:
         The violating keys, sorted, empty when policy is enforceable.
     """
-    from deepagents_code.config_manifest import get_option, is_valid_recursion_limit
+    from deepagents_code.config_manifest import (
+        get_option,
+        is_valid_recursion_limit,
+        resolve_scalar,
+    )
     from deepagents_code.configuration.resolver import MANAGED_RANK
     from deepagents_code.configuration.types import Found, Invalid
 

@@ -198,7 +198,7 @@ def test_explicit_model_config_path_excludes_managed_allowlist(
         '[models]\nallowed = ["anthropic:managed"]\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     invalidate_config_sources()
     try:
         config = model_config.ModelConfig.load(explicit)
@@ -217,7 +217,7 @@ def test_malformed_managed_model_allowlist_is_fail_closed(
 
     managed = tmp_path / "managed.toml"
     managed.write_text('[models]\nallowed = ["openai:gpt", "broken"]\n')
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     invalidate_config_sources()
     try:
         with pytest.raises(ManagedConfigError, match=r"models\.allowed"):
@@ -242,7 +242,7 @@ def test_rejected_model_allowlist_reload_keeps_previous_policy(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -275,7 +275,7 @@ def test_managed_default_must_be_in_managed_model_allowlist(
         '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n'
         'default = "openai:gpt-5.6-terra"\n'
     )
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     invalidate_config_sources()
     try:
         with pytest.raises(ManagedConfigError, match=r"models\.default"):

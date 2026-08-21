@@ -611,7 +611,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """
         glyphs = get_glyphs()
         parts = [
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} or Shift+Tab navigate",
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} to navigate",
             "Tab autocomplete",
             "Enter select",
         ]

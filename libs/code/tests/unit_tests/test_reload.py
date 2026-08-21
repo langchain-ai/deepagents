@@ -502,6 +502,58 @@ class TestReloadFromEnvironment:
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
 
+    def test_project_dotenv_denies_lowercase_git_config_keys(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Denied keys are matched case-insensitively for Windows env semantics.
+
+        On Windows `os.environ` keys are case-insensitive and Python normalizes
+        assigned keys to uppercase, so a lowercase `git_config_key_0` in a
+        committed `.env` would otherwise pass a case-sensitive check and become
+        an active `GIT_CONFIG_KEY_0` for the `git` commands dcode runs during
+        startup detection. On POSIX the lowercase spelling is inert (git reads
+        only the canonical case), so denying it there is harmless.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "git_config_count=1\n"
+            "git_config_key_0=core.fsmonitor\n"
+            "Git_Config_Value_0=/tmp/evil.sh\n"
+            "git_dir=/tmp/evil.git\n"
+            "OPENAI_API_KEY=sk-ok\n"
+        )
+        # On POSIX the lowercase names are distinct env vars; ensure neither the
+        # lowercase spelling nor its uppercase normalization is already set.
+        for key in (
+            "git_config_count",
+            "git_config_key_0",
+            "Git_Config_Value_0",
+            "git_dir",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_DIR",
+            "OPENAI_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        _load_dotenv(start_path=tmp_path)
+
+        for key in (
+            "git_config_count",
+            "git_config_key_0",
+            "Git_Config_Value_0",
+            "git_dir",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_DIR",
+        ):
+            assert key not in os.environ
+        assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
     def test_project_dotenv_cannot_set_mcp_trust_lists(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

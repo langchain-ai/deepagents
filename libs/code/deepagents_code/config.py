@@ -183,10 +183,15 @@ checking which category it belongs to:
 `PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
 is only meant to relay a value the user set in their launch environment.
 
-Matching is exact and case-sensitive: the protected consumers (the dynamic
-linker, bash, CPython, git) read these names only in their canonical case, so a
-lowercase `bash_env` injected into the environment is inert. Any future entry
-that some consumer reads case-insensitively would need a different check.
+Matching is case-sensitive on POSIX because the protected consumers (the
+dynamic linker, bash, CPython, git) read these names only in their canonical
+case, so a lowercase `bash_env` injected into the environment is inert there.
+On Windows, however, environment variable names are case-insensitive and
+`os.environ` normalizes assigned keys to uppercase, so a lowercase
+`git_config_key_0` in a `.env` would become an active `GIT_CONFIG_KEY_0` for a
+spawned `git`. `_is_dotenv_denied_env_key` therefore compares the uppercased
+key, which is a superset on POSIX (denied names are already uppercase, so the
+extra denials like `git_config_count` are of otherwise-inert spellings).
 """
 
 _DOTENV_DENIED_ENV_KEY_PREFIXES = (
@@ -212,9 +217,13 @@ def _is_dotenv_denied_env_key(key: str) -> bool:
 
     Combines the exact-match `_DOTENV_DENIED_ENV_KEYS` set with the
     `_DOTENV_DENIED_ENV_KEY_PREFIXES` family so numbered git config keys
-    (`GIT_CONFIG_KEY_0`, ...) are denied without enumeration.
+    (`GIT_CONFIG_KEY_0`, ...) are denied without enumeration. The key is
+    uppercased before both checks so a lowercase or mixed-case spelling cannot
+    slip past on Windows, where `os.environ` assignment would normalize it back
+    to the active uppercase form.
     """
-    return key in _DOTENV_DENIED_ENV_KEYS or key.startswith(
+    normalized = key.upper()
+    return normalized in _DOTENV_DENIED_ENV_KEYS or normalized.startswith(
         _DOTENV_DENIED_ENV_KEY_PREFIXES
     )
 

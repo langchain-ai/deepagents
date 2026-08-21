@@ -88,6 +88,42 @@ class TestPatchedWordSelection:
 
             assert pilot.app.screen.get_selected_text() == "second message"
 
+    async def test_shift_click_extends_drag_selection_from_anchor(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.mouse_down("#msg", offset=(0, 0))
+            await pilot.mouse_up("#msg", offset=(4, 0))
+            assert pilot.app.screen.get_selected_text() == "alpha"
+
+            await pilot.click("#msg", offset=(11, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() == "alpha beta g"
+
+    async def test_shift_click_preserves_backward_drag_anchor(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.mouse_down("#msg", offset=(15, 0))
+            await pilot.mouse_up("#msg", offset=(11, 0))
+            assert pilot.app.screen.get_selected_text() == "gamma"
+
+            await pilot.click("#msg", offset=(0, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() == "alpha beta gamma"
+
+    async def test_shift_click_extends_selection_across_widgets(self) -> None:
+        async with SelectableHistoryApp().run_test() as pilot:
+            await pilot.mouse_down("#first", offset=(6, 0))
+            await pilot.mouse_up("#first", offset=(12, 0))
+            assert pilot.app.screen.get_selected_text() == "message"
+
+            await pilot.click("#second", offset=(6, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() == "message\nsecond"
+
+    async def test_shift_click_without_selection_remains_unselected(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.click("#msg", offset=(7, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() is None
+
 
 class TestDetachedHitGuard:
     """Coverage of the Textualize/textual#6643 crash guard."""

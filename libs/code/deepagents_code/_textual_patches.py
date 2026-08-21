@@ -1,6 +1,6 @@
 r"""Runtime patches over Textual internals, imported for side effect.
 
-This module hosts five independent best-effort patches over private Textual
+This module hosts six independent best-effort patches over private Textual
 APIs. Each guards its own import/assignment and degrades to stock Textual
 behavior (logging a warning) if the targeted internals move, so they have
 separate lifecycles — do not delete the whole file when only one lands
@@ -42,7 +42,12 @@ upstream.
     drag) to word boundaries. No upstream issue tracks this yet, so it has
     no removal criterion — it stays until Textual grows native word select.
 
-4. Detached-widget hit filtering. The compositor keeps reporting a widget as
+4. Shift-click selection extension. Stock Textual replaces an existing text
+    selection on every mouse press, so Shift+click cannot move the active end
+    of a drag-selected range. The patch preserves the original selection anchor
+    and applies the click as its new end. No upstream issue tracks this yet.
+
+5. Detached-widget hit filtering. The compositor keeps reporting a widget as
     visible for a few event-loop iterations after it leaves the DOM, which
     `Markdown.update` (and therefore the `MarkdownStream` that drives every
     streaming assistant message) does constantly. `Screen._forward_event`
@@ -51,7 +56,7 @@ upstream.
     crashes the app with `AttributeError: 'NoneType' object has no attribute
     'region'`. Tracked in Textualize/textual#6643; remove when that lands.
 
-5. Diff-gutter exclusion from selections. Textual paints the selection
+6. Diff-gutter exclusion from selections. Textual paints the selection
     highlight from the geometry stored in `Screen.selections`, so excluding
     a diff row's decorative gutter (line number, `+`/`-` marker) only in
     `Widget.get_selection` would copy the right text while still highlighting
@@ -81,14 +86,13 @@ from rich.text import Text
 from textual import __version__ as _textual_version
 from textual.content import Content
 from textual.geometry import Offset
-from textual.selection import Selection
+from textual.selection import SelectEnd, Selection, SelectState
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Iterable
 
     from textual.events import Click, Event
     from textual.screen import Screen
-    from textual.selection import SelectState
     from textual.widget import Widget
 
 logger = logging.getLogger(__name__)
@@ -442,6 +446,64 @@ else:
     except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
         logger.warning(
             "Textual word-selection patch assignment rejected (textual %s): %s",
+            _textual_version,
+            exc,
+        )
+
+
+try:
+    from textual import events as _shift_events
+    from textual.screen import Screen as _ShiftScreen
+
+    _original_forward_event_with_shift = _ShiftScreen._forward_event
+except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
+    logger.warning(
+        "Textual Shift+click selection patch skipped (textual %s): %s",
+        _textual_version,
+        exc,
+    )
+else:
+
+    def _shift_click_anchor(screen: Screen, event: Event) -> SelectState | None:
+        if (
+            not isinstance(event, _shift_events.MouseDown)
+            or not event.shift
+            or screen.app.mouse_captured
+            or not screen.selections
+        ):
+            return None
+        select_state = screen._select_state
+        if select_state is None or select_state.end is None:
+            return None
+        return select_state if select_state.is_attached_to_dom() else None
+
+    def _extend_selection_to_click(
+        screen: Screen,
+        anchor: SelectState | None,
+        event: _shift_events.MouseDown,
+    ) -> None:
+        click_state = screen._select_state
+        if anchor is None or click_state is None:
+            return
+        click = click_state.start
+        screen._mouse_down_offset = None
+        screen._select_state = SelectState(
+            event.screen_offset,
+            anchor.start,
+            SelectEnd(click.container, click.content_widget, click.content_offset),
+        )
+
+    def _forward_event_with_shift_select(self: Screen, event: Event) -> None:
+        shift_anchor = _shift_click_anchor(self, event)
+        _original_forward_event_with_shift(self, event)
+        if isinstance(event, _shift_events.MouseDown):
+            _extend_selection_to_click(self, shift_anchor, event)
+
+    try:
+        _ShiftScreen._forward_event = _forward_event_with_shift_select  # ty: ignore[invalid-assignment]
+    except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "Textual Shift+click selection patch assignment rejected (textual %s): %s",
             _textual_version,
             exc,
         )

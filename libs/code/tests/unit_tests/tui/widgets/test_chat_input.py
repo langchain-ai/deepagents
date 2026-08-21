@@ -1599,6 +1599,72 @@ class TestShellSyntaxHighlighting:
                     tab_size=1,
                 )
 
+    async def test_posix_shell_mode_uses_bash_lexer(self) -> None:
+        """Non-Windows shell commands should use Bash syntax styles.
+
+        Asserts a Bash-specific outcome rather than only the lexer name: Bash
+        expands `$FOO` inside a double-quoted string, so the expansion carries
+        a different style from the quotes around it. A non-shell grammar (or a
+        shell one applied at the wrong offsets) styles the whole string
+        uniformly and fails here.
+        """
+        from unittest.mock import patch
+
+        app = _ChatInputTestApp()
+        with patch.object(chat_input_module.sys, "platform", "linux"):
+            async with app.run_test() as pilot:
+                chat_input = app.query_one(ChatInput)
+                text_area = app.query_one(ChatTextArea)
+                command = 'FOO="bar" echo "$FOO"'
+                text_area.text = command
+
+                chat_input.mode = "shell"
+                await pilot.pause()
+
+                line = text_area.get_line(0)
+                assert line.plain == command
+                style_by_start = {span.start: span.style for span in line.spans}
+                quote_start = command.index('"$FOO"')
+                variable_start = command.index("$FOO")
+                command_start = command.index("echo")
+                # `$FOO` is styled apart from its enclosing quotes.
+                assert style_by_start[variable_start] != style_by_start[quote_start]
+                # `echo` is a command word, not plain text like the quotes.
+                assert style_by_start[command_start] != style_by_start[quote_start]
+
+    async def test_highlight_failure_never_shows_stale_text(self) -> None:
+        """A failed highlight must fall back to the document, not a stale draft.
+
+        The rendered text has to match the buffer that Enter would submit. If
+        the cache marker were committed before `highlight()` ran, a failure
+        would leave the marker on the new text and the cached lines on the old,
+        so every later call would take the cache-hit path and render the
+        previous draft indefinitely.
+        """
+        from unittest.mock import patch
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            text_area.text = "echo first"
+            chat_input.mode = "shell"
+            await pilot.pause()
+            assert text_area.get_line(0).plain == "echo first"
+
+            text_area.text = "echo second"
+            with patch.object(
+                chat_input_module,
+                "highlight",
+                side_effect=RuntimeError("lexer exploded"),
+            ):
+                line = text_area.get_line(0)
+
+            assert line.plain == "echo second"
+            # Degradation persists rather than re-raising every frame, and the
+            # text stays correct once the patch is lifted.
+            assert text_area.get_line(0).plain == "echo second"
+
     async def test_leaving_shell_mode_removes_highlighting(self) -> None:
         """Returning to normal input should clear cached shell styles."""
         app = _ChatInputTestApp()
@@ -1674,8 +1740,13 @@ class TestShellSyntaxHighlighting:
             chat_input.mode = "shell"
             await pilot.pause()
 
-            # Put the cursor on the line being rendered.
-            text_area.move_cursor((0, 0))
+            # Put the cursor on the line being rendered, but at end-of-line.
+            # The block cursor inverts the cell it sits on, which contributes a
+            # second color on its own - enough to satisfy the assertion below
+            # even with the token colors flattened. Parking it past the last
+            # character puts it on trailing padding, which the `.strip()`
+            # filter drops, so only real token colors are counted.
+            text_area.move_cursor((0, len(text_area.text)))
             strip = text_area.render_line(0)
             colors = {
                 segment.style.color.triplet

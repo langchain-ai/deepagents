@@ -615,7 +615,11 @@ class ChatTextArea(PasteBurstTextArea):
         self._highlighted_lines: list[Content] | None = None
 
     def set_shell_highlighting(self, *, enabled: bool) -> None:
-        """Enable shell syntax highlighting for this text area."""
+        """Enable or disable shell syntax highlighting for this text area.
+
+        Args:
+            enabled: Whether to style input as shell syntax.
+        """
         if self._shell_highlighting == enabled:
             return
         self._shell_highlighting = enabled
@@ -624,27 +628,29 @@ class ChatTextArea(PasteBurstTextArea):
         self._line_cache.clear()
         self.refresh()
 
-    def notify_style_update(self) -> None:
-        """Clear resolved shell styles when the app theme changes."""
-        self._highlighted_lines = None
-        super().notify_style_update()
-
     def _render_line(self, y: int) -> Strip:
         """Render a line, keeping shell token colors visible on the cursor line.
 
         `TextArea._render_line` stylizes the whole cursor line with
-        `theme.cursor_line_style`, which resolves to a style carrying the
-        widget's text color. That foreground is painted after (and on top of)
-        the shell syntax spans produced by `get_line`, flattening every token
-        on the cursor line to a single color. Temporarily strip the foreground
-        from `cursor_line_style` while shell highlighting is active so only the
-        cursor-line background tint is applied over the token colors.
+        `theme.cursor_line_style`, which under the default `css` theme resolves
+        to a style carrying the widget's text color. That foreground is painted
+        after (and on top of) the shell syntax spans produced by `get_line`,
+        flattening every token on the cursor line to a single color. Clear just
+        the foreground while shell highlighting is active so the cursor-line
+        background tint - and any text styles such as bold - still apply over
+        the token colors.
+
+        Mutating the theme in place is safe because `TextArea._set_theme` keeps
+        a per-widget copy (`dataclasses.replace`), so this never touches the
+        shared builtin theme or another `TextArea`. Rendering is synchronous
+        and `apply_css` runs outside this window, so the `finally` restore is
+        sufficient.
 
         Args:
-            y: Y Coordinate of line relative to the widget region.
+            y: Y coordinate of the line relative to the widget region.
 
         Returns:
-            A rendered line.
+            The rendered line.
         """
         theme = self._theme
         cursor_line_style = theme.cursor_line_style if theme else None
@@ -655,33 +661,75 @@ class ChatTextArea(PasteBurstTextArea):
         ):
             return super()._render_line(y)
 
-        theme.cursor_line_style = Style(bgcolor=cursor_line_style.bgcolor)
+        # Restore on the exception path too; otherwise the widget keeps a
+        # foreground-less cursor line for the rest of the session.
+        theme.cursor_line_style = cursor_line_style.without_color + Style(
+            bgcolor=cursor_line_style.bgcolor
+        )
         try:
             return super()._render_line(y)
         finally:
             theme.cursor_line_style = cursor_line_style
 
     def get_line(self, line_index: int) -> Text:
-        """Return one input line with shell syntax styles when enabled."""
+        """Return one input line, with shell syntax styles when enabled.
+
+        Args:
+            line_index: Index of the line to return.
+
+        Returns:
+            The line as Rich text, styled per shell token when highlighting is
+            active. Falls back to the unstyled base implementation if
+            highlighting fails, so the text shown always matches the document.
+        """
         if not self._shell_highlighting:
             return super().get_line(line_index)
 
         source = self.text
         lines = self._highlighted_lines
         if lines is None or source != self._highlighted_source:
-            self._highlighted_source = source
             language = "batch" if sys.platform == "win32" else "sh"
-            highlighted = highlight(source, language=language, tab_size=1)
-            lines = list(highlighted.split("\n", allow_blank=True))
+            try:
+                # `tab_size=1` keeps span offsets aligned with the document's
+                # raw character offsets: Pygments expands tabs (default 8),
+                # while `_render_line` does its own tab expansion downstream.
+                highlighted = highlight(source, language=language, tab_size=1)
+                lines = list(highlighted.split("\n", allow_blank=True))
+            except Exception:
+                # This runs inside the render loop, where an uncaught exception
+                # tears down the whole app. Degrade to unhighlighted text and
+                # stop retrying every frame.
+                logger.exception(
+                    "Shell highlighting failed for a %d-character draft; "
+                    "falling back to unhighlighted text",
+                    len(source),
+                )
+                self._shell_highlighting = False
+                self._highlighted_source = ""
+                self._highlighted_lines = None
+                return super().get_line(line_index)
+            # `highlight()` normalizes via `"\n".join(code.splitlines())`, which
+            # drops the trailing empty line that `Document` keeps. Pad so line
+            # indices stay in step with the document.
+            lines.extend([Content("")] * max(0, self.document.line_count - len(lines)))
+            # Only commit the cache marker once both fallible steps succeeded;
+            # advancing it earlier would serve the previous draft's lines
+            # forever on the cache-hit path.
+            self._highlighted_source = source
             self._highlighted_lines = lines
 
-        try:
-            content = lines[line_index]
-        except IndexError:
-            return Text("", end="", no_wrap=True)
+        if not 0 <= line_index < len(lines):
+            logger.warning(
+                "Shell highlight covers %d lines, not line %d (document has "
+                "%d); rendering it unhighlighted",
+                len(lines),
+                line_index,
+                self.document.line_count,
+            )
+            return super().get_line(line_index)
 
         line = Text(end="", no_wrap=True)
-        for segment in content.render_segments(self.visual_style):
+        for segment in lines[line_index].render_segments(self.visual_style):
             line.append(segment.text, segment.style)
         return line
 

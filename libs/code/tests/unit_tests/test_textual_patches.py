@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -108,6 +110,23 @@ class TestPatchedWordSelection:
 
             assert pilot.app.screen.get_selected_text() == "alpha beta gamma"
 
+    async def test_shift_click_rejects_detached_markdown_anchor(self) -> None:
+        async with SelectableMarkdownApp().run_test() as pilot:
+            screen = pilot.app.screen
+            document = pilot.app.query_one("#msg", Markdown)
+            await pilot.mouse_down("#msg", offset=(15, 0))
+            await pilot.mouse_up("#msg", offset=(11, 0))
+            select_state = screen._select_state
+            assert select_state is not None
+            anchor_widget = select_state.start.content_widget
+            assert anchor_widget is not None
+
+            await document.update("replacement text")
+            assert not anchor_widget.is_attached
+            await pilot.click("#msg", offset=(0, 0), shift=True)
+
+            assert screen.get_selected_text() is None
+
     async def test_shift_click_extends_selection_across_widgets(self) -> None:
         async with SelectableHistoryApp().run_test() as pilot:
             await pilot.mouse_down("#first", offset=(6, 0))
@@ -170,6 +189,25 @@ class TestDetachedHitGuard:
 
             assert hit is widget
             assert hit_offset == Offset(2, 0)
+
+
+def test_missing_shift_selection_internals_does_not_break_import() -> None:
+    """Missing private classes must skip only the best-effort Shift patch."""
+    code = (
+        "import textual.selection\n"
+        "del textual.selection.SelectEnd\n"
+        "del textual.selection.SelectState\n"
+        "import deepagents_code._textual_patches\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 class TestPatchedSequenceToKeyEvents:

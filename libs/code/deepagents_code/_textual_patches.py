@@ -97,13 +97,14 @@ from rich.text import Text
 from textual import __version__ as _textual_version
 from textual.content import Content
 from textual.geometry import Offset
-from textual.selection import SelectEnd, Selection, SelectState
+from textual.selection import Selection
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Iterable
 
     from textual.events import Click, Event
     from textual.screen import Screen
+    from textual.selection import SelectState
     from textual.widget import Widget
 
 logger = logging.getLogger(__name__)
@@ -465,6 +466,7 @@ else:
 try:
     from textual import events as _shift_events
     from textual.screen import Screen as _ShiftScreen
+    from textual.selection import SelectEnd, SelectState
 
     _original_forward_event_with_shift = _ShiftScreen._forward_event
 except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
@@ -491,6 +493,9 @@ else:
             return None
         select_state = screen._select_state
         if select_state is None or select_state.end is None:
+            return None
+        content_widget = select_state.start.content_widget
+        if content_widget is not None and not content_widget.is_attached:
             return None
         return select_state if select_state.is_attached_to_dom() else None
 

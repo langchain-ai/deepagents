@@ -6195,10 +6195,13 @@ class TestExecuteTaskTextualAskUser:
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
 
+    # No zero-question case: `AskUserRequest.questions` rejects an empty list,
+    # so a cancelled call always carries at least one question and the count can
+    # never be zero here. Zero and one took the same singular branch anyway
+    # (`dismissed_question_count > 1`), so the case below still covers it.
     @pytest.mark.parametrize(
         ("question_count", "expected_message"),
         [
-            (0, "Question dismissed. Tell the agent what you'd like instead."),
             (1, "Question dismissed. Tell the agent what you'd like instead."),
             (2, "Questions dismissed. Tell the agent what you'd like instead."),
         ],

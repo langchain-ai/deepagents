@@ -11,12 +11,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+from pydantic import TypeAdapter, ValidationError
+
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_SUMMARY,
     ASK_USER_ERROR_ANSWER_PREFIX,
     ASK_USER_FAILED_SUMMARY,
     ASK_USER_NO_ANSWER,
     ASK_USER_NOTHING_SELECTED,
+    AskUserRequest,
     AskUserRowSummary,
     ask_user_answer_is_empty,
     decode_multi_select_answer,
@@ -72,7 +76,7 @@ class TestFormatAskUserTranscript:
         assert "blue" not in result
 
     def test_missing_question_text_does_not_raise(self) -> None:
-        """`_validate_questions` blocks this upstream; degrade rather than raise."""
+        """The tool schema blocks this upstream; degrade rather than raise."""
         result = format_ask_user_transcript([{}], ["Alice"])  # ty: ignore
 
         assert result == "Q: \nA: Alice"
@@ -420,3 +424,50 @@ def test_row_summary_alias_matches_its_constants() -> None:
         ASK_USER_ANSWERED_SUMMARY,
         ASK_USER_FAILED_SUMMARY,
     }
+
+
+class TestAskUserRequestClientValidation:
+    """`AskUserRequest` re-validates the interrupt payload client-side.
+
+    `tui.textual_adapter` parses the resumed payload with
+    `TypeAdapter(AskUserRequest)` and re-raises on failure. That boundary is the
+    reason `questions` is `list[ValidatedQuestion]` carrying
+    `_validate_questions`, rather than a plain `list[Question]`: it is the only
+    thing standing between a malformed payload and the TUI widgets.
+
+    The tool schema is the only production writer and rejects all of these
+    already, so these are not reachable today. They pin the second gate.
+    """
+
+    def _validate(self, questions: object) -> None:
+        TypeAdapter(AskUserRequest).validate_python(
+            {"type": "ask_user", "questions": questions, "tool_call_id": "c1"}
+        )
+
+    def test_well_formed_payload_is_accepted(self) -> None:
+        """The negative control for the rejections below."""
+        self._validate([{"question": "How?", "type": "text"}])
+
+    def test_choice_question_without_choices_is_rejected(self) -> None:
+        """Otherwise `_QuestionWidget` degrades it to a text box.
+
+        The widget keeps that degrade as a defence, but this is what makes the
+        degrade unreachable rather than a live gap.
+        """
+        with pytest.raises(ValidationError, match="requires a non-empty 'choices'"):
+            self._validate([{"question": "Pick", "type": "multiple_choice"}])
+
+    def test_empty_questions_is_rejected(self) -> None:
+        """Otherwise `AskUserMenu([])` renders a prompt with no questions.
+
+        The result is a titled panel with no question widgets and nothing
+        focusable. This rule lives on the tool's `questions` parameter too; it
+        is attached here as well so both gates enforce it.
+        """
+        with pytest.raises(ValidationError, match="at least one question"):
+            self._validate([])
+
+    def test_blank_question_text_is_rejected(self) -> None:
+        """Field-level rules are unconditional, so they apply here too."""
+        with pytest.raises(ValidationError, match="must not be blank"):
+            self._validate([{"question": "  ", "type": "text"}])

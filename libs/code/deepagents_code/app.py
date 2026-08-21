@@ -9220,7 +9220,7 @@ class DeepAgentsApp(App):
 
         is_auto_fallback = any(
             isinstance(request.get("description"), str)
-            and request["description"].startswith("Auto human fallback ")
+            and request["description"].startswith("Auto human fallback")
             for request in action_requests or []
         )
         if settings.shell_allow_list and action_requests and not is_auto_fallback:
@@ -20725,11 +20725,18 @@ class DeepAgentsApp(App):
                 text = f"Auto fell back to Manual: {reason}"
                 self.notify(text, severity="warning", timeout=10, markup=False)
             else:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Auto human fallback reason=%s consecutive_denials=%s "
+                        "consecutive_unavailable=%s total_denials=%s",
+                        reason,
+                        event.get("consecutive_denials", 0),
+                        event.get("consecutive_unavailable", 0),
+                        event.get("total_denials", 0),
+                    )
                 text = (
-                    "Auto fallback: human approval required "
-                    f"(denials {event.get('consecutive_denials', 0)}, "
-                    f"unavailable {event.get('consecutive_unavailable', 0)}, "
-                    f"total {event.get('total_denials', 0)})."
+                    "Auto couldn't confidently approve this action, so it needs your "
+                    "review. Auto will continue afterward."
                 )
         else:
             text = f"Auto warning: {reason}"

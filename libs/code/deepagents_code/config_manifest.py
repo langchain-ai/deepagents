@@ -788,6 +788,74 @@ def resolve_scalar(
     return resolved.value, _ranked_source(resolved)
 
 
+def resolve_read_project_dotenv(
+    *,
+    toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any] | None = None,
+    global_dotenv: Mapping[str, str] | None = None,
+) -> bool:
+    """Resolve whether the project `.env` should be loaded into the process env.
+
+    Resolves `startup.read_project_dotenv` with precedence managed → process
+    env → global `~/.deepagents/.env` → `config.toml` → default. The default
+    (`True`) preserves the historical behavior of loading the project `.env`.
+    Disabling skips only the project file — the global `~/.deepagents/.env`
+    still loads — as defense-in-depth against an untrusted repo whose `.env`
+    carries hostile values the dotenv denylist does not yet enumerate.
+
+    The option's own env var is denied from every `.env` (see
+    `config._DOTENV_DENIED_ENV_KEYS`), so neither dotenv file can inject it into
+    the process env; and the global-file value is read directly (before the
+    project file is touched) and supplied here as `global_dotenv`, so the
+    trusted global opt-out is honored for the current startup and a project
+    `.env` cannot pin the toggle true via first-write-wins.
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+        managed_toml_data: Parsed managed TOML; the process snapshot is used when
+            omitted.
+        global_dotenv: The trusted global `~/.deepagents/.env` value for the
+            option's env var, when present; occupies a tier between the process
+            env and `config.toml`.
+
+    Returns:
+        `True` (the default) to load the project `.env`, `False` to skip it.
+    """
+    option = get_option("startup.read_project_dotenv")
+    if option is None:
+        return True
+
+    # Managed policy and the process env outrank the trusted global dotenv;
+    # resolve them (and TOML, which we discard here in favor of the global
+    # file) through the standard engine, then layer the global dotenv between
+    # the env and TOML to match the option's env-over-file precedence.
+    data = load_config_toml() if toml_data is None else toml_data
+    value, source = resolve_scalar(
+        option, toml_data=data, managed_toml_data=managed_toml_data
+    )
+    if source.startswith(("managed", "env (")):
+        return bool(value)
+
+    # The trusted global `~/.deepagents/.env` is a legitimate place to opt out
+    # and is read (by the caller) before the project file is touched.
+    raw = (global_dotenv or {}).get(option.env_var or "")
+    if raw is not None:
+        classified = _env_vars.classify_env_bool(raw)
+        if classified is not None:
+            return classified
+        logger.warning(
+            "Ignoring unrecognized %s value %r in the global dotenv; using %r",
+            option.env_var,
+            raw,
+            option.default,
+        )
+
+    # Fall back to a TOML value (if any), then the typed default.
+    if source == "config.toml":
+        return bool(value)
+    return bool(option.default)
+
+
 def load_bool_display_preference(
     key: str,
     *,
@@ -2245,6 +2313,18 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="manual",
         toml_keys=("startup", "mode"),
         cli_flag="--auto-approve",
+    ),
+    ConfigOption(
+        key="startup.read_project_dotenv",
+        group="Startup",
+        summary=(
+            "Load the project `.env` (found walking up from cwd) into the "
+            "process environment; disable to skip an untrusted repo's file."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.READ_PROJECT_DOTENV,
+        toml_keys=("startup", "read_project_dotenv"),
     ),
     ConfigOption(
         key="startup.yolo_switcher",

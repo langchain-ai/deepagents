@@ -2979,21 +2979,14 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         runtime: object,
         *,
         fallback: bool,
-        counters: AutoModeCounters | None,
-        fallback_reason: str | None = None,
     ) -> tuple[ActionRequest, ReviewConfig]:
         config = self.interrupt_on[tool_call["name"]]
         action, review = self._create_action_and_config(
             tool_call, config, state, cast("Any", runtime)
         )
         if fallback:
-            counts = counters or _default_counters(ApprovalMode.AUTO)
-            reason = f"reason: {fallback_reason}; " if fallback_reason else ""
             action["description"] = (
-                "Auto human fallback "
-                f"({reason}consecutive denials: {counts['consecutive_denials']}, "
-                f"classifier unavailable: {counts['consecutive_unavailable']}, "
-                f"total denials: {counts['total_denials']}).\n\n"
+                "Auto human fallback: this action needs your review.\n\n"
                 f"{action.get('description', '')}"
             )
         return action, review
@@ -3023,8 +3016,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 state,
                 runtime,
                 fallback=fallback,
-                counters=counters,
-                fallback_reason=fallback_reason,
             )
             action_requests.append(action)
             review_configs.append(review)
@@ -3084,7 +3075,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 manual_reviews: list[ReviewConfig] = []
                 for call in manual_calls:
                     action, review = self._action_and_config(
-                        call, state, runtime, fallback=False, counters=counters
+                        call, state, runtime, fallback=False
                     )
                     manual_actions.append(action)
                     manual_reviews.append(review)

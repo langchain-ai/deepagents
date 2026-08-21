@@ -3560,7 +3560,7 @@ class ToolCallMessage(Vertical):
         Returns:
             The question count, or zero unless `questions` is a non-empty list of
                 dicts each carrying non-blank `question` text. Deliberately looser
-                than `ask_user._validate_questions` — it accepts payloads that
+                than the `ask_user` tool schema — it accepts payloads the schema
                 rejects, such as an unknown `type` or a `choices`/`type` mismatch —
                 because it only needs to guard the fields the count reads. Of the
                 three paths that populate `_args`, only the `ask_user` interrupt

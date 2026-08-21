@@ -359,7 +359,7 @@ class TestOptionOrdering:
             {
                 "name": "delete",
                 "args": {"file_path": "old.py"},
-                "description": "Auto human fallback (consecutive denials: 3).",
+                "description": "Auto human fallback: this action needs your review.",
             }
         )
         menu.set_future(future)
@@ -539,7 +539,7 @@ class TestAutoOptionEligibility:
             {
                 "name": "delete",
                 "args": {"file_path": "old.py"},
-                "description": "Auto human fallback (consecutive denials: 3).",
+                "description": "Auto human fallback: this action needs your review.",
             },
             auto_mode_eligible=False,
         )

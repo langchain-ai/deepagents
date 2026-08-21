@@ -4377,8 +4377,7 @@ def _check_project_dotenv_trust() -> None:
     prompt_console = Console(stderr=True)
     prompt_console.print()
     prompt_console.print(
-        "[bold yellow]This project has a .env file that will be loaded into the "
-        "environment.[/bold yellow]",
+        "[bold yellow].env detected, load it?[/bold yellow]",
         highlight=False,
     )
     # `dotenv_path`/`skip_key` come from a directory name that can carry ANSI

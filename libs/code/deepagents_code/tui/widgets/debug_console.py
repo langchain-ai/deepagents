@@ -89,6 +89,8 @@ _CLICK_TO_COPY_ID = "debug-click-to-copy"
 """Id of the checkbox that opts click-to-copy in for the console."""
 _CLICK_TO_COPY_DEFAULT = False
 """Whether click-to-copy is enabled before the user toggles the checkbox."""
+_MIN_HANGING_VALUE_WIDTH = 10
+"""Minimum readable value-column width for hanging snapshot rows."""
 _FOCUS_CYCLE = f"#{_FILTER_SELECT_ID}, #{_CLICK_TO_COPY_ID}, #debug-log"
 """Tab-cycle selector spanning the toolbar controls and the log view."""
 FilterValue = Literal[
@@ -645,9 +647,10 @@ class _SnapshotView(Static):
     def _wrapped_content(self, width: int) -> Content:
         """Wrap each row while preserving its label as a hanging indent.
 
-        Rows hang continuation lines under the value column only when the label
-        column itself fits; on narrower terminals the whole row wraps flat
-        instead, so values stay readable rather than clipped away.
+        Rows hang continuation lines under the value column only when that
+        leaves a readable value width; on narrower terminals the whole row
+        wraps flat instead, so values stay readable without making the fixed
+        header excessively tall.
 
         Returns:
             Snapshot content with wrapped value lines indented.
@@ -655,7 +658,8 @@ class _SnapshotView(Static):
         indent = self._continuation_indent
         if width <= 0:
             return self._snapshot_content
-        flat = width <= indent or indent <= 0
+        value_width = width - indent
+        flat = value_width < _MIN_HANGING_VALUE_WIDTH or indent <= 0
         wrapped: list[Content] = []
         padding = Content(" " * indent)
         for row in self._snapshot_content.split(allow_blank=True):
@@ -663,7 +667,7 @@ class _SnapshotView(Static):
                 wrapped.extend(row.wrap(width))
                 continue
             prefix, value = row.divide([indent])
-            value_lines = value.wrap(width - indent)
+            value_lines = value.wrap(value_width)
             wrapped.append(Content.assemble(prefix, value_lines[0]))
             wrapped.extend(Content.assemble(padding, line) for line in value_lines[1:])
         return Content("\n").join(wrapped)

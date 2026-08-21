@@ -122,18 +122,22 @@ class TestDebugConsoleScreen:
             assert line[:indent] == " " * indent
             assert line[indent:].strip()
 
-    async def test_narrow_terminal_wraps_snapshot_values_without_indent(self) -> None:
+    async def test_cramped_value_column_wraps_snapshot_rows_flat(self) -> None:
         fields = [SnapshotField("Approval mode", "auto-edit")]
         app = _Harness()
-        async with app.run_test(size=(16, 40)) as pilot:
+        async with app.run_test(size=(30, 40)) as pilot:
             screen = DebugConsoleScreen(fields)
             app.push_screen(screen)
             await pilot.pause()
 
             view = screen.query_one(".debug-console-snapshot", Static)
             lines = _widget_text(view).splitlines()
+            content_width = view.content_size.width
 
         indent = len("Approval mode") + 2
+        # The label fits, but the remaining seven cells are too narrow for a
+        # useful hanging value column and would make the snapshot very tall.
+        assert content_width - indent == 7
         assert len(lines) > 1
         for line in lines:
             assert line[:indent] != " " * indent

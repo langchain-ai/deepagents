@@ -45,6 +45,7 @@ jobs:
       evals: ${{ steps.filter.outputs.evals }}
       acp: ${{ steps.filter.outputs.acp }}
       daytona: ${{ steps.filter.outputs.daytona }}
+      docker: ${{ steps.filter.outputs.docker }}
       modal: ${{ steps.filter.outputs.modal }}
       runloop: ${{ steps.filter.outputs.runloop }}
       vercel: ${{ steps.filter.outputs.vercel }}
@@ -128,6 +129,13 @@ jobs:
               - '.github/actions/**'
             daytona:
               - 'libs/partners/daytona/**'
+              - 'libs/deepagents/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            docker:
+              - 'libs/partners/docker/**'
               - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
@@ -223,6 +231,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/daytona"
+      python-version: "3.11"
+
+  lint-docker:
+    name: "🧹 Lint docker"
+    needs: changes
+    if: needs.changes.outputs.docker == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/docker"
       python-version: "3.11"
 
   lint-modal:
@@ -330,6 +347,16 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/daytona"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
+  test-docker:
+    name: "🧪 Test docker"
+    needs: changes
+    if: needs.changes.outputs.docker == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/docker"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
@@ -538,6 +565,7 @@ jobs:
       - lint-evals
       - lint-acp
       - lint-daytona
+      - lint-docker
       - lint-modal
       - lint-runloop
       - lint-vercel
@@ -549,6 +577,7 @@ jobs:
       - test-evals
       - test-acp
       - test-daytona
+      - test-docker
       - test-modal
       - test-runloop
       - test-vercel

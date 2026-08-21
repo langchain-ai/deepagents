@@ -145,6 +145,21 @@
         "libs/partners/daytona/tests"
       ]
     },
+    "libs/partners/docker": {
+      "release-type": "python",
+      "package-name": "langchain-docker",
+      "component": "langchain-docker",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_docker/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/docker/tests"
+      ]
+    },
     "libs/partners/modal": {
       "release-type": "python",
       "package-name": "langchain-modal",

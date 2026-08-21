@@ -34,6 +34,7 @@ on:
           - deepagents-talon
           - deepagents-evals
           - langchain-daytona
+          - langchain-docker
           - langchain-modal
           - langchain-quickjs
           - langchain-runloop
@@ -153,6 +154,9 @@ jobs:
             langchain-daytona)
               echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
               ;;
+            langchain-docker)
+              echo "working-dir=libs/partners/docker" >> $GITHUB_OUTPUT
+              ;;
             langchain-modal)
               echo "working-dir=libs/partners/modal" >> $GITHUB_OUTPUT
               ;;
@@ -167,7 +171,7 @@ jobs:
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop, langchain-vercel-sandbox"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-docker, langchain-modal, langchain-quickjs, langchain-runloop, langchain-vercel-sandbox"
               exit 1
               ;;
           esac

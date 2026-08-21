@@ -62,6 +62,7 @@ on:
           - "deepagents-acp"
           - "deepagents-talon"
           - "langchain-daytona"
+          - "langchain-docker"
           - "langchain-modal"
           - "langchain-quickjs"
           - "langchain-runloop"

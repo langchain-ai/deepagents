@@ -328,6 +328,20 @@ def _dotenv_skip_key(start_path: Path | None) -> str | None:
     return skip_key_for_start_path(start_path)
 
 
+def _project_dotenv_is_skipped(start_path: Path | None) -> bool:
+    """Return whether either skip store covers the discovered project `.env`."""
+    from deepagents_code.dotenv_skip import (
+        is_project_dotenv_skipped,
+        is_project_dotenv_skipped_for_session,
+    )
+
+    skip_key = _dotenv_skip_key(start_path)
+    return skip_key is not None and (
+        is_project_dotenv_skipped(skip_key)
+        or is_project_dotenv_skipped_for_session(skip_key)
+    )
+
+
 # Global user-level .env (~/.deepagents/.env); sentinel when Path.home() fails.
 try:
     _GLOBAL_DOTENV_PATH = Path.home() / ".deepagents" / ".env"
@@ -390,12 +404,8 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
     # Mirror `_load_dotenv`: a persisted "never load" skip for this `.env` must
     # keep the preview aligned with what a real reload would apply, or the
     # cwd-switch prompt would report settings changes that never take effect.
-    if read_project:
-        from deepagents_code.dotenv_skip import is_project_dotenv_skipped
-
-        skip_key = _dotenv_skip_key(start_path)
-        if skip_key is not None and is_project_dotenv_skipped(skip_key):
-            read_project = False
+    if read_project and _project_dotenv_is_skipped(start_path):
+        read_project = False
 
     if read_project:
         project_dotenv: Path | None = None
@@ -553,13 +563,9 @@ def _load_dotenv(
     # non-Git projects with no `ProjectContext.project_root`. Explicit
     # `read_project_dotenv=false` (above) still wins; this store only ever
     # skips, it never forces a load the option disabled.
-    if read_project:
-        from deepagents_code.dotenv_skip import is_project_dotenv_skipped
-
-        skip_key = _dotenv_skip_key(start_path)
-        if skip_key is not None and is_project_dotenv_skipped(skip_key):
-            logger.debug("Skipping project dotenv: %s is in the skip store", skip_key)
-            read_project = False
+    if read_project and _project_dotenv_is_skipped(start_path):
+        logger.debug("Skipping project dotenv at %s: project is skipped", start_path)
+        read_project = False
 
     dotenv_path: Path | str | None = None
     if read_project:

@@ -4322,7 +4322,7 @@ def _check_project_dotenv_trust() -> None:
     # A persisted "never load" decision already covers this `.env` (and every
     # subdirectory launch, since discovery walks up to the same file).
     if is_project_dotenv_skipped(skip_key):
-        _skip_project_dotenv_for_session()
+        _skip_project_dotenv_for_session(skip_key)
         return
 
     from rich.console import Console
@@ -4364,7 +4364,7 @@ def _check_project_dotenv_trust() -> None:
             "[dim]Skipping the project .env for this session.[/dim]",
             highlight=False,
         )
-        _skip_project_dotenv_for_session()
+        _skip_project_dotenv_for_session(skip_key)
     elif action is _TrustAction.REMEMBER:
         if skip_project_dotenv(skip_key):
             prompt_console.print(
@@ -4378,20 +4378,22 @@ def _check_project_dotenv_trust() -> None:
                 "only.[/yellow]",
                 highlight=False,
             )
-        _skip_project_dotenv_for_session()
+        _skip_project_dotenv_for_session(skip_key)
 
 
-def _skip_project_dotenv_for_session() -> None:
-    """Skip the project `.env` for the rest of this process.
+def _skip_project_dotenv_for_session(skip_key: str) -> None:
+    """Skip one project's `.env` for the rest of this process.
 
-    The settings bootstrap and any `/reload` re-read `resolve_read_project_dotenv`
-    on each call, so forcing the option's process-env var off here is honored by
-    both. The var is denied from every `.env` (`config._DOTENV_DENIED_ENV_KEYS`),
-    so no dotenv file can re-enable it afterward.
+    The independent canonical key is checked after `read_project_dotenv`
+    resolution, so managed policy cannot override the user's session decision
+    and an in-process cwd switch cannot leak it into another project.
+
+    Args:
+        skip_key: Canonical directory that owns the discovered project `.env`.
     """
-    from deepagents_code._env_vars import READ_PROJECT_DOTENV
+    from deepagents_code.dotenv_skip import skip_project_dotenv_for_session
 
-    os.environ[READ_PROJECT_DOTENV] = "0"
+    skip_project_dotenv_for_session(skip_key)
 
 
 def _verify_interpreter_or_exit() -> None:

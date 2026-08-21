@@ -747,6 +747,37 @@ class TestReloadFromEnvironment:
 
         assert "PROJECT_ONLY_KEY" not in os.environ
 
+    def test_session_skip_survives_managed_true_without_crossing_projects(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A session skip beats managed true and remains scoped to one `.env`."""
+        from deepagents_code.config import _load_dotenv
+        from deepagents_code.dotenv_skip import skip_project_dotenv_for_session
+
+        skipped = tmp_path / "skipped"
+        allowed = tmp_path / "allowed"
+        skipped.mkdir()
+        allowed.mkdir()
+        (skipped / ".env").write_text("SESSION_SKIPPED_KEY=hidden\n")
+        (allowed / ".env").write_text("SESSION_ALLOWED_KEY=loaded\n")
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda **_kwargs: True,
+        )
+        monkeypatch.delenv("SESSION_SKIPPED_KEY", raising=False)
+        monkeypatch.delenv("SESSION_ALLOWED_KEY", raising=False)
+
+        skip_project_dotenv_for_session(skipped)
+        _load_dotenv(start_path=skipped)
+        _load_dotenv(start_path=allowed)
+
+        assert "SESSION_SKIPPED_KEY" not in os.environ
+        assert os.environ["SESSION_ALLOWED_KEY"] == "loaded"
+
     def test_preview_dotenv_skipped_when_read_project_dotenv_false(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

@@ -31,6 +31,12 @@ _STORE_LOCK_TIMEOUT_SECONDS = 5.0
 _STORE_THREAD_LOCK = threading.Lock()
 """Process-local guard for skip-store mutations (see `hooks.trust`)."""
 
+_SESSION_SKIP_LOCK = threading.Lock()
+"""Guard for project skips that last only for the current process."""
+
+_SESSION_SKIPPED_PROJECTS: set[str] = set()
+"""Canonical `.env` parent directories skipped for the current process."""
+
 
 class DotenvSkipEntry(BaseModel):
     """Persisted record for one canonical project root whose `.env` is skipped."""
@@ -61,6 +67,31 @@ def _default_store_path() -> Path:
 
 def _project_key(project_root: Path | str) -> str:
     return str(Path(project_root).expanduser().resolve())
+
+
+def skip_project_dotenv_for_session(project_root: Path | str) -> None:
+    """Skip one project's `.env` for the rest of the current process.
+
+    Args:
+        project_root: Directory that owns the discovered project `.env`.
+    """
+    key = _project_key(project_root)
+    with _SESSION_SKIP_LOCK:
+        _SESSION_SKIPPED_PROJECTS.add(key)
+
+
+def is_project_dotenv_skipped_for_session(project_root: Path | str) -> bool:
+    """Return whether this process skips the project's `.env`.
+
+    Args:
+        project_root: Directory that owns the discovered project `.env`.
+
+    Returns:
+        `True` when the canonical project key was skipped in this process.
+    """
+    key = _project_key(project_root)
+    with _SESSION_SKIP_LOCK:
+        return key in _SESSION_SKIPPED_PROJECTS
 
 
 def skip_key_for_start_path(start_path: Path | None) -> str | None:

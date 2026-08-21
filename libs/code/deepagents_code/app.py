@@ -20777,6 +20777,21 @@ class DeepAgentsApp(App):
         if isinstance(self.screen, PluginManagerScreen):
             self.screen.action_previous_tab()
             return
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        if (
+            isinstance(self.screen, NotificationCenterScreen)
+            and self.screen.settings_expanded
+            and self.screen.settings_checkbox_focused
+        ):
+            # Expanded settings hand key focus to real checkboxes, so
+            # shift+tab must step focus backward between them rather than
+            # move the row cursor via `_SupportsReverseNav` below (which
+            # would leave focus stranded on the first checkbox).
+            self.screen.action_focus_previous()
+            return
         if isinstance(self.screen, _SupportsReverseNav):
             # Membership is by `action_move_up` presence, not an enumerated
             # list: this catches the cursor-style modals (update-available,

@@ -441,11 +441,21 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         self._drilling = False
         self._settings_expanded = False
         self._settings_loading = False
+        self._settings_transitioning = False
 
     @property
     def settings_expanded(self) -> bool:
         """Whether the inline warning preferences are currently expanded."""
         return self._settings_expanded
+
+    @property
+    def settings_checkbox_focused(self) -> bool:
+        """Whether key focus is on one of the settings checkboxes.
+
+        Used by `DeepAgentsApp.action_toggle_auto_approve` to route
+        shift+tab into reverse checkbox traversal instead of the row cursor.
+        """
+        return self._settings_has_focus()
 
     def _build_list(self) -> list[Static]:
         """Build list widgets and refresh the selectable row index.
@@ -606,6 +616,20 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
             return
         self._set_selected((self._selected + 1) % len(self._rows))
 
+    def action_focus_previous(self) -> None:
+        """Step checkbox focus backward for the app's shift+tab router.
+
+        The app-level priority `shift+tab -> toggle_auto_approve` binding
+        wins dispatch, and `action_toggle_auto_approve` routes cursor-style
+        modals to `action_move_up` via `_SupportsReverseNav`. With settings
+        expanded that would only move the row cursor and strand focus on the
+        first checkbox, so the app branches here instead (see
+        `DeepAgentsApp.action_toggle_auto_approve`).
+        """
+        group = next(iter(self.query(_NotificationSettingsGroup)), None)
+        if group is not None:
+            group.action_focus_previous()
+
     def on_notification_settings_requested(
         self, message: NotificationSettingsRequested
     ) -> None:
@@ -621,11 +645,25 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         self.run_worker(self._toggle_settings(), group="nc-settings")
 
     async def _toggle_settings(self) -> None:
-        """Expand or collapse the inline warning-preferences section."""
-        if self._settings_expanded:
-            await self._collapse_settings()
-        else:
-            await self._expand_settings()
+        """Expand or collapse the inline warning-preferences section.
+
+        Serialized against re-entry: the mount/unmount awaits yield, so a
+        rapid second toggle (e.g. keyboard-repeat Esc) would otherwise start
+        a second `nc-settings` worker — which is not exclusive by default —
+        and the expand branch would mount a duplicate `#nc-settings-group`
+        while the first worker's removal is still in flight, raising
+        `DuplicateIds` and killing the app via `WorkerFailed`.
+        """
+        if self._settings_transitioning:
+            return
+        self._settings_transitioning = True
+        try:
+            if self._settings_expanded:
+                await self._collapse_settings()
+            else:
+                await self._expand_settings()
+        finally:
+            self._settings_transitioning = False
 
     def _settings_row(self) -> _NotificationSettingsRow:
         """The settings disclosure row (always the last selectable row).
@@ -650,6 +688,11 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
             return
         if self._settings_loading:
             return
+        # Drop a stale group that a `reload()` rebuild or an interrupted
+        # collapse left mounted, so the mount below cannot raise
+        # `DuplicateIds` on `#nc-settings-group`.
+        for stale in self.query("#nc-settings-group"):
+            await stale.remove()
         if self._suppressed is None:
             self._settings_loading = True
             try:

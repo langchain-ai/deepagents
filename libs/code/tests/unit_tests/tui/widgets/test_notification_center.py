@@ -268,6 +268,30 @@ class TestNotificationCenterScreen:
             await pilot.pause()
             assert "Esc close" in str(screen.query_one(".nc-help", Static).content)
 
+    async def test_rapid_double_esc_does_not_duplicate_settings_group(self) -> None:
+        """Two Esc presses in one batch must not mount a second settings group.
+
+        `run_worker(..., group="nc-settings")` is not exclusive by default,
+        so without serialization the second Esc starts an expand while the
+        first Esc's collapse is still awaiting `remove()` — mounting a
+        duplicate `#nc-settings-group` raises `DuplicateIds` and kills the
+        app via `WorkerFailed`.
+        """
+        app = App()
+        screen = NotificationCenterScreen([], suppressed=set())
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen.settings_expanded
+
+            await pilot.press("escape", "escape")
+            for _ in range(20):
+                await pilot.pause()
+
+            assert len(screen.query("#nc-settings-group")) <= 1
+
     async def test_reload_keeps_settings_expanded(self) -> None:
         """A row-list refresh must not collapse the open settings section."""
         app = App()

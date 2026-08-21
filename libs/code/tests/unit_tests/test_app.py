@@ -27829,6 +27829,40 @@ class TestNotificationCenterIntegration:
             assert screen._selected == len(entries)
             assert app._auto_approve is False
 
+    async def test_notification_center_shift_tab_cycles_checkboxes_when_expanded(
+        self,
+    ) -> None:
+        """App-level shift+tab wraps checkbox focus while settings are expanded.
+
+        The app's priority `shift+tab -> toggle_auto_approve` binding wins
+        dispatch and routes cursor-style modals to `move_up` via
+        `_SupportsReverseNav`; with expanded settings that would strand focus
+        on the first checkbox instead of wrapping to the last.
+        """
+        from textual.widgets import Checkbox
+
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = NotificationCenterScreen([], suppressed=set())
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen.settings_expanded
+            checkboxes = list(screen.query(Checkbox))
+            assert app.focused is checkboxes[0]
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert app.focused is checkboxes[-1]
+            assert app._auto_approve is False
+
     async def test_notification_detail_shift_tab_moves_cursor_up(self) -> None:
         """App-level shift+tab routes to NotificationDetailScreen.move_up."""
         from deepagents_code.tui.widgets.notification_detail import (

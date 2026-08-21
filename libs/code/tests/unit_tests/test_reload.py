@@ -392,12 +392,12 @@ class TestReloadFromEnvironment:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         original_dotenv_values = _dotenv_module.dotenv_values
-        call_count = 0
+        global_calls = 0
 
         def _fail_on_global(*, dotenv_path: Path) -> dict[str, str | None]:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
+            nonlocal global_calls
+            if dotenv_path == global_env:
+                global_calls += 1
                 msg = "read error"
                 raise OSError(msg)
             return dict(original_dotenv_values(dotenv_path=dotenv_path))
@@ -407,7 +407,9 @@ class TestReloadFromEnvironment:
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             settings.reload_from_environment(start_path=tmp_path)
 
-        assert call_count == 2
+        # The global file is read once for the trusted `read_project_dotenv`
+        # pre-check and once for its remaining values; both hit the failure.
+        assert global_calls == 2
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
         assert any("Could not read global dotenv" in r.message for r in caplog.records)
 
@@ -578,7 +580,7 @@ class TestReloadFromEnvironment:
 
         monkeypatch.setattr(
             "deepagents_code.config_manifest.resolve_read_project_dotenv",
-            lambda: False,
+            lambda **_kw: False,
         )
 
         _load_dotenv(start_path=tmp_path)
@@ -603,12 +605,79 @@ class TestReloadFromEnvironment:
 
         monkeypatch.setattr(
             "deepagents_code.config_manifest.resolve_read_project_dotenv",
-            lambda: True,
+            lambda **_kw: True,
         )
 
         _load_dotenv(start_path=tmp_path)
 
         assert os.environ["PROJECT_ONLY_KEY"] == "project-value"
+
+    def test_project_dotenv_cannot_set_read_project_dotenv(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A project `.env` cannot inject the toggle that skips it.
+
+        `DEEPAGENTS_CODE_READ_PROJECT_DOTENV` is denied from every `.env` (the
+        `_DOTENV_DENIED_ENV_KEYS` set), so a hostile project file cannot pin it
+        true and block the trusted global file from opting out via
+        first-write-wins.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "DEEPAGENTS_CODE_READ_PROJECT_DOTENV=1\nPROJECT_ONLY_KEY=project-value\n"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert "DEEPAGENTS_CODE_READ_PROJECT_DOTENV" not in os.environ
+        assert os.environ["PROJECT_ONLY_KEY"] == "project-value"
+
+    def test_global_dotenv_read_project_dotenv_false_protects_startup(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The trusted global `.env` opt-out is honored for the current startup.
+
+        The toggle is read from the global file *before* the project file is
+        touched, so `DEEPAGENTS_CODE_READ_PROJECT_DOTENV=false` in
+        `~/.deepagents/.env` skips the untrusted project `.env` even though the
+        global file is otherwise loaded after it.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".env").write_text("PROJECT_ONLY_KEY=project-value\n")
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        (global_dir / ".env").write_text(
+            "DEEPAGENTS_CODE_READ_PROJECT_DOTENV=false\nGLOBAL_ONLY_KEY=global-value\n"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH", global_dir / ".env"
+        )
+        for key in (
+            "DEEPAGENTS_CODE_READ_PROJECT_DOTENV",
+            "PROJECT_ONLY_KEY",
+            "GLOBAL_ONLY_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        _load_dotenv(start_path=project_dir)
+
+        assert "PROJECT_ONLY_KEY" not in os.environ
+        # The toggle's env var is denied from every `.env`, so the global file's
+        # own copy is consumed for the decision but not injected into os.environ.
+        assert "DEEPAGENTS_CODE_READ_PROJECT_DOTENV" not in os.environ
+        # The global file's other values still load.
+        assert os.environ["GLOBAL_ONLY_KEY"] == "global-value"
 
     def test_preview_dotenv_skipped_when_read_project_dotenv_false(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -630,7 +699,7 @@ class TestReloadFromEnvironment:
         monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
         monkeypatch.setattr(
             "deepagents_code.config_manifest.resolve_read_project_dotenv",
-            lambda: False,
+            lambda **_kw: False,
         )
 
         env = _preview_dotenv_environ(start_path=tmp_path)

@@ -3401,6 +3401,7 @@ def _run_trust_action_picker(
     deny_label: str = "Deny",
     refresh_label: str | None = None,
     deny_first: bool = False,
+    default_action: "_TrustAction | None" = None,
 ) -> _TrustAction | _TrustPromptOutcome | None:
     """Show the inline decision picker shared by pre-TUI prompts.
 
@@ -3419,12 +3420,17 @@ def _run_trust_action_picker(
             "deny" reads as a safe default (e.g. aborting a launch) put it in
             the leading position. The picker starts highlighted on the deny
             option in either ordering, so a bare Enter refuses.
+        default_action: Action to highlight initially. Defaults to `DENY` so a
+            bare Enter refuses for opt-in prompts; opt-out prompts (whose safe
+            default is to proceed) pass `ALLOW_ONCE` so Enter continues.
 
     Returns:
         The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
         Ctrl+C, or `None` when the inline picker cannot run and the caller should
         use the text fallback.
     """
+    if default_action is None:
+        default_action = _TrustAction.DENY
     if not _trust_picker_has_terminal():
         return None
 
@@ -3472,13 +3478,11 @@ def _run_trust_action_picker(
         )
     elif deny_first:
         actions.reverse()
-    # Highlight the refusing option by identity, not position: `deny_first`
-    # moves it to the front, so a positional index would silently default to
-    # "allow" for exactly the callers that asked for a safer ordering.
+    # Highlight the default action by identity, not position: `deny_first`
+    # reorders the list, so a positional index would silently default to the
+    # wrong action for exactly the callers that changed the ordering.
     selected_index = next(
-        index
-        for index, (action, _) in enumerate(actions)
-        if action is _TrustAction.DENY
+        index for index, (action, _) in enumerate(actions) if action is default_action
     )
 
     def _rows() -> FormattedText:
@@ -3626,6 +3630,7 @@ def _select_trust_action(
     refresh_label: str | None = None,
     deny_first: bool = False,
     abort_on_deny: bool = False,
+    default_action: "_TrustAction | None" = None,
 ) -> _TrustAction | _TrustPromptOutcome:
     """Choose an action for a project trust or dependency-floor prompt.
 
@@ -3647,12 +3652,17 @@ def _select_trust_action(
             on every input path (picker, typed answer, and EOF), so prompts
             whose refuse option aborts the launch report exactly one outcome
             and callers cannot mistake a deny for a decision to proceed.
+        default_action: Action a bare Enter selects and the picker highlights
+            first. Defaults to `DENY` so opt-in prompts fail closed; opt-out
+            prompts (whose safe default is to proceed) pass `ALLOW_ONCE`.
 
     Returns:
         The selected trust action, `CANCELLED` when the user presses Esc or
         Ctrl+D (or denies with `abort_on_deny`), or `INTERRUPTED` when the
         user presses Ctrl+C.
     """
+    if default_action is None:
+        default_action = _TrustAction.DENY
     selected = _run_trust_action_picker(
         console,
         remember_label=remember_label,
@@ -3660,6 +3670,7 @@ def _select_trust_action(
         deny_label=deny_label,
         refresh_label=refresh_label,
         deny_first=deny_first,
+        default_action=default_action,
     )
     if selected is not None:
         if selected is _TrustAction.DENY and abort_on_deny:
@@ -3701,6 +3712,10 @@ def _select_trust_action(
         return _TrustAction.REMEMBER
     if refresh_label is not None and answer in {"u", "update", "f", "refresh"}:
         return _TrustAction.REFRESH
+    # A blank answer selects the default action: DENY for opt-in prompts (fail
+    # closed), the caller-chosen default for opt-out prompts (fail open).
+    if not answer and not abort_on_deny:
+        return default_action
     return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
 
 
@@ -4251,6 +4266,127 @@ def _check_project_hooks_trust(
     return WorkspaceTrust.none()
 
 
+_PROJECT_DOTENV_SKIP_SESSION_LABEL = "Don't load .env this session"
+_PROJECT_DOTENV_SKIP_ALWAYS_LABEL = "Never load .env in this project"
+
+
+def _check_project_dotenv_trust() -> None:
+    """Offer an interactive opt-out from loading the project `.env`.
+
+    Advisory only: the default action (Enter, Esc, Ctrl+C) loads the file,
+    preserving current behavior. "Skip" answers reduce trust for this session
+    or persistently. Runs before the settings bootstrap (which loads the
+    project `.env`) so the decision takes effect on the current launch.
+
+    No-op unless the launch is an interactive TUI with a terminal, a project
+    `.env` is present, and the directory is not already governed by the
+    `read_project_dotenv` opt-out (#5726) or the persisted skip store.
+    Non-interactive/headless launches load the file normally (they set the
+    explicit `read_project_dotenv=false` flag to suppress it).
+    """
+    # Only the interactive TUI can answer a prompt; everything else loads the
+    # file. Piped-stdin launches mount the TUI but have no TTY for the picker
+    # (see `_trust_picker_has_terminal`), so they fall through to loading too.
+    if not _trust_picker_has_terminal():
+        return
+
+    from deepagents_code.config import _find_dotenv_from_start_path
+    from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+    # An explicit opt-out (managed config, env, global dotenv, config.toml)
+    # already skips the file; the prompt would be redundant.
+    if not resolve_read_project_dotenv():
+        return
+
+    try:
+        dotenv_path = _find_dotenv_from_start_path(Path.cwd())
+    except OSError:
+        logger.debug("Could not locate a project .env for the trust prompt")
+        return
+    if dotenv_path is None:
+        return
+
+    from deepagents_code.dotenv_skip import (
+        is_project_dotenv_skipped,
+        skip_project_dotenv,
+    )
+    from deepagents_code.project_utils import ProjectContext
+
+    try:
+        context = ProjectContext.from_user_cwd(Path.cwd())
+        project_root = context.project_root or context.user_cwd
+    except OSError:
+        logger.debug("Could not resolve project root for the .env trust prompt")
+        return
+
+    # A persisted "never load" decision already covers this project root (and
+    # its subdirectories, since the root is canonical and resolved).
+    if is_project_dotenv_skipped(project_root):
+        _skip_project_dotenv_for_session()
+        return
+
+    from rich.console import Console
+    from rich.markup import escape
+
+    prompt_console = Console(stderr=True)
+    prompt_console.print()
+    prompt_console.print(
+        "[bold yellow]This project has a .env file that will be loaded into the "
+        "environment.[/bold yellow]",
+        highlight=False,
+    )
+    prompt_console.print(f"  {escape(str(dotenv_path))}", highlight=False)
+    prompt_console.print(
+        "Loaded values reach subprocesses before any approval prompt and can run "
+        "code (shell startup hooks, git config). Loading anyway — you can change "
+        "this.",
+        style="yellow",
+        highlight=False,
+    )
+    action = _select_trust_action(
+        prompt_console,
+        allow_label="Continue (load .env)",
+        remember_label=_PROJECT_DOTENV_SKIP_ALWAYS_LABEL,
+        deny_label=_PROJECT_DOTENV_SKIP_SESSION_LABEL,
+        default_action=_TrustAction.ALLOW_ONCE,
+    )
+    # ALLOW_ONCE (Enter/Esc) loads the file: do nothing. CANCELLED (Ctrl+D in
+    # the picker) also loads — the prompt is advisory, never a gate.
+    if action is _TrustAction.DENY:
+        prompt_console.print(
+            "[dim]Skipping the project .env for this session.[/dim]",
+            highlight=False,
+        )
+        _skip_project_dotenv_for_session()
+    elif action is _TrustAction.REMEMBER:
+        if skip_project_dotenv(project_root):
+            prompt_console.print(
+                f'[dim]The .env in "{escape(str(project_root))}" will be skipped '
+                "from now on.[/dim]",
+                highlight=False,
+            )
+        else:
+            prompt_console.print(
+                "[yellow]The skip could not be remembered; skipping this session "
+                "only.[/yellow]",
+                highlight=False,
+            )
+        _skip_project_dotenv_for_session()
+
+
+def _skip_project_dotenv_for_session() -> None:
+    """Skip the project `.env` for the rest of this process.
+
+    The settings bootstrap and any `/reload` re-read `resolve_read_project_dotenv`
+    on each call, so forcing the option's process-env var off here is honored by
+    both. The var is denied from every `.env` (`config._DOTENV_DENIED_ENV_KEYS`),
+    so no dotenv file can re-enable it afterward.
+    """
+    from deepagents_code._env_vars import READ_PROJECT_DOTENV
+
+    os.environ[READ_PROJECT_DOTENV] = "0"
+
+
 def _verify_interpreter_or_exit() -> None:
     """Run the interpreter pre-flight check; print and exit on failure.
 
@@ -4592,6 +4728,19 @@ def cli_main() -> None:
                 "Legacy state migration failed unexpectedly; continuing.",
                 exc_info=True,
             )
+
+        # Advisory `.env` opt-out prompt. Runs before the settings import below
+        # (which loads the project `.env`) so the decision applies to this
+        # launch. Gated to the interactive TUI like the dep-floor prompt: a
+        # piped-stdin launch mounts the TUI but has no TTY for the picker, and
+        # headless/subcommand launches must never block — they load the file or
+        # suppress it via `read_project_dotenv=false`. The prompt's default
+        # action loads the file, so it can only ever reduce trust, never gate.
+        interactive_tui = (
+            not getattr(args, "command", None) and not args.non_interactive_message
+        )
+        if interactive_tui and _trust_picker_has_terminal():
+            _check_project_dotenv_trust()
 
         # Import console/settings AFTER arg parsing and after the bare-help
         # fast path so neither argparse's `--help`/`-h` exit nor

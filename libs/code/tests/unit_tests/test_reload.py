@@ -679,6 +679,41 @@ class TestReloadFromEnvironment:
         # The global file's other values still load.
         assert os.environ["GLOBAL_ONLY_KEY"] == "global-value"
 
+    def test_project_dotenv_skipped_via_persisted_skip_store(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A project root in the skip store is skipped even when the option is on.
+
+        This is the path a "never load in this project" answer takes on a future
+        (possibly headless) launch: no prompt, no env var, just the store.
+        """
+        from deepagents_code.config import _load_dotenv
+        from deepagents_code.dotenv_skip import skip_project_dotenv
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".env").write_text("PROJECT_ONLY_KEY=project-value\n")
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
+
+        store = tmp_path / "state" / "dotenv_skip.json"
+        monkeypatch.setattr(
+            "deepagents_code.dotenv_skip._default_store_path", lambda: store
+        )
+        # Resolve the same root the loader will (project_root or user_cwd).
+        from deepagents_code.project_utils import ProjectContext
+
+        ctx = ProjectContext.from_user_cwd(project_dir)
+        skip_project_dotenv(ctx.project_root or ctx.user_cwd, store_path=store)
+
+        _load_dotenv(start_path=project_dir)
+
+        assert "PROJECT_ONLY_KEY" not in os.environ
+
     def test_preview_dotenv_skipped_when_read_project_dotenv_false(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

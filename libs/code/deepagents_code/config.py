@@ -515,6 +515,31 @@ def _load_dotenv(
         )
 
     read_project = resolve_read_project_dotenv(global_dotenv=global_toggle)
+
+    # A persisted "never load in this project" decision (recorded by the
+    # interactive opt-out prompt in `main._check_project_dotenv_trust`) is a
+    # second, independent skip source. It is keyed to the canonical project
+    # root, so it covers subdirectory launches too. Explicit
+    # `read_project_dotenv=false` (above) still wins; this store only ever
+    # skips, it never forces a load the option disabled.
+    if read_project:
+        from deepagents_code.dotenv_skip import is_project_dotenv_skipped
+
+        try:
+            from deepagents_code.project_utils import ProjectContext
+
+            ctx = ProjectContext.from_user_cwd(
+                Path(start_path) if start_path is not None else Path.cwd()
+            )
+            root = ctx.project_root or ctx.user_cwd
+            if is_project_dotenv_skipped(root):
+                logger.debug("Skipping project dotenv: %s is in the skip store", root)
+                read_project = False
+        except OSError:
+            # A root we cannot resolve cannot be matched against the store; fall
+            # back to the option's decision rather than skipping blindly.
+            logger.debug("Could not resolve project root for dotenv skip check")
+
     dotenv_path: Path | str | None = None
     if read_project:
         try:

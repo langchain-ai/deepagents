@@ -26,7 +26,6 @@ from deepagents_code._ask_user_types import (
 )
 from deepagents_code.ask_user import (
     AskUserMiddleware,
-    _format_validation_error,
     _parse_answers,
 )
 
@@ -66,8 +65,8 @@ class TestValidateQuestions:
 
     These rules replace the old imperative `_validate_questions` body: raising
     `ValueError` from a validator surfaces as a pydantic `ValidationError`,
-    which `_format_validation_error` converts to an error `ToolMessage` the
-    model can correct.
+    which `ToolNode` converts to an error `ToolMessage` the model can
+    correct.
     """
 
     def test_rejects_blank_question_text(self) -> None:
@@ -849,29 +848,24 @@ def _harness_runtime() -> ToolRuntime[Any, Any]:
     )
 
 
-def _invoke_ask_user(questions: object) -> ToolMessage:
+def _invoke_ask_user(questions: object) -> object:
     """Invoke the middleware's `ask_user` tool on raw model-authored args.
 
     `tool_call_id` and `runtime` are injected the way `ToolNode` injects them,
-    so the only validation error in play is the one the caller is testing. Pass
-    them through `_invoke_ask_user_raw` to exercise a harness-side failure
-    instead.
+    so the only validation error in play is the one the caller is testing.
+    Malformed `questions` raise `ValidationError` — nothing on the tool converts
+    that to a `ToolMessage`.
     """
-    result = _invoke_ask_user_raw(
+    return _invoke_ask_user_raw(
         {"questions": questions, "tool_call_id": "c1", "runtime": _harness_runtime()}
     )
-    assert isinstance(result, ToolMessage), (
-        f"expected a rejection, got {type(result).__name__}"
-    )
-    return result
 
 
 def _invoke_ask_user_raw(args: dict[str, Any]) -> object:
     """Invoke the tool on a complete args dict, injected arguments included.
 
-    A rejection of model-authored input surfaces as an error `ToolMessage` via
-    `handle_validation_error`, not a raised exception. A call that clears the
-    schema runs the tool body and returns a `Command`.
+    A malformed call raises `ValidationError` out of argument parsing; a call
+    that clears the schema runs the tool body and returns a `Command`.
     """
     tool = AskUserMiddleware().tools[0]
     return tool.invoke(
@@ -880,12 +874,12 @@ def _invoke_ask_user_raw(args: dict[str, Any]) -> object:
 
 
 class TestToolArgumentValidation:
-    """Bad `ask_user` arguments come back as error `ToolMessage`s, not crashes.
+    """Bad `ask_user` arguments become a `ValidationError` during parsing.
 
-    Validation lives on the tool schema, so a malformed call is a pydantic
-    `ValidationError` raised during argument parsing, which the tool's
-    `handle_validation_error` (`_format_validation_error`) turns into a
-    recoverable error `ToolMessage` — no `ToolErrorMiddleware` involved.
+    No handling is wired on the tool. `ToolNode` converts the error into a
+    recoverable `ToolMessage` and strips the injected arguments from it first,
+    which is what `test_end_to_end` covers. These tests pin that the tool
+    rejects at parse time and leaves the conversion to the framework.
     """
 
     def test_valid_questions_clear_the_schema(self) -> None:
@@ -909,131 +903,54 @@ class TestToolArgumentValidation:
         assert isinstance(result, Command)
         message = _extract_tool_message(cast("Command[object]", result))
         assert message.status != "error"
-        assert "`ask_user` failed" not in str(message.content)
 
-    def test_empty_questions_becomes_error_tool_message(self) -> None:
-        result = _invoke_ask_user([])
-
-        assert result.status == "error"
-        assert result.tool_call_id == "c1"
-        assert "`ask_user` failed" in str(result.content)
-        assert "at least one question" in str(result.content)
+    def test_empty_questions_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="at least one question"):
+            _invoke_ask_user([])
 
     def test_blank_choice_value_names_the_field(self) -> None:
-        result = _invoke_ask_user(
-            [
-                {
-                    "question": "Pick some",
-                    "type": "multi_select",
-                    "choices": [{"value": "logs"}, {"value": "  "}],
-                }
-            ]
-        )
-
-        assert result.status == "error"
-        assert "blank 'value'" in str(result.content)
-
-    def test_unknown_question_type_is_rejected(self) -> None:
-        result = _invoke_ask_user([{"question": "Q?", "type": "multiselect"}])
-
-        assert result.status == "error"
-        assert "Input should be" in str(result.content)
-
-    def test_rejection_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
-        """A rejected call must leave a record.
-
-        The run survives the rejection, so nothing else reports it: the handled
-        error makes `BaseTool.run` call `on_tool_end`, so even the callback
-        layer sees the call as successful. Without this log a model stuck in a
-        retry loop is invisible in the Debug Console.
-        """
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.ask_user"):
-            result = _invoke_ask_user([])
-
-        assert result.status == "error"
-        records = [r for r in caplog.records if "Rejected ask_user" in r.getMessage()]
-        assert len(records) == 1
-        assert "at least one question" in records[0].getMessage()
-
-    def test_reports_every_model_authored_error(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """The model sees the first error; the log carries all of them."""
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.ask_user"):
-            result = _invoke_ask_user(
+        with pytest.raises(ValidationError, match="blank 'value'"):
+            _invoke_ask_user(
                 [
-                    {"question": "  ", "type": "text"},
-                    {"question": "Pick", "type": "multiple_choice"},
+                    {
+                        "question": "Pick some",
+                        "type": "multi_select",
+                        "choices": [{"value": "logs"}, {"value": "  "}],
+                    }
                 ]
             )
 
-        assert result.status == "error"
-        assert str(result.content).count("`ask_user` failed") == 1
-        logged = next(
-            r.getMessage()
-            for r in caplog.records
-            if "Rejected ask_user" in r.getMessage()
-        )
-        assert "must not be blank" in logged
-        assert "requires a non-empty 'choices'" in logged
+    def test_unknown_question_type_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="Input should be"):
+            _invoke_ask_user([{"question": "Q?", "type": "multiselect"}])
+
+    def test_no_error_handling_is_wired_on_the_tool(self) -> None:
+        """The tool must leave both error hooks unset.
+
+        `handle_validation_error` is undocumented in LangChain v1, and the
+        migration guide says schema mismatches are already handled by the
+        framework. Setting either hook here would intercept inside
+        `BaseTool.run`, which (a) bypasses `_filter_validation_errors`, so a
+        harness fault would be reported to the model as its own bad input, and
+        (b) makes `BaseTool.run` call `on_tool_end`, so tracing would record a
+        rejected call as a success. Setting `handle_tool_error` would also
+        swallow the `interrupt()` signal.
+        """
+        tool = AskUserMiddleware().tools[0]
+
+        assert not tool.handle_validation_error
+        assert not tool.handle_tool_error
 
 
-class TestHarnessFaultsStayFatal:
-    """Only the model's own arguments are reported back to the model.
+class TestBodyFaultsStayFatal:
+    """A fault raised after parsing must not become model-facing input.
 
-    `tool_call_id` and `runtime` are harness-injected but sit on the same
-    `args_schema` as `questions`, so pydantic rejects them the same way. The
-    model cannot rewrite them, so telling it to "fix the input and retry" would
-    loop until the recursion limit. LangGraph filters these itself in
-    `_filter_validation_errors`; registering `handle_validation_error` bypasses
-    that, so `_format_validation_error` re-raises instead.
+    `_parse_answers` raises plain `ValueError` for a malformed resume payload.
+    These are not model-authored arguments, and no `handle_tool_error` is set,
+    so they propagate and halt the run.
     """
 
-    def test_missing_runtime_is_fatal(self) -> None:
-        with pytest.raises(ValidationError, match="runtime"):
-            _invoke_ask_user_raw(
-                {
-                    "questions": [{"question": "How?", "type": "text"}],
-                    "tool_call_id": "c1",
-                }
-            )
-
-    def test_wrong_runtime_type_is_fatal(self) -> None:
-        with pytest.raises(ValidationError, match="runtime"):
-            _invoke_ask_user_raw(
-                {
-                    "questions": [{"question": "How?", "type": "text"}],
-                    "tool_call_id": "c1",
-                    "runtime": "not-a-runtime",
-                }
-            )
-
-    def test_body_raised_validation_error_is_fatal(self) -> None:
-        """A `ValidationError` from the tool body must not blame the model.
-
-        `BaseTool.run` runs the tool body inside the same `try` as argument
-        parsing, so a body fault reaches `handle_validation_error` too. If it
-        were reported as bad model input the run would continue having silently
-        discarded answers the user already gave.
-        """
-        body_error = ValidationError.from_exception_data(
-            "InternalModel",
-            [{"type": "missing", "loc": ("internal_field",), "input": {}}],
-        )
-
-        with (
-            patch("deepagents_code.ask_user.interrupt", side_effect=body_error),
-            pytest.raises(ValidationError, match="internal_field"),
-        ):
-            _invoke_ask_user([{"question": "How?", "type": "text"}])
-
     def test_body_raised_value_error_is_fatal(self) -> None:
-        """A plain `ValueError` from the body stays fatal.
-
-        `_parse_answers` raises these for a malformed resume payload. They are
-        not model-authored input, and `handle_tool_error` is deliberately unset,
-        so they must propagate.
-        """
         with (
             patch(
                 "deepagents_code.ask_user.interrupt",
@@ -1052,58 +969,3 @@ class TestHarnessFaultsStayFatal:
             pytest.raises(RuntimeError, match="boom"),
         ):
             _invoke_ask_user([{"question": "How?", "type": "text"}])
-
-    def test_handler_is_the_validation_one_only(self) -> None:
-        tool = AskUserMiddleware().tools[0]
-
-        assert tool.handle_validation_error is _format_validation_error
-        assert not tool.handle_tool_error
-
-
-class TestFormatValidationError:
-    """`_format_validation_error` locates the failing field for the model."""
-
-    def test_names_loc_and_detail(self) -> None:
-        # Errors arrive from the tool's pydantic model with the parameter name
-        # leading `loc`; `from_exception_data` reproduces that shape.
-        exc = ValidationError.from_exception_data(
-            "ask_user",
-            [
-                {
-                    "type": "literal_error",
-                    "loc": ("questions", 0, "type"),
-                    "input": "bogus",
-                    "ctx": {"expected": "'text', 'multiple_choice' or 'multi_select'"},
-                }
-            ],
-        )
-
-        message = _format_validation_error(exc)
-
-        assert message.startswith("`ask_user` failed: questions.0.type: ")
-        assert "Input should be 'text', 'multiple_choice' or 'multi_select'" in message
-        assert message.endswith("Fix the input and retry.")
-
-    def test_empty_questions_list(self) -> None:
-        # The empty-list rule lives on the `questions` parameter, one level
-        # above `list[ValidatedQuestion]`, so its error is shaped by hand here.
-        exc = ValidationError.from_exception_data(
-            "ask_user",
-            [
-                {
-                    "type": "value_error",
-                    "loc": ("questions",),
-                    "input": [],
-                    "ctx": {
-                        "error": ValueError("ask_user requires at least one question")
-                    },
-                }
-            ],
-        )
-
-        message = _format_validation_error(exc)
-
-        assert message == (
-            "`ask_user` failed: questions: Value error, "
-            "ask_user requires at least one question. Fix the input and retry."
-        )

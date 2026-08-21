@@ -2981,12 +2981,12 @@ class TestEnableAskUser:
     def test_no_tool_error_middleware(self, tmp_path: Path) -> None:
         """The stack must not install `ToolErrorMiddleware` for `ask_user`.
 
-        Argument validation lives on the tool schema (pydantic), and the tool's
-        own `handle_validation_error` converts bad `ask_user` arguments to an
-        error `ToolMessage`. A `ToolErrorMiddleware` here would be dead weight —
-        and, sitting outermost in the stack, would risk reporting an internal
-        `ValueError` (e.g. `ServerHooksMiddleware`'s "client answered a
-        different request") to the model as its own bad tool input.
+        Argument validation lives on the tool schema (pydantic), and `ToolNode`
+        already converts bad `ask_user` arguments to an error `ToolMessage`. A
+        `ToolErrorMiddleware` here would be dead weight — and, sitting outermost
+        in the stack, would risk reporting an internal `ValueError` (e.g.
+        `ServerHooksMiddleware`'s "client answered a different request") to the
+        model as its own bad tool input.
         """
         from langchain.agents.middleware import ToolErrorMiddleware
 

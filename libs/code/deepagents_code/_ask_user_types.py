@@ -330,8 +330,8 @@ interrupt payload client-side and re-raises on failure. Keep that in mind
 before adding another field-level rule here.
 
 A `ValueError` raised by any of these validators becomes a tool-call
-`ValidationError`, which `ask_user._format_validation_error` turns into an
-error `ToolMessage` the model can correct and retry from."""
+`ValidationError`, which `ToolNode` turns into an error `ToolMessage` the model
+can correct and retry from."""
 
 
 def _validate_questions(questions: list[ValidatedQuestion]) -> list[ValidatedQuestion]:

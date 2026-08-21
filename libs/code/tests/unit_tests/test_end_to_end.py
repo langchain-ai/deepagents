@@ -466,9 +466,10 @@ class TestDeepAgentsCLIEndToEnd:
     async def test_ask_user_argument_error_is_recoverable(self, tmp_path: Path) -> None:
         """A malformed `ask_user` call must not abort the run.
 
-        The unit tests exercise the schema and `_format_validation_error`
-        directly, so they cannot catch a regression in how the tool's
-        `handle_validation_error` surfaces on the real execution path.
+        The unit tests exercise the schema directly, so they cannot catch a
+        regression in how `ToolNode` surfaces the `ValidationError` on the real
+        execution path. Nothing on the tool handles the error: the conversion,
+        and the stripping of injected arguments from it, is the framework's.
         """
         with mock_settings(tmp_path):
             model = FixedGenericFakeChatModel(
@@ -479,8 +480,8 @@ class TestDeepAgentsCLIEndToEnd:
                             tool_calls=[
                                 {
                                     "name": "ask_user",
-                                    # No questions: the tool schema rejects the
-                                    # arguments before `interrupt()`.
+                                    # No questions: the tool schema rejects
+                                    # the arguments before `interrupt()`.
                                     "args": {"questions": []},
                                     "id": "call_1",
                                     "type": "tool_call",
@@ -508,8 +509,12 @@ class TestDeepAgentsCLIEndToEnd:
             tool_messages = [m for m in result["messages"] if m.type == "tool"]
             assert len(tool_messages) == 1
             assert tool_messages[0].status == "error"
-            assert "`ask_user` failed" in str(tool_messages[0].content)
-            assert "at least one question" in str(tool_messages[0].content)
+            content = str(tool_messages[0].content)
+            assert "at least one question" in content
+            assert "Please fix the error and try again" in content
+            # The injected arguments are not echoed back at the model.
+            assert "runtime" not in content
+            assert "tool_call_id" not in content
 
             # The run continued instead of halting.
             assert result["messages"][-1].content == "Recovered."
@@ -520,11 +525,10 @@ class TestDeepAgentsCLIEndToEnd:
         The counterpart to `test_ask_user_argument_error_is_recoverable`: that
         one pins the recoverable path, this one pins that a valid call still
         reaches `interrupt()` and surfaces as `__interrupt__`. Registering
-        `handle_validation_error` on the tool puts an error-handling layer
-        between the model and the interrupt, and `GraphBubbleUp` escapes it
-        only because it is not a `ValidationError`. Setting `handle_tool_error`
-        on the tool would break that silently, and the tool would become a
-        no-op.
+        `ToolNode` wraps the call in error handling, and `GraphBubbleUp`
+        escapes it only through an explicit `except GraphBubbleUp: raise`.
+        Setting `handle_tool_error` on the tool would break that silently, and
+        the tool would become a no-op.
         """
         with mock_settings(tmp_path):
             model = FixedGenericFakeChatModel(

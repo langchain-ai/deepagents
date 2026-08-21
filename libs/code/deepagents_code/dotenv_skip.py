@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import tempfile
 import threading
 from contextlib import contextmanager, suppress
@@ -125,6 +126,31 @@ def skip_key_for_start_path(start_path: Path | None) -> str | None:
     return _project_key(dotenv_path.parent)
 
 
+def _warn_store_unusable(path: Path, reason: str) -> None:
+    """Report a skip store that could not be used, visibly.
+
+    Every call means a remembered "never load this project's `.env`" decision
+    was dropped and the file will load, so the user has to be able to see it.
+    A bare `logger.warning` cannot do that: `deepagents_code.__init__` attaches
+    an in-memory handler to the package logger, which suppresses the stderr
+    `lastResort` fallback, and this runs before the TUI (and its Debug Console)
+    exists. Pairing the log with an explicit stderr line matches `_debug`.
+
+    Args:
+        path: Store path that could not be used.
+        reason: Short description of what was wrong with it.
+    """
+    message = (
+        f"could not read {path}: {reason}. "
+        f"Remembered project .env skips are not applied."
+    )
+    # stderr for headless / pre-TUI visibility; the logger so it also lands in
+    # the always-on in-memory buffer and surfaces in the Debug Console (see
+    # `_debug`, which uses this same pairing for the same reason).
+    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+    logger.warning("%s", message)
+
+
 def _store_lock_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.lock")
 
@@ -150,11 +176,15 @@ def _store_lock(path: Path) -> Iterator[None]:
 
 
 def _parse_projects(raw_projects: object, *, path: Path) -> dict[str, DotenvSkipEntry]:
-    """Parse skip entries, skipping structurally invalid ones.
+    """Parse skip entries, dropping structurally invalid ones.
+
+    Args:
+        raw_projects: The store's `projects` field, straight from JSON.
+        path: Store path, used only to identify the file in warnings.
 
     Returns:
-        Validated project map. Empty when `raw_projects` is missing or not a
-        mapping.
+        Validated project map, with unusable entries dropped. Empty when
+        `raw_projects` is `None`.
 
     Raises:
         TypeError: When `raw_projects` is present but not a mapping.
@@ -168,16 +198,12 @@ def _parse_projects(raw_projects: object, *, path: Path) -> dict[str, DotenvSkip
     projects: dict[str, DotenvSkipEntry] = {}
     for key, value in raw_projects.items():
         if not isinstance(key, str):
-            logger.warning(
-                "Skipping non-string dotenv skip project key in %s: %r", path, key
-            )
+            _warn_store_unusable(path, f"a project key is not a string: {key!r}")
             continue
         try:
             projects[key] = DotenvSkipEntry.model_validate(value)
         except ValidationError as exc:
-            logger.warning(
-                "Skipping invalid dotenv skip entry for %s in %s: %s", key, path, exc
-            )
+            _warn_store_unusable(path, f"the entry for {key} is invalid: {exc}")
     return projects
 
 
@@ -194,7 +220,8 @@ def _load_store(path: Path, *, strict: bool = False) -> DotenvSkipStore:
         unsupported stores yield an empty store when not `strict`.
 
     Raises:
-        OSError: When `strict` and the file cannot be read.
+        OSError: When `strict` and the file exists but cannot be read; a
+            missing file always yields an empty store.
         TypeError: When `strict` and `projects` or the top-level shape is not a
             mapping.
         ValueError: When `strict` and the version is unsupported.
@@ -208,7 +235,7 @@ def _load_store(path: Path, *, strict: bool = False) -> DotenvSkipStore:
     except (OSError, UnicodeDecodeError) as exc:
         if strict:
             raise
-        logger.warning("Could not read dotenv skip store %s: %s", path, exc)
+        _warn_store_unusable(path, str(exc))
         return DotenvSkipStore()
 
     try:
@@ -216,14 +243,14 @@ def _load_store(path: Path, *, strict: bool = False) -> DotenvSkipStore:
     except json.JSONDecodeError as exc:
         if strict:
             raise
-        logger.warning("Could not parse dotenv skip store %s: %s", path, exc)
+        _warn_store_unusable(path, f"it is not valid JSON ({exc})")
         return DotenvSkipStore()
 
     if not isinstance(data, dict):
         msg = f"dotenv skip store must be a JSON object: {path}"
         if strict:
             raise TypeError(msg)
-        logger.warning(msg)
+        _warn_store_unusable(path, "it is not a JSON object")
         return DotenvSkipStore()
 
     version = data.get("version")
@@ -231,9 +258,7 @@ def _load_store(path: Path, *, strict: bool = False) -> DotenvSkipStore:
         msg = f"Unsupported dotenv skip store version: {version!r}"
         if strict:
             raise ValueError(msg)
-        logger.warning(
-            "Ignoring dotenv skip store with unsupported version %r", version
-        )
+        _warn_store_unusable(path, f"its version {version!r} is not supported")
         return DotenvSkipStore()
 
     try:
@@ -241,9 +266,7 @@ def _load_store(path: Path, *, strict: bool = False) -> DotenvSkipStore:
     except TypeError:
         if strict:
             raise
-        logger.warning(
-            "Ignoring dotenv skip store with invalid projects field at %s", path
-        )
+        _warn_store_unusable(path, "its projects field is not an object")
         return DotenvSkipStore()
 
     return DotenvSkipStore(version=_STORE_VERSION, projects=projects)

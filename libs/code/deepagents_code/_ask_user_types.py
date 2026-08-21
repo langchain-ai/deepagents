@@ -11,6 +11,7 @@ side produces it and which reads it.
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Literal, NotRequired, assert_never, get_args
 
 from pydantic import Field
@@ -61,23 +62,97 @@ same as being *rendered* as a choice list: the TUI has its own exhaustive
 dispatch in `_QuestionWidget.compose`.
 """
 
-MULTI_SELECT_ANSWER_SEPARATOR = ", "
-"""Separator joining the selected values of a `multi_select` answer."""
 
-MULTI_SELECT_FORBIDDEN_IN_VALUE = ","
-"""Substring a `multi_select` choice value must not contain.
+def encode_multi_select_answer(values: list[str]) -> str:
+    """Encode the selected values of a `multi_select` answer for the wire.
 
-Deliberately stated outright rather than derived from
-`MULTI_SELECT_ANSWER_SEPARATOR`, so the two can evolve independently: a separator
-of `" and "` would, if the forbidden text were derived from it, reject every value
-containing "and".
+    The answer stays one string so `answers: list[str]` keeps one slot per
+    question, positionally matched. JSON is self-delimiting, so values carrying
+    commas, quotes, or newlines round-trip exactly.
 
-This buys *legibility* of the joined answer, not invertibility. Nothing decodes a
-multi-select answer back into its components, and per
-`format_ask_user_transcript` the transcript is not unambiguously decodable
-anyway. If one is ever written, that is the moment to introduce a structured
-answer type instead of leaning on this ban.
-"""
+    The encoding is opaque to a consumer that only moves the answer around. A
+    consumer that tests whether the user answered at all must go through
+    `ask_user_answer_is_empty`: an unselected `multi_select` encodes as the
+    *truthy* string `[]`, so a bare `.strip()` reads it as answered.
+
+    Args:
+        values: Selected values — toggled predefined choices in choice-list
+            order, then custom Other values in slot order.
+
+    Returns:
+        The values as a JSON array, e.g. `["a", "b"]`. An empty selection
+        encodes as `[]`. The result never contains a line feed or carriage
+        return, so it cannot split a blank-line-separated transcript block.
+        `ensure_ascii=False` does pass U+2028 and U+2029 through literally, so
+        do not read this as "the result is a single line to every consumer" —
+        the guarantee is about the block separator only.
+    """
+    return json.dumps(values, ensure_ascii=False)
+
+
+def decode_multi_select_answer(raw: str) -> list[str] | None:
+    """Decode a `multi_select` answer produced by `encode_multi_select_answer`.
+
+    Args:
+        raw: The raw answer string for a `multi_select` question. Must already
+            be a `str`: a non-string raises `TypeError` out of `json.loads`
+            rather than returning `None`. Every call site establishes that
+            first — `_parse_answers` coerces non-string answers,
+            `_validated_ask_user_answers` checks `isinstance(answer, str)`, and
+            the display path passes a slice of the transcript.
+
+    Returns:
+        The selected values, or `None` when `raw` is not a JSON array of
+            strings. Callers choose the policy for `None`; the one thing none of
+            them may do is fall back to splitting on `", "`, which mis-splits a
+            value that contains a comma.
+    """
+    try:
+        decoded = json.loads(raw)
+    except (json.JSONDecodeError, RecursionError):
+        return None
+    if not isinstance(decoded, list) or not all(
+        isinstance(value, str) for value in decoded
+    ):
+        return None
+    return decoded
+
+
+def ask_user_answer_is_empty(answer: str, question_type: object) -> bool:
+    """Return whether an `ask_user` answer counts as "no answer".
+
+    The single definition of emptiness for an answer, shared by the TUI (which
+    blocks submitting a required question) and by the Auto authorization path
+    (which keeps unanswered questions out of the consent evidence). Both sides
+    must agree: an answer the TUI accepts as empty must not read as consent
+    evidence downstream.
+
+    A bare `.strip()` is wrong for `multi_select`, whose empty encoding is the
+    truthy string `[]`. Every other type is empty when it is blank.
+
+    Args:
+        answer: The raw answer string for the question.
+        question_type: The paired question's `type`. Anything other than
+            `'multi_select'` — including a malformed or missing type — takes the
+            blank test.
+
+    Returns:
+        `True` when the question has no substantive answer.
+    """
+    if question_type == "multi_select":
+        # A malformed encoding counts as empty, which is the fail-closed side of
+        # both call sites: the TUI re-prompts a *required* question (an optional
+        # one submits unchanged), and Auto withholds the answer from the consent
+        # evidence rather than passing an undecodable string to the classifier.
+        #
+        # This makes emptiness asymmetric across types for the `(cancelled)` and
+        # `(error: ...)` placeholders, which are not JSON: on a `multi_select`
+        # they read as empty and are withheld from the evidence, while the same
+        # placeholder on a `text` question becomes a row. Withholding is the
+        # safe direction, so the asymmetry is acceptable — but it is real, and a
+        # future caller counting answered questions across types will see it.
+        return not decode_multi_select_answer(answer)
+    return not answer.strip()
 
 
 class Choice(TypedDict):
@@ -88,7 +163,11 @@ class Choice(TypedDict):
         Field(
             description=(
                 "The display label for this choice. Also the text returned as "
-                "the answer when this choice is selected."
+                "the answer when this choice is selected. A 'multi_select' answer "
+                "is a JSON array, so a value may contain commas, quotes, and "
+                "newlines; JSON escaping keeps it exact. A 'multiple_choice' "
+                "value is returned on its own with no escaping, so keep that "
+                "one to a single line."
             )
         ),
     ]
@@ -108,10 +187,9 @@ class Question(TypedDict):
                 "one or more predefined options. Both choice types always append an "
                 "'Other' free-form option automatically; multi-select can accept "
                 "multiple custom Other values (filling one reveals another). A "
-                "'multi_select' answer comes back as the selected values "
-                "(including any custom Other text) joined with ', '; if nothing "
-                "is selected on an optional question the answer is an empty "
-                "string."
+                "'multi_select' answer comes back as a JSON array of the selected "
+                'values (including any custom Other text), e.g. ["a", "b"]; if '
+                "nothing is selected on an optional question the answer is []."
             )
         ),
     ]
@@ -124,9 +202,10 @@ class Question(TypedDict):
                     "Options for 'multiple_choice' and 'multi_select' questions. "
                     "Every choice needs a non-empty 'value'. An 'Other' free-form "
                     "option is always appended automatically for both types; "
-                    "multi-select may collect multiple custom Other values. "
-                    "'multi_select' values (including custom Other text) must not "
-                    "contain ',' because the answer joins them with ', '."
+                    "multi-select may collect multiple custom Other values. A "
+                    "'multi_select' answer is a JSON array of the selected "
+                    "values, so values (including custom Other text) may "
+                    "contain commas, quotes, and newlines."
                 )
             ),
         ]
@@ -170,6 +249,10 @@ MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS = 4000
 # These limits bound the receipt-anchored question/answer evidence copied into
 # Auto's classifier prompt. Questions are model-generated and otherwise have no
 # schema length constraint, so they must not be able to exhaust that context.
+# The answer budget is measured on the answer as it travels the wire, which for
+# `multi_select` is the JSON encoding: escaping and quoting count toward the
+# limit, so a selection can cross it while its decoded values would not.
+# Crossing it withholds the receipt, which is the fail-closed direction.
 MAX_ASK_USER_AUTHORIZATION_QUESTION_CHARS = 4000
 MAX_ASK_USER_AUTHORIZATION_QUESTION_TOTAL_CHARS = 8000
 
@@ -204,6 +287,20 @@ class AskUserCancelled(TypedDict):
 AskUserWidgetResult = AskUserAnswered | AskUserCancelled
 """Discriminated union for the ask_user widget Future result."""
 
+
+ASK_USER_NOTHING_SELECTED = "(nothing selected)"
+"""Display-only placeholder for a `multi_select` the user left unselected.
+
+Distinct from `ASK_USER_NO_ANSWER`, which marks a *missing* answer: this one
+marks an answer that arrived and selected nothing. Only
+`render_ask_user_transcript_for_display` produces it, and only for a human — the
+transcript the model reads keeps the `[]` encoding.
+
+In-band like the other placeholders, so a `multi_select` value spelled
+`(nothing selected)` renders indistinguishably from an empty selection. The
+result feeds no trust decision, so this costs legibility in a corner case
+rather than correctness.
+"""
 
 ASK_USER_NO_ANSWER = "(no answer)"
 """Placeholder for a question with no positionally matching answer.
@@ -327,15 +424,25 @@ def format_ask_user_transcript(questions: list[Question], answers: list[str]) ->
     r"""Render questions and answers as the `Q:`/`A:` transcript.
 
     This is the text the `ask_user` tool returns to the model and persists in the
-    thread. The TUI renders that authoritative text literally rather than trying
-    to parse the unrestricted answer content back into structured data.
+    thread. The TUI renders that authoritative text literally, except for the
+    display-only re-render in `render_ask_user_transcript_for_display`, which
+    anchors on the known question text and gives up rather than guess.
 
-    Answers are interpolated unescaped, so the encoding is not unambiguously
-    decodable: an answer containing a blank line followed by a literal
-    `Q: <text>\nA:` header is indistinguishable from a real block boundary. Only
-    the model reads it that way today. Any future decoder must anchor on the known
-    question text rather than on a generic `Q: ` pattern, or a crafted answer can
-    fabricate an extra question/answer pair.
+    Answers of every type are interpolated unescaped, so the encoding is not
+    unambiguously decodable: an answer containing a blank line followed by a
+    literal `Q: <text>\nA:` header is indistinguishable from a real block
+    boundary. Only the model reads it that way today. Any future decoder must
+    anchor on the known question text rather than on a generic `Q: ` pattern,
+    or a crafted answer can fabricate an extra question/answer pair.
+
+    For an answer `encode_multi_select_answer` produced, the JSON encoding does
+    close the hazard above: no encoded value can carry a raw line feed, so it
+    cannot fabricate a block boundary. This function cannot *rely* on that,
+    because it does not validate answers and not every answer is encoded — the
+    cancel and error paths in `_parse_answers` substitute `(cancelled)` and
+    `(error: ...)` placeholders for every question whatever its type, and a
+    non-TUI client resuming the interrupt can put arbitrary text in a
+    `multi_select` slot.
 
     Args:
         questions: Questions that were asked. Callers must pass questions whose
@@ -353,4 +460,91 @@ def format_ask_user_transcript(questions: list[Question], answers: list[str]) ->
         f"A: {answers[i] if i < len(answers) else ASK_USER_NO_ANSWER}"
         for i, question in enumerate(questions)
     ]
+    return "\n\n".join(blocks)
+
+
+def render_ask_user_transcript_for_display(
+    questions: list[Question], transcript: str
+) -> str | None:
+    r"""Re-render a transcript with `multi_select` answers unpacked for a human.
+
+    The transcript is built for the model, where a `multi_select` answer is a
+    JSON array. A person reading the same text sees the quoting and, worse, sees
+    a multi-line custom answer flattened to a literal `\n`. This unpacks those
+    answers back to one value per line, leaving every other answer untouched.
+
+    Recovering the answers means splitting the transcript, which
+    `format_ask_user_transcript` warns is not unambiguously decodable. So this
+    anchors on the known question text, the mitigation that docstring
+    prescribes, and gives up rather than guessing: a transcript that does not
+    match the questions exactly returns `None` and must be rendered literally.
+    An answer may itself contain a later `Q: ...` block verbatim (pasting
+    transcript-like text into a text answer is legitimate), so a separator must
+    be unique to be trusted — with duplicates, the first occurrence would
+    swallow the real blocks into the wrong answer and misattribute the rest.
+    The result is display-only and feeds no trust decision.
+
+    Two things this deliberately does not do. It does not reject trailing
+    content: the last answer runs to the end of the transcript, so junk appended
+    after the final block is indistinguishable from answer text and is
+    re-emitted verbatim. And it does not handle three or more identically worded
+    questions — their shared anchor makes the separator non-unique, so a
+    perfectly well-formed transcript falls back to literal rendering. Both are
+    display-only outcomes.
+
+    Args:
+        questions: The questions that produced `transcript`, in order.
+        transcript: Output of `format_ask_user_transcript` for those questions.
+
+    Returns:
+        The re-rendered transcript, or `None` when `transcript` does not parse
+            as exactly these questions — including when no answer needed
+            unpacking, so the caller keeps its literal rendering. The two
+            cases share one sentinel because the caller wants the same literal
+            rendering either way. A caller that wants to report an unexpected
+            `None` should first check that a `multi_select` is present at all,
+            which is what the TUI row does.
+    """
+    if not questions:
+        return None
+    anchors = [f"Q: {question.get('question', '')}\nA: " for question in questions]
+    answers: list[str] = []
+    position = 0
+    for index, anchor in enumerate(anchors):
+        if not transcript.startswith(anchor, position):
+            return None
+        position += len(anchor)
+        if index + 1 == len(anchors):
+            # The final answer runs to the end, so there is nothing left to
+            # check: trailing junk cannot be told apart from answer text.
+            answers.append(transcript[position:])
+            break
+        separator = f"\n\n{anchors[index + 1]}"
+        end = transcript.find(separator, position)
+        # `end` indexes the first of the two newlines, so `end + 2` is the `Q`
+        # of the next anchor. Re-searching from there cannot re-find this match,
+        # and cannot miss one that overlaps it: an occurrence starting at
+        # `end + 1` would need `transcript[end + 2]` to be a newline, and it is
+        # the `Q`. So the check establishes exactly one separator ahead.
+        if end == -1 or transcript.find(separator, end + 2) != -1:
+            return None
+        answers.append(transcript[position:end])
+        position = end + 2
+
+    changed = False
+    blocks: list[str] = []
+    for question, answer in zip(questions, answers, strict=True):
+        rendered = answer
+        if question.get("type") == "multi_select":
+            values = decode_multi_select_answer(answer)
+            if values is not None:
+                # One per line, so a value that itself spans lines stays
+                # legible. This trades away distinguishability: `["a", "b"]` and
+                # `["a\nb"]` render identically. Legibility is the point here and
+                # nothing downstream parses the result, so the trade is fine.
+                rendered = "\n".join(values) if values else ASK_USER_NOTHING_SELECTED
+                changed = changed or rendered != answer
+        blocks.append(f"Q: {question.get('question', '')}\nA: {rendered}")
+    if not changed:
+        return None
     return "\n\n".join(blocks)

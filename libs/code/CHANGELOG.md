@@ -2,6 +2,28 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.59](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.58...deepagents-code==0.1.59) (2026-08-20)
+
+### Features
+
+- Added support for `managed_config.toml` configuration ([#5604](https://github.com/langchain-ai/deepagents/issues/5604))
+- Multi-select `ask_user` answers are now encoded as JSON arrays ([#5660](https://github.com/langchain-ai/deepagents/issues/5660))
+- Made teardown usage stats configurable ([#5696](https://github.com/langchain-ai/deepagents/issues/5696))
+- Footer pickers now open on click ([#5674](https://github.com/langchain-ai/deepagents/issues/5674))
+- Replaced Gemini 3.6 Flash with Gemini 3.7 Flash ([#5681](https://github.com/langchain-ai/deepagents/issues/5681))
+
+### Bug fixes
+
+- Made tool argument validation errors recoverable ([#5659](https://github.com/langchain-ai/deepagents/issues/5659))
+- Improved streaming performance for tool-call arguments to run in linear time ([#5712](https://github.com/langchain-ai/deepagents/issues/5712))
+- Fixed durable-mask config resolution with ranked resolver behavior ([#5672](https://github.com/langchain-ai/deepagents/issues/5672))
+- Skipped background sync in Apple Terminal ([#5666](https://github.com/langchain-ai/deepagents/issues/5666))
+- Hid thread IDs when tracing is disabled ([#5692](https://github.com/langchain-ai/deepagents/issues/5692))
+- Kept installed providers visible in `/auth` ([#5689](https://github.com/langchain-ai/deepagents/issues/5689))
+- Preloaded the auth UI before notification handoff ([#5697](https://github.com/langchain-ai/deepagents/issues/5697))
+- Updated and clarified UI copy across Auto mode, YOLO hints, classifier notices, `/tokens`, line-number toggles, review failures, onboarding Tavily cancellation, and OpenAI subscription login labels ([#5685](https://github.com/langchain-ai/deepagents/issues/5685), [#5694](https://github.com/langchain-ai/deepagents/issues/5694), [#5684](https://github.com/langchain-ai/deepagents/issues/5684), [#5687](https://github.com/langchain-ai/deepagents/issues/5687), [#5680](https://github.com/langchain-ai/deepagents/issues/5680), [#5688](https://github.com/langchain-ai/deepagents/issues/5688), [#5686](https://github.com/langchain-ai/deepagents/issues/5686), [#5691](https://github.com/langchain-ai/deepagents/issues/5691), [#5693](https://github.com/langchain-ai/deepagents/issues/5693))
+- Removed the `Muse Spark 1.1` recommendation ([#5683](https://github.com/langchain-ai/deepagents/issues/5683))
+
 ## [0.1.58](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.57...deepagents-code==0.1.58) (2026-08-19)
 
 ### Breaking Changes

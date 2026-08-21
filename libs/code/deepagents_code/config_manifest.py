@@ -35,15 +35,17 @@ import logging
 import math
 import os
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, assert_never, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from deepagents_code import _env_vars
-from deepagents_code._env_vars import classify_env_bool
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
+
+    from deepagents_code.configuration.resolver import ResolvedValue
+    from deepagents_code.configuration.types import ProviderStatus
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +142,8 @@ class OptionKind(Enum):
 
     All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
     `BOOL_MODE_DEFAULT`, `BOOL_PRESENCE`, `INT`, `NON_NEGATIVE_INT`, `FLOAT`,
-    `STR`, and `NON_EMPTY_STR`) are coerced inline by `_coerce_env`/`_coerce_toml`.
+    `STR`, and `NON_EMPTY_STR`) are coerced by the source providers behind the
+    compatibility `_coerce_env`/`_coerce_toml` wrappers.
     `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
     bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
@@ -198,6 +201,14 @@ class OptionKind(Enum):
 
     STRUCTURED = "structured"
     """User-defined table parsed by a dedicated loader; not scalar-coerced."""
+
+
+class MergeStrategy(StrEnum):
+    """How valid provider values for one manifest option compose."""
+
+    REPLACE = "replace"
+    UNION = "union"
+    DEEP_MERGE = "deep_merge"
 
 
 _KIND_TYPE_LABEL: dict[OptionKind, str] = {
@@ -327,6 +338,9 @@ class ConfigOption:
     empty_env_is_false: bool = False
     """Whether an explicitly present empty env value disables a bool option."""
 
+    merge_strategy: MergeStrategy = MergeStrategy.REPLACE
+    """How provider values compose after each tier has coerced its own input."""
+
     def __post_init__(self) -> None:
         """Reject a `default` that contradicts `kind` at construction time.
 
@@ -361,6 +375,12 @@ class ConfigOption:
             OptionKind.BOOL_MODE_DEFAULT,
         }:
             msg = f"{self.key}: empty_env_is_false requires a bool option kind"
+            raise TypeError(msg)
+        if (
+            self.merge_strategy is not MergeStrategy.REPLACE
+            and self.kind is not OptionKind.STRUCTURED
+        ):
+            msg = f"{self.key}: accumulating merge strategies require STRUCTURED"
             raise TypeError(msg)
 
         default = self.default
@@ -495,260 +515,39 @@ def load_managed_config_toml(*, refresh: bool = False) -> Mapping[str, Any]:
 _warned_non_table_paths: set[tuple[str, ...]] = set()
 
 
-def toml_lookup(
-    data: Mapping[str, Any], keys: tuple[str, ...], *, source: str = "config.toml"
-) -> tuple[bool, Any]:
-    """Navigate nested `keys` in one TOML source.
-
-    A traversal that stops because an intermediate node is not a table (say
-    `ui = "dark"` shadowing the whole `[ui]` table) is logged, because it
-    silently defaults *every* option under that table and the value the user
-    edited is nowhere in the output. The warning is emitted once per path per
-    process: `config` resolves the full manifest in one pass, so logging per
-    option would print the same line ~100 times for a single typo.
-
-    Returns:
-        `(found, value)`, where `found` is `False` if any key was missing.
-    """
-    node: Any = data
-    for index, key in enumerate(keys):
-        if not isinstance(node, dict):
-            path = keys[:index]
-            warning_key = (source, *path)
-            if warning_key not in _warned_non_table_paths:
-                _warned_non_table_paths.add(warning_key)
-                logger.warning(
-                    "Ignoring %s [%s]; expected a table, got %s — every option "
-                    "under it falls back to its next source",
-                    source,
-                    ".".join(path),
-                    type(node).__name__,
-                )
-            return False, None
-        if key not in node:
-            return False, None
-        node = node[key]
-    return True, node
-
-
 def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
-    """Coerce a raw environment-variable string by the option's kind.
+    """Delegate environment coercion to the provider boundary.
 
     Returns:
         The typed value, or `_INVALID` when the raw value cannot be coerced.
     """
-    kind = option.kind
-    if kind in {OptionKind.BOOL, OptionKind.BOOL_MODE_DEFAULT}:
-        classified = classify_env_bool(raw)
-        if classified is None:
-            # Unrecognized boolean token: log and fall through like every other
-            # malformed scalar, so `config` reports the real source
-            # (config.toml/default) instead of crediting the env var with a
-            # value it did not actually supply.
-            logger.warning("Ignoring %s=%r (expected bool)", name, raw)
-            return _INVALID
-        return classified
-    if kind is OptionKind.BOOL_PRESENCE:
-        return bool(raw)
-    if kind is OptionKind.STR:
-        return raw
-    if kind is OptionKind.NON_EMPTY_STR:
-        value = raw.strip()
-        if value:
-            return value
-        logger.warning("Ignoring %s=%r (expected non-empty string)", name, raw)
-        return _INVALID
-    if kind is OptionKind.LOG_LEVEL_DELEGATE:
-        from deepagents_code._debug import LOG_LEVELS
+    from deepagents_code.configuration.providers import coerce_environment_value
+    from deepagents_code.configuration.types import Found, Invalid
 
-        level = raw.strip().upper()
-        if level in LOG_LEVELS:
-            return level
-        valid = ", ".join(LOG_LEVELS)
-        logger.warning("Ignoring %s=%r (expected one of %s)", name, raw, valid)
-        return _INVALID
-    if kind is OptionKind.INT:
-        try:
-            return int(raw.strip())
-        except ValueError:
-            logger.warning("Ignoring %s=%r (expected int)", name, raw)
-            return _INVALID
-    if kind is OptionKind.NON_NEGATIVE_INT:
-        try:
-            value = int(raw.strip())
-        except ValueError:
-            logger.warning("Ignoring %s=%r (expected int >= 0)", name, raw)
-            return _INVALID
-        if value >= 0:
-            return value
-        logger.warning("Ignoring %s=%r (expected int >= 0)", name, raw)
-        return _INVALID
-    if kind is OptionKind.FLOAT:
-        try:
-            return float(raw.strip())
-        except ValueError:
-            logger.warning("Ignoring %s=%r (expected number)", name, raw)
-            return _INVALID
-    if kind is OptionKind.SHELL_LIST_DELEGATE:
-        from deepagents_code.config import parse_shell_allow_list
-
-        try:
-            return parse_shell_allow_list(raw)
-        except ValueError:
-            logger.warning("Ignoring invalid %s", name)
-            return _INVALID
-    if kind is OptionKind.SKILLS_DIRS_DELEGATE:
-        from deepagents_code.config import _parse_extra_skills_dirs
-
-        try:
-            return _parse_extra_skills_dirs(raw, None)
-        except (ValueError, RuntimeError):
-            # `Path.expanduser()` raises on an unresolvable `~user`, `.resolve()`
-            # on a NUL byte; fall back rather than crash resolution/startup.
-            logger.warning("Ignoring %s (could not resolve a path)", name)
-            return _INVALID
-    if kind is OptionKind.THEME_DELEGATE:
-        # Resolved upstream in `resolve_scalar` and never reaches here; the raw
-        # passthrough is a defensive fallback only.
-        return raw
-    if kind is OptionKind.CURSOR_STYLE_DELEGATE:
-        if raw in VALID_CURSOR_STYLES:
-            return raw
-        logger.warning(
-            "Ignoring %s=%r (expected 'block' or 'underline')",
-            name,
-            raw,
-        )
-        return _INVALID
-    if kind is OptionKind.PTC_DELEGATE or kind is OptionKind.STRUCTURED:
-        # Neither kind declares an `env_var`, so the `if option.env_var` guard in
-        # `resolve_scalar` means this is unreachable today. If a future option
-        # ever adds an env var for one of these, return `_INVALID` rather than
-        # the raw string: passing an uncoerced value into a typed `Settings`
-        # field (e.g. `interpreter_ptc`) would bypass the delegate parser's
-        # validation. Falling back to the validated default is the safe choice.
-        logger.warning("%s is not env-backed; ignoring %s=%r", option.key, name, raw)
-        return _INVALID
-    if kind is OptionKind.STARTUP_MODE_DELEGATE:
-        from deepagents_code.model_config import VALID_STARTUP_MODES
-
-        if raw in VALID_STARTUP_MODES:
-            return raw
-        logger.warning(
-            "Ignoring %s=%r (expected 'manual', 'auto', or 'yolo')",
-            name,
-            raw,
-        )
-        return _INVALID
-    assert_never(kind)
+    result = coerce_environment_value(option, raw, name)
+    if isinstance(result, Found):
+        return result.value
+    if isinstance(result, Invalid):
+        logger.warning("%s", result.reason)
+    return _INVALID
 
 
 def _coerce_toml(
     option: ConfigOption, raw: object, *, source: str = "config.toml"
 ) -> object:
-    """Coerce a raw TOML value by the option's kind, logging on mismatch.
+    """Delegate TOML coercion to the provider boundary.
 
     Returns:
         The typed value, or `_INVALID` when the raw value has the wrong shape.
     """
-    kind = option.kind
-    label = option.toml_path or option.key
+    from deepagents_code.configuration.providers import coerce_toml_value
+    from deepagents_code.configuration.types import Found, Invalid
 
-    if kind in {
-        OptionKind.BOOL,
-        OptionKind.BOOL_MODE_DEFAULT,
-        OptionKind.BOOL_PRESENCE,
-    }:
-        if isinstance(raw, bool):
-            return not raw if option.invert_toml_bool else raw
-    elif kind is OptionKind.INT:
-        if isinstance(raw, int) and not isinstance(raw, bool):
-            return raw
-    elif kind is OptionKind.NON_NEGATIVE_INT:
-        if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
-            return raw
-    elif kind is OptionKind.FLOAT:
-        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-            return float(raw)
-    elif kind is OptionKind.STR:
-        if isinstance(raw, str):
-            return raw
-    elif kind is OptionKind.NON_EMPTY_STR:
-        if isinstance(raw, str) and (value := raw.strip()):
-            return value
-    elif kind is OptionKind.SKILLS_DIRS_DELEGATE:
-        if isinstance(raw, list):
-            from deepagents_code.config import _parse_extra_skills_dirs
-
-            try:
-                # `raw` is a TOML list of unknown element type; the callee
-                # guards each entry with `isinstance(p, str)`.
-                return _parse_extra_skills_dirs(None, cast("list[str]", raw))
-            except (ValueError, RuntimeError):
-                # Unresolvable `~user` / NUL byte in a path string: fall back
-                # rather than crash resolution.
-                logger.warning(
-                    "Ignoring %s in %s (could not resolve a path)", label, source
-                )
-                return _INVALID
-    elif kind is OptionKind.PTC_DELEGATE:
-        from deepagents_code.config import _parse_interpreter_ptc
-
-        try:
-            return _parse_interpreter_ptc(raw)
-        except ValueError as exc:
-            logger.warning("Ignoring %s in %s: %s", label, source, exc)
-            return _INVALID
-    elif kind is OptionKind.CURSOR_STYLE_DELEGATE:
-        if isinstance(raw, str) and raw in VALID_CURSOR_STYLES:
-            return raw
-        logger.warning(
-            "Ignoring %s=%r in %s (expected 'block' or 'underline')",
-            label,
-            raw,
-            source,
-        )
-        return _INVALID
-    elif kind is OptionKind.STARTUP_MODE_DELEGATE:
-        from deepagents_code.model_config import VALID_STARTUP_MODES
-
-        if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
-            return raw
-        logger.warning(
-            "Ignoring %s=%r in %s (expected 'manual', 'auto', or 'yolo')",
-            label,
-            raw,
-            source,
-        )
-        return _INVALID
-    elif kind is OptionKind.STRUCTURED:
-        # Passed through verbatim for display; parsed by a dedicated loader.
-        return raw
-    elif kind is OptionKind.SHELL_LIST_DELEGATE:
-        from deepagents_code.config import (
-            parse_shell_allow_list,
-            parse_shell_allow_list_items,
-        )
-
-        # A TOML array is the natural spelling for this key, so it must honor
-        # the same `all`/`recommended` sentinels and the same "`all` cannot be
-        # combined" rule as the string form. Elements are parsed individually:
-        # joining them into the comma-separated form would split an entry like
-        # `my,tool` into two commands, broadening the administrator's policy.
-        try:
-            if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
-                return parse_shell_allow_list_items(cast("list[str]", raw))
-            if isinstance(raw, str):
-                return parse_shell_allow_list(raw)
-        except ValueError as exc:
-            logger.warning("Ignoring %s in %s: %s", label, source, exc)
-            return _INVALID
-    # Any other (future) kind falls through to the warning below, so a missing
-    # branch logs and falls back rather than passing a raw value through.
-
-    logger.warning(
-        "Ignoring %s=%r in %s (expected %s)", label, raw, source, option.type
-    )
+    result = coerce_toml_value(option, raw, source=source)
+    if isinstance(result, Found):
+        return result.value
+    if isinstance(result, Invalid):
+        logger.warning("%s", result.reason)
     return _INVALID
 
 
@@ -760,54 +559,202 @@ def _resolve_theme(
     Returns:
         Theme and source, or `None` when unset or invalid.
     """
-    from deepagents_code.app import _resolve_terminal_mapping, _resolve_theme_name
+    from deepagents_code.configuration.providers import ranked_theme_toml_value
+    from deepagents_code.configuration.types import (
+        Found,
+        Invalid,
+        ProviderHealth,
+        ProviderStatus,
+    )
 
-    ui = toml_data.get("ui")
-    if ui is None:
-        return None
-    if not isinstance(ui, dict):
-        logger.warning(
-            "[ui] in %s should be a table; got %s while resolving theme",
-            source,
-            type(ui).__name__,
-        )
-        return None
-    resolved = _resolve_terminal_mapping(ui)
-    if resolved is not None:
-        term_program = os.environ.get("TERM_PROGRAM", "").strip()
-        return resolved, f"{source} [ui.terminal_themes.{term_program}]"
-    saved = ui.get("theme")
-    resolved = _resolve_theme_name(saved)
-    if resolved is not None:
-        return resolved, f"{source} [ui.theme]"
-    if isinstance(saved, str):
-        logger.warning("Unknown theme '%s' in %s; ignoring it", saved, source)
+    provider = ranked_theme_toml_value(
+        toml_data,
+        rank=0,
+        durable=True,
+        status=ProviderStatus(source, None, ProviderHealth.OK),
+    )
+    if isinstance(provider.result, Found) and isinstance(provider.result.value, str):
+        return provider.result.value, provider.status.name
+    if isinstance(provider.result, Invalid):
+        logger.warning("%s", provider.result.reason)
     return None
 
 
-def _resolve_effective_theme(
-    toml_data: Mapping[str, Any], managed_toml_data: Mapping[str, Any]
-) -> tuple[str, str]:
-    """Resolve managed, environment, and user theme preferences.
+def resolve_ranked_scalar(
+    option: ConfigOption,
+    *,
+    toml_data: Mapping[str, Any],
+    managed_toml_data: Mapping[str, Any] | None = None,
+    managed_status: ProviderStatus | None = None,
+    user_status: ProviderStatus | None = None,
+) -> ResolvedValue[object]:
+    """Resolve one option through the ranked durable-mask engine.
+
+    Consumers that need health or per-leaf provenance use this typed form;
+    `resolve_scalar` preserves the established `(value, source)` compatibility
+    surface by rendering from the same result.
+
+    Args:
+        option: Manifest option to resolve.
+        toml_data: Parsed user `config.toml` mapping.
+        managed_toml_data: Parsed managed mapping, or the process snapshot when
+            omitted.
+        managed_status: Health/display metadata for the supplied managed table.
+        user_status: Health/display metadata for the supplied user table.
 
     Returns:
-        Effective theme name and source.
-    """
-    from deepagents_code import theme
-    from deepagents_code._env_vars import THEME
-    from deepagents_code.app import _resolve_theme_name
+        A rank-keyed `ResolvedValue`.
 
-    managed = _resolve_theme(managed_toml_data, source="managed config")
-    if managed is not None:
-        return managed
-    env_name = os.environ.get(THEME)
-    if env_name is not None:
-        resolved = _resolve_theme_name(env_name)
-        if resolved is not None:
-            return resolved, f"env ({THEME})"
-        logger.warning("Unknown theme '%s' in %s; falling through", env_name, THEME)
-    user = _resolve_theme(toml_data, source="config.toml")
-    return user if user is not None else (theme.DEFAULT_THEME, "default")
+    Raises:
+        RuntimeError: If the always-present default provider is unexpectedly unset.
+    """
+    from deepagents_code.configuration.providers import (
+        ranked_default_value,
+        ranked_environment_value,
+        ranked_theme_environment_value,
+        ranked_theme_toml_value,
+        ranked_toml_value,
+    )
+    from deepagents_code.configuration.resolver import (
+        DEFAULT_RANK,
+        ENVIRONMENT_RANK,
+        MANAGED_RANK,
+        USER_RANK,
+        RankedProviderValue,
+        resolve_ranked,
+    )
+    from deepagents_code.configuration.types import (
+        Found,
+        ProviderHealth,
+        ProviderStatus,
+    )
+
+    managed_status = managed_status or ProviderStatus(
+        "managed config", None, ProviderHealth.OK
+    )
+    user_status = user_status or ProviderStatus("config.toml", None, ProviderHealth.OK)
+    managed_data = (
+        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
+    )
+    if option.kind is OptionKind.THEME_DELEGATE:
+        providers = (
+            ranked_theme_toml_value(
+                managed_data,
+                rank=MANAGED_RANK,
+                durable=True,
+                status=managed_status,
+            ),
+            ranked_theme_environment_value(os.environ, rank=ENVIRONMENT_RANK),
+            ranked_theme_toml_value(
+                toml_data,
+                rank=USER_RANK,
+                durable=True,
+                status=user_status,
+            ),
+            ranked_default_value(option, rank=DEFAULT_RANK),
+        )
+    else:
+        providers = (
+            ranked_toml_value(
+                option,
+                managed_data,
+                rank=MANAGED_RANK,
+                durable=True,
+                status=managed_status,
+            ),
+            ranked_environment_value(option, os.environ, rank=ENVIRONMENT_RANK),
+            ranked_toml_value(
+                option,
+                toml_data,
+                rank=USER_RANK,
+                durable=True,
+                status=user_status,
+            ),
+            ranked_default_value(option, rank=DEFAULT_RANK),
+        )
+    resolved = resolve_ranked(providers, strategy=option.merge_strategy.value)
+    if resolved is None:
+        fallback = RankedProviderValue(
+            DEFAULT_RANK,
+            True,
+            ProviderStatus("default", None, ProviderHealth.OK),
+            Found(option.default),
+        )
+        resolved = resolve_ranked(
+            (*providers[:-1], fallback),
+            strategy=option.merge_strategy.value,
+        )
+    if resolved is None:
+        msg = f"fallback provider was unset for {option.key}"
+        raise RuntimeError(msg)
+    return resolved
+
+
+def _ranked_source(resolved: ResolvedValue[object]) -> str:
+    """Render rank-keyed provenance through provider display metadata.
+
+    Returns:
+        The compatibility source label for `resolve_scalar`.
+    """
+    return " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
+
+
+def _emit_ranked_diagnostics(
+    option: ConfigOption, resolved: ResolvedValue[object]
+) -> None:
+    """Emit provider rejections encountered before the effective value.
+
+    Providers retain rejection reasons without logging so resolution can be
+    inspected by diagnostics and startup policy without duplicating warnings.
+    This compatibility boundary preserves `resolve_scalar`'s fall-through
+    messages for callers that expect the historical logging behavior.
+
+    A scalar that shadows a whole table defaults *every* option beneath it, so
+    that rejection is emitted once per process. `config` resolves the full
+    manifest in one pass, and logging per option would print the same line
+    roughly a hundred times for a single typo.
+
+    Args:
+        option: Manifest option being resolved.
+        resolved: Rank-keyed provider results and selected value.
+    """
+    from deepagents_code.configuration.providers import SHADOWED_TABLE_SUFFIX
+    from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
+    from deepagents_code.configuration.types import Found, Invalid
+
+    accumulating = option.merge_strategy is not MergeStrategy.REPLACE
+    for rank in sorted(resolved.tier_health):
+        result = resolved.tier_health[rank]
+        if isinstance(result, Invalid):
+            reasons = resolved.tier_diagnostics.get(rank) or (result.reason,)
+            for reason in reasons:
+                if SHADOWED_TABLE_SUFFIX in reason:
+                    warning_key = ("ranked provider", reason)
+                    if warning_key in _warned_non_table_paths:
+                        continue
+                    _warned_non_table_paths.add(warning_key)
+                logger.warning("%s", reason)
+            continue
+        if isinstance(result, Found):
+            for reason in resolved.tier_diagnostics.get(rank, ()):
+                logger.warning("%s", reason)
+        if not isinstance(result, Found):
+            continue
+        if rank == ENVIRONMENT_RANK and option.empty_env_is_false:
+            source = resolved.provider_status[rank].name
+            prefix = "env ("
+            if source.startswith(prefix) and source.endswith(")"):
+                name = source[len(prefix) : -1]
+                raw = os.environ.get(name)
+                if raw is not None and not raw.strip():
+                    logger.debug(
+                        "%s is blank (%r); resolving %s to False",
+                        name,
+                        raw,
+                        option.key,
+                    )
+        if not accumulating:
+            break
 
 
 def resolve_scalar(
@@ -816,142 +763,112 @@ def resolve_scalar(
     toml_data: Mapping[str, Any],
     managed_toml_data: Mapping[str, Any] | None = None,
 ) -> tuple[Any, str]:
-    """Resolve an option through managed, environment, user, and default tiers.
+    """Resolve an option through ranked providers with a stable return shape.
 
-    Resolution order is managed config, then the environment, then user
-    `config.toml`, then the typed default. An invalid value at one tier falls
-    through to the next tier, never straight to the default. An environment
-    variable that is empty or holds only whitespace counts as unset, except
-    when the option sets `empty_env_is_false`.
+    The public-ish signature remains unchanged for embedders. Coercion happens
+    at provider boundaries, precedence is numeric, and durable providers mask
+    lower-priority ephemeral tiers structurally.
 
     Args:
-        option: The option to resolve.
+        option: Manifest option to resolve.
         toml_data: Parsed user `config.toml` mapping.
         managed_toml_data: Parsed managed TOML mapping. The process snapshot is
             used when omitted; pass an empty mapping for an isolated user source.
 
     Returns:
-        `(value, source)` for the first valid scalar or merged structured value.
-            `source` is one of `"managed config"`, `"env (<VAR>)"`,
-            `"config.toml"`, `"default"`, or — when a structured table or a
-            union deny list draws on both layers — `"managed config +
-            config.toml"`. A `THEME_DELEGATE` option reports the richer
-            `[ui.*]` sources its own resolver produces. Callers that ask "did
-            managed policy win?" must use `service.managed_decided(source)`
-            rather than `==`, which answers `False` for every combined label.
+        `(value, source)` from the ranked engine. Human-readable source labels
+            are rendered from rank-keyed `ProviderStatus` metadata.
     """
-    managed_data = (
-        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
+    resolved = resolve_ranked_scalar(
+        option,
+        toml_data=toml_data,
+        managed_toml_data=managed_toml_data,
     )
-    if option.kind is OptionKind.THEME_DELEGATE:
-        return _resolve_effective_theme(toml_data, managed_data)
+    _emit_ranked_diagnostics(option, resolved)
+    return resolved.value, _ranked_source(resolved)
 
-    managed_found = False
-    managed_raw: object = None
-    if option.toml_keys:
-        managed_found, managed_raw = toml_lookup(
-            managed_data,
-            option.toml_keys,
-            source="managed config",
+
+def load_bool_display_preference(
+    key: str,
+    *,
+    fallback: bool,
+    on_rejected: Callable[[str], None] | None = None,
+) -> bool:
+    """Resolve a boolean `Display` option through the config manifest.
+
+    Precedence follows `resolve_scalar`: managed config wins, then the option's
+    `DEEPAGENTS_CODE_*` env var if it declares one (not all do), then its
+    `[ui]` key in `~/.deepagents/config.toml`, then the declared default.
+    Resolution is intentionally forgiving — an unreadable config, a non-table
+    `[ui]`, or a wrong-typed value is logged and falls through, so a typo in a
+    cosmetic setting never breaks startup.
+
+    Warnings from this path only reach the TUI Debug Console or a
+    `DEEPAGENTS_CODE_DEBUG` log file, so by default a rejected value has no
+    reader; `dcode config get <key>` shows one as source `default`. Pass
+    `on_rejected` where that silence is itself the bug — see `on_rejected`
+    below.
+
+    Args:
+        key: Manifest key of the option, e.g. `"display.cursor_blink"`.
+        fallback: Value to use when `key` is not in the manifest at all, or is
+            not a `BOOL` option — both mean a caller and the manifest disagree.
+            Pinned against each option's declared default by
+            `test_bool_display_preference_fallbacks_match_the_manifest`.
+        on_rejected: Called once per rejection reason when a tier at or above
+            the winning tier supplied a value that failed to parse — a
+            rejection a weaker tier could not have influenced, and one at a
+            stronger tier the stronger tier's own value already settled. Only
+            worth passing for an option whose
+            purpose is to *suppress* something: falling through to the default
+            then produces the exact output the user asked to hide, which is
+            indistinguishable from the option never having been set. Callers
+            that fail toward a merely cosmetic default should omit it — this
+            runs during TUI startup for most options, where writing to a
+            stream would land on top of the interface.
+
+    Returns:
+        The resolved value.
+    """
+    from deepagents_code.configuration.types import Invalid
+
+    option = get_option(key)
+    if option is None:
+        logger.warning("Unknown config option %r; falling back to %r", key, fallback)
+        return fallback
+    if option.kind is not OptionKind.BOOL:
+        # Without this, a mistyped key naming a STR option would return
+        # `bool("auto")` (`display.charset`) — silently `True` forever, with no
+        # warning at all.
+        logger.warning(
+            "Config option %r is %s, not a bool; falling back to %r",
+            key,
+            option.kind.value,
+            fallback,
         )
-        if managed_found and option.kind is not OptionKind.STRUCTURED:
-            managed_value = _coerce_toml(
-                option,
-                managed_raw,
-                source="managed config",
-            )
-            if managed_value is not _INVALID:
-                return managed_value, "managed config"
-
-    if option.env_var or option.fallback_env_vars:
-        from deepagents_code.model_config import resolved_env_var_name
-
-        names: list[str] = []
-        if option.env_var:
-            names.append(resolved_env_var_name(option.env_var))
-        names.extend(option.fallback_env_vars)
-        # A blank (empty or whitespace-only) value normally counts as unset, so
-        # it is skipped and the loop continues to the next name. This is
-        # stricter than `resolve_env_var`, which keeps a whitespace-only value.
-        # Options with an explicitly documented empty-value opt-out declare
-        # `empty_env_is_false`. Names are tried in order, so the primary
-        # `env_var` wins over any fallback.
-        for name in names:
-            raw = os.environ.get(name)
-            if raw is None:
-                continue
-            if not raw.strip():
-                if option.empty_env_is_false:
-                    # Documented opt-out: an empty value means "off". Logged
-                    # because a whitespace-only value reads as unset to the user
-                    # while it actively forces `False` over their config.toml.
-                    logger.debug(
-                        "%s is blank (%r); resolving %s to False",
-                        name,
-                        raw,
-                        option.key,
-                    )
-                    return False, f"env ({name})"
-                if raw:
-                    # Empty is a normal "unset" idiom, but whitespace-only is
-                    # almost always an accident (`export X="$UNSET "`), and
-                    # discarding it silently was the one unlogged rejection path
-                    # in this resolver.
-                    logger.warning(
-                        "Ignoring %s=%r (whitespace-only; treated as unset)",
-                        name,
-                        raw,
-                    )
-                continue
-            value = _coerce_env(option, raw, name)
-            if value is not _INVALID:
-                return value, f"env ({name})"
-
-    if option.toml_keys:
-        found, raw = toml_lookup(toml_data, option.toml_keys)
-        if option.kind is OptionKind.STRUCTURED and managed_found:
-            from deepagents_code.configuration.resolver import (
-                union_entries,
-                union_lists,
-            )
-            from deepagents_code.configuration.service import (
-                UNION_PATHS,
-                merge_managed_over_user,
-            )
-
-            if found and isinstance(raw, dict) and isinstance(managed_raw, dict):
-                merged, _ = merge_managed_over_user(
-                    raw, managed_raw, prefix=option.toml_keys
-                )
-                return merged, "managed config + config.toml"
-            if found and option.toml_keys in UNION_PATHS:
-                # Both spellings of a deny list union here, exactly as the
-                # merge and the runtime readers do; a managed string layer that
-                # fell through to the replace below dropped the user's denials.
-                user_entries = union_entries(raw)
-                managed_entries = union_entries(managed_raw)
-                if user_entries is not None and managed_entries is not None:
-                    return (
-                        union_lists(user_entries, managed_entries),
-                        "managed config + config.toml",
-                    )
-            return managed_raw, "managed config"
-        if found:
-            value = _coerce_toml(option, raw)
-            if value is not _INVALID:
-                return value, "config.toml"
-
-    if option.kind is OptionKind.BOOL_MODE_DEFAULT:
-        from deepagents_code._env_vars import DEBUG, EXPERIMENTAL, is_env_truthy
-
-        return is_env_truthy(DEBUG) or is_env_truthy(EXPERIMENTAL), "default"
-
-    if option.kind is OptionKind.LOG_LEVEL_DELEGATE:
-        from deepagents_code._env_vars import DEBUG, is_env_truthy
-
-        return ("DEBUG" if is_env_truthy(DEBUG) else "INFO"), "default"
-
-    return option.default, "default"
+        return fallback
+    # Inlines `resolve_scalar` rather than calling it, because the rejection
+    # reasons `on_rejected` needs live on the ranked result that it discards.
+    ranked = resolve_ranked_scalar(option, toml_data=load_config_toml())
+    _emit_ranked_diagnostics(option, ranked)
+    resolved = bool(ranked.value)
+    # Keep the source: a display option turned off by managed policy is
+    # otherwise indistinguishable from one the user turned off themselves.
+    # Visible under `DEEPAGENTS_CODE_DEBUG`; `dcode config get` is the answer
+    # without it.
+    logger.debug("Resolved %s to %r from %s", key, resolved, _ranked_source(ranked))
+    if on_rejected is not None:
+        # The env tier is the only non-durable one, so a stronger durable tier
+        # cannot mask it; every tier at or below the winner genuinely lost.
+        winner_rank = ranked.ranks[0]
+        for rank in sorted(ranked.tier_health):
+            if rank > winner_rank:
+                break
+            result = ranked.tier_health[rank]
+            if isinstance(result, Invalid):
+                for reason in ranked.tier_diagnostics.get(rank) or (result.reason,):
+                    on_rejected(reason)
+    return resolved
 
 
 def resolve_interpreter_kwargs(
@@ -1583,6 +1500,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "show_message_timestamps"),
     ),
     ConfigOption(
+        key="display.show_usage_stats",
+        group="Display",
+        summary="Show session usage statistics when a session ends.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.SHOW_USAGE_STATS,
+        toml_keys=("ui", "show_usage_stats"),
+        empty_env_is_false=True,
+    ),
+    ConfigOption(
         key="display.themes",
         group="Display",
         summary=(
@@ -1590,6 +1517,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("themes",),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
     ),
     ConfigOption(
         key="display.terminal_themes",
@@ -1597,6 +1525,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Per-`TERM_PROGRAM` default theme, written by the theme picker.",
         kind=OptionKind.STRUCTURED,
         toml_keys=("ui", "terminal_themes"),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
     ),
     ConfigOption(
         key="display.show_header",
@@ -1787,6 +1716,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("models", "providers"),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
         # A provider table's `params` are forwarded verbatim to the constructor
         # and can carry credentials, so the value is never printed — `config`
         # reports source and presence only.
@@ -1829,6 +1759,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Remote LangGraph deployments exposed to the agent as subagents.",
         kind=OptionKind.STRUCTURED,
         toml_keys=("async_subagents",),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
         # A subagent `headers` table can carry `Authorization` tokens, so the
         # value is never printed — `config` reports source and presence only.
         redacted=True,
@@ -1853,6 +1784,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("sandboxes", "providers"),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
         # A provider table's `params` are forwarded verbatim to the constructor
         # and can carry credentials, so the value is never printed — `config`
         # reports source and presence only.
@@ -2103,6 +2035,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Per-column visibility for the threads list.",
         kind=OptionKind.STRUCTURED,
         toml_keys=("threads", "columns"),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
@@ -2178,6 +2111,11 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "enabled_project_server_approvals"),
+        # The trust reader normalizes heterogeneous env-name and scoped TOML
+        # grants into distinct mapping leaves. Deep merge keeps both when
+        # managed policy is absent; an explicit managed value supplies both
+        # leaves and therefore replaces both lower grant forms.
+        merge_strategy=MergeStrategy.DEEP_MERGE,
     ),
     ConfigOption(
         key="mcp.enabled_project_servers",
@@ -2198,6 +2136,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_project_servers"),
+        merge_strategy=MergeStrategy.UNION,
     ),
     # Read by `mcp_disabled` (the server viewer's disable toggle) rather than by
     # `load_mcp_server_trust_lists`, but it is security-load-bearing all the
@@ -2213,6 +2152,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_servers"),
+        merge_strategy=MergeStrategy.UNION,
     ),
     # --- Plugins --------------------------------------------------------
     ConfigOption(

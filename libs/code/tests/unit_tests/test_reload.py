@@ -424,6 +424,16 @@ class TestReloadFromEnvironment:
             "CDPATH=/tmp\n"
             "COMSPEC=C:\\repo\\cmd.exe\n"
             "ENV=/tmp/evil.sh\n"
+            "GIT_CONFIG_COUNT=1\n"
+            "GIT_CONFIG_KEY_0=core.fsmonitor\n"
+            "GIT_CONFIG_VALUE_0=/tmp/evil.sh\n"
+            "GIT_CONFIG_PARAMETERS='core.pager=/tmp/evil.sh'\n"
+            "GIT_CONFIG_GLOBAL=/tmp/evil.gitconfig\n"
+            "GIT_CONFIG_SYSTEM=/tmp/evil.gitconfig\n"
+            "GIT_DIR=/tmp/evil.git\n"
+            "GIT_EDITOR=/tmp/evil.sh\n"
+            "GIT_SSH_COMMAND=/tmp/evil.sh\n"
+            "GIT_WORK_TREE=/tmp/evil\n"
             "GLOBIGNORE=*\n"
             "LD_PRELOAD=/tmp/evil.so\n"
             "PYTHONPATH=/tmp/evil\n"
@@ -441,6 +451,16 @@ class TestReloadFromEnvironment:
             "CDPATH",
             "COMSPEC",
             "ENV",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "GIT_DIR",
+            "GIT_EDITOR",
+            "GIT_SSH_COMMAND",
+            "GIT_WORK_TREE",
             "GLOBIGNORE",
             "LD_PRELOAD",
             "PYTHONPATH",
@@ -460,6 +480,16 @@ class TestReloadFromEnvironment:
         assert "CDPATH" not in os.environ
         assert "COMSPEC" not in os.environ
         assert "ENV" not in os.environ
+        assert "GIT_CONFIG_COUNT" not in os.environ
+        assert "GIT_CONFIG_KEY_0" not in os.environ
+        assert "GIT_CONFIG_VALUE_0" not in os.environ
+        assert "GIT_CONFIG_PARAMETERS" not in os.environ
+        assert "GIT_CONFIG_GLOBAL" not in os.environ
+        assert "GIT_CONFIG_SYSTEM" not in os.environ
+        assert "GIT_DIR" not in os.environ
+        assert "GIT_EDITOR" not in os.environ
+        assert "GIT_SSH_COMMAND" not in os.environ
+        assert "GIT_WORK_TREE" not in os.environ
         assert "GLOBIGNORE" not in os.environ
         assert "LD_PRELOAD" not in os.environ
         assert "PYTHONPATH" not in os.environ
@@ -470,6 +500,58 @@ class TestReloadFromEnvironment:
         # The carrier var must not be injectable from `.env`, or a project could
         # smuggle a PYTHONPATH into agent `execute` commands through it.
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
+        assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_project_dotenv_denies_lowercase_git_config_keys(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Denied keys are matched case-insensitively for Windows env semantics.
+
+        On Windows `os.environ` keys are case-insensitive and Python normalizes
+        assigned keys to uppercase, so a lowercase `git_config_key_0` in a
+        committed `.env` would otherwise pass a case-sensitive check and become
+        an active `GIT_CONFIG_KEY_0` for the `git` commands dcode runs during
+        startup detection. On POSIX the lowercase spelling is inert (git reads
+        only the canonical case), so denying it there is harmless.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "git_config_count=1\n"
+            "git_config_key_0=core.fsmonitor\n"
+            "Git_Config_Value_0=/tmp/evil.sh\n"
+            "git_dir=/tmp/evil.git\n"
+            "OPENAI_API_KEY=sk-ok\n"
+        )
+        # On POSIX the lowercase names are distinct env vars; ensure neither the
+        # lowercase spelling nor its uppercase normalization is already set.
+        for key in (
+            "git_config_count",
+            "git_config_key_0",
+            "Git_Config_Value_0",
+            "git_dir",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_DIR",
+            "OPENAI_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        _load_dotenv(start_path=tmp_path)
+
+        for key in (
+            "git_config_count",
+            "git_config_key_0",
+            "Git_Config_Value_0",
+            "git_dir",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_DIR",
+        ):
+            assert key not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
 
     def test_project_dotenv_cannot_set_mcp_trust_lists(
@@ -751,6 +833,13 @@ class TestReloadFromEnvironment:
             "CDPATH",
             "COMSPEC",
             "ENV",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_DIR",
+            "GIT_EDITOR",
+            "GIT_SSH_COMMAND",
             "GLOBIGNORE",
             "SHELLOPTS",
         )

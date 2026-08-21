@@ -20,6 +20,12 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
+    from deepagents_code.configuration.resolver import (
+        RankedProviderValue,
+        ResolvedValue,
+    )
+    from deepagents_code.configuration.types import ProviderResult, ProviderStatus
+
 from deepagents_code.model_config import DEFAULT_CONFIG_PATH as _DEFAULT_CONFIG_PATH
 
 logger = logging.getLogger(__name__)
@@ -167,30 +173,126 @@ def _strict_entries(value: object, *, section: str, key: str) -> set[str]:
     return names
 
 
-def _managed_entries(data: Mapping[str, Any]) -> set[str]:
-    """Return the deny entries a managed table declares.
+def _user_entries_result(data: Mapping[str, Any]) -> ProviderResult[list[str]]:
+    """Coerce the user tier while preserving its legacy-section fallback.
 
-    Unlike `_disabled_entries`, a present-but-unusable value is an error rather
-    than an empty set, so the caller can fail closed. A section that is not a
-    table shadows the deny list it should contain and is rejected for the same
-    reason.
+    A wrong-typed folded value is intentionally `Unset` at that spelling, so
+    the legacy list remains eligible. Managed policy has a stricter coercer:
+    the same shape is `Invalid` because silently dropping a deny is fail-open.
 
     Returns:
-        Server names the managed table denies, empty when it declares none.
-
-    Raises:
-        _ManagedDenyListError: If a deny list is present but unusable.
+        A typed provider result for the user file.
     """
+    from deepagents_code.configuration.types import Found, Unset
+
+    for section_name, key in ((_SECTION, _KEY), (_LEGACY_SECTION, _LEGACY_KEY)):
+        section = data.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        entries = _coerce_entries(section.get(key))
+        if entries is not None:
+            return Found(sorted(entries))
+    return Unset()
+
+
+def _managed_entries_result(data: Mapping[str, Any]) -> ProviderResult[list[str]]:
+    """Coerce the managed tier into names or a fail-closed rejection.
+
+    Returns:
+        A typed provider result for managed policy.
+    """
+    from deepagents_code.configuration.types import Found, Invalid, Unset
+
     for section_name, key in ((_SECTION, _KEY), (_LEGACY_SECTION, _LEGACY_KEY)):
         section = data.get(section_name)
         if section is None:
             continue
         if not isinstance(section, dict):
-            msg = f"[{section_name}] must be a table, got {type(section).__name__}"
-            raise _ManagedDenyListError(msg)
-        if key in section:
-            return _strict_entries(section[key], section=section_name, key=key)
-    return set()
+            return Invalid(
+                f"[{section_name}] must be a table, got {type(section).__name__}"
+            )
+        if key not in section:
+            continue
+        try:
+            entries = _strict_entries(section[key], section=section_name, key=key)
+            return Found(sorted(entries))
+        except _ManagedDenyListError as exc:
+            return Invalid(str(exc))
+    return Unset()
+
+
+def _ranked_entries(
+    data: Mapping[str, Any],
+    *,
+    rank: int,
+    durable: bool,
+    status: ProviderStatus,
+    managed: bool,
+) -> RankedProviderValue[list[str]]:
+    """Build one already-coerced deny-list provider tier.
+
+    Returns:
+        The rank, status, and typed provider result consumed by the pure resolver.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.types import Unset
+
+    if not status.usable:
+        result: ProviderResult[list[str]] = Unset()
+    elif managed:
+        result = _managed_entries_result(data)
+    else:
+        result = _user_entries_result(data)
+    return RankedProviderValue(rank, durable, status, result)
+
+
+def _resolve_entries(
+    providers: tuple[RankedProviderValue[list[str]], ...],
+) -> ResolvedValue[list[str]] | None:
+    """Resolve deny tiers with the option's manifest-declared union strategy.
+
+    Returns:
+        The accumulated names and rank metadata, or `None` when every tier is unset.
+
+    Raises:
+        RuntimeError: If the option is missing from the manifest.
+    """
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import resolve_ranked
+
+    option = get_option("mcp.disabled_servers")
+    if option is None:
+        msg = "mcp.disabled_servers is missing from the config manifest"
+        raise RuntimeError(msg)
+    return resolve_ranked(providers, strategy=option.merge_strategy.value)
+
+
+def _raise_for_managed_provider(
+    provider: RankedProviderValue[list[str]],
+) -> None:
+    """Apply the deny-list callsite's fail-closed health policy.
+
+    Raises:
+        ManagedConfigError: If the provider is unhealthy or its value is invalid.
+    """
+    from deepagents_code.configuration.service import ManagedConfigError
+    from deepagents_code.configuration.types import (
+        Invalid,
+        ProviderHealth,
+        ProviderStatus,
+    )
+
+    if not provider.status.usable:
+        raise ManagedConfigError(provider.status)
+    if isinstance(provider.result, Invalid):
+        raise ManagedConfigError(
+            ProviderStatus(
+                provider.status.name,
+                provider.status.path,
+                ProviderHealth.CORRUPT,
+                provider.result.reason,
+            )
+        )
 
 
 def _disabled_entries(data: dict[str, Any]) -> set[str]:
@@ -222,30 +324,21 @@ def _managed_disabled_servers() -> set[str]:
             cases would otherwise yield an empty set, which is indistinguishable
             from "nothing is denied", so returning it would re-enable every
             administrator-denied server. The caller must fail closed instead.
-    """
-    from deepagents_code.configuration.service import (
-        ManagedConfigError,
-        get_managed_snapshot,
-    )
-    from deepagents_code.configuration.types import ProviderHealth, ProviderStatus
+    """  # noqa: DOC502 - `_raise_for_managed_provider` owns fail-closed policy
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+    from deepagents_code.configuration.service import get_managed_snapshot
 
     snapshot = get_managed_snapshot()
-    if not snapshot.status.usable:
-        raise ManagedConfigError(snapshot.status)
-    try:
-        return _managed_entries(snapshot.data)
-    except _ManagedDenyListError as exc:
-        # The file parsed, so provider health is OK and the startup gate let
-        # this launch through. The deny list itself is unusable, which is the
-        # same fail-closed condition as an unparseable file.
-        raise ManagedConfigError(
-            ProviderStatus(
-                snapshot.status.name,
-                snapshot.status.path,
-                ProviderHealth.CORRUPT,
-                str(exc),
-            )
-        ) from exc
+    provider = _ranked_entries(
+        snapshot.data,
+        rank=MANAGED_RANK,
+        durable=True,
+        status=snapshot.status,
+        managed=True,
+    )
+    _raise_for_managed_provider(provider)
+    resolved = _resolve_entries((provider,))
+    return set() if resolved is None else set(resolved.value)
 
 
 def _remove_legacy_disabled_section(data: dict[str, Any]) -> None:
@@ -279,19 +372,55 @@ def get_disabled_servers(*, config_path: Path | None = None) -> set[str]:
             Callers must treat this as "deny everything", never as an empty
             deny set.
     """  # noqa: DOC502 - propagates from `_managed_disabled_servers`
+    from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.resolver import MANAGED_RANK, USER_RANK
+    from deepagents_code.configuration.service import (
+        ConfigSources,
+        get_config_sources,
+        get_managed_snapshot,
+    )
+    from deepagents_code.configuration.types import ProviderHealth
+
     is_default = config_path is None
-    if config_path is None:
-        config_path = _DEFAULT_CONFIG_PATH
-    # The managed deny set must apply even when the user config is corrupt —
-    # otherwise a broken user TOML would silently re-enable admin-denied servers.
-    managed = _managed_disabled_servers() if is_default else set()
-    try:
-        data = _load_config(config_path)
-    except _ConfigLoadError:
-        return managed
-    disabled = _disabled_entries(data)
-    disabled.update(managed)
-    return disabled
+    path = _DEFAULT_CONFIG_PATH if config_path is None else config_path
+    if is_default:
+        # `_DEFAULT_CONFIG_PATH` is a long-standing test/embedder seam in this
+        # module. Production points it at the same path as `get_config_sources`,
+        # while constructing the pair here preserves overrides without turning
+        # an explicit user path into an instruction to omit managed policy.
+        sources = ConfigSources(
+            managed=get_managed_snapshot(),
+            user=TomlFileProvider("config.toml", path).load(),
+        )
+    else:
+        sources = get_config_sources(user_path=path)
+    managed = _ranked_entries(
+        sources.managed.data,
+        rank=MANAGED_RANK,
+        durable=True,
+        status=sources.managed.status,
+        managed=True,
+    )
+    user = _ranked_entries(
+        sources.user.data,
+        rank=USER_RANK,
+        durable=True,
+        status=sources.user.status,
+        managed=False,
+    )
+    if is_default:
+        _raise_for_managed_provider(managed)
+    if sources.user.status.health in {
+        ProviderHealth.CORRUPT,
+        ProviderHealth.UNREADABLE,
+    }:
+        logger.warning(
+            "Could not read MCP disabled config at %s: %s",
+            path,
+            sources.user.status.detail or sources.user.status.health.value,
+        )
+    resolved = _resolve_entries((managed, user))
+    return set() if resolved is None else set(resolved.value)
 
 
 def is_server_disabled(server_name: str, *, config_path: Path | None = None) -> bool:

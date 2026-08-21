@@ -528,6 +528,18 @@ Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to suppress the success toast while still opening URLs normally.
 """
 
+SHOW_USAGE_STATS = "DEEPAGENTS_CODE_SHOW_USAGE_STATS"
+"""Print the session usage-statistics table when a session ends.
+
+Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to suppress the table. Applies to both the TUI teardown and the headless
+`-x`/`--execute` run, which is why the option carries an env var at all: a CI
+runner can set one, but rarely has a `~/.deepagents/config.toml` to edit.
+
+Suppressing only the table is narrower than `--quiet`, which silences the rest
+of the headless teardown output too.
+"""
+
 SPLASH_SHOW_CWD = "DEEPAGENTS_CODE_SPLASH_SHOW_CWD"
 """Show the working-directory row in the startup welcome banner when enabled.
 

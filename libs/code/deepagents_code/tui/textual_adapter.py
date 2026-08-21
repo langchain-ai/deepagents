@@ -1174,26 +1174,20 @@ def _opaque_ids(value: object, *, allow_empty: bool = False) -> tuple[str, ...] 
     return identifiers if len(set(identifiers)) == len(identifiers) else None
 
 
-def _parse_auto_mode_review_event(
-    data: object, *, is_main_agent: bool
+def _validated_auto_mode_review_event(
+    data: Any,  # noqa: ANN401
+    *,
+    phase: str,
 ) -> _AutoModeReviewEvent | None:
-    """Validate an Auto classifier lifecycle event from the main agent.
+    """Validate the body of a lifecycle payload with a known phase.
+
+    Args:
+        data: Payload already confirmed to be an Auto mode event dict.
+        phase: Lifecycle phase parsed from the payload.
 
     Returns:
-        The validated lifecycle event, or `None` when the payload is not trusted.
+        The validated lifecycle event, or `None` when the body is malformed.
     """
-    if (
-        not is_main_agent
-        or not isinstance(data, dict)
-        or data.get("type") != "auto_mode"
-    ):
-        return None
-    phase = data.get("event")
-    if not isinstance(phase, str) or phase not in {
-        "review_started",
-        "review_completed",
-    }:
-        return None
     expected_keys = {"type", "event", "batch_id", "tool_call_ids"}
     if phase == "review_completed":
         expected_keys.add("approved_tool_call_ids")
@@ -1216,6 +1210,42 @@ def _parse_auto_mode_review_event(
         if not set(approved_tool_call_ids).issubset(tool_call_ids):
             return None
     return _AutoModeReviewEvent(phase, batch_id, tool_call_ids, approved_tool_call_ids)
+
+
+def _parse_auto_mode_review_event(
+    data: object, *, is_main_agent: bool
+) -> _AutoModeReviewEvent | None:
+    """Validate an Auto classifier lifecycle event from the main agent.
+
+    Returns:
+        The validated lifecycle event, or `None` when the payload is not trusted.
+    """
+    if (
+        not is_main_agent
+        or not isinstance(data, dict)
+        or data.get("type") != "auto_mode"
+    ):
+        return None
+    phase = data.get("event")
+    if not isinstance(phase, str) or phase not in {
+        "review_started",
+        "review_completed",
+    }:
+        return None
+    event = _validated_auto_mode_review_event(data, phase=phase)
+    if event is None:
+        # `auto_mode` builds this payload by hand and we re-derive its exact key
+        # set here, so producer drift rejects the event instead of degrading it
+        # -- silently disabling the progress indicator, or worse, pausing rows
+        # that never resume. Past the phase check the payload is meant to be a
+        # lifecycle event, so a rejection is a defect rather than a foreign
+        # event, and it is the only signal that the two sides disagree.
+        logger.warning(
+            "Rejected malformed Auto review event: event=%s keys=%s",
+            phase,
+            sorted(data),
+        )
+    return event
 
 
 def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401

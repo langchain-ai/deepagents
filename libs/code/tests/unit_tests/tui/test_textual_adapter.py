@@ -1622,6 +1622,52 @@ class TestParseAutoModeReviewEvent:
 
         assert _parse_auto_mode_review_event(payload, is_main_agent=False) is None
 
+    def test_warns_when_a_lifecycle_payload_is_malformed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        payload = {
+            "type": "auto_mode",
+            "event": "review_started",
+            "batch_id": "batch-1",
+            "tool_call_ids": ["call-1"],
+            "latency_ms": 42,
+        }
+
+        with caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"):
+            assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
+
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if "Auto review event" in record.getMessage()
+        ] == [
+            (
+                "Rejected malformed Auto review event: event=review_started "
+                "keys=['batch_id', 'event', 'latency_ms', 'tool_call_ids', 'type']"
+            )
+        ]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"type": "auto_mode", "event": "fallback", "reason": "unavailable"},
+            {"type": "rubric", "event": "review_started"},
+            {},
+        ],
+    )
+    def test_foreign_events_are_rejected_without_a_warning(
+        self, payload: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A rejection is only a defect for payloads claiming a review phase."""
+        with caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"):
+            assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
+
+        assert not [
+            record
+            for record in caplog.records
+            if "Auto review event" in record.getMessage()
+        ]
+
 
 class TestAutoModeReviewLifecycle:
     """Tests for targeted classifier progress transitions."""

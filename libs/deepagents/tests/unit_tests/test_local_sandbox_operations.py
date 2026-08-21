@@ -1610,6 +1610,24 @@ class TestLocalSandboxOperations:
 # 5000 of these lines (~250 KB) clear the default eviction budget (~80 KB).
 _BIG_OUTPUT_CMD = 'for i in $(seq 1 5000); do echo "line $i: padding text to make the output long enough to offload"; done'
 
+# ~120 KB over only 3 lines: clears the eviction budget, but has fewer lines than
+# the wrapper's head+tail budget, so there is no middle to drop. The wrapper falls
+# back to a leading byte excerpt (the meta field is a negative surplus, -7) and
+# closes it with the in-band clip notice instead of a truncation marker.
+_FEW_LONG_LINES_CMD = "for i in 1 2 3; do printf 'line %s: ' \"$i\"; head -c 40000 /dev/zero | tr '\\0' x; echo; done"
+
+# 20 lines of 3 KB each: more lines than the head+tail budget, so this takes the
+# head/tail branch -- but `head -c 2000`/`tail -c 2000` bite before the line caps,
+# so the excerpts show fewer than 5 lines each and cut the outermost ones mid-line.
+# The truncation marker counts only whole middle lines, so that extra loss has to be
+# disclosed in-band.
+_MANY_LONG_LINES_CMD = "for i in $(seq 1 20); do printf 'line %s: ' \"$i\"; head -c 3000 /dev/zero | tr '\\0' x; echo; done"
+
+# 200 KB on a single line (no newlines at all). Paired with a 5 KB capture cap it
+# is both capped and too few lines for the head/tail branch, so the byte excerpt
+# has to report the cap rather than the output's real size.
+_ONE_HUGE_LINE_CMD = 'head -c 200000 /dev/zero | tr "\\0" x'
+
 
 class TestExecuteCaptureOffload:
     """End-to-end capture-at-source offload via the execute tool on a real shell.
@@ -1696,11 +1714,142 @@ class TestExecuteCaptureOffload:
         assert "lines truncated" in result.content
         # A middle line is absent from the preview...
         assert "line 2500:" not in result.content
+        # ...and the note explains the marker standing in for it. Asserted on the
+        # note's own wording rather than "lines truncated", which the note quotes
+        # and so matches whether or not a marker was inserted.
+        assert "lines of the form" in result.content
 
         # ...but recoverable in full via read_file on the offload path: a middle
         # slice the preview never showed is present on disk.
         read = read_tool.invoke({"file_path": capture_path, "offset": 2499, "limit": 3, "runtime": rt})
         assert "line 2500:" in read.content
+
+    def test_offloaded_preview_reports_truncation_marker(self, sandbox: LocalSubprocessSandbox) -> None:
+        offload = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, self._capture_path("c_omit"), max_inline_bytes=100)
+
+        assert offload.offloaded is True
+        assert offload.preview_has_truncation_marker is True
+        assert "lines truncated] ..." in offload.response.output
+
+    def test_offloaded_byte_excerpt_reports_no_marker_but_says_it_clipped(self, tools: tuple, sandbox: LocalSubprocessSandbox) -> None:
+        """Few-but-huge lines: no marker to explain, yet the end is still dropped."""
+        offload = sandbox.execute_with_offload(_FEW_LONG_LINES_CMD, self._capture_path("c_few"), max_inline_bytes=100)
+
+        assert offload.offloaded is True
+        assert offload.preview_has_truncation_marker is False
+        # No marker is claimed because none was inserted...
+        assert "lines truncated" not in offload.response.output
+        # ...but the excerpt drops the end of the output, so it says so in-band.
+        assert "output clipped here" in offload.response.output
+        assert "full output at the path above" in offload.response.output
+
+        # The tool message therefore drops the truncation-marker explanation while
+        # the body still discloses the clip.
+        execute_tool, _ = tools
+        result = execute_tool.invoke({"command": _FEW_LONG_LINES_CMD, "runtime": self._runtime("c_few_tool")})
+        assert "Here is a preview of the result:" in result.content
+        assert "lines of the form" not in result.content
+        assert "output clipped here" in result.content
+
+    def test_capped_byte_excerpt_does_not_claim_the_path_holds_the_full_output(self, sandbox: LocalSubprocessSandbox) -> None:
+        """When capture hits its cap, neither the byte count nor the path is the whole story.
+
+        The wrapper only ever sees the capped file, so its byte count is the cap
+        rather than the command's real output size, and the saved file is itself
+        incomplete. The notice must not contradict the `truncated` status line the
+        caller renders next to it.
+        """
+        offload = sandbox.execute_with_offload(
+            _ONE_HUGE_LINE_CMD,
+            self._capture_path("c_capped"),
+            max_inline_bytes=100,
+            max_capture_bytes=5000,
+        )
+
+        assert offload.offloaded is True
+        assert offload.response.truncated is True
+        assert offload.preview_has_truncation_marker is False
+
+        notice = offload.response.output.splitlines()[-1]
+        assert "capture stopped at its 5000-byte limit" in notice
+        # The real output was 200000 bytes, so the cap must not be sold as the total...
+        assert "5000 bytes total" not in notice
+        # ...and the saved file is incomplete, so it must not be sold as the full output.
+        assert "full output at the path above" not in notice
+        assert "incomplete" in notice
+
+    def test_uncapped_byte_excerpt_reports_the_true_total_and_full_recovery(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Below the cap, the captured file really is the whole output."""
+        offload = sandbox.execute_with_offload(_FEW_LONG_LINES_CMD, self._capture_path("c_uncapped"), max_inline_bytes=100)
+
+        assert offload.response.truncated is False
+        notice = offload.response.output.splitlines()[-1]
+        assert "bytes total, full output at the path above" in notice
+        assert "capture stopped at its" not in notice
+
+    def test_capped_head_tail_preview_has_no_clip_notice(self, sandbox: LocalSubprocessSandbox) -> None:
+        """The clip notice belongs to the byte-excerpt branch only, capped or not."""
+        offload = sandbox.execute_with_offload(
+            _BIG_OUTPUT_CMD,
+            self._capture_path("c_capped_marker"),
+            max_inline_bytes=100,
+            max_capture_bytes=5000,
+        )
+
+        assert offload.response.truncated is True
+        assert offload.preview_has_truncation_marker is True
+        assert "output clipped here" not in offload.response.output
+
+    def test_offloaded_preview_shorter_than_excerpt_budget_omits_clip_notice(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Output above the inline budget but below the excerpt budget loses nothing."""
+        cmd = 'printf "a\\nb\\nc\\n"; head -c 300 /dev/zero | tr "\\0" x; echo'
+        offload = sandbox.execute_with_offload(cmd, self._capture_path("c_fits"), max_inline_bytes=100)
+
+        assert offload.offloaded is True
+        assert offload.preview_has_truncation_marker is False
+        # Nothing was dropped, so neither notice appears.
+        assert "lines truncated" not in offload.response.output
+        assert "output clipped here" not in offload.response.output
+
+    def test_head_tail_excerpts_disclose_their_byte_caps(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Long lines make the head/tail excerpts lose content the marker never counts.
+
+        `head -c`/`tail -c` run before the line caps, so the outermost shown lines are
+        cut mid-line and fewer lines appear than the budget. The marker only accounts
+        for whole middle lines, so the preview must say the rest out loud.
+        """
+        offload = sandbox.execute_with_offload(_MANY_LONG_LINES_CMD, self._capture_path("c_ht_clip"), max_inline_bytes=100)
+
+        assert offload.offloaded is True
+        assert offload.preview_has_truncation_marker is True
+        assert "byte-capped" in offload.response.output
+        # The marker keeps its own line rather than being glued onto a mid-line cut.
+        marker_lines = [line for line in offload.response.output.splitlines() if line.startswith("... [") and "lines truncated" in line]
+        assert len(marker_lines) == 1
+
+    def test_head_tail_excerpts_stay_quiet_when_byte_caps_do_not_bite(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Short lines fit inside the byte caps, so there is no extra loss to disclose."""
+        offload = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, self._capture_path("c_ht_noclip"), max_inline_bytes=100)
+
+        assert offload.preview_has_truncation_marker is True
+        assert "byte-capped" not in offload.response.output
+
+    def test_capped_byte_excerpt_notice_agrees_with_the_status_line(self, sandbox: LocalSubprocessSandbox) -> None:
+        """The capped wording exists to not contradict the `truncated` status line.
+
+        That pairing is the whole reason for the variant, so assert both halves on the
+        composed message rather than only on the raw backend value.
+        """
+        capture_path = self._capture_path("c_capped_msg")
+        offload = sandbox.execute_with_offload(_ONE_HUGE_LINE_CMD, capture_path, max_inline_bytes=100, max_capture_bytes=5000)
+
+        middleware = FilesystemMiddleware(backend=sandbox)
+        content = middleware._interpret_capture_output(offload, capture_path, "c_capped_msg")
+
+        # The status line and the in-band notice must tell the model the same story.
+        assert "the saved file is incomplete" in content
+        assert "capture stopped at its 5000-byte limit" in content
+        assert "full output at the path above" not in content
 
     async def test_nonzero_exit_code_preserved(self, tools: tuple, invoke: Callable) -> None:
         execute_tool, _ = tools

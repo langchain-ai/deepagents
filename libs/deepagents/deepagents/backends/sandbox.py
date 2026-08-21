@@ -42,7 +42,7 @@ from deepagents.backends.protocol import (
     WriteResult,
     execute_accepts_timeout,
 )
-from deepagents.backends.utils import _get_backend_read_file_type, normalize_read_bounds
+from deepagents.backends.utils import TRUNCATION_MARKER_TEMPLATE, _get_backend_read_file_type, normalize_read_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -1131,7 +1131,46 @@ def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, *, repla
 
 
 _EXECUTE_CAPTURE_SENTINEL: Final = "__DEEPAGENTS_EXEC_META__"
-"""First-line marker identifying capture-wrapper output: `<sentinel> <exit_code> <offloaded> <capped>`."""
+"""First-line marker identifying capture-wrapper output: `<sentinel> <exit_code> <offloaded> <capped> <omitted_lines>`."""
+
+_EXECUTE_CAPTURE_META_FIELDS: Final = 5
+"""Number of space-separated fields on the capture wrapper's meta line."""
+
+_EXECUTE_CAPTURE_CLIP_NOTICE: Final = "... [output clipped here; {captured_bytes} bytes total, full output at the path above] ..."
+"""Appended to a byte-excerpt preview when the excerpt is shorter than the captured output."""
+
+_EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED: Final = (
+    "... [output clipped here; capture stopped at its {captured_bytes}-byte limit, so the file at the path above is also incomplete] ..."
+)
+"""Variant of `_EXECUTE_CAPTURE_CLIP_NOTICE` for when capture hit its byte cap.
+
+Output past `max_capture_bytes` is discarded uncounted, so the byte count is
+the cap, not the output's real size, and the saved file is also incomplete.
+
+For example, with a 10 MB cap and 25 MB of output, the notice reads `capture
+stopped at its 10485760-byte limit` — not `26214400 bytes total`.
+"""
+
+_EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE: Final = (
+    "... [the excerpts above and below are byte-capped, so the lines bordering this marker may be cut mid-line] ..."
+)
+"""Inserted before the marker in a head/tail preview whose excerpts hit their
+byte caps.
+
+The wrapper keeps the first/last 2000 bytes of output, then takes up to 5 lines
+from each. So this fires when those 5 lines total more than 2000 bytes — i.e.
+output with very long lines (JSONL logs, minified JS, base64 blobs). The 2000
+bytes can then end mid-line and show fewer than 5 lines:
+
+    {"event":"pageview","properties":{"url":"https://exa   <- head excerpt: cut at byte 2000, mid-line
+    ... [the excerpts above and below are byte-capped, so the lines bordering this marker may be cut mid-line] ...
+    ... [42 lines truncated] ...
+    pv},{"event":"click","properties":{"button":"signup"}}  <- tail excerpt: starts mid-line
+    {"event":"purchase","properties":{"total":49.99}}
+
+The truncation marker counts whole lines dropped from the middle, so without
+this notice nothing would mention the cut.
+"""
 
 _EXECUTE_CAPTURE_HEAD_LINES: Final = 5
 _EXECUTE_CAPTURE_TAIL_LINES: Final = 5
@@ -1159,8 +1198,12 @@ beyond the cap is truncated and flagged.
 # issues; the (internal, sanitized) path is shell-quoted.
 _EXECUTE_CAPTURE_CMD_TEMPLATE = """# ===== deepagents capture-at-source offload (auto-generated wrapper) =====
 # Runs the requested command below, capturing its combined output to a file in
-# the sandbox: returned inline when small, or as a head/tail preview when large
-# (the full result stays at the path for read_file). Disable this wrapping with
+# the sandbox: returned inline when small, or as a preview when large (the full
+# result stays at the path for read_file). Large output is previewed as a
+# head/tail excerpt around a truncation marker when it has more lines than the
+# head+tail budget, otherwise as a leading byte excerpt that ends with an
+# in-band clip notice. Either shape discloses byte-cap losses in-band. Disable
+# this wrapping with
 # BaseSandbox.enable_capture_offload = False.
 __da_f=__PATH_Q__
 __da_ecf="$__da_f.ec"
@@ -1180,20 +1223,45 @@ __da_bytes=$(wc -c < "$__da_f" 2>/dev/null | tr -d ' ')
 __da_capped=0
 [ "$__da_bytes" -ge __MAXBYTES__ ] && __da_capped=1
 if [ "$__da_bytes" -le __BUDGET__ ]; then
-  printf '%s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 0 0
+  printf '%s %s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 0 0 0
   cat "$__da_f"
   rm -f "$__da_f"
 else
   __da_lines=$(wc -l < "$__da_f" 2>/dev/null | tr -d ' ')
   : "${__da_lines:=0}"
   __da_omitted=$((__da_lines - __HEADLINES__ - __TAILLINES__))
-  printf '%s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 1 "$__da_capped"
+  printf '%s %s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 1 "$__da_capped" "$__da_omitted"
   if [ "$__da_omitted" -gt 0 ]; then
+    # The byte caps run before the line caps, so long lines make these excerpts
+    # show fewer lines than the budget and cut the outermost ones mid-line. Detect
+    # that by asking how big the line-capped excerpts would have been, and say so
+    # in-band -- the marker only accounts for whole lines dropped from the middle.
+    __da_head_bytes=$(head -n __HEADLINES__ "$__da_f" 2>/dev/null | wc -c | tr -d ' ')
+    : "${__da_head_bytes:=0}"
+    __da_tail_bytes=$(tail -n __TAILLINES__ "$__da_f" 2>/dev/null | wc -c | tr -d ' ')
+    : "${__da_tail_bytes:=0}"
     head -c __HEAD__ "$__da_f" | head -n __HEADLINES__
-    printf '... [%s lines truncated] ...\\n' "$__da_omitted"
+    if [ "$__da_head_bytes" -gt __HEAD__ ] || [ "$__da_tail_bytes" -gt __TAIL__ ]; then
+      # Also guarantees the marker starts its own line: a byte-clipped head
+      # excerpt has no trailing newline, which would otherwise glue the two.
+      printf '\\n__EXCERPT_CLIP_NOTICE__\\n'
+    fi
+    printf '__MARKER_FMT__\\n' "$__da_omitted"
     tail -c __TAIL__ "$__da_f" | tail -n __TAILLINES__
   else
+    # Fewer lines than the head+tail budget, so there is no middle to drop:
+    # emit a leading byte excerpt. That silently loses the end of the output, so
+    # close it with an in-band notice whenever anything was actually left out.
+    # When capture was capped, __da_bytes is the cap rather than the output's real
+    # size and the saved file is incomplete too, so use the capped wording.
     head -c $((__HEAD__ + __TAIL__)) "$__da_f"
+    if [ "$__da_bytes" -gt $((__HEAD__ + __TAIL__)) ]; then
+      if [ "$__da_capped" -eq 1 ]; then
+        printf '\\n__CLIP_NOTICE_CAPPED_FMT__\\n' "$__da_bytes"
+      else
+        printf '\\n__CLIP_NOTICE_FMT__\\n' "$__da_bytes"
+      fi
+    fi
   fi
 fi
 """
@@ -1208,11 +1276,12 @@ def _new_heredoc_delim() -> str:
 def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget: int, max_capture_bytes: int | None = None) -> str:
     """Build the capture-at-source wrapper command for `execute`.
 
-    `inline_budget` is the byte threshold at or below which output is returned
-    inline; above it the output is left at `capture_path` and only a head/tail
-    preview is returned. Captured output is hard-capped at `max_capture_bytes`
-    (defaulting to `_EXECUTE_CAPTURE_MAX_BYTES`, resolved here so it stays
-    overridable/patchable); beyond that it is truncated and flagged.
+    Output at or below `inline_budget` bytes is returned inline. Above it, the
+    full output is left at `capture_path` and only a preview is returned: a
+    head/tail excerpt around a truncation marker when there are more lines than
+    the head+tail budget, otherwise a leading byte excerpt ending in a clip
+    notice. Captured output is hard-capped at `max_capture_bytes` (default
+    `_EXECUTE_CAPTURE_MAX_BYTES`); beyond that it is truncated and flagged.
     """
     cap = max_capture_bytes if max_capture_bytes is not None else _EXECUTE_CAPTURE_MAX_BYTES
     # The command is embedded in a quoted heredoc; guarantee the delimiter cannot
@@ -1229,6 +1298,14 @@ def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget
         .replace("__MAXBYTES__", str(cap))
         .replace("__BUDGET__", str(inline_budget))
         .replace("__SENTINEL__", _EXECUTE_CAPTURE_SENTINEL)
+        # Both notices become `printf` format strings, so the count/byte total is
+        # the single `%s` operand. Deriving the marker from the shared template
+        # keeps the wrapper's output and the note describing it in lockstep.
+        .replace("__MARKER_FMT__", TRUNCATION_MARKER_TEMPLATE.format(omitted_lines="%s"))
+        .replace("__CLIP_NOTICE_CAPPED_FMT__", _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED.format(captured_bytes="%s"))
+        .replace("__CLIP_NOTICE_FMT__", _EXECUTE_CAPTURE_CLIP_NOTICE.format(captured_bytes="%s"))
+        # Takes no operand, so it is a literal `printf` format with no `%`.
+        .replace("__EXCERPT_CLIP_NOTICE__", _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE)
         .replace("__HEADLINES__", str(_EXECUTE_CAPTURE_HEAD_LINES))
         .replace("__TAILLINES__", str(_EXECUTE_CAPTURE_TAIL_LINES))
         .replace("__HEAD__", str(_EXECUTE_CAPTURE_HEAD_BYTES))
@@ -1242,33 +1319,76 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
 
     The wrapper emits a meta line followed by the body:
 
-        <sentinel> <exit_code> <offloaded> <capped>\n<inline output or preview>
+        <sentinel> <exit_code> <offloaded> <capped> <omitted_lines>\n<inline output or preview>
 
-    i.e. four space-separated fields on the first line — the sentinel, the
-    command's exit code, `1`/`0` for whether output was offloaded to the capture
-    file, and `1`/`0` for whether it hit the size cap — then everything after the
-    first newline is the body (full output when inline, head/tail preview when
-    offloaded).
+    i.e. five space-separated fields on the first line, then everything after
+    the first newline is the body (full output when inline, preview when
+    offloaded). For example:
 
-    Falls back to `offloaded=False` with the raw output when the meta line is
-    absent or malformed — e.g. if the backend truncated transport; the caller
-    must not re-run the command in that case. `response.truncated` is set when the
-    captured output hit the size cap (the saved file is incomplete) or
+        __DEEPAGENTS_EXEC_META__ 0 1 0 14\n<head lines>... [14 lines truncated] ...<tail lines>
+
+    The surplus is `captured_lines - head_lines - tail_lines`. A value `> 0`
+    means lines were dropped from the middle behind a truncation marker; zero or
+    negative means the output fit within the head+tail budget and the preview is
+    a leading byte excerpt instead (see
+    `ExecuteOffloadResult.preview_has_truncation_marker`). `captured_lines` comes
+    from `wc -l`, which counts newlines, so a final unterminated line does not
+    count toward the budget.
+
+    When the meta line is absent or malformed (e.g. the backend truncated
+    transport), the result falls back to `offloaded=False` with the raw output —
+    logged, since this silently reframes a preview as complete output. The
+    caller must not re-run the command in that case. `response.truncated` is set
+    when the captured output hit the size cap (the saved file is incomplete) or
     `backend_truncated` is passed through from the underlying `execute`.
     """
     first, _, body = output.partition("\n")
-    parts = first.split(" ")
-    # Expect exactly the four meta fields described above; anything else is not
-    # our wrapper's output, so fall back to returning it verbatim.
-    if len(parts) != 4 or parts[0] != _EXECUTE_CAPTURE_SENTINEL:  # noqa: PLR2004
+
+    def _unoffloaded() -> ExecuteOffloadResult:
         return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
+
+    # Reject non-wrapper output before splitting: with the wrapper disabled the
+    # first line can be the whole output on one line (minified JS, single-line
+    # JSON), and splitting allocates a string per space only to discard them.
+    if not first.startswith(_EXECUTE_CAPTURE_SENTINEL):
+        logger.warning("Capture wrapper meta line absent or malformed (no sentinel); returning output unoffloaded: %r", first[:200])
+        return _unoffloaded()
+
+    parts = first.split(" ")
+    # Expect exactly the meta fields described above; anything else is not our
+    # wrapper's output, so fall back to returning it verbatim.
+    if len(parts) != _EXECUTE_CAPTURE_META_FIELDS or parts[0] != _EXECUTE_CAPTURE_SENTINEL:
+        logger.warning(
+            "Capture wrapper meta line absent or malformed (%d fields, expected %d); returning output unoffloaded: %r",
+            len(parts),
+            _EXECUTE_CAPTURE_META_FIELDS,
+            first[:200],
+        )
+        return _unoffloaded()
     try:
         exit_code = int(parts[1])
     except ValueError:
-        return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
+        logger.warning("Capture wrapper emitted a non-integer exit code %r; returning output unoffloaded", parts[1][:50])
+        return _unoffloaded()
+    # Parsed separately from the exit code: an unreadable surplus only costs us
+    # the preview note's wording, and must not discard a good exit code or cap
+    # flag by falling back to the raw-output path.
+    try:
+        surplus_lines = int(parts[4])
+    except ValueError:
+        logger.warning(
+            "Capture wrapper emitted a non-integer preview line surplus %r; assuming no truncation marker",
+            parts[4][:50],
+        )
+        surplus_lines = 0
+    offloaded = parts[2] == "1"
     return ExecuteOffloadResult(
-        offloaded=parts[2] == "1",
+        offloaded=offloaded,
         response=ExecuteResponse(output=body, exit_code=exit_code, truncated=parts[3] == "1" or backend_truncated),
+        # `and offloaded` upholds the field's documented invariant by construction:
+        # the two fields are parsed from independent meta columns, so a wrapper bug
+        # could otherwise report a marker on output that carries no preview.
+        preview_has_truncation_marker=surplus_lines > 0 and offloaded,
     )
 
 
@@ -1338,7 +1458,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
         Captures the command's combined output: returned inline when it is at or
         below `max_inline_bytes`, otherwise left at `capture_path` (so the caller
-        can surface a `read_file` pointer) with only a head/tail preview returned.
+        can surface a `read_file` pointer) with only a preview returned.
         Captured output is hard-capped at `max_capture_bytes` (default
         `_EXECUTE_CAPTURE_MAX_BYTES`) without killing the command, so the exit
         code is preserved. When `enable_capture_offload` is `False`, the command
@@ -1346,9 +1466,11 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         callers can fall back to their own handling (e.g. generic eviction).
 
         Returns:
-            An `ExecuteOffloadResult`. `offloaded=True` when the result was left
-            at `capture_path` and `response.output` holds only the preview;
-            `offloaded=False` when `response.output` is the complete output.
+            An `ExecuteOffloadResult`: `offloaded=True` when the result was left
+                at `capture_path` and `response.output` holds only the preview,
+                with `preview_has_truncation_marker` recording whether the
+                preview dropped middle lines behind a marker; `offloaded=False`
+                when `response.output` is the complete output.
         """
         use_timeout = timeout is not None and execute_accepts_timeout(type(self))
         if not self.enable_capture_offload:

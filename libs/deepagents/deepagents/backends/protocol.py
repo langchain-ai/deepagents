@@ -828,13 +828,29 @@ class ExecuteOffloadResult:
     offloaded: bool
     """Whether the output was left at the capture path.
 
-    When `True`, `response.output` holds only a head/tail preview and the full
-    output lives at the capture path on the sandbox filesystem. When `False`,
-    `response.output` is the complete output.
+    When `True`, `response.output` holds only a preview of the output and the
+    full output lives at the capture path on the sandbox filesystem.
+
+    When `False`, `response.output` is the complete output.
     """
 
     response: ExecuteResponse
     """The command result. `response.truncated` indicates the output hit the size cap."""
+
+    preview_has_truncation_marker: bool = False
+    """Whether the preview contains a `... [N lines truncated] ...` marker.
+
+    Set by the code that builds the preview. This is the only reliable way to
+    know the marker was inserted, as the command output itself can contain
+    a line that looks the same (scanning the text is unsafe).
+
+    This flag covers only the `... [N lines truncated] ...` marker. A preview
+    may disclose other losses through its own in-band clip notices, which need
+    no flag because they carry their own explanation; see
+    `_build_capture_execute_cmd` in `backends.sandbox` for the wording.
+
+    When `offloaded` is `False`, this flag is always `False`.
+    """
 
 
 class SandboxBackendProtocol(BackendProtocol):

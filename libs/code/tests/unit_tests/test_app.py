@@ -24622,9 +24622,34 @@ class TestHasConversationMessages:
             app._agent = AsyncMock()
             app._lc_thread_id = "t1"
             app._agent_running = True
+            app._agent_turn_started = True
             app._active_user_message = UserMessage("hi")
 
             assert await app._has_conversation_messages() is True
+
+    async def test_ignores_unsent_message_during_non_message_operation(self) -> None:
+        """A prompt retained from a failed send must not suppress the warning.
+
+        If the agent was unavailable when the user submitted, `_send_to_agent`
+        reports the error but never clears `_active_user_message`. A later
+        operation that reserves `_agent_running` (e.g. goal-criteria
+        generation) must not make the empty thread look non-empty.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+            app._lc_thread_id = "t1"
+            # Busy from a non-message operation; the mounted prompt was never
+            # sent, so its worker never started a turn.
+            app._agent_running = True
+            app._agent_turn_started = False
+            app._active_user_message = UserMessage("hi")
+
+            assert await app._has_conversation_messages() is False
 
     async def test_returns_false_when_only_system_messages(self) -> None:
         """Should return False when messages list has no HumanMessage."""

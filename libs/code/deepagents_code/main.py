@@ -4386,12 +4386,14 @@ def _check_project_dotenv_trust() -> None:
     safe_dotenv_path = sanitize_control_chars(str(dotenv_path), keep_newlines=False)
     safe_skip_key = sanitize_control_chars(skip_key, keep_newlines=False)
     prompt_console.print(f"  {escape(safe_dotenv_path)}", highlight=False)
+    prompt_console.print()
     prompt_console.print(
         "Its values pass to subprocesses and can run code (shell startup hooks, "
         "git config).",
         style="yellow",
         highlight=False,
     )
+    prompt_console.print()
     action = _select_trust_action(
         prompt_console,
         allow_label="Continue (load .env)",

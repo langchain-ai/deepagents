@@ -645,15 +645,23 @@ class _SnapshotView(Static):
     def _wrapped_content(self, width: int) -> Content:
         """Wrap each row while preserving its label as a hanging indent.
 
+        Rows hang continuation lines under the value column only when the label
+        column itself fits; on narrower terminals the whole row wraps flat
+        instead, so values stay readable rather than clipped away.
+
         Returns:
             Snapshot content with wrapped value lines indented.
         """
         indent = self._continuation_indent
-        if width <= indent or indent <= 0:
+        if width <= 0:
             return self._snapshot_content
+        flat = width <= indent or indent <= 0
         wrapped: list[Content] = []
         padding = Content(" " * indent)
         for row in self._snapshot_content.split(allow_blank=True):
+            if flat:
+                wrapped.extend(row.wrap(width))
+                continue
             prefix, value = row.divide([indent])
             value_lines = value.wrap(width - indent)
             wrapped.append(Content.assemble(prefix, value_lines[0]))

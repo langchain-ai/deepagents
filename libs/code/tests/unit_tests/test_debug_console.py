@@ -122,6 +122,23 @@ class TestDebugConsoleScreen:
             assert line[:indent] == " " * indent
             assert line[indent:].strip()
 
+    async def test_narrow_terminal_wraps_snapshot_values_without_indent(self) -> None:
+        fields = [SnapshotField("Approval mode", "auto-edit")]
+        app = _Harness()
+        async with app.run_test(size=(16, 40)) as pilot:
+            screen = DebugConsoleScreen(fields)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            view = screen.query_one(".debug-console-snapshot", Static)
+            lines = _widget_text(view).splitlines()
+
+        indent = len("Approval mode") + 2
+        assert len(lines) > 1
+        for line in lines:
+            assert line[:indent] != " " * indent
+        assert any("auto" in line for line in lines[1:])
+
     def test_footer_omits_click_to_copy_hint(self) -> None:
         footer = str(DebugConsoleScreen._render_help())
 

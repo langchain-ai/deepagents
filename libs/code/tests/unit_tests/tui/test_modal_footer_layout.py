@@ -56,9 +56,6 @@ from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
 from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
 from deepagents_code.tui.widgets.notification_center import NotificationCenterScreen
 from deepagents_code.tui.widgets.notification_detail import NotificationDetailScreen
-from deepagents_code.tui.widgets.notification_settings import (
-    NotificationSettingsScreen,
-)
 from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
@@ -109,11 +106,6 @@ FOOTER_CASES: list[tuple[str, Callable[[], ModalScreen], str]] = [
         "notification_detail",
         lambda: NotificationDetailScreen(_update_entry()),
         ".nd-help",
-    ),
-    (
-        "notification_settings",
-        lambda: NotificationSettingsScreen(suppressed=set()),
-        ".ns-help",
     ),
     (
         "update_available",

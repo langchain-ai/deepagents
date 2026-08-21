@@ -4381,16 +4381,19 @@ class TestModalScreenShiftTabHandling:
         "Tab/Shift+Tab navigate" copy, so the traversal has to work both ways.
         """
         from deepagents_code.approval_mode import ApprovalMode
-        from deepagents_code.tui.widgets.notification_settings import (
-            NotificationSettingsScreen,
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
         )
 
         app = DeepAgentsApp()
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            screen = NotificationSettingsScreen(suppressed=set())
+            screen = NotificationCenterScreen([], suppressed=set())
             app.push_screen(screen)
+            await pilot.pause()
+            # Open the inline settings section so its checkboxes take focus.
+            await pilot.press("enter")
             await pilot.pause()
             first = screen.focused
             assert first is not None
@@ -26072,29 +26075,68 @@ class TestNotificationCenterIntegration:
         ):
             yield
 
-    async def test_ctrl_n_with_empty_registry_emits_toast(self) -> None:
-        """ctrl+n with nothing pending notifies and doesn't push a modal."""
+    async def test_ctrl_n_with_empty_registry_opens_notifications_hub(self) -> None:
+        """ctrl+n keeps settings reachable when no notifications are pending."""
         from deepagents_code.notifications import NotificationRegistry
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+            _NotificationSettingsRow,
+        )
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         app._notice_registry = NotificationRegistry()
-
-        notified: list[str] = []
-        original_notify = app.notify
-
-        def capture_notify(message: str, **kwargs: Any) -> None:
-            notified.append(message)
-            original_notify(message, **kwargs)
-
-        app.notify = capture_notify  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("ctrl+n")
             await pilot.pause()
-            assert not isinstance(app.screen, ModalScreen)
 
-        assert any("No pending notifications" in m for m in notified)
+            assert isinstance(app.screen, NotificationCenterScreen)
+            assert len(app.screen.query(_NotificationSettingsRow)) == 1
+
+    async def test_notifications_command_opens_same_hub(self) -> None:
+        """The slash command and keybinding share the notification center."""
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/notifications")
+            await pilot.pause()
+
+            assert isinstance(app.screen, NotificationCenterScreen)
+
+    async def test_notification_hub_expands_settings_inline(self) -> None:
+        """Preferences expand inside the hub; Esc collapses back to the list."""
+        from textual.widgets import Checkbox
+
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            center = app.screen
+            assert isinstance(center, NotificationCenterScreen)
+
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.screen is center
+            assert center.settings_expanded
+            assert len(center.query(Checkbox)) > 0
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is center
+            assert not center.settings_expanded
 
     async def test_ctrl_n_over_modal_toasts_close_hint(self) -> None:
         """ctrl+n while a modal is open surfaces a hint instead of stacking."""
@@ -26407,13 +26449,15 @@ class TestNotificationCenterIntegration:
             keys = [r.notification.key for r in app.screen.query(_NotificationRow)]
             assert keys == ["dep:ripgrep"]
 
-    async def test_enter_api_key_save_last_entry_dismisses_center(self) -> None:
-        """Saving the only key removes it and dismisses the emptied center."""
+    async def test_enter_api_key_save_last_entry_keeps_settings_hub(self) -> None:
+        """Saving the only key leaves warning preferences reachable."""
         from deepagents_code.notifications import ActionId
         from deepagents_code.tui.widgets.auth import AuthResult
         from deepagents_code.tui.widgets.notification_center import (
             NotificationActionRequested,
             NotificationCenterScreen,
+            _NotificationRow,
+            _NotificationSettingsRow,
         )
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
@@ -26432,7 +26476,9 @@ class TestNotificationCenterIntegration:
                 await pilot.pause()
 
             assert app._notice_registry.get("dep:tavily") is None
-            assert not isinstance(app.screen, NotificationCenterScreen)
+            assert isinstance(app.screen, NotificationCenterScreen)
+            assert not list(app.screen.query(_NotificationRow))
+            assert len(app.screen.query(_NotificationSettingsRow)) == 1
 
     async def test_enter_api_key_reload_failure_surfaces_toast(self) -> None:
         """A reload race after saving logs and toasts instead of vanishing."""
@@ -26581,11 +26627,13 @@ class TestNotificationCenterIntegration:
                 assert keys == ["dep:ripgrep", "dep:tavily"]
                 assert app._notice_registry.get("dep:ripgrep") is dep
 
-    async def test_suppress_last_entry_closes_center(self) -> None:
-        """Suppressing the only remaining entry dismisses the center."""
+    async def test_suppress_last_entry_keeps_settings_hub(self) -> None:
+        """Suppressing the final entry leaves warning preferences reachable."""
         from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
             NotificationSuppressRequested,
+            _NotificationRow,
+            _NotificationSettingsRow,
         )
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
@@ -26605,7 +26653,9 @@ class TestNotificationCenterIntegration:
                 app.screen.post_message(NotificationSuppressRequested("dep:ripgrep"))
                 await pilot.pause()
 
-                assert not isinstance(app.screen, NotificationCenterScreen)
+                assert isinstance(app.screen, NotificationCenterScreen)
+                assert not list(app.screen.query(_NotificationRow))
+                assert len(app.screen.query(_NotificationSettingsRow)) == 1
 
     async def test_suppress_action_failure_keeps_entry_and_warns(self) -> None:
         """When suppress_warning returns False, the entry stays and a warning toasts."""
@@ -27937,8 +27987,42 @@ class TestNotificationCenterIntegration:
             assert screen._selected == 0
             await pilot.press("shift+tab")
             await pilot.pause()
-            # Wraps from row 0 to the last row; auto_approve stays off.
-            assert screen._selected == len(entries) - 1
+            # Wraps from row 0 to settings; auto_approve stays off.
+            assert screen._selected == len(entries)
+            assert app._auto_approve is False
+
+    async def test_notification_center_shift_tab_cycles_checkboxes_when_expanded(
+        self,
+    ) -> None:
+        """App-level shift+tab wraps checkbox focus while settings are expanded.
+
+        The app's priority `shift+tab -> toggle_auto_approve` binding wins
+        dispatch and routes cursor-style modals to `move_up` via
+        `_SupportsReverseNav`; with expanded settings that would strand focus
+        on the first checkbox instead of wrapping to the last.
+        """
+        from textual.widgets import Checkbox
+
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = NotificationCenterScreen([], suppressed=set())
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen.settings_expanded
+            checkboxes = list(screen.query(Checkbox))
+            assert app.focused is checkboxes[0]
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert app.focused is checkboxes[-1]
             assert app._auto_approve is False
 
     async def test_notification_detail_shift_tab_moves_cursor_up(self) -> None:

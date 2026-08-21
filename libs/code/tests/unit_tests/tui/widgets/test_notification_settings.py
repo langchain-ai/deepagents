@@ -1,4 +1,4 @@
-"""Tests for NotificationSettingsScreen."""
+"""Tests for the notification center's inline settings section."""
 
 from __future__ import annotations
 
@@ -9,33 +9,31 @@ from textual.widgets import Checkbox, Static
 
 from deepagents_code.approval_mode import YOLO_WARNING_KEY
 from deepagents_code.model_config import is_warning_suppressed, suppress_warning
-from deepagents_code.tui.widgets.notification_settings import (
-    WARNING_TOGGLES,
-    NotificationSettingsScreen,
-)
+from deepagents_code.tui.widgets.notification_center import NotificationCenterScreen
+from deepagents_code.tui.widgets.notification_settings import WARNING_TOGGLES
 
 
 class _NotificationSettingsHost(App[None]):
-    """Minimal host app for mounting `NotificationSettingsScreen` in tests."""
+    """Minimal host app for mounting `NotificationCenterScreen` in tests."""
 
 
-async def test_notification_settings_dims_underlying_content() -> None:
+async def test_notification_center_dims_underlying_content() -> None:
     """The modal must inherit the translucent `ModalScreen` backdrop.
 
-    Like the selector modals, the notification settings dialog should dim the
-    content underneath rather than render a fully transparent overlay. The
-    alpha is in (0, 1) only under a non-ansi theme, so pin `textual-dark`.
+    Like the selector modals, the notification hub should dim the content
+    underneath rather than render a fully transparent overlay. The alpha is
+    in (0, 1) only under a non-ansi theme, so pin `textual-dark`.
     """
     app = _NotificationSettingsHost()
     async with app.run_test() as pilot:
         app.theme = "textual-dark"
         await pilot.pause()
-        await app.push_screen(NotificationSettingsScreen(suppressed=set()))
+        await app.push_screen(NotificationCenterScreen([], suppressed=set()))
         await pilot.pause()
         assert 0 < app.screen.styles.background.a < 1
 
 
-async def test_enter_toggles_focused_warning_without_closing() -> None:
+async def test_enter_toggles_focused_warning_without_collapsing() -> None:
     """Enter must toggle the focused warning, matching the footer hint.
 
     Textual's `ToggleButton` binds `enter,space` to its toggle action, so Enter
@@ -44,8 +42,10 @@ async def test_enter_toggles_focused_warning_without_closing() -> None:
     """
     app = _NotificationSettingsHost()
     async with app.run_test() as pilot:
-        screen = NotificationSettingsScreen(suppressed=set())
+        screen = NotificationCenterScreen([], suppressed=set())
         await app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("enter")  # expand the settings section
         await pilot.pause()
         focused = screen.query(Checkbox).first()
         assert app.focused is focused
@@ -56,21 +56,24 @@ async def test_enter_toggles_focused_warning_without_closing() -> None:
 
         assert focused.value is False
         assert app.screen is screen
+        assert screen.settings_expanded
 
 
-async def test_help_footer_documents_both_toggle_keys() -> None:
+async def test_help_footer_documents_both_toggle_keys_when_expanded() -> None:
     """The footer advertises Enter alongside Space so the hint is complete."""
     app = _NotificationSettingsHost()
     async with app.run_test() as pilot:
-        screen = NotificationSettingsScreen(suppressed=set())
+        screen = NotificationCenterScreen([], suppressed=set())
         await app.push_screen(screen)
         await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
 
-        help_text = str(screen.query_one(".ns-help", Static).content)
+        help_text = str(screen.query_one(".nc-help", Static).content)
 
         assert "Tab/Shift+Tab navigate" in help_text
         assert "Space/Enter toggle" in help_text
-        assert "Esc close" in help_text
+        assert "Esc collapse" in help_text
 
 
 def test_cold_cache_warning_is_listed() -> None:
@@ -88,10 +91,13 @@ async def test_yolo_warning_is_toggleable() -> None:
 
     app = _NotificationSettingsHost()
     async with app.run_test() as pilot:
-        await app.push_screen(NotificationSettingsScreen(suppressed=set()))
+        screen = NotificationCenterScreen([], suppressed=set())
+        await app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("enter")
         await pilot.pause()
 
-        checkbox = app.screen.query_one(f"#ns-{YOLO_WARNING_KEY}", Checkbox)
+        checkbox = screen.query_one(f"#ns-{YOLO_WARNING_KEY}", Checkbox)
         assert checkbox.value is True
         checkbox.value = False
         await pilot.pause()
@@ -110,10 +116,13 @@ async def test_suppressed_key_renders_unchecked() -> None:
     """A key already in `[warnings].suppress` renders its row unchecked."""
     app = _NotificationSettingsHost()
     async with app.run_test() as pilot:
-        await app.push_screen(NotificationSettingsScreen(suppressed={YOLO_WARNING_KEY}))
+        screen = NotificationCenterScreen([], suppressed={YOLO_WARNING_KEY})
+        await app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("enter")
         await pilot.pause()
 
-        checkbox = app.screen.query_one(f"#ns-{YOLO_WARNING_KEY}", Checkbox)
+        checkbox = screen.query_one(f"#ns-{YOLO_WARNING_KEY}", Checkbox)
         assert checkbox.value is False
 
 
@@ -128,10 +137,13 @@ async def test_failed_unsuppress_reverts_the_checkbox() -> None:
 
     app = _NotificationSettingsHost()
     async with app.run_test() as pilot:
-        await app.push_screen(NotificationSettingsScreen(suppressed={YOLO_WARNING_KEY}))
+        screen = NotificationCenterScreen([], suppressed={YOLO_WARNING_KEY})
+        await app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("enter")
         await pilot.pause()
 
-        checkbox = app.screen.query_one(f"#ns-{YOLO_WARNING_KEY}", Checkbox)
+        checkbox = screen.query_one(f"#ns-{YOLO_WARNING_KEY}", Checkbox)
         assert checkbox.value is False
 
         with patch(

@@ -457,6 +457,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         writable_memory: List of dedicated agent-generated memory file paths to
             load after `memory`. These are identified as writable destinations
             in the memory prompt and are not blocked by `MemoryMiddleware`.
+
+            !!! warning
+
+                This ownership split is enforced for the built-in filesystem
+                mutation tools. Custom tools and sandbox commands require their
+                own backend or operating-system access controls.
         permissions: List of `FilesystemPermission` rules for the main agent
             and its subagents.
 

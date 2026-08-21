@@ -191,6 +191,13 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
     Loads memory content from configured sources and injects into the system
     prompt. Supports multiple sources that are combined together. See
     constructor for the full argument list.
+
+    !!! warning
+
+        The read-only boundary is enforced for the built-in `write_file`,
+        `edit_file`, and `delete` tool calls. It cannot constrain arbitrary
+        custom tools or commands executed by a sandbox backend; use backend or
+        operating-system isolation when those paths require a security boundary.
     """
 
     state_schema = MemoryState

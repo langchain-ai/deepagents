@@ -27,24 +27,32 @@ def test_skip_persists_under_canonical_key(tmp_path: Path) -> None:
         assert (store.stat().st_mode & 0o777) == 0o600
 
 
-def test_subdirectory_of_skipped_root_is_not_independently_keyed(
-    tmp_path: Path,
-) -> None:
-    """The store keys the canonical root; a subdirectory is a different key.
+def test_skip_key_follows_the_discovered_env_file(tmp_path: Path) -> None:
+    """The skip key is the discovered `.env`'s parent, not the launch dir.
 
-    `_load_dotenv` resolves the project root from the cwd before consulting the
-    store, so a root skip covers subdirectories through that resolution — not
-    through the store matching a subdirectory key directly.
+    A non-Git project has no `project_root`, so the key must come from walking
+    up to the `.env` file. Keying on the launch directory would miss an
+    ancestor `.env` when launching from the project root or a sibling.
     """
-    root = tmp_path / "project"
+    from deepagents_code.dotenv_skip import skip_key_for_start_path
+
+    root = tmp_path / "plain"  # no .git — project_root is None
     sub = root / "sub" / "dir"
     sub.mkdir(parents=True)
-    store = tmp_path / "dotenv_skip.json"
+    (root / ".env").write_text("KEY=val\n", encoding="utf-8")
 
-    assert skip_project_dotenv(root, store_path=store)
-    assert is_project_dotenv_skipped(root, store_path=store)
-    # The bare subdirectory is not itself a stored key.
-    assert not is_project_dotenv_skipped(sub, store_path=store)
+    # From the file's own directory and from a nested subdirectory, the key is
+    # the `.env`'s parent.
+    assert skip_key_for_start_path(root) == str(root.resolve())
+    assert skip_key_for_start_path(sub) == str(root.resolve())
+
+
+def test_skip_key_is_none_without_a_project_env(tmp_path: Path) -> None:
+    from deepagents_code.dotenv_skip import skip_key_for_start_path
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert skip_key_for_start_path(empty) is None
 
 
 def test_corrupt_store_fails_closed_without_overwrite(tmp_path: Path) -> None:

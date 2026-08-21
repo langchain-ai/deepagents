@@ -4310,18 +4310,18 @@ def _check_project_dotenv_trust() -> None:
         is_project_dotenv_skipped,
         skip_project_dotenv,
     )
-    from deepagents_code.project_utils import ProjectContext
 
-    try:
-        context = ProjectContext.from_user_cwd(Path.cwd())
-        project_root = context.project_root or context.user_cwd
-    except OSError:
-        logger.debug("Could not resolve project root for the .env trust prompt")
-        return
+    # Key the skip on the discovered `.env`'s parent — the directory that owns
+    # the file — not the invocation directory. A non-Git project has no
+    # `ProjectContext.project_root`, so keying on `user_cwd` would store the
+    # launch subdirectory and miss the ancestor `.env` on a later launch from
+    # the project root or a sibling. `dotenv_path` is already resolved by
+    # `_find_dotenv_from_start_path`, so its parent is canonical.
+    skip_key = str(dotenv_path.parent)
 
-    # A persisted "never load" decision already covers this project root (and
-    # its subdirectories, since the root is canonical and resolved).
-    if is_project_dotenv_skipped(project_root):
+    # A persisted "never load" decision already covers this `.env` (and every
+    # subdirectory launch, since discovery walks up to the same file).
+    if is_project_dotenv_skipped(skip_key):
         _skip_project_dotenv_for_session()
         return
 
@@ -4359,9 +4359,9 @@ def _check_project_dotenv_trust() -> None:
         )
         _skip_project_dotenv_for_session()
     elif action is _TrustAction.REMEMBER:
-        if skip_project_dotenv(project_root):
+        if skip_project_dotenv(skip_key):
             prompt_console.print(
-                f'[dim]The .env in "{escape(str(project_root))}" will be skipped '
+                f'[dim]The .env in "{escape(skip_key)}" will be skipped '
                 "from now on.[/dim]",
                 highlight=False,
             )

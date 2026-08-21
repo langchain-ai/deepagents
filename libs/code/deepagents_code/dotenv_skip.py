@@ -63,6 +63,37 @@ def _project_key(project_root: Path | str) -> str:
     return str(Path(project_root).expanduser().resolve())
 
 
+def skip_key_for_start_path(start_path: Path | None) -> str | None:
+    """Resolve the skip-store key that governs the `.env` found from a directory.
+
+    The key is the parent of the discovered `.env` file — the directory that
+    actually owns the file — not the invocation directory. A non-Git project
+    has no `ProjectContext.project_root`, so keying on `user_cwd` would miss
+    the ancestor `.env` that `_find_dotenv_from_start_path` walks up to; keying
+    on the file's parent makes "never load" follow the file whether the launch
+    is from its own directory or a subdirectory.
+
+    Args:
+        start_path: Directory to start `.env` discovery from; cwd when `None`.
+
+    Returns:
+        The canonical key for the discovered `.env`, or `None` when no project
+        `.env` is present (nothing to skip).
+    """
+    from deepagents_code.config import _find_dotenv_from_start_path
+
+    try:
+        dotenv_path = _find_dotenv_from_start_path(
+            Path(start_path) if start_path is not None else Path.cwd()
+        )
+    except OSError:
+        logger.debug("Could not locate a project .env for the skip key")
+        return None
+    if dotenv_path is None:
+        return None
+    return _project_key(dotenv_path.parent)
+
+
 def _store_lock_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.lock")
 
@@ -218,14 +249,15 @@ def is_project_dotenv_skipped(
     *,
     store_path: Path | None = None,
 ) -> bool:
-    """Return whether the project `.env` is skipped for a canonical project root.
+    """Return whether the project `.env` is skipped for a canonical key.
 
     Args:
-        project_root: Project root to inspect.
+        project_root: The skip key to inspect — the parent directory of the
+            discovered `.env` (see `skip_key_for_start_path`).
         store_path: Alternate store path for tests.
 
     Returns:
-        `True` when the canonical project root is in the skip store.
+        `True` when the key is in the skip store.
     """
     path = store_path or _default_store_path()
     store = _load_store(path)

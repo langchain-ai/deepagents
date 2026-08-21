@@ -310,6 +310,24 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     return None
 
 
+def _dotenv_skip_key(start_path: Path | None) -> str | None:
+    """Resolve the persisted skip-store key for the `.env` found from a path.
+
+    Thin wrapper over `dotenv_skip.skip_key_for_start_path` so the loader and
+    the preview share one definition of which directory owns the discovered
+    `.env` (the file's parent, not the invocation directory).
+
+    Args:
+        start_path: Directory to start `.env` discovery from; cwd when `None`.
+
+    Returns:
+        The canonical key, or `None` when no project `.env` is present.
+    """
+    from deepagents_code.dotenv_skip import skip_key_for_start_path
+
+    return skip_key_for_start_path(start_path)
+
+
 # Global user-level .env (~/.deepagents/.env); sentinel when Path.home() fails.
 try:
     _GLOBAL_DOTENV_PATH = Path.home() / ".deepagents" / ".env"
@@ -368,7 +386,18 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
 
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
-    if resolve_read_project_dotenv():
+    read_project = resolve_read_project_dotenv()
+    # Mirror `_load_dotenv`: a persisted "never load" skip for this `.env` must
+    # keep the preview aligned with what a real reload would apply, or the
+    # cwd-switch prompt would report settings changes that never take effect.
+    if read_project:
+        from deepagents_code.dotenv_skip import is_project_dotenv_skipped
+
+        skip_key = _dotenv_skip_key(start_path)
+        if skip_key is not None and is_project_dotenv_skipped(skip_key):
+            read_project = False
+
+    if read_project:
         project_dotenv: Path | None = None
         try:
             project_dotenv = (
@@ -518,27 +547,19 @@ def _load_dotenv(
 
     # A persisted "never load in this project" decision (recorded by the
     # interactive opt-out prompt in `main._check_project_dotenv_trust`) is a
-    # second, independent skip source. It is keyed to the canonical project
-    # root, so it covers subdirectory launches too. Explicit
+    # second, independent skip source. The key is the discovered `.env`'s
+    # parent directory (see `skip_key_for_start_path`), so it follows the file
+    # whether the launch is from its directory or a subdirectory — including
+    # non-Git projects with no `ProjectContext.project_root`. Explicit
     # `read_project_dotenv=false` (above) still wins; this store only ever
     # skips, it never forces a load the option disabled.
     if read_project:
         from deepagents_code.dotenv_skip import is_project_dotenv_skipped
 
-        try:
-            from deepagents_code.project_utils import ProjectContext
-
-            ctx = ProjectContext.from_user_cwd(
-                Path(start_path) if start_path is not None else Path.cwd()
-            )
-            root = ctx.project_root or ctx.user_cwd
-            if is_project_dotenv_skipped(root):
-                logger.debug("Skipping project dotenv: %s is in the skip store", root)
-                read_project = False
-        except OSError:
-            # A root we cannot resolve cannot be matched against the store; fall
-            # back to the option's decision rather than skipping blindly.
-            logger.debug("Could not resolve project root for dotenv skip check")
+        skip_key = _dotenv_skip_key(start_path)
+        if skip_key is not None and is_project_dotenv_skipped(skip_key):
+            logger.debug("Skipping project dotenv: %s is in the skip store", skip_key)
+            read_project = False
 
     dotenv_path: Path | str | None = None
     if read_project:

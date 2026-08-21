@@ -382,7 +382,8 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
     Returns:
         Environment mapping with project and global dotenv values applied using
         the same first-write-wins precedence as `_load_dotenv`. The project
-        `.env` is skipped when `startup.read_project_dotenv` resolves false, so
+        `.env` is skipped when `startup.read_project_dotenv` resolves false or
+        when either skip store covers it (see `_project_dotenv_is_skipped`), so
         a preview never reports a value a real reload would not load.
     """
     import dotenv

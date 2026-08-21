@@ -810,9 +810,9 @@ class TestReloadFromEnvironment:
     ) -> None:
         """Preview honors a persisted skip, matching the runtime loader.
 
-        Otherwise `/reload` would preview settings from a project `.env` that
-        the confirmed reload then omits (and tracing diagnostics would report
-        configuration startup never loaded).
+        The cwd-switch confirmation prompt is the only caller of
+        `preview_reload_from_environment`. Without this, it would preview
+        settings from a project `.env` that the confirmed reload then omits.
         """
         from deepagents_code.config import _preview_dotenv_environ
         from deepagents_code.dotenv_skip import skip_project_dotenv

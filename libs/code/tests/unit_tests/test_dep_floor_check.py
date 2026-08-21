@@ -904,7 +904,7 @@ class TestCliMainChannel:
     @pytest.fixture
     def channels(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
         """Count which channel `cli_main` reaches, without running either."""
-        calls = {"prompt": 0, "warn": 0}
+        calls = {"prompt": 0, "warn": 0, "dotenv_prompt": 0}
 
         def _prompt() -> None:
             """Stand in for the prompt, always choosing to continue."""
@@ -917,6 +917,14 @@ class TestCliMainChannel:
         monkeypatch.setattr(dep_floor_check, "warn_if_editable_deps_stale", _warn)
         monkeypatch.setattr(main_module, "check_cli_dependencies", lambda: None)
         monkeypatch.setattr(main_module, "apply_stdin_pipe", lambda _args: None)
+        # The `.env` opt-out prompt shares this gate and runs earlier. Left
+        # live, it prompts for real on any machine with a `.env` above the
+        # test's cwd and fails these tests on captured stderr.
+        monkeypatch.setattr(
+            main_module,
+            "_check_project_dotenv_trust",
+            lambda: calls.__setitem__("dotenv_prompt", calls["dotenv_prompt"] + 1),
+        )
         return calls
 
     def _run_cli_main(
@@ -943,7 +951,7 @@ class TestCliMainChannel:
         self, monkeypatch: pytest.MonkeyPatch, channels: dict[str, int]
     ) -> None:
         self._run_cli_main(monkeypatch, [], tty=True)
-        assert channels == {"prompt": 1, "warn": 0}
+        assert channels == {"prompt": 1, "warn": 0, "dotenv_prompt": 1}
 
     def test_piped_stdin_interactive_launch_warns_instead_of_prompting(
         self, monkeypatch: pytest.MonkeyPatch, channels: dict[str, int]
@@ -955,13 +963,13 @@ class TestCliMainChannel:
         is a pipe. Prompting would read EOF and abort the launch outright.
         """
         self._run_cli_main(monkeypatch, ["-m", "explain this"], tty=False)
-        assert channels == {"prompt": 0, "warn": 1}
+        assert channels == {"prompt": 0, "warn": 1, "dotenv_prompt": 0}
 
     def test_headless_launch_warns(
         self, monkeypatch: pytest.MonkeyPatch, channels: dict[str, int]
     ) -> None:
         self._run_cli_main(monkeypatch, ["-n", "summarize"], tty=True)
-        assert channels == {"prompt": 0, "warn": 1}
+        assert channels == {"prompt": 0, "warn": 1, "dotenv_prompt": 0}
 
 
 def test_dep_floor_prompt_escapes_dynamic_rich_markup(

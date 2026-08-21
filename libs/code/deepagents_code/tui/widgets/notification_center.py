@@ -713,12 +713,6 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
             # A reload-driven remount is racing the mount preload; fall out
             # and let the next toggle rebuild.
             return
-        # Flip state, disclosure glyph, and footer hint before the first
-        # await so the expanded hints render in the same frame as the pane
-        # opening instead of flickering in one repaint later.
-        self._settings_expanded = True
-        self._settings_row().set_expanded(True)
-        self._refresh_help()
         # Drop a stale group that a `reload()` rebuild or an interrupted
         # collapse left mounted, so the mount below cannot raise
         # `DuplicateIds` on `#nc-settings-group`.
@@ -730,9 +724,8 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
             # background read finishes.
             await self._settings_preloaded.wait()
             # A rapid Esc while the config read was in flight already
-            # dismissed or collapsed the screen; expanding further would
-            # raise or reopen a section the user already closed.
-            if not self.is_mounted or not self._settings_expanded:
+            # dismissed the screen; expanding a dead screen would raise.
+            if not self.is_mounted:
                 return
             if self._suppressed is None:
                 self._suppressed = set()
@@ -750,9 +743,25 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         ]
         await group.mount(*checkboxes)
 
+        # Flip state, glyph, and footer hint together with the focus handoff
+        # so the expanded section renders complete in one frame. A paint
+        # between the mount above and here would otherwise show the pane
+        # open with no selected item (the footer hint switches with the
+        # same refresh, so it never flashes its collapsed verbs either).
+        self._settings_expanded = True
+        self._settings_row().set_expanded(True)
+        self._refresh_help()
         self._set_selected(len(self._rows) - 1)
         if checkboxes:
-            checkboxes[0].focus()
+            first = checkboxes[0]
+            if first.is_attached:
+                # `Widget.focus()` defers via `app.call_later` and refreshes
+                # twice, so the pane would paint open with nothing focused
+                # before the focused checkbox styles in; setting focus on
+                # the screen applies in this same turn.
+                self.set_focus(first)
+            else:
+                first.call_after_refresh(first.focus)
         self._settings_row().scroll_visible()
 
     async def _collapse_settings(self) -> None:

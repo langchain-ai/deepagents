@@ -76,28 +76,6 @@ async def test_help_footer_documents_both_toggle_keys_when_expanded() -> None:
         assert "Esc collapse" in help_text
 
 
-async def test_expand_shows_toggle_hint_before_checkboxes_mount() -> None:
-    """The footer must not wait on the checkbox mount to show the toggle verb.
-
-    `_refresh_help()` runs before the first mount await in
-    `_expand_settings`, so by the time the pane's expansion settles the
-    footer already reads "Space/Enter toggle" instead of switching verbs a
-    repaint later.
-    """
-    app = _NotificationSettingsHost()
-    async with app.run_test() as pilot:
-        screen = NotificationCenterScreen([], suppressed=set())
-        await app.push_screen(screen)
-        await pilot.pause()
-        await pilot.press("enter")
-
-        help_text = str(screen.query_one(".nc-help", Static).content)
-        assert "Space/Enter toggle" in help_text
-
-        await pilot.pause()
-        assert screen.query(Checkbox)
-
-
 async def test_settings_row_leading_glyph_marks_expanded_state() -> None:
     """The disclosure affordance lives in the leading glyph, not a suffix."""
     glyphs = get_glyphs()

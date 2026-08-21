@@ -7,6 +7,29 @@ from pathlib import Path
 from typing import Any
 
 
+@dataclass(frozen=True, slots=True)
+class Found[T]:
+    """A provider declared a value and coerced it successfully."""
+
+    value: T
+
+
+@dataclass(frozen=True, slots=True)
+class Unset:
+    """A provider made no declaration for an option."""
+
+
+@dataclass(frozen=True, slots=True)
+class Invalid:
+    """A provider declared a value that its input domain could not coerce."""
+
+    reason: str
+
+
+type ProviderResult[T] = Found[T] | Unset | Invalid
+"""Complete result of reading one option from one provider."""
+
+
 class ProviderHealth(StrEnum):
     """Health of one configuration source."""
 

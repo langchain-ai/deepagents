@@ -5,18 +5,22 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from rich.cells import cell_len
 from rich.segment import Segment
+from rich.style import Style
+from rich.text import Text
 from textual.app import NoScreen
 from textual.color import Color
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.geometry import Offset, Size
+from textual.highlight import highlight
 from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
@@ -606,6 +610,128 @@ class ChatTextArea(PasteBurstTextArea):
         # `_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS`.
         self._app_blurred = False
         self._refocus_time: float | None = None
+        self._shell_highlighting = False
+        self._highlighted_source = ""
+        self._highlighted_lines: list[Content] | None = None
+
+    def set_shell_highlighting(self, *, enabled: bool) -> None:
+        """Enable or disable shell syntax highlighting for this text area.
+
+        Args:
+            enabled: Whether to style input as shell syntax.
+        """
+        if self._shell_highlighting == enabled:
+            return
+        self._shell_highlighting = enabled
+        self._highlighted_source = ""
+        self._highlighted_lines = None
+        self._line_cache.clear()
+        self.refresh()
+
+    def _render_line(self, y: int) -> Strip:
+        """Render a line, keeping shell token colors visible on the cursor line.
+
+        `TextArea._render_line` stylizes the whole cursor line with
+        `theme.cursor_line_style`, which under the default `css` theme resolves
+        to a style carrying the widget's text color. That foreground is painted
+        after (and on top of) the shell syntax spans produced by `get_line`,
+        flattening every token on the cursor line to a single color. Clear just
+        the foreground while shell highlighting is active so the cursor-line
+        background tint - and any text styles such as bold - still apply over
+        the token colors.
+
+        Mutating the theme in place is safe because `TextArea._set_theme` keeps
+        a per-widget copy (`dataclasses.replace`), so this never touches the
+        shared builtin theme or another `TextArea`. Rendering is synchronous
+        and `apply_css` runs outside this window, so the `finally` restore is
+        sufficient.
+
+        Args:
+            y: Y coordinate of the line relative to the widget region.
+
+        Returns:
+            The rendered line.
+        """
+        theme = self._theme
+        cursor_line_style = theme.cursor_line_style if theme else None
+        if (
+            not self._shell_highlighting
+            or cursor_line_style is None
+            or cursor_line_style.color is None
+        ):
+            return super()._render_line(y)
+
+        # Restore on the exception path too; otherwise the widget keeps a
+        # foreground-less cursor line for the rest of the session.
+        theme.cursor_line_style = cursor_line_style.without_color + Style(
+            bgcolor=cursor_line_style.bgcolor
+        )
+        try:
+            return super()._render_line(y)
+        finally:
+            theme.cursor_line_style = cursor_line_style
+
+    def get_line(self, line_index: int) -> Text:
+        """Return one input line, with shell syntax styles when enabled.
+
+        Args:
+            line_index: Index of the line to return.
+
+        Returns:
+            The line as Rich text, styled per shell token when highlighting is
+            active. Falls back to the unstyled base implementation if
+            highlighting fails, so the text shown always matches the document.
+        """
+        if not self._shell_highlighting:
+            return super().get_line(line_index)
+
+        source = self.text
+        lines = self._highlighted_lines
+        if lines is None or source != self._highlighted_source:
+            language = "batch" if sys.platform == "win32" else "sh"
+            try:
+                # `tab_size=1` keeps span offsets aligned with the document's
+                # raw character offsets: Pygments expands tabs (default 8),
+                # while `_render_line` does its own tab expansion downstream.
+                highlighted = highlight(source, language=language, tab_size=1)
+                lines = list(highlighted.split("\n", allow_blank=True))
+            except Exception:
+                # This runs inside the render loop, where an uncaught exception
+                # tears down the whole app. Degrade to unhighlighted text and
+                # stop retrying every frame.
+                logger.exception(
+                    "Shell highlighting failed for a %d-character draft; "
+                    "falling back to unhighlighted text",
+                    len(source),
+                )
+                self._shell_highlighting = False
+                self._highlighted_source = ""
+                self._highlighted_lines = None
+                return super().get_line(line_index)
+            # `highlight()` normalizes via `"\n".join(code.splitlines())`, which
+            # drops the trailing empty line that `Document` keeps. Pad so line
+            # indices stay in step with the document.
+            lines.extend([Content("")] * max(0, self.document.line_count - len(lines)))
+            # Only commit the cache marker once both fallible steps succeeded;
+            # advancing it earlier would serve the previous draft's lines
+            # forever on the cache-hit path.
+            self._highlighted_source = source
+            self._highlighted_lines = lines
+
+        if not 0 <= line_index < len(lines):
+            logger.warning(
+                "Shell highlight covers %d lines, not line %d (document has "
+                "%d); rendering it unhighlighted",
+                len(lines),
+                line_index,
+                self.document.line_count,
+            )
+            return super().get_line(line_index)
+
+        line = Text(end="", no_wrap=True)
+        for segment in lines[line_index].render_segments(self.visual_style):
+            line.append(segment.text, segment.style)
+        return line
 
     def render_line(self, y: int) -> Strip:
         """Render a single line, appending any argument hint at line end.
@@ -2234,6 +2360,9 @@ class ChatInput(Vertical):
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
         self._text_area._chat_input_owner = self
+        self._text_area.set_shell_highlighting(
+            enabled=self.mode in {"shell", "shell_incognito"}
+        )
 
         # Both controllers implement the CompletionController protocol but have
         # different concrete types; the list-item warning is a false positive.
@@ -2259,8 +2388,13 @@ class ChatInput(Vertical):
             self._refresh_file_cache,
         )
         self.call_after_refresh(self._sync_resize_handle_geometry)
+        self.watch(self.app, "theme", self._on_theme_change, init=False)
         self._sync_resize_handle_color()
         self._text_area.focus()
+
+    def _on_theme_change(self) -> None:
+        """Recolor the resize handle when the app theme changes."""
+        self._sync_resize_handle_color()
 
     def _sync_resize_handle_geometry(self) -> None:
         """Inset the resize handle so border corners remain visible."""
@@ -3390,6 +3524,10 @@ class ChatInput(Vertical):
         # Keep inline argument hints in sync for mode-only transitions
         # (for example, exiting command mode via Escape or backspace).
         self._update_argument_hint()
+        if self._text_area is not None:
+            self._text_area.set_shell_highlighting(
+                enabled=mode in {"shell", "shell_incognito"}
+            )
 
         glyph = MODE_DISPLAY_GLYPHS.get(mode)
         if not glyph and mode != "normal":

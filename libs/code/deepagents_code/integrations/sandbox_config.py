@@ -120,13 +120,17 @@ class SandboxConfig:
             Parsed `SandboxConfig`. A missing user file yields managed values
                 alone. An unreadable or invalid user file is reported through
                 `parse_error`, and managed values still apply.
+
+        Raises:
+            RuntimeError: If required sandbox options are missing from the manifest.
         """
         is_default = config_path is None
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
 
+        from deepagents_code.config_manifest import get_option, resolve_ranked_scalar
         from deepagents_code.configuration.service import get_config_sources
-        from deepagents_code.configuration.types import ProviderHealth
+        from deepagents_code.configuration.types import Invalid, ProviderHealth
 
         # `None` on the default path: that is what includes managed policy.
         sources = get_config_sources(user_path=None if is_default else config_path)
@@ -153,22 +157,54 @@ class SandboxConfig:
                 sources.managed.status.path,
                 dropped,
             )
-        data, _ = sources.merged()
-        section = data.get("sandboxes", {})
+        section = (
+            sources.managed.data.get("sandboxes")
+            if "sandboxes" in sources.managed.data
+            else sources.user.data.get("sandboxes", {})
+        )
         if not isinstance(section, dict):
             logger.warning("[sandboxes] is not a table; ignoring sandbox config")
             return cls(parse_error=parse_error or "[sandboxes] is not a table")
 
-        providers = section.get("providers", {})
-        if not isinstance(providers, dict):
+        default_option = get_option("sandboxes.default")
+        providers_option = get_option("sandboxes.providers")
+        if default_option is None or providers_option is None:
+            msg = "sandbox options are missing from the config manifest"
+            raise RuntimeError(msg)
+        default = resolve_ranked_scalar(
+            default_option,
+            toml_data=sources.user.data,
+            managed_toml_data=sources.managed.data,
+            managed_status=sources.managed.status,
+            user_status=sources.user.status,
+        ).value
+        providers_resolved = resolve_ranked_scalar(
+            providers_option,
+            toml_data=sources.user.data,
+            managed_toml_data=sources.managed.data,
+            managed_status=sources.managed.status,
+            user_status=sources.user.status,
+        )
+        providers = providers_resolved.value
+        if providers is None:
+            if any(
+                isinstance(result, Invalid)
+                for result in providers_resolved.tier_health.values()
+            ):
+                logger.warning(
+                    "[sandboxes.providers] is not a table; ignoring sandbox providers"
+                )
+            providers = {}
+        elif not isinstance(providers, dict):
             logger.warning(
                 "[sandboxes.providers] is not a table; ignoring sandbox providers"
             )
             providers = {}
+        provider_table = cast("dict[str, Any]", providers)
 
         config = cls(
-            default=section.get("default"),
-            providers=_normalize_provider_configs(providers),
+            default=default if isinstance(default, str) else None,
+            providers=_normalize_provider_configs(provider_table),
             parse_error=parse_error,
         )
         config._validate()

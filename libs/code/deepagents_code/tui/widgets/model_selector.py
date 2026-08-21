@@ -1330,7 +1330,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         # Resolve friendly provider labels via the shared helper so headers
         # match the `/auth` and install UIs (e.g. `openai_codex` renders as
-        # "OpenAI Codex (ChatGPT login)"). Load config once; the helper reads a
+        # "OpenAI (Subscription login)"). Load config once; the helper reads a
         # user-configured `display_name` before the built-in map.
         from deepagents_code.tui.widgets.auth import provider_display_name
 

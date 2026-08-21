@@ -1109,7 +1109,6 @@ if TYPE_CHECKING:
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
         NotificationActionRequested,
-        NotificationSettingsRequested,
         NotificationSuppressRequested,
     )
     from deepagents_code.tui.widgets.restart_prompt import RestartChoice
@@ -9476,9 +9475,9 @@ class DeepAgentsApp(App):
         Deliberately synchronous. Callers warn *before* awaiting anything, so
         that a cancellation or a raise downstream can never land between "YOLO
         is live" and "the user was told". Offloading the small config read to
-        a thread (as `_show_notification_settings` does) would reopen exactly
-        that window. An unreadable or malformed config fails open: when
-        suppression cannot be determined, the warning still fires.
+        a thread (as the notification hub's settings load does) would reopen
+        exactly that window. An unreadable or malformed config fails open:
+        when suppression cannot be determined, the warning still fires.
 
         Args:
             timeout: Seconds the toast stays on screen.
@@ -20795,9 +20794,6 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
         from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
         from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
-        from deepagents_code.tui.widgets.notification_settings import (
-            NotificationSettingsScreen,
-        )
         from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
@@ -20810,8 +20806,8 @@ class DeepAgentsApp(App):
         ):
             self.screen.action_cursor_up()
             return
-        if isinstance(self.screen, (AuthPromptScreen, NotificationSettingsScreen)):
-            # These modals hold multiple focusable inputs; reuse shift+tab to
+        if isinstance(self.screen, AuthPromptScreen):
+            # This modal holds multiple focusable inputs; reuse shift+tab to
             # step focus backward (the Screen's own app.focus_previous binding
             # never fires because this priority binding consumes the key first).
             self.screen.focus_previous()
@@ -23012,37 +23008,6 @@ class DeepAgentsApp(App):
                 except Exception:
                     logger.exception("Failed to restore pending goal review")
 
-    async def _show_notification_settings(self) -> None:
-        """Show notification settings over the current notification surface."""
-        from deepagents_code.model_config import is_warning_suppressed
-        from deepagents_code.tui.widgets.notification_settings import (
-            WARNING_TOGGLES,
-            NotificationSettingsScreen,
-        )
-
-        return_to_modal = isinstance(self.screen, ModalScreen)
-        suppressed: set[str] = set()
-        try:
-            for key, _ in WARNING_TOGGLES:
-                if await asyncio.to_thread(is_warning_suppressed, key):
-                    suppressed.add(key)
-        except Exception:
-            logger.warning("Failed to read notification settings", exc_info=True)
-            suppressed = set()
-            self.notify(
-                "Could not read notification preferences. Showing defaults.",
-                severity="warning",
-                timeout=6,
-                markup=False,
-            )
-
-        def handle_result(_result: None) -> None:
-            if not return_to_modal and self._chat_input:
-                self._chat_input.focus_input()
-
-        screen = NotificationSettingsScreen(suppressed=suppressed)
-        self.push_screen(screen, handle_result)
-
     def _notify_actionable(
         self,
         notification: PendingNotification,
@@ -23449,14 +23414,6 @@ class DeepAgentsApp(App):
             self._unnotify(notif, refresh=False)
             self._notice_registry.unbind_toast(notif.identity)
         self._refresh_notifications()
-
-    async def on_notification_settings_requested(
-        self,
-        message: NotificationSettingsRequested,
-    ) -> None:
-        """Open warning preferences without dismissing the notification hub."""
-        message.stop()
-        await self._show_notification_settings()
 
     async def on_notification_suppress_requested(
         self,

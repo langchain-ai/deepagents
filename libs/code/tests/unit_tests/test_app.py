@@ -25816,13 +25816,12 @@ class TestNotificationCenterIntegration:
 
             assert isinstance(app.screen, NotificationCenterScreen)
 
-    async def test_notification_hub_opens_settings_and_returns_to_hub(self) -> None:
-        """Preferences stack over the hub and Esc returns to pending notices."""
+    async def test_notification_hub_expands_settings_inline(self) -> None:
+        """Preferences expand inside the hub; Esc collapses back to the list."""
+        from textual.widgets import Checkbox
+
         from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
-        )
-        from deepagents_code.tui.widgets.notification_settings import (
-            NotificationSettingsScreen,
         )
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
@@ -25837,11 +25836,14 @@ class TestNotificationCenterIntegration:
             await pilot.press("enter")
             await pilot.pause()
             await pilot.pause()
-            assert isinstance(app.screen, NotificationSettingsScreen)
+            assert app.screen is center
+            assert center.settings_expanded
+            assert len(center.query(Checkbox)) > 0
 
             await pilot.press("escape")
             await pilot.pause()
             assert app.screen is center
+            assert not center.settings_expanded
 
     async def test_ctrl_n_over_modal_toasts_close_hint(self) -> None:
         """ctrl+n while a modal is open surfaces a hint instead of stacking."""

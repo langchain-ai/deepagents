@@ -825,6 +825,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         )
     )
     sub_agent_middleware: SubAgentMiddleware | None = None
+    async_subagent_middleware: AsyncSubAgentMiddleware | None = None
     if inline_subagents:
         sub_agent_middleware = SubAgentMiddleware(
             backend=backend,
@@ -848,7 +849,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if async_subagents:
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
+        async_subagent_middleware = AsyncSubAgentMiddleware(async_subagents=async_subagents)
+        deepagent_middleware.append(async_subagent_middleware)
 
     # Names of the core stack, captured before the tail is appended so new user
     # middleware can splice in ahead of the profile/prompt-caching/memory tail.
@@ -896,6 +898,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     private_state_keys = private_state_field_names(*state_schemas)
     if sub_agent_middleware is not None:
         sub_agent_middleware.private_state_keys = private_state_keys
+    if async_subagent_middleware is not None:
+        async_subagent_middleware.private_state_keys = private_state_keys
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale

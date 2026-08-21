@@ -26,6 +26,7 @@ from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendProtocol
+from deepagents.middleware._state import prepare_subagent_state
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemPermission
 
@@ -249,24 +250,8 @@ DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user as
 The calling agent only sees your final assistant message, not your intermediate work, tool results, or status tracking. Ensure your final
 response contains the complete answer."""
 
-_EXCLUDED_STATE_KEYS = {
-    "messages",
-    "todos",
-    "structured_response",
-}
-"""State keys that are excluded when passing state to subagents and when
-returning updates from subagents.
 
-When returning updates:
 
-1. The messages key is handled explicitly to ensure only the final message
-    is included
-2. The todos and `structured_response` keys are excluded as they do not have
-    a defined reducer and no clear meaning for returning them from a subagent
-    to the main agent.
-3. Agent-private fields on middleware state schemas are excluded from both
-    subagent output and subagent inputs.
-"""
 
 
 class TaskToolSchema(BaseModel):
@@ -481,7 +466,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             )
             raise ValueError(error_msg)
 
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
+        state_update = prepare_subagent_state(result, private_state_keys=private_state_keys)
 
         structured = result.get("structured_response")
         if structured is not None:
@@ -534,8 +519,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         """Prepare state for invocation."""
         subagent = _select_subagent(subagent_type, runtime)
         # Create a new state dict to avoid mutating the original
-        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
-        subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
+        subagent_state = prepare_subagent_state(runtime.state, private_state_keys=private_state_keys)
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 

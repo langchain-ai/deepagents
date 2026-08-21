@@ -3,9 +3,50 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Annotated, get_args, get_origin, get_type_hints
 
 from langchain.agents.middleware.types import PrivateStateAttr
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from typing import Any
+
+
+_EXCLUDED_STATE_KEYS = {
+    "messages",
+    "todos",
+    "structured_response",
+    "async_tasks",
+}
+"""State keys that are excluded when passing state to subagents and when
+returning updates from subagents.
+
+When returning updates:
+
+1. The messages key is handled explicitly to ensure only the final message
+    is included
+2. The todos and `structured_response` keys are excluded as they do not have
+    a defined reducer and no clear meaning for returning them from a subagent
+    to the main agent.
+3. Agent-private fields on middleware state schemas are excluded from both
+    subagent output and subagent inputs.
+"""
+
+
+
+def prepare_subagent_state(
+    state: Mapping[str, Any],
+    *,
+    private_state_keys: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Copy the public portion of parent state for a child subagent.
+
+    Callers must supply the child-specific `messages` value after this helper
+    returns. This allows synchronous and remote subagents to use their native
+    message representations while sharing the same visibility policy.
+    """
+    excluded_keys = _EXCLUDED_STATE_KEYS | private_state_keys
+    return {key: value for key, value in state.items() if key not in excluded_keys}
 
 logger = logging.getLogger(__name__)
 

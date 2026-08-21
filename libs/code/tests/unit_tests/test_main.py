@@ -20,6 +20,7 @@ from rich.console import Console
 if TYPE_CHECKING:
     from prompt_toolkit.layout import Layout
 
+from deepagents_code import main as main_module
 from deepagents_code._env_vars import (
     DEBUG,
     EXPERIMENTAL,
@@ -47,6 +48,8 @@ from deepagents_code.main import (
     _run_startup_auto_update,
     _should_check_teardown_thread,
     _terminal_row_count,
+    _TrustAction,
+    _TrustPromptOutcome,
     build_missing_tool_notification,
     check_optional_tools,
     cli_main,
@@ -151,6 +154,187 @@ def test_project_dotenv_prompt_honors_global_opt_out() -> None:
 
     resolver.assert_called_once_with(global_dotenv=global_toggle)
     select.assert_not_called()
+
+
+class TestCheckProjectDotenvTrust:
+    """Branches of the advisory project `.env` opt-out prompt."""
+
+    @pytest.fixture
+    def project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> Iterator[Path]:
+        """A cwd holding a `.env`, an isolated store, and a live terminal."""
+        from deepagents_code import dotenv_skip
+
+        (tmp_path / ".env").write_text("PROJECT_KEY=value\n", encoding="utf-8")
+        store = tmp_path / "state" / "dotenv_skip.json"
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(dotenv_skip, "_default_store_path", lambda: store)
+        monkeypatch.setattr(main_module, "_trust_picker_has_terminal", lambda: True)
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda **_kwargs: True,
+        )
+        skipped = set(dotenv_skip._SESSION_SKIPPED_PROJECTS)
+        try:
+            yield tmp_path
+        finally:
+            # The session skip lives in a module-global set; do not leak it.
+            dotenv_skip._SESSION_SKIPPED_PROJECTS.clear()
+            dotenv_skip._SESSION_SKIPPED_PROJECTS.update(skipped)
+
+    @staticmethod
+    def _answer(monkeypatch: pytest.MonkeyPatch, action: object) -> MagicMock:
+        """Make the prompt return `action` and report whether it was shown."""
+        select = MagicMock(return_value=action)
+        monkeypatch.setattr(main_module, "_select_trust_action", select)
+        return select
+
+    @staticmethod
+    def _session_skipped(project: Path) -> bool:
+        from deepagents_code.dotenv_skip import is_project_dotenv_skipped_for_session
+
+        return is_project_dotenv_skipped_for_session(project)
+
+    def test_no_terminal_does_not_prompt(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A launch with no TTY loads the file rather than blocking on input."""
+        monkeypatch.setattr(main_module, "_trust_picker_has_terminal", lambda: False)
+        select = self._answer(monkeypatch, _TrustAction.DENY)
+
+        main_module._check_project_dotenv_trust()
+
+        select.assert_not_called()
+        assert not self._session_skipped(project)
+
+    def test_project_without_a_dotenv_does_not_prompt(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nothing to opt out of means no prompt."""
+        empty = project / "empty"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        (project / ".env").unlink()
+        select = self._answer(monkeypatch, _TrustAction.DENY)
+
+        main_module._check_project_dotenv_trust()
+
+        select.assert_not_called()
+
+    def test_remembered_skip_applies_without_prompting(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A persisted decision is applied silently, not re-asked."""
+        from deepagents_code.dotenv_skip import skip_project_dotenv
+
+        assert skip_project_dotenv(project)
+        select = self._answer(monkeypatch, _TrustAction.ALLOW_ONCE)
+
+        main_module._check_project_dotenv_trust()
+
+        select.assert_not_called()
+        assert self._session_skipped(project)
+
+    def test_enter_loads_the_file(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ALLOW_ONCE keeps the historical behavior: the `.env` still loads."""
+        self._answer(monkeypatch, _TrustAction.ALLOW_ONCE)
+
+        main_module._check_project_dotenv_trust()
+
+        assert not self._session_skipped(project)
+
+    @pytest.mark.parametrize(
+        "action",
+        [_TrustAction.DENY, _TrustPromptOutcome.CANCELLED],
+        ids=["deny", "escape"],
+    )
+    def test_refusing_skips_for_the_session(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch, action: object
+    ) -> None:
+        """Esc/Ctrl+D must refuse like an explicit deny, not silently consent.
+
+        The picker advertises "Esc/Ctrl+D abort", so treating CANCELLED as a
+        decision to load would make that hint a lie.
+        """
+        self._answer(monkeypatch, action)
+
+        main_module._check_project_dotenv_trust()
+
+        assert self._session_skipped(project)
+
+    def test_interrupt_aborts_the_launch(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+C exits 130 like every sibling prompt, never loading the file."""
+        self._answer(monkeypatch, _TrustPromptOutcome.INTERRUPTED)
+
+        with pytest.raises(SystemExit) as exc:
+            main_module._check_project_dotenv_trust()
+
+        assert exc.value.code == 130
+        assert not self._session_skipped(project)
+
+    def test_remember_persists_and_skips_this_session(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A remembered skip applies now and survives into the next launch."""
+        from deepagents_code.dotenv_skip import is_project_dotenv_skipped
+
+        self._answer(monkeypatch, _TrustAction.REMEMBER)
+
+        main_module._check_project_dotenv_trust()
+
+        assert is_project_dotenv_skipped(project)
+        assert self._session_skipped(project)
+
+    def test_failed_remember_falls_back_to_the_session(
+        self,
+        project: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An unwritable store must not be reported as a remembered decision."""
+        from deepagents_code import dotenv_skip
+
+        self._answer(monkeypatch, _TrustAction.REMEMBER)
+        monkeypatch.setattr(dotenv_skip, "skip_project_dotenv", lambda *_a, **_k: False)
+
+        main_module._check_project_dotenv_trust()
+
+        assert "could not be remembered" in capsys.readouterr().err
+        assert self._session_skipped(project)
+
+    def test_prompt_neutralizes_escapes_in_the_dotenv_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A crafted directory name cannot spoof which `.env` is described."""
+        from deepagents_code import dotenv_skip
+
+        hostile = tmp_path / "repo\x1b[2Kspoofed"
+        hostile.mkdir()
+        (hostile / ".env").write_text("K=v\n", encoding="utf-8")
+        monkeypatch.chdir(hostile)
+        monkeypatch.setattr(
+            dotenv_skip,
+            "_default_store_path",
+            lambda: tmp_path / "state" / "dotenv_skip.json",
+        )
+        monkeypatch.setattr(main_module, "_trust_picker_has_terminal", lambda: True)
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda **_kwargs: True,
+        )
+        self._answer(monkeypatch, _TrustAction.ALLOW_ONCE)
+
+        main_module._check_project_dotenv_trust()
+
+        assert "\x1b" not in capsys.readouterr().err
 
 
 class TestStartupAutoUpdate:

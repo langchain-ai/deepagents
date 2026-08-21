@@ -3491,9 +3491,25 @@ def _run_trust_action_picker(
     # Highlight the default action by identity, not position: `deny_first`
     # reorders the list, so a positional index would silently default to the
     # wrong action for exactly the callers that changed the ordering.
-    selected_index = next(
-        index for index, (action, _) in enumerate(actions) if action is default_action
+    default_index = next(
+        (
+            index
+            for index, (action, _) in enumerate(actions)
+            if action is default_action
+        ),
+        -1,
     )
+    if default_index < 0:
+        # A caller asked for a default that is not offered (REFRESH without a
+        # `refresh_label`, say). Highlight the first row instead of letting a
+        # bare `next()` raise StopIteration out of a pre-TUI prompt.
+        logger.warning(
+            "Trust picker default %r is not an offered action; highlighting %r",
+            default_action,
+            actions[0][0],
+        )
+        default_index = 0
+    selected_index = default_index
 
     def _rows() -> FormattedText:
         rows: list[tuple[str, str]] = [
@@ -4295,16 +4311,19 @@ _PROJECT_DOTENV_SKIP_ALWAYS_LABEL = "Never load .env in this project"
 def _check_project_dotenv_trust() -> None:
     """Offer an interactive opt-out from loading the project `.env`.
 
-    Advisory only: the default action (Enter, Esc, Ctrl+C) loads the file,
-    preserving current behavior. "Skip" answers reduce trust for this session
-    or persistently. Runs before the settings bootstrap (which loads the
-    project `.env`) so the decision takes effect on the current launch.
+    Advisory by default: a bare Enter loads the file, preserving current
+    behavior. Every other non-answer refuses rather than consents — Esc and
+    Ctrl+D skip the file for this session, and Ctrl+C exits the process with
+    status 130. Runs before the settings bootstrap (which loads the project
+    `.env`) so the decision takes effect on the current launch.
 
-    No-op unless the launch is an interactive TUI with a terminal, a project
-    `.env` is present, and the directory is not already governed by the
-    `read_project_dotenv` opt-out (#5726) or the persisted skip store.
-    Non-interactive/headless launches load the file normally (they set the
-    explicit `read_project_dotenv=false` flag to suppress it).
+    Prompts only when this process has a terminal, a project `.env` is present,
+    and the file is not already governed by the `read_project_dotenv` opt-out
+    or the skip store. When the store already covers the `.env`, applies the
+    skip silently instead of prompting. Whether the launch is an interactive
+    TUI is the caller's decision (see `_is_interactive_tui_launch`); headless
+    launches never reach here, and suppressing the file there requires the
+    explicit `read_project_dotenv=false` flag.
     """
     # Only the interactive TUI can answer a prompt; everything else loads the
     # file. Piped-stdin launches mount the TUI but have no TTY for the picker
@@ -4382,9 +4401,15 @@ def _check_project_dotenv_trust() -> None:
         deny_label=_PROJECT_DOTENV_SKIP_SESSION_LABEL,
         default_action=_TrustAction.ALLOW_ONCE,
     )
-    # ALLOW_ONCE (Enter/Esc) loads the file: do nothing. CANCELLED (Ctrl+D in
-    # the picker) also loads — the prompt is advisory, never a gate.
-    if action is _TrustAction.DENY:
+    # Ctrl+C aborts like every sibling prompt: an interrupt must never be read
+    # as consent to load an untrusted file. CANCELLED (Esc/Ctrl+D in the picker)
+    # skips for the session, which is what the picker's own "abort" hint
+    # promises. Only ALLOW_ONCE — a bare Enter or an explicit "y" — loads, so
+    # the prompt stays advisory for anyone who just presses Enter.
+    if action is _TrustPromptOutcome.INTERRUPTED:
+        prompt_console.print("[dim]Aborted.[/dim]", highlight=False)
+        sys.exit(130)
+    if action in {_TrustAction.DENY, _TrustPromptOutcome.CANCELLED}:
         prompt_console.print(
             "[dim]Skipping the project .env for this session.[/dim]",
             highlight=False,
@@ -4763,18 +4788,27 @@ def cli_main() -> None:
                 exc_info=True,
             )
 
-        # Advisory `.env` opt-out prompt. Runs before the settings import below
-        # (which loads the project `.env`) so the decision applies to this
-        # launch. Gated to the interactive TUI like the dep-floor prompt: a
-        # piped-stdin launch mounts the TUI but has no TTY for the picker, and
-        # headless/subcommand launches must never block — they load the file or
-        # suppress it via `read_project_dotenv=false`. The prompt's default
-        # action loads the file, so it can only ever reduce trust, never gate.
-        # `non_interactive_message` is not set on every argparse path (some
-        # subcommands and ACP omit it), so read it defensively here — this gate
-        # runs earlier than the dep-floor check that relies on it.
+        # Advisory `.env` opt-out prompt. It has to run before the settings
+        # import below, which loads the project `.env`, so the decision applies
+        # to this launch. That ordering puts it *ahead* of `apply_stdin_pipe`,
+        # so `non_interactive_message` is not final here: `cat x | dcode` still
+        # reads as an interactive TUI launch at this point.
+        # `_trust_picker_has_terminal()` is what actually excludes those
+        # launches, because piped stdin is not a TTY. Both conditions are
+        # load-bearing; neither alone is sufficient.
+        #
+        # Wrapped for the same reason as the state migration above: an advisory
+        # prompt must never take down a launch. `SystemExit` from a Ctrl+C abort
+        # is a BaseException and still propagates.
         if _is_interactive_tui_launch(args) and _trust_picker_has_terminal():
-            _check_project_dotenv_trust()
+            try:
+                _check_project_dotenv_trust()
+            except Exception:
+                logger.warning(
+                    "Could not run the project .env opt-out prompt; the file "
+                    "will load normally",
+                    exc_info=True,
+                )
 
         # Import console/settings AFTER arg parsing and after the bare-help
         # fast path so neither argparse's `--help`/`-h` exit nor
@@ -4927,9 +4961,9 @@ def cli_main() -> None:
         # Prompting there would find no TTY for the picker, read EOF from the
         # text fallback, and abort the launch outright — with no way to answer
         # the prompt and mute it. Those launches get the warning instead.
-        interactive_tui = (
-            not getattr(args, "command", None) and not args.non_interactive_message
-        )
+        # Same predicate as the `.env` prompt above, so the two pre-TUI gates
+        # cannot drift. Here `non_interactive_message` is already final.
+        interactive_tui = _is_interactive_tui_launch(args)
         if interactive_tui and _trust_picker_has_terminal():
             from deepagents_code._dep_floor_check import prompt_if_editable_deps_stale
 

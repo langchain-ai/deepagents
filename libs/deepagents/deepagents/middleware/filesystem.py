@@ -77,11 +77,13 @@ from deepagents.backends.utils import (
     validate_path,
 )
 from deepagents.middleware._message_eviction import (
-    TOO_LARGE_TOOL_MSG as TOO_LARGE_TOOL_MSG,
+    _TOO_LARGE_TOOL_MSG,
+    ContentPreview,
     _aoffload_tool_message_content,
     _create_content_preview,
     _extract_text_from_message,
     _offload_tool_message_content,
+    _render_preview_stub,
 )
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware._video import (
@@ -1494,11 +1496,11 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
 )
 
 
-TOO_LARGE_HUMAN_MSG = """Message content too large and was saved to the filesystem at: {file_path}
+_TOO_LARGE_HUMAN_MSG = """Message content too large and was saved to the filesystem at: {file_path}
 
 You can read the full content using the read_file tool with pagination (offset and limit parameters).
 
-Here is a preview showing the head and tail of the content:
+{preview_note}
 
 {content_sample}
 """
@@ -1544,10 +1546,11 @@ def _build_truncated_human_message(message: HumanMessage, file_path: str) -> Hum
         A new HumanMessage with truncated content and the same `id`.
     """
     content_str = _extract_text_from_message(message)
-    content_sample = _create_content_preview(content_str)
-    replacement_text = TOO_LARGE_HUMAN_MSG.format(
+    replacement_text = _render_preview_stub(
+        _TOO_LARGE_HUMAN_MSG,
+        _create_content_preview(content_str),
+        subject="content",
         file_path=file_path,
-        content_sample=content_sample,
     )
     evicted = _build_evicted_human_content(message, replacement_text)
     return message.model_copy(update={"content": evicted})
@@ -2816,10 +2819,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if response.truncated:
             status_line += "\n[Output exceeded the capture size limit and was truncated; the saved file is incomplete]"
         content_sample = f"{status_line}\n{response.output}"
-        return TOO_LARGE_TOOL_MSG.format(
+        return _render_preview_stub(
+            _TOO_LARGE_TOOL_MSG,
+            ContentPreview(content_sample, lines_omitted="lines truncated" in response.output),
             tool_call_id=tool_call_id,
             file_path=capture_path,
-            content_sample=content_sample,
         )
 
     def _create_execute_tool(self) -> BaseTool:  # noqa: C901

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import pytest
@@ -134,6 +135,66 @@ class TestSkillInvocationHistory:
 
         reloaded = HistoryManager(history_file)
         assert reloaded._entries == ["/skill:web-research find cats"]
+
+
+class TestRecentPrompts:
+    """Prompt snapshots refresh, deduplicate, and bound persisted history."""
+
+    def test_returns_newest_first_and_deduplicates(self, tmp_path: Path) -> None:
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text(
+            "".join(
+                json.dumps(entry) + "\n"
+                for entry in ("first", "duplicate", "second", "duplicate")
+            ),
+            encoding="utf-8",
+        )
+
+        mgr = HistoryManager(history_file)
+
+        assert mgr.recent_prompts() == ("duplicate", "second", "first")
+
+    def test_refreshes_concurrent_appends(self, tmp_path: Path) -> None:
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file)
+        mgr.add("first")
+        with history_file.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps("from another process") + "\n")
+
+        assert mgr.recent_prompts() == ("from another process", "first")
+        assert mgr.get_previous("") == "from another process"
+
+    def test_bounds_unique_entries_after_deduplication(self, tmp_path: Path) -> None:
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text(
+            "".join(
+                json.dumps(entry) + "\n"
+                for entry in ("old unique", "repeat", "new unique", "repeat")
+            ),
+            encoding="utf-8",
+        )
+
+        mgr = HistoryManager(history_file, max_entries=3)
+
+        assert mgr.recent_prompts() == ("repeat", "new unique", "old unique")
+
+    def test_preserves_malformed_line_fallback(self, tmp_path: Path) -> None:
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text('"valid"\nnot-json\n', encoding="utf-8")
+
+        mgr = HistoryManager(history_file)
+
+        assert mgr.recent_prompts() == ("not-json", "valid")
+
+    def test_includes_only_slash_commands_eligible_for_history(
+        self, tmp_path: Path
+    ) -> None:
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("regular prompt")
+        mgr.add("/help")
+        mgr.add("/skill:remember this")
+
+        assert mgr.recent_prompts() == ("/skill:remember this", "regular prompt")
 
 
 class TestSubstringMatch:

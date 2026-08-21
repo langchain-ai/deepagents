@@ -3615,6 +3615,25 @@ class ChatInput(Vertical):
         self._text_area.move_cursor_to_end()
         return True
 
+    def recent_prompts(self) -> tuple[str, ...]:
+        """Refresh and return submitted prompts in newest-first order.
+
+        Returns:
+            An immutable snapshot of recent unique prompts.
+        """
+        return self._history.recent_prompts()
+
+    def insert_at_cursor(self, text: str) -> bool:
+        """Insert text at the current cursor through the undoable edit path.
+
+        Returns:
+            Whether the text area was available for insertion.
+        """
+        if not self._text_area:
+            return False
+        self._text_area.insert(text)
+        return True
+
     def discard_text(self) -> bool:
         """Clear the draft, keeping it restorable via undo (ctrl+z).
 

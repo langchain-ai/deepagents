@@ -40567,3 +40567,183 @@ class TestColdCacheConfirmationBoundary:
         message = app.notify.call_args[0][0]
         assert "is not a table" in message
         assert "permissions" not in message
+
+
+class TestPromptClipboard:
+    """App wiring and priority-key routing for prompt recall."""
+
+    def test_ctrl_r_binding_is_priority(self) -> None:
+        bindings = [
+            binding
+            for binding in DeepAgentsApp.BINDINGS
+            if isinstance(binding, Binding) and binding.key == "ctrl+r"
+        ]
+
+        assert len(bindings) == 1
+        assert bindings[0].action == "open_prompt_clipboard"
+        assert bindings[0].priority is True
+
+    async def test_ctrl_r_inserts_selection_at_current_cursor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            text_area = chat_input._text_area
+            assert text_area is not None
+            monkeypatch.setattr(chat_input, "recent_prompts", lambda: ("saved prompt",))
+            text_area.insert("hello world")
+            text_area.move_cursor((0, len("hello ")))
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert isinstance(app.screen, PromptClipboardScreen)
+
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat_input.value == "hello saved promptworld"
+            assert app.focused is text_area
+
+    async def test_escape_preserves_draft_and_cursor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            text_area = chat_input._text_area
+            assert text_area is not None
+            monkeypatch.setattr(chat_input, "recent_prompts", lambda: ("saved prompt",))
+            text_area.insert("draft text")
+            text_area.move_cursor((0, 3))
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat_input.value == "draft text"
+            assert text_area.cursor_location == (0, 3)
+            assert app.focused is text_area
+
+    async def test_ctrl_c_in_modal_copies_prompt_not_filter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(
+                chat_input, "recent_prompts", lambda: ("copy this prompt",)
+            )
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            screen = cast("PromptClipboardScreen", app.screen)
+            assert isinstance(screen, PromptClipboardScreen)
+
+            with patch(
+                "deepagents_code.clipboard.copy_text_with_feedback"
+            ) as copy_text:
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+
+            copy_text.assert_called_once_with(
+                app,
+                "copy this prompt",
+                failure_noun="prompt",
+                success_message="Prompt copied to clipboard",
+            )
+            assert app.screen is screen
+
+    async def test_ctrl_r_steps_aside_for_model_selector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.widgets import model_selector
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+        app = DeepAgentsApp(agent=MagicMock())
+        screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(screen)
+            await pilot.pause()
+            assert screen._recommended_only is True
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert app.screen is screen
+            assert screen._recommended_only is False
+
+    async def test_shift_tab_does_not_route_to_prompt_navigation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(
+                chat_input, "recent_prompts", lambda: ("newest", "older")
+            )
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            screen = cast("PromptClipboardScreen", app.screen)
+            assert isinstance(screen, PromptClipboardScreen)
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+    @pytest.mark.parametrize(
+        "pending_field",
+        [
+            "_pending_approval_widget",
+            "_pending_ask_user_widget",
+            "_pending_goal_review_widget",
+        ],
+    )
+    async def test_ctrl_r_is_disabled_for_inline_prompts(
+        self, pending_field: str
+    ) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            setattr(app, pending_field, MagicMock())
+
+            assert app.check_action("open_prompt_clipboard", ()) is False
+
+    async def test_prompts_command_opens_without_awaiting_modal(self) -> None:
+        app = DeepAgentsApp()
+        with patch.object(app, "action_open_prompt_clipboard") as open_clipboard:
+            await app._handle_command("/prompts")
+
+        open_clipboard.assert_called_once_with()

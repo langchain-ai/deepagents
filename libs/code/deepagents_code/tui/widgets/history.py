@@ -34,10 +34,14 @@ class HistoryManager:
         self._query: str = ""
         self._load_history()
 
-    def _load_history(self) -> None:
-        """Load history from file."""
+    def _read_history(self) -> list[str]:
+        """Read all persisted entries, tolerating legacy malformed lines.
+
+        Returns:
+            Persisted entries in file order.
+        """
         if not self.history_file.exists():
-            return
+            return []
 
         try:
             with self.history_file.open("r", encoding="utf-8") as f:
@@ -51,14 +55,39 @@ class HistoryManager:
                     except json.JSONDecodeError:
                         entry = line
                     entries.append(entry if isinstance(entry, str) else str(entry))
-                self._entries = entries[-self.max_entries :]
+                return entries
         except (OSError, UnicodeDecodeError):
             logger.warning(
                 "Failed to load history from %s; starting with empty history",
                 self.history_file,
                 exc_info=True,
             )
-            self._entries = []
+            return []
+
+    def _load_history(self) -> None:
+        """Load the bounded navigation history from file."""
+        self._entries = self._read_history()[-self.max_entries :]
+
+    def recent_prompts(self) -> tuple[str, ...]:
+        """Refresh and return unique prompts in newest-first order.
+
+        Returns:
+            A bounded immutable prompt snapshot.
+        """
+        entries = self._read_history()
+        self._entries = entries[-self.max_entries :]
+        self.reset_navigation()
+
+        recent: list[str] = []
+        seen: set[str] = set()
+        for entry in reversed(entries):
+            if entry in seen:
+                continue
+            seen.add(entry)
+            recent.append(entry)
+            if len(recent) == self.max_entries:
+                break
+        return tuple(recent)
 
     def _append_to_file(self, text: str) -> None:
         """Append a single entry to history file (concurrent-safe)."""

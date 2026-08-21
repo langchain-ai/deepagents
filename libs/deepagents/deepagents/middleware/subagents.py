@@ -116,7 +116,8 @@ class _SubAgentBase(TypedDict):
     """Configure human-in-the-loop for specific tools."""
 
     skills: NotRequired[list[str]]
-    """Skill source paths for `SkillsMiddleware`."""
+    """Skill source paths for `SkillsMiddleware`. Forbidden on
+    [`ForkedSubAgent`][deepagents.middleware.subagents.ForkedSubAgent]."""
 
     permissions: NotRequired[list[FilesystemPermission]]
     """List of `FilesystemPermission` rules for this subagent.
@@ -192,7 +193,8 @@ class ForkedSubAgent(_SubAgentBase):
         Forked subagents are experimental and may change in a future release.
 
     A forked subagent receives the parent's effective conversation history and
-    exact system prompt. It cannot define a separate `system_prompt`.
+    exact system prompt. It cannot define a separate `system_prompt` or
+    `skills`, since either would diverge from the parent's exact message.
     """
 
     mode: Literal["fork"]
@@ -296,6 +298,9 @@ def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
         raise ValueError(msg)
     if mode == "fork" and spec.get("system_prompt") is not None:
         msg = f"ForkedSubAgent '{spec['name']}' cannot set system_prompt; it always inherits the parent's."
+        raise ValueError(msg)
+    if mode == "fork" and spec.get("skills"):
+        msg = f"ForkedSubAgent '{spec['name']}' cannot set skills; the parent's system message would discard it."
         raise ValueError(msg)
 
 

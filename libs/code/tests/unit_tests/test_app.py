@@ -30243,6 +30243,26 @@ class TestLiveApprovalModeWrites:
 
         save_recent.assert_not_called()
 
+    async def test_switch_to_manual_from_fallback_persists_manual(self) -> None:
+        """The live fallback's Manual switch updates the next bare launch."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        with (
+            patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=True,
+            ) as save_recent,
+        ):
+            assert await app._switch_to_manual_from_fallback() is True
+
+        save_recent.assert_called_once_with(ApprovalMode.MANUAL.value)
+
     async def test_prompt_yolo_push_failure_surfaces_and_allows_retry(self) -> None:
         """A push_screen failure warns the user and never latches the guard."""
         app = DeepAgentsApp()

@@ -1209,6 +1209,55 @@ def resolve_auto_classifier_model_with_source(
     return None, source
 
 
+def resolve_startup_mode_with_source(
+    *,
+    toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Resolve the effective startup approval mode and its source for display.
+
+    Mirrors `model_config.load_startup_mode`: an explicit `[startup].mode` (or
+    managed/env override) wins; otherwise the app-managed `[startup].recent`
+    value restores `manual`/`auto`, so `dcode config get startup.mode` reports
+    the mode the next bare launch will actually use instead of the bare default.
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+        managed_toml_data: Parsed managed TOML; the process snapshot is used when
+            omitted.
+
+    Returns:
+        `(mode, source)`. `source` credits `config.toml` when either the
+        explicit mode or the recent fallback supplied the value.
+    """
+    from deepagents_code.model_config import RECENT_STARTUP_MODES
+
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("startup.mode")
+    if option is None:
+        return "manual", "default"
+
+    managed_data = (
+        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
+    )
+    value, source = resolve_scalar(
+        option,
+        toml_data=data,
+        managed_toml_data=managed_data,
+    )
+    if source != "default":
+        return value, source
+
+    # No explicit/managed/env mode: fall back to the app-managed recent mode so
+    # the display agrees with what `load_startup_mode` will restore at launch.
+    startup = data.get("startup")
+    if isinstance(startup, dict):
+        recent = startup.get("recent")
+        if isinstance(recent, str) and recent in RECENT_STARTUP_MODES:
+            return recent, "config.toml"
+    return value, source
+
+
 def option_accepts_toml(
     option: ConfigOption, value: object, *, source: str = "config.toml"
 ) -> bool:

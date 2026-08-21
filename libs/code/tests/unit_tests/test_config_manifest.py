@@ -3017,6 +3017,35 @@ def test_resolve_startup_mode_from_toml(caplog) -> None:
     assert resolve_scalar(opt, toml_data={}) == (DEFAULT_STARTUP_MODE, "default")
 
 
+def test_resolve_startup_mode_with_source_reports_recent_fallback() -> None:
+    """`startup.mode` display reflects the `[startup].recent` restore."""
+    from deepagents_code.config_manifest import resolve_startup_mode_with_source
+
+    # Only `recent` set: bare launch runs Auto, so the display must say so.
+    assert resolve_startup_mode_with_source(
+        toml_data={"startup": {"recent": "auto"}},
+        managed_toml_data={},
+    ) == ("auto", "config.toml")
+
+    # An explicit mode still outranks `recent`.
+    assert resolve_startup_mode_with_source(
+        toml_data={"startup": {"mode": "manual", "recent": "auto"}},
+        managed_toml_data={},
+    ) == ("manual", "config.toml")
+
+    # Nothing configured: the typed default stands.
+    assert resolve_startup_mode_with_source(
+        toml_data={},
+        managed_toml_data={},
+    ) == (DEFAULT_STARTUP_MODE, "default")
+
+    # An invalid recent value fails closed rather than crediting config.toml.
+    assert resolve_startup_mode_with_source(
+        toml_data={"startup": {"recent": "yolo"}},
+        managed_toml_data={},
+    ) == (DEFAULT_STARTUP_MODE, "default")
+
+
 def test_resolve_toml_float_success_non_bool() -> None:
     """A FLOAT option reads a real number from TOML and coerces an int to float."""
     opt = get_option("interpreter.timeout_seconds")

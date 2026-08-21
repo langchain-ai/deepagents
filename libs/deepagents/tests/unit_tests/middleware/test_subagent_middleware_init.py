@@ -158,6 +158,17 @@ class TestSubagentMiddlewareInit:
         with pytest.raises(ValueError, match="cannot set system_prompt"):
             SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
 
+    def test_rejects_skills_on_forked_subagent(self) -> None:
+        invalid_spec: Any = {
+            "name": "worker",
+            "description": "Does work.",
+            "mode": "fork",
+            "skills": ["/skills/fork-only/"],
+        }
+
+        with pytest.raises(ValueError, match="cannot set skills"):
+            SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
+
     def test_forked_subagent_inherits_prompt_and_skips_memory_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, Any]] = []
         runnable = self._make_echo_graph()
@@ -208,7 +219,7 @@ class TestSubagentMiddlewareInit:
         assert not any(isinstance(middleware, MemoryMiddleware) for middleware in forked["middleware"])
         assert not any(isinstance(middleware, MemoryMiddleware) for middleware in isolated["middleware"])
 
-    def test_forked_subagent_skips_its_own_skills_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_isolated_subagent_keeps_its_own_skills_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, Any]] = []
         runnable = self._make_echo_graph()
 
@@ -224,7 +235,6 @@ class TestSubagentMiddlewareInit:
 
         monkeypatch.setattr("deepagents.middleware.subagents.create_sub_agent", fake_create_sub_agent)
         model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
-        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
         fake_agent = MagicMock()
         fake_agent.with_config.return_value = "compiled-agent"
 
@@ -234,13 +244,6 @@ class TestSubagentMiddlewareInit:
                 system_prompt="PARENT_PROMPT",
                 subagents=[
                     {
-                        "name": "forked-worker",
-                        "description": "Continues with context.",
-                        "model": worker_model,
-                        "mode": "fork",
-                        "skills": ["/skills/fork-only/"],
-                    },
-                    {
                         "name": "isolated-worker",
                         "description": "Starts fresh.",
                         "system_prompt": "ISOLATED_PROMPT",
@@ -249,12 +252,7 @@ class TestSubagentMiddlewareInit:
                 ],
             )
 
-        forked = next(spec for spec in captured if spec["name"] == "forked-worker")
         isolated = next(spec for spec in captured if spec["name"] == "isolated-worker")
-        # The fork's own skills index would only feed a prompt fragment that
-        # _ForkSystemMessageMiddleware immediately overwrites with the
-        # parent's captured message, so building it is skipped entirely.
-        assert not any(isinstance(middleware, SkillsMiddleware) for middleware in forked["middleware"])
         assert any(isinstance(middleware, SkillsMiddleware) for middleware in isolated["middleware"])
 
     def test_forked_subagent_inherits_dynamic_parent_prompt(self) -> None:

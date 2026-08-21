@@ -425,7 +425,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             `ForkedSubAgent` is experimental. It requires `mode="fork"`, inherits
             the parent's effective message history and exact system prompt, and
-            cannot define its own `system_prompt`.
+            cannot define its own `system_prompt` or `skills`.
 
             `CompiledSubAgent` entries are also exposed through the `task` tool,
             but provide a pre-built `runnable` instead of a declarative prompt

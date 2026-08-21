@@ -9,11 +9,12 @@ from typing import TYPE_CHECKING
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
+from textual.color import Color
 from textual.containers import Container
 from textual.widgets import Static
 from textual.widgets.text_area import Selection
 
-from deepagents_code import _textual_patches as _textual_patches
+from deepagents_code import _textual_patches as _textual_patches, theme
 from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.input import MediaTracker
 from deepagents_code.media_utils import ImageData, create_multimodal_content
@@ -858,6 +859,22 @@ class TestChatInputResize:
 
             assert len(set(colors.values())) == len(colors)
 
+    async def test_theme_change_recolors_handle(self) -> None:
+        """Switching themes updates the resize line's inline color."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test() as pilot:
+            handle = app.query_one(ChatInputResizeHandle)
+            await pilot.pause()
+            original_color = handle.styles.color
+
+            app.theme = "textual-light"
+            await pilot.pause()
+
+            assert handle.styles.color == Color.parse(
+                theme.get_theme_colors(app).primary
+            )
+            assert handle.styles.color != original_color
+
     async def test_non_left_press_does_not_start_drag(self) -> None:
         """A non-left press on the handle leaves resize inactive."""
         app = _ChatInputResizeTestApp()
@@ -1547,6 +1564,215 @@ class TestPromptIndicator:
             chat_input.mode = "shell"
             await pilot.pause()
             assert any(m.mode == "shell" for m in messages)
+
+
+class TestShellSyntaxHighlighting:
+    """Shell command modes should render native shell styles in the chat input."""
+
+    @pytest.mark.parametrize("mode", ["shell", "shell_incognito"])
+    async def test_shell_modes_highlight_command(self, mode: str) -> None:
+        """Shell and incognito shell modes should style command tokens."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            command = 'FOO="bar" echo "$FOO"'
+            text_area.text = command
+
+            chat_input.mode = mode
+            await pilot.pause()
+
+            line = text_area.get_line(0)
+            assert line.plain == command
+            assert len({span.style for span in line.spans}) > 1
+
+    async def test_windows_shell_mode_uses_batch_lexer(self) -> None:
+        """Windows shell commands should use `cmd.exe` batch syntax styles."""
+        from unittest.mock import patch
+
+        app = _ChatInputTestApp()
+        with (
+            patch.object(chat_input_module, "sys") as mock_sys,
+            patch.object(
+                chat_input_module,
+                "highlight",
+                wraps=chat_input_module.highlight,
+            ) as mock_highlight,
+        ):
+            mock_sys.platform = "win32"
+            async with app.run_test() as pilot:
+                chat_input = app.query_one(ChatInput)
+                text_area = app.query_one(ChatTextArea)
+                command = "if exist %TEMP% echo %PATH%"
+                text_area.text = command
+
+                chat_input.mode = "shell"
+                await pilot.pause()
+
+                assert text_area.get_line(0).plain == command
+                mock_highlight.assert_called_once_with(
+                    command,
+                    language="batch",
+                    tab_size=1,
+                )
+
+    async def test_posix_shell_mode_uses_bash_lexer(self) -> None:
+        """Non-Windows shell commands should use Bash syntax styles.
+
+        Asserts a Bash-specific outcome rather than only the lexer name: Bash
+        expands `$FOO` inside a double-quoted string, so the expansion carries
+        a different style from the quotes around it. A non-shell grammar (or a
+        shell one applied at the wrong offsets) styles the whole string
+        uniformly and fails here.
+        """
+        from unittest.mock import patch
+
+        app = _ChatInputTestApp()
+        with patch.object(chat_input_module.sys, "platform", "linux"):
+            async with app.run_test() as pilot:
+                chat_input = app.query_one(ChatInput)
+                text_area = app.query_one(ChatTextArea)
+                command = 'FOO="bar" echo "$FOO"'
+                text_area.text = command
+
+                chat_input.mode = "shell"
+                await pilot.pause()
+
+                line = text_area.get_line(0)
+                assert line.plain == command
+                style_by_start = {span.start: span.style for span in line.spans}
+                quote_start = command.index('"$FOO"')
+                variable_start = command.index("$FOO")
+                command_start = command.index("echo")
+                # `$FOO` is styled apart from its enclosing quotes.
+                assert style_by_start[variable_start] != style_by_start[quote_start]
+                # `echo` is a command word, not plain text like the quotes.
+                assert style_by_start[command_start] != style_by_start[quote_start]
+
+    async def test_highlight_failure_never_shows_stale_text(self) -> None:
+        """A failed highlight must fall back to the document, not a stale draft.
+
+        The rendered text has to match the buffer that Enter would submit. If
+        the cache marker were committed before `highlight()` ran, a failure
+        would leave the marker on the new text and the cached lines on the old,
+        so every later call would take the cache-hit path and render the
+        previous draft indefinitely.
+        """
+        from unittest.mock import patch
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            text_area.text = "echo first"
+            chat_input.mode = "shell"
+            await pilot.pause()
+            assert text_area.get_line(0).plain == "echo first"
+
+            text_area.text = "echo second"
+            with patch.object(
+                chat_input_module,
+                "highlight",
+                side_effect=RuntimeError("lexer exploded"),
+            ):
+                line = text_area.get_line(0)
+
+            assert line.plain == "echo second"
+            # Degradation persists rather than re-raising every frame, and the
+            # text stays correct once the patch is lifted.
+            assert text_area.get_line(0).plain == "echo second"
+
+    async def test_leaving_shell_mode_removes_highlighting(self) -> None:
+        """Returning to normal input should clear cached shell styles."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            text_area.text = 'echo "$HOME"'
+
+            chat_input.mode = "shell"
+            await pilot.pause()
+            assert text_area.get_line(0).spans
+
+            chat_input.mode = "normal"
+            await pilot.pause()
+            line = text_area.get_line(0)
+            assert line.plain == 'echo "$HOME"'
+            assert not line.spans
+
+    async def test_shell_highlighting_tracks_multiline_edits(self) -> None:
+        """Editing a shell draft should invalidate all cached highlighted lines."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            chat_input.mode = "shell"
+            text_area.text = 'echo "first"'
+            await pilot.pause()
+            assert text_area.get_line(0).plain == 'echo "first"'
+
+            text_area.text = 'FOO="bar"\nprintf "%s" "$FOO"'
+            await pilot.pause()
+
+            assert text_area.get_line(0).plain == 'FOO="bar"'
+            second_line = text_area.get_line(1)
+            assert second_line.plain == 'printf "%s" "$FOO"'
+            assert second_line.spans
+
+    async def test_tab_keeps_shell_highlight_spans_aligned(self) -> None:
+        """Tabs should not shift the styles applied to later shell tokens."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            command = 'echo\t"$HOME"'
+            text_area.text = command
+            chat_input.mode = "shell"
+            await pilot.pause()
+
+            line = text_area.get_line(0)
+            variable_start = command.index("$HOME")
+            assert line.plain == command
+            assert any(
+                span.start == variable_start
+                and span.end == variable_start + len("$HOME")
+                for span in line.spans
+            )
+
+    async def test_cursor_line_keeps_shell_highlight_colors(self) -> None:
+        """Rendered strip on the cursor line should keep token colors.
+
+        Regression test: `TextArea._render_line` stylizes the whole cursor line
+        with `cursor_line_style`, which carries the widget text color. Without
+        the foreground strip in `ChatTextArea._render_line`, that paints over
+        the syntax spans and every rendered token collapses to one color. The
+        other tests in this class only assert on `get_line()`, which runs
+        before the cursor-line style is applied.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            text_area.text = 'FOO="bar" echo "$FOO"'
+            chat_input.mode = "shell"
+            await pilot.pause()
+
+            # Put the cursor on the line being rendered, but at end-of-line.
+            # The block cursor inverts the cell it sits on, which contributes a
+            # second color on its own - enough to satisfy the assertion below
+            # even with the token colors flattened. Parking it past the last
+            # character puts it on trailing padding, which the `.strip()`
+            # filter drops, so only real token colors are counted.
+            text_area.move_cursor((0, len(text_area.text)))
+            strip = text_area.render_line(0)
+            colors = {
+                segment.style.color.triplet
+                for segment in strip
+                if segment.text.strip() and segment.style and segment.style.color
+            }
+            # Distinct syntax colors must survive to the rendered strip, not
+            # flatten to the single cursor-line text color.
+            assert len(colors) > 1
 
 
 class TestModeSwitchNoJitter:

@@ -254,13 +254,15 @@ class TestServerGraph:
                 return_value=(),
             ),
         ):
-            for suffix in (
-                "MCP_CONFIG_PATH",
-                "TRUST_PROJECT_MCP",
-                "CWD",
-                "PROJECT_ROOT",
-            ):
-                os.environ.pop(f"{SERVER_ENV_PREFIX}{suffix}", None)
+            # Drop every ambient `DEEPAGENTS_CODE_SERVER_*` the round-trip did
+            # not set. With `clear=False` an exported value (e.g.
+            # `AUTO_CLASSIFIER_MODEL` from a developer shell) would survive
+            # into `ServerConfig.from_env()` and break the strict
+            # `create_cli_agent` kwargs assertion below, even though the test
+            # never configured it.
+            for key in list(os.environ):
+                if key.startswith(SERVER_ENV_PREFIX) and key not in env_overrides:
+                    os.environ.pop(key)
 
             module = _import_fresh_server_graph()
             resolve_mcp_tools.assert_not_awaited()

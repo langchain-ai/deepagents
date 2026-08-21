@@ -508,6 +508,43 @@ def _path_status(label: str, path: object) -> DiagnosticItem:
     )
 
 
+def _managed_config_diagnostic() -> DiagnosticItem:
+    """Report managed TOML location, parse health, and policy enforceability.
+
+    Returns:
+        Managed config diagnostic row.
+    """
+    from deepagents_code.configuration.service import managed_health
+
+    health = managed_health(refresh=True)
+    status = health.status
+    path = status.path or "(unknown)"
+    suffix = status.health.value.lower()
+    detail = f" - {status.detail}" if status.detail else ""
+    # Doctor exists to explain a failure, so it must carry the parse detail and
+    # say who can fix it. Without this a user who just saw exit 78 learns
+    # nothing new here.
+    hint = "" if status.usable else "; ask your administrator to repair or remove it"
+    # A file that parses is not necessarily enforceable, and both halves of
+    # exit 78 have to show up here: reporting only `usable` gives a green row
+    # to the `ManagedPolicyError` half. `managed_health` reads both from one
+    # snapshot, so the refreshed status cannot be paired with stale violations.
+    violations = health.violations
+    if violations:
+        detail += f" - rejects {', '.join(violations)}"
+        hint = "; ask your administrator to correct the value"
+    if health.rejections:
+        # Declared but ignored, which is not a launch failure and so not part of
+        # `ok`. It still has to appear somewhere: the only other announcement is
+        # a `logger.warning` that cannot reach stderr.
+        detail += f" - ignores {', '.join(health.rejections)}"
+    return DiagnosticItem(
+        "Managed config",
+        f"{path} ({suffix}){detail}{hint}",
+        ok=health.ok,
+    )
+
+
 def _collect_configuration() -> DiagnosticSection:
     """Collect on-disk configuration and data locations.
 
@@ -523,6 +560,7 @@ def _collect_configuration() -> DiagnosticSection:
         title="Configuration",
         items=[
             _path_status("Data directory", DEFAULT_CONFIG_DIR),
+            _managed_config_diagnostic(),
             _path_status("Config file", DEFAULT_CONFIG_PATH),
         ],
     )

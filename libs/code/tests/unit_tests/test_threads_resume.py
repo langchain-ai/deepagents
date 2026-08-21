@@ -494,6 +494,7 @@ class TestPreviousThreadHintOwnership:
                 "deepagents_code.sessions.get_thread_agent",
                 AsyncMock(return_value="researcher"),
             ),
+            patch.object(app, "_thread_links_configured", return_value=True),
             patch.object(app, "_schedule_thread_message_link") as schedule,
         ):
             hinted = await app._mount_previous_thread_hint(

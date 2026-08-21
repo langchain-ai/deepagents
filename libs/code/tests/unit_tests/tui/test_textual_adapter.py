@@ -685,20 +685,25 @@ class TestInterruptCleanup:
             set_active_message=MagicMock(),
         )
 
-        await _handle_interrupt_cleanup(
-            adapter=adapter,
-            agent=agent,
-            config={"configurable": {"thread_id": "t-1"}},
-            pending_text_by_namespace={(): "partial answer"},
-            captured_input_tokens=10,
-            captured_output_tokens=5,
-            turn_stats=SessionStats(),
-            start_time=0.0,
-        )
+        with patch(
+            "deepagents_code.tui.textual_adapter.get_glyphs",
+            return_value=UNICODE_GLYPHS,
+        ):
+            await _handle_interrupt_cleanup(
+                adapter=adapter,
+                agent=agent,
+                config={"configurable": {"thread_id": "t-1"}},
+                pending_text_by_namespace={(): "partial answer"},
+                captured_input_tokens=10,
+                captured_output_tokens=5,
+                turn_stats=SessionStats(),
+                start_time=0.0,
+            )
 
         assert any(
             isinstance(widget, AppMessage)
-            and str(widget._content) == "Interrupted by user"
+            and str(widget._content)
+            == f"{UNICODE_GLYPHS.square_filled} Interrupted by user"
             for widget in mounted
         )
         assert len(agent.aupdate_state.await_args_list) == 2
@@ -6190,10 +6195,13 @@ class TestExecuteTaskTextualAskUser:
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
 
+    # No zero-question case: `AskUserRequest.questions` rejects an empty list,
+    # so a cancelled call always carries at least one question and the count can
+    # never be zero here. Zero and one took the same singular branch anyway
+    # (`dismissed_question_count > 1`), so the case below still covers it.
     @pytest.mark.parametrize(
         ("question_count", "expected_message"),
         [
-            (0, "Question dismissed. Tell the agent what you'd like instead."),
             (1, "Question dismissed. Tell the agent what you'd like instead."),
             (2, "Questions dismissed. Tell the agent what you'd like instead."),
         ],

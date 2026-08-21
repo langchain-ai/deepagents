@@ -587,17 +587,30 @@ def load_trusted_cache_endpoints(
     value by type. Each distinct rejection is logged once per process.
 
     Args:
-        config: Parsed `config.toml` mapping; loaded from disk when omitted.
-            The disk read tolerates an absent, unreadable, or undecodable file
-            by falling back to `{}`.
+        config: Parsed user `config.toml` mapping. When omitted, the user
+            configuration is loaded from disk and resolved with managed
+            configuration, which takes precedence.
 
     Returns:
-        Lowercase hostnames of user-trusted endpoints (possibly empty).
+        Lowercase hostnames of configured trusted endpoints (possibly empty).
     """
     if config is None:
-        from deepagents_code.config_manifest import load_config_toml
+        from deepagents_code.config_manifest import (
+            get_option,
+            load_config_toml,
+            resolve_scalar,
+        )
 
-        config = load_config_toml()
+        option = get_option("warnings.trusted_cache_endpoints")
+        if option is None:
+            return frozenset()
+        entries, _ = resolve_scalar(option, toml_data=load_config_toml())
+        # The manifest has no default for this optional structured setting.
+        # Preserve the absent-setting behavior without changing diagnostics
+        # for malformed configured values.
+        if entries is None:
+            entries = []
+        config = {"warnings": {"trusted_cache_endpoints": entries}}
     warnings_section = config.get("warnings", {})
     if not isinstance(warnings_section, dict):
         # `warnings = "off"` reads like a plausible toggle, and silently

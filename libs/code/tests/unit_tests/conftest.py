@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Generator
+    from collections.abc import Callable, Coroutine, Generator, Iterator
     from pathlib import Path
 
     from textual.pilot import Pilot
@@ -562,6 +562,54 @@ def _isolate_global_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         "deepagents_code.config._GLOBAL_DOTENV_PATH",
         tmp_path / "nonexistent-global.env",
     )
+
+
+def redirect_managed_config(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Point every managed-config seam at `path`.
+
+    The snapshot loader resolves through `resolve_managed_path`, error messages
+    render `managed_config_path`, and both names are also bound at import time
+    in the modules that read them. Patching one seam leaves a test reading the
+    developer's real host policy file — or, worse, silently reading nothing —
+    so they are redirected together.
+    """
+    from deepagents_code.configuration import paths, service
+    from deepagents_code.configuration.paths import ResolvedManagedPath
+
+    for module in (paths, service):
+        monkeypatch.setattr(module, "managed_config_path", lambda **_kwargs: path)
+        monkeypatch.setattr(
+            module,
+            "resolve_managed_path",
+            lambda **_kwargs: ResolvedManagedPath(path),
+        )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_managed_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Point managed config at a missing file and reset its process cache.
+
+    The managed path is fixed per platform, so without this the suite reads
+    whatever policy the developer's machine (or a CI image) has installed, and
+    unrelated tests change behavior. The snapshot is cached process-wide, so it
+    is also cleared on both sides of every test.
+    """
+    from deepagents_code.configuration import service
+
+    absent = tmp_path / "absent-managed_config.toml"
+    redirect_managed_config(monkeypatch, absent)
+    # The "expected a table" dedup set is process-global. Left alone, the first
+    # test to trip it decides what every later test sees, and the suite runs in
+    # random order.
+    from deepagents_code import config_manifest
+
+    config_manifest._warned_non_table_paths.clear()
+    service.invalidate_config_sources()
+    yield
+    config_manifest._warned_non_table_paths.clear()
+    service.invalidate_config_sources()
 
 
 @pytest.fixture(autouse=True)

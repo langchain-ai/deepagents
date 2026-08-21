@@ -212,7 +212,7 @@ _DEFERRED_START_NOTICE = (
 
 _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
     "anthropic:claude-haiku-4-5": "Claude Haiku 4.5",
-    "google_genai:gemini-3.6-flash": "Gemini 3.6 Flash",
+    "google_genai:gemini-3.7-flash": "Gemini 3.7 Flash",
     "openai:gpt-5.6-luna": "GPT-5.6 Luna",
 }
 """Lower-latency models recommended for repeated Auto action reviews."""
@@ -245,11 +245,13 @@ def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
     return parsed, None
 
 
-# Config `config.toml` writes are serialized by the single process-wide lock
-# `model_config._config_write_lock`, imported lazily at each write site (below).
-# It is shared with `model_config`'s writers so a theme/UI write here cannot
-# clobber, e.g., an effort or default-model write; a lock local to this module
-# would not mutually exclude against those. See that lock's docstring.
+# Config `config.toml` writes here go through
+# `configuration.writer.update_user_config`, which holds
+# `USER_CONFIG_WRITE_LOCK` for the whole read-modify-write.
+# `model_config._config_write_lock` is an alias for that same lock object, so a
+# theme/UI write here cannot clobber, e.g., an effort or default-model write; a
+# lock local to this module would not mutually exclude against those. See that
+# lock's docstring.
 
 _DEEPAGENTS_IMPORT_LOCK = threading.RLock()
 """Serializes process-local cold imports into the Deep Agents SDK graph.
@@ -1306,33 +1308,40 @@ def _resolve_terminal_mapping(ui: Mapping[str, object]) -> str | None:
 def _load_terminal_default() -> str | None:
     """Return the saved default theme for the current `TERM_PROGRAM`.
 
-    Reads `[ui.terminal_themes][TERM_PROGRAM]` from `config.toml` and
-    resolves the value via `_resolve_theme_name`, so labels and case variants
-    are accepted. Used by `ThemeSelectorScreen` to badge the matching option
-    with `(default)`.
+    Reads `[ui.terminal_themes][TERM_PROGRAM]` from managed config merged over
+    `config.toml` and resolves the value via `_resolve_theme_name`, so labels
+    and case variants are accepted. A managed mapping still applies when the
+    user file is unusable. Used by `ThemeSelectorScreen` to badge the matching
+    option with `(default)`.
 
     Returns:
-        The canonical registry key, or `None` if `TERM_PROGRAM` is unset, the
-            file is missing/unreadable, no mapping is set, or the mapped value
-            doesn't match a registered theme. Read errors and misconfigurations
-            are logged at WARNING.
+        The canonical registry key, or `None` if `TERM_PROGRAM` is unset,
+            neither layer sets a mapping, or the mapped value doesn't match a
+            registered theme. Read errors and misconfigurations are logged at
+            WARNING.
     """
     if not os.environ.get("TERM_PROGRAM", "").strip():
         return None
 
-    import tomllib
+    from deepagents_code.configuration.service import get_config_sources
 
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-    if not DEFAULT_CONFIG_PATH.exists():
-        return None
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
-        logger.warning("Could not read config for terminal theme default: %s", exc)
-        return None
-
+    sources = get_config_sources()
+    if not sources.user.status.usable:
+        logger.warning(
+            "Could not read config for terminal theme default: %s",
+            sources.user.status.detail or sources.user.status.health.value,
+        )
+        # Managed policy parsed cleanly and must still apply, so keep
+        # going with the merged data (managed-only when the user file
+        # failed) instead of discarding it with the user's file.
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
+        )
+    data, _ = sources.merged()
     ui = data.get("ui")
     if not isinstance(ui, dict):
         if ui is not None:
@@ -1349,113 +1358,54 @@ def _load_theme_preference() -> str:
 
     Resolution order:
 
-    1. `DEEPAGENTS_CODE_THEME` env var (explicit override). If it is set but
-        cannot be resolved, the default theme is used immediately.
-    2. `[ui.terminal_themes]` mapping keyed by `TERM_PROGRAM` — wins over the
-        saved preference so a user moving between terminals (e.g. dark iTerm,
-        light Apple Terminal) gets the right theme automatically.
-    3. `[ui].theme` in `~/.deepagents/config.toml` (saved preference, used
-        when no terminal mapping matches).
+    1. Managed `[ui.terminal_themes]` or `[ui].theme` policy.
+    2. `DEEPAGENTS_CODE_THEME` env var.
+    3. User `[ui.terminal_themes]` or `[ui].theme` preference.
     4. `theme.DEFAULT_THEME`.
 
     Returns:
         A Textual theme name (e.g., `'langchain'`, `'langchain-light'`).
     """
     from deepagents_code._env_vars import THEME
+    from deepagents_code.config_manifest import (
+        _resolve_theme,
+        load_config_toml,
+        load_managed_config_toml,
+    )
 
+    managed = _resolve_theme(load_managed_config_toml(), source="managed config")
+    if managed is not None:
+        return managed[0]
     env_name = os.environ.get(THEME)
     if env_name is not None:
         resolved = _resolve_theme_name(env_name)
         if resolved is not None:
             return resolved
         logger.warning(
-            "Unknown theme '%s' in %s; falling back to default",
+            "Unknown theme '%s' in %s; falling through to config.toml",
             env_name,
             THEME,
         )
-        return theme.DEFAULT_THEME
-
-    import tomllib
-
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-    if not DEFAULT_CONFIG_PATH.exists():
-        return theme.DEFAULT_THEME
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
-        logger.warning("Could not read config for theme preference: %s", exc)
-        return theme.DEFAULT_THEME
-
-    ui = data.get("ui", {})
-    if not isinstance(ui, dict):
-        logger.warning(
-            "[ui] should be a table; got %s while loading theme preference",
-            type(ui).__name__,
-        )
-        return theme.DEFAULT_THEME
-
-    resolved = _resolve_terminal_mapping(ui)
-    if resolved is not None:
-        return resolved
-
-    saved = ui.get("theme")
-    resolved = _resolve_theme_name(saved)
-    if resolved is not None:
-        return resolved
-    if isinstance(saved, str):
-        logger.warning(
-            "Unknown theme '%s' in config; falling back to default",
-            saved,
-        )
-
-    return theme.DEFAULT_THEME
+    user = _resolve_theme(load_config_toml(), source="config.toml")
+    return user[0] if user is not None else theme.DEFAULT_THEME
 
 
 def _load_bool_display_preference(key: str, *, fallback: bool) -> bool:
-    """Resolve a boolean `Display` option through the config manifest.
+    """Deferred-import wrapper around `config_manifest`.
 
-    Precedence follows `resolve_scalar`: the option's `DEEPAGENTS_CODE_*` env
-    var wins, then its `[ui]` key in `~/.deepagents/config.toml`, then the
-    option's declared default. Resolution is intentionally forgiving — an
-    unreadable config, a non-table `[ui]`, or a wrong-typed value is logged by
-    the resolver and falls through, so a typo in a cosmetic setting never
-    breaks startup.
+    Written once here rather than inlined at each caller, so that
+    `config_manifest` stays off `app.py`'s import path. See
+    `load_bool_display_preference` for the resolution rules and arguments.
 
-    Args:
-        key: Manifest key of the option, e.g. `"display.cursor_blink"`.
-        fallback: Value to use when `key` is not in the manifest at all, or is
-            not a `BOOL` option — both mean a caller and the manifest disagree.
-            `test_bool_display_preference_keys_match_the_manifest` pins it to
-            each option's declared default so the two cannot drift.
+    Deliberately does not forward `on_rejected`: these are startup reads, and
+    the TUI owns the screen by the time they run.
 
     Returns:
         The resolved value.
     """
-    from deepagents_code.config_manifest import (
-        OptionKind,
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import load_bool_display_preference
 
-    option = get_option(key)
-    if option is None:
-        logger.warning("Unknown config option %r; falling back to %r", key, fallback)
-        return fallback
-    if option.kind is not OptionKind.BOOL:
-        # Without this, a mistyped key naming a STR option would return
-        # `bool("block")` — silently `True` forever, with no warning at all.
-        logger.warning(
-            "Config option %r is %s, not a bool; falling back to %r",
-            key,
-            option.kind.value,
-            fallback,
-        )
-        return fallback
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    return load_bool_display_preference(key, fallback=fallback)
 
 
 def _load_message_timestamps_visible() -> bool:
@@ -1541,65 +1491,73 @@ def _replace_malformed_ui(
     )
 
 
+def _with_write_error(message: str, error: str | None) -> str:
+    """Append a failed write's cause to a user-facing message.
+
+    `WriteResult.error` already carries the path and the reason ("could not
+    update <path>: [Errno 13] Permission denied"). The toast used to drop it and
+    the detail went only to a logger that has no handler in the TUI outside
+    debug mode, so the user could not tell a read-only home directory from a
+    full disk.
+
+    Returns:
+        The message, with the cause appended when there is one.
+    """
+    if not error:
+        return message
+    return f"{message} ({error})"
+
+
 def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
     """Persist theme preference and return TUI-facing status details.
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
     if name not in theme.get_registry():
         logger.warning("Refusing to save unknown theme '%s'", name)
         return _ConfigWriteResult(False, f"Unknown theme '{name}' was not saved.")
 
-    import contextlib
-    import tempfile
-    import tomllib
+    from deepagents_code.configuration.writer import update_user_config
 
-    try:
-        import tomli_w
+    repair_message: str | None = None
 
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
+    def mutate(data: dict[str, Any]) -> bool:
+        nonlocal repair_message
+        ui, repair_message = _replace_malformed_ui(data)
+        ui["theme"] = name
+        return True
 
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            ui["theme"] = name
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save theme preference")
+    result = update_user_config(mutate)
+    if not result.ok:
+        logger.error("Could not save theme preference: %s", result.error)
         return _ConfigWriteResult(
             False,
-            f"Theme applied for this session but could not be saved "
-            f"({type(exc).__name__}).",
+            _with_write_error(
+                "Theme applied for this session but could not be saved.",
+                result.error,
+            ),
             "error",
+        )
+
+    from deepagents_code.config_manifest import (
+        _resolve_theme,
+        load_managed_config_toml,
+    )
+
+    if (
+        _resolve_theme(
+            load_managed_config_toml(),
+            source="managed config",
+        )
+        is not None
+    ):
+        return _ConfigWriteResult(
+            True,
+            "Theme preference saved, but managed config remains effective.",
+            "warning",
         )
     return _ConfigWriteResult(True, repair_message)
 
@@ -1680,7 +1638,8 @@ def _save_terminal_theme_mapping_result(
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
     if name not in theme.get_registry():
         logger.warning("Refusing to map unknown theme '%s'", name)
@@ -1693,71 +1652,57 @@ def _save_terminal_theme_mapping_result(
             "TERM_PROGRAM is unset; can't set a per-terminal default.",
         )
 
-    import contextlib
-    import tempfile
-    import tomllib
+    from deepagents_code.configuration.writer import update_user_config
 
-    try:
-        import tomli_w
+    repair_messages: list[str] = []
 
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
+    def mutate(data: dict[str, Any]) -> bool:
+        ui, repair_message = _replace_malformed_ui(data)
+        if repair_message is not None:
+            repair_messages.append(repair_message)
+        terminal_themes = ui.get("terminal_themes")
+        terminal_themes_table = _as_toml_table(terminal_themes)
+        if terminal_themes_table is None:
+            if terminal_themes is not None:
+                logger.warning(
+                    "Existing [ui.terminal_themes] is not a table (got %r); "
+                    "replacing with a fresh table",
+                    terminal_themes,
+                )
+                repair_messages.append(
+                    "Existing [ui.terminal_themes] was not a table and was "
+                    "replaced while saving this terminal default.",
+                )
+            terminal_themes_table = {}
+            ui["terminal_themes"] = terminal_themes_table
+        terminal_themes_table[term_program] = name
+        return True
 
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        repair_messages: list[str] = []
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            if repair_message is not None:
-                repair_messages.append(repair_message)
-            terminal_themes = ui.get("terminal_themes")
-            terminal_themes_table = _as_toml_table(terminal_themes)
-            if terminal_themes_table is None:
-                if terminal_themes is not None:
-                    logger.warning(
-                        "Existing [ui.terminal_themes] is not a table (got %r); "
-                        "replacing with a fresh table",
-                        terminal_themes,
-                    )
-                    repair_messages.append(
-                        "Existing [ui.terminal_themes] was not a table and was "
-                        "replaced while saving this terminal default.",
-                    )
-                terminal_themes_table = {}
-                ui["terminal_themes"] = terminal_themes_table
-            terminal_themes_table[term_program] = name
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save terminal theme mapping")
+    result = update_user_config(mutate)
+    if not result.ok:
+        logger.error("Could not save terminal theme mapping: %s", result.error)
         return _ConfigWriteResult(
             False,
-            f"Could not save terminal mapping ({type(exc).__name__}).",
+            _with_write_error("Could not save terminal mapping.", result.error),
             "error",
+        )
+
+    from deepagents_code.config_manifest import (
+        _resolve_theme,
+        load_managed_config_toml,
+    )
+
+    if (
+        _resolve_theme(
+            load_managed_config_toml(),
+            source="managed config",
+        )
+        is not None
+    ):
+        return _ConfigWriteResult(
+            True,
+            "Terminal mapping saved, but managed config remains effective.",
+            "warning",
         )
     return _ConfigWriteResult(True, " ".join(repair_messages) or None)
 
@@ -1784,252 +1729,139 @@ def save_terminal_theme_mapping(term_program: str, name: str) -> bool:
     return _save_terminal_theme_mapping_result(term_program, name).ok
 
 
+def _save_ui_bool_result(
+    *,
+    toml_key: str,
+    option_key: str,
+    value: bool,
+    failure_message: str,
+) -> _ConfigWriteResult:
+    """Persist one user UI boolean and report managed shadowing.
+
+    Returns:
+        Write status and optional user-facing detail.
+    """
+    from deepagents_code.configuration.writer import update_user_config
+
+    repair_message: str | None = None
+
+    def mutate(data: dict[str, Any]) -> bool:
+        nonlocal repair_message
+        ui, repair_message = _replace_malformed_ui(data)
+        ui[toml_key] = value
+        return True
+
+    result = update_user_config(mutate)
+    if not result.ok:
+        logger.error("Could not save %s: %s", option_key, result.error)
+        # Carry the cause into the toast. `WriteResult.error` is already
+        # path-plus-errno ("could not update <path>: [Errno 13] Permission
+        # denied"), and in the TUI this logger has no handler unless debug mode
+        # is on, so dropping it left the user with no way to learn why.
+        return _ConfigWriteResult(
+            False,
+            _with_write_error(failure_message, result.error),
+            "error",
+        )
+
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_managed_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option(option_key)
+    if option is not None:
+        from deepagents_code.configuration.service import managed_decided
+
+        _, source = resolve_scalar(
+            option,
+            toml_data={},
+            managed_toml_data=load_managed_config_toml(),
+        )
+        if managed_decided(source):
+            return _ConfigWriteResult(
+                True,
+                "Preference saved, but managed config remains effective.",
+                "warning",
+            )
+    return _ConfigWriteResult(True, repair_message)
+
+
 def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult:
     """Persist the timestamp-footer visibility preference.
 
-    Writes `[ui].show_message_timestamps` atomically (temp file +
-    `Path.replace`). Mirrors `_save_theme_preference_result`.
+    Persists `[ui].show_message_timestamps` through `_save_ui_bool_result`.
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
-    import contextlib
-    import tempfile
-    import tomllib
-
-    try:
-        import tomli_w
-
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
-
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            ui["show_message_timestamps"] = visible
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save timestamp preference")
-        return _ConfigWriteResult(
-            False,
-            f"Timestamps toggled for this session but could not be saved "
-            f"({type(exc).__name__}).",
-            "error",
-        )
-    return _ConfigWriteResult(True, repair_message)
+    return _save_ui_bool_result(
+        toml_key="show_message_timestamps",
+        option_key="display.show_message_timestamps",
+        value=visible,
+        failure_message=("Timestamps toggled for this session but could not be saved."),
+    )
 
 
 def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
     """Persist the chat scrollbar visibility preference.
 
-    Writes `[ui].show_scrollbar` atomically (temp file +
-    `Path.replace`). Mirrors `_save_message_timestamps_visible_result`.
+    Persists `[ui].show_scrollbar` through `_save_ui_bool_result`.
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
-    import contextlib
-    import tempfile
-    import tomllib
-
-    try:
-        import tomli_w
-
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
-
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            ui["show_scrollbar"] = visible
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save scrollbar preference")
-        return _ConfigWriteResult(
-            False,
-            f"Scrollbar toggled for this session but could not be saved "
-            f"({type(exc).__name__}).",
-            "error",
-        )
-    return _ConfigWriteResult(True, repair_message)
+    return _save_ui_bool_result(
+        toml_key="show_scrollbar",
+        option_key="display.show_scrollbar",
+        value=visible,
+        failure_message="Scrollbar toggled for this session but could not be saved.",
+    )
 
 
 def _save_show_diff_line_numbers_result(enabled: bool) -> _ConfigWriteResult:
     """Persist the diff line-number visibility preference.
 
-    Writes `[ui].show_diff_line_numbers` atomically (temp file +
-    `Path.replace`). Mirrors `_save_show_scrollbar_result`.
+    Persists `[ui].show_diff_line_numbers` through `_save_ui_bool_result`.
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
-    import contextlib
-    import tempfile
-    import tomllib
-
-    try:
-        import tomli_w
-
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
-
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            ui["show_diff_line_numbers"] = enabled
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save diff line-number preference")
-        return _ConfigWriteResult(
-            False,
-            f"Diff line numbers toggled for this session but could not be saved "
-            f"({type(exc).__name__}).",
-            "error",
-        )
-    return _ConfigWriteResult(True, repair_message)
+    return _save_ui_bool_result(
+        toml_key="show_diff_line_numbers",
+        option_key="display.show_diff_line_numbers",
+        value=enabled,
+        failure_message=(
+            "Diff line numbers toggled for this session but could not be saved."
+        ),
+    )
 
 
 def _save_debug_console_click_to_copy_result(enabled: bool) -> _ConfigWriteResult:
     r"""Persist the `Ctrl+\` Debug Console click-to-copy preference.
 
-    Writes `[ui].debug_console_click_to_copy` atomically (temp file +
-    `Path.replace`). Mirrors `_save_show_scrollbar_result`.
+    Persists `[ui].debug_console_click_to_copy` through `_save_ui_bool_result`.
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
-    import contextlib
-    import tempfile
-    import tomllib
-
-    try:
-        import tomli_w
-
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
-
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            ui["debug_console_click_to_copy"] = enabled
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save debug console click-to-copy preference")
-        return _ConfigWriteResult(
-            False,
-            f"Click-to-copy toggled for this session but could not be saved "
-            f"({type(exc).__name__}).",
-            "error",
-        )
-    return _ConfigWriteResult(True, repair_message)
+    return _save_ui_bool_result(
+        toml_key="debug_console_click_to_copy",
+        option_key="display.debug_console_click_to_copy",
+        value=enabled,
+        failure_message=(
+            "Click-to-copy toggled for this session but could not be saved."
+        ),
+    )
 
 
 def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
@@ -4765,7 +4597,6 @@ class DeepAgentsApp(App):
 
         self._status_bar.set_approval_mode(self._approval_mode.value)
         if self._approval_mode.value == "auto":
-            self._notify_auto_mode_enabled_once()
             self._notify_auto_classifier_active()
         elif self._approval_mode.value == "yolo":
             self._warn_yolo_active(timeout=10)
@@ -9246,9 +9077,15 @@ class DeepAgentsApp(App):
         logged and swallowed because the OSC background sync is cosmetic.
 
         ANSI themes intentionally skip this step so the terminal's native
-        background is preserved.
+        background is preserved. This method also skips Apple Terminal, which
+        sets `TERM_PROGRAM` to `Apple_Terminal`. Apple Terminal applies the
+        `OSC 11` background but does not restore the original background on
+        `OSC 111`.
         """
         if self.theme in {"ansi-dark", "ansi-light"}:
+            return
+        # Apple Terminal applies OSC 11 but will not restore it with OSC 111.
+        if os.environ.get("TERM_PROGRAM", "").strip() == "Apple_Terminal":
             return
 
         from deepagents_code.terminal_escape import set_terminal_background
@@ -9408,7 +9245,7 @@ class DeepAgentsApp(App):
 
         is_auto_fallback = any(
             isinstance(request.get("description"), str)
-            and request["description"].startswith("Auto human fallback ")
+            and request["description"].startswith("Auto human fallback")
             for request in action_requests or []
         )
         if settings.shell_allow_list and action_requests and not is_auto_fallback:
@@ -9675,112 +9512,70 @@ class DeepAgentsApp(App):
             markup=False,
         )
 
-    def _notify_auto_mode_enabled_once(self) -> None:
-        """Show the Auto first-enable modal at most once per install.
-
-        Auto is already active when this runs. Enter keeps Auto and records the
-        notice; Esc (or a non-true dismiss) reverts to Manual without saving so
-        the notice can appear again. Save is best-effort on accept so a failed
-        write only re-shows on a later successful enable path.
-        """
-        from deepagents_code.approval_mode import (
-            has_auto_mode_notice,
-            save_auto_mode_notice,
-        )
-        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
-
-        if has_auto_mode_notice() or getattr(self, "_auto_mode_notice_pending", False):
-            return
-
-        def handle_result(accepted: bool | None) -> None:
-            self._auto_mode_notice_pending = False
-            # Only an explicit continue persists "do not show again". Esc/None
-            # invert Auto back to Manual without recording the notice.
-            if accepted is True:
-                save_auto_mode_notice()
-                return
-            # `push_screen` callbacks are sync; schedule the Manual revert.
-            task = asyncio.create_task(self._revert_auto_mode_after_notice_cancel())
-            task.add_done_callback(_log_task_exception)
-
-        try:
-            self.push_screen(
-                AutoModeNoticeScreen(
-                    model_label=self._auto_classifier_review_model_spec(),
-                    distinct_from_main_model=self._auto_classifier_is_distinct(),
-                ),
-                handle_result,
-            )
-        except Exception:
-            # Cosmetic notice must never break an already-applied Auto enable.
-            logger.warning("Could not show Auto first-enable notice", exc_info=True)
-            return
-
-        # Mark pending only after the push succeeds so a failed push can't
-        # strand the guard True and suppress the notice for the whole session.
-        self._auto_mode_notice_pending = True
-
-    async def _revert_auto_mode_after_notice_cancel(self) -> None:
-        """Leave Auto after the first-enable modal is cancelled with Esc.
-
-        Best-effort live Store write mirrors the Manual toggle path: local TUI
-        state always returns to Manual; a failed live write warns and blocks new
-        runs when a live session was already writing approval mode.
-        """
-        from deepagents_code.approval_mode import ApprovalMode
-
-        # Already left Auto (e.g. a concurrent toggle) — nothing to undo.
-        if self._approval_mode is not ApprovalMode.AUTO:
-            return
-
-        should_persist_live = (
-            self._agent is not None and self._session_state is not None
-        )
-        if should_persist_live and not await self._write_live_approval_mode(
-            ApprovalMode.MANUAL
-        ):
-            self._approval_mode_blocked = True
-            self._warn_live_approval_mode_unavailable(
-                "Manual could not be persisted after declining Auto; active work "
-                "was cancelled and new runs are blocked."
-            )
-            if self._agent_running:
-                self._force_interrupt_active_work()
-            # Still flip the UI so the user is not left trusting a declined Auto.
-            self._approval_mode = ApprovalMode.MANUAL
-            self._auto_approve = False
-            if self._session_state:
-                self._session_state.approval_mode = ApprovalMode.MANUAL
-            if self._status_bar:
-                self._status_bar.set_approval_mode(ApprovalMode.MANUAL.value)
-            return
-
-        self._approval_mode_blocked = False
-        self._approval_mode = ApprovalMode.MANUAL
-        self._auto_approve = False
-        if self._session_state:
-            self._session_state.approval_mode = ApprovalMode.MANUAL
-        if self._status_bar:
-            self._status_bar.set_approval_mode(ApprovalMode.MANUAL.value)
-        self.notify(
-            "Returned to Manual approval.",
-            severity="information",
-            markup=False,
-        )
-
     async def _on_auto_approve_enabled(self) -> bool:
         """Enable Auto only after the live Store acknowledges it.
+
+        Shows the first-enable confirmation modal before activating Auto when
+        the notice has not been shown yet. If the user cancels (Esc), returns
+        `False` so the inline approval loop continues asking.
 
         Returns:
             `True` when Auto is active for subsequent actions.
         """
-        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.approval_mode import (
+            ApprovalMode,
+            has_auto_mode_notice,
+            save_auto_mode_notice,
+        )
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
         if not self._auto_mode_eligible:
             self._warn_live_approval_mode_unavailable(
                 "Auto is unavailable with a sandbox."
             )
             return False
+
+        if not has_auto_mode_notice():
+            pending: asyncio.Future[bool] | None = getattr(
+                self, "_auto_mode_confirmation_future", None
+            )
+            if pending is not None and not pending.done():
+                # Another entry point already pushed the modal — await its result
+                # rather than bypassing the confirmation.
+                confirmed = await pending
+                if not confirmed:
+                    return False
+            else:
+                # Pre-confirmation: show modal before activating Auto
+                loop = asyncio.get_running_loop()
+                future: asyncio.Future[bool] = loop.create_future()
+                self._auto_mode_confirmation_future = future
+
+                def handle_result(accepted: bool | None) -> None:
+                    self._auto_mode_notice_pending = False
+                    if not future.done():
+                        future.set_result(accepted is True)
+
+                try:
+                    self.push_screen(
+                        AutoModeNoticeScreen(
+                            model_label=self._auto_classifier_review_model_spec(),
+                            distinct_from_main_model=self._auto_classifier_is_distinct(),
+                        ),
+                        handle_result,
+                    )
+                except Exception:
+                    logger.warning("Could not show Auto confirmation", exc_info=True)
+                    self._auto_mode_confirmation_future = None
+                    return False
+                self._auto_mode_notice_pending = True
+
+                confirmed = await future
+                self._auto_mode_confirmation_future = None
+                if not confirmed:
+                    return False
+                save_auto_mode_notice()
+
         if not await self._write_live_approval_mode(ApprovalMode.AUTO):
             self._warn_live_approval_mode_unavailable(
                 "Auto could not be persisted; this approval remains pending in Manual."
@@ -9792,7 +9587,6 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(ApprovalMode.AUTO.value)
         if self._session_state:
             self._session_state.approval_mode = ApprovalMode.AUTO
-        self._notify_auto_mode_enabled_once()
         self._notify_auto_classifier_active()
         await self._auto_accept_pending_goal_rubric()
         return True
@@ -10903,6 +10697,7 @@ class DeepAgentsApp(App):
                 allow_empty_submit=True,
                 input_placeholder="Tavily API key (optional)",
                 submit_label="Enter save/skip",
+                show_cancel_hint=False,
             )
         )
         if result is not AuthResult.SAVED:
@@ -12250,6 +12045,20 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
         await self._mount_message(AppMessage(link))
+
+    @staticmethod
+    def _thread_links_configured() -> bool:
+        """Return whether LangSmith thread links can be resolved."""
+        from deepagents_code.config import get_langsmith_project_name
+
+        try:
+            return get_langsmith_project_name() is not None
+        except Exception:
+            logger.debug(
+                "Could not determine whether LangSmith thread links are configured",
+                exc_info=True,
+            )
+            return False
 
     @staticmethod
     async def _build_thread_message(
@@ -15530,13 +15339,20 @@ class DeepAgentsApp(App):
                     logger.debug(
                         "Screen stack empty during thread reset", exc_info=True
                     )
-                thread_msg_widget = AppMessage(f"Started new thread: {new_thread_id}")
-                await self._mount_message(thread_msg_widget)
-                self._schedule_thread_message_link(
-                    thread_msg_widget,
-                    prefix="Started new thread",
-                    thread_id=new_thread_id,
+                thread_links_configured = self._thread_links_configured()
+                started_message = (
+                    f"Started new thread: {new_thread_id}"
+                    if thread_links_configured
+                    else "Started new thread"
                 )
+                thread_msg_widget = AppMessage(started_message)
+                await self._mount_message(thread_msg_widget)
+                if thread_links_configured:
+                    self._schedule_thread_message_link(
+                        thread_msg_widget,
+                        prefix="Started new thread",
+                        thread_id=new_thread_id,
+                    )
                 await self._mount_previous_thread_hint(
                     self._session_state.previous_thread_id,
                     had_agent_output=outgoing_had_agent_output,
@@ -15632,7 +15448,7 @@ class DeepAgentsApp(App):
             await self._toggle_diff_line_numbers()
             label = "shown" if self._show_diff_line_numbers else "hidden"
             self.notify(
-                f"Diff line numbers {label} for new diffs.",
+                f"Line numbers {label} for new diffs.",
                 severity="information",
                 timeout=5,
                 markup=False,
@@ -15694,17 +15510,7 @@ class DeepAgentsApp(App):
                     msg += f"\n\n{self._format_cost_summary()}"
                 await self._mount_message(AppMessage(msg))
             else:
-                model_name = settings.model_name
-                context_limit = settings.model_context_limit
-
-                parts: list[str] = ["No token usage yet"]
-                if context_limit is not None:
-                    limit_str = format_token_count(context_limit)
-                    parts.append(f"{limit_str} token context window")
-                if model_name:
-                    parts.append(model_name)
-
-                msg = " · ".join(parts)
+                msg = "No token usage yet - send a message to get started"
                 if self._displayed_cost_usd > 0:
                     msg += f"\n\n{self._format_cost_summary()}"
                 await self._mount_message(AppMessage(msg))
@@ -18878,10 +18684,14 @@ class DeepAgentsApp(App):
         if not owner or (owner != active_agent and self._server_kwargs is None):
             return False
 
+        thread_links_configured = self._thread_links_configured()
         resume_hint = " (Resume with /threads -r)"
-        previous_msg_widget = AppMessage(
+        previous_message = (
             f"Previous thread: {previous_thread_id}{resume_hint}"
+            if thread_links_configured
+            else "Resume previous thread with /threads -r"
         )
+        previous_msg_widget = AppMessage(previous_message)
         # The hint is cosmetic, so a mount fault must not escape into the
         # caller's error handling. Two callers wrap this in a rollback: a raise
         # from `_resume_thread` would undo an already-completed switch and
@@ -18890,12 +18700,13 @@ class DeepAgentsApp(App):
         # server came up healthy. Both would misreport success as failure.
         try:
             await self._mount_message(previous_msg_widget)
-            self._schedule_thread_message_link(
-                previous_msg_widget,
-                prefix="Previous thread",
-                thread_id=previous_thread_id,
-                suffix=resume_hint,
-            )
+            if thread_links_configured:
+                self._schedule_thread_message_link(
+                    previous_msg_widget,
+                    prefix="Previous thread",
+                    thread_id=previous_thread_id,
+                    suffix=resume_hint,
+                )
         except Exception:
             logger.warning(
                 "Could not mount previous-thread hint for %s",
@@ -21173,11 +20984,18 @@ class DeepAgentsApp(App):
                 text = f"Auto fell back to Manual: {reason}"
                 self.notify(text, severity="warning", timeout=10, markup=False)
             else:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Auto human fallback reason=%s consecutive_denials=%s "
+                        "consecutive_unavailable=%s total_denials=%s",
+                        reason,
+                        event.get("consecutive_denials", 0),
+                        event.get("consecutive_unavailable", 0),
+                        event.get("total_denials", 0),
+                    )
                 text = (
-                    "Auto fallback: human approval required "
-                    f"(denials {event.get('consecutive_denials', 0)}, "
-                    f"unavailable {event.get('consecutive_unavailable', 0)}, "
-                    f"total {event.get('total_denials', 0)})."
+                    "Auto couldn't confidently approve this action, so it needs your "
+                    "review. Auto will continue afterward."
                 )
         else:
             text = f"Auto warning: {reason}"
@@ -21251,6 +21069,7 @@ class DeepAgentsApp(App):
             return
         from deepagents_code.approval_mode import (
             ApprovalMode,
+            has_auto_mode_notice,
             has_yolo_acknowledgement,
             next_approval_mode,
         )
@@ -21270,6 +21089,11 @@ class DeepAgentsApp(App):
                 "Auto is unavailable with a sandbox, and YOLO is disabled "
                 "in the approval switcher."
             )
+            return
+
+        # Gate the first Auto switch on the education confirmation.
+        if target is ApprovalMode.AUTO and not has_auto_mode_notice():
+            self._prompt_auto_mode_confirmation()
             return
 
         # Gate the first YOLO switcher entry on the same policy acknowledgement
@@ -21326,7 +21150,6 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
-            self._notify_auto_mode_enabled_once()
             self._notify_auto_classifier_active()
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
@@ -21739,6 +21562,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.approval_mode import (
             ApprovalMode,
+            has_auto_mode_notice,
             has_yolo_acknowledgement,
         )
         from deepagents_code.config import is_yolo_switcher_enabled
@@ -21758,6 +21582,11 @@ class DeepAgentsApp(App):
             self._warn_live_approval_mode_unavailable(
                 "Auto is unavailable with a sandbox."
             )
+            return
+
+        # Gate the first Auto switch on the education confirmation.
+        if target is ApprovalMode.AUTO and not has_auto_mode_notice():
+            self._prompt_auto_mode_confirmation()
             return
 
         if target is ApprovalMode.YOLO:
@@ -21837,6 +21666,58 @@ class DeepAgentsApp(App):
         # Mark pending only after the push succeeds so a failed push cannot
         # suppress a later try for the whole session.
         self._yolo_mode_notice_pending = True
+
+    def _prompt_auto_mode_confirmation(self) -> None:
+        """Show the first-enable Auto confirmation before switching.
+
+        Auto stays inactive until Enter persists the notice and the follow-up
+        mode write succeeds. Esc leaves the current mode untouched and does
+        not store the notice.
+        """
+        from deepagents_code.approval_mode import (
+            ApprovalMode,
+            save_auto_mode_notice,
+        )
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
+
+        if getattr(self, "_auto_mode_notice_pending", False):
+            return
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bool] = loop.create_future()
+        self._auto_mode_confirmation_future = future
+
+        def handle_result(accepted: bool | None) -> None:
+            self._auto_mode_notice_pending = False
+            if not future.done():
+                future.set_result(accepted is True)
+            if accepted is not True:
+                return
+            if not save_auto_mode_notice():
+                self._warn_live_approval_mode_unavailable(
+                    "Auto notice could not be saved; staying in the current mode."
+                )
+                return
+            task = asyncio.create_task(self._set_approval_mode(ApprovalMode.AUTO))
+            task.add_done_callback(_log_task_exception)
+
+        try:
+            self.push_screen(
+                AutoModeNoticeScreen(
+                    model_label=self._auto_classifier_review_model_spec(),
+                    distinct_from_main_model=self._auto_classifier_is_distinct(),
+                ),
+                handle_result,
+            )
+        except Exception:
+            logger.warning("Could not show Auto confirmation", exc_info=True)
+            self._auto_mode_confirmation_future = None
+            self._warn_live_approval_mode_unavailable(
+                "Could not open the Auto confirmation; approval mode unchanged."
+            )
+            return
+
+        self._auto_mode_notice_pending = True
 
     def action_toggle_tool_output(self) -> None:
         """Toggle the most recent collapsible transcript unit."""
@@ -25290,6 +25171,9 @@ class DeepAgentsApp(App):
                 severity="error",
                 markup=False,
             )
+            return
+        if detail:
+            self.notify(detail, severity="warning", markup=False)
             return
 
         had_original = server_name in self._mcp_optimistic_original_server_info

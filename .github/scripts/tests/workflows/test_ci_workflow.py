@@ -758,8 +758,12 @@ def test_ripgrep_timeout_comment_uses_isolated_workflow_run() -> None:
     # the only lookup that works for them.
     assert "pulls.list" in script
     assert "run.head_repository.owner.login" in script
-    # An unreportable timeout is a broken mechanism, not a no-op.
-    assert "core.setFailed" in script
+    # An unresolvable PR is a normal race (closed PR / deleted head branch
+    # between CI completing and this workflow firing), so the job warns in the
+    # run log instead of failing: the CI run's own `::warning::` annotation is
+    # the record of the timeout, and there is no conversation left to post to.
+    assert "core.setFailed" not in script
+    assert "core.warning(`${message} A ripgrep timeout goes unreported" in script
 
 
 def test_ripgrep_comment_wording_is_keyed_on_pr_kind_not_the_label() -> None:

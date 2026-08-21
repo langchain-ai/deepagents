@@ -9453,9 +9453,9 @@ class DeepAgentsApp(App):
         Deliberately synchronous. Callers warn *before* awaiting anything, so
         that a cancellation or a raise downstream can never land between "YOLO
         is live" and "the user was told". Offloading the small config read to
-        a thread (as `_show_notification_settings` does) would reopen exactly
-        that window. An unreadable or malformed config fails open: when
-        suppression cannot be determined, the warning still fires.
+        a thread (as the notification hub's settings load does) would reopen
+        exactly that window. An unreadable or malformed config fails open:
+        when suppression cannot be determined, the warning still fires.
 
         Args:
             timeout: Seconds the toast stays on screen.
@@ -15377,7 +15377,7 @@ class DeepAgentsApp(App):
         elif cmd == "/theme":
             await self._show_theme_selector()
         elif cmd == "/notifications":
-            await self._show_notification_settings()
+            self._open_notification_center()
         elif cmd == "/effort" or cmd.startswith("/effort "):
             await self._handle_effort_command(command)
         elif cmd == "/model" or cmd.startswith("/model "):
@@ -20753,9 +20753,6 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
         from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
         from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
-        from deepagents_code.tui.widgets.notification_settings import (
-            NotificationSettingsScreen,
-        )
         from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
@@ -20768,8 +20765,8 @@ class DeepAgentsApp(App):
         ):
             self.screen.action_cursor_up()
             return
-        if isinstance(self.screen, (AuthPromptScreen, NotificationSettingsScreen)):
-            # These modals hold multiple focusable inputs; reuse shift+tab to
+        if isinstance(self.screen, AuthPromptScreen):
+            # This modal holds multiple focusable inputs; reuse shift+tab to
             # step focus backward (the Screen's own app.focus_previous binding
             # never fires because this priority binding consumes the key first).
             self.screen.focus_previous()
@@ -20779,6 +20776,21 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, PluginManagerScreen):
             self.screen.action_previous_tab()
+            return
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        if (
+            isinstance(self.screen, NotificationCenterScreen)
+            and self.screen.settings_expanded
+            and self.screen.settings_checkbox_focused
+        ):
+            # Expanded settings hand key focus to real checkboxes, so
+            # shift+tab must step focus backward between them rather than
+            # move the row cursor via `_SupportsReverseNav` below (which
+            # would leave focus stranded on the first checkbox).
+            self.screen.action_focus_previous()
             return
         if isinstance(self.screen, _SupportsReverseNav):
             # Membership is by `action_move_up` presence, not an enumerated
@@ -23033,36 +23045,6 @@ class DeepAgentsApp(App):
                 except Exception:
                     logger.exception("Failed to restore pending goal review")
 
-    async def _show_notification_settings(self) -> None:
-        """Show notification settings modal."""
-        from deepagents_code.model_config import is_warning_suppressed
-        from deepagents_code.tui.widgets.notification_settings import (
-            WARNING_TOGGLES,
-            NotificationSettingsScreen,
-        )
-
-        suppressed: set[str] = set()
-        try:
-            for key, _ in WARNING_TOGGLES:
-                if await asyncio.to_thread(is_warning_suppressed, key):
-                    suppressed.add(key)
-        except Exception:
-            logger.warning("Failed to read notification settings", exc_info=True)
-            suppressed = set()
-            self.notify(
-                "Could not read notification preferences. Showing defaults.",
-                severity="warning",
-                timeout=6,
-                markup=False,
-            )
-
-        def handle_result(_result: None) -> None:
-            if self._chat_input:
-                self._chat_input.focus_input()
-
-        screen = NotificationSettingsScreen(suppressed=suppressed)
-        self.push_screen(screen, handle_result)
-
     def _notify_actionable(
         self,
         notification: PendingNotification,
@@ -23416,7 +23398,7 @@ class DeepAgentsApp(App):
         ]
 
     def _open_notification_center(self) -> None:
-        """Push the notification center modal, or toast when empty."""
+        """Push the shared notification center and settings hub."""
         from deepagents_code.tui.widgets.notification_center import (
             NotificationActionResult,
             NotificationCenterScreen,
@@ -23435,15 +23417,6 @@ class DeepAgentsApp(App):
             return
 
         pending = self._notice_registry.list_all()
-        if not pending:
-            self.notify(
-                "No pending notifications.",
-                severity="information",
-                timeout=2,
-                markup=False,
-            )
-            return
-
         self._dismiss_registered_toasts()
 
         def handle_result(result: NotificationActionResult | None) -> None:
@@ -23521,8 +23494,8 @@ class DeepAgentsApp(App):
 
         The action's follow-up modal (e.g. the API-key prompt) stacks on
         top of the center so Esc returns to it. Once the action resolves,
-        the center is reloaded so any handled entry drops out; reloading an
-        empty list dismisses the center.
+        the center is reloaded so any handled entry drops out while settings
+        remain reachable.
         """
         await self._dispatch_notification_action(key, action_id)
         await self._refresh_open_center()

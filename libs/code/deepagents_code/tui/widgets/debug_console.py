@@ -89,6 +89,8 @@ _CLICK_TO_COPY_ID = "debug-click-to-copy"
 """Id of the checkbox that opts click-to-copy in for the console."""
 _CLICK_TO_COPY_DEFAULT = False
 """Whether click-to-copy is enabled before the user toggles the checkbox."""
+_MIN_HANGING_VALUE_WIDTH = 10
+"""Minimum readable value-column width for hanging snapshot rows."""
 _FOCUS_CYCLE = f"#{_FILTER_SELECT_ID}, #{_CLICK_TO_COPY_ID}, #debug-log"
 """Tab-cycle selector spanning the toolbar controls and the log view."""
 FilterValue = Literal[
@@ -594,7 +596,7 @@ def _snapshot_copy_success_message(label: str) -> str:
 
 
 class _SnapshotView(Static):
-    """Snapshot header that copies marked spans and opens link spans on click."""
+    """Snapshot header that copies marked spans and hangs wrapped values."""
 
     # Match WelcomeBanner: disabling auto_links avoids a hover-refresh flicker
     # loop caused by link styles getting a fresh random id on every render.
@@ -614,6 +616,61 @@ class _SnapshotView(Static):
         """
         super().__init__(classes=classes)
         self._on_copy = on_copy
+        self._snapshot_content = Content()
+        self._continuation_indent = 0
+
+    def update_snapshot(self, content: Content, continuation_indent: int) -> None:
+        """Update the snapshot and its shared value-column offset."""
+        self._snapshot_content = content
+        self._continuation_indent = continuation_indent
+        self.update(content)
+
+    def render(self) -> Content:
+        """Render values with continuation lines aligned to the value column.
+
+        Returns:
+            The snapshot content wrapped to the current width.
+        """
+        return self._wrapped_content(self.content_size.width)
+
+    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
+        """Measure the hanging-wrapped snapshot at its available width.
+
+        Returns:
+            The number of rendered snapshot lines.
+        """
+        del container, viewport
+        if width <= 0:
+            return 0
+        return len(self._wrapped_content(width).split(allow_blank=True))
+
+    def _wrapped_content(self, width: int) -> Content:
+        """Wrap each row while preserving its label as a hanging indent.
+
+        Rows hang continuation lines under the value column only when that
+        leaves a readable value width; on narrower terminals the whole row
+        wraps flat instead, so values stay readable without making the fixed
+        header excessively tall.
+
+        Returns:
+            Snapshot content with wrapped value lines indented.
+        """
+        indent = self._continuation_indent
+        if width <= 0:
+            return self._snapshot_content
+        value_width = width - indent
+        flat = value_width < _MIN_HANGING_VALUE_WIDTH or indent <= 0
+        wrapped: list[Content] = []
+        padding = Content(" " * indent)
+        for row in self._snapshot_content.split(allow_blank=True):
+            if flat:
+                wrapped.extend(row.wrap(width))
+                continue
+            prefix, value = row.divide([indent])
+            value_lines = value.wrap(value_width)
+            wrapped.append(Content.assemble(prefix, value_lines[0]))
+            wrapped.extend(Content.assemble(padding, line) for line in value_lines[1:])
+        return Content("\n").join(wrapped)
 
     def on_click(self, event: events.Click) -> None:
         """Copy a marked span or open a link span under the click.
@@ -813,7 +870,9 @@ class DebugConsoleScreen(ModalScreen[None]):
                 self._copy_snapshot_value,
                 classes="debug-console-snapshot",
             )
-            snapshot_view.update(self._render_snapshot())
+            snapshot_view.update_snapshot(
+                self._render_snapshot(), self._snapshot_value_column()
+            )
             yield snapshot_view
             with Horizontal(classes="debug-console-toolbar"):
                 yield Static("Level", classes="debug-console-filter-label")
@@ -961,8 +1020,8 @@ class DebugConsoleScreen(ModalScreen[None]):
         from textual.css.query import NoMatches
 
         try:
-            self.query_one(".debug-console-snapshot", _SnapshotView).update(
-                self._render_snapshot()
+            self.query_one(".debug-console-snapshot", _SnapshotView).update_snapshot(
+                self._render_snapshot(), self._snapshot_value_column()
             )
         except NoMatches:
             # The console was dismissed before the worker returned.
@@ -1045,6 +1104,12 @@ class DebugConsoleScreen(ModalScreen[None]):
         if self._on_click_to_copy_change is not None:
             self._on_click_to_copy_change(event.value)
 
+    def _snapshot_value_column(self) -> int:
+        """Return the cell offset shared by snapshot field values."""
+        if not self._snapshot:
+            return 0
+        return max(len(field.label) for field in self._snapshot) + 2
+
     def _render_snapshot(self) -> Content:
         """Build the right-aligned `label: value` snapshot block.
 
@@ -1053,7 +1118,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         """
         if not self._snapshot:
             return Content.styled("(no session data)", "dim italic")
-        width = max(len(field.label) for field in self._snapshot)
+        width = self._snapshot_value_column() - 2
         lines = [self._render_snapshot_row(field, width) for field in self._snapshot]
         return Content("\n").join(lines)
 

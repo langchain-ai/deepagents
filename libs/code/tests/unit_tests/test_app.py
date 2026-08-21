@@ -15297,9 +15297,12 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-0-timestamp-footer", Static)
 
+            schedule_prune = MagicMock()
+            monkeypatch.setattr(app, "_schedule_transcript_prune", schedule_prune)
             await app._hydrate_messages("above")
             await pilot.pause()
 
+            schedule_prune.assert_called_once_with("above")
             footer = app.query_one("#hist-0-timestamp-footer", Static)
             assert footer.display is True
             # Footer sits directly after its hydrated message in the DOM.

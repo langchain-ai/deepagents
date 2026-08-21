@@ -4099,7 +4099,7 @@ class DeepAgentsApp(App):
         """Whether resumed history is warming toward the soft window size."""
 
         self._transcript_prune_timer: Timer | None = None
-        """Idle timer that defers opposite-edge pruning while scrolling."""
+        """Idle timer that defers oldest-edge pruning while scrolling."""
 
         self._transcript_prune_running = False
         """Whether one bounded prune slice is currently mutating the DOM."""
@@ -8753,7 +8753,7 @@ class DeepAgentsApp(App):
             self._message_store.mark_hydrated_below(len(entries))
         self._schedule_message_height_measurements(hydrated_ids)
         self._sync_transcript_spacers(messages_container)
-        self._schedule_transcript_prune("below" if above else "above")
+        self._schedule_transcript_prune("above")
         chat.scroll_y = old_scroll_y
         await self._regroup_completed_tools()
         return len(entries)
@@ -8764,7 +8764,7 @@ class DeepAgentsApp(App):
         *,
         immediate: bool = False,
     ) -> None:
-        """Debounce opposite-edge pruning until scrolling or hydration settles."""
+        """Debounce oldest-edge pruning until scrolling or hydration settles."""
         self._transcript_prune_direction = direction
         if self._transcript_prune_running:
             return
@@ -8784,7 +8784,7 @@ class DeepAgentsApp(App):
         )
 
     async def _run_transcript_prune_slice(self) -> None:
-        """Remove one small opposite-edge batch after the transcript goes idle."""
+        """Remove one small oldest-edge batch after the transcript goes idle."""
         self._transcript_prune_timer = None
         if self._transcript_prune_running:
             return

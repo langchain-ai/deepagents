@@ -30421,11 +30421,12 @@ class TestLiveApprovalModeWrites:
                 )
                 assert app._approval_mode is not ApprovalMode.AUTO
                 save_notice.assert_not_called()
-                save_recent_mode.assert_called_once_with(ApprovalMode.AUTO.value)
+                save_recent_mode.assert_not_called()
                 await pilot.press("enter")
                 result = await task
                 assert result is True
                 save_notice.assert_called_once_with()
+                save_recent_mode.assert_called_once_with(ApprovalMode.AUTO.value)
                 assert app._approval_mode is ApprovalMode.AUTO
 
     async def test_on_auto_approve_enabled_skips_modal_when_notice_shown(self) -> None:
@@ -30562,6 +30563,10 @@ class TestLiveApprovalModeWrites:
                 patch(
                     "deepagents_code.approval_mode.save_auto_mode_notice",
                 ) as save_notice,
+                patch(
+                    "deepagents_code.model_config.save_recent_startup_mode",
+                    return_value=True,
+                ) as save_recent_mode,
             ):
                 task = asyncio.create_task(app._on_auto_approve_enabled())
                 await pilot.pause()
@@ -30570,6 +30575,8 @@ class TestLiveApprovalModeWrites:
                 result = await task
                 assert result is False
                 save_notice.assert_not_called()
+                # A declined confirmation must not persist Auto for next launch.
+                save_recent_mode.assert_not_called()
                 assert app._approval_mode is not ApprovalMode.AUTO
                 write_live.assert_not_awaited()
 

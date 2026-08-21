@@ -9554,13 +9554,6 @@ class DeepAgentsApp(App):
                     return False
                 self._auto_mode_notice_pending = True
 
-                # Persist the intent as soon as the confirmation modal is on
-                # screen, so the next bare launch restores Auto even when the
-                # user dismisses the modal (Enter or Esc) before the live
-                # Store write lands. `_persist_startup_approval_mode` only
-                # records `manual`/`auto`, so this cannot promote YOLO.
-                await self._persist_startup_approval_mode(ApprovalMode.AUTO)
-
                 confirmed = await future
                 self._auto_mode_confirmation_future = None
                 if not confirmed:

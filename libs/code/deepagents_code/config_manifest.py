@@ -1248,10 +1248,14 @@ def resolve_startup_mode_with_source(
     if source != "default":
         return value, source
 
-    # No explicit/managed/env mode: fall back to the app-managed recent mode so
-    # the display agrees with what `load_startup_mode` will restore at launch.
+    # No explicit/managed/env mode resolved. Apply the app-managed recent
+    # fallback only when no explicit `[startup].mode` was declared: an invalid
+    # explicit value is fail-closed in `load_startup_mode` (it returns Manual
+    # without consulting `recent`), so introspection must not report Auto here.
     startup = data.get("startup")
     if isinstance(startup, dict):
+        if startup.get("mode") is not None:
+            return value, source
         recent = startup.get("recent")
         if isinstance(recent, str) and recent in RECENT_STARTUP_MODES:
             return recent, "config.toml"

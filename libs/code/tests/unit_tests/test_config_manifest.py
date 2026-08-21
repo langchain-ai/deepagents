@@ -3045,6 +3045,13 @@ def test_resolve_startup_mode_with_source_reports_recent_fallback() -> None:
         managed_toml_data={},
     ) == (DEFAULT_STARTUP_MODE, "default")
 
+    # An invalid explicit mode is fail-closed: `load_startup_mode` returns
+    # Manual immediately without consulting `recent`, so the display must too.
+    assert resolve_startup_mode_with_source(
+        toml_data={"startup": {"mode": "hands-off", "recent": "auto"}},
+        managed_toml_data={},
+    ) == (DEFAULT_STARTUP_MODE, "default")
+
 
 def test_resolve_toml_float_success_non_bool() -> None:
     """A FLOAT option reads a real number from TOML and coerces an int to float."""

@@ -4388,9 +4388,8 @@ def _check_project_dotenv_trust() -> None:
     safe_skip_key = sanitize_control_chars(skip_key, keep_newlines=False)
     prompt_console.print(f"  {escape(safe_dotenv_path)}", highlight=False)
     prompt_console.print(
-        "Loaded values reach subprocesses before any approval prompt and can run "
-        "code (shell startup hooks, git config). Loading anyway — you can change "
-        "this.",
+        "Its values pass to subprocesses and can run code (shell startup hooks, "
+        "git config).",
         style="yellow",
         highlight=False,
     )

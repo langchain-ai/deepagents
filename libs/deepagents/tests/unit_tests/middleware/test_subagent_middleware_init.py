@@ -17,11 +17,10 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 from langgraph.graph import START, MessagesState, StateGraph
 
-from deepagents import ForkedSubAgent as ExportedForkedSubAgent
 from deepagents.backends.state import StateBackend
 from deepagents.graph import create_deep_agent
-from deepagents.middleware import ForkedSubAgent
 from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     _PARENT_SYSTEM_MESSAGE_KEY,
     GENERAL_PURPOSE_SUBAGENT,
@@ -115,11 +114,6 @@ class TestSubagentMiddlewareInit:
         assert "state_schema" in create_hints
         assert "return" in create_hints
 
-    def test_forked_subagent_is_exported_with_required_mode(self) -> None:
-        assert ExportedForkedSubAgent is ForkedSubAgent
-        assert "mode" in ForkedSubAgent.__required_keys__
-        assert "system_prompt" in ForkedSubAgent.__optional_keys__
-
     def test_create_sub_agent_defaults_to_empty_system_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 
@@ -153,7 +147,18 @@ class TestSubagentMiddlewareInit:
         with pytest.raises(ValueError, match="invalid mode 'dynamic'"):
             SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
 
-    def test_forked_subagent_inherits_prompt_and_memory_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_rejects_system_prompt_on_forked_subagent(self) -> None:
+        invalid_spec: Any = {
+            "name": "worker",
+            "description": "Does work.",
+            "mode": "fork",
+            "system_prompt": "You are a SQL expert.",
+        }
+
+        with pytest.raises(ValueError, match="cannot set system_prompt"):
+            SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
+
+    def test_forked_subagent_inherits_prompt_and_skips_memory_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, Any]] = []
         runnable = self._make_echo_graph()
 
@@ -196,8 +201,61 @@ class TestSubagentMiddlewareInit:
         forked = next(spec for spec in captured if spec["name"] == "forked-worker")
         isolated = next(spec for spec in captured if spec["name"] == "isolated-worker")
         assert forked["system_prompt"] == "PARENT_PROMPT"
-        assert any(isinstance(middleware, MemoryMiddleware) for middleware in forked["middleware"])
+        # No mirrored MemoryMiddleware for the fork: the captured parent
+        # message already carries the parent's own memory content, so a
+        # second instance would only reload files to build a prompt
+        # fragment that _ForkSystemMessageMiddleware immediately discards.
+        assert not any(isinstance(middleware, MemoryMiddleware) for middleware in forked["middleware"])
         assert not any(isinstance(middleware, MemoryMiddleware) for middleware in isolated["middleware"])
+
+    def test_forked_subagent_skips_its_own_skills_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: list[dict[str, Any]] = []
+        runnable = self._make_echo_graph()
+
+        def fake_create_sub_agent(
+            spec: dict[str, Any],
+            *,
+            state_schema: type | None = None,
+            response_format: object = None,
+        ) -> object:
+            del state_schema, response_format
+            captured.append(spec)
+            return runnable
+
+        monkeypatch.setattr("deepagents.middleware.subagents.create_sub_agent", fake_create_sub_agent)
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with patch("deepagents.graph.create_agent", return_value=fake_agent):
+            create_deep_agent(
+                model=model,
+                system_prompt="PARENT_PROMPT",
+                subagents=[
+                    {
+                        "name": "forked-worker",
+                        "description": "Continues with context.",
+                        "model": worker_model,
+                        "mode": "fork",
+                        "skills": ["/skills/fork-only/"],
+                    },
+                    {
+                        "name": "isolated-worker",
+                        "description": "Starts fresh.",
+                        "system_prompt": "ISOLATED_PROMPT",
+                        "skills": ["/skills/isolated/"],
+                    },
+                ],
+            )
+
+        forked = next(spec for spec in captured if spec["name"] == "forked-worker")
+        isolated = next(spec for spec in captured if spec["name"] == "isolated-worker")
+        # The fork's own skills index would only feed a prompt fragment that
+        # _ForkSystemMessageMiddleware immediately overwrites with the
+        # parent's captured message, so building it is skipped entirely.
+        assert not any(isinstance(middleware, SkillsMiddleware) for middleware in forked["middleware"])
+        assert any(isinstance(middleware, SkillsMiddleware) for middleware in isolated["middleware"])
 
     def test_forked_subagent_inherits_dynamic_parent_prompt(self) -> None:
         class _AppendPromptMiddleware(AgentMiddleware):
@@ -625,49 +683,33 @@ class TestSubagentMiddlewareInit:
 
         assert _PARENT_SYSTEM_MESSAGE_KEY not in captured
 
-    def test_duplicate_name_uses_winning_handoff_mode(self) -> None:
-        captured: dict[str, object] = {}
-
+    def test_rejects_duplicate_subagent_names(self) -> None:
         class _Runnable:
             def with_config(self, config: dict[str, object]) -> "_Runnable":
                 del config
                 return self
 
             def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
-                del config
-                captured.update(state)
+                del state, config
                 return {"messages": [AIMessage(content="done")]}
 
-        middleware = SubAgentMiddleware(
-            backend=StateBackend(),
-            subagents=[
-                {
-                    "name": "worker",
-                    "description": "Forked registration.",
-                    "runnable": _Runnable(),
-                    "mode": "fork",
-                },
-                {
-                    "name": "worker",
-                    "description": "Winning isolated registration.",
-                    "runnable": _Runnable(),
-                },
-            ],
-        )
-        task_tool = middleware.tools[0]
-        runtime = ToolRuntime(
-            state={"messages": [HumanMessage(content="parent history")]},
-            context={},
-            config={"configurable": {}},
-            stream_writer=lambda _chunk: None,
-            tools=[task_tool],
-            tool_call_id="call_worker",
-            store=None,
-        )
-
-        task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
-
-        assert captured["messages"] == [HumanMessage(content="new task")]
+        with pytest.raises(ValueError, match="Duplicate subagent name 'worker'"):
+            SubAgentMiddleware(
+                backend=StateBackend(),
+                subagents=[
+                    {
+                        "name": "worker",
+                        "description": "Forked registration.",
+                        "runnable": _Runnable(),
+                        "mode": "fork",
+                    },
+                    {
+                        "name": "worker",
+                        "description": "Second registration.",
+                        "runnable": _Runnable(),
+                    },
+                ],
+            )
 
     def test_handoff_subagent_receives_only_task_description(self) -> None:
         captured: dict[str, object] = {}

@@ -691,8 +691,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
             ]
+            # A fork's system message always gets overwritten by the parent's
+            # captured one, so building Memory/Skills prompt content here is wasted.
             subagent_skills = spec.get("skills")
-            if subagent_skills:
+            if subagent_skills and not is_forked:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             # Core names captured before the tail so new spec middleware splices in ahead of it.
             _subagent_core_names = {m.name for m in subagent_middleware}
@@ -700,14 +702,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
 
             append_prompt_caching_middleware(subagent_middleware)
-            if is_forked and memory is not None:
-                subagent_middleware.append(
-                    MemoryMiddleware(
-                        backend=backend,
-                        sources=memory,
-                        add_cache_control=True,
-                    )
-                )
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()

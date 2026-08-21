@@ -28,6 +28,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field
+from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
@@ -295,9 +296,28 @@ def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
     if mode not in (None, "handoff", "fork"):
         msg = f"SubAgent '{spec['name']}' has invalid mode '{mode}'; expected 'handoff' or 'fork'"
         raise ValueError(msg)
+    if mode == "fork" and spec.get("system_prompt") is not None:
+        msg = f"ForkedSubAgent '{spec['name']}' cannot set system_prompt; it always inherits the parent's."
+        raise ValueError(msg)
 
 
-def _is_forked_subagent(spec: _SubAgentSpec) -> bool:
+def _validate_unique_subagent_names(subagents: Sequence[_SubAgentSpec]) -> None:
+    """Reject subagent specs that share a name.
+
+    The model selects a subagent purely by name, so a collision has no
+    coherent meaning — it would otherwise silently resolve to whichever
+    spec happens to be last.
+    """
+    seen: set[str] = set()
+    for spec in subagents:
+        name = spec["name"]
+        if name in seen:
+            msg = f"Duplicate subagent name '{name}'; each subagent must have a unique name."
+            raise ValueError(msg)
+        seen.add(name)
+
+
+def _is_forked_subagent(spec: _SubAgentSpec) -> TypeIs[ForkedSubAgent]:
     """Return whether a subagent inherits parent conversation history."""
     return spec.get("mode") == "fork"
 
@@ -321,6 +341,7 @@ _EXCLUDED_STATE_KEYS = {
     "messages",
     "todos",
     "structured_response",
+    _PARENT_SYSTEM_MESSAGE_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.
@@ -539,13 +560,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
     Returns:
         A StructuredTool that can invoke subagents by type.
     """
+    _validate_unique_subagent_names(subagents)
     for spec in subagents:
         _validate_subagent_mode(spec)
 
     def _resolved_declarative_spec(spec: SubAgent | ForkedSubAgent) -> SubAgent:
         """Resolve the inherited prompt for a declarative fork."""
         if not _is_forked_subagent(spec):
-            return cast("SubAgent", spec)
+            return spec
         resolved = {key: value for key, value in spec.items() if key not in {"mode", "system_prompt"}}
         resolved["system_prompt"] = parent_system_prompt if parent_system_prompt is not None else ""
         resolved["middleware"] = [*spec.get("middleware", []), _ForkSystemMessageMiddleware()]
@@ -665,7 +687,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         """Prepare state for invocation."""
         subagent = _select_subagent(subagent_type, runtime)
         forked = subagent_type in fork_mode_names
-        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS and k != _PARENT_SYSTEM_MESSAGE_KEY}
+        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
         subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
         if forked and "runnable" not in subagents_by_name[subagent_type] and effective_system_message is not None:
             subagent_state[_PARENT_SYSTEM_MESSAGE_KEY] = effective_system_message

@@ -20,6 +20,7 @@ inline under "Notification settings" so toggles never leave the hub.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 from importlib import import_module
@@ -104,6 +105,14 @@ class NotificationSettingsRequested(Message):
     config; the center also handles the message itself so toggles stay
     responsive in isolation (e.g. widget tests on a bare host app).
     """
+
+
+_PRELOAD_TIMEOUT_SECONDS = 3.0
+"""How long an expand waits on the mount-time preferences read.
+
+Generous for a local config read, short enough that a stalled filesystem
+surfaces as a toast instead of an unresponsive settings row.
+"""
 
 
 IN_PLACE_ACTIONS: frozenset[ActionId] = frozenset({ActionId.ENTER_API_KEY})
@@ -224,7 +233,7 @@ class _NotificationSettingsRow(Static):
         return self._index
 
     def set_expanded(self, expanded: bool) -> None:
-        """Point the leading disclosure glyph at the section's new state.
+        """Redraw the leading glyph for the section's new state.
 
         Args:
             expanded: Whether the settings section is now expanded.
@@ -247,11 +256,11 @@ class _NotificationSettingsRow(Static):
         self.update(self._render())
 
     def _render(self) -> Content:
-        # The leading glyph doubles as the disclosure affordance: the cursor
-        # on the selected row hints that Enter opens the section, and the
-        # expanded disclosure glyph stays up while it is open (signaling Esc
-        # collapses). A separate trailing triangle would visibly flip between
-        # glyphs on each toggle.
+        # One leading glyph carries both the cursor and the disclosure
+        # affordance, so a toggle changes a single position instead of two.
+        # While expanded the disclosure glyph deliberately takes the
+        # cursor's place: focus has moved to the checkboxes, so a row
+        # cursor there would point at something that is not selected.
         glyphs = get_glyphs()
         if self._expanded:
             cursor = glyphs.disclosure_expanded
@@ -517,18 +526,27 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
             # checkboxes immediately. Loading on expand would leave the pane
             # open but unfocused for the duration of the config read, which
             # also delayed the footer hint's "Space/Enter toggle" verb.
-            self.run_worker(self._preload_settings(), group="nc-preload")
+            self.run_worker(
+                self._preload_settings(),
+                group="nc-preload",
+                # A preferences read must not be able to kill the session.
+                # The default would route any escape to `WorkerFailed`.
+                exit_on_error=False,
+            )
 
     async def _preload_settings(self) -> None:
         """Load suppressed keys in the background so expand need not wait."""
         self._settings_loading = True
         try:
             suppressed = await self._load_suppressed()
+            if self._suppressed is None:
+                self._suppressed = suppressed
         finally:
+            # Release the waiter even when the read raises or the worker is
+            # cancelled. `_expand_settings` blocks on this event, so a missed
+            # `set()` would wedge the settings row for the life of the screen.
             self._settings_loading = False
-        if self._suppressed is None:
-            self._suppressed = suppressed
-        self._settings_preloaded.set()
+            self._settings_preloaded.set()
 
     def _settings_has_focus(self) -> bool:
         """Whether key focus is inside the expanded settings checkboxes.
@@ -696,37 +714,64 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         assert isinstance(row, _NotificationSettingsRow)  # noqa: S101
         return row
 
+    async def _await_preload(self) -> set[str] | None:
+        """Wait for the mount preload to publish the suppressed keys.
+
+        Bounded so a stalled config read (an unresponsive network home
+        directory, a held lock) cannot block the expand forever. On timeout
+        or a failed read the section stays collapsed rather than rendering
+        every warning as enabled, which is the unsafe direction to lie in.
+
+        Returns:
+            The preloaded suppressed keys, or `None` when the read timed out
+            or failed and the expand must not go on.
+        """
+        try:
+            async with asyncio.timeout(_PRELOAD_TIMEOUT_SECONDS):
+                await self._settings_preloaded.wait()
+        except TimeoutError:
+            logger.warning("Notification settings preload did not complete in time")
+        if self._suppressed is not None:
+            return self._suppressed
+        # The preload released the event without keys, so it raised or was
+        # cancelled; `_load_suppressed` handles its own errors and returns a
+        # set, so reaching here means an unexpected failure.
+        if self.is_mounted:
+            self.app.notify(
+                "Could not read notification preferences. Reopen to retry.",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
+        return None
+
     async def _expand_settings(self) -> None:
         """Mount the warning checkboxes under the settings row.
 
-        Uses the suppressed keys preloaded by `on_mount` (or supplied at
-        construction); only an expand that beats the preload to the await
-        still waits on it. A `reload()` that rebuilt the row list while the
-        section was open calls this to remount the checkboxes, so an
-        already-`_settings_expanded` state only skips a *mounted* section.
+        Uses the suppressed keys supplied at construction, or the ones
+        `on_mount` preloaded. Reaching the wait below means the preload has
+        not stored them yet, so that path always blocks; it is bounded so a
+        stalled config read cannot wedge the row. A `reload()` that rebuilt
+        the row list while the section was open calls this to remount the
+        checkboxes, so an already-`_settings_expanded` state only skips a
+        *mounted* section.
         """
         if self._settings_expanded and self.query("#nc-settings-group"):
-            return
-        if self._settings_loading and self._settings_preloaded.is_set():
-            # A reload-driven remount is racing the mount preload; fall out
-            # and let the next toggle rebuild.
             return
         # Drop a stale group that a `reload()` rebuild or an interrupted
         # collapse left mounted, so the mount below cannot raise
         # `DuplicateIds` on `#nc-settings-group`.
         for stale in self.query("#nc-settings-group"):
             await stale.remove()
-        if self._suppressed is None:
-            # Normally resolves immediately: `on_mount` preloaded the keys.
-            # The wait only blocks when the user expands before that
-            # background read finishes.
-            await self._settings_preloaded.wait()
+        suppressed = self._suppressed
+        if suppressed is None:
+            suppressed = await self._await_preload()
+            if suppressed is None:
+                return
             # A rapid Esc while the config read was in flight already
             # dismissed the screen; expanding a dead screen would raise.
             if not self.is_mounted:
                 return
-            if self._suppressed is None:
-                self._suppressed = set()
 
         scroll = self.query_one(VerticalScroll)
         group = _NotificationSettingsGroup(id="nc-settings-group")
@@ -739,29 +784,22 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
             checkboxes = [
                 Checkbox(
                     label,
-                    value=key not in self._suppressed,
+                    value=key not in suppressed,
                     id=f"ns-{key}",
                 )
                 for key, label in WARNING_TOGGLES
             ]
             await group.mount(*checkboxes)
 
-            # Flip state, glyph, footer hint, and focus together so the
-            # expanded section renders complete in one frame.
             self._settings_expanded = True
             self._settings_row().set_expanded(True)
             self._refresh_help()
             self._set_selected(len(self._rows) - 1)
             if checkboxes:
-                first = checkboxes[0]
-                if first.is_attached:
-                    # `Widget.focus()` defers via `app.call_later`, so the
-                    # pane would paint open with nothing focused before the
-                    # focused checkbox styles in; setting focus on the screen
-                    # applies in this same turn.
-                    self.set_focus(first)
-                else:
-                    first.call_after_refresh(first.focus)
+                # `Widget.focus()` defers via `app.call_later`.
+                # `Screen.set_focus` applies in this same turn, so the pane
+                # cannot paint open with nothing focused.
+                self.set_focus(checkboxes[0])
             self._settings_row().scroll_visible()
 
     async def _collapse_settings(self) -> None:
@@ -779,27 +817,35 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
     async def _load_suppressed(self) -> set[str]:
         """Read suppressed warning keys from config off the event loop.
 
-        An unreadable or malformed config falls back to empty (all warnings
-        shown) with a warning toast, matching the old settings modal.
+        Falls back to empty (all warnings shown) with a warning toast. Note
+        that `is_warning_suppressed` already swallows an unreadable or
+        malformed config and returns `False` per key, so the ordinary config
+        failure defaults silently and never reaches the handler here; this
+        catches the rest.
 
         Returns:
             The set of suppressed warning keys from `config.toml`.
         """
-        from deepagents_code.model_config import is_warning_suppressed
-
         suppressed: set[str] = set()
         try:
+            # Imported inside the try: a failure here must degrade to
+            # defaults like any other read failure, not escape the worker.
+            from deepagents_code.model_config import is_warning_suppressed
+
             for key, _ in WARNING_TOGGLES:
                 if await asyncio.to_thread(is_warning_suppressed, key):
                     suppressed.add(key)
         except Exception:
             logger.warning("Failed to read notification settings", exc_info=True)
-            self.app.notify(
-                "Could not read notification preferences. Showing defaults.",
-                severity="warning",
-                timeout=6,
-                markup=False,
-            )
+            # Guarded: a raise from the recovery path would replace the
+            # handled error and escape as an unhandled one.
+            with contextlib.suppress(Exception):
+                self.app.notify(
+                    "Could not read notification preferences. Showing defaults.",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
+                )
             return set()
         return suppressed
 

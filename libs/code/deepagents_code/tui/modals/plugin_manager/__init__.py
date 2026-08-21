@@ -502,7 +502,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             search_input.display = False
             source_input.display = True
             source_input.focus()
-            help_text.update(f"Enter add {glyphs.bullet} Esc cancel")
+            help_text.update(f"Enter to add {glyphs.bullet} Esc to cancel")
             return
 
         title.update("Plugins")

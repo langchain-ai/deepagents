@@ -254,7 +254,8 @@ def test_store_backend_ls_nested_directories():
     assert len(utils_paths) == 2
 
     empty_listing = be.ls("/nonexistent/")
-    assert empty_listing.entries == []
+    assert empty_listing.entries is None
+    assert empty_listing.error == "Path '/nonexistent/': path_not_found"
 
 
 def test_store_backend_ls_trailing_slash():
@@ -280,6 +281,23 @@ def test_store_backend_ls_trailing_slash():
     assert listing2 is not None
     assert len(listing1) == len(listing2)
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
+
+
+# Regression test for https://github.com/langchain-ai/deepagents/issues/3930
+def test_store_backend_ls_nonexistent_path_sets_error():
+    """Ls on a missing path must surface the failure on .error, not return [].
+
+    Mirrors the FilesystemBackend contract from #3573 so that a missing path is
+    distinguishable from a genuinely empty directory.
+    """
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/existing/notes.txt", "hello")
+
+    result = be.ls("/missing/")
+
+    assert result.entries is None
+    assert result.error == "Path '/missing/': path_not_found"
 
 
 def test_store_backend_intercept_large_tool_result():

@@ -30,6 +30,7 @@ from deepagents.backends.utils import (
     file_data_to_string,
     grep_matches_from_files,
     perform_string_replacement,
+    prefix_dir_missing,
     slice_read_response,
     update_file_data,
 )
@@ -309,10 +310,15 @@ class StoreBackend(BackendProtocol):
             path: Absolute path to directory.
 
         Returns:
-            List of `FileInfo`-like dicts for files and directories directly
-                in the directory.
+            `LsResult` with `entries` listing files and directories directly
+                in the directory on success.
 
                 Directories have a trailing `/` in their path and `is_dir=True`.
+
+                Missing paths set `error` to `Path '<path>': path_not_found`
+                with `entries=None`, matching `FilesystemBackend.ls`.
+
+                Empty directories return `error=None` and `entries=[]`.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -320,11 +326,15 @@ class StoreBackend(BackendProtocol):
         # Retrieve all items and filter by path prefix locally to avoid
         # coupling to store-specific filter semantics
         items = self._search_store_paginated(store, namespace)
-        infos: list[FileInfo] = []
-        subdirs: set[str] = set()
 
         # Normalize path to have trailing slash for proper prefix matching
         normalized_path = path if path.endswith("/") else path + "/"
+
+        if prefix_dir_missing((str(item.key) for item in items), normalized_path):
+            return LsResult(error=f"Path '{path}': path_not_found", entries=None)
+
+        infos: list[FileInfo] = []
+        subdirs: set[str] = set()
 
         for item in items:
             # Check if file is in the specified directory or a subdirectory

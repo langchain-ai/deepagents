@@ -472,6 +472,21 @@ def test_ls_surfaces_pull_error() -> None:
     assert "Hub unavailable" in result.error
 
 
+# Regression test for https://github.com/langchain-ai/deepagents/issues/3930
+def test_ls_nonexistent_path_sets_error() -> None:
+    """Ls on a missing path must surface the failure on .error, not return [].
+
+    Mirrors the FilesystemBackend contract from #3573 so that a missing path is
+    distinguishable from a genuinely empty directory.
+    """
+    backend, _ = _make_backend(**{"existing/notes.md": FileEntry(type="file", content="hi")})
+
+    result = backend.ls("/missing/")
+
+    assert result.entries is None
+    assert result.error == "Path '/missing/': path_not_found"
+
+
 def test_grep_finds_matches() -> None:
     backend, _ = _make_backend(
         **{

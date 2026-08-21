@@ -249,8 +249,24 @@ Enums, `anyOf` unions, nested objects, and arrays are all supported by the schem
 
 - Each PTC-exposed tool gets a QuickJS host-function bridge registered under a generated `__tools_*` global symbol. The bridge is async, so the guest sees `tools.x(...)` as returning a `Promise`.
 - `globalThis.tools` is rebuilt every turn from the currently-exposed name set. So if an upstream middleware filters tools on a per-turn basis, the `tools` namespace follows along.
-- When the bridge invokes a tool, it forwards the `ToolRuntime` captured from the outer `eval` call — so the tool sees graph `state`, `store`, `context`, and a synthesised child `tool_call_id`. (Subagent dispatch has its own top-level `task(...)` primitive — see [Dispatching subagents](#dispatching-subagents-task) — and is not routed through the `tools` namespace.)
-- Tool return values are coerced to strings: strings pass through, `ToolMessage`s get unwrapped, a `Command` has its last-message content extracted, everything else gets `json.dumps`'d.
+- When the bridge invokes a tool, it forwards the `ToolRuntime` and runnable config captured from the outer `eval` call — so the tool sees graph `state`, `store`, `context`, callbacks, and a synthesized child `tool_call_id`. (Subagent dispatch has its own top-level `task(...)` primitive — see [Dispatching subagents](#dispatching-subagents-task) — and is not routed through the `tools` namespace.)
+- PTC calls participate in the standard LangGraph tool lifecycle. With v3 event streaming, they appear on `run.tool_calls` just like ordinary tool calls, including output deltas emitted through `ToolRuntime.emit_output_delta`:
+
+```python
+run = agent.stream_events(
+    {"messages": [{"role": "user", "content": "Research and summarize this"}]},
+    version="v3",
+)
+
+for call in run.tool_calls:
+    print(call.tool_name, call.tool_call_id)
+    for delta in call.output_deltas:
+        print(delta)
+```
+
+This visibility does not route PTC calls through `ToolNode` or add per-call human-in-the-loop approval; the configured PTC allowlist remains the security boundary. The inner calls are not added as synthetic graph messages.
+
+- Tool return values retain JS-native scalar, list, and object shapes where possible. `ToolMessage` and `Command` envelopes are unwrapped at the bridge boundary, and nested non-native Python values are stringified in place.
 
 ## Configuration reference
 

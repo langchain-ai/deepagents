@@ -473,6 +473,10 @@ class _TomlSnapshotState:
     """Mutable snapshot cell owned by a frozen provider."""
 
     value: TomlSnapshot | None = None
+    """Snapshot used to resolve values; always the last usable generation."""
+
+    failure: ProviderStatus | None = None
+    """Status of the most recent failed reload, kept for health reporting."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -584,13 +588,42 @@ class TomlFileProvider:
         )
 
     def status(self) -> ProviderStatus:
-        """Return health for the current file snapshot."""
-        return self._current_snapshot().status
+        """Return health for the current file snapshot.
+
+        A failed reload reports its own health even though resolution keeps
+        using the retained snapshot: diagnostics must describe the file on
+        disk, not the generation still being enforced.
+
+        Raises:
+            RuntimeError: If a reload produces no snapshot.
+        """
+        state = self._state
+        if state.value is None:
+            self.reload()
+        if state.failure is not None:
+            return state.failure
+        snapshot = state.value
+        if snapshot is None:
+            msg = f"{self.name} reload produced no snapshot"
+            raise RuntimeError(msg)
+        return snapshot.status
 
     def reload(self) -> None:
-        """Replace the current snapshot with a fresh file read."""
+        """Replace the current snapshot with a fresh file read.
+
+        A reload the source cannot use never replaces the last usable
+        snapshot. An unusable candidate carries an empty table, which
+        resolution reads as "this source declares nothing"; installing it
+        would drop the source's restrictions and let lower ranks win. The
+        failed status is still recorded so health surfaces report the file on
+        disk.
+        """
         snapshot = self.loader() if self.loader is not None else self.load()
-        self._state.value = snapshot
+        if snapshot.status.usable:
+            self._state.value = snapshot
+            self._state.failure = None
+        else:
+            self._state.failure = snapshot.status
 
     def _current_snapshot(self) -> TomlSnapshot:
         """Return the cached snapshot, loading it on first access.

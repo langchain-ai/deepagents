@@ -362,6 +362,76 @@ def test_resolve_all_uses_one_toml_snapshot(
     assert after["test.second"].value is True
 
 
+def test_failed_toml_reload_keeps_the_last_usable_snapshot(tmp_path: Path) -> None:
+    """A corrupt re-read must not replace the values still being enforced.
+
+    An unusable candidate carries an empty table, which resolution reads as
+    "this source declares nothing"; installing it on reload would drop the
+    file's values and let lower ranks win.
+    """
+    path = tmp_path / "managed_config.toml"
+    path.write_text("[test]\nenabled = true\n", encoding="utf-8")
+    provider = TomlFileProvider("managed config", path, MANAGED_RANK)
+    option = _bool_option("test.enabled", "enabled")
+    assert provider.get(option).result == Found(True)
+
+    path.write_text("not toml [", encoding="utf-8")
+    provider.reload()
+
+    assert provider.get(option).result == Found(True)
+    status = provider.status()
+    assert status.health is ProviderHealth.CORRUPT
+
+    path.write_text("[test]\nenabled = false\n", encoding="utf-8")
+    provider.reload()
+
+    assert provider.get(option).result == Found(False)
+    assert provider.status().health is ProviderHealth.OK
+
+
+def test_failed_reload_keeps_managed_policy_enforced(tmp_path: Path) -> None:
+    """A failed managed reload through the resolver must not fail open.
+
+    Regression: `get_managed_snapshot(refresh=True)` returns the failed
+    candidate for diagnostics, and `reload` installed it, so the managed tier
+    read as unset and the user tier won until the file was repaired.
+    """
+    managed_path = tmp_path / "managed_config.toml"
+    user_path = tmp_path / "config.toml"
+    managed_path.write_text("[test]\nenabled = false\n", encoding="utf-8")
+    user_path.write_text("[test]\nenabled = true\n", encoding="utf-8")
+    managed = TomlFileProvider(
+        "managed config",
+        managed_path,
+        MANAGED_RANK,
+        True,
+        loader=lambda: TomlFileProvider("managed config", managed_path).load(),
+    )
+    user = TomlFileProvider(
+        "config.toml",
+        user_path,
+        USER_RANK,
+        True,
+        loader=lambda: TomlFileProvider("config.toml", user_path).load(),
+    )
+    resolver = ConfigResolver((managed, user))
+    option = _bool_option("test.enabled", "enabled")
+    assert resolver.get(option).value is False
+
+    managed_path.write_text("not toml [", encoding="utf-8")
+    resolver.reload()
+
+    resolved = resolver.get(option)
+    assert resolved.value is False
+    assert resolved.provider_status[MANAGED_RANK].health is ProviderHealth.OK
+    assert resolver.provider_statuses()[MANAGED_RANK].health is ProviderHealth.CORRUPT
+
+    managed_path.write_text("[test]\nenabled = false\n", encoding="utf-8")
+    resolver.reload()
+
+    assert resolver.provider_statuses()[MANAGED_RANK].health is ProviderHealth.OK
+
+
 def test_resolver_get_matches_resolve_scalar_for_every_manifest_option() -> None:
     """The compatibility wrapper and provider resolver remain equivalent."""
     managed = TomlSnapshot(

@@ -111,6 +111,7 @@ class LaunchGoalCriteriaPreferenceScreen(ModalScreen[bool]):
     }
 
     LaunchGoalCriteriaPreferenceScreen .launch-init-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;

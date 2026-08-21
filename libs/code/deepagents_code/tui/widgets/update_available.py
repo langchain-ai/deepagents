@@ -189,6 +189,7 @@ class UpdateAvailableScreen(ModalScreen[ActionId | None]):
     }
 
     UpdateAvailableScreen .ua-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;

@@ -4248,6 +4248,165 @@ class TestModalScreenShiftTabHandling:
             assert options.highlighted < after_tab
             assert app._auto_approve is False
 
+    async def test_tab_round_trips_in_the_effort_selector(self) -> None:
+        """Tab and Shift+Tab both move the effort cursor, as the footer says.
+
+        `EffortSelectorScreen` names its action `action_cursor_up`, so it does
+        not match `_SupportsReverseNav` and reaches the explicit `isinstance`
+        tuple in `action_toggle_auto_approve` instead. Dropping it from that
+        tuple sends Shift+Tab to the `ModalScreen` catch-all, which swallows it
+        silently while the footer still advertises it.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = EffortSelectorScreen(
+                model_spec="anthropic:claude-sonnet-4-5",
+                efforts=("low", "medium", "high"),
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            options = screen.query_one("#effort-options", OptionList)
+            assert options.highlighted == 0
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert options.highlighted == 1
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert options.highlighted == 0
+
+            # Wraps backward off the first row rather than sticking.
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert options.highlighted == 2
+
+            # The key must be consumed by the modal, never reach the toggle.
+            assert app._approval_mode is ApprovalMode.MANUAL
+
+    async def test_tab_round_trips_in_the_goal_preference_prompt(self) -> None:
+        """Tab and Shift+Tab both move the launch-preference cursor.
+
+        Same `action_cursor_up` routing as the effort selector above.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = LaunchGoalCriteriaPreferenceScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            options = screen.query_one(OptionList)
+            assert options.highlighted == 0
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert options.highlighted == 1
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert options.highlighted == 0
+
+            assert app._approval_mode is ApprovalMode.MANUAL
+
+    async def test_tab_round_trips_in_the_theme_selector(self) -> None:
+        """Tab and Shift+Tab both move the theme cursor, as the footer says."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+            options = screen.query_one(OptionList)
+            start = options.highlighted
+            assert start is not None
+
+            await pilot.press("tab")
+            await pilot.pause()
+            after_tab = options.highlighted
+            assert after_tab == start + 1
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert options.highlighted == start
+
+            assert app._approval_mode is ApprovalMode.MANUAL
+
+    async def test_tab_round_trips_in_the_agent_selector(self) -> None:
+        """Tab and Shift+Tab both move the agent cursor, as the footer says."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = AgentSelectorScreen(
+                current_agent="general",
+                agent_names=["general", "research", "review"],
+                default_agent=None,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            options = screen.query_one(OptionList)
+            assert options.highlighted == 0
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert options.highlighted == 1
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert options.highlighted == 0
+
+            assert app._approval_mode is ApprovalMode.MANUAL
+
+    async def test_tab_round_trips_focus_in_notification_settings(self) -> None:
+        """Tab and Shift+Tab step focus between the notification toggles.
+
+        This screen is the odd one out: `action_toggle_auto_approve` routes it
+        to `focus_previous()` rather than a cursor action, because its rows are
+        focusable `Checkbox` widgets. The footer advertises the same
+        "Tab/Shift+Tab navigate" copy, so the traversal has to work both ways.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.notification_settings import (
+            NotificationSettingsScreen,
+        )
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = NotificationSettingsScreen(suppressed=set())
+            app.push_screen(screen)
+            await pilot.pause()
+            first = screen.focused
+            assert first is not None
+
+            await pilot.press("tab")
+            await pilot.pause()
+            second = screen.focused
+            assert second is not None
+            assert second is not first
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen.focused is first
+
+            assert app._approval_mode is ApprovalMode.MANUAL
+
 
 class TestModalScreenCtrlCHandling:
     """Tests for app-level Ctrl+C behavior while modals are open."""
@@ -40158,50 +40317,6 @@ class TestColdCacheWarningFlow:
             # Wraps from the first row to "Don't send (keep draft)"; the
             # approval-mode toggle must not fire.
             assert screen._selected == len(screen._options) - 1
-            assert app._approval_mode is ApprovalMode.MANUAL
-
-    async def test_shift_tab_reverse_navigates_the_effort_selector(self) -> None:
-        """The app routes Shift+Tab to the effort selector's previous option."""
-        from deepagents_code.approval_mode import ApprovalMode
-        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
-
-        app = DeepAgentsApp()
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            screen = EffortSelectorScreen(
-                model_spec="anthropic:claude-sonnet-4-5",
-                efforts=("low", "medium", "high"),
-            )
-            app.push_screen(screen)
-            await pilot.pause()
-            options = screen.query_one("#effort-options", OptionList)
-            assert options.highlighted == 0
-
-            await pilot.press("shift+tab")
-            await pilot.pause()
-
-            assert options.highlighted == 2
-            assert app._approval_mode is ApprovalMode.MANUAL
-
-    async def test_shift_tab_reverse_navigates_goal_preference(self) -> None:
-        """The app routes Shift+Tab to the launch preference's previous option."""
-        from deepagents_code.approval_mode import ApprovalMode
-
-        app = DeepAgentsApp()
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            screen = LaunchGoalCriteriaPreferenceScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-            options = screen.query_one(OptionList)
-            assert options.highlighted == 0
-
-            await pilot.press("shift+tab")
-            await pilot.pause()
-
-            assert options.highlighted == 1
             assert app._approval_mode is ApprovalMode.MANUAL
 
     async def test_shift_tab_reverse_navigates_the_model_selector(self) -> None:

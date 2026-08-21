@@ -86,6 +86,7 @@ class AgentSelectorScreen(ModalScreen[str | None]):
     }
 
     AgentSelectorScreen .agent-selector-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;
@@ -197,12 +198,14 @@ class AgentSelectorScreen(ModalScreen[str | None]):
     def _help_text(glyphs: Glyphs) -> str:
         r"""Build the help-line text shown beneath the option list.
 
-        Split into two balanced rows joined by `\n` so the wrap is
-        predictable at the modal's fixed 60-column width — Textual's
-        default word-wrap might otherwise break mid-phrase (e.g.,
-        between "set" and "default"), which reads as a bug. The Static
-        host has `height: auto` and `text-align: center`, so each row
-        centers on its own line.
+        Split into two rows joined by `\n` so the break point is fixed
+        rather than left to Textual's word-wrap, which might otherwise
+        break mid-phrase (e.g., between "set" and "default") and read as
+        a bug. Each row stays inside the modal's 56-column content width
+        (60 wide, less `padding: 1 2`); they are not equal length. The
+        Static host has `dock: bottom`, `height: auto`, and
+        `text-align: center`, so each row centers on its own line and a
+        row that wraps anyway stays inside the modal.
 
         Args:
             glyphs: Glyph set for the active terminal mode.

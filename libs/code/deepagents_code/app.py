@@ -159,6 +159,13 @@ class _SupportsReverseNav(Protocol):
     `shift+tab` in mind. A screen that wants different behavior -- or none --
     needs an explicit branch ahead of the protocol check in
     `action_toggle_auto_approve`.
+
+    Enrollment is by method *name*, so it covers only one of the two cursor
+    conventions in this codebase. `OptionList`-hosting modals name their action
+    `action_cursor_up` instead; those never match this protocol, fall through
+    to the `ModalScreen` catch-all, and swallow `shift+tab` with no error while
+    their footer still advertises it. Such a screen must be added to the
+    explicit `isinstance` tuple in `action_toggle_auto_approve`.
     """
 
     def action_move_up(self) -> None: ...

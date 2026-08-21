@@ -65,6 +65,7 @@ class EffortSelectorScreen(ModalScreen[str | None]):
     }
 
     EffortSelectorScreen .effort-selector-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;

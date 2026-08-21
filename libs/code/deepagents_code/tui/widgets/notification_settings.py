@@ -77,6 +77,7 @@ class NotificationSettingsScreen(ModalScreen[None]):
     }
 
     NotificationSettingsScreen .ns-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;

@@ -502,7 +502,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             search_input.display = False
             source_input.display = True
             source_input.focus()
-            help_text.update(f"Enter to add {glyphs.bullet} Esc to cancel")
+            help_text.update(f"Enter add {glyphs.bullet} Esc cancel")
             return
 
         title.update("Plugins")
@@ -559,7 +559,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             help_text.update(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} select {glyphs.bullet} "
                 f"Enter add/view {glyphs.bullet} "
-                f"L/R/Tab/Shift+Tab tabs {glyphs.bullet} Esc"
+                f"Left/Right or Tab/Shift+Tab tabs {glyphs.bullet} Esc close"
             )
         elif self._tab in {"discover", "installed"}:
             if self._tab == "installed":
@@ -573,11 +573,13 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             )
             help_text.update(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} select {glyphs.bullet} "
-                f"Enter {action} {glyphs.bullet} {search_hint}L/R/Tab/Shift+Tab "
-                f"tabs {glyphs.bullet} Esc"
+                f"Enter {action} {glyphs.bullet} {search_hint}Left/Right or "
+                f"Tab/Shift+Tab tabs {glyphs.bullet} Esc close"
             )
         else:
-            help_text.update(f"L/R/Tab/Shift+Tab tabs {glyphs.bullet} Esc")
+            help_text.update(
+                f"Left/Right or Tab/Shift+Tab tabs {glyphs.bullet} Esc close"
+            )
 
     def _active_details_options(self) -> list[Option]:
         if self._mode == "plugin_details":

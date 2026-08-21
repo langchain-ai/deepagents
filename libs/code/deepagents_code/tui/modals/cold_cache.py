@@ -144,6 +144,7 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         width: 72;
         max-width: 90%;
         height: auto;
+        max-height: 90%;
         background: $surface;
         border: solid $warning;
         padding: 1 2;
@@ -173,6 +174,7 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
     }
 
     ColdCacheWarningScreen .cold-cache-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;

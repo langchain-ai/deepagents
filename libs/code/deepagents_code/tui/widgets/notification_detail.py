@@ -155,6 +155,7 @@ class NotificationDetailScreen(ModalScreen["ActionId | None"]):
     }
 
     NotificationDetailScreen .nd-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;

@@ -252,6 +252,7 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
     }
 
     NotificationCenterScreen .nc-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;

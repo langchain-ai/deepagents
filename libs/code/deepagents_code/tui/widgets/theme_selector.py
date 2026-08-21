@@ -92,6 +92,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     }
 
     ThemeSelectorScreen .theme-selector-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;

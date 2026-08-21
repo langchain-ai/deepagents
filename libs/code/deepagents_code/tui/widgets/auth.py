@@ -1589,6 +1589,7 @@ class AuthManagerScreen(ModalScreen[None]):
     }
 
     AuthManagerScreen .auth-manager-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;

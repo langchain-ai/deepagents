@@ -224,7 +224,7 @@ class _NotificationSettingsRow(Static):
         return self._index
 
     def set_expanded(self, expanded: bool) -> None:
-        """Point the disclosure arrow at the section's new state.
+        """Point the leading disclosure glyph at the section's new state.
 
         Args:
             expanded: Whether the settings section is now expanded.
@@ -247,17 +247,21 @@ class _NotificationSettingsRow(Static):
         self.update(self._render())
 
     def _render(self) -> Content:
+        # The leading glyph doubles as the disclosure affordance: the cursor
+        # on the selected row hints that Enter opens the section, and the
+        # expanded disclosure glyph stays up while it is open (signaling Esc
+        # collapses). A separate trailing triangle would visibly flip between
+        # glyphs on each toggle.
         glyphs = get_glyphs()
-        cursor = glyphs.cursor if self._is_selected else " "
-        disclosure = (
-            glyphs.disclosure_expanded
-            if self._expanded
-            else glyphs.disclosure_collapsed
-        )
+        if self._expanded:
+            cursor = glyphs.disclosure_expanded
+        elif self._is_selected:
+            cursor = glyphs.cursor
+        else:
+            cursor = " "
         return Content.assemble(
             f"{cursor} ",
             ("Notification settings", "bold"),
-            f" {disclosure}",
         )
 
     def on_click(self, event: Click) -> None:
@@ -324,7 +328,7 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
     Each `PendingNotification` is a single row followed by a settings
     disclosure row. Up/Down (or j/k) moves the cursor; Enter or click drills
     into a notification or toggles the inline settings section. Expanded
-    settings hand key focus to their checkboxes (Space/Enter toggle); Esc
+    settings hand key focus to their first checkbox (Space/Enter toggle); Esc
     there collapses back to the row cursor. Esc on the row cursor returns
     `None`.
     """
@@ -431,7 +435,8 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
             suppressed: Currently suppressed warning keys, used to render
                 checkbox state when the settings section expands. `None`
                 means the app has not supplied settings state; the screen
-                loads it from config the first time the section expands.
+                preloads it from config on mount so the first expand has
+                the values ready.
         """
         super().__init__()
         self._notifications = notifications
@@ -442,6 +447,7 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         self._settings_expanded = False
         self._settings_loading = False
         self._settings_transitioning = False
+        self._settings_preloaded = asyncio.Event()
 
     @property
     def settings_expanded(self) -> bool:
@@ -498,7 +504,7 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
             yield Static(self._help_text(), classes="nc-help")
 
     def on_mount(self) -> None:
-        """Apply ASCII borders and highlight the first row."""
+        """Apply ASCII borders, highlight the first row, preload settings."""
         if is_ascii_mode():
             container = self.query_one(Vertical)
             colors = theme.get_theme_colors(self)
@@ -506,6 +512,23 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         if self._rows:
             self._rows[0].set_selected(selected=True)
             self._rows[0].scroll_visible()
+        if self._suppressed is None:
+            # Read the suppressed keys now so the first expand can mount the
+            # checkboxes immediately. Loading on expand would leave the pane
+            # open but unfocused for the duration of the config read, which
+            # also delayed the footer hint's "Space/Enter toggle" verb.
+            self.run_worker(self._preload_settings(), group="nc-preload")
+
+    async def _preload_settings(self) -> None:
+        """Load suppressed keys in the background so expand need not wait."""
+        self._settings_loading = True
+        try:
+            suppressed = await self._load_suppressed()
+        finally:
+            self._settings_loading = False
+        if self._suppressed is None:
+            self._suppressed = suppressed
+        self._settings_preloaded.set()
 
     def _settings_has_focus(self) -> bool:
         """Whether key focus is inside the expanded settings checkboxes.
@@ -678,34 +701,42 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
     async def _expand_settings(self) -> None:
         """Mount the warning checkboxes under the settings row.
 
-        Loads suppressed keys from config on first expand when the app did
-        not supply them at construction. A `reload()` that rebuilt the row
-        list while the section was open calls this to remount the checkboxes,
-        so an already-`_settings_expanded` state only skips a *mounted*
-        section.
+        Uses the suppressed keys preloaded by `on_mount` (or supplied at
+        construction); only an expand that beats the preload to the await
+        still waits on it. A `reload()` that rebuilt the row list while the
+        section was open calls this to remount the checkboxes, so an
+        already-`_settings_expanded` state only skips a *mounted* section.
         """
         if self._settings_expanded and self.query("#nc-settings-group"):
             return
-        if self._settings_loading:
+        if self._settings_loading and self._settings_preloaded.is_set():
+            # A reload-driven remount is racing the mount preload; fall out
+            # and let the next toggle rebuild.
             return
+        # Flip state, disclosure glyph, and footer hint before the first
+        # await so the expanded hints render in the same frame as the pane
+        # opening instead of flickering in one repaint later.
+        self._settings_expanded = True
+        self._settings_row().set_expanded(True)
+        self._refresh_help()
         # Drop a stale group that a `reload()` rebuild or an interrupted
         # collapse left mounted, so the mount below cannot raise
         # `DuplicateIds` on `#nc-settings-group`.
         for stale in self.query("#nc-settings-group"):
             await stale.remove()
         if self._suppressed is None:
-            self._settings_loading = True
-            try:
-                self._suppressed = await self._load_suppressed()
-            finally:
-                self._settings_loading = False
+            # Normally resolves immediately: `on_mount` preloaded the keys.
+            # The wait only blocks when the user expands before that
+            # background read finishes.
+            await self._settings_preloaded.wait()
             # A rapid Esc while the config read was in flight already
-            # dismissed the screen; expanding a dead screen would raise.
-            if not self.is_mounted:
+            # dismissed or collapsed the screen; expanding further would
+            # raise or reopen a section the user already closed.
+            if not self.is_mounted or not self._settings_expanded:
                 return
+            if self._suppressed is None:
+                self._suppressed = set()
 
-        self._settings_expanded = True
-        self._settings_row().set_expanded(True)
         scroll = self.query_one(VerticalScroll)
         group = _NotificationSettingsGroup(id="nc-settings-group")
         await scroll.mount(group)
@@ -723,7 +754,6 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         if checkboxes:
             checkboxes[0].focus()
         self._settings_row().scroll_visible()
-        self._refresh_help()
 
     async def _collapse_settings(self) -> None:
         """Unmount the warning checkboxes and return focus to the row."""

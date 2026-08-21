@@ -8,6 +8,7 @@ from textual.app import App
 from textual.widgets import Checkbox, Static
 
 from deepagents_code.approval_mode import YOLO_WARNING_KEY
+from deepagents_code.config import get_glyphs
 from deepagents_code.model_config import is_warning_suppressed, suppress_warning
 from deepagents_code.tui.widgets.notification_center import NotificationCenterScreen
 from deepagents_code.tui.widgets.notification_settings import WARNING_TOGGLES
@@ -73,6 +74,48 @@ async def test_help_footer_documents_both_toggle_keys_when_expanded() -> None:
 
         assert "Space/Enter toggle" in help_text
         assert "Esc collapse" in help_text
+
+
+async def test_expand_shows_toggle_hint_before_checkboxes_mount() -> None:
+    """The footer must not wait on the checkbox mount to show the toggle verb.
+
+    `_refresh_help()` runs before the first mount await in
+    `_expand_settings`, so by the time the pane's expansion settles the
+    footer already reads "Space/Enter toggle" instead of switching verbs a
+    repaint later.
+    """
+    app = _NotificationSettingsHost()
+    async with app.run_test() as pilot:
+        screen = NotificationCenterScreen([], suppressed=set())
+        await app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("enter")
+
+        help_text = str(screen.query_one(".nc-help", Static).content)
+        assert "Space/Enter toggle" in help_text
+
+        await pilot.pause()
+        assert screen.query(Checkbox)
+
+
+async def test_settings_row_leading_glyph_marks_expanded_state() -> None:
+    """The disclosure affordance lives in the leading glyph, not a suffix."""
+    glyphs = get_glyphs()
+    app = _NotificationSettingsHost()
+    async with app.run_test() as pilot:
+        screen = NotificationCenterScreen([], suppressed=set())
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        row = screen.query_one("#nc-settings", Static)
+        assert str(row.content) == f"{glyphs.cursor} Notification settings"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        content = str(row.content)
+        assert content == f"{glyphs.disclosure_expanded} Notification settings"
+        assert glyphs.disclosure_collapsed not in content
 
 
 def test_cold_cache_warning_is_listed() -> None:

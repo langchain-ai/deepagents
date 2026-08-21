@@ -1643,7 +1643,33 @@ class TestParseAutoModeReviewEvent:
         ] == [
             (
                 "Rejected malformed Auto review event: event=review_started "
-                "keys=['batch_id', 'event', 'latency_ms', 'tool_call_ids', 'type']"
+                "keys=['type', 'event', 'batch_id', 'tool_call_ids', 'latency_ms']"
+            )
+        ]
+
+    def test_warns_when_a_lifecycle_payload_has_non_string_keys(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Mixed key types cannot be sorted, so the log lists keys in order."""
+        payload = {
+            "type": "auto_mode",
+            "event": "review_started",
+            "batch_id": "batch-1",
+            "tool_call_ids": ["call-1"],
+            1: "bad",
+        }
+
+        with caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"):
+            assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
+
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if "Auto review event" in record.getMessage()
+        ] == [
+            (
+                "Rejected malformed Auto review event: event=review_started "
+                "keys=['type', 'event', 'batch_id', 'tool_call_ids', 1]"
             )
         ]
 

@@ -1243,7 +1243,7 @@ def _parse_auto_mode_review_event(
         logger.warning(
             "Rejected malformed Auto review event: event=%s keys=%s",
             phase,
-            sorted(data),
+            list(data),
         )
     return event
 

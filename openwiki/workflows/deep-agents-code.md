@@ -6,11 +6,11 @@ tags: [dcode, security, approvals, mcp, workflow, tui, transcript]
 openwiki:
   roles: [workflow, integration]
   change_kinds: [ui, transcript, client-server]
-  source_paths: [libs/code/deepagents_code/tui/widgets/messages.py, libs/code/deepagents_code/app.py, libs/code/deepagents_code/server_graph.py]
-  symbols: [UserMessage, QueuedUserMessage, create_cli_agent, make_graph]
-  test_paths: [libs/code/tests/unit_tests/tui/widgets/test_messages.py, libs/code/tests/unit_tests/test_app.py]
-  invariants: ["Sent-prompt continuation lines align under the message body, not the prefix glyph.", "Full-message selection returns submitted text rather than display-truncated content."]
-  validation_commands: ["cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k UserMessageAppearance"]
+  source_paths: [libs/code/deepagents_code/config_manifest.py, libs/code/deepagents_code/configuration/resolver.py, libs/code/deepagents_code/_ask_user_types.py, libs/code/deepagents_code/tui/widgets/messages.py, libs/code/deepagents_code/app.py, libs/code/deepagents_code/server_graph.py]
+  symbols: [resolve_ranked, require_healthy_managed_config, encode_multi_select_answer, ask_user_answer_is_empty, UserMessage, QueuedUserMessage, create_cli_agent, make_graph]
+  test_paths: [libs/code/tests/unit_tests/test_configuration.py, libs/code/tests/unit_tests/test_configuration_resolver.py, libs/code/tests/unit_tests/test_ask_user_types.py, libs/code/tests/unit_tests/tui/widgets/test_messages.py, libs/code/tests/unit_tests/test_app.py]
+  invariants: ["A valid managed policy masks lower-precedence environment values for replacement options.", "An empty or malformed multi-select answer never becomes Auto consent evidence.", "Sent-prompt continuation lines align under the message body, not the prefix glyph.", "Full-message selection returns submitted text rather than display-truncated content."]
+  validation_commands: ["cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_configuration.py tests/unit_tests/test_configuration_resolver.py -k 'managed_provider_failure_is_fail_closed or corrupt_managed_config_does_not_empty_the_mcp_deny_set or durable_found_masks_only_lower_priority_ephemeral_tiers'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_ask_user_types.py -k 'MultiSelectAnswerEncoding or AskUserAnswerIsEmpty'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k UserMessageAppearance"]
 ---
 # Deep Agents Code: runtime, approvals, and MCP trust
 
@@ -35,6 +35,49 @@ CLI parsing (`main.py`)
 - Local execution uses `LocalShellBackend` rooted at the working directory; remote execution delegates filesystem and shell operations to the selected sandbox.
 
 `libs/code/ARCHITECTURE.md` and `DEVELOPMENT.md` are the first primary docs to read when changing this path. Changes to the server-side graph construction should also account for the core assembly rules in [Runtime and package architecture](../architecture/overview.md).
+
+## Configuration and managed policy
+
+Consult this section when adding a dcode configuration option, changing precedence, or enforcing deployment policy. `config_manifest.py` declares the typed option surface; `configuration/providers.py` coerces each source; and `configuration/resolver.py::resolve_ranked()` resolves them. The normal precedence is managed policy (rank 200), a reserved but currently unwired CLI seam (300), environment (400), user `~/.deepagents/config.toml` (500), then manifest defaults (1000). Lower numeric rank wins.
+
+```mermaid
+flowchart TD
+    Managed["Managed TOML policy"] --> Resolve["Ranked configuration resolver"]
+    Environment["Environment values"] --> Resolve
+    UserConfig["User config TOML"] --> Resolve
+    Defaults["Manifest defaults"] --> Resolve
+    Resolve --> Effective["Effective dcode configuration"]
+    Managed --> Gate["Startup health and policy gate"]
+    Gate --> Effective
+```
+
+This flow shows that the managed source participates both in normal resolution and in the launch-time enforcement gate.
+
+`managed_config.toml` is an administrator-owned OS file: `/etc/dcode/managed_config.toml` on Linux, `/Library/Application Support/dcode/managed_config.toml` on macOS, and the registry-derived ProgramData location on Windows. The Windows production lookup intentionally ignores a caller-controlled `ProgramData` environment variable. `configuration/service.py::require_healthy_managed_config()` gates startup: corrupt, unreadable, indeterminate, or unenforceable managed policy raises an error instead of becoming an empty policy. A refresh retains the last enforceable snapshot rather than caching a broken replacement, and MCP disabled-server checks fail closed when policy cannot be read.
+
+For replacement options, a `Found` value from a durable managed source masks lower-precedence **environment** values; a lower-precedence durable user value cannot reverse an environment value that already wins. Union and deep-merge options deliberately retain valid contributions, including deny-list restrictions. Do not add a resolver bypass or treat a failed managed load as absent policy: that can turn an administrator restriction into a user-controlled configuration.
+
+When extending this seam, register the option in `config_manifest.py`, choose its typed coercion and merge strategy, route it through the ranked providers, and make the user config writer leave the managed path untouched. Validate precedence and failure behavior before UI polish:
+
+```bash
+cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_configuration.py tests/unit_tests/test_configuration_resolver.py -k 'managed_provider_failure_is_fail_closed or corrupt_managed_config_does_not_empty_the_mcp_deny_set or durable_found_masks_only_lower_priority_ephemeral_tiers'
+```
+
+The named tests cover a corrupt policy startup gate, MCP-deny fail-closed behavior, and directional durable masking. Add `test_configuration_resolution.py` or the specific consumer suite when changing a concrete option. `DEEPAGENTS_CODE_SHOW_USAGE_STATS` is a narrow teardown-output option: falsy values suppress only the session usage table for both TUI and `-x`/`--execute`, not all headless output.
+
+## Ask-user wire contract
+
+`ask_user` is interactive middleware and also feeds the Auto policy described below. `_ask_user_types.py` is the shared wire-format module used by the tool, TUI adapter, and `auto_mode`, avoiding a dependency from those consumers onto one another. `QuestionType` supports `text`, `multiple_choice`, and `multi_select`; choice types require non-empty choices.
+
+A multi-select answer remains one `str` in the positional `answers: list[str]` wire shape, but `encode_multi_select_answer()` serializes selected values as a JSON array. This preserves commas, quotes, and newlines in a choice and makes an unselected question `[]`. Consumers must use `ask_user_answer_is_empty()` rather than `strip()`: `[]` is truthy but is empty for both required-answer validation and Auto consent evidence; malformed multi-select JSON also fails closed. Never restore comma-splitting as a fallback.
+
+Use the focused contract test when changing question types, encoding/decoding, transcript display, or authorization evidence:
+
+```bash
+cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_ask_user_types.py -k 'MultiSelectAnswerEncoding or AskUserAnswerIsEmpty'
+```
+
+Broaden to `test_ask_user_middleware.py`, `tui/test_textual_adapter.py`, and `test_auto_mode.py` only if the change crosses the tool, client interrupt, or Auto authorization boundary.
 
 ## Transcript presentation and selection
 
@@ -89,7 +132,7 @@ The recent classifier-backed Auto feature is deliberately narrow:
 
 - Fast-path writes must stay inside the trusted root and exclude sensitive paths such as CI/hooks, shell scripts, and dependency/config locations.
 - Fast-path shell approval permits a small read-only Git set or narrow configured commands; shell control operators and broad/wildcard commands are rejected.
-- Classifier input may be authorized only by **literal, pre-expansion user text attached by the client**. File content, tool output, and assistant prose cannot expand authority.
+- Classifier input may be authorized only by **literal, pre-expansion user text attached by the client**. File content, tool output, and assistant prose cannot expand authority. A same-turn `ask_user` response is included only after server validation; its empty/malformed multi-select representation is withheld according to the [ask-user wire contract](#ask-user-wire-contract).
 - The implementation redacts/sanitizes persisted reasons and validates tool-call identities/batches exactly.
 - `readOnlyHint` only bypasses gating when it is literal, coherent boolean metadata with no destructive hint. Ambiguous metadata fails closed.
 

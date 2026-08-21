@@ -112,6 +112,7 @@ SDK layering / maintainer architecture   libs/ARCHITECTURE.md
 Core graph assembly                      libs/deepagents/deepagents/graph.py
 Core extensions                          libs/deepagents/deepagents/{middleware,backends,profiles}/
 Terminal agent entry/server/assembly     libs/code/deepagents_code/{main,server_graph,agent}.py
+Configuration and managed policy         libs/code/deepagents_code/{config_manifest.py,configuration/}
 Approval / Auto / MCP policy             libs/code/deepagents_code/{approval_mode,auto_mode,mcp_tools}.py
 Managed deployment CLI                   libs/cli/deepagents_cli/main.py and deploy/
 ACP adapter                              libs/acp/deepagents_acp/server.py

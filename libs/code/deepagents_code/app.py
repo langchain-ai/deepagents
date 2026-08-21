@@ -3610,6 +3610,8 @@ class DeepAgentsApp(App):
         self._auto_mode_eligible = self._sandbox_type is None
         self._auto_downgraded_by_sandbox = False
         """Whether a startup Auto was downgraded because a sandbox is active."""
+        self._persisted_startup_mode: str | None = None
+        """Last mode this session wrote to `[startup].recent`, if any."""
         if self._approval_mode is ApprovalMode.AUTO and not self._auto_mode_eligible:
             self._approval_mode = ApprovalMode.MANUAL
             self._auto_approve = False
@@ -9473,6 +9475,12 @@ class DeepAgentsApp(App):
 
         if mode is ApprovalMode.YOLO:
             return
+        if mode.value == self._persisted_startup_mode:
+            # Two entry points can activate Auto from one confirmation modal
+            # (the awaiting caller and the task the modal result schedules), so
+            # skip the duplicate round-trip. Without this, a read-only config
+            # directory reports the same failure twice as two distinct toasts.
+            return
         if not await asyncio.to_thread(save_recent_startup_mode, mode.value):
             self.notify(
                 "Approval mode changed for this session, but the startup "
@@ -9481,6 +9489,8 @@ class DeepAgentsApp(App):
                 severity="warning",
                 markup=False,
             )
+            return
+        self._persisted_startup_mode = mode.value
 
     def _warn_live_approval_mode_unavailable(self, message: str) -> None:
         """Surface live approval-mode degradation to the user."""

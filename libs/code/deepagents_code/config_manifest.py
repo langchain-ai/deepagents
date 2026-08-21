@@ -2401,7 +2401,10 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
             "Most recently selected Manual or Auto mode (managed by the app; "
             "only `manual` and `auto` are restored)."
         ),
-        kind=OptionKind.STR,
+        # `NON_EMPTY_STR` for parity with the sibling app-managed `agents.recent`:
+        # it trims and rejects a blank, so a hand-edited `recent = ""` reports as
+        # unset instead of as a set value the loader then discards.
+        kind=OptionKind.NON_EMPTY_STR,
         toml_keys=("startup", "recent"),
     ),
     ConfigOption(

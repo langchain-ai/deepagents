@@ -30260,6 +30260,41 @@ class TestLiveApprovalModeWrites:
 
         save_recent.assert_not_called()
 
+    async def test_persist_startup_mode_skips_duplicate_write(self) -> None:
+        """One confirmation must not write, or fail, twice.
+
+        The confirmation modal has two entry points that both activate Auto:
+        the awaiting caller and the task its result schedules.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        with patch(
+            "deepagents_code.model_config.save_recent_startup_mode",
+            return_value=True,
+        ) as save_recent:
+            await app._persist_startup_approval_mode(ApprovalMode.AUTO)
+            await app._persist_startup_approval_mode(ApprovalMode.AUTO)
+
+        save_recent.assert_called_once_with(ApprovalMode.AUTO.value)
+
+    async def test_persist_startup_mode_retries_after_failure(self) -> None:
+        """A failed write is not remembered as done."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        with (
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=False,
+            ) as save_recent,
+            patch.object(app, "notify"),
+        ):
+            await app._persist_startup_approval_mode(ApprovalMode.MANUAL)
+            await app._persist_startup_approval_mode(ApprovalMode.MANUAL)
+
+        assert save_recent.call_count == 2
+
     async def test_notify_auto_mode_not_restored_surfaces_notice_gate(self) -> None:
         """A notice-blocked Auto restore is explained after mount."""
         app = DeepAgentsApp()

@@ -23,6 +23,7 @@ from deepagents.graph import create_deep_agent
 from deepagents.middleware import ForkedSubAgent
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.subagents import (
+    _PARENT_SYSTEM_MESSAGE_KEY,
     GENERAL_PURPOSE_SUBAGENT,
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
     SubAgentMiddleware,
@@ -242,7 +243,54 @@ class TestSubagentMiddlewareInit:
 
         worker_system_message = worker_model.call_history[0]["messages"][0]
         assert worker_system_message.text == "PARENT_PROMPT\n\nDYNAMIC_PROMPT"
-        assert "_deepagents_parent_system_message" not in result
+        assert _PARENT_SYSTEM_MESSAGE_KEY not in result
+
+    def test_forked_subagent_replaces_repeated_prompt_updates(self) -> None:
+        class _AppendPromptMiddleware(AgentMiddleware):
+            def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+                message = request.system_message
+                content = "MEMORY" if message is None else f"{message.text}\n\nMEMORY"
+                return handler(request.override(system_message=SystemMessage(content=content)))
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "continue", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+        agent = create_deep_agent(
+            model=parent_model,
+            system_prompt="PARENT_PROMPT",
+            middleware=[_AppendPromptMiddleware()],
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues with context.",
+                    "model": worker_model,
+                    "middleware": [_AppendPromptMiddleware()],
+                    "mode": "fork",
+                }
+            ],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="start")]})
+
+        worker_system_message = worker_model.call_history[0]["messages"][0]
+        assert worker_system_message.text == "PARENT_PROMPT\n\nMEMORY"
+        assert worker_system_message.text.count("MEMORY") == 1
 
     def test_create_sub_agent_compiles_declarative_spec(self) -> None:
         """The public helper should compile and invoke declarative specs."""
@@ -534,6 +582,48 @@ class TestSubagentMiddlewareInit:
 
         assert captured["messages"] == [summary, after_cutoff, HumanMessage(content="new task")]
         assert "_summarization_event" not in captured
+
+    def test_compiled_fork_does_not_receive_parent_prompt_state(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _Runnable:
+            def with_config(self, config: dict[str, object]) -> "_Runnable":
+                del config
+                return self
+
+            def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
+                del config
+                captured.update(state)
+                return {"messages": [AIMessage(content="done")]}
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues with context.",
+                    "runnable": _Runnable(),
+                    "mode": "fork",
+                }
+            ],
+        )
+        task_tool = middleware.tools[0]
+        runtime = ToolRuntime(
+            state={
+                "messages": [HumanMessage(content="parent history")],
+                _PARENT_SYSTEM_MESSAGE_KEY: SystemMessage(content="SESSION_PROMPT"),
+            },
+            context={},
+            config={"configurable": {}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id="call_worker",
+            store=None,
+        )
+
+        task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
+
+        assert _PARENT_SYSTEM_MESSAGE_KEY not in captured
 
     def test_duplicate_name_uses_winning_handoff_mode(self) -> None:
         captured: dict[str, object] = {}

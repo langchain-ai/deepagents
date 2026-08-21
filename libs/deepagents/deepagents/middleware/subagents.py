@@ -375,15 +375,11 @@ GENERAL_PURPOSE_SUBAGENT: SubAgent = {
 class _ParentSystemMessageMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     state_schema = _ParentSystemMessageState
 
-    def __init__(self, subagent_middleware: "SubAgentMiddleware[Any, Any]") -> None:
-        self._subagent_middleware = subagent_middleware
-
     def wrap_model_call(
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
     ) -> ExtendedModelResponse[ResponseT]:
-        self._subagent_middleware.parent_system_message = request.system_message
         response = handler(request)
         return ExtendedModelResponse(
             model_response=response,
@@ -395,7 +391,6 @@ class _ParentSystemMessageMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
     ) -> ExtendedModelResponse[ResponseT]:
-        self._subagent_middleware.parent_system_message = request.system_message
         response = await handler(request)
         return ExtendedModelResponse(
             model_response=response,
@@ -527,7 +522,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
     private_state_keys: frozenset[str] = frozenset(),
     state_schema: type | None = None,
     parent_system_prompt: str | SystemMessage | None = None,
-    parent_system_message: Callable[[], SystemMessage | None] | None = None,
 ) -> BaseTool:
     """Create a task tool from subagent specs.
 
@@ -539,7 +533,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
             should be stripped from parent state before invoking subagents.
         state_schema: Base graph state schema forwarded to raw subagent specs.
         parent_system_prompt: Static prompt inherited by declarative forked subagents.
-        parent_system_message: Accessor for the parent's most recent effective system message.
 
     Returns:
         A StructuredTool that can invoke subagents by type.
@@ -553,7 +546,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             return cast("SubAgent", spec)
         resolved = {key: value for key, value in spec.items() if key not in {"mode", "system_prompt"}}
         resolved["system_prompt"] = parent_system_prompt if parent_system_prompt is not None else ""
-        resolved["middleware"] = [_ForkSystemMessageMiddleware(), *spec.get("middleware", [])]
+        resolved["middleware"] = [*spec.get("middleware", []), _ForkSystemMessageMiddleware()]
         return cast("SubAgent", resolved)
 
     def _compile_spec(
@@ -670,7 +663,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         """Prepare state for invocation."""
         subagent = _select_subagent(subagent_type, runtime)
         forked = subagent_type in fork_mode_names
-        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
+        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS and k != _PARENT_SYSTEM_MESSAGE_KEY}
         subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
         if forked and "runnable" not in subagents_by_name[subagent_type] and effective_system_message is not None:
             subagent_state[_PARENT_SYSTEM_MESSAGE_KEY] = effective_system_message
@@ -691,7 +684,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        effective_system_message = parent_system_message() if parent_system_message is not None else None
+        effective_system_message = runtime.state.get(_PARENT_SYSTEM_MESSAGE_KEY)
         subagent, subagent_state = _validate_and_prepare_state(
             subagent_type,
             description,
@@ -721,7 +714,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        effective_system_message = parent_system_message() if parent_system_message is not None else None
+        effective_system_message = runtime.state.get(_PARENT_SYSTEM_MESSAGE_KEY)
         subagent, subagent_state = _validate_and_prepare_state(
             subagent_type,
             description,
@@ -834,7 +827,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._task_description = task_description
         self._state_schema = state_schema
         self._parent_system_prompt = parent_system_prompt
-        self.parent_system_message: SystemMessage | None = None
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
@@ -845,7 +837,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             private_state_keys=self._private_state_keys,
             state_schema=self._state_schema,
             parent_system_prompt=self._parent_system_prompt,
-            parent_system_message=self._current_parent_system_message,
         )
 
         # Build system prompt with available agents
@@ -856,9 +847,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             self.system_prompt = system_prompt
 
         self.tools = [task_tool]
-
-    def _current_parent_system_message(self) -> SystemMessage | None:
-        return self.parent_system_message
 
     @property
     def private_state_keys(self) -> frozenset[str]:
@@ -874,7 +862,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             private_state_keys=value,
             state_schema=self._state_schema,
             parent_system_prompt=self._parent_system_prompt,
-            parent_system_message=self._current_parent_system_message,
         )
         self.tools = [task_tool]
 
@@ -887,7 +874,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         if self.system_prompt is not None:
             new_system_message = append_to_system_message(request.system_message, self.system_prompt)
             request = request.override(system_message=new_system_message)
-        self.parent_system_message = request.system_message
         return handler(request)
 
     async def awrap_model_call(
@@ -899,5 +885,4 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         if self.system_prompt is not None:
             new_system_message = append_to_system_message(request.system_message, self.system_prompt)
             request = request.override(system_message=new_system_message)
-        self.parent_system_message = request.system_message
         return await handler(request)

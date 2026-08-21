@@ -158,11 +158,17 @@ def ask_user_answer_is_empty(answer: str, question_type: object) -> bool:
 def _validate_question_text(text: str) -> str:
     """Reject a `question` that is empty or all whitespace.
 
-    This is the only runtime gate on blank question text. It is the inner
-    annotation on the field, so it runs before `min_length=1`, which therefore
-    never rejects anything — that constraint is kept because it is what puts
-    `minLength: 1` in the JSON schema the model reads. A string like `"   "`
-    would render as a visually blank prompt.
+    This is the only rule that *rejects* blank question text.
+    `messages._ask_user_question_count` also tests it, but degrades to a count
+    of zero instead of rejecting.
+
+    Do not reorder this annotation and the `Field` beside it. As the inner
+    annotation it runs before `min_length=1`, which therefore never rejects
+    anything — that constraint is kept only because it is what puts
+    `minLength: 1` in the JSON schema the model reads. Swapping the two moves
+    the empty-string rejection onto `min_length` and changes the error the
+    model sees from this function's message to `string_too_short`. A string
+    like `"   "` would render as a visually blank prompt.
 
     Args:
         text: The parsed `question` text to check.
@@ -184,6 +190,9 @@ def _validate_choice(choice: Choice) -> Choice:
 
     A blank value would render as an unlabelled option the user can select but
     whose answer reads as "no answer".
+
+    Attached to the item annotation inside `Question.choices`, not to `Choice`
+    itself, so `TypeAdapter(Choice)` does not apply it.
 
     Callers must pass a parsed `Choice`. A missing `value` never reaches here —
     it is a required key, so pydantic rejects it as `choices.N.value: Field
@@ -323,22 +332,27 @@ ValidatedQuestion = Annotated[Question, AfterValidator(_validate_question)]
 """A `Question` with its cross-field rules applied during pydantic parsing.
 
 Only the cross-field `choices` rules are scoped to this alias. The field-level
-rules on `Question.question` and on `Choice` are unconditional, so they also
-apply wherever `Question` itself is pydantic-parsed — notably
+rules on `Question.question` and on `Question.choices` are unconditional, so
+they also apply wherever `Question` itself is pydantic-parsed — notably
 `TypeAdapter(AskUserRequest)` in `tui.textual_adapter`, which re-validates the
 interrupt payload client-side and re-raises on failure. Keep that in mind
 before adding another field-level rule here.
 
-A `ValueError` raised by any of these validators becomes a tool-call
-`ValidationError`, which `ToolNode` turns into an error `ToolMessage` the model
-can correct and retry from."""
+Where a `ValueError` from one of these validators ends up depends on the path.
+On the tool path it becomes a tool-call `ValidationError`, which `ToolNode`
+turns into an error `ToolMessage` the model can correct and retry from. On the
+client re-validation path there is no tool call and `textual_adapter` logs and
+re-raises instead."""
 
 
 def _validate_questions(questions: list[ValidatedQuestion]) -> list[ValidatedQuestion]:
     """Reject an empty `questions` list.
 
     Per-question rules live on `ValidatedQuestion`; this covers the one rule
-    about the list itself, which only the tool's `questions` parameter can see.
+    about the list itself. Attached both to the tool's `questions` parameter
+    and to `AskUserRequest.questions`, so the client re-validation boundary
+    rejects an empty list too — `AskUserMenu([])` would otherwise build a
+    titled prompt with no question widgets and nothing focusable.
 
     Args:
         questions: The parsed `questions` argument to check.
@@ -361,13 +375,14 @@ class AskUserRequest(TypedDict):
     type: Literal["ask_user"]
     """Discriminator tag, always `'ask_user'`."""
 
-    questions: list[ValidatedQuestion]
+    questions: Annotated[list[ValidatedQuestion], AfterValidator(_validate_questions)]
     """Questions to present to the user.
 
-    `ValidatedQuestion` rather than `Question` so the cross-field `choices`
-    rules also apply where `tui.textual_adapter` re-validates this payload. A
-    choice question with no `choices` would otherwise reach the client and
-    degrade to a text box.
+    `ValidatedQuestion` rather than `Question`, and carrying
+    `_validate_questions`, so every rule the tool applies also applies where
+    `tui.textual_adapter` re-validates this payload. A choice question with no
+    `choices` would otherwise reach the client and degrade to a text box, and
+    an empty list would render a prompt with no questions in it.
     """
 
     tool_call_id: str

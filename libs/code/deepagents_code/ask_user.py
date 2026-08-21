@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast, override
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -16,12 +16,13 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     ResponseT,
+    ToolCallRequest,
 )
 from langchain.tools import InjectedToolCallId, ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
-from pydantic import AfterValidator, Field
+from pydantic import AfterValidator, Field, ValidationError
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
@@ -314,6 +315,23 @@ def _parse_answers(
     )
 
 
+def _log_rejected_ask_user_call(
+    request: ToolCallRequest, result: ToolMessage | Command[Any]
+) -> None:
+    """Log an `ask_user` call the schema rejected.
+
+    Args:
+        request: The tool call request that produced `result`.
+        result: The handler's result.
+    """
+    if (
+        request.tool_call["name"] == "ask_user"
+        and isinstance(result, ToolMessage)
+        and result.status == "error"
+    ):
+        logger.warning("ask_user rejected the model's arguments: %s", result.content)
+
+
 class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware that provides an ask_user tool for interactive questioning.
 
@@ -355,15 +373,30 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.
+
+            Raises:
+                RuntimeError: If the tool body raises a `ValidationError` after
+                    the arguments have been validated. Re-raised as a type
+                    `ToolNode` will not convert, so the fault stays fatal
+                    instead of being reported to the model as bad input.
             """
-            # Malformed arguments never reach here: the schema rejects them
-            # with a pydantic `ValidationError` (an empty list, blank question
-            # text, an unknown `type`, a non-boolean `required`, blank choice
-            # values, and the cross-field `choices` rules on
-            # `ValidatedQuestion`). `ToolNode` converts that into an error
-            # `ToolMessage` the model can correct and retry from, and strips
-            # the injected arguments from it first, so no handling is wired
-            # here. See `_filter_validation_errors` in `langgraph`.
+            # The arguments below are already validated: the schema rejects an
+            # empty list, blank question text, an unknown `type`, a non-boolean
+            # `required`, blank choice values, and the cross-field `choices`
+            # rules on `ValidatedQuestion`. `ToolNode` converts that rejection
+            # into an error `ToolMessage` the model can correct and retry from,
+            # so no handling is wired here.
+            #
+            # Two separate mechanisms keep the injected arguments out of that
+            # message, and neither covers the other:
+            #   - `runtime` is dropped by `_filter_validation_errors`, which
+            #     builds its name set from state/store/runtime only.
+            #   - `tool_call_id` is an `InjectedToolCallId`, which that filter
+            #     does *not* know about. It stays out because
+            #     `ToolInvocationError` is built from the pre-injection
+            #     `call["args"]`.
+            # `AskUserMiddleware.wrap_tool_call` logs the rejection, since
+            # `ToolNode` logs nothing itself.
             ask_request = AskUserRequest(
                 type="ask_user",
                 questions=questions,
@@ -374,29 +407,103 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             # wrap_tool_call middleware that catches exceptions MUST re-raise
             # GraphBubbleUp — a broad `except Exception` (e.g. ToolRetryMiddleware)
             # would swallow this interrupt and silently break ask_user.
-            response = interrupt(ask_request)
-            execution_thread_id = _execution_thread_id(runtime)
-            context_thread_id = _context_string(runtime.context, "thread_id")
-            context_turn_id = _context_string(runtime.context, "turn_id")
-            active_turn_id = _active_turn_id(runtime)
-            runtime_tool_call_id = runtime.tool_call_id
-            return _parse_answers(
-                response,
-                questions,
-                tool_call_id,
-                thread_id=(
-                    execution_thread_id
-                    if execution_thread_id == context_thread_id
-                    and runtime_tool_call_id == tool_call_id
-                    else None
-                ),
-                turn_id=(
-                    context_turn_id if context_turn_id == active_turn_id else None
-                ),
-            )
+            # `ToolNode` wraps the tool body in the same `try` as argument
+            # parsing, so any `ValidationError` escaping from here would be
+            # reported to the model as *its* bad input — naming fields that are
+            # not even on the tool schema, against arguments the model wrote
+            # correctly, and discarding the user's answer. Re-raise as a
+            # non-`ValidationError` so it stays fatal, which is what
+            # `_default_handle_tool_errors` does with every other type.
+            #
+            # Nothing in the body raises one today. This guards the next edit,
+            # not a live fault. `GraphInterrupt` from `interrupt()` is not a
+            # `ValidationError` and passes through untouched.
+            try:
+                response = interrupt(ask_request)
+                execution_thread_id = _execution_thread_id(runtime)
+                context_thread_id = _context_string(runtime.context, "thread_id")
+                context_turn_id = _context_string(runtime.context, "turn_id")
+                active_turn_id = _active_turn_id(runtime)
+                runtime_tool_call_id = runtime.tool_call_id
+                return _parse_answers(
+                    response,
+                    questions,
+                    tool_call_id,
+                    thread_id=(
+                        execution_thread_id
+                        if execution_thread_id == context_thread_id
+                        and runtime_tool_call_id == tool_call_id
+                        else None
+                    ),
+                    turn_id=(
+                        context_turn_id if context_turn_id == active_turn_id else None
+                    ),
+                )
+            except ValidationError as exc:
+                msg = (
+                    "ask_user failed internally after its arguments were "
+                    "validated; this is not a model-authored error"
+                )
+                raise RuntimeError(msg) from exc
 
         _ask_user.name = "ask_user"
         self.tools = [_ask_user]
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Log a rejected `ask_user` call, then pass the result through.
+
+        `ToolNode` converts an argument `ValidationError` into an error
+        `ToolMessage` before it reaches here, and it logs nothing itself, so
+        without this a model sending malformed arguments — or looping on them —
+        leaves no operator-visible record at all. The user sees only a red
+        `ask_user` row in the transcript.
+
+        The result type is the discriminant: `_ask_user` always returns a
+        `Command`, so a `ToolMessage` here means the call never entered the tool
+        body. That keeps this off the `_parse_answers` error path, which reports
+        a malformed *resume payload* inside a `Command` and logs itself.
+
+        Nothing is caught. An exception from the body must stay fatal, and
+        `GraphBubbleUp` from `interrupt()` must keep bubbling.
+
+        Args:
+            request: The tool call request.
+            handler: Callable that executes the tool.
+
+        Returns:
+            The handler's result, unchanged.
+        """
+        result = handler(request)
+        _log_rejected_ask_user_call(request, result)
+        return result
+
+    @override
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Async twin of `wrap_tool_call`.
+
+        Defined so the async path keeps executing tools asynchronously. With
+        only the sync wrapper present, `ToolNode` falls back to running the tool
+        through `_execute_tool_sync`.
+
+        Args:
+            request: The tool call request.
+            handler: Awaitable callable that executes the tool.
+
+        Returns:
+            The handler's result, unchanged.
+        """
+        result = await handler(request)
+        _log_rejected_ask_user_call(request, result)
+        return result
 
     def wrap_model_call(
         self,

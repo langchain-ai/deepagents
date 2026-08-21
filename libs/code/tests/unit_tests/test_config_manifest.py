@@ -3091,6 +3091,11 @@ def test_resolve_startup_mode_with_source_reports_recent_fallback(
         "[startup]\nrecent = 'manual'\n",
         "[startup]\nrecent = 'yolo'\n",
         "[startup]\nrecent = ['auto']\n",
+        # Whitespace and blanks: the display must not accept a value the
+        # loader's exact match rejects.
+        "[startup]\nrecent = ' auto '\n",
+        "[startup]\nrecent = 'AUTO'\n",
+        "[startup]\nrecent = ''\n",
         "[startup]\nmode = 'auto'\n",
         "[startup]\nmode = 'yolo'\nrecent = 'manual'\n",
         "[startup]\nmode = 'hands-off'\nrecent = 'auto'\n",

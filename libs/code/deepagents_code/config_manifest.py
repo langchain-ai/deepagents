@@ -2401,10 +2401,13 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
             "Most recently selected Manual or Auto mode (managed by the app; "
             "only `manual` and `auto` are restored)."
         ),
-        # `NON_EMPTY_STR` for parity with the sibling app-managed `agents.recent`:
-        # it trims and rejects a blank, so a hand-edited `recent = ""` reports as
-        # unset instead of as a set value the loader then discards.
-        kind=OptionKind.NON_EMPTY_STR,
+        # Deliberately `STR`, not the `NON_EMPTY_STR` used by the sibling
+        # app-managed `agents.recent`: that kind strips, while
+        # `load_startup_mode` matches `recent` exactly. Stripping here would
+        # make `recent = " auto "` display as Auto while the launch fails closed
+        # to Manual. Exact coercion keeps introspection and startup on the same
+        # boundary, and an unmatched value fails closed either way.
+        kind=OptionKind.STR,
         toml_keys=("startup", "recent"),
     ),
     ConfigOption(

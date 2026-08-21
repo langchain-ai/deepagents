@@ -4736,8 +4736,11 @@ def cli_main() -> None:
         # headless/subcommand launches must never block — they load the file or
         # suppress it via `read_project_dotenv=false`. The prompt's default
         # action loads the file, so it can only ever reduce trust, never gate.
-        interactive_tui = (
-            not getattr(args, "command", None) and not args.non_interactive_message
+        # `non_interactive_message` is not set on every argparse path (some
+        # subcommands and ACP omit it), so read it defensively here — this gate
+        # runs earlier than the dep-floor check that relies on it.
+        interactive_tui = not getattr(args, "command", None) and not getattr(
+            args, "non_interactive_message", None
         )
         if interactive_tui and _trust_picker_has_terminal():
             _check_project_dotenv_trust()

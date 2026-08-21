@@ -2388,8 +2388,13 @@ class ChatInput(Vertical):
             self._refresh_file_cache,
         )
         self.call_after_refresh(self._sync_resize_handle_geometry)
+        self.watch(self.app, "theme", self._on_theme_change, init=False)
         self._sync_resize_handle_color()
         self._text_area.focus()
+
+    def _on_theme_change(self) -> None:
+        """Recolor the resize handle when the app theme changes."""
+        self._sync_resize_handle_color()
 
     def _sync_resize_handle_geometry(self) -> None:
         """Inset the resize handle so border corners remain visible."""

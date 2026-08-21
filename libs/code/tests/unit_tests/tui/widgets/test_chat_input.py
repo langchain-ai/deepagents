@@ -9,11 +9,12 @@ from typing import TYPE_CHECKING
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
+from textual.color import Color
 from textual.containers import Container
 from textual.widgets import Static
 from textual.widgets.text_area import Selection
 
-from deepagents_code import _textual_patches as _textual_patches
+from deepagents_code import _textual_patches as _textual_patches, theme
 from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.input import MediaTracker
 from deepagents_code.media_utils import ImageData, create_multimodal_content
@@ -857,6 +858,22 @@ class TestChatInputResize:
                 colors[mode] = handle.styles.color
 
             assert len(set(colors.values())) == len(colors)
+
+    async def test_theme_change_recolors_handle(self) -> None:
+        """Switching themes updates the resize line's inline color."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test() as pilot:
+            handle = app.query_one(ChatInputResizeHandle)
+            await pilot.pause()
+            original_color = handle.styles.color
+
+            app.theme = "textual-light"
+            await pilot.pause()
+
+            assert handle.styles.color == Color.parse(
+                theme.get_theme_colors(app).primary
+            )
+            assert handle.styles.color != original_color
 
     async def test_non_left_press_does_not_start_drag(self) -> None:
         """A non-left press on the handle leaves resize inactive."""

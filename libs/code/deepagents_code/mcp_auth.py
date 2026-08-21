@@ -40,7 +40,14 @@ from mcp.client.auth.utils import (
     handle_auth_metadata_response,
     handle_protected_resource_response,
 )
-from mcp.client.streamable_http import MCP_PROTOCOL_VERSION
+
+try:
+    # mcp<2.0 exposed the protocol-version header name here.
+    from mcp.client.streamable_http import (
+        MCP_PROTOCOL_VERSION,  # ty: ignore[unresolved-import]
+    )
+except ImportError:  # mcp>=2.0 renamed it and moved it to `mcp.shared.inbound`.
+    from mcp.shared.inbound import MCP_PROTOCOL_VERSION_HEADER as MCP_PROTOCOL_VERSION
 from mcp.shared.auth import (
     OAuthClientInformationFull,
     OAuthMetadata,

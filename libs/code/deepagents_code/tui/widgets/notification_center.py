@@ -663,8 +663,6 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         host app).
         """
         message.stop()
-        if self._settings_loading:
-            return
         self.run_worker(self._toggle_settings(), group="nc-settings")
 
     async def _toggle_settings(self) -> None:
@@ -922,12 +920,16 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
         Preserves a notification selection by key and keeps the settings row
         selected across refreshes. When a selected notification disappears,
         the cursor clamps to the remaining notification rows before falling
-        back to settings. An expanded settings section is remounted so the
-        refresh never silently collapses it.
+        back to settings. Warning preferences are refreshed from config so an
+        in-place suppression is reflected if the user expands settings next.
+        An expanded settings section is remounted so the refresh never silently
+        collapses it.
 
         Args:
             notifications: Current pending entries to display.
         """
+        self._suppressed = await self._load_suppressed()
+
         prev_key: str | None = None
         settings_selected = False
         if self._rows and 0 <= self._selected < len(self._rows):

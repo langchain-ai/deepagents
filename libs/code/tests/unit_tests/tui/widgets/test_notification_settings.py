@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
 
 from textual.app import App
@@ -16,6 +17,61 @@ from deepagents_code.tui.widgets.notification_settings import WARNING_TOGGLES
 
 class _NotificationSettingsHost(App[None]):
     """Minimal host app for mounting `NotificationCenterScreen` in tests."""
+
+
+async def test_first_toggle_waits_for_settings_preload() -> None:
+    """The first Enter is honored even while the config read is in flight."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_load(_screen: NotificationCenterScreen) -> set[str]:
+        started.set()
+        await release.wait()
+        return {YOLO_WARNING_KEY}
+
+    app = _NotificationSettingsHost()
+    with patch.object(NotificationCenterScreen, "_load_suppressed", blocked_load):
+        async with app.run_test() as pilot:
+            screen = NotificationCenterScreen([])
+            await app.push_screen(screen)
+            await started.wait()
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not screen.settings_expanded
+
+            release.set()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert screen.settings_expanded
+            checkbox = screen.query_one(f"#ns-{YOLO_WARNING_KEY}", Checkbox)
+            assert checkbox.value is False
+
+
+async def test_reload_refreshes_preloaded_settings() -> None:
+    """A reload picks up a suppression saved after the initial preload."""
+    suppressed: set[str] = set()
+
+    async def load(  # noqa: RUF029  # awaited by the production reload path
+        _screen: NotificationCenterScreen,
+    ) -> set[str]:
+        return set(suppressed)
+
+    app = _NotificationSettingsHost()
+    with patch.object(NotificationCenterScreen, "_load_suppressed", load):
+        async with app.run_test() as pilot:
+            screen = NotificationCenterScreen([])
+            await app.push_screen(screen)
+            await screen._settings_preloaded.wait()
+            suppressed.add(YOLO_WARNING_KEY)
+
+            await screen.reload([])
+            await pilot.press("enter")
+            await pilot.pause()
+
+            checkbox = screen.query_one(f"#ns-{YOLO_WARNING_KEY}", Checkbox)
+            assert checkbox.value is False
 
 
 async def test_notification_center_dims_underlying_content() -> None:

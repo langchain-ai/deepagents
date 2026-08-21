@@ -466,7 +466,7 @@ else:
 try:
     from textual import events as _shift_events
     from textual.screen import Screen as _ShiftScreen
-    from textual.selection import SelectEnd, SelectState
+    from textual.selection import SelectEnd, SelectStart, SelectState
 
     _original_forward_event_with_shift = _ShiftScreen._forward_event
 except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
@@ -499,6 +499,26 @@ else:
             return None
         return select_state if select_state.is_attached_to_dom() else None
 
+    def _rebase_anchor_scroll(anchor_start: SelectStart) -> SelectStart:
+        # `SelectStart.pointer_start_offset` adds the scroll travelled since
+        # the drag began, which tracks the viewport rather than the anchored
+        # text. That is harmless mid-drag, but a Shift+click can arrive many
+        # rows after the container scrolled — the transcript auto-scrolls while
+        # a message streams — leaving the anchor pointing at whatever text now
+        # occupies its old screen row. Fold the drift into the pointer delta
+        # and re-base against the current scroll offset, so the anchor stays on
+        # its original text.
+        container = anchor_start.container
+        drift = container.scroll_offset - anchor_start.container_initial_scroll_offset
+        return SelectStart(
+            container,
+            anchor_start.container_pointer_delta - drift,
+            anchor_start.container_initial_offset,
+            container.scroll_offset,
+            content_widget=anchor_start.content_widget,
+            content_offset=anchor_start.content_offset,
+        )
+
     def _extend_selection_to_click(
         screen: Screen,
         anchor: SelectState | None,
@@ -508,23 +528,15 @@ else:
         if anchor is None or click_state is None:
             return
         click = click_state.start
+        # Stock Textual clears the selection when a MouseUp lands on the
+        # offset of its MouseDown. Forget the offset so the Shift+click's own
+        # MouseUp leaves the extension we install below alone.
         screen._mouse_down_offset = None
         screen._select_state = SelectState(
             event.screen_offset,
-            anchor.start,
+            _rebase_anchor_scroll(anchor.start),
             SelectEnd(click.container, click.content_widget, click.content_offset),
         )
-        # A Shift+click after a completed drag rebuilds a SelectState whose
-        # field values match the finished selection, and Textual reactives
-        # skip the watcher on equal assignment — so the visible highlight
-        # (`screen.selections`, recomputed by `_watch__select_state`) would
-        # never update. Invoke the watcher directly, as `Screen._update_select`
-        # does. The word-select patch above replaces that watcher with a
-        # coroutine, and `_forward_event` is synchronous, so hand the
-        # awaitable to the running loop instead of dropping it.
-        result = screen._watch__select_state(screen._select_state)
-        if isawaitable(result):
-            screen.run_worker(result, name="shift-click select", group="selection")
 
     def _forward_event_with_shift_select(self: Screen, event: Event) -> None:
         shift_anchor = _shift_click_anchor(self, event)

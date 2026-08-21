@@ -16,7 +16,7 @@ from textual import events
 from textual._time import get_time
 from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.geometry import Offset
 from textual.selection import Selection
@@ -57,6 +57,15 @@ class SelectableHistoryApp(App[None]):
         with Vertical(id="history"):
             yield Static("first message", id="first")
             yield Static("second message", id="second")
+
+
+class SelectableScrollApp(App[None]):
+    CSS = "VerticalScroll { height: 8; }"
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="history"):
+            for index in range(1, 31):
+                yield Static(f"line{index:02d} content", id=f"row{index}")
 
 
 class TestPatchedWordSelection:
@@ -126,6 +135,31 @@ class TestPatchedWordSelection:
             await pilot.click("#msg", offset=(0, 0), shift=True)
 
             assert screen.get_selected_text() is None
+
+    async def test_shift_click_extends_from_anchor_after_scroll(self) -> None:
+        async with SelectableScrollApp().run_test(size=(40, 8)) as pilot:
+            await pilot.mouse_down("#row1", offset=(0, 0))
+            await pilot.mouse_up("#row2", offset=(6, 0))
+            history = pilot.app.query_one("#history", VerticalScroll)
+            history.scroll_to(y=10, animate=False)
+            await pilot.pause()
+
+            await pilot.click("#row14", offset=(6, 0), shift=True)
+
+            selected = pilot.app.screen.get_selected_text()
+            assert selected is not None
+            assert selected.startswith("line01 content")
+            assert selected.endswith("line14")
+
+    async def test_shift_click_ignores_unmodified_click(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.mouse_down("#msg", offset=(0, 0))
+            await pilot.mouse_up("#msg", offset=(4, 0))
+            assert pilot.app.screen.get_selected_text() == "alpha"
+
+            await pilot.click("#msg", offset=(11, 0))
+
+            assert pilot.app.screen.get_selected_text() is None
 
     async def test_shift_click_extends_selection_across_widgets(self) -> None:
         async with SelectableHistoryApp().run_test() as pilot:

@@ -85,6 +85,7 @@ Production agents powered by the LangChain stack:
 | [**Content Writer**](deploy-content-writer/) | Content writer with per-user memory and Supabase auth |
 | [**GTM Strategist**](deploy-gtm-agent/) | GTM strategy agent coordinating sync and async subagents |
 | [**Async Subagent Server**](async-subagent-server/) | Self-hosted Agent Protocol server exposing a researcher as an async subagent |
+| [**Deep Agent Template**](deep-agent-template/) | Deployable starter Deep Agent with subagents and human-in-the-loop interrupts |
 
 ### Advanced patterns
 

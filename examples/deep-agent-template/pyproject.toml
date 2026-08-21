@@ -1,0 +1,29 @@
+[project]
+name = "deep-agent-template"
+version = "0.1.0"
+description = "Deep Agent template for LangSmith/LangGraph deployment"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.4.0",
+    "langgraph>=1.0.0",
+    "langgraph-sdk>=0.3.15",
+    "langsmith>=0.8.18",
+    "python-dotenv>=1.0.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.15,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "anyio>=4.7.0",
+    "langgraph-cli[inmem]>=0.4.10",
+    "pytest>=9.0.3",
+    "ruff>=0.8.0",
+]
+
+[tool.uv.build-backend]
+module-name = "deep_agent"
+source-include = ["langgraph.json", ".env.example", "Makefile"]

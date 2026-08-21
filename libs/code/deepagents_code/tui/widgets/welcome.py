@@ -427,13 +427,16 @@ class WelcomeBanner(Static):
         )
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a hand pointer over clickable spans and reset it elsewhere."""
-        clickable = bool(event.style.link) or copy_span_target(event.style) is not None
+        """Show pointer and tooltip affordances for interactive spans."""
+        copy_target = copy_span_target(event.style)
+        clickable = bool(event.style.link) or copy_target is not None
         self.styles.pointer = "pointer" if clickable else "default"
+        self.tooltip = "Copy" if copy_target is not None else None
 
     def on_leave(self) -> None:
-        """Reset the pointer shape when the mouse leaves the banner."""
+        """Reset hover affordances when the mouse leaves the banner."""
         self.styles.pointer = "default"
+        self.tooltip = None
 
     def _build_banner(self) -> Content:
         """Build the banner content.

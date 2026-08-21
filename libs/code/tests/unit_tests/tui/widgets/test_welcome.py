@@ -893,6 +893,19 @@ def _click_offset(banner: WelcomeBanner, needle: str) -> tuple[int, int]:
 class TestThreadIdClickToCopy:
     """Clicking the thread ID copies it; the trace link still opens."""
 
+    async def test_hover_shows_copy_tooltip_only_for_thread_id(self) -> None:
+        """Hovering the thread ID shows `Copy`, then clears it elsewhere."""
+        banner = _make_banner(thread_id="abc-123", show_model=False, env={DEBUG: "1"})
+        app = _BannerApp(banner)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.hover(banner, offset=_click_offset(banner, "abc-123"))
+            await pilot.pause()
+            assert banner.tooltip == "Copy"
+
+            await pilot.hover(banner, offset=_click_offset(banner, "thread:"))
+            await pilot.pause()
+            assert banner.tooltip is None
+
     async def test_click_copies_thread_id(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

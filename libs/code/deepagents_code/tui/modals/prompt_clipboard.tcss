@@ -30,13 +30,13 @@ PromptClipboardScreen #prompt-filter {
 PromptClipboardScreen #prompt-list {
     height: auto;
     min-height: 3;
-    max-height: 10;
+    max-height: 20;
     background: $background;
     scrollbar-gutter: stable;
 }
 
 PromptClipboardScreen .prompt-row {
-    height: 2;
+    height: 1;
     padding: 0 1;
 }
 

@@ -14,9 +14,8 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 _TITLE_MAX = 72
-_EXCERPT_MAX = 120
 
-_PROMPT_LIST_MAX_HEIGHT = 10
+_PROMPT_LIST_MAX_HEIGHT = 20
 """Upper bound (in cells) for the prompt list; mirrors the tcss max-height."""
 
 _PROMPT_LIST_MIN_HEIGHT = 1
@@ -32,7 +31,9 @@ class _PromptRow(Static):
 
     @staticmethod
     def _content(prompt: str) -> Content:
-        """Build a bounded literal-text title and excerpt.
+        """Build a bounded literal-text title.
+
+        Rows show only the title; the full prompt renders in the preview pane.
 
         Returns:
             Safe Textual content for the row.
@@ -41,12 +42,7 @@ class _PromptRow(Static):
         title = nonempty[0] if nonempty else prompt.strip()
         if len(title) > _TITLE_MAX:
             title = title[: _TITLE_MAX - 1] + "…"
-        excerpt = " ".join(prompt.split())
-        if len(excerpt) > _EXCERPT_MAX:
-            excerpt = excerpt[: _EXCERPT_MAX - 1] + "…"
-        return Content.assemble(
-            (title or "(empty prompt)", "bold"), (f"\n{excerpt}", "dim")
-        )
+        return Content.styled(title or "(empty prompt)", "bold")
 
 
 class PromptClipboardScreen(ModalScreen[str | None]):

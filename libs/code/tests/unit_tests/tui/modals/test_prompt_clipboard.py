@@ -96,6 +96,26 @@ class TestPromptClipboardScreen:
             assert str(preview.content) == prompt
             assert str(screen._rows[0].content).startswith("[bold red]")
 
+    async def test_row_shows_only_first_line_of_multiline_prompt(self) -> None:
+        """Rows are one line; continuation lines belong to the preview pane."""
+        prompt = "title line\ndetails here"
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open((prompt,))
+            await pilot.pause()
+
+            assert str(screen._rows[0].content) == "title line"
+
+    async def test_single_line_prompt_row_does_not_repeat_text(self) -> None:
+        """A one-line prompt renders as one line, not a duplicated excerpt."""
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("single line prompt",))
+            await pilot.pause()
+
+            assert str(screen._rows[0].content) == "single line prompt"
+            assert screen._rows[0].region.height == 1
+
     async def test_empty_state_fits_narrow_terminal(self) -> None:
         app = _PromptClipboardApp()
         async with app.run_test(size=(45, 18)) as pilot:

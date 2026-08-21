@@ -1550,7 +1550,7 @@ class TestPromptIndicator:
 
 
 class TestShellSyntaxHighlighting:
-    """Shell command modes should render Bash syntax styles in the chat input."""
+    """Shell command modes should render native shell styles in the chat input."""
 
     @pytest.mark.parametrize("mode", ["shell", "shell_incognito"])
     async def test_shell_modes_highlight_command(self, mode: str) -> None:
@@ -1568,6 +1568,36 @@ class TestShellSyntaxHighlighting:
             line = text_area.get_line(0)
             assert line.plain == command
             assert len({span.style for span in line.spans}) > 1
+
+    async def test_windows_shell_mode_uses_batch_lexer(self) -> None:
+        """Windows shell commands should use `cmd.exe` batch syntax styles."""
+        from unittest.mock import patch
+
+        app = _ChatInputTestApp()
+        with (
+            patch.object(chat_input_module, "sys") as mock_sys,
+            patch.object(
+                chat_input_module,
+                "highlight",
+                wraps=chat_input_module.highlight,
+            ) as mock_highlight,
+        ):
+            mock_sys.platform = "win32"
+            async with app.run_test() as pilot:
+                chat_input = app.query_one(ChatInput)
+                text_area = app.query_one(ChatTextArea)
+                command = "if exist %TEMP% echo %PATH%"
+                text_area.text = command
+
+                chat_input.mode = "shell"
+                await pilot.pause()
+
+                assert text_area.get_line(0).plain == command
+                mock_highlight.assert_called_once_with(
+                    command,
+                    language="batch",
+                    tab_size=1,
+                )
 
     async def test_leaving_shell_mode_removes_highlighting(self) -> None:
         """Returning to normal input should clear cached shell styles."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never
@@ -669,7 +670,8 @@ class ChatTextArea(PasteBurstTextArea):
         lines = self._highlighted_lines
         if lines is None or source != self._highlighted_source:
             self._highlighted_source = source
-            highlighted = highlight(source, language="sh", tab_size=1)
+            language = "batch" if sys.platform == "win32" else "sh"
+            highlighted = highlight(source, language=language, tab_size=1)
             lines = list(highlighted.split("\n", allow_blank=True))
             self._highlighted_lines = lines
 

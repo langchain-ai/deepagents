@@ -4328,6 +4328,8 @@ def _check_project_dotenv_trust() -> None:
     from rich.console import Console
     from rich.markup import escape
 
+    from deepagents_code.unicode_security import sanitize_control_chars
+
     prompt_console = Console(stderr=True)
     prompt_console.print()
     prompt_console.print(
@@ -4335,7 +4337,12 @@ def _check_project_dotenv_trust() -> None:
         "environment.[/bold yellow]",
         highlight=False,
     )
-    prompt_console.print(f"  {escape(str(dotenv_path))}", highlight=False)
+    # `dotenv_path`/`skip_key` come from a directory name that can carry ANSI
+    # escapes, control chars, or deceptive Unicode; strip them before printing
+    # so a crafted path cannot spoof which `.env` this prompt is about.
+    safe_dotenv_path = sanitize_control_chars(str(dotenv_path), keep_newlines=False)
+    safe_skip_key = sanitize_control_chars(skip_key, keep_newlines=False)
+    prompt_console.print(f"  {escape(safe_dotenv_path)}", highlight=False)
     prompt_console.print(
         "Loaded values reach subprocesses before any approval prompt and can run "
         "code (shell startup hooks, git config). Loading anyway — you can change "
@@ -4361,7 +4368,7 @@ def _check_project_dotenv_trust() -> None:
     elif action is _TrustAction.REMEMBER:
         if skip_project_dotenv(skip_key):
             prompt_console.print(
-                f'[dim]The .env in "{escape(skip_key)}" will be skipped '
+                f'[dim]The .env in "{escape(safe_skip_key)}" will be skipped '
                 "from now on.[/dim]",
                 highlight=False,
             )

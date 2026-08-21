@@ -732,37 +732,39 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
 
         scroll = self.query_one(VerticalScroll)
         group = _NotificationSettingsGroup(id="nc-settings-group")
-        await scroll.mount(group)
-        checkboxes = [
-            Checkbox(
-                label,
-                value=key not in self._suppressed,
-                id=f"ns-{key}",
-            )
-            for key, label in WARNING_TOGGLES
-        ]
-        await group.mount(*checkboxes)
+        # Batch so the display timer cannot paint between the mount and the
+        # focus handoff; an unbatched timer would otherwise show the pane
+        # open with nothing focused (and the footer hint still on its
+        # collapsed verbs) for a frame before the focused checkbox lands.
+        with self.app.batch_update():
+            await scroll.mount(group)
+            checkboxes = [
+                Checkbox(
+                    label,
+                    value=key not in self._suppressed,
+                    id=f"ns-{key}",
+                )
+                for key, label in WARNING_TOGGLES
+            ]
+            await group.mount(*checkboxes)
 
-        # Flip state, glyph, and footer hint together with the focus handoff
-        # so the expanded section renders complete in one frame. A paint
-        # between the mount above and here would otherwise show the pane
-        # open with no selected item (the footer hint switches with the
-        # same refresh, so it never flashes its collapsed verbs either).
-        self._settings_expanded = True
-        self._settings_row().set_expanded(True)
-        self._refresh_help()
-        self._set_selected(len(self._rows) - 1)
-        if checkboxes:
-            first = checkboxes[0]
-            if first.is_attached:
-                # `Widget.focus()` defers via `app.call_later` and refreshes
-                # twice, so the pane would paint open with nothing focused
-                # before the focused checkbox styles in; setting focus on
-                # the screen applies in this same turn.
-                self.set_focus(first)
-            else:
-                first.call_after_refresh(first.focus)
-        self._settings_row().scroll_visible()
+            # Flip state, glyph, footer hint, and focus together so the
+            # expanded section renders complete in one frame.
+            self._settings_expanded = True
+            self._settings_row().set_expanded(True)
+            self._refresh_help()
+            self._set_selected(len(self._rows) - 1)
+            if checkboxes:
+                first = checkboxes[0]
+                if first.is_attached:
+                    # `Widget.focus()` defers via `app.call_later`, so the
+                    # pane would paint open with nothing focused before the
+                    # focused checkbox styles in; setting focus on the screen
+                    # applies in this same turn.
+                    self.set_focus(first)
+                else:
+                    first.call_after_refresh(first.focus)
+            self._settings_row().scroll_visible()
 
     async def _collapse_settings(self) -> None:
         """Unmount the warning checkboxes and return focus to the row."""

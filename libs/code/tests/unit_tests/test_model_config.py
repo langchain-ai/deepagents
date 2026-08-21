@@ -6272,6 +6272,34 @@ recent = "openai:gpt-5.2"
         ):
             _get_default_model_spec()
 
+    def test_allowlist_falls_back_to_remote_no_auth_provider(
+        self, tmp_path: Path
+    ) -> None:
+        """A remote Ollama endpoint with unknown auth remains a viable fallback.
+
+        `get_provider_auth_status` reports UNKNOWN for remote no-auth providers
+        because a LAN/hosted endpoint may not require credentials. Rejecting
+        that state here would block startup even though `create_model()`
+        deliberately permits it.
+        """
+        from deepagents_code.config import _get_default_model_spec
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nallowed = ["ollama:qwen3:4b"]\n\n'
+            "[models.providers.ollama]\n"
+            'base_url = "https://ollama.example.com"\n'
+            'models = ["qwen3:4b"]\n'
+        )
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            result = _get_default_model_spec()
+
+        assert result == "ollama:qwen3:4b"
+
     def test_env_used_when_neither_set(self, tmp_path):
         """Falls back to env var auto-detection when neither default nor recent set."""
         from deepagents_code.config import _get_default_model_spec, settings

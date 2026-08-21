@@ -4812,7 +4812,12 @@ def _get_default_model_spec() -> str:
         for candidate in config.allowed_models:
             parsed = ModelSpec.parse(candidate)
             auth = get_provider_auth_status(parsed.provider)
-            if auth.state not in {ProviderAuthState.MISSING, ProviderAuthState.UNKNOWN}:
+            # Only a definitively missing credential disqualifies a candidate.
+            # UNKNOWN covers remote no-auth providers (e.g., a LAN/hosted
+            # Ollama endpoint) that may not require auth at all; rejecting
+            # them here would block startup even though create_model()
+            # deliberately permits that state.
+            if auth.state is not ProviderAuthState.MISSING:
                 return candidate
         msg = "No credentials are configured for any model in models.allowed"
         raise NoCredentialsConfiguredError(msg)

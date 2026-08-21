@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from textual.app import App
+from textual.widgets import Checkbox, Static
 
 from deepagents_code.notifications import (
     ActionId,
@@ -19,8 +20,10 @@ from deepagents_code.tui.widgets.notification_center import (
     NotificationCenterScreen,
     NotificationSuppressRequested,
     _NotificationRow,
+    _NotificationSettingsRow,
 )
 from deepagents_code.tui.widgets.notification_detail import NotificationDetailScreen
+from deepagents_code.tui.widgets.notification_settings import WARNING_TOGGLES
 from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
 
@@ -90,6 +93,22 @@ class TestNotificationCenterScreen:
                 "dep:ripgrep",
                 "update:available",
             ]
+            assert len(screen.query(_NotificationSettingsRow)) == 1
+
+    async def test_empty_center_shows_settings_destination(self) -> None:
+        """An empty hub stays useful by selecting warning preferences."""
+        app = App()
+        screen = NotificationCenterScreen([])
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert not list(screen.query(_NotificationRow))
+            assert len(screen.query(_NotificationSettingsRow)) == 1
+            assert "No pending notifications" in str(
+                screen.query_one(".nc-empty", Static).content
+            )
+            assert screen._selected == 0
 
     async def test_widget_ids_are_collision_free_across_duplicate_keys(self) -> None:
         """Enumerated widget ids survive keys that would sanitize identically."""
@@ -122,6 +141,177 @@ class TestNotificationCenterScreen:
             await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, UpdateAvailableScreen)
+
+    async def test_enter_on_settings_expands_inline_without_dismissing(self) -> None:
+        """Enter on the settings row expands the checkboxes inside the hub."""
+        app = App()
+        screen = NotificationCenterScreen([], suppressed=set())
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.screen is screen
+            assert screen.settings_expanded
+            assert len(screen.query(Checkbox)) == len(WARNING_TOGGLES)
+            assert screen._selected == len(screen._rows) - 1
+
+    async def test_esc_while_expanded_collapses_before_closing(self) -> None:
+        """Esc collapses expanded settings first; a second Esc dismisses."""
+        results: list[NotificationActionResult | None] = []
+        app = App()
+        screen = NotificationCenterScreen([], suppressed=set())
+        async with app.run_test() as pilot:
+            app.push_screen(screen, results.append)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen.settings_expanded
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert app.screen is screen
+            assert not screen.settings_expanded
+            assert not list(screen.query(Checkbox))
+            assert results == []
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+        assert results == [None]
+
+    async def test_settings_expand_focuses_first_checkbox(self) -> None:
+        """Expanding settings hands key focus to the first warning toggle."""
+        app = App()
+        screen = NotificationCenterScreen([], suppressed=set())
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.focused is screen.query(Checkbox).first()
+
+    @pytest.mark.parametrize(
+        ("key", "expected_index"),
+        [
+            ("down", 1),
+            ("j", 1),
+            ("tab", 1),
+            ("up", len(WARNING_TOGGLES) - 1),
+            ("k", len(WARNING_TOGGLES) - 1),
+            ("shift+tab", len(WARNING_TOGGLES) - 1),
+        ],
+    )
+    async def test_expanded_settings_nav_cycles_checkboxes(
+        self, key: str, expected_index: int
+    ) -> None:
+        """Navigation keys move between warning checkboxes, not the row cursor.
+
+        With the section expanded and a checkbox focused, up/down/tab (and
+        j/k) must cycle the checkboxes and wrap; the center's row cursor
+        must stay parked on the settings row.
+        """
+        app = App()
+        screen = NotificationCenterScreen([_dep_entry()], suppressed=set())
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("down")  # select the settings row
+            await pilot.press("enter")  # expand
+            await pilot.pause()
+            boxes = list(screen.query(Checkbox))
+            assert app.focused is boxes[0]
+
+            await pilot.press(key)
+            await pilot.pause()
+
+            assert app.focused is boxes[expected_index]
+            # Row cursor stays on the settings row; it never moved.
+            assert screen._selected == len(screen._rows) - 1
+
+    async def test_expanded_settings_nav_wraps_at_end(self) -> None:
+        """Down from the last checkbox wraps back to the first."""
+        app = App()
+        screen = NotificationCenterScreen([], suppressed=set())
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            boxes = list(screen.query(Checkbox))
+            boxes[-1].focus()
+            await pilot.pause()
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            assert app.focused is boxes[0]
+
+    async def test_settings_expand_collapse_round_trip_restores_help(self) -> None:
+        """The footer hint tracks expansion so the Esc verb stays accurate."""
+        app = App()
+        screen = NotificationCenterScreen([], suppressed=set())
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            help_widget = screen.query_one(".nc-help", Static)
+            assert "Esc close" in str(help_widget.content)
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "Esc collapse" in str(screen.query_one(".nc-help", Static).content)
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert "Esc close" in str(screen.query_one(".nc-help", Static).content)
+
+    async def test_rapid_double_esc_does_not_duplicate_settings_group(self) -> None:
+        """Two Esc presses in one batch must not mount a second settings group.
+
+        `run_worker(..., group="nc-settings")` is not exclusive by default,
+        so without serialization the second Esc starts an expand while the
+        first Esc's collapse is still awaiting `remove()` — mounting a
+        duplicate `#nc-settings-group` raises `DuplicateIds` and kills the
+        app via `WorkerFailed`.
+        """
+        app = App()
+        screen = NotificationCenterScreen([], suppressed=set())
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen.settings_expanded
+
+            await pilot.press("escape", "escape")
+            for _ in range(20):
+                await pilot.pause()
+
+            assert len(screen.query("#nc-settings-group")) <= 1
+
+    async def test_reload_keeps_settings_expanded(self) -> None:
+        """A row-list refresh must not collapse the open settings section."""
+        app = App()
+        screen = NotificationCenterScreen([_dep_entry()], suppressed=set())
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("down")  # select the settings row
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen.settings_expanded
+
+            await screen.reload([_dep_entry()])
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert screen.settings_expanded
+            assert len(screen.query(Checkbox)) == len(WARNING_TOGGLES)
+            assert screen._selected == len(screen._rows) - 1
 
     async def test_enter_preloads_api_key_screen_before_detail(
         self, monkeypatch: pytest.MonkeyPatch
@@ -277,8 +467,8 @@ class TestNotificationCenterScreen:
             ]
             assert screen._selected == 0
 
-    async def test_reload_with_empty_list_dismisses_center(self) -> None:
-        """`reload([])` closes the center with None."""
+    async def test_reload_with_empty_list_keeps_settings_reachable(self) -> None:
+        """`reload([])` retains the hub with the settings row selected."""
         results: list[NotificationActionResult | None] = []
         app = App()
 
@@ -292,7 +482,12 @@ class TestNotificationCenterScreen:
             await screen.reload([])
             await pilot.pause()
 
-        assert results == [None]
+            assert app.screen is screen
+            assert not list(screen.query(_NotificationRow))
+            assert len(screen.query(_NotificationSettingsRow)) == 1
+            assert screen._selected == 0
+
+        assert results == []
 
     async def test_detail_esc_returns_to_center(self) -> None:
         """Esc in the detail modal keeps the notification center open."""
@@ -320,8 +515,8 @@ class TestNotificationCenterScreen:
             assert screen._selected == 1
 
     @pytest.mark.parametrize("key", ["up", "k"])
-    async def test_up_or_k_wraps_to_last_row(self, key: str) -> None:
-        """Navigating up from row 0 wraps to the last notification."""
+    async def test_up_or_k_wraps_to_settings_row(self, key: str) -> None:
+        """Navigating up from row 0 wraps to notification settings."""
         app = App()
         screen = NotificationCenterScreen([_dep_entry(), _update_entry()])
         async with app.run_test() as pilot:
@@ -329,7 +524,7 @@ class TestNotificationCenterScreen:
             await pilot.pause()
             await pilot.press(key)
             await pilot.pause()
-            assert screen._selected == 1
+            assert screen._selected == 2
 
     async def test_escape_dismisses_with_none(self) -> None:
         """Esc on the center (no detail open) returns `None`."""

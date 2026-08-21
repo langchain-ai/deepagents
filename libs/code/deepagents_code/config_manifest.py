@@ -788,6 +788,41 @@ def resolve_scalar(
     return resolved.value, _ranked_source(resolved)
 
 
+def resolve_read_project_dotenv(
+    *,
+    toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any] | None = None,
+) -> bool:
+    """Resolve whether the project `.env` should be loaded into the process env.
+
+    Resolves `startup.read_project_dotenv` through the standard managed → env →
+    `config.toml` → default precedence; the default (`True`) preserves the
+    historical behavior of loading the project `.env`. Disabling skips only the
+    project file — the global `~/.deepagents/.env` still loads — as
+    defense-in-depth against an untrusted repo whose `.env` carries hostile
+    values the dotenv denylist does not yet enumerate. The option's own sources
+    (managed config, the process env, user `config.toml`) are all user- or
+    org-controlled and are read before any project `.env` is applied, so a
+    project `.env` cannot disable (or re-enable) its own loading.
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+        managed_toml_data: Parsed managed TOML; the process snapshot is used when
+            omitted.
+
+    Returns:
+        `True` (the default) to load the project `.env`, `False` to skip it.
+    """
+    option = get_option("startup.read_project_dotenv")
+    if option is None:
+        return True
+    data = load_config_toml() if toml_data is None else toml_data
+    value, _ = resolve_scalar(
+        option, toml_data=data, managed_toml_data=managed_toml_data
+    )
+    return bool(value)
+
+
 def load_bool_display_preference(
     key: str,
     *,
@@ -2245,6 +2280,18 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="manual",
         toml_keys=("startup", "mode"),
         cli_flag="--auto-approve",
+    ),
+    ConfigOption(
+        key="startup.read_project_dotenv",
+        group="Startup",
+        summary=(
+            "Load the project `.env` (found walking up from cwd) into the "
+            "process environment; disable to skip an untrusted repo's file."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.READ_PROJECT_DOTENV,
+        toml_keys=("startup", "read_project_dotenv"),
     ),
     ConfigOption(
         key="startup.yolo_switcher",

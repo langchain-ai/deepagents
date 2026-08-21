@@ -554,6 +554,62 @@ class TestReloadFromEnvironment:
             assert key not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
 
+    def test_project_dotenv_skipped_when_read_project_dotenv_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`startup.read_project_dotenv = false` skips the project `.env`.
+
+        The project file must not apply its values, while the global
+        `~/.deepagents/.env` still loads — disabling is scoped to the untrusted,
+        repo-traveling file, not the user's own global defaults.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text("GIT_CONFIG_COUNT=1\nPROJECT_ONLY_KEY=project-value\n")
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text("GLOBAL_ONLY_KEY=global-value\n")
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        for key in ("GIT_CONFIG_COUNT", "PROJECT_ONLY_KEY", "GLOBAL_ONLY_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
+
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda: False,
+        )
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert "GIT_CONFIG_COUNT" not in os.environ
+        assert "PROJECT_ONLY_KEY" not in os.environ
+        assert os.environ["GLOBAL_ONLY_KEY"] == "global-value"
+
+    def test_project_dotenv_loads_when_read_project_dotenv_default(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Default (`startup.read_project_dotenv` true) still loads the project file."""
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text("PROJECT_ONLY_KEY=project-value\n")
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda: True,
+        )
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert os.environ["PROJECT_ONLY_KEY"] == "project-value"
+
     def test_project_dotenv_cannot_set_mcp_trust_lists(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

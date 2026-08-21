@@ -407,7 +407,8 @@ def _load_dotenv(
 
     Loads in order (first write wins, `override=False`):
 
-    1. Project/CWD `.env` — project-specific values
+    1. Project/CWD `.env` — project-specific values (skipped when
+       `startup.read_project_dotenv` resolves false)
     2. `~/.deepagents/.env` — global user defaults
 
     Both layers use `override=False` (the python-dotenv default) so that
@@ -468,23 +469,36 @@ def _load_dotenv(
         return applied
 
     # 1. Project/CWD .env — loads first so project values are set before the
-    # global file, which can only fill in vars not already present.
+    # global file, which can only fill in vars not already present. Skipped
+    # entirely when `startup.read_project_dotenv` resolves false (the option's
+    # sources — managed config, process env, user config.toml — are read before
+    # any project `.env`, so a repo file cannot veto its own skip).
+    from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+    read_project = resolve_read_project_dotenv()
     dotenv_path: Path | str | None = None
-    try:
-        if start_path is None:
-            found = dotenv.find_dotenv(usecwd=True)
-            if found:
-                dotenv_path = found
-                loaded = apply_dotenv(Path(found), is_project=True) or loaded
-        else:
-            dotenv_path = _find_dotenv_from_start_path(start_path)
-            if dotenv_path is not None:
-                loaded = apply_dotenv(dotenv_path, is_project=True) or loaded
-    except (OSError, ValueError):
-        logger.warning(
-            "Could not read project dotenv at %s; project env vars will not be loaded",
-            dotenv_path or start_path or "cwd",
-            exc_info=True,
+    if read_project:
+        try:
+            if start_path is None:
+                found = dotenv.find_dotenv(usecwd=True)
+                if found:
+                    dotenv_path = found
+                    loaded = apply_dotenv(Path(found), is_project=True) or loaded
+            else:
+                dotenv_path = _find_dotenv_from_start_path(start_path)
+                if dotenv_path is not None:
+                    loaded = apply_dotenv(dotenv_path, is_project=True) or loaded
+        except (OSError, ValueError):
+            logger.warning(
+                "Could not read project dotenv at %s; project env vars will not "
+                "be loaded",
+                dotenv_path or start_path or "cwd",
+                exc_info=True,
+            )
+    else:
+        logger.debug(
+            "Skipping project dotenv at %s: startup.read_project_dotenv is false",
+            start_path or "cwd",
         )
 
     # 2. Global (~/.deepagents/.env) — fills in any vars not already set by

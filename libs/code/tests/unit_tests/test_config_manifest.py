@@ -3017,9 +3017,14 @@ def test_resolve_startup_mode_from_toml(caplog) -> None:
     assert resolve_scalar(opt, toml_data={}) == (DEFAULT_STARTUP_MODE, "default")
 
 
-def test_resolve_startup_mode_with_source_reports_recent_fallback() -> None:
+def test_resolve_startup_mode_with_source_reports_recent_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """`startup.mode` display reflects the `[startup].recent` restore."""
+    from deepagents_code import approval_mode
     from deepagents_code.config_manifest import resolve_startup_mode_with_source
+
+    monkeypatch.setattr(approval_mode, "has_auto_mode_notice", lambda: True)
 
     # Only `recent` set: bare launch runs Auto, so the display must say so.
     assert resolve_startup_mode_with_source(
@@ -3050,6 +3055,31 @@ def test_resolve_startup_mode_with_source_reports_recent_fallback() -> None:
     assert resolve_startup_mode_with_source(
         toml_data={"startup": {"mode": "hands-off", "recent": "auto"}},
         managed_toml_data={},
+    ) == (DEFAULT_STARTUP_MODE, "default")
+
+    # Managed `recent` participates in the same precedence as runtime loading.
+    assert resolve_startup_mode_with_source(
+        toml_data={},
+        managed_toml_data={"startup": {"recent": "auto"}},
+    ) == ("auto", "managed config")
+    assert resolve_startup_mode_with_source(
+        toml_data={"startup": {"recent": "auto"}},
+        managed_toml_data={"startup": {"recent": "manual"}},
+    ) == ("manual", "managed config")
+
+
+def test_resolve_startup_mode_with_source_gates_recent_auto_on_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The displayed fallback matches a launch blocked by a stale notice."""
+    from deepagents_code import approval_mode
+    from deepagents_code.config_manifest import resolve_startup_mode_with_source
+
+    monkeypatch.setattr(approval_mode, "has_auto_mode_notice", lambda: False)
+
+    assert resolve_startup_mode_with_source(
+        toml_data={},
+        managed_toml_data={"startup": {"recent": "auto"}},
     ) == (DEFAULT_STARTUP_MODE, "default")
 
 

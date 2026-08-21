@@ -5628,12 +5628,35 @@ DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
 """Fallback startup mode when `[startup]` has no valid configured mode."""
 
 
+def is_recent_startup_mode_restorable(mode: str) -> bool:
+    """Return whether an app-managed recent mode may be restored silently.
+
+    Auto restoration requires the current versioned education notice. Manual
+    remains safe to restore without one.
+
+    Args:
+        mode: Candidate value from `[startup].recent`.
+
+    Returns:
+        Whether startup may apply the mode without prompting.
+    """
+    if mode not in RECENT_STARTUP_MODES:
+        return False
+    if mode != STARTUP_MODE_AUTO:
+        return True
+
+    from deepagents_code.approval_mode import has_auto_mode_notice
+
+    return has_auto_mode_notice()
+
+
 def load_startup_mode(config_path: Path | None = None) -> str:
     """Load the startup approval mode from config.toml.
 
     An explicit `[startup].mode` remains the intentional default and outranks the
-    app-managed `[startup].recent` value. Recent mode restores only `manual` or
-    classifier-backed `auto`; unrestricted `yolo` must remain explicitly configured.
+    app-managed `[startup].recent` value. Recent mode restores `manual`, or
+    classifier-backed `auto` after the current notice has been shown;
+    unrestricted `yolo` must remain explicitly configured.
 
     Args:
         config_path: Path to config file.
@@ -5662,7 +5685,9 @@ def load_startup_mode(config_path: Path | None = None) -> str:
             return DEFAULT_STARTUP_MODE
         recent = startup.get("recent")
         if isinstance(recent, str) and recent in RECENT_STARTUP_MODES:
-            return recent
+            if is_recent_startup_mode_restorable(recent):
+                return recent
+            return DEFAULT_STARTUP_MODE
         if recent is not None:
             logger.warning(
                 "Ignoring [startup].recent=%r (expected 'manual' or 'auto')",

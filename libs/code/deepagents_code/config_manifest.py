@@ -1218,8 +1218,9 @@ def resolve_startup_mode_with_source(
 
     Mirrors `model_config.load_startup_mode`: an explicit `[startup].mode` (or
     managed/env override) wins; otherwise the app-managed `[startup].recent`
-    value restores `manual`/`auto`, so `dcode config get startup.mode` reports
-    the mode the next bare launch will actually use instead of the bare default.
+    value restores `manual` or notice-approved `auto`, so
+    `dcode config get startup.mode` reports the mode the next bare launch will
+    actually use instead of the bare default.
 
     Args:
         toml_data: Parsed `config.toml`; loaded automatically when omitted.
@@ -1227,10 +1228,10 @@ def resolve_startup_mode_with_source(
             omitted.
 
     Returns:
-        `(mode, source)`. `source` credits `config.toml` when either the
-        explicit mode or the recent fallback supplied the value.
+        `(mode, source)`. `source` credits the managed or user configuration
+        layer that supplied either the explicit mode or recent fallback.
     """
-    from deepagents_code.model_config import RECENT_STARTUP_MODES
+    from deepagents_code.model_config import is_recent_startup_mode_restorable
 
     data = load_config_toml() if toml_data is None else toml_data
     option = get_option("startup.mode")
@@ -1248,17 +1249,22 @@ def resolve_startup_mode_with_source(
     if source != "default":
         return value, source
 
-    # No explicit/managed/env mode resolved. Apply the app-managed recent
-    # fallback only when no explicit `[startup].mode` was declared: an invalid
-    # explicit value is fail-closed in `load_startup_mode` (it returns Manual
-    # without consulting `recent`), so introspection must not report Auto here.
+    # No explicit/managed/env mode resolved. An invalid user mode is fail-closed
+    # in `load_startup_mode`, so introspection must not consult `recent` either.
     startup = data.get("startup")
-    if isinstance(startup, dict):
-        if startup.get("mode") is not None:
-            return value, source
-        recent = startup.get("recent")
-        if isinstance(recent, str) and recent in RECENT_STARTUP_MODES:
-            return recent, "config.toml"
+    if isinstance(startup, dict) and startup.get("mode") is not None:
+        return value, source
+
+    recent_option = get_option("startup.recent")
+    if recent_option is None:
+        return value, source
+    recent, recent_source = resolve_scalar(
+        recent_option,
+        toml_data=data,
+        managed_toml_data=managed_data,
+    )
+    if isinstance(recent, str) and is_recent_startup_mode_restorable(recent):
+        return recent, recent_source
     return value, source
 
 

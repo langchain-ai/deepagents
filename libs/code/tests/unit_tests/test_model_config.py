@@ -8587,10 +8587,40 @@ class TestLoadStartupMode:
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
 
     @pytest.mark.parametrize("mode", [STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO])
-    def test_recent_mode_is_restored(self, tmp_path: Path, mode: str) -> None:
+    def test_recent_mode_is_restored(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mode: str,
+    ) -> None:
+        from deepagents_code.approval_mode import save_auto_mode_notice
+
+        monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path / ".state")
+        if mode == STARTUP_MODE_AUTO:
+            assert save_auto_mode_notice()
         config = tmp_path / "config.toml"
         config.write_text(f"[startup]\nrecent = '{mode}'\n")
         assert load_startup_mode(config) == mode
+
+    @pytest.mark.parametrize("notice_state", ["missing", "stale"])
+    def test_recent_auto_requires_current_notice(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        notice_state: str,
+    ) -> None:
+        """Implicit Auto restoration fails closed until its notice is current."""
+        state_dir = tmp_path / ".state"
+        monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", state_dir)
+        if notice_state == "stale":
+            state_dir.mkdir()
+            (state_dir / "approval.json").write_text(
+                '{"auto_notice_shown":true,"auto_notice_version":"old"}\n'
+            )
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nrecent = 'auto'\n")
+
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
 
     def test_explicit_mode_outranks_recent(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
@@ -8614,8 +8644,16 @@ class TestLoadStartupMode:
 
     @pytest.mark.parametrize("mode", [STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO])
     def test_save_recent_startup_mode_round_trip(
-        self, tmp_path: Path, mode: str
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mode: str,
     ) -> None:
+        from deepagents_code.approval_mode import save_auto_mode_notice
+
+        monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path / ".state")
+        if mode == STARTUP_MODE_AUTO:
+            assert save_auto_mode_notice()
         config = tmp_path / "config.toml"
         config.write_text("[models]\ndefault = 'openai:gpt-5.5'\n")
 

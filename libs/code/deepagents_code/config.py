@@ -121,6 +121,14 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "DYLD_LIBRARY_PATH",
         "ENV",
         "GIT_ASKPASS",
+        "GIT_DIR",
+        "GIT_EDITOR",
+        "GIT_EXEC_PATH",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PAGER",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_WORK_TREE",
         "GLOBIGNORE",
         "LD_AUDIT",
         "LD_LIBRARY_PATH",
@@ -159,16 +167,66 @@ checking which category it belongs to:
     `execute` commands through non-interactive shells, so these are live vectors.
 - Askpass hijack (`GIT_ASKPASS`, `SSH_ASKPASS`): point credential prompts at an
     attacker-controlled binary.
+- Git config/exec injection (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_OBJECT_DIRECTORY`,
+    `GIT_EXEC_PATH`, `GIT_EDITOR`, `GIT_PAGER`, `GIT_SSH`, `GIT_SSH_COMMAND`):
+    `dcode` runs `git rev-parse`/`git status`/`git for-each-ref` during startup
+    local-context detection (`local_context.build_detect_script`), before any
+    HITL approval. These keys redirect git's object store/exec path or hook its
+    editor/pager/transport helpers into attacker-controlled binaries. The
+    numbered `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` family
+    and the inline `GIT_CONFIG_PARAMETERS` blob are worse: they inject arbitrary
+    config values such as `core.fsmonitor`/`core.pager`/`core.sshCommand`, which
+    git executes. The numbered keys cannot be enumerated in a static set, so
+    they are matched by prefix in `_is_dotenv_denied_env_key`.
 
 `_INHERITED_PYTHONPATH_ENV` is denied so a project `.env` cannot smuggle a
 `PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
 is only meant to relay a value the user set in their launch environment.
 
-Matching is exact and case-sensitive: the protected consumers (the dynamic
-linker, bash, CPython) read these names only in their canonical case, so a
-lowercase `bash_env` injected into the environment is inert. Any future entry
-that some consumer reads case-insensitively would need a different check.
+Matching is case-sensitive on POSIX because the protected consumers (the
+dynamic linker, bash, CPython, git) read these names only in their canonical
+case, so a lowercase `bash_env` injected into the environment is inert there.
+On Windows, however, environment variable names are case-insensitive and
+`os.environ` normalizes assigned keys to uppercase, so a lowercase
+`git_config_key_0` in a `.env` would become an active `GIT_CONFIG_KEY_0` for a
+spawned `git`. `_is_dotenv_denied_env_key` therefore compares the uppercased
+key, which is a superset on POSIX (denied names are already uppercase, so the
+extra denials like `git_config_count` are of otherwise-inert spellings).
 """
+
+_DOTENV_DENIED_ENV_KEY_PREFIXES = (
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_GLOBAL",
+)
+"""Prefixes of env keys that must not be injected from a `.env` file.
+
+`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` are numbered pairs and cannot be listed
+exhaustively; the rest are single keys whose `GIT_CONFIG_` prefix makes them
+unambiguous config-injection vectors. `GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL`
+point git at attacker-controlled config files, which can carry the same
+executable values (`core.fsmonitor`, `core.pager`, ...).
+"""
+
+
+def _is_dotenv_denied_env_key(key: str) -> bool:
+    """Return whether a dotenv key is denied from any `.env` file.
+
+    Combines the exact-match `_DOTENV_DENIED_ENV_KEYS` set with the
+    `_DOTENV_DENIED_ENV_KEY_PREFIXES` family so numbered git config keys
+    (`GIT_CONFIG_KEY_0`, ...) are denied without enumeration. The key is
+    uppercased before both checks so a lowercase or mixed-case spelling cannot
+    slip past on Windows, where `os.environ` assignment would normalize it back
+    to the active uppercase form.
+    """
+    normalized = key.upper()
+    return normalized in _DOTENV_DENIED_ENV_KEYS or normalized.startswith(
+        _DOTENV_DENIED_ENV_KEY_PREFIXES
+    )
+
 
 _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
@@ -282,7 +340,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
         for key, value in values.items():
             if value is None or key in env:
                 continue
-            if key in _DOTENV_DENIED_ENV_KEYS:
+            if _is_dotenv_denied_env_key(key):
                 # Log the key only — the value is attacker-controlled.
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
@@ -391,7 +449,7 @@ def _load_dotenv(
         for key, value in values.items():
             if value is None or key in os.environ:
                 continue
-            if key in _DOTENV_DENIED_ENV_KEYS:
+            if _is_dotenv_denied_env_key(key):
                 # Log the key only — the value is attacker-controlled.
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue

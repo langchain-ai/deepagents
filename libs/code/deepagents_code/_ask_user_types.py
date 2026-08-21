@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Literal, NotRequired, assert_never, get_args
 
-from pydantic import Field
+from pydantic import AfterValidator, Field
 from typing_extensions import TypedDict
 
 QuestionType = Literal["text", "multiple_choice", "multi_select"]
@@ -155,6 +155,65 @@ def ask_user_answer_is_empty(answer: str, question_type: object) -> bool:
     return not answer.strip()
 
 
+def _validate_question_text(text: str) -> str:
+    """Reject a `question` that is empty or all whitespace.
+
+    This is the only rule that *rejects* blank question text.
+    `messages._ask_user_question_count` also tests it, but degrades to a count
+    of zero instead of rejecting.
+
+    Do not reorder this annotation and the `Field` beside it. As the inner
+    annotation it runs before `min_length=1`, which therefore never rejects
+    anything — that constraint is kept only because it is what puts
+    `minLength: 1` in the JSON schema the model reads. Swapping the two moves
+    the empty-string rejection onto `min_length` and changes the error the
+    model sees from this function's message to `string_too_short`. A string
+    like `"   "` would render as a visually blank prompt.
+
+    Args:
+        text: The parsed `question` text to check.
+
+    Returns:
+        The same `text`, unchanged.
+
+    Raises:
+        ValueError: If `text` has no non-whitespace character.
+    """
+    if not text.strip():
+        msg = "question text must not be blank"
+        raise ValueError(msg)
+    return text
+
+
+def _validate_choice(choice: Choice) -> Choice:
+    """Reject a choice whose `value` is blank.
+
+    A blank value would render as an unlabelled option the user can select but
+    whose answer reads as "no answer".
+
+    Attached to the item annotation inside `Question.choices`, not to `Choice`
+    itself, so `TypeAdapter(Choice)` does not apply it.
+
+    Callers must pass a parsed `Choice`. A missing `value` never reaches here —
+    it is a required key, so pydantic rejects it as `choices.N.value: Field
+    required` before the choice-level validators run. On a raw dict this would
+    raise `KeyError`, which is not a `ValidationError` and would halt the run.
+
+    Args:
+        choice: The parsed `Choice` to check.
+
+    Returns:
+        The same `choice`, unchanged.
+
+    Raises:
+        ValueError: If `value` is blank or whitespace-only.
+    """
+    if not choice["value"].strip():
+        msg = f"choice has a blank 'value': {choice!r}"
+        raise ValueError(msg)
+    return choice
+
+
 class Choice(TypedDict):
     """A single choice option for a multiple choice or multi-select question."""
 
@@ -173,10 +232,48 @@ class Choice(TypedDict):
     ]
 
 
+def _validate_question(question: Question) -> Question:
+    """Apply the cross-field rules of a single question.
+
+    These are the rules no single field type can express: choice questions need
+    a non-empty `choices` list, and non-choice questions must not define one.
+
+    `Literal` already rejects an unknown `type` and `strict=True` a non-boolean
+    `required` before this runs, so they are not re-checked here.
+
+    Args:
+        question: The parsed `Question` to check.
+
+    Returns:
+        The same `question`, unchanged.
+
+    Raises:
+        ValueError: If the question violates one of the rules above.
+    """
+    question_type = question["type"]
+    question_text = question["question"]
+    choices = question.get("choices")
+    if question_type in CHOICE_QUESTION_TYPES:
+        if not choices:
+            msg = (
+                f"{question_type} question {question_text!r} requires a "
+                f"non-empty 'choices' list"
+            )
+            raise ValueError(msg)
+    elif choices:
+        msg = f"{question_type} question {question_text!r} must not define 'choices'"
+        raise ValueError(msg)
+    return question
+
+
 class Question(TypedDict):
     """A question to ask the user."""
 
-    question: Annotated[str, Field(description="The question text to display.")]
+    question: Annotated[
+        str,
+        AfterValidator(_validate_question_text),
+        Field(description="The question text to display.", min_length=1),
+    ]
 
     type: Annotated[
         QuestionType,
@@ -196,7 +293,7 @@ class Question(TypedDict):
 
     choices: NotRequired[
         Annotated[
-            list[Choice],
+            list[Annotated[Choice, AfterValidator(_validate_choice)]],
             Field(
                 description=(
                     "Options for 'multiple_choice' and 'multi_select' questions. "
@@ -231,14 +328,62 @@ class Question(TypedDict):
     ]
 
 
+ValidatedQuestion = Annotated[Question, AfterValidator(_validate_question)]
+"""A `Question` with its cross-field rules applied during pydantic parsing.
+
+Only the cross-field `choices` rules are scoped to this alias. The field-level
+rules on `Question.question` and on `Question.choices` are unconditional, so
+they also apply wherever `Question` itself is pydantic-parsed — notably
+`TypeAdapter(AskUserRequest)` in `tui.textual_adapter`, which re-validates the
+interrupt payload client-side and re-raises on failure. Keep that in mind
+before adding another field-level rule here.
+
+Where a `ValueError` from one of these validators ends up depends on the path.
+On the tool path it becomes a tool-call `ValidationError`, which `ToolNode`
+turns into an error `ToolMessage` the model can correct and retry from. On the
+client re-validation path there is no tool call and `textual_adapter` logs and
+re-raises instead."""
+
+
+def _validate_questions(questions: list[ValidatedQuestion]) -> list[ValidatedQuestion]:
+    """Reject an empty `questions` list.
+
+    Per-question rules live on `ValidatedQuestion`; this covers the one rule
+    about the list itself. Attached both to the tool's `questions` parameter
+    and to `AskUserRequest.questions`, so the client re-validation boundary
+    rejects an empty list too — `AskUserMenu([])` would otherwise build a
+    titled prompt with no question widgets and nothing focusable.
+
+    Args:
+        questions: The parsed `questions` argument to check.
+
+    Returns:
+        The same `questions`, unchanged.
+
+    Raises:
+        ValueError: If the list is empty.
+    """
+    if not questions:
+        msg = "ask_user requires at least one question"
+        raise ValueError(msg)
+    return questions
+
+
 class AskUserRequest(TypedDict):
     """Request payload sent via interrupt when asking the user questions."""
 
     type: Literal["ask_user"]
     """Discriminator tag, always `'ask_user'`."""
 
-    questions: list[Question]
-    """Questions to present to the user."""
+    questions: Annotated[list[ValidatedQuestion], AfterValidator(_validate_questions)]
+    """Questions to present to the user.
+
+    `ValidatedQuestion` rather than `Question`, and carrying
+    `_validate_questions`, so every rule the tool applies also applies where
+    `tui.textual_adapter` re-validates this payload. A choice question with no
+    `choices` would otherwise reach the client and degrade to a text box, and
+    an empty list would render a prompt with no questions in it.
+    """
 
     tool_call_id: str
     """ID of the originating tool call, used to route the response back."""
@@ -446,9 +591,10 @@ def format_ask_user_transcript(questions: list[Question], answers: list[str]) ->
 
     Args:
         questions: Questions that were asked. Callers must pass questions whose
-            `question` text is a non-empty string; `ask_user._validate_questions`
-            enforces that before interrupting. The empty default below only
-            keeps a caller that skips validation from raising `KeyError`.
+            `question` text is a non-empty string; `_validate_question_text`,
+            attached to `Question.question`, enforces that before interrupting.
+            The empty default below only keeps a caller that skips validation
+            from raising `KeyError`.
         answers: Answers, positionally matched to `questions`. A missing entry
             falls back to `ASK_USER_NO_ANSWER`; extra entries are dropped.
 

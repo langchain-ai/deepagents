@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Annotated, Any, cast, override
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -16,27 +16,26 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     ResponseT,
+    ToolCallRequest,
 )
 from langchain.tools import InjectedToolCallId, ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
-from pydantic import Field
+from pydantic import AfterValidator, Field, ValidationError
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
     ASK_USER_CANCELLED_ANSWER,
-    CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
-    QUESTION_TYPES,
     AskUserAuthorizationReceipt,
     AskUserRequest,
     Question,
-    QuestionType,
+    ValidatedQuestion,
+    _validate_questions,
     format_ask_user_error_answer,
     format_ask_user_transcript,
 )
-from deepagents_code._tool_errors import ToolArgumentError
 
 logger = logging.getLogger(__name__)
 
@@ -77,101 +76,6 @@ When using `ask_user`:
 - Use text input when you need free-form responses
 - Group related questions into a single ask_user call rather than making multiple calls
 - Never ask questions you can answer yourself from the available context"""  # noqa: E501
-
-
-def _validate_choices(
-    choices: Sequence[object], *, question_text: str, question_type: QuestionType
-) -> None:
-    """Validate the choice list of a choice-type question.
-
-    Rejects blank values, which would otherwise render as an unlabelled option
-    the user can select but whose answer reads as "no answer".
-
-    Args:
-        choices: Candidate `choices` value from a question definition.
-        question_text: Question text, for error messages.
-        question_type: Question type. Names the type in error messages.
-
-    Raises:
-        ToolArgumentError: If any choice is malformed or blank.
-    """
-    # On the tool path pydantic has already parsed `choices` into `list[Choice]`,
-    # so the shape checks below are redundant there. They are kept — and the
-    # parameter typed as a plain sequence — so this stays safe if it is ever
-    # called on a raw, unparsed payload.
-    for choice in choices:
-        value = choice.get("value") if isinstance(choice, Mapping) else None
-        if not isinstance(value, str) or not value.strip():
-            msg = (
-                f"{question_type} question {question_text!r} has a choice with a "
-                f"missing or blank 'value': {choice!r}"
-            )
-            raise ToolArgumentError(msg)
-
-
-def _validate_questions(questions: list[Question]) -> None:
-    """Validate ask_user question structure before interrupting.
-
-    Args:
-        questions: Question definitions provided to the `ask_user` tool.
-
-    Raises:
-        ToolArgumentError: If the questions list or an individual question is
-            invalid.
-    """
-    if not questions:
-        msg = "ask_user requires at least one question"
-        raise ToolArgumentError(msg)
-
-    for q in questions:
-        question_text = q.get("question")
-        if not isinstance(question_text, str) or not question_text.strip():
-            msg = "ask_user questions must have non-empty 'question' text"
-            raise ToolArgumentError(msg)
-
-        question_type = q.get("type")
-        if question_type not in QUESTION_TYPES:
-            msg = f"unsupported ask_user question type: {question_type!r}"
-            raise ToolArgumentError(msg)
-
-        # Belt-and-braces: on the tool path `Question.required` is `strict=True`,
-        # so pydantic has already rejected a non-boolean before this runs. This
-        # only covers a caller that reaches here with a raw, unparsed payload.
-        # It matters because `_ask_user_question_count` reads the raw tool args
-        # and also requires a real bool: a coerced `"false"` would render the
-        # prompt and then silently drop every answer in the call as same-turn
-        # authorization.
-        required = q.get("required")
-        if required is not None and not isinstance(required, bool):
-            msg = (
-                f"ask_user question {question_text!r} has a non-boolean "
-                f"'required': {required!r}"
-            )
-            raise ToolArgumentError(msg)
-
-        if question_type in CHOICE_QUESTION_TYPES:
-            choices = q.get("choices")
-            if not choices:
-                msg = (
-                    f"{question_type} question "
-                    f"{q.get('question')!r} requires a "
-                    f"non-empty 'choices' list"
-                )
-                raise ToolArgumentError(msg)
-            _validate_choices(
-                choices,
-                question_text=question_text,
-                question_type=question_type,
-            )
-
-        # Derived from `CHOICE_QUESTION_TYPES` rather than spelled `== "text"`, so
-        # a future non-choice `QuestionType` member keeps this check instead of
-        # silently letting stray `choices` through.
-        if question_type not in CHOICE_QUESTION_TYPES and q.get("choices"):
-            msg = (
-                f"{question_type} question {question_text!r} must not define 'choices'"
-            )
-            raise ToolArgumentError(msg)
 
 
 def _context_string(context: object, name: str) -> str | None:
@@ -411,6 +315,23 @@ def _parse_answers(
     )
 
 
+def _log_rejected_ask_user_call(
+    request: ToolCallRequest, result: ToolMessage | Command[Any]
+) -> None:
+    """Log an `ask_user` call the schema rejected.
+
+    Args:
+        request: The tool call request that produced `result`.
+        result: The handler's result.
+    """
+    if (
+        request.tool_call["name"] == "ask_user"
+        and isinstance(result, ToolMessage)
+        and result.status == "error"
+    ):
+        logger.warning("ask_user rejected the model's arguments: %s", result.content)
+
+
 class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware that provides an ask_user tool for interactive questioning.
 
@@ -441,7 +362,8 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         @tool(description=self.tool_description)
         def _ask_user(
             questions: Annotated[
-                list[Question],
+                list[ValidatedQuestion],
+                AfterValidator(_validate_questions),
                 Field(description="Questions to present to the user."),
             ],
             tool_call_id: Annotated[str, InjectedToolCallId],
@@ -451,14 +373,30 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.
+
+            Raises:
+                RuntimeError: If the tool body raises a `ValidationError` after
+                    the arguments have been validated. Re-raised as a type
+                    `ToolNode` will not convert, so the fault stays fatal
+                    instead of being reported to the model as bad input.
             """
-            # A malformed payload raises `ToolArgumentError` out of
-            # `_validate_questions`. `ToolErrorMiddleware` (wired in
-            # `create_cli_agent`) turns it into a recoverable error
-            # `ToolMessage` the model retries against, so the turn survives it,
-            # and `_tool_arg_validation_on_error` logs the rejection with
-            # `exc_info`. Do not add a second log here.
-            _validate_questions(questions)
+            # The arguments below are already validated: the schema rejects an
+            # empty list, blank question text, an unknown `type`, a non-boolean
+            # `required`, blank choice values, and the cross-field `choices`
+            # rules on `ValidatedQuestion`. `ToolNode` converts that rejection
+            # into an error `ToolMessage` the model can correct and retry from,
+            # so no handling is wired here.
+            #
+            # Two separate mechanisms keep the injected arguments out of that
+            # message, and neither covers the other:
+            #   - `runtime` is dropped by `_filter_validation_errors`, which
+            #     builds its name set from state/store/runtime only.
+            #   - `tool_call_id` is an `InjectedToolCallId`, which that filter
+            #     does *not* know about. It stays out because
+            #     `ToolInvocationError` is built from the pre-injection
+            #     `call["args"]`.
+            # `AskUserMiddleware.wrap_tool_call` logs the rejection, since
+            # `ToolNode` logs nothing itself.
             ask_request = AskUserRequest(
                 type="ask_user",
                 questions=questions,
@@ -469,29 +407,103 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             # wrap_tool_call middleware that catches exceptions MUST re-raise
             # GraphBubbleUp — a broad `except Exception` (e.g. ToolRetryMiddleware)
             # would swallow this interrupt and silently break ask_user.
-            response = interrupt(ask_request)
-            execution_thread_id = _execution_thread_id(runtime)
-            context_thread_id = _context_string(runtime.context, "thread_id")
-            context_turn_id = _context_string(runtime.context, "turn_id")
-            active_turn_id = _active_turn_id(runtime)
-            runtime_tool_call_id = runtime.tool_call_id
-            return _parse_answers(
-                response,
-                questions,
-                tool_call_id,
-                thread_id=(
-                    execution_thread_id
-                    if execution_thread_id == context_thread_id
-                    and runtime_tool_call_id == tool_call_id
-                    else None
-                ),
-                turn_id=(
-                    context_turn_id if context_turn_id == active_turn_id else None
-                ),
-            )
+            # `ToolNode` wraps the tool body in the same `try` as argument
+            # parsing, so any `ValidationError` escaping from here would be
+            # reported to the model as *its* bad input — naming fields that are
+            # not even on the tool schema, against arguments the model wrote
+            # correctly, and discarding the user's answer. Re-raise as a
+            # non-`ValidationError` so it stays fatal, which is what
+            # `_default_handle_tool_errors` does with every other type.
+            #
+            # Nothing in the body raises one today. This guards the next edit,
+            # not a live fault. `GraphInterrupt` from `interrupt()` is not a
+            # `ValidationError` and passes through untouched.
+            try:
+                response = interrupt(ask_request)
+                execution_thread_id = _execution_thread_id(runtime)
+                context_thread_id = _context_string(runtime.context, "thread_id")
+                context_turn_id = _context_string(runtime.context, "turn_id")
+                active_turn_id = _active_turn_id(runtime)
+                runtime_tool_call_id = runtime.tool_call_id
+                return _parse_answers(
+                    response,
+                    questions,
+                    tool_call_id,
+                    thread_id=(
+                        execution_thread_id
+                        if execution_thread_id == context_thread_id
+                        and runtime_tool_call_id == tool_call_id
+                        else None
+                    ),
+                    turn_id=(
+                        context_turn_id if context_turn_id == active_turn_id else None
+                    ),
+                )
+            except ValidationError as exc:
+                msg = (
+                    "ask_user failed internally after its arguments were "
+                    "validated; this is not a model-authored error"
+                )
+                raise RuntimeError(msg) from exc
 
         _ask_user.name = "ask_user"
         self.tools = [_ask_user]
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Log a rejected `ask_user` call, then pass the result through.
+
+        `ToolNode` converts an argument `ValidationError` into an error
+        `ToolMessage` before it reaches here, and it logs nothing itself, so
+        without this a model sending malformed arguments — or looping on them —
+        leaves no operator-visible record at all. The user sees only a red
+        `ask_user` row in the transcript.
+
+        The result type is the discriminant: `_ask_user` always returns a
+        `Command`, so a `ToolMessage` here means the call never entered the tool
+        body. That keeps this off the `_parse_answers` error path, which reports
+        a malformed *resume payload* inside a `Command` and logs itself.
+
+        Nothing is caught. An exception from the body must stay fatal, and
+        `GraphBubbleUp` from `interrupt()` must keep bubbling.
+
+        Args:
+            request: The tool call request.
+            handler: Callable that executes the tool.
+
+        Returns:
+            The handler's result, unchanged.
+        """
+        result = handler(request)
+        _log_rejected_ask_user_call(request, result)
+        return result
+
+    @override
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Async twin of `wrap_tool_call`.
+
+        Defined so the async path keeps executing tools asynchronously. With
+        only the sync wrapper present, `ToolNode` falls back to running the tool
+        through `_execute_tool_sync`.
+
+        Args:
+            request: The tool call request.
+            handler: Awaitable callable that executes the tool.
+
+        Returns:
+            The handler's result, unchanged.
+        """
+        result = await handler(request)
+        _log_rejected_ask_user_call(request, result)
+        return result
 
     def wrap_model_call(
         self,

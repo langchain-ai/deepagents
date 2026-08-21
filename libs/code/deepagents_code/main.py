@@ -4300,12 +4300,15 @@ def _check_project_dotenv_trust() -> None:
     if not _trust_picker_has_terminal():
         return
 
-    from deepagents_code.config import _find_dotenv_from_start_path
+    from deepagents_code.config import (
+        _find_dotenv_from_start_path,
+        _read_global_dotenv_toggle,
+    )
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
     # An explicit opt-out (managed config, env, global dotenv, config.toml)
     # already skips the file; the prompt would be redundant.
-    if not resolve_read_project_dotenv():
+    if not resolve_read_project_dotenv(global_dotenv=_read_global_dotenv_toggle()):
         return
 
     try:

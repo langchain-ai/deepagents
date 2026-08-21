@@ -349,6 +349,30 @@ except RuntimeError:
     _GLOBAL_DOTENV_PATH = Path("/nonexistent/.deepagents/.env")
 
 
+def _read_global_dotenv_toggle() -> dict[str, str]:
+    """Read only the trusted global project-dotenv loading toggle.
+
+    Returns:
+        A one-item environment mapping when the toggle is set, otherwise empty.
+    """
+    import dotenv
+
+    try:
+        if not _GLOBAL_DOTENV_PATH.is_file():
+            return {}
+        raw = dotenv.dotenv_values(dotenv_path=_GLOBAL_DOTENV_PATH).get(
+            READ_PROJECT_DOTENV
+        )
+    except (OSError, ValueError):
+        logger.warning(
+            "Could not read global dotenv at %s; global defaults will not be applied",
+            _GLOBAL_DOTENV_PATH,
+            exc_info=True,
+        )
+        return {}
+    return {READ_PROJECT_DOTENV: raw} if raw is not None else {}
+
+
 def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]:
     """Return the environment after dotenv loading without mutating `os.environ`.
 
@@ -538,22 +562,9 @@ def _load_dotenv(
     # could pin the var true) before the trusted opt-out was ever seen.
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
-    global_toggle: dict[str, str] = {}
-    try:
-        if _GLOBAL_DOTENV_PATH.is_file():
-            raw = dotenv.dotenv_values(dotenv_path=_GLOBAL_DOTENV_PATH).get(
-                READ_PROJECT_DOTENV
-            )
-            if raw is not None:
-                global_toggle[READ_PROJECT_DOTENV] = raw
-    except (OSError, ValueError):
-        logger.warning(
-            "Could not read global dotenv at %s; global defaults will not be applied",
-            _GLOBAL_DOTENV_PATH,
-            exc_info=True,
-        )
-
-    read_project = resolve_read_project_dotenv(global_dotenv=global_toggle)
+    read_project = resolve_read_project_dotenv(
+        global_dotenv=_read_global_dotenv_toggle()
+    )
 
     # A persisted "never load in this project" decision (recorded by the
     # interactive opt-out prompt in `main._check_project_dotenv_trust`) is a

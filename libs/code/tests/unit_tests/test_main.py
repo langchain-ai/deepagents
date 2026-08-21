@@ -130,6 +130,29 @@ class TestInteractiveTuiLaunch:
         assert _is_interactive_tui_launch(args)
 
 
+def test_project_dotenv_prompt_honors_global_opt_out() -> None:
+    """The trusted global toggle suppresses the advisory prompt."""
+    from deepagents_code._env_vars import READ_PROJECT_DOTENV
+    from deepagents_code.main import _check_project_dotenv_trust
+
+    global_toggle = {READ_PROJECT_DOTENV: "0"}
+    resolver = MagicMock(return_value=False)
+    select = MagicMock()
+    with (
+        patch("deepagents_code.main._trust_picker_has_terminal", return_value=True),
+        patch(
+            "deepagents_code.config._read_global_dotenv_toggle",
+            return_value=global_toggle,
+        ),
+        patch("deepagents_code.config_manifest.resolve_read_project_dotenv", resolver),
+        patch("deepagents_code.main._select_trust_action", select),
+    ):
+        _check_project_dotenv_trust()
+
+    resolver.assert_called_once_with(global_dotenv=global_toggle)
+    select.assert_not_called()
+
+
 class TestStartupAutoUpdate:
     """Tests for startup auto-update behavior."""
 

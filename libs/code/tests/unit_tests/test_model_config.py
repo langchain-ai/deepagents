@@ -8695,6 +8695,21 @@ class TestLoadStartupMode:
             "[startup].recent" in record.getMessage() for record in caplog.records
         )
 
+    @pytest.mark.parametrize("literal", ["['auto']", "{ a = 'auto' }", "3", "true"])
+    def test_non_scalar_recent_returns_default(
+        self, tmp_path: Path, literal: str
+    ) -> None:
+        """A non-string `recent` must not reach the frozenset membership test.
+
+        `recent in RECENT_STARTUP_MODES` raises `TypeError: unhashable type` on
+        a list or table, which `except (OSError, TOMLDecodeError)` does not
+        catch, so dropping the isinstance guard aborts launch. This mirrors
+        `test_non_scalar_mode_returns_default` for the newer key.
+        """
+        config = tmp_path / "config.toml"
+        config.write_text(f"[startup]\nrecent = {literal}\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
     @pytest.mark.parametrize("mode", [STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO])
     def test_save_recent_startup_mode_round_trip(
         self,

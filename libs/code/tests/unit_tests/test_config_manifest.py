@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import tomllib
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -3017,8 +3018,54 @@ def test_resolve_startup_mode_from_toml(caplog) -> None:
     assert resolve_scalar(opt, toml_data={}) == (DEFAULT_STARTUP_MODE, "default")
 
 
+@pytest.mark.parametrize(
+    ("toml_data", "managed_toml_data", "expected"),
+    [
+        # Only `recent` set: a bare launch runs Auto, so the display must agree.
+        ({"startup": {"recent": "auto"}}, {}, ("auto", "config.toml")),
+        # An explicit mode outranks `recent`.
+        (
+            {"startup": {"mode": "manual", "recent": "auto"}},
+            {},
+            ("manual", "config.toml"),
+        ),
+        # Nothing configured: the typed default stands.
+        ({}, {}, (DEFAULT_STARTUP_MODE, "default")),
+        # An unsafe `recent` fails closed rather than crediting config.toml.
+        ({"startup": {"recent": "yolo"}}, {}, (DEFAULT_STARTUP_MODE, "default")),
+        # A non-scalar `recent` cannot reach the membership test.
+        ({"startup": {"recent": ["auto"]}}, {}, (DEFAULT_STARTUP_MODE, "default")),
+        # An invalid explicit mode is fail-closed: `load_startup_mode` returns
+        # Manual without consulting `recent`, so the display must too.
+        (
+            {"startup": {"mode": "hands-off", "recent": "auto"}},
+            {},
+            (DEFAULT_STARTUP_MODE, "default"),
+        ),
+        # Managed `recent` participates in the same precedence as runtime loading.
+        ({}, {"startup": {"recent": "auto"}}, ("auto", "managed config")),
+        (
+            {"startup": {"recent": "auto"}},
+            {"startup": {"recent": "manual"}},
+            ("manual", "managed config"),
+        ),
+    ],
+    ids=[
+        "recent-only",
+        "explicit-outranks-recent",
+        "nothing-configured",
+        "unsafe-recent",
+        "non-scalar-recent",
+        "invalid-explicit-mode",
+        "managed-recent",
+        "managed-recent-outranks-user",
+    ],
+)
 def test_resolve_startup_mode_with_source_reports_recent_fallback(
     monkeypatch: pytest.MonkeyPatch,
+    toml_data: dict,
+    managed_toml_data: dict,
+    expected: tuple[str, str],
 ) -> None:
     """`startup.mode` display reflects the `[startup].recent` restore."""
     from deepagents_code import approval_mode
@@ -3026,46 +3073,55 @@ def test_resolve_startup_mode_with_source_reports_recent_fallback(
 
     monkeypatch.setattr(approval_mode, "has_auto_mode_notice", lambda: True)
 
-    # Only `recent` set: bare launch runs Auto, so the display must say so.
-    assert resolve_startup_mode_with_source(
-        toml_data={"startup": {"recent": "auto"}},
-        managed_toml_data={},
-    ) == ("auto", "config.toml")
+    assert (
+        resolve_startup_mode_with_source(
+            toml_data=toml_data,
+            managed_toml_data=managed_toml_data,
+        )
+        == expected
+    )
 
-    # An explicit mode still outranks `recent`.
-    assert resolve_startup_mode_with_source(
-        toml_data={"startup": {"mode": "manual", "recent": "auto"}},
-        managed_toml_data={},
-    ) == ("manual", "config.toml")
 
-    # Nothing configured: the typed default stands.
-    assert resolve_startup_mode_with_source(
-        toml_data={},
-        managed_toml_data={},
-    ) == (DEFAULT_STARTUP_MODE, "default")
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        "",
+        "[startup]\n",
+        "[startup]\nrecent = 'auto'\n",
+        "[startup]\nrecent = 'manual'\n",
+        "[startup]\nrecent = 'yolo'\n",
+        "[startup]\nrecent = ['auto']\n",
+        "[startup]\nmode = 'auto'\n",
+        "[startup]\nmode = 'yolo'\nrecent = 'manual'\n",
+        "[startup]\nmode = 'hands-off'\nrecent = 'auto'\n",
+        "[startup]\nmode = ['auto']\nrecent = 'auto'\n",
+        "startup = 'nonsense'\n",
+    ],
+)
+def test_resolve_startup_mode_with_source_agrees_with_loader(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, config_text: str
+) -> None:
+    """The display resolver and the runtime loader must never disagree.
 
-    # An invalid recent value fails closed rather than crediting config.toml.
-    assert resolve_startup_mode_with_source(
-        toml_data={"startup": {"recent": "yolo"}},
-        managed_toml_data={},
-    ) == (DEFAULT_STARTUP_MODE, "default")
+    Both consult `[startup].mode`, `[startup].recent`, and the Auto notice, in
+    two separate implementations held together only by a docstring. Per-case
+    assertions cannot catch drift between them; this can.
+    """
+    from deepagents_code import approval_mode
+    from deepagents_code.config_manifest import resolve_startup_mode_with_source
+    from deepagents_code.model_config import load_startup_mode
 
-    # An invalid explicit mode is fail-closed: `load_startup_mode` returns
-    # Manual immediately without consulting `recent`, so the display must too.
-    assert resolve_startup_mode_with_source(
-        toml_data={"startup": {"mode": "hands-off", "recent": "auto"}},
-        managed_toml_data={},
-    ) == (DEFAULT_STARTUP_MODE, "default")
+    monkeypatch.setattr(approval_mode, "has_auto_mode_notice", lambda: True)
+    config = tmp_path / "config.toml"
+    config.write_text(config_text)
+    with config.open("rb") as file:
+        toml_data = tomllib.load(file)
 
-    # Managed `recent` participates in the same precedence as runtime loading.
-    assert resolve_startup_mode_with_source(
-        toml_data={},
-        managed_toml_data={"startup": {"recent": "auto"}},
-    ) == ("auto", "managed config")
-    assert resolve_startup_mode_with_source(
-        toml_data={"startup": {"recent": "auto"}},
-        managed_toml_data={"startup": {"recent": "manual"}},
-    ) == ("manual", "managed config")
+    displayed, _ = resolve_startup_mode_with_source(
+        toml_data=toml_data,
+        managed_toml_data={},
+    )
+    assert displayed == load_startup_mode(config)
 
 
 def test_resolve_startup_mode_with_source_gates_recent_auto_on_notice(
@@ -3543,6 +3599,34 @@ def test_config_resolve_discards_out_of_range_toml_auto_classifier_timeout(
     assert is_set is False
     assert source == "default"
     assert value == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+
+@pytest.mark.parametrize(
+    ("toml_data", "expected"),
+    [
+        # A file with no `mode` key still reports the mode the launch will use.
+        ({"startup": {"recent": "auto"}}, (True, "config.toml", "auto")),
+        ({}, (False, "default", DEFAULT_STARTUP_MODE)),
+        (
+            {"startup": {"mode": "hands-off", "recent": "auto"}},
+            (False, "default", DEFAULT_STARTUP_MODE),
+        ),
+    ],
+    ids=["recent-only", "nothing-configured", "invalid-explicit-mode"],
+)
+def test_config_resolve_reports_effective_startup_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    toml_data: dict,
+    expected: tuple[bool, str, str],
+) -> None:
+    """`config get startup.mode` must route through the recent-aware resolver."""
+    from deepagents_code import approval_mode
+
+    monkeypatch.setattr(approval_mode, "has_auto_mode_notice", lambda: True)
+    option = get_option("startup.mode")
+    assert option is not None
+
+    assert _resolve(option, toml_data) == expected
 
 
 def test_config_resolve_reports_valid_env_auto_classifier_timeout(

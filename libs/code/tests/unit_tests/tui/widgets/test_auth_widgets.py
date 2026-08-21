@@ -2193,15 +2193,18 @@ api_key_env = "MY_GATEWAY_API_KEY"
             "DEEPAGENTS_CODE_OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
             "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+            "LANGSMITH_API_KEY",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+            "TAVILY_API_KEY",
+            "DEEPAGENTS_CODE_TAVILY_API_KEY",
         ):
             monkeypatch.delenv(var, raising=False)
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
-        )
+        # Only these two count as installed, so the manageable rows are
+        # `anthropic`, `openai`, and the two services — a short enough list
+        # that the alphabetical head is predictable.
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
-            lambda _provider: True,
+            lambda provider: provider in {"openai", "anthropic"},
         )
         app = _AuthHostApp()
         async with app.run_test() as pilot:
@@ -2209,8 +2212,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.pause()
             options = app.screen.query_one("#auth-manager-options", OptionList)
             help_text = app.screen.query_one("#auth-manager-help", Static)
-            # Unconfigured `anthropic` sorts first, so the cursor starts on a
-            # provider with no key.
+            # Nothing is configured yet, so rows are alphabetical and
+            # `anthropic` leads.
             assert options.highlighted == 0
             assert options.get_option_at_index(0).id == "anthropic"
             assert "Enter add " in str(help_text.content)
@@ -2707,10 +2710,6 @@ enabled = false
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
-        )
-        monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda provider: provider in {"openai", "anthropic"},
         )
@@ -2758,8 +2757,8 @@ models = ["managed-model"]
         monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
         model_config.clear_caches()
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"]},
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
         )
         auth_store.set_stored_key("unknown_provider", "test-key")
         auth_store.set_stored_key("managed_provider", "test-key")

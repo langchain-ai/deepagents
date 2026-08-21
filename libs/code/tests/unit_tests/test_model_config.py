@@ -8622,6 +8622,59 @@ class TestLoadStartupMode:
 
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
 
+    def test_recent_auto_blocked_by_notice_warns_and_queues_notice(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A declined Auto restore is diagnosable, not silent.
+
+        This is the one exit that discards a *valid* preference, so without a
+        log line and a queued toast an `AUTO_NOTICE_VERSION` bump looks exactly
+        like the persistence feature being broken.
+        """
+        from deepagents_code.model_config import (
+            consume_recent_auto_not_restored_notice,
+        )
+
+        monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path / ".state")
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nrecent = 'auto'\n")
+        # The notice is module state; clear anything an earlier test queued.
+        consume_recent_auto_not_restored_notice()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+        assert any(
+            "Not restoring [startup].recent" in record.getMessage()
+            for record in caplog.records
+        )
+        notice = consume_recent_auto_not_restored_notice()
+        assert notice is not None
+        assert "Shift+Tab" in notice
+        # One-shot: a second consumer must not re-toast the same launch.
+        assert consume_recent_auto_not_restored_notice() is None
+
+    def test_restored_recent_auto_queues_no_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A successful restore leaves nothing to explain."""
+        from deepagents_code.approval_mode import save_auto_mode_notice
+        from deepagents_code.model_config import (
+            consume_recent_auto_not_restored_notice,
+        )
+
+        monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path / ".state")
+        assert save_auto_mode_notice()
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nrecent = 'auto'\n")
+        consume_recent_auto_not_restored_notice()
+
+        assert load_startup_mode(config) == STARTUP_MODE_AUTO
+        assert consume_recent_auto_not_restored_notice() is None
+
     def test_explicit_mode_outranks_recent(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
         config.write_text("[startup]\nmode = 'manual'\nrecent = 'auto'\n")

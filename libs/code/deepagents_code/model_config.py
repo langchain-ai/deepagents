@@ -5624,6 +5624,25 @@ VALID_STARTUP_MODES = frozenset(
 RECENT_STARTUP_MODES = frozenset({STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO})
 """Modes the app may restore implicitly from `[startup].recent`."""
 
+_RECENT_AUTO_NOT_RESTORED_NOTICE = (
+    "Auto was not restored for this session because its guidance notice is "
+    "missing or out of date. Press Shift+Tab to review it and re-enable Auto."
+)
+"""User-facing copy for a remembered Auto that the notice gate declined."""
+
+_recent_auto_not_restored_notice: str | None = None
+"""One-shot TUI notice populated when the notice gate declines a stored Auto."""
+
+
+def consume_recent_auto_not_restored_notice() -> str | None:
+    """Return and clear the pending not-restored notice, if any."""
+    global _recent_auto_not_restored_notice  # noqa: PLW0603
+
+    notice = _recent_auto_not_restored_notice
+    _recent_auto_not_restored_notice = None
+    return notice
+
+
 DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
 """Fallback startup mode when `[startup]` has no valid configured mode."""
 
@@ -5684,9 +5703,24 @@ def load_startup_mode(config_path: Path | None = None) -> str:
             )
             return DEFAULT_STARTUP_MODE
         recent = startup.get("recent")
+        # Re-test membership here so only an invalid value takes the warning
+        # below; a valid-but-notice-blocked Auto is a normal fail-closed, and
+        # gets its own diagnostic instead of being reported as a config error.
         if isinstance(recent, str) and recent in RECENT_STARTUP_MODES:
             if is_recent_startup_mode_restorable(recent):
                 return recent
+            # The only exit that discards a *valid* user-earned preference.
+            # Without this it is indistinguishable from the feature not working:
+            # a notice-version bump silently returns every Auto user to Manual.
+            global _recent_auto_not_restored_notice  # noqa: PLW0603
+
+            logger.warning(
+                "Not restoring [startup].recent=%r: the Auto notice is missing "
+                "or out of date; starting in %s",
+                recent,
+                DEFAULT_STARTUP_MODE,
+            )
+            _recent_auto_not_restored_notice = _RECENT_AUTO_NOT_RESTORED_NOTICE
             return DEFAULT_STARTUP_MODE
         if recent is not None:
             logger.warning(

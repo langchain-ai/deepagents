@@ -29318,6 +29318,20 @@ class TestLiveApprovalModeWrites:
         )
 
         assert app._approval_mode is ApprovalMode.MANUAL
+        # Flagged for the post-mount toast: a restored preference makes this
+        # downgrade reachable without the user choosing Auto this launch.
+        assert app._auto_downgraded_by_sandbox is True
+
+    def test_no_sandbox_downgrade_flag_without_auto(self) -> None:
+        """Manual under a sandbox has nothing to explain."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(
+            approval_mode=ApprovalMode.MANUAL,
+            server_kwargs={"sandbox_type": "daytona"},
+        )
+
+        assert app._auto_downgraded_by_sandbox is False
 
     async def test_write_live_approval_mode_records_key(self) -> None:
         from deepagents_code.approval_mode import (
@@ -30242,6 +30256,60 @@ class TestLiveApprovalModeWrites:
             assert await app._set_approval_mode(ApprovalMode.YOLO) is True
 
         save_recent.assert_not_called()
+
+    async def test_notify_auto_mode_not_restored_surfaces_notice_gate(self) -> None:
+        """A notice-blocked Auto restore is explained after mount."""
+        app = DeepAgentsApp()
+        app._auto_downgraded_by_sandbox = False
+        with (
+            patch(
+                "deepagents_code.model_config.consume_recent_auto_not_restored_notice",
+                return_value="Auto was not restored.",
+            ),
+            patch.object(app, "notify") as notify,
+        ):
+            app._notify_auto_mode_not_restored()
+
+        notify.assert_called_once_with(
+            "Auto was not restored.",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+
+    async def test_notify_auto_mode_not_restored_prefers_sandbox_reason(self) -> None:
+        """A sandbox blocks Auto all session, so it outranks a stale notice."""
+        app = DeepAgentsApp()
+        app._auto_downgraded_by_sandbox = True
+        with (
+            patch(
+                "deepagents_code.model_config.consume_recent_auto_not_restored_notice",
+                return_value="Auto was not restored.",
+            ),
+            patch.object(app, "notify") as notify,
+        ):
+            app._notify_auto_mode_not_restored()
+
+        assert "sandbox" in str(notify.call_args.args[0])
+        # One-shot: a second refresh must not repeat the toast.
+        assert app._auto_downgraded_by_sandbox is False
+
+    async def test_notify_auto_mode_not_restored_stays_quiet_when_restored(
+        self,
+    ) -> None:
+        """Nothing to explain when the mode survived startup."""
+        app = DeepAgentsApp()
+        app._auto_downgraded_by_sandbox = False
+        with (
+            patch(
+                "deepagents_code.model_config.consume_recent_auto_not_restored_notice",
+                return_value=None,
+            ),
+            patch.object(app, "notify") as notify,
+        ):
+            app._notify_auto_mode_not_restored()
+
+        notify.assert_not_called()
 
     @pytest.mark.parametrize("mode_value", ["auto", "manual"])
     async def test_set_approval_mode_skips_persist_when_live_write_fails(

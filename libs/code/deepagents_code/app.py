@@ -3608,9 +3608,16 @@ class DeepAgentsApp(App):
         self._sandbox_type: str | None = raw if raw and raw != "none" else None
         """Normalized sandbox type (or `None`), attached to trace metadata."""
         self._auto_mode_eligible = self._sandbox_type is None
+        self._auto_downgraded_by_sandbox = False
+        """Whether a startup Auto was downgraded because a sandbox is active."""
         if self._approval_mode is ApprovalMode.AUTO and not self._auto_mode_eligible:
             self._approval_mode = ApprovalMode.MANUAL
             self._auto_approve = False
+            # `notify` is unavailable this early, so defer the explanation to
+            # `_notify_auto_mode_not_restored`. A restored `[startup].recent`
+            # makes this reachable without the user choosing Auto this launch,
+            # so a silent downgrade reads as the preference being forgotten.
+            self._auto_downgraded_by_sandbox = True
         self._approval_mode_blocked = False
         self._auto_mode_notice_pending = False
         self._yolo_mode_notice_pending = False
@@ -4626,6 +4633,7 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
         self.call_after_refresh(self._notify_interpreter_disabled_by_sandbox)
         self.call_after_refresh(self._notify_orphaned_tracing_disabled)
+        self.call_after_refresh(self._notify_auto_mode_not_restored)
 
         # Surface a `-m`/`--message` prompt as a queued message right away,
         # while the server is still connecting, instead of waiting for
@@ -4659,6 +4667,34 @@ class DeepAgentsApp(App):
             self.notify(notice, severity="warning", timeout=8, markup=False)
         except Exception:
             logger.exception("Failed to surface orphaned-tracing disabled notice")
+
+    def _notify_auto_mode_not_restored(self) -> None:
+        """Toast when a remembered Auto mode did not survive startup.
+
+        Two independent causes land here, and neither is visible on its own:
+        the notice gate declined a stored `[startup].recent = "auto"` (recorded
+        in `model_config`), or a sandbox made Auto ineligible. Both leave the
+        status bar reading `MANUAL` with nothing to explain it, which reads as
+        the preference not being remembered at all.
+        """
+        from deepagents_code.model_config import (
+            consume_recent_auto_not_restored_notice,
+        )
+
+        notice = consume_recent_auto_not_restored_notice()
+        if self._auto_downgraded_by_sandbox:
+            self._auto_downgraded_by_sandbox = False
+            # The sandbox is the operative reason: it blocks Auto for the whole
+            # session, so it outranks a stale notice the user could re-confirm.
+            notice = "Auto is unavailable with a sandbox; starting in Manual."
+        if notice is None:
+            return
+        # Best-effort, like the other deferred advisories: the durable channel
+        # is the `logger.warning` at each mutation site.
+        try:
+            self.notify(notice, severity="warning", timeout=8, markup=False)
+        except Exception:
+            logger.exception("Failed to surface Auto-not-restored notice")
 
     def _notify_interpreter_tools_without_interpreter(self) -> None:
         """Toast when `--interpreter-tools` was set while the interpreter is off.

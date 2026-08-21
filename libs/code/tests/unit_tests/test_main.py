@@ -1,5 +1,6 @@
 """Unit tests for main entry point."""
 
+import argparse
 import asyncio
 import inspect
 import logging
@@ -95,6 +96,38 @@ class TestTerminationSignalHandling:
         _install_termination_signal_handlers()
 
         install.assert_not_called()
+
+
+class TestInteractiveTuiLaunch:
+    """Classification for prompts that only belong to a Textual session."""
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("acp", True),
+            ("update", True),
+            ("install", "daytona"),
+            ("auto_update", True),
+            ("default_model", "__SHOW__"),
+            ("clear_default_model", True),
+        ],
+    )
+    def test_root_non_tui_modes_do_not_prompt(self, field: str, value: object) -> None:
+        """ACP and root actions must not enter the project trust picker."""
+        from deepagents_code.main import _is_interactive_tui_launch
+
+        args = argparse.Namespace(command=None, non_interactive_message=None)
+        setattr(args, field, value)
+
+        assert not _is_interactive_tui_launch(args)
+
+    def test_plain_root_launch_is_interactive_tui(self) -> None:
+        """A plain root invocation still receives pre-TUI prompts."""
+        from deepagents_code.main import _is_interactive_tui_launch
+
+        args = argparse.Namespace(command=None, non_interactive_message=None)
+
+        assert _is_interactive_tui_launch(args)
 
 
 class TestStartupAutoUpdate:

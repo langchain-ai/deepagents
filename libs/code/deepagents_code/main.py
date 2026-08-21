@@ -3393,6 +3393,16 @@ def _trust_picker_has_terminal() -> bool:
     return sys.stdin.isatty() and sys.stderr.isatty()
 
 
+def _is_interactive_tui_launch(args: argparse.Namespace) -> bool:
+    """Return whether parsed root arguments will launch the Textual session."""
+    if getattr(args, "command", None) or getattr(args, "non_interactive_message", None):
+        return False
+    root_actions = ("acp", "update", "install", "auto_update", "clear_default_model")
+    if any(getattr(args, name, False) for name in root_actions):
+        return False
+    return getattr(args, "default_model", None) is None
+
+
 def _run_trust_action_picker(
     console: "Console",
     *,
@@ -4748,10 +4758,7 @@ def cli_main() -> None:
         # `non_interactive_message` is not set on every argparse path (some
         # subcommands and ACP omit it), so read it defensively here — this gate
         # runs earlier than the dep-floor check that relies on it.
-        interactive_tui = not getattr(args, "command", None) and not getattr(
-            args, "non_interactive_message", None
-        )
-        if interactive_tui and _trust_picker_has_terminal():
+        if _is_interactive_tui_launch(args) and _trust_picker_has_terminal():
             _check_project_dotenv_trust()
 
         # Import console/settings AFTER arg parsing and after the bare-help

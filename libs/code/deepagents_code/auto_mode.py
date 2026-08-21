@@ -2690,6 +2690,13 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 command=Command(update={"_auto_decision_plan": plan}),
             )
 
+        review_tool_call_ids = [_tool_call_id(call) for call in review_calls]
+        self._emit_review_event(
+            request.runtime,
+            event="review_started",
+            batch_id=batch_id,
+            tool_call_ids=review_tool_call_ids,
+        )
         started = time.monotonic()
         try:
             classified = await self._classify(
@@ -2702,6 +2709,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             expected_ids = {_tool_call_id(call) for call in review_calls}
             _validate_classifier_ids(classified, expected_ids)
         except asyncio.CancelledError:
+            self._emit_review_event(
+                request.runtime,
+                event="review_completed",
+                batch_id=batch_id,
+                tool_call_ids=review_tool_call_ids,
+            )
             raise
         # Providers expose heterogeneous error types; all failures block review.
         except Exception as exc:
@@ -2723,7 +2736,16 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 # model may have been built against a since-revoked credential,
                 # so forget it rather than failing identically every batch until
                 # the process restarts.
-                await self._evict_classifier_model(classifier_label)
+                try:
+                    await self._evict_classifier_model(classifier_label)
+                except asyncio.CancelledError:
+                    self._emit_review_event(
+                        request.runtime,
+                        event="review_completed",
+                        batch_id=batch_id,
+                        tool_call_ids=review_tool_call_ids,
+                    )
+                    raise
             latched = (
                 config_fault is not None
                 and counters["classifier_config_failed_spec"] == config_fault.spec
@@ -2733,9 +2755,18 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             else:
                 counters["consecutive_unavailable"] += 1
             counters["last_batch_id"] = batch_id
-            counters_saved = await _write_counters(
-                request.runtime.store, thread_key, counters
-            )
+            try:
+                counters_saved = await _write_counters(
+                    request.runtime.store, thread_key, counters
+                )
+            except asyncio.CancelledError:
+                self._emit_review_event(
+                    request.runtime,
+                    event="review_completed",
+                    batch_id=batch_id,
+                    tool_call_ids=review_tool_call_ids,
+                )
+                raise
             if not counters_saved:
                 plan["fallback_reason"] = "control_state_unavailable"
             # Agent/UI reasons stay non-provider text (type, or our timeout
@@ -2810,6 +2841,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 error_detail,
                 exc_info=True,
             )
+            self._emit_review_event(
+                request.runtime,
+                event="review_completed",
+                batch_id=batch_id,
+                tool_call_ids=review_tool_call_ids,
+            )
             return ExtendedModelResponse(
                 model_response=response,
                 command=Command(update={"_auto_decision_plan": plan}),
@@ -2853,7 +2890,19 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 }
             )
         counters["last_batch_id"] = batch_id
-        if not await _write_counters(request.runtime.store, thread_key, counters):
+        try:
+            counters_saved = await _write_counters(
+                request.runtime.store, thread_key, counters
+            )
+        except asyncio.CancelledError:
+            self._emit_review_event(
+                request.runtime,
+                event="review_completed",
+                batch_id=batch_id,
+                tool_call_ids=review_tool_call_ids,
+            )
+            raise
+        if not counters_saved:
             for decision in plan["decisions"]:
                 if decision["path"] == "classifier":
                     decision["disposition"] = "require_human"
@@ -2871,10 +2920,41 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             len(review_calls),
             latency_ms,
         )
+        approved_tool_call_ids = [
+            decision["tool_call_id"]
+            for decision in plan["decisions"]
+            if decision["disposition"] == "classifier_allow"
+        ]
+        self._emit_review_event(
+            request.runtime,
+            event="review_completed",
+            batch_id=batch_id,
+            tool_call_ids=review_tool_call_ids,
+            approved_tool_call_ids=approved_tool_call_ids,
+        )
         return ExtendedModelResponse(
             model_response=response,
             command=Command(update={"_auto_decision_plan": plan}),
         )
+
+    def _emit_review_event(
+        self,
+        runtime: object,
+        *,
+        event: Literal["review_started", "review_completed"],
+        batch_id: str,
+        tool_call_ids: Sequence[str],
+        approved_tool_call_ids: Sequence[str] = (),
+    ) -> None:
+        """Emit opaque classifier lifecycle metadata on a best-effort basis."""
+        payload: dict[str, object] = {
+            "event": event,
+            "batch_id": batch_id,
+            "tool_call_ids": list(tool_call_ids),
+        }
+        if event == "review_completed":
+            payload["approved_tool_call_ids"] = list(approved_tool_call_ids)
+        self._emit_event(runtime, payload)
 
     def _emit_event(  # noqa: PLR6301
         self, runtime: object, payload: Mapping[str, object]

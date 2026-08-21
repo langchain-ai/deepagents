@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -195,6 +196,47 @@ class TestRecentPrompts:
         mgr.add("/skill:remember this")
 
         assert mgr.recent_prompts() == ("/skill:remember this", "regular prompt")
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores read-only mode")
+    def test_read_failure_preserves_session_prompts(self, tmp_path: Path) -> None:
+        """A failed refresh keeps in-memory prompts instead of wiping them."""
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text(json.dumps("persisted") + "\n", encoding="utf-8")
+
+        mgr = HistoryManager(history_file)
+        mgr.add("session only")
+        assert mgr._entries == ["persisted", "session only"]
+
+        history_file.chmod(0o000)
+        try:
+            assert mgr.recent_prompts() == ("session only", "persisted")
+            assert mgr._entries == ["persisted", "session only"]
+        finally:
+            history_file.chmod(0o600)
+
+    def test_failed_append_survives_refresh(self, tmp_path: Path) -> None:
+        """A prompt that could not be written stays through a later refresh."""
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file)
+        mgr.add("persisted")
+
+        # Point the manager at a path whose parent is a regular file, so the
+        # append's mkdir/open raises OSError and the entry stays in memory.
+        blocker = tmp_path / "blocker"
+        blocker.touch()
+        mgr.history_file = blocker / "history.jsonl"
+        mgr.add("append failed")
+
+        mgr.history_file = history_file
+        with history_file.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps("from another process") + "\n")
+
+        assert mgr.recent_prompts() == (
+            "append failed",
+            "from another process",
+            "persisted",
+        )
+        assert mgr.get_previous("") == "append failed"
 
 
 class TestSubstringMatch:

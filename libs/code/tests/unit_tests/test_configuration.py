@@ -2212,6 +2212,46 @@ def test_project_dotenv_path_reports_disabled_when_reading_off() -> None:
     assert _config_path_status("global .env", exists=True) == "ok"
 
 
+def test_project_dotenv_path_reports_remembered_skip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A persisted project skip makes the diagnostic row `disabled`."""
+    import json
+
+    from deepagents_code.client.commands.config import _run_path
+    from deepagents_code.dotenv_skip import skip_project_dotenv
+
+    project = tmp_path / "project"
+    project.mkdir()
+    dotenv_path = project / ".env"
+    dotenv_path.write_text("PROJECT_SETTING=value\n", encoding="utf-8")
+    store = tmp_path / "state" / "dotenv_skip.json"
+    assert skip_project_dotenv(project, store_path=store)
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(
+        "deepagents_code.dotenv_skip._default_store_path", lambda: store
+    )
+    monkeypatch.setattr(
+        "deepagents_code.client.commands.config._config_paths",
+        lambda: [("project .env", dotenv_path, True)],
+    )
+    monkeypatch.setattr(
+        "deepagents_code.client.commands.config._load_managed_generation",
+        lambda: ({}, None),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.config_manifest.resolve_read_project_dotenv",
+        lambda **_kwargs: True,
+    )
+
+    assert _run_path("json") == 0
+
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert rows[0]["status"] == "disabled"
+
+
 def test_a_guessed_managed_path_is_not_a_clean_missing_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

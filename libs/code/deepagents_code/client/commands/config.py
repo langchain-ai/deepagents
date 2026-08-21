@@ -1045,9 +1045,9 @@ def _config_path_status(
     corrupt file is not shown as present and fine. A file that parses but
     declares an unenforceable key is reported as rejected, because it is the
     other half of exit 78 and read as `ok` before. The project `.env` row is
-    reported as `disabled` when `startup.read_project_dotenv` is off: the file
-    exists on disk but is skipped at bootstrap, and `ok` would wrongly imply it
-    is a live config source.
+    reported as `disabled` when `startup.read_project_dotenv` is off or the
+    project has a remembered skip: the file exists on disk but is skipped at
+    bootstrap, and `ok` would wrongly imply it is a live config source.
 
     Returns:
         A short status word for the row.
@@ -1073,12 +1073,20 @@ def _run_path(output_format: OutputFormat) -> int:
     """
     paths = _config_paths()
     _, health = _load_managed_generation()
-    # The project `.env` is listed whether or not it is loaded; when
-    # `startup.read_project_dotenv` is off the file exists on disk but is skipped
-    # at bootstrap, so its row is reported as disabled rather than a live source.
+    # The project `.env` is listed whether or not it is loaded. Mirror bootstrap's
+    # option, trusted global toggle, and project skip checks so a skipped file is
+    # reported as disabled rather than a live source.
+    from deepagents_code.config import (
+        _project_dotenv_is_skipped,
+        _read_global_dotenv_toggle,
+    )
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
-    project_dotenv_enabled = resolve_read_project_dotenv()
+    project_dotenv_enabled = resolve_read_project_dotenv(
+        global_dotenv=_read_global_dotenv_toggle()
+    )
+    if project_dotenv_enabled and _project_dotenv_is_skipped(None):
+        project_dotenv_enabled = False
 
     if output_format == "json":
         write_json(

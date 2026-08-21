@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from textual.app import App, ComposeResult
-from textual.containers import Container
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.widgets import Input, Static
 
 from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
@@ -102,12 +102,46 @@ class TestPromptClipboardScreen:
             screen = app.open(())
             await pilot.pause()
 
-            rows = screen.query_one("#prompt-rows", Container)
+            rows = screen.query_one("#prompt-list", VerticalScroll)
             empty = rows.query_one(Static)
             assert (
                 str(empty.content) == "No prompts yet. Submitted prompts appear here."
             )
             assert screen.region.width <= 45
+
+    async def test_list_scrolls_when_rows_exceed_max_height(self) -> None:
+        """Rows past the visible cap must overflow the list, not be clipped."""
+        app = _PromptClipboardApp()
+        async with app.run_test(size=(80, 40)) as pilot:
+            screen = app.open(tuple(f"prompt {index}" for index in range(30)))
+            await pilot.pause()
+            await pilot.pause()
+
+            rows_list = screen.query_one("#prompt-list", VerticalScroll)
+            assert len(screen._rows) == 30
+            assert rows_list.is_scrollable
+            assert rows_list.virtual_size.height > rows_list.region.height
+            assert rows_list.max_scroll_y > 0
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._rows[1].region.height > 0
+
+    async def test_list_shrinks_to_keep_controls_visible(self) -> None:
+        """A short terminal caps the list instead of pushing help off-modal."""
+        app = _PromptClipboardApp()
+        async with app.run_test(size=(80, 18)) as pilot:
+            screen = app.open(tuple(f"prompt {index}" for index in range(30)))
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.pause()
+
+            rows_list = screen.query_one("#prompt-list", VerticalScroll)
+            outer = screen.query_one(Vertical)
+            help_ = screen.query_one(".prompt-help", Static)
+            assert rows_list.region.height < 10
+            assert rows_list.show_vertical_scrollbar
+            assert help_.region.bottom <= outer.region.bottom
 
     async def test_ctrl_c_copies_selected_prompt_without_dismissing(self) -> None:
         app = _PromptClipboardApp()

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar, override
 
 from textual.binding import Binding, BindingType
-from textual.containers import Container, Vertical, VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
@@ -15,6 +15,12 @@ if TYPE_CHECKING:
 
 _TITLE_MAX = 72
 _EXCERPT_MAX = 120
+
+_PROMPT_LIST_MAX_HEIGHT = 10
+"""Upper bound (in cells) for the prompt list; mirrors the tcss max-height."""
+
+_PROMPT_LIST_MIN_HEIGHT = 1
+"""Floor (in cells) so the prompt list never collapses to zero."""
 
 
 class _PromptRow(Static):
@@ -75,8 +81,10 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         with Vertical():
             yield Static("Prompt Clipboard", classes="prompt-title")
             yield Input(placeholder="Search submitted prompts", id="prompt-filter")
-            with VerticalScroll(id="prompt-list"):
-                yield Container(id="prompt-rows")
+            # Rows mount directly into the scroll container: a nested
+            # auto-height wrapper is clamped to the list's max-height, which
+            # hides the overflow and leaves the list unscrollable.
+            yield VerticalScroll(id="prompt-list")
             yield Static("Preview", classes="prompt-preview-label")
             with VerticalScroll(id="prompt-preview-scroll"):
                 yield Static("", id="prompt-preview")
@@ -89,6 +97,34 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         """Render the initial rows and focus search."""
         await self._render_rows()
         self.query_one("#prompt-filter", Input).focus()
+        self.call_after_refresh(self._fit_prompt_list)
+
+    def on_resize(self) -> None:
+        """Refit the prompt list when terminal dimensions change."""
+        self.call_after_refresh(self._fit_prompt_list)
+
+    def _fit_prompt_list(self) -> None:
+        """Cap the list so preview and help stay on screen.
+
+        The outer `Vertical` is `height: auto`, so it always grows to its
+        natural content height even when that exceeds the terminal; clamping
+        the container would not shrink its auto-height children. The list is
+        the only child meant to give up space, so its `max-height` is shrunk
+        to what the terminal can actually fit, keeping every control visible
+        — the same approach as the `/model` selector's `_fit_model_list`.
+        """
+        container = self.query_one(Vertical)
+        body = self.query_one("#prompt-list", VerticalScroll)
+        non_body_height = max(0, container.region.height - body.region.height)
+        available_height = self.size.height - non_body_height
+        max_height = max(
+            _PROMPT_LIST_MIN_HEIGHT,
+            min(_PROMPT_LIST_MAX_HEIGHT, available_height),
+        )
+        current = body.styles.max_height
+        if current is not None and current.cells == max_height:
+            return
+        body.styles.max_height = max_height
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Filter prompts using the current search value."""
@@ -116,8 +152,8 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         self.action_select()
 
     async def _render_rows(self) -> None:
-        container = self.query_one("#prompt-rows", Container)
-        await container.remove_children()
+        rows_list = self.query_one("#prompt-list", VerticalScroll)
+        await rows_list.remove_children()
         self._rows = []
         if not self._filtered:
             message = (
@@ -125,7 +161,7 @@ class PromptClipboardScreen(ModalScreen[str | None]):
                 if self._prompts
                 else "No prompts yet. Submitted prompts appear here."
             )
-            await container.mount(Static(Content.styled(message, "dim")))
+            await rows_list.mount(Static(Content.styled(message, "dim")))
             self.query_one("#prompt-preview", Static).update("")
             return
 
@@ -133,7 +169,7 @@ class PromptClipboardScreen(ModalScreen[str | None]):
             _PromptRow(prompt, selected=index == self._selected_index)
             for index, prompt in enumerate(self._filtered)
         ]
-        await container.mount(*self._rows)
+        await rows_list.mount(*self._rows)
         self._update_preview()
 
     def _update_preview(self) -> None:
@@ -157,7 +193,7 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         self._rows[previous].remove_class("prompt-row-selected")
         selected = self._rows[self._selected_index]
         selected.add_class("prompt-row-selected")
-        selected.scroll_visible()
+        selected.scroll_visible(animate=False)
         self._update_preview()
 
     def action_move_up(self) -> None:

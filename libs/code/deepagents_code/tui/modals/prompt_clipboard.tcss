@@ -6,7 +6,10 @@ PromptClipboardScreen > Vertical {
     width: 90%;
     max-width: 100;
     height: auto;
-    max-height: 90%;
+    /* No max-height here: a clamped auto container does not shrink its
+       children, so the list would keep its natural height and push the
+       preview/help past the border. `_fit_prompt_list` clamps the list
+       instead, same as the `/model` selector. */
     background: $surface;
     border: solid $primary;
     padding: 1 2;

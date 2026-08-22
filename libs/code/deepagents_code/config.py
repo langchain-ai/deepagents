@@ -4789,16 +4789,41 @@ def _get_default_model_spec() -> str:
     """
     from deepagents_code.model_config import (
         ModelConfig,
+        ModelSpec,
         NoCredentialsConfiguredError,
+        ProviderAuthState,
         get_provider_auth_status,
     )
 
     config = ModelConfig.load()
-    if config.default_model:
-        return config.default_model
+    for label, candidate in (
+        ("default", config.default_model),
+        ("recent", config.recent_model),
+    ):
+        if candidate and config.is_model_allowed(candidate):
+            return candidate
+        if candidate:
+            logger.warning(
+                "Ignoring [models].%s=%r because it is outside models.allowed",
+                label,
+                candidate,
+            )
 
-    if config.recent_model:
-        return config.recent_model
+    if config.allowed_models is not None:
+        if not config.allowed_models:
+            config.require_model_allowed("<default>")
+        for candidate in config.allowed_models:
+            parsed = ModelSpec.parse(candidate)
+            auth = get_provider_auth_status(parsed.provider)
+            # Only a definitively missing credential disqualifies a candidate.
+            # UNKNOWN covers remote no-auth providers (e.g., a LAN/hosted
+            # Ollama endpoint) that may not require auth at all; rejecting
+            # them here would block startup even though create_model()
+            # deliberately permits that state.
+            if auth.state is not ProviderAuthState.MISSING:
+                return candidate
+        msg = "No credentials are configured for any model in models.allowed"
+        raise NoCredentialsConfiguredError(msg)
 
     # `is True` deliberately excludes `ProviderAuthState.UNKNOWN` (which maps
     # to `as_legacy_bool() -> None`). For the three explicit-credential
@@ -5340,6 +5365,9 @@ def create_model(
         # Bare model name — auto-detect provider or let init_chat_model infer
         model_name = model_spec
         provider = inferred_provider or ""
+
+    resolved_spec = f"{provider}:{model_name}" if provider else model_spec
+    config.require_model_allowed(resolved_spec)
 
     # Stored API keys (added via `/auth`) take effect by being copied onto
     # the env var name LangChain reads. Apply before the credential check so

@@ -2195,6 +2195,28 @@ class TestModelSelectorAuthRouting:
 class TestModelSelectorFiltering:
     """Tests for search filtering."""
 
+    async def test_empty_allowlist_explains_policy(self) -> None:
+        """An empty policy shows its cause instead of offering custom models."""
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            "[models]\nallowed = []\n",
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            options = screen.query_one("#model-options", Container)
+            content = " ".join(str(widget.content) for widget in options.query(Static))
+            assert "models.allowed policy" in content
+            assert "press Enter" not in content
+
     async def test_typing_filters_models(self) -> None:
         """Typing in the filter input should filter models."""
         app = ModelSelectorTestApp()

@@ -60,7 +60,12 @@ from deepagents_code.config import (
     settings,
     validate_model_capabilities,
 )
-from deepagents_code.model_config import ModelConfigError, clear_caches
+from deepagents_code.model_config import (
+    ModelConfig,
+    ModelConfigError,
+    ModelNotAllowedError,
+    clear_caches,
+)
 from deepagents_code.project_utils import (
     ProjectContext,
     find_project_agent_md as _find_project_agent_md,
@@ -980,6 +985,90 @@ class TestClaudeSkillsDirs:
 
         settings = Settings.from_environment(start_path=no_project)
         assert settings.get_project_claude_skills_dir() is None
+
+
+class TestCreateModelAllowlist:
+    """Tests for construction-time model policy enforcement."""
+
+    def test_rejects_before_credential_side_effects(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blocked model never bridges credentials or reaches construction."""
+        policy = ModelConfig(
+            providers={"custom": {"class_path": "example.models:ChatModel"}},
+            allowed_models=("anthropic:claude-sonnet-5",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            model_config.ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+        apply_credentials = Mock()
+        split_warning = Mock()
+        provider_kwargs = Mock()
+        custom_constructor = Mock()
+        monkeypatch.setattr(model_config, "apply_stored_credentials", apply_credentials)
+        monkeypatch.setattr(
+            model_config, "warn_on_split_credential_source", split_warning
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._get_provider_kwargs", provider_kwargs
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._create_model_from_class", custom_constructor
+        )
+
+        with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
+            create_model("custom:blocked")
+
+        apply_credentials.assert_not_called()
+        split_warning.assert_not_called()
+        provider_kwargs.assert_not_called()
+        custom_constructor.assert_not_called()
+
+    def test_allows_exact_spec_and_reaches_credential_check(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An exact member proceeds past policy enforcement."""
+        policy = ModelConfig(
+            allowed_models=("openai:gpt-5.6-terra",),
+            allowed_models_source="config.toml",
+        )
+        monkeypatch.setattr(
+            model_config.ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+        apply_credentials = Mock()
+        monkeypatch.setattr(model_config, "apply_stored_credentials", apply_credentials)
+        monkeypatch.setattr(
+            model_config, "has_provider_credentials", lambda _provider: False
+        )
+
+        with pytest.raises(model_config.MissingCredentialsError):
+            create_model("openai:gpt-5.6-terra")
+
+        apply_credentials.assert_called_once_with("openai")
+
+    def test_unresolved_bare_name_requests_fully_qualified_spec(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Active policy rejects bare names whose provider cannot be proven."""
+        policy = ModelConfig(
+            allowed_models=("custom:allowed",),
+            allowed_models_source="config.toml",
+        )
+        monkeypatch.setattr(
+            model_config.ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        with pytest.raises(
+            ModelNotAllowedError, match="fully qualified provider:model"
+        ):
+            create_model("unknown-model")
 
 
 class TestCreateModelProfileExtraction:

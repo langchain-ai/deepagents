@@ -30,6 +30,7 @@ from deepagents_code.model_config import (
     McpServerTrustLists,
     ModelConfig,
     ModelConfigError,
+    ModelNotAllowedError,
     ModelProfileEntry,
     ModelSpec,
     ProviderAuthSource,
@@ -60,6 +61,7 @@ from deepagents_code.model_config import (
     load_startup_mode,
     load_thread_columns,
     normalize_mcp_project_root,
+    parse_model_allowlist,
     save_default_agent,
     save_effort_for_model,
     save_recent_agent,
@@ -268,6 +270,47 @@ class TestModelSpec:
         """ModelSpec raises on empty model."""
         with pytest.raises(ValueError, match="Model cannot be empty"):
             ModelSpec(provider="openai", model="")
+
+
+class TestModelAllowlist:
+    """Tests for exact model policy parsing and matching."""
+
+    def test_parser_preserves_order_colons_and_removes_duplicates(self) -> None:
+        """Valid exact specs normalize without changing model identifiers."""
+        assert parse_model_allowlist(
+            [" openai:gpt-5.6-terra ", "ollama:qwen3:4b", "openai:gpt-5.6-terra"]
+        ) == ("openai:gpt-5.6-terra", "ollama:qwen3:4b")
+
+    @pytest.mark.parametrize(
+        "value",
+        ["openai:gpt-5.6-terra", ["openai"], ["openai: gpt"], [3], [""]],
+    )
+    def test_parser_rejects_malformed_values(self, value: object) -> None:
+        """Wrong shapes and noncanonical entries reject the declaration."""
+        with pytest.raises((TypeError, ValueError), match=r"expected|entry|invalid"):
+            parse_model_allowlist(value)
+
+    def test_absent_policy_is_unrestricted(self) -> None:
+        """A missing allowlist preserves existing unrestricted behavior."""
+        assert ModelConfig().is_model_allowed("openai:anything") is True
+
+    def test_empty_policy_denies_every_model(self) -> None:
+        """An explicitly empty allowlist is a total lockdown."""
+        config = ModelConfig(allowed_models=(), allowed_models_source="config.toml")
+        assert config.is_model_allowed("openai:gpt-5.6-terra") is False
+        with pytest.raises(ModelNotAllowedError, match="allows no models"):
+            config.require_model_allowed("openai:gpt-5.6-terra")
+
+    def test_policy_matches_exact_canonical_spec(self) -> None:
+        """Provider and model membership is exact."""
+        config = ModelConfig(
+            allowed_models=("openai:gpt-5.6-terra",),
+            allowed_models_source="managed config",
+        )
+        assert config.is_model_allowed("openai:gpt-5.6-terra") is True
+        assert config.is_model_allowed("openai:gpt-5.6-sol") is False
+        with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
+            config.require_model_allowed("openai:gpt-5.6-sol")
 
 
 class TestHasProviderCredentials:
@@ -1840,6 +1883,43 @@ default = "claude-sonnet-4-5"
 
         assert config.default_model == "claude-sonnet-4-5"
 
+    def test_loads_model_allowlist(self, tmp_path: Path) -> None:
+        """Loads an ordered allowlist and records its user source."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nallowed = ["openai:gpt-5.6-terra", "ollama:qwen3:4b"]\n'
+        )
+
+        config = ModelConfig.load(config_path)
+
+        assert config.allowed_models == (
+            "openai:gpt-5.6-terra",
+            "ollama:qwen3:4b",
+        )
+        assert config.allowed_models_source == "config.toml"
+
+    def test_empty_model_allowlist_is_distinct_from_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """An explicit empty list remains an active deny-all policy."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\nallowed = []\n")
+
+        config = ModelConfig.load(config_path)
+
+        assert config.allowed_models == ()
+        assert config.allowed_models_source == "config.toml"
+
+    def test_malformed_user_allowlist_is_ignored(self, tmp_path: Path) -> None:
+        """A malformed voluntary list does not crash configuration loading."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\nallowed = ["openai:gpt", "broken"]\n')
+
+        config = ModelConfig.load(config_path)
+
+        assert config.allowed_models is None
+        assert config.allowed_models_source is None
+
     def test_loads_providers(self, tmp_path):
         """Loads provider configurations."""
         config_path = tmp_path / "config.toml"
@@ -3074,6 +3154,36 @@ models = ["claude-custom-finetune"]
 
         assert "claude-sonnet-4-5" in models["anthropic"]
         assert "claude-custom-finetune" in models["anthropic"]
+
+    def test_allowlist_filters_discovery_and_additive_config_models(
+        self, tmp_path: Path
+    ) -> None:
+        """Registration remains additive before the final policy filter."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nallowed = ["anthropic:claude-custom"]\n\n'
+            '[models.providers.anthropic]\nmodels = ["claude-custom"]\n'
+        )
+        fake_profiles = {
+            "claude-sonnet-4-5": {"tool_calling": True},
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_code.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert models == {"anthropic": ["claude-custom"]}
 
     def test_does_not_duplicate_existing_models(self, tmp_path):
         """Config-file models already in profiles are not duplicated."""
@@ -5778,6 +5888,14 @@ default = "ollama:qwen3:4b"
 
         assert config_path.exists()
 
+    def test_refuses_model_outside_allowlist(self, tmp_path: Path) -> None:
+        """Persistence cannot save a stale value that policy rejects."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\nallowed = ["anthropic:claude-sonnet-5"]\n')
+
+        assert save_recent_model("openai:gpt-5.6-terra", config_path) is False
+        assert "recent" not in config_path.read_text()
+
 
 class TestRecentModelsMRU:
     """`load_recent_models` / `touch_recent_model` round-trip + MRU semantics."""
@@ -5785,6 +5903,17 @@ class TestRecentModelsMRU:
     def test_missing_file_returns_empty_list(self, tmp_path):
         """A missing recent-models cache should yield an empty list."""
         assert load_recent_models(state_dir=tmp_path) == []
+
+    def test_load_filters_entries_outside_allowlist(self, tmp_path: Path) -> None:
+        """Stale MRU entries cannot reappear in the selector."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\nallowed = ["anthropic:allowed"]\n')
+        (tmp_path / "recent_models.json").write_text(
+            '{"models": ["openai:blocked", "anthropic:allowed"]}'
+        )
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert load_recent_models(state_dir=tmp_path) == ["anthropic:allowed"]
 
     def test_touch_creates_file_with_single_entry(self, tmp_path):
         """First touch should create the JSON file with one entry."""
@@ -6110,6 +6239,67 @@ recent = "openai:gpt-5.2"
             result = _get_default_model_spec()
 
         assert result == "openai:gpt-5.2"
+
+    def test_disallowed_saved_values_fall_back_in_allowlist_order(
+        self, tmp_path: Path
+    ) -> None:
+        """Stale defaults cannot outrank an allowed authenticated fallback."""
+        from deepagents_code.config import _get_default_model_spec
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nallowed = ["anthropic:claude-opus-5"]\n'
+            'default = "openai:gpt-5.6-terra"\n'
+        )
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}, clear=True),
+        ):
+            result = _get_default_model_spec()
+
+        assert result == "anthropic:claude-opus-5"
+
+    def test_empty_allowlist_blocks_default_resolution(self, tmp_path: Path) -> None:
+        """A deny-all list never reaches unrestricted credential fallback."""
+        from deepagents_code.config import _get_default_model_spec
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\nallowed = []\n")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            pytest.raises(ModelNotAllowedError, match="allows no models"),
+        ):
+            _get_default_model_spec()
+
+    def test_allowlist_falls_back_to_remote_no_auth_provider(
+        self, tmp_path: Path
+    ) -> None:
+        """A remote Ollama endpoint with unknown auth remains a viable fallback.
+
+        `get_provider_auth_status` reports UNKNOWN for remote no-auth providers
+        because a LAN/hosted endpoint may not require credentials. Rejecting
+        that state here would block startup even though `create_model()`
+        deliberately permits it.
+        """
+        from deepagents_code.config import _get_default_model_spec
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nallowed = ["ollama:qwen3:4b"]\n\n'
+            "[models.providers.ollama]\n"
+            'base_url = "https://ollama.example.com"\n'
+            'models = ["qwen3:4b"]\n'
+        )
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            result = _get_default_model_spec()
+
+        assert result == "ollama:qwen3:4b"
 
     def test_env_used_when_neither_set(self, tmp_path):
         """Falls back to env var auto-detection when neither default nor recent set."""

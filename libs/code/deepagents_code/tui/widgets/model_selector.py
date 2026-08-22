@@ -737,9 +737,28 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """
         available = get_available_models()
         config = ModelConfig.load()
+
+        # Once an OAuth sibling (`openai_codex`, `xai_oauth`) is actually
+        # signed in, the raw API-key provider it piggybacks on (`openai`,
+        # `xai`) is redundant noise in this list — it can never be selected
+        # without a key the user has no reason to add, so hide it rather
+        # than show a permanent "missing credentials" row next to a working
+        # OAuth entry for the same models. Mirrors the same declutter logic
+        # already applied to the `/auth` screen's `AuthManagerScreen`. A raw
+        # provider with its own real credentials configured is unaffected —
+        # this only fires when the OAuth sibling is the one actually signed
+        # in and the raw provider itself has nothing configured.
+        oauth_gated_raw_providers = {
+            base
+            for base, oauth in (("openai", CODEX_PROVIDER), ("xai", XAI_OAUTH_PROVIDER))
+            if get_provider_auth_status(oauth).state is ProviderAuthState.CONFIGURED
+            and get_provider_auth_status(base).state is not ProviderAuthState.CONFIGURED
+        }
+
         all_models: list[tuple[str, str]] = [
             (f"{provider}:{model}", provider)
             for provider, models in available.items()
+            if provider not in oauth_gated_raw_providers
             for model in models
         ]
 
@@ -766,6 +785,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 if spec in existing_specs:
                     continue
                 provider = spec.split(":", 1)[0]
+                if provider in oauth_gated_raw_providers:
+                    continue
                 try:
                     if not config.is_provider_enabled(provider):
                         continue

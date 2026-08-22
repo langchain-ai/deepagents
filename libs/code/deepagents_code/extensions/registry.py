@@ -3,21 +3,57 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-
-from deepagents_code.extensions.models import RegisteredUnit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from deepagents.backends.protocol import BackendProtocol
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.tools import BaseTool
 
-    from deepagents_code.extensions.models import SourceInfo
-
 logger = logging.getLogger(__name__)
-RegistrySnapshot = tuple[int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrySnapshot:
+    """Registration counts used to restore registry state."""
+
+    middleware: int
+    tools: int
+    backend_routes: int
+    shutdown_hooks: int
+
+
+@dataclass(frozen=True, slots=True)
+class SourceInfo:
+    """An extension entry file, ownership, and import shape."""
+
+    path: Path
+    is_package: bool = False
+    plugin_id: str | None = None
+
+    @property
+    def label(self) -> str:
+        """Short extension label."""
+        if self.plugin_id is not None:
+            return self.plugin_id
+        return self.path.parent.name if self.is_package else self.path.stem
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredUnit[T]:
+    """A registered unit paired with its source."""
+
+    name: str
+    unit: T
+    source: SourceInfo
+
+
+class ExtensionError(Exception):
+    """Raised when an extension cannot be loaded."""
 
 
 class ExtensionRegistry:
@@ -31,19 +67,18 @@ class ExtensionRegistry:
         self.shutdown_hooks: list[RegisteredUnit[Callable[[], Any]]] = []
 
     def _snapshot(self) -> RegistrySnapshot:
-        return (
-            len(self.middleware),
-            len(self.tools),
-            len(self.backend_routes),
-            len(self.shutdown_hooks),
+        return RegistrySnapshot(
+            middleware=len(self.middleware),
+            tools=len(self.tools),
+            backend_routes=len(self.backend_routes),
+            shutdown_hooks=len(self.shutdown_hooks),
         )
 
     def _rollback(self, snapshot: RegistrySnapshot) -> None:
-        middleware, tools, routes, hooks = snapshot
-        del self.middleware[middleware:]
-        del self.tools[tools:]
-        del self.backend_routes[routes:]
-        del self.shutdown_hooks[hooks:]
+        del self.middleware[snapshot.middleware :]
+        del self.tools[snapshot.tools :]
+        del self.backend_routes[snapshot.backend_routes :]
+        del self.shutdown_hooks[snapshot.shutdown_hooks :]
 
     @staticmethod
     def _add[T](

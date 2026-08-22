@@ -7,6 +7,14 @@ This file contains repository-wide rules for agents and contributors. Use these 
 - [`.github/RELEASING.md`](.github/RELEASING.md) — releases, version lines, fan-out, CI labels, and troubleshooting.
 - [LangChain contributing guide](https://docs.langchain.com/oss/python/contributing/overview) — general contribution policy.
 
+<corridor>
+
+## Corridor security analysis
+
+Before generating or modifying code, create a plan and use Corridor's `analyzePlan` tool to analyze it. Apply the resulting security guidance before writing code.
+
+</corridor>
+
 ## Development workflow
 
 Work inside the package you are changing; [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md) covers environment setup (`uv`, `make`) and the edit-test-lint loop.

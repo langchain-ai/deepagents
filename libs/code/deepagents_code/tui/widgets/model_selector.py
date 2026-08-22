@@ -114,8 +114,12 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:qwen/qwen3.7-plus": "Qwen 3.7 Plus",
     "openrouter:z-ai/glm-5.2": "GLM 5.2",
     "openrouter:z-ai/glm-5.3": "GLM 5.3",
-    "xai:grok-4.5": "Grok 4.5",
-    "xai_oauth:grok-4.5": "Grok 4.5",
+    "xai:grok-4.6": "Grok 4.6",
+    "xai:grok-4.3": "Grok 4.3",
+    "xai:grok-build-0.1": "Grok Build 0.1",
+    "xai_oauth:grok-4.6": "Grok 4.6",
+    "xai_oauth:grok-4.3": "Grok 4.3",
+    "xai_oauth:grok-build-0.1": "Grok Build 0.1",
 }
 """Hand-curated frontier-tier models promoted across the UI, mapped to a
 human-readable display name.

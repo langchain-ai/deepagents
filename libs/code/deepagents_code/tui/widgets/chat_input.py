@@ -5,16 +5,22 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from rich.cells import cell_len
 from rich.segment import Segment
+from rich.style import Style
+from rich.text import Text
+from textual.app import NoScreen
+from textual.color import Color
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.geometry import Offset, Size
+from textual.highlight import highlight
 from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
@@ -26,9 +32,13 @@ from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
     detect_mode_prefix,
+    get_glyphs,
     is_ascii_mode,
 )
-from deepagents_code.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
+from deepagents_code.input import (
+    IMAGE_PLACEHOLDER_PATTERN,
+    VIDEO_PLACEHOLDER_PATTERN,
+)
 from deepagents_code.paste_collapse import (
     PASTE_PLACEHOLDER_PATTERN,
     PastedContent,
@@ -81,6 +91,74 @@ protocol spec (functional key definitions) for background.
 _FILE_CACHE_WORKER_GROUP = "file-cache"
 """Textual worker group for all `@` file-completion cache warmers."""
 
+_CHAT_INPUT_AUTO_MAX_HEIGHT = 8
+"""Rows the composer grows to on its own before the draft starts scrolling.
+
+Also caps the manual-resize floor: a drag will not shrink the composer below
+the visible draft, but that refusal itself stops at this many rows, so a long
+draft cannot pin the composer open. Interpolated into `ChatInput.DEFAULT_CSS`
+as the `ChatTextArea` `max-height` so the stylesheet and the sizing math cannot
+drift apart.
+"""
+
+_CHAT_INPUT_BORDER_CORNER_COLUMNS = 2
+"""Columns the resize handle gives up so both top border corners stay drawn.
+
+The handle occludes whatever it covers (see `ChatInputResizeHandle.render`), so
+it is inset one column at each end — paired with `offset: 1 0` in the CSS — to
+leave the box's corner glyphs visible.
+"""
+
+_CHAT_INPUT_BOX_MAX_HEIGHT = 25
+"""Rows the bordered input box may occupy, including its border and any popup.
+
+`ChatInputBox._apply_manual_height` subtracts the gutter and the completion
+popup from this to derive the composer budget, so it is load-bearing arithmetic
+rather than a cosmetic cap. Interpolated into `ChatInput.DEFAULT_CSS` as the
+`#input-box` `max-height`.
+"""
+
+_CHAT_INPUT_MANUAL_MAX_HEIGHT = 20
+"""Rows a drag may stretch the composer to, before screen-size clamping.
+
+Five rows short of `_CHAT_INPUT_BOX_MAX_HEIGHT` so that a composer dragged to
+its limit still leaves room inside the box for the border and a few rows of
+completion popup, rather than immediately fighting the popup for space.
+"""
+
+_CHAT_INPUT_RESERVED_SCREEN_ROWS = 7
+"""Screen rows kept away from the composer text so the app stays usable.
+
+Subtracted from the screen height to bound a manual resize. It counts rows
+*outside* the composer's own text area but excludes the input box's 2-row
+border, which is charged separately via `gutter.height`. So on a 24-row
+terminal the composer maxes at 17 rows, the bordered box occupies 19, and about
+5 rows remain for the transcript and status bar.
+"""
+
+_CHAT_INPUT_RESIZE_HOVER_LIGHTEN = 0.15
+"""How far to lighten the resize line while the pointer is over it.
+
+Enough to read as a distinct affordance against the same-colored box border it
+sits on, but below the point where the top border looks like a different UI
+element from the other three sides.
+"""
+
+_COMPLETION_POPUP_MAX_HEIGHT = 12
+"""Rows the completion popup may occupy inside the input box.
+
+`ChatInputBox` reserves this much space when fitting a manual composer height,
+so it must match what the popup actually renders. Interpolated into
+`CompletionPopup.DEFAULT_CSS` as its `max-height` to keep the two in step.
+"""
+
+_DOUBLE_CLICK_CHAIN = 2
+"""Textual `Click.chain` count that marks a click as a double-click.
+
+Compared with `>=`, so triple and faster clicks also toggle rather than being
+silently ignored partway through a rapid click sequence.
+"""
+
 _REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS = 0.3
 """Window after a terminal focus regain during which a click only refocuses.
 
@@ -110,6 +188,7 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
     from textual.events import Click
+    from textual.screen import Screen
 
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.input import MediaTracker, ParsedPastedPathPayload
@@ -294,13 +373,25 @@ class InputActionButton(Static):
 class CompletionPopup(VerticalScroll):
     """Popup widget that displays completion suggestions as clickable options."""
 
-    DEFAULT_CSS = """
-    CompletionPopup {
+    DEFAULT_CSS = f"""
+    CompletionPopup {{
         display: none;
         height: auto;
-        max-height: 12;
-    }
+        max-height: {_COMPLETION_POPUP_MAX_HEIGHT};
+    }}
     """
+
+    class RowsChanged(Message):
+        """Message sent when the popup's visible row count changes.
+
+        Deduplicated by the sender, so receiving this always means the rendered
+        row count actually moved.
+        """
+
+        def __init__(self, rows: int) -> None:
+            """Initialize with the visible row count (0 when hidden)."""
+            super().__init__()
+            self.rows = rows
 
     class OptionClicked(Message):
         """Message sent when a completion option is clicked."""
@@ -317,6 +408,7 @@ class CompletionPopup(VerticalScroll):
         self._options: list[CompletionOption] = []
         self._selected_index = 0
         self._pending_suggestions: list[tuple[str, str]] = []
+        self._reported_rows = 0
         self._pending_selected: int = 0
         self._rebuild_generation: int = 0
 
@@ -404,7 +496,7 @@ class CompletionPopup(VerticalScroll):
         if generation != self._rebuild_generation:
             return
 
-        self.show()
+        self.show(len(self._options))
 
         if 0 <= selected_index < len(self._options):
             self._options[selected_index].scroll_visible()
@@ -433,15 +525,30 @@ class CompletionPopup(VerticalScroll):
         event.stop()
         self.post_message(self.OptionClicked(event.index))
 
+    def _report_rows(self, rows: int) -> None:
+        """Announce the popup's rendered row count when it changes."""
+        if self._reported_rows != rows:
+            self._reported_rows = rows
+            self.post_message(self.RowsChanged(rows))
+
     def hide(self) -> None:
         """Hide the popup."""
         self._pending_suggestions = []
         self._rebuild_generation += 1  # Cancel any in-flight rebuild
         self.styles.display = "none"  # ty: ignore[invalid-assignment]  # Textual accepts string display values at runtime
+        self._report_rows(0)
 
-    def show(self) -> None:
-        """Show the popup."""
+    def show(self, suggestion_count: int) -> None:
+        """Show the popup and report how many rows it will render.
+
+        Args:
+            suggestion_count: Number of suggestions about to be displayed. Taken
+                as an argument rather than read from internal state so the
+                reported height is tied to the caller's list, which is the thing
+                `ChatInputBox` must reserve space for.
+        """
         self.styles.display = "block"
+        self._report_rows(min(suggestion_count, _COMPLETION_POPUP_MAX_HEIGHT))
 
 
 class ChatTextArea(PasteBurstTextArea):
@@ -477,31 +584,6 @@ class ChatTextArea(PasteBurstTextArea):
     class HistoryNext(Message):
         """Request next history entry."""
 
-    class PastedPaths(Message):
-        """Message sent when paste payload resolves to file paths."""
-
-        def __init__(self, raw_text: str, paths: list[Path]) -> None:
-            """Initialize with raw pasted text and parsed file paths."""
-            self.raw_text = raw_text
-            self.paths = paths
-            super().__init__()
-
-    class PastedText(Message):
-        """Message sent when a paste is large enough to be collapsed.
-
-        The full text is carried in the message so `ChatInput` can store it
-        and insert a compact placeholder into the text area instead.
-        """
-
-        def __init__(self, text: str) -> None:
-            """Initialize with the full pasted text.
-
-            Args:
-                text: The complete pasted text content.
-            """
-            self.text = text
-            super().__init__()
-
     class Typing(Message):
         """Posted when the user presses a printable key or backspace.
 
@@ -520,6 +602,7 @@ class ChatTextArea(PasteBurstTextArea):
         self._chat_input_owner: ChatInput | None = None
         self._skip_history_change_events = 0
         self._completion_active = False
+        self._burst_payload_keeps_leading_slash = False
         # Paste-burst and backslash-pending state is initialized by
         # PasteBurstTextArea.__init__.
         # Tracks terminal focus so a click that re-focuses the window only
@@ -527,6 +610,128 @@ class ChatTextArea(PasteBurstTextArea):
         # `_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS`.
         self._app_blurred = False
         self._refocus_time: float | None = None
+        self._shell_highlighting = False
+        self._highlighted_source = ""
+        self._highlighted_lines: list[Content] | None = None
+
+    def set_shell_highlighting(self, *, enabled: bool) -> None:
+        """Enable or disable shell syntax highlighting for this text area.
+
+        Args:
+            enabled: Whether to style input as shell syntax.
+        """
+        if self._shell_highlighting == enabled:
+            return
+        self._shell_highlighting = enabled
+        self._highlighted_source = ""
+        self._highlighted_lines = None
+        self._line_cache.clear()
+        self.refresh()
+
+    def _render_line(self, y: int) -> Strip:
+        """Render a line, keeping shell token colors visible on the cursor line.
+
+        `TextArea._render_line` stylizes the whole cursor line with
+        `theme.cursor_line_style`, which under the default `css` theme resolves
+        to a style carrying the widget's text color. That foreground is painted
+        after (and on top of) the shell syntax spans produced by `get_line`,
+        flattening every token on the cursor line to a single color. Clear just
+        the foreground while shell highlighting is active so the cursor-line
+        background tint - and any text styles such as bold - still apply over
+        the token colors.
+
+        Mutating the theme in place is safe because `TextArea._set_theme` keeps
+        a per-widget copy (`dataclasses.replace`), so this never touches the
+        shared builtin theme or another `TextArea`. Rendering is synchronous
+        and `apply_css` runs outside this window, so the `finally` restore is
+        sufficient.
+
+        Args:
+            y: Y coordinate of the line relative to the widget region.
+
+        Returns:
+            The rendered line.
+        """
+        theme = self._theme
+        cursor_line_style = theme.cursor_line_style if theme else None
+        if (
+            not self._shell_highlighting
+            or cursor_line_style is None
+            or cursor_line_style.color is None
+        ):
+            return super()._render_line(y)
+
+        # Restore on the exception path too; otherwise the widget keeps a
+        # foreground-less cursor line for the rest of the session.
+        theme.cursor_line_style = cursor_line_style.without_color + Style(
+            bgcolor=cursor_line_style.bgcolor
+        )
+        try:
+            return super()._render_line(y)
+        finally:
+            theme.cursor_line_style = cursor_line_style
+
+    def get_line(self, line_index: int) -> Text:
+        """Return one input line, with shell syntax styles when enabled.
+
+        Args:
+            line_index: Index of the line to return.
+
+        Returns:
+            The line as Rich text, styled per shell token when highlighting is
+            active. Falls back to the unstyled base implementation if
+            highlighting fails, so the text shown always matches the document.
+        """
+        if not self._shell_highlighting:
+            return super().get_line(line_index)
+
+        source = self.text
+        lines = self._highlighted_lines
+        if lines is None or source != self._highlighted_source:
+            language = "batch" if sys.platform == "win32" else "sh"
+            try:
+                # `tab_size=1` keeps span offsets aligned with the document's
+                # raw character offsets: Pygments expands tabs (default 8),
+                # while `_render_line` does its own tab expansion downstream.
+                highlighted = highlight(source, language=language, tab_size=1)
+                lines = list(highlighted.split("\n", allow_blank=True))
+            except Exception:
+                # This runs inside the render loop, where an uncaught exception
+                # tears down the whole app. Degrade to unhighlighted text and
+                # stop retrying every frame.
+                logger.exception(
+                    "Shell highlighting failed for a %d-character draft; "
+                    "falling back to unhighlighted text",
+                    len(source),
+                )
+                self._shell_highlighting = False
+                self._highlighted_source = ""
+                self._highlighted_lines = None
+                return super().get_line(line_index)
+            # `highlight()` normalizes via `"\n".join(code.splitlines())`, which
+            # drops the trailing empty line that `Document` keeps. Pad so line
+            # indices stay in step with the document.
+            lines.extend([Content("")] * max(0, self.document.line_count - len(lines)))
+            # Only commit the cache marker once both fallible steps succeeded;
+            # advancing it earlier would serve the previous draft's lines
+            # forever on the cache-hit path.
+            self._highlighted_source = source
+            self._highlighted_lines = lines
+
+        if not 0 <= line_index < len(lines):
+            logger.warning(
+                "Shell highlight covers %d lines, not line %d (document has "
+                "%d); rendering it unhighlighted",
+                len(lines),
+                line_index,
+                self.document.line_count,
+            )
+            return super().get_line(line_index)
+
+        line = Text(end="", no_wrap=True)
+        for segment in lines[line_index].render_segments(self.visual_style):
+            line.append(segment.text, segment.style)
+        return line
 
     def render_line(self, y: int) -> Strip:
         """Render a single line, appending any argument hint at line end.
@@ -724,8 +929,8 @@ class ChatTextArea(PasteBurstTextArea):
         regain only restores focus and leaves the cursor where it was.
 
         Deliberately shadows Textual's private `TextArea._on_mouse_down` to gate
-        cursor positioning; verified against Textual 8.2.7. If the base handler
-        changes, re-verify that early-returning before `super()` still leaves no
+        cursor positioning; verified against Textual 8.2.8. Re-verify on every
+        Textual bump that early-returning before `super()` still leaves no
         selection/capture state set.
         """
         if self._consume_refocus_click():
@@ -766,8 +971,8 @@ class ChatTextArea(PasteBurstTextArea):
         untouched.
 
         Deliberately overrides Textual's private `_refresh_scrollbars` and
-        swaps the private `_container_size`; verified against Textual 8.2.7.
-        Re-verify on major Textual upgrades.
+        swaps the private `_container_size`; verified against Textual 8.2.8.
+        Re-verify these attribute names on every Textual bump.
         """
         bound = self._settled_content_height()
         if bound is None:
@@ -869,10 +1074,25 @@ class ChatTextArea(PasteBurstTextArea):
     async def _dispatch_burst_payload(self, payload: str) -> None:
         """Route a flushed burst through dropped-path and large-paste checks.
 
-        When parsing fails, the buffered text is inserted unchanged so regular
-        typing behavior is preserved.
+        Routed payloads are applied through the owner synchronously rather than
+        posted to it, so the payload is in the document before this returns. A
+        posted message lands at the tail of this widget's queue, behind any
+        keystroke the terminal has already delivered, which would insert that
+        character ahead of the paste.
+
+        When parsing fails, or there is no owner to route through, the buffered
+        text is inserted unchanged so regular typing behavior is preserved.
         """
         from deepagents_code.input import parse_pasted_path_payload
+
+        keeps_leading_slash = self._burst_payload_keeps_leading_slash
+        self._burst_payload_keeps_leading_slash = False
+        owner = self._chat_input_owner
+        if owner is not None:
+            # Cleared up front so the verbatim-insert path below cannot leave a
+            # previous payload's answer standing for
+            # `_payload_supplied_trailing_space`.
+            owner._paste_appended_trailing_space = False
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
@@ -889,15 +1109,104 @@ class ChatTextArea(PasteBurstTextArea):
                 exc_info=True,
             )
             parsed = None
-        if parsed is not None:
-            self.post_message(self.PastedPaths(payload, parsed.paths))
-            return
+        if owner is not None:
+            if parsed is not None:
+                applied = owner.apply_paste_payload(payload, parsed.paths)
+            elif self._paste_collapse_enabled() and _should_collapse_chat_paste(
+                payload
+            ):
+                applied = owner.apply_paste_payload(payload, None)
+            else:
+                applied = False
+            if applied:
+                return
 
-        if self._paste_collapse_enabled() and _should_collapse_chat_paste(payload):
-            self.post_message(self.PastedText(payload))
-            return
-
+        if keeps_leading_slash and owner is not None:
+            # Consumed by the change handler this insert triggers, suppressing the
+            # mode re-detection that would otherwise strip the restored `/`.
+            owner.suppress_next_prefix_detection()
         self.insert(payload)
+        # A multi-line payload adds rows the same way `action_insert_newline`
+        # does, and needs the same post-refresh scroll for the same reason: the
+        # built-in scroll sees stale dimensions and leaves the cursor off screen.
+        if "\n" in payload:
+            self.call_after_refresh(self.scroll_cursor_visible)
+
+    def _burst_run_payload_for_dispatch(self, payload: str) -> str:
+        """Restore a virtual command prefix when a burst is an absolute path.
+
+        A `/` typed at offset 0 switches the input into command mode and is never
+        inserted, so a dropped absolute path replayed as key events loses its
+        leading separator. Restoring it lets the run be recognized as a path.
+
+        The restore is deliberately narrow, because a payload rewritten here is
+        also what takes the input *out* of command mode
+        (`_on_burst_run_promoted`). Asking `looks_like_dropped_payload` about the
+        `/`-prefixed candidate cannot decide this — that function is a leading-
+        token check, so prepending `/` makes it vacuously true for any text. Three
+        conditions stand in for it instead:
+
+        - The run must start at document offset 0, i.e. it is the text that
+          directly followed the consumed `/` rather than a later burst.
+        - The payload must contain its own separator, so `help` stays a command
+          name while `private/tmp/x` reads as a path tail.
+        - Nothing before that separator may be whitespace, which keeps a command
+          with a path argument (`read src/main.py`) from qualifying.
+
+        Returns:
+            The payload with the consumed leading slash restored, or the payload
+            unchanged when it does not look like the tail of an absolute path.
+        """
+        owner = self._chat_input_owner
+        if owner is None or owner.mode != "command":
+            return payload
+        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
+        if cursor_offset != len(payload) or not self.text.startswith(payload):
+            return payload
+        head, separator, _ = payload.partition("/")
+        if not separator or any(char.isspace() for char in head):
+            return payload
+        # Exactly one `/` was consumed, so exactly one is restored: `lstrip("/")`
+        # would eat a second leading slash and silently drop a character from a
+        # `//host/share` payload.
+        return f"/{payload}"
+
+    def _on_burst_run_promoted(
+        self, visible_payload: str, dispatch_payload: str
+    ) -> None:
+        """Leave command mode when promotion recovered a leading path slash."""
+        if visible_payload == dispatch_payload:
+            return
+        # The payload now leads with the restored `/`, so re-inserting it at
+        # offset 0 would trip mode-prefix detection a second time and strip the
+        # slash again — losing the character for good on the paths that do not
+        # resolve on disk. Flag it so the insert suppresses that detection.
+        self._burst_payload_keeps_leading_slash = True
+        owner = self._chat_input_owner
+        if owner is not None and owner.mode == "command":
+            owner.mode = "normal"
+
+    def _reset_paste_burst_state(self) -> None:
+        """Reset burst tracking, including the restored-slash flag.
+
+        The flag describes the buffered payload that `super()` is about to
+        discard, so it must not outlive it: a stale `True` would suppress the next
+        burst's legitimate mode re-detection.
+        """
+        self._burst_payload_keeps_leading_slash = False
+        super()._reset_paste_burst_state()
+
+    def _payload_supplied_trailing_space(self) -> bool:
+        """Return whether the flush appended a trailing space of its own.
+
+        An attached dropped-path payload gets a trailing space from
+        `_build_path_replacement`; inserting the pending space as well would
+        double it. The question is what the flush *did*, not what the document
+        happens to end with — a verbatim payload that merely ends in a space
+        would otherwise swallow the user's real keystroke.
+        """
+        owner = self._chat_input_owner
+        return owner is not None and owner._paste_appended_trailing_space
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
@@ -929,8 +1238,32 @@ class ChatTextArea(PasteBurstTextArea):
         if event.key == "space" and event.character is None:
             event.prevent_default()
             event.stop()
+            # This branch bypasses the burst helpers below, so it has to drive
+            # them itself: a space inside a replayed paste must reach the buffer
+            # (if one is live) or the run tracker (if not), otherwise the
+            # tracker's text diverges from the document and the run is discarded,
+            # losing grouping for that stretch of the paste.
+            space_now = time.monotonic()
+            if self._paste_burst_buffer and self._append_recent_paste_burst_text(
+                " ", space_now
+            ):
+                self.post_message(self.Typing())
+                return
+            # The burst (if any) had gone idle, so this space follows the paste
+            # rather than belonging to it. Flushing applies the payload before it
+            # returns, so the space inserted next lands after it.
+            if self._paste_burst_buffer:
+                await self._flush_paste_burst()
+                if self._payload_supplied_trailing_space():
+                    self.post_message(self.Typing())
+                    return
             self.insert(" ")
+            self._note_printable_burst_keystroke(" ", space_now)
             self.post_message(self.Typing())
+            # The space is in the document, so the run may now qualify — a path
+            # payload can end on a space, and a long single-line paste can cross
+            # the length threshold here.
+            self._check_burst_run_for_promotion()
             return
 
         now = time.monotonic()
@@ -945,17 +1278,9 @@ class ChatTextArea(PasteBurstTextArea):
             event.stop()
             return
 
-        if self._maybe_start_burst(event, now):
-            event.prevent_default()
-            event.stop()
-            return
-
-        # Promote rapid keystroke runs into the paste buffer so terminals without
-        # bracketed paste still get newline grouping and large-paste collapsing.
-        if self._track_burst_run(event, now):
-            event.prevent_default()
-            event.stop()
-            return
+        # Track rapid keystroke runs so terminals without bracketed paste keep
+        # embedded newlines grouped without delaying ordinary text insertion.
+        self._track_burst_run(event, now)
 
         # A mode trigger (`!`, `!!`, `/`) typed at the very start of an
         # unselected input switches modes. Handle it before TextArea inserts the
@@ -971,6 +1296,10 @@ class ChatTextArea(PasteBurstTextArea):
         ):
             event.prevent_default()
             event.stop()
+            # `_track_burst_run` above already counted this character, but it is
+            # consumed as a mode switch rather than inserted. Drop the run so the
+            # tracker does not claim a character the document never received.
+            self._reset_paste_burst_run()
             return
 
         # Some terminals (e.g. VSCode built-in) send a literal backslash
@@ -1009,12 +1338,20 @@ class ChatTextArea(PasteBurstTextArea):
             # Prevent TextArea's default behavior (e.g., Enter inserting newline)
             # but let event bubble to ChatInput for completion handling
             event.prevent_default()
+            # `space` is the one printable key here, so `_track_burst_run` above
+            # counted it while this branch inserts nothing. Drop the run so the
+            # tracker does not claim a character the document never received —
+            # the same reason as the mode-prefix branch above.
+            if event.is_printable:
+                self._reset_paste_burst_run()
             return
 
         # Plain Enter submits, unless a recent keystroke burst suggests this
-        # newline is part of a paste replayed as key events; then insert a
-        # newline and keep the window alive so the rest of the paste stays
-        # grouped instead of submitting mid-stream.
+        # newline is part of a paste replayed as key events. In that case the
+        # visible run is pulled off screen into the paste buffer along with this
+        # newline, and the window is kept alive so the rest of the paste stays
+        # grouped instead of submitting mid-stream. The text reappears when the
+        # burst flushes — possibly as a `[Pasted text #N]` placeholder.
         if event.key == "enter":
             event.prevent_default()
             event.stop()
@@ -1031,6 +1368,10 @@ class ChatTextArea(PasteBurstTextArea):
             return
 
         await super()._on_key(event)
+
+        # Must follow `super()._on_key`: promotion verifies the run against the
+        # document, so the current character has to be in it already.
+        self._check_burst_run_for_promotion()
 
     def action_delete_right(self) -> None:
         """Delete a bound placeholder atomically or the next character."""
@@ -1200,19 +1541,25 @@ class ChatTextArea(PasteBurstTextArea):
                 exc_info=True,
             )
             parsed = None
-        if parsed is not None:
+        owner = self._chat_input_owner
+        if parsed is not None and owner is not None:
             event.prevent_default()
             event.stop()
-            self.post_message(self.PastedPaths(event.text, parsed.paths))
+            owner.apply_paste_payload(event.text, parsed.paths)
             return
 
-        if self._paste_collapse_enabled() and _should_collapse_chat_paste(event.text):
+        if (
+            owner is not None
+            and self._paste_collapse_enabled()
+            and _should_collapse_chat_paste(event.text)
+        ):
             # Intercept the paste so Textual's default _on_paste doesn't insert
-            # the full text. ChatInput stores the content and inserts a compact
-            # placeholder instead.
+            # the full text. The owner stores the content and inserts a compact
+            # placeholder instead — applied here rather than posted, so a
+            # keystroke queued behind this paste cannot overtake it.
             event.prevent_default()
             event.stop()
-            self.post_message(self.PastedText(event.text))
+            owner.apply_paste_payload(event.text, None)
             return
 
         # Don't call super() here — Textual's MRO dispatch already calls
@@ -1323,6 +1670,400 @@ class _CompletionViewAdapter:
         )
 
 
+def _manual_height_ceiling(screen_height: int) -> int:
+    """Return the largest composer height a manual resize may request.
+
+    Args:
+        screen_height: Current screen height in rows.
+
+    Returns:
+        The manual-resize ceiling, at least 1 row.
+    """
+    return max(
+        1,
+        min(
+            _CHAT_INPUT_MANUAL_MAX_HEIGHT,
+            screen_height - _CHAT_INPUT_RESERVED_SCREEN_ROWS,
+        ),
+    )
+
+
+def _content_height_floor(text_area: ChatTextArea) -> int:
+    """Return the rows the draft currently occupies, capped at auto growth.
+
+    Uses `virtual_size`, so soft-wrapped lines count as the rows they actually
+    render as rather than as one row per newline. A drag cannot shrink the
+    composer below this, which stops resizing from hiding visible text.
+
+    Args:
+        text_area: The composer whose draft height to measure.
+
+    Returns:
+        The floor in rows, between 1 and `_CHAT_INPUT_AUTO_MAX_HEIGHT`.
+    """
+    return max(1, min(text_area.virtual_size.height, _CHAT_INPUT_AUTO_MAX_HEIGHT))
+
+
+class ChatInputBox(Vertical):
+    """Bordered box that owns the chat composer size.
+
+    Sizing is either automatic (content-driven, the default) or manual, and
+    `_requested_height` is the discriminator: `None` means automatic.
+
+    A manual size separates *intent* from what is *rendered*. The requested
+    height is what the user dragged to and is preserved verbatim; the applied
+    height is re-derived on every relayout by fitting that request between a
+    content floor and whichever ceiling is currently tightest. So a completion
+    popup can transiently squeeze the composer and it springs back when the
+    popup closes, and a terminal shrink does not destroy the request.
+
+    `ChatInput` composes the children and drives this box through
+    `set_manual_height`, `toggle_expanded`, and `refresh_content_height`.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize sizing state."""
+        super().__init__(**kwargs)
+        self._completion_rows = 0
+        self._requested_height: int | None = None
+        self._applied_height: int | None = None
+
+    def on_mount(self) -> None:
+        """Re-fit the composer whenever the screen relayouts.
+
+        A manual height pins the composer, so once it has been squeezed by a
+        smaller terminal nothing about this box's own geometry changes when the
+        terminal grows back -- it never receives another `Resize`. The screen's
+        layout-refresh signal does still fire, so that is what restores the
+        height the user asked for.
+        """
+        self.screen.screen_layout_refresh_signal.subscribe(
+            self, self._on_layout_refresh
+        )
+
+    def _on_layout_refresh(self, _screen: Screen) -> None:
+        """Re-fit a manual height against the new layout."""
+        self._apply_manual_height()
+
+    def _composer(self) -> ChatTextArea | None:
+        """Return the composer, or `None` when the box is mid-teardown.
+
+        Returns:
+            The child text area, or `None` if it is no longer mounted.
+        """
+        try:
+            return self.query_one(ChatTextArea)
+        except NoMatches:
+            logger.warning("ChatInputBox: composer not found; skipping height update")
+            return None
+
+    def _screen_height(self) -> int | None:
+        """Return the screen height, or `None` when detached from a screen.
+
+        Returns:
+            The screen's row count, or `None` if this box has no screen.
+        """
+        try:
+            return self.screen.size.height
+        except NoScreen:
+            logger.warning("ChatInputBox: no screen; skipping height update")
+            return None
+
+    def set_manual_height(self, height: int) -> None:
+        """Request a manual composer height and render it.
+
+        The request is stored clamped only by the screen ceiling; the popup and
+        content constraints are applied at render time so they stay reversible.
+
+        Args:
+            height: Desired composer height in rows.
+        """
+        screen_height = self._screen_height()
+        if screen_height is None:
+            return
+        self._requested_height = max(
+            1, min(height, _manual_height_ceiling(screen_height))
+        )
+        self._apply_manual_height()
+
+    def refresh_content_height(self) -> None:
+        """Re-fit a manual height after the draft's rendered height changes."""
+        if self._requested_height is not None:
+            self._apply_manual_height()
+
+    def _apply_manual_height(self) -> None:
+        """Render the requested height against the current constraints.
+
+        Three ceilings compete, and the tightest wins:
+
+        - the screen ceiling, which reserves rows for the rest of the app;
+        - the box ceiling, `_CHAT_INPUT_BOX_MAX_HEIGHT` minus the border gutter
+          and any completion popup, so the popup renders inside the border
+          rather than overflowing it;
+        - the same screen budget again but with the popup subtracted, since a
+          popup adds rows to the box that the plain screen ceiling ignores.
+
+        The result is then floored by the visible draft, so a manual height
+        never hides text. Both `height` and `max_height` are set because
+        `max_height` alone would leave Textual's `auto` growth in charge.
+        """
+        if self._requested_height is None:
+            return
+        text_area = self._composer()
+        screen_height = self._screen_height()
+        if text_area is None or screen_height is None:
+            return
+        # The plain screen cap already allows for the composer's own gutter; a
+        # popup needs it reserved explicitly because it adds rows to the box.
+        popup_gutter = self.gutter.height if self._completion_rows else 0
+        screen_available = (
+            screen_height
+            - _CHAT_INPUT_RESERVED_SCREEN_ROWS
+            - self._completion_rows
+            - popup_gutter
+        )
+        available = min(
+            _manual_height_ceiling(screen_height),
+            max(
+                1,
+                _CHAT_INPUT_BOX_MAX_HEIGHT - self.gutter.height - self._completion_rows,
+            ),
+            max(1, screen_available),
+        )
+        minimum = min(_content_height_floor(text_area), available)
+        height = max(minimum, min(self._requested_height, available))
+        # Writing styles schedules another layout, which republishes the signal
+        # this method runs from. Bail when nothing moved so the two cannot feed
+        # each other.
+        if height == self._applied_height:
+            return
+        self._applied_height = height
+        text_area.styles.height = height
+        text_area.styles.max_height = height
+        text_area.call_after_refresh(text_area.scroll_cursor_visible)
+
+    def _reset_height(self) -> None:
+        """Restore content-driven composer sizing."""
+        self._requested_height = None
+        self._applied_height = None
+        text_area = self._composer()
+        if text_area is None:
+            return
+        text_area.styles.height = "auto"
+        text_area.styles.max_height = _CHAT_INPUT_AUTO_MAX_HEIGHT
+        text_area.call_after_refresh(text_area.scroll_cursor_visible)
+
+    def _manual_height_is_visible(self) -> bool:
+        """Whether a manual height renders taller than automatic sizing would.
+
+        A drag that lands at or below the draft's own height is floored by
+        `_content_height_floor`, so it renders exactly as automatic sizing does
+        even though a request is stored. Distinguishing the two keeps a toggle
+        from having no visible effect.
+
+        Returns:
+            True when a manual height is set and is what pins the composer.
+        """
+        text_area = self._composer()
+        if self._requested_height is None or self._applied_height is None:
+            return False
+        if text_area is None:
+            return False
+        return self._applied_height > _content_height_floor(text_area)
+
+    def toggle_expanded(self) -> None:
+        """Expand to the manual-height ceiling, or drop a manual height.
+
+        Keys off whether a manual height is *visible* rather than merely stored.
+        A request floored by the draft renders identically to automatic sizing,
+        so collapsing it would leave the composer where it already is and the
+        gesture would read as broken -- expanding is the only move that
+        responds. That also covers the stray row of travel a press can emit
+        before the second half of a double-click lands.
+        """
+        if self._manual_height_is_visible():
+            self._reset_height()
+        else:
+            # Clamped to the screen ceiling inside `set_manual_height`, so
+            # asking for the absolute maximum lands on whatever fits now.
+            self.set_manual_height(_CHAT_INPUT_MANUAL_MAX_HEIGHT)
+
+    def on_completion_popup_rows_changed(
+        self, event: CompletionPopup.RowsChanged
+    ) -> None:
+        """Fit a manual composer around the completion popup."""
+        self._completion_rows = event.rows
+        self._apply_manual_height()
+        event.stop()
+
+    def on_resize(self, _event: events.Resize) -> None:
+        """Re-fit a manual height after this box is resized.
+
+        Deliberately re-renders rather than re-requesting: the stored request
+        survives, so shrinking the terminal and growing it back restores the
+        height the user actually chose.
+        """
+        self._apply_manual_height()
+
+
+class ChatInputResizeHandle(Static):
+    """Drag target docked over the chat input's top border.
+
+    Only the background is transparent: the handle sits on the layer above the
+    box's border and would blank the line it covers, so `render` repaints the
+    horizontal rule itself.
+
+    The handle reports pointer geometry and knows nothing about heights; the
+    parent decides what a drag means.
+    """
+
+    ALLOW_SELECT = False
+
+    class DragStarted(Message):
+        """Message sent when a resize drag begins."""
+
+    class Dragged(Message):
+        """Message sent with the current drag delta."""
+
+        def __init__(self, delta: int) -> None:
+            """Initialize with a row delta, cumulative since the drag started.
+
+            Positive is upward — screen Y grows downward, so this is the
+            negation of the raw pointer movement.
+            """
+            super().__init__()
+            self.delta = delta
+
+    class DragEnded(Message):
+        """Message sent when a resize drag stops, however it stopped."""
+
+    class HoverChanged(Message):
+        """Message sent when resize hover feedback changes."""
+
+        def __init__(self, highlighted: bool) -> None:
+            """Initialize with the new hover state."""
+            super().__init__()
+            self.highlighted = highlighted
+
+    class ToggleExpanded(Message):
+        """Message sent when expanded sizing should be toggled."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize drag state."""
+        super().__init__("", markup=False, **kwargs)
+        self._drag_start_y: int | None = None
+        self._highlighted = False
+
+    def render(self) -> str:
+        """Render the border line beneath the drag target.
+
+        Returns:
+            A charset-compatible horizontal rule spanning the handle.
+        """
+        return get_glyphs().box_horizontal * self.size.width
+
+    def _set_highlighted(self, *, highlighted: bool) -> None:
+        """Publish top-border hover changes."""
+        if self._highlighted != highlighted:
+            self._highlighted = highlighted
+            self.post_message(self.HoverChanged(highlighted))
+
+    def on_enter(self, event: events.Enter) -> None:
+        """Highlight the resize target on hover."""
+        if event.node is self:
+            self._set_highlighted(highlighted=True)
+
+    def on_leave(self, event: events.Leave) -> None:
+        """Remove hover feedback, but never mid-drag.
+
+        A drag routinely travels outside the handle; dropping the highlight
+        there would make the border flicker off the moment resizing starts.
+        """
+        if event.node is self and self._drag_start_y is None:
+            self._set_highlighted(highlighted=False)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """Begin resizing from a left press on the handle."""
+        if event.button != 1:
+            return
+        self._drag_start_y = event.screen_y
+        self._set_highlighted(highlighted=True)
+        self.capture_mouse()
+        self.post_message(self.DragStarted())
+        event.stop()
+        event.prevent_default()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Publish movement during a captured drag."""
+        if self._drag_start_y is None:
+            return
+        delta = self._drag_start_y - event.screen_y
+        # A double-click registers only when both presses land on the same cell,
+        # which is exactly when the pointer drifts away and back — emitting a
+        # zero-delta move. Reporting it would pin the composer to a manual height
+        # the user never asked for, freezing the auto-growth they expect as they
+        # keep typing.
+        if delta:
+            self.post_message(self.Dragged(delta))
+        event.stop()
+        event.prevent_default()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        """Finish an active left-button resize.
+
+        Hover feedback drops here rather than being re-derived from the pointer
+        position: releasing the capture makes Textual recompute what the mouse
+        is over and deliver a `Leave` anyway, and the next real movement back
+        onto the handle re-highlights it through `on_enter`.
+        """
+        if self._drag_start_y is None or event.button != 1:
+            return
+        self._end_drag(highlighted=False)
+        event.stop()
+        event.prevent_default()
+
+    def _end_drag(self, *, highlighted: bool, notify: bool = True) -> None:
+        """Clear drag state, drop mouse capture, and settle hover feedback.
+
+        Args:
+            highlighted: Hover state to leave the handle in.
+            notify: Whether to announce `DragEnded`. Suppressed during teardown,
+                where the message pump is closing and nothing can receive it.
+        """
+        was_dragging = self._drag_start_y is not None
+        self._drag_start_y = None
+        self.release_mouse()
+        self._set_highlighted(highlighted=highlighted)
+        if was_dragging and notify:
+            self.post_message(self.DragEnded())
+
+    def on_mouse_release(self, _event: events.MouseRelease) -> None:
+        """Abandon a drag when the app revokes this widget's mouse capture.
+
+        Without this the handle keeps a phantom drag alive: `on_leave` refuses
+        to clear the highlight, and later pointer movement resizes from a stale
+        baseline with no press behind it.
+        """
+        if self._drag_start_y is not None:
+            logger.debug("Resize drag ended without a mouse up; clearing drag state")
+        self._end_drag(highlighted=False)
+
+    def on_hide(self, _event: events.Hide) -> None:
+        """Abandon a drag when the composer is hidden mid-gesture."""
+        self._end_drag(highlighted=False)
+
+    def on_click(self, event: Click) -> None:
+        """Toggle expanded sizing on a double-click (or a faster chain)."""
+        if event.button == 1 and event.chain >= _DOUBLE_CLICK_CHAIN:
+            self.post_message(self.ToggleExpanded())
+            event.stop()
+            event.prevent_default()
+
+    def on_unmount(self) -> None:
+        """Release mouse capture and hover state during teardown."""
+        self._end_drag(highlighted=False, notify=False)
+
+
 class ChatInput(Vertical):
     """Chat input widget with prompt, multi-line text, autocomplete, and history.
 
@@ -1331,9 +2072,13 @@ class ChatInput(Vertical):
     - Enter to submit, modifier key for newlines (see `config.newline_shortcut`)
     - Up/Down arrows for command history at input boundaries (start/end of text)
     - Autocomplete for @ (files) and / (commands)
+    - Drag the top border to resize the composer; double-click it to expand to
+      the maximum height, or to drop a manual height back to content-driven
+      sizing
     """
 
-    DEFAULT_CSS = """
+    DEFAULT_CSS = (
+        """
     ChatInput {
         height: auto;
         layers: base actions;
@@ -1342,7 +2087,6 @@ class ChatInput(Vertical):
     ChatInput #input-box {
         height: auto;
         min-height: 3;
-        max-height: 25;
         padding: 0;
         background: $background;
         border: solid $primary;
@@ -1360,6 +2104,22 @@ class ChatInput(Vertical):
         border: solid $mode-incognito;
         border-title-color: $mode-incognito;
         border-title-style: bold;
+    }
+
+    /* Pre-mount default only. `_sync_resize_handle_color` sets the color as an
+       inline style, which outranks this rule, because the hover highlight must
+       persist while a drag travels outside the handle -- something `:hover`
+       cannot express. Mode-specific rules here would be dead code, so mode
+       colors live in that method instead. */
+    ChatInput #input-resize-handle {
+        layer: actions;
+        dock: left;
+        width: 1;
+        height: 1;
+        offset: 1 0;
+        background: transparent;
+        color: $primary;
+        pointer: ns-resize;
     }
 
     /* Action buttons float on their own z-layer over the top border line, so
@@ -1404,7 +2164,6 @@ class ChatInput(Vertical):
         width: 1fr;
         height: auto;
         min-height: 1;
-        max-height: 8;
         border: none;
         background: transparent;
         padding: 0;
@@ -1420,6 +2179,20 @@ class ChatInput(Vertical):
         border: none;
     }
     """
+        f"""
+    /* Sizes the composer sizing math depends on, interpolated from the module
+       constants so the stylesheet cannot silently drift from the arithmetic in
+       `ChatInputBox`. Appended rather than inlined above to keep the rest of
+       this block free of doubled braces. */
+    ChatInput #input-box {{
+        max-height: {_CHAT_INPUT_BOX_MAX_HEIGHT};
+    }}
+
+    ChatInput ChatTextArea {{
+        max-height: {_CHAT_INPUT_AUTO_MAX_HEIGHT};
+    }}
+    """
+    )
     """Border and prompt glyph change color per mode for immediate visual feedback."""
 
     class Submitted(Message):
@@ -1468,7 +2241,10 @@ class ChatInput(Vertical):
         super().__init__(**kwargs)
         self._cwd = Path(cwd) if cwd else Path.cwd()
         self._image_tracker = image_tracker
-        self._input_box: Vertical | None = None
+        self._input_box: ChatInputBox | None = None
+        self._resize_handle: ChatInputResizeHandle | None = None
+        self._resize_hovered = False
+        self._resize_start_height: int | None = None
         self._action_buttons: Horizontal | None = None
         self._text_area: ChatTextArea | None = None
         self._popup: CompletionPopup | None = None
@@ -1511,6 +2287,11 @@ class ChatInput(Vertical):
         # immediately recurse into the same replacement path.
         self._applying_inline_path_replacement = False
 
+        # Whether the most recent `apply_paste_payload` appended its own
+        # trailing space. Read by `ChatTextArea._payload_supplied_trailing_space`
+        # to decide whether a pending space keystroke would double it.
+        self._paste_appended_trailing_space = False
+
         # Text area content from the previous Changed event. Used to skip
         # blocking filesystem path-detection on single-keystroke edits while
         # still detecting replacement edits that insert a full path payload.
@@ -1540,11 +2321,14 @@ class ChatInput(Vertical):
         # The bordered box owns the prompt, text area, and completion popup so
         # the action buttons (a sibling) can float on its top border line; a
         # widget can only render on its sibling's border, not its parent's.
-        with Vertical(id="input-box"):
+        input_box = ChatInputBox(id="input-box")
+        with input_box:
             with Horizontal(classes="input-row"):
                 yield Static(">", classes="input-prompt", id="prompt")
                 yield ChatTextArea(id="chat-input")
             yield CompletionPopup(id="completion-popup")
+
+        yield ChatInputResizeHandle(id="input-resize-handle")
 
         # Action buttons float on their own z-layer over the top border line so
         # they cost no content row and never overlap the draft text.
@@ -1564,7 +2348,10 @@ class ChatInput(Vertical):
 
     def on_mount(self) -> None:
         """Initialize components after mount."""
-        self._input_box = self.query_one("#input-box", Vertical)
+        self._input_box = self.query_one("#input-box", ChatInputBox)
+        self._resize_handle = self.query_one(
+            "#input-resize-handle", ChatInputResizeHandle
+        )
         self._action_buttons = self.query_one("#input-actions", Horizontal)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
@@ -1573,6 +2360,9 @@ class ChatInput(Vertical):
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
         self._text_area._chat_input_owner = self
+        self._text_area.set_shell_highlighting(
+            enabled=self.mode in {"shell", "shell_incognito"}
+        )
 
         # Both controllers implement the CompletionController protocol but have
         # different concrete types; the list-item warning is a false positive.
@@ -1597,7 +2387,106 @@ class ChatInput(Vertical):
             _FILE_CACHE_REFRESH_INTERVAL_SECONDS,
             self._refresh_file_cache,
         )
+        self.call_after_refresh(self._sync_resize_handle_geometry)
+        self.watch(self.app, "theme", self._on_theme_change, init=False)
+        self._sync_resize_handle_color()
         self._text_area.focus()
+
+    def _on_theme_change(self) -> None:
+        """Recolor the resize handle when the app theme changes."""
+        self._sync_resize_handle_color()
+
+    def _sync_resize_handle_geometry(self) -> None:
+        """Inset the resize handle so border corners remain visible."""
+        if self._input_box is None or self._resize_handle is None:
+            return
+        # `Widget.region` swallows NoScreen/NoWidget and returns a null region,
+        # so a zero width means "not laid out yet" rather than a real size.
+        # Writing it through would collapse the whole drag target to one column.
+        box_width = self._input_box.region.width
+        if not box_width:
+            logger.debug("Chat input box not laid out yet; deferring handle geometry")
+            return
+        self._resize_handle.styles.width = max(
+            1,
+            box_width - _CHAT_INPUT_BORDER_CORNER_COLUMNS,
+        )
+
+    def on_resize(self, _event: events.Resize) -> None:
+        """Keep the resize handle aligned after layout changes."""
+        self.call_after_refresh(self._sync_resize_handle_geometry)
+
+    def _sync_resize_handle_color(self) -> None:
+        """Match the resize line to the active input mode and hover state."""
+        if self._resize_handle is None:
+            return
+        colors = theme.get_theme_colors(self)
+        mode_colors = {
+            "shell": colors.mode_bash,
+            "command": colors.mode_command,
+            "shell_incognito": colors.mode_incognito,
+        }
+        if self.mode != "normal" and self.mode not in mode_colors:
+            # A mode added to config without a color here would render the resize
+            # line in the default color while the border and prompt follow the
+            # new mode -- a mismatch that is hard to trace back to this method.
+            logger.warning(
+                "No resize handle color for mode %r; falling back to primary",
+                self.mode,
+            )
+        color = Color.parse(mode_colors.get(self.mode, colors.primary))
+        if self._resize_hovered:
+            color = color.lighten(_CHAT_INPUT_RESIZE_HOVER_LIGHTEN)
+        self._resize_handle.styles.color = color
+
+    def _set_resize_highlighted(self, *, highlighted: bool) -> None:
+        """Toggle resize hover feedback on the interior border line."""
+        self._resize_hovered = highlighted
+        self._sync_resize_handle_color()
+
+    def on_chat_input_resize_handle_drag_started(
+        self, event: ChatInputResizeHandle.DragStarted
+    ) -> None:
+        """Record the composer height at the start of a drag."""
+        if self._text_area is not None:
+            self._resize_start_height = max(1, self._text_area.size.height)
+        event.stop()
+
+    def on_chat_input_resize_handle_dragged(
+        self, event: ChatInputResizeHandle.Dragged
+    ) -> None:
+        """Apply a drag delta to the composer height."""
+        if self._resize_start_height is None:
+            # No baseline means no DragStarted arrived; resizing from a stale
+            # one would jump the composer to an unrelated size.
+            logger.debug("Ignoring resize drag with no recorded start height")
+            event.stop()
+            return
+        if self._input_box is not None:
+            self._input_box.set_manual_height(self._resize_start_height + event.delta)
+        event.stop()
+
+    def on_chat_input_resize_handle_drag_ended(
+        self, event: ChatInputResizeHandle.DragEnded
+    ) -> None:
+        """Drop the drag baseline so a later delta cannot reuse it."""
+        self._resize_start_height = None
+        event.stop()
+
+    def on_chat_input_resize_handle_hover_changed(
+        self, event: ChatInputResizeHandle.HoverChanged
+    ) -> None:
+        """Update top-border hover feedback."""
+        self._set_resize_highlighted(highlighted=event.highlighted)
+        event.stop()
+
+    def on_chat_input_resize_handle_toggle_expanded(
+        self, event: ChatInputResizeHandle.ToggleExpanded
+    ) -> None:
+        """Expand the composer, or drop a manual height back to automatic."""
+        if self._input_box is not None:
+            self._input_box.toggle_expanded()
+        event.stop()
 
     def _warm_file_cache(self, *, force: bool = False, exclusive: bool = False) -> None:
         """Schedule an `@` file-completion cache warmer.
@@ -1731,6 +2620,8 @@ class ChatInput(Vertical):
         # paths (esc+esc clear, Ctrl+C copy), which act on the raw value so a
         # whitespace-only draft is still clearable/copyable without the buttons.
         self._set_action_buttons_visible(visible=bool(text.strip()))
+        if self._input_box is not None:
+            self._input_box.refresh_content_height()
         # Drag-drop / bracketed paste arrive as one Changed event with a
         # multi-character inserted span. Normal typing arrives one character at
         # a time. Checking the changed span (rather than net length delta)
@@ -1973,6 +2864,14 @@ class ChatInput(Vertical):
             True if the keystroke was consumed as a mode selector without
             inserting the character, otherwise False.
         """
+        # The first slash enters command mode without being inserted. A second
+        # slash at the same offset can be the leading separator of a UNC-style
+        # path replayed as key events, so retain it rather than consuming both
+        # characters as mode triggers.
+        if char == "/" and self.mode == "command":
+            self.suppress_next_prefix_detection()
+            return False
+
         detected_prefix = detect_mode_prefix(char)
         if detected_prefix is None:
             return False
@@ -2242,26 +3141,42 @@ class ChatInput(Vertical):
         else:
             self.app.bell()
 
-    def on_chat_text_area_pasted_paths(self, event: ChatTextArea.PastedPaths) -> None:
-        """Handle paste payloads that resolve to dropped file paths."""
-        if not self._text_area:
-            return
+    def apply_paste_payload(self, text: str, paths: list[Path] | None) -> bool:
+        """Apply an already-parsed paste payload to the input.
 
-        self._insert_pasted_paths(event.raw_text, event.paths)
-
-    def on_chat_text_area_pasted_text(self, event: ChatTextArea.PastedText) -> None:
-        """Handle large pastes by collapsing into a compact placeholder.
-
-        Stores the full text in `_pasted_contents` and inserts a
-        `[Pasted text #N +M lines]` placeholder into the text area instead
-        of the raw content, keeping the input box compact.
+        Callers apply a payload through this method rather than posting it as a
+        message so it reaches the document synchronously. Textual appends a
+        posted message to the tail of the receiving widget's FIFO queue, so a
+        keystroke the terminal already delivered would be handled first and land
+        ahead of the paste.
 
         Args:
-            event: The `PastedText` message carrying the full pasted text.
+            text: Raw payload text.
+            paths: Resolved dropped paths, or `None` to collapse `text` into a
+                `[Pasted text #N]` placeholder.
+
+        Returns:
+            `True` when the payload was applied. `False` when there is no text
+            area to apply it to, in which case the caller still owns the text.
         """
         if not self._text_area:
-            return
-        self._collapse_and_insert_paste(event.text)
+            return False
+        if paths is not None:
+            self._paste_appended_trailing_space = self._insert_pasted_paths(text, paths)
+        else:
+            self._collapse_and_insert_paste(text)
+            self._paste_appended_trailing_space = False
+        return True
+
+    def suppress_next_prefix_detection(self) -> None:
+        """Skip mode-prefix detection for the next text change.
+
+        Used when inserting text that legitimately starts with a mode trigger, so
+        the change handler does not consume that character. Shares the guard with
+        `_strip_mode_prefix`, which reports a guard left uncleared by a missed
+        change event.
+        """
+        self._stripping_prefix = True
 
     def handle_external_paste(self, pasted: str) -> bool:
         """Handle paste text from app-level routing when input is not focused.
@@ -2282,9 +3197,9 @@ class ChatInput(Vertical):
 
         parsed = self._parse_dropped_path_payload(pasted)
         if parsed is not None:
-            self._insert_pasted_paths(pasted, parsed.paths)
+            self.apply_paste_payload(pasted, parsed.paths)
         elif self._collapse_pastes and _should_collapse_chat_paste(pasted):
-            self._collapse_and_insert_paste(pasted)
+            self.apply_paste_payload(pasted, None)
         else:
             self._text_area.insert(pasted)
 
@@ -2360,22 +3275,28 @@ class ChatInput(Vertical):
         self._text_area.move_cursor_to_end()
         return True
 
-    def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> None:
+    def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> bool:
         """Insert pasted path payload, attaching images when possible.
 
         Args:
             raw_text: Original paste payload text.
             paths: Resolved file paths parsed from the payload.
+
+        Returns:
+            `True` when the inserted text carries a trailing space that
+            `_build_path_replacement` appended. Unattached payloads are inserted
+            verbatim, so they never do.
         """
         if not self._text_area:
-            return
+            return False
         replacement, attached = self._build_path_replacement(
             raw_text, paths, add_trailing_space=True
         )
         if attached:
             self._text_area.insert(replacement)
-            return
+            return replacement.endswith(" ")
         self._text_area.insert(raw_text)
+        return False
 
     def _build_path_replacement(
         self,
@@ -2603,6 +3524,10 @@ class ChatInput(Vertical):
         # Keep inline argument hints in sync for mode-only transitions
         # (for example, exiting command mode via Escape or backspace).
         self._update_argument_hint()
+        if self._text_area is not None:
+            self._text_area.set_shell_highlighting(
+                enabled=mode in {"shell", "shell_incognito"}
+            )
 
         glyph = MODE_DISPLAY_GLYPHS.get(mode)
         if not glyph and mode != "normal":
@@ -2638,12 +3563,17 @@ class ChatInput(Vertical):
                                 markup=False,
                             )
                     self.mode = "normal"
+                # The handle color is an inline style, so backing out of a mode
+                # does not repaint it on its own; a stale incognito-colored line
+                # would outlive the mode it advertises.
+                self._sync_resize_handle_color()
                 return
             prompt.update(glyph or ">")
             if self._input_box is not None:
                 self._input_box.border_title = (
                     "incognito" if mode == "shell_incognito" else None
                 )
+            self._sync_resize_handle_color()
 
         self.call_next(_apply)
         self.post_message(self.ModeChanged(mode))

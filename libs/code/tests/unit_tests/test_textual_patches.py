@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,7 +16,7 @@ from textual import events
 from textual._time import get_time
 from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.geometry import Offset
 from textual.selection import Selection
@@ -57,6 +59,15 @@ class SelectableHistoryApp(App[None]):
             yield Static("second message", id="second")
 
 
+class SelectableScrollApp(App[None]):
+    CSS = "VerticalScroll { height: 8; }"
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="history"):
+            for index in range(1, 31):
+                yield Static(f"line{index:02d} content", id=f"row{index}")
+
+
 class TestPatchedWordSelection:
     async def test_double_click_selects_word_not_entire_widget(self) -> None:
         async with SelectableTextApp().run_test() as pilot:
@@ -87,6 +98,84 @@ class TestPatchedWordSelection:
             await pilot.triple_click("#second", offset=(1, 0))
 
             assert pilot.app.screen.get_selected_text() == "second message"
+
+    async def test_shift_click_extends_drag_selection_from_anchor(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.mouse_down("#msg", offset=(0, 0))
+            await pilot.mouse_up("#msg", offset=(4, 0))
+            assert pilot.app.screen.get_selected_text() == "alpha"
+
+            await pilot.click("#msg", offset=(11, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() == "alpha beta g"
+
+    async def test_shift_click_preserves_backward_drag_anchor(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.mouse_down("#msg", offset=(15, 0))
+            await pilot.mouse_up("#msg", offset=(11, 0))
+            assert pilot.app.screen.get_selected_text() == "gamma"
+
+            await pilot.click("#msg", offset=(0, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() == "alpha beta gamma"
+
+    async def test_shift_click_rejects_detached_markdown_anchor(self) -> None:
+        async with SelectableMarkdownApp().run_test() as pilot:
+            screen = pilot.app.screen
+            document = pilot.app.query_one("#msg", Markdown)
+            await pilot.mouse_down("#msg", offset=(15, 0))
+            await pilot.mouse_up("#msg", offset=(11, 0))
+            select_state = screen._select_state
+            assert select_state is not None
+            anchor_widget = select_state.start.content_widget
+            assert anchor_widget is not None
+
+            await document.update("replacement text")
+            assert not anchor_widget.is_attached
+            await pilot.click("#msg", offset=(0, 0), shift=True)
+
+            assert screen.get_selected_text() is None
+
+    async def test_shift_click_extends_from_anchor_after_scroll(self) -> None:
+        async with SelectableScrollApp().run_test(size=(40, 8)) as pilot:
+            await pilot.mouse_down("#row1", offset=(0, 0))
+            await pilot.mouse_up("#row2", offset=(6, 0))
+            history = pilot.app.query_one("#history", VerticalScroll)
+            history.scroll_to(y=10, animate=False)
+            await pilot.pause()
+
+            await pilot.click("#row14", offset=(6, 0), shift=True)
+
+            selected = pilot.app.screen.get_selected_text()
+            assert selected is not None
+            assert selected.startswith("line01 content")
+            assert selected.endswith("line14")
+
+    async def test_shift_click_ignores_unmodified_click(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.mouse_down("#msg", offset=(0, 0))
+            await pilot.mouse_up("#msg", offset=(4, 0))
+            assert pilot.app.screen.get_selected_text() == "alpha"
+
+            await pilot.click("#msg", offset=(11, 0))
+
+            assert pilot.app.screen.get_selected_text() is None
+
+    async def test_shift_click_extends_selection_across_widgets(self) -> None:
+        async with SelectableHistoryApp().run_test() as pilot:
+            await pilot.mouse_down("#first", offset=(6, 0))
+            await pilot.mouse_up("#first", offset=(12, 0))
+            assert pilot.app.screen.get_selected_text() == "message"
+
+            await pilot.click("#second", offset=(6, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() == "message\nsecond"
+
+    async def test_shift_click_without_selection_remains_unselected(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.click("#msg", offset=(7, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() is None
 
 
 class TestDetachedHitGuard:
@@ -134,6 +223,25 @@ class TestDetachedHitGuard:
 
             assert hit is widget
             assert hit_offset == Offset(2, 0)
+
+
+def test_missing_shift_selection_internals_does_not_break_import() -> None:
+    """Missing private classes must skip only the best-effort Shift patch."""
+    code = (
+        "import textual.selection\n"
+        "del textual.selection.SelectEnd\n"
+        "del textual.selection.SelectState\n"
+        "import deepagents_code._textual_patches\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 class TestPatchedSequenceToKeyEvents:

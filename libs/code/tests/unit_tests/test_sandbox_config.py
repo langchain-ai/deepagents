@@ -76,6 +76,20 @@ def test_clean_config_has_no_parse_error(tmp_path: Path) -> None:
     assert SandboxConfig.load(path).parse_error is None
 
 
+def test_absent_providers_are_empty_without_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Built-in-only sandbox config does not look malformed."""
+    path = _write(tmp_path, '[sandboxes]\ndefault = "modal"\n')
+    with caplog.at_level(logging.WARNING):
+        config = SandboxConfig.load(path)
+    assert dict(config.providers) == {}
+    assert not any(
+        "[sandboxes.providers] is not a table" in record.message
+        for record in caplog.records
+    )
+
+
 def test_missing_file_has_no_parse_error(tmp_path: Path) -> None:
     assert SandboxConfig.load(tmp_path / "missing.toml").parse_error is None
 
@@ -88,10 +102,17 @@ def test_sandboxes_not_a_table_records_parse_error(tmp_path: Path) -> None:
     assert "not a table" in config.parse_error
 
 
-def test_providers_not_a_table_is_ignored(tmp_path: Path) -> None:
+def test_providers_not_a_table_is_ignored(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     path = _write(tmp_path, "[sandboxes]\nproviders = 1\n")
-    config = SandboxConfig.load(path)
+    with caplog.at_level(logging.WARNING):
+        config = SandboxConfig.load(path)
     assert dict(config.providers) == {}
+    assert any(
+        "[sandboxes.providers] is not a table" in record.message
+        for record in caplog.records
+    )
 
 
 def test_provider_entry_not_a_table_is_ignored(

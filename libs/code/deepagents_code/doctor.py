@@ -351,20 +351,14 @@ def _sanitize_endpoint(endpoint: str) -> str:
     return f"{parsed.scheme}://{netloc}"
 
 
-_LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
-"""Host identifying LangSmith's managed (SaaS) tracing gateway.
-
-Traces sent to an endpoint whose host is `smith.langchain.com` (or a subdomain
-of it) route through the managed gateway; any other host is a self-hosted or
-dev/staging target. `app.py` keeps the same constant for its model-gateway
-key-mismatch check, but matches a raw-URL substring; this module matches the
-parsed hostname exactly or by subdomain suffix so lookalike hosts such as
-`smith.langchain.com.evil.example` are not treated as the gateway.
-"""
-
-
 def _endpoint_gateway_state(endpoint: str) -> str:
     """Classify a single tracing endpoint as gateway, non-gateway, or unknown.
+
+    Traces sent to the managed gateway host (or a subdomain of it) route
+    through LangSmith SaaS; any other host is a self-hosted or dev/staging
+    target. The exact/subdomain comparison, and the case and root-dot
+    normalization it needs, both live in
+    `model_config.is_langsmith_gateway_host`.
 
     Args:
         endpoint: A configured tracing endpoint URL.
@@ -375,15 +369,19 @@ def _endpoint_gateway_state(endpoint: str) -> str:
             and `"unknown"` when the endpoint cannot be parsed into a host — so
             a typo'd or malformed URL is never silently reported as `"no"`.
     """
+    from deepagents_code.model_config import is_langsmith_gateway_host
+
     try:
         host = urlsplit(endpoint.strip()).hostname or ""
     except ValueError:
         # urlsplit raises on bracket-malformed IPv6 (e.g. `http://[::1`); a
         # diagnostic must degrade to "unknown" rather than crash `dcode doctor`.
         return "unknown"
-    if not host:
+    # A host of only a root dot carries no name, so it stays `"unknown"` rather
+    # than being reported as a definite non-gateway.
+    if not host.removesuffix("."):
         return "unknown"
-    if host == _LANGSMITH_GATEWAY_HOST or host.endswith(f".{_LANGSMITH_GATEWAY_HOST}"):
+    if is_langsmith_gateway_host(host):
         return "yes"
     return "no"
 
@@ -510,6 +508,43 @@ def _path_status(label: str, path: object) -> DiagnosticItem:
     )
 
 
+def _managed_config_diagnostic() -> DiagnosticItem:
+    """Report managed TOML location, parse health, and policy enforceability.
+
+    Returns:
+        Managed config diagnostic row.
+    """
+    from deepagents_code.configuration.service import managed_health
+
+    health = managed_health(refresh=True)
+    status = health.status
+    path = status.path or "(unknown)"
+    suffix = status.health.value.lower()
+    detail = f" - {status.detail}" if status.detail else ""
+    # Doctor exists to explain a failure, so it must carry the parse detail and
+    # say who can fix it. Without this a user who just saw exit 78 learns
+    # nothing new here.
+    hint = "" if status.usable else "; ask your administrator to repair or remove it"
+    # A file that parses is not necessarily enforceable, and both halves of
+    # exit 78 have to show up here: reporting only `usable` gives a green row
+    # to the `ManagedPolicyError` half. `managed_health` reads both from one
+    # snapshot, so the refreshed status cannot be paired with stale violations.
+    violations = health.violations
+    if violations:
+        detail += f" - rejects {', '.join(violations)}"
+        hint = "; ask your administrator to correct the value"
+    if health.rejections:
+        # Declared but ignored, which is not a launch failure and so not part of
+        # `ok`. It still has to appear somewhere: the only other announcement is
+        # a `logger.warning` that cannot reach stderr.
+        detail += f" - ignores {', '.join(health.rejections)}"
+    return DiagnosticItem(
+        "Managed config",
+        f"{path} ({suffix}){detail}{hint}",
+        ok=health.ok,
+    )
+
+
 def _collect_configuration() -> DiagnosticSection:
     """Collect on-disk configuration and data locations.
 
@@ -525,6 +560,7 @@ def _collect_configuration() -> DiagnosticSection:
         title="Configuration",
         items=[
             _path_status("Data directory", DEFAULT_CONFIG_DIR),
+            _managed_config_diagnostic(),
             _path_status("Config file", DEFAULT_CONFIG_PATH),
         ],
     )

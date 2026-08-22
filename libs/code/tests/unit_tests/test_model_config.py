@@ -64,8 +64,10 @@ from deepagents_code.model_config import (
     save_effort_for_model,
     save_recent_agent,
     save_recent_model,
+    save_recent_startup_mode,
     save_thread_columns,
     suppress_warning,
+    suppress_warning_reason,
     touch_recent_model,
     unsuppress_warning,
 )
@@ -1793,20 +1795,39 @@ class TestModelConfigLoad:
         assert config.providers == {}
         assert any("structurally invalid" in r.getMessage() for r in caplog.records)
 
-    def test_returns_empty_config_when_providers_is_not_a_table(self, tmp_path, caplog):
-        """Valid TOML with a non-table `providers` falls back instead of raising.
+    def test_ignores_a_non_table_providers_and_keeps_its_siblings(
+        self, tmp_path, caplog
+    ):
+        """A non-table `providers` degrades to `{}` without discarding the rest.
 
-        This shape raises a TypeError from the dataclass constructor
-        (`MappingProxyType(5)`), the other post-parse failure mode.
+        `_validate` iterates `providers`, and it runs outside the constructor's
+        guard, so this shape used to raise `AttributeError` out of a loader every
+        caller treats as total. Coercing the one field keeps `default` usable.
         """
         config_path = tmp_path / "config.toml"
-        config_path.write_text("[models]\nproviders = 5\n")
+        config_path.write_text('[models]\nproviders = 5\ndefault = "anthropic:x"\n')
 
         with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
             config = ModelConfig.load(config_path)
 
         assert config.providers == {}
-        assert any("structurally invalid" in r.getMessage() for r in caplog.records)
+        assert config.default_model == "anthropic:x"
+        assert any(
+            "Ignoring [models].providers" in r.getMessage() for r in caplog.records
+        )
+
+    def test_ignores_a_non_string_default_model(self, tmp_path, caplog):
+        """A table where a model spec belongs cannot reach `create_model`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models.default]\noops = true\n")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            config = ModelConfig.load(config_path)
+
+        assert config.default_model is None
+        assert any(
+            "Ignoring [models].default" in r.getMessage() for r in caplog.records
+        )
 
     def test_loads_default_model(self, tmp_path):
         """Loads default model from config."""
@@ -4794,6 +4815,38 @@ api_key_env = "CIS_API_KEY"
         assert has_provider_credentials("nonexistent_provider_xyz") is None
 
 
+class TestIsLangsmithGatewayHost:
+    """Tests for the shared LangSmith gateway host predicate.
+
+    Two modules gate behavior on this (`doctor` classifies tracing endpoints,
+    `app` decides whether a provider key mismatches the gateway it is being
+    sent through), so its boundary cases are pinned directly rather than only
+    through callers. `cold_cache` deliberately does *not* use it: its
+    cross-format decision comes from the model-name prefix alone and is
+    host-independent.
+    """
+
+    @pytest.mark.parametrize(
+        ("host", "expected"),
+        [
+            ("smith.langchain.com", True),
+            ("eu.api.smith.langchain.com", True),
+            # A dot boundary is required, so a longer name that merely ends in
+            # the gateway's letters is not a subdomain of it.
+            ("notsmith.langchain.com", False),
+            # The gateway name appearing earlier in the string is not a suffix.
+            ("smith.langchain.com.evil.example", False),
+            ("langchain.com", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_host_classification(self, host: str | None, expected: bool) -> None:
+        from deepagents_code.model_config import is_langsmith_gateway_host
+
+        assert is_langsmith_gateway_host(host) is expected
+
+
 class TestIsLocalEndpoint:
     """Tests for _is_local_endpoint URL classification."""
 
@@ -5141,6 +5194,39 @@ temperature = 0.5
         config = ModelConfig.load(config_path)
         kwargs = config.get_kwargs("ollama", model_name="qwen3:4b")
         assert kwargs == {"temperature": 0.5}
+
+
+class TestModelConfigGetEffectiveKwargs:
+    """Tests for effective request kwargs used by model construction and policy."""
+
+    def test_merges_params_endpoint_and_runtime_override(self, tmp_path):
+        """Runtime params win after per-model config and the resolved endpoint."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai]
+base_url = "https://configured.example.com/v1"
+
+[models.providers.openai.params]
+temperature = 0
+base_url = "https://params.example.com/v1"
+prompt_cache_retention = "in_memory"
+
+[models.providers.openai.params."gpt-5.5"]
+prompt_cache_retention = "24h"
+""")
+        config = ModelConfig.load(config_path)
+
+        kwargs = config.get_effective_kwargs(
+            "openai",
+            model_name="gpt-5.5",
+            overrides={"temperature": 0.5},
+        )
+
+        assert kwargs == {
+            "temperature": 0.5,
+            "base_url": "https://configured.example.com/v1",
+            "prompt_cache_retention": "24h",
+        }
 
 
 class TestModelConfigGetProfileOverrides:
@@ -6221,6 +6307,42 @@ class TestSuppressWarning:
         assert data["models"]["default"] == "some:model"
         assert "ripgrep" in data["warnings"]["suppress"]
 
+    def test_returns_false_when_warnings_is_not_a_table(self, tmp_path) -> None:
+        """Reports failure instead of raising on a hand-edited `warnings = []`.
+
+        Callers run this inside detached async continuations where a raised
+        `AttributeError` would surface only as a background-task failure and
+        abandon the user's pending action.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('warnings = ["ripgrep"]\n')
+
+        result = suppress_warning("ripgrep", config_path)
+
+        assert result is False
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
+    def test_reason_names_a_malformed_warnings_table(self, tmp_path: Path) -> None:
+        """The cause must be distinguishable from an I/O failure.
+
+        The two need different fixes, and a bare `False` supports only the
+        generic "check file permissions" advice -- which sends a user with one
+        line of bad TOML to `chmod` a file that was never unwritable.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('warnings = ["ripgrep"]\n')
+
+        reason = suppress_warning_reason("ripgrep", config_path)
+
+        assert reason is not None
+        assert "not a table" in reason
+
+    def test_reason_is_none_on_success(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+
+        assert suppress_warning_reason("ripgrep", config_path) is None
+        assert is_warning_suppressed("ripgrep", config_path) is True
+
 
 class TestUnsuppressWarning:
     """Tests for unsuppress_warning() function."""
@@ -6296,6 +6418,15 @@ class TestUnsuppressWarning:
         result = unsuppress_warning("ripgrep", config_path)
 
         assert result is True
+
+    def test_returns_false_when_warnings_is_not_a_table(self, tmp_path: Path) -> None:
+        """Reports failure instead of raising on a hand-edited `warnings = []`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('warnings = ["ripgrep"]\n')
+
+        result = unsuppress_warning("ripgrep", config_path)
+
+        assert result is False
 
     def test_roundtrip_suppress_unsuppress(self, tmp_path: Path) -> None:
         """Suppress then unsuppress returns to original state."""
@@ -8442,7 +8573,11 @@ class TestAddEnabledProjectMcpServers:
 
 
 class TestLoadStartupMode:
-    """Tests for `load_startup_mode` reading `[startup].mode` from config.toml."""
+    """Tests for the `[startup]` approval-mode read and its recent-mode write.
+
+    Covers `load_startup_mode` over both `mode` and `recent`, and
+    `save_recent_startup_mode`.
+    """
 
     def test_missing_file_returns_default(self, tmp_path: Path) -> None:
         """A nonexistent config file falls back to the default mode."""
@@ -8454,6 +8589,165 @@ class TestLoadStartupMode:
         config = tmp_path / "config.toml"
         config.write_text("[threads]\nsort_order = 'created_at'\n")
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    @pytest.mark.parametrize("mode", [STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO])
+    def test_recent_mode_is_restored(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mode: str,
+    ) -> None:
+        """A stored recent mode is restored on a bare launch."""
+        from deepagents_code.approval_mode import save_auto_mode_notice
+
+        monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path / ".state")
+        if mode == STARTUP_MODE_AUTO:
+            assert save_auto_mode_notice()
+        config = tmp_path / "config.toml"
+        config.write_text(f"[startup]\nrecent = '{mode}'\n")
+        assert load_startup_mode(config) == mode
+
+    @pytest.mark.parametrize("notice_state", ["missing", "stale"])
+    def test_recent_auto_requires_current_notice(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        notice_state: str,
+    ) -> None:
+        """Implicit Auto restoration fails closed until its notice is current."""
+        state_dir = tmp_path / ".state"
+        monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", state_dir)
+        if notice_state == "stale":
+            state_dir.mkdir()
+            (state_dir / "approval.json").write_text(
+                '{"auto_notice_shown":true,"auto_notice_version":"old"}\n'
+            )
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nrecent = 'auto'\n")
+
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_recent_auto_blocked_by_notice_warns_and_queues_notice(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A declined Auto restore is diagnosable, not silent.
+
+        This is the one exit that discards a *valid* preference, so without a
+        log line and a queued toast an `AUTO_NOTICE_VERSION` bump looks exactly
+        like the persistence feature being broken.
+        """
+        from deepagents_code.model_config import (
+            consume_recent_auto_not_restored_notice,
+        )
+
+        monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path / ".state")
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nrecent = 'auto'\n")
+        # The notice is module state; clear anything an earlier test queued.
+        consume_recent_auto_not_restored_notice()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+        assert any(
+            "Not restoring [startup].recent" in record.getMessage()
+            for record in caplog.records
+        )
+        notice = consume_recent_auto_not_restored_notice()
+        assert notice is not None
+        assert "Shift+Tab" in notice
+        # One-shot: a second consumer must not re-toast the same launch.
+        assert consume_recent_auto_not_restored_notice() is None
+
+    def test_restored_recent_auto_queues_no_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A successful restore leaves nothing to explain."""
+        from deepagents_code.approval_mode import save_auto_mode_notice
+        from deepagents_code.model_config import (
+            consume_recent_auto_not_restored_notice,
+        )
+
+        monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path / ".state")
+        assert save_auto_mode_notice()
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nrecent = 'auto'\n")
+        consume_recent_auto_not_restored_notice()
+
+        assert load_startup_mode(config) == STARTUP_MODE_AUTO
+        assert consume_recent_auto_not_restored_notice() is None
+
+    def test_explicit_mode_outranks_recent(self, tmp_path: Path) -> None:
+        """An explicit mode is an intentional default and wins."""
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = 'manual'\nrecent = 'auto'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    @pytest.mark.parametrize("recent", ["yolo", "hands-off"])
+    def test_unsafe_or_invalid_recent_mode_fails_closed(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        recent: str,
+    ) -> None:
+        """Only Manual and Auto restore; anything else warns and fails closed."""
+        config = tmp_path / "config.toml"
+        config.write_text(f"[startup]\nrecent = '{recent}'\n")
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+        assert any(
+            "[startup].recent" in record.getMessage() for record in caplog.records
+        )
+
+    @pytest.mark.parametrize("literal", ["['auto']", "{ a = 'auto' }", "3", "true"])
+    def test_non_scalar_recent_returns_default(
+        self, tmp_path: Path, literal: str
+    ) -> None:
+        """A non-string `recent` must not reach the frozenset membership test.
+
+        `recent in RECENT_STARTUP_MODES` raises `TypeError: unhashable type` on
+        a list or table, which `except (OSError, TOMLDecodeError)` does not
+        catch, so dropping the isinstance guard aborts launch. This mirrors
+        `test_non_scalar_mode_returns_default` for the newer key.
+        """
+        config = tmp_path / "config.toml"
+        config.write_text(f"[startup]\nrecent = {literal}\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    @pytest.mark.parametrize("mode", [STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO])
+    def test_save_recent_startup_mode_round_trip(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mode: str,
+    ) -> None:
+        """A saved mode reloads, and neighbouring config keys survive the write."""
+        from deepagents_code.approval_mode import save_auto_mode_notice
+
+        monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path / ".state")
+        if mode == STARTUP_MODE_AUTO:
+            assert save_auto_mode_notice()
+        config = tmp_path / "config.toml"
+        config.write_text("[models]\ndefault = 'openai:gpt-5.5'\n")
+
+        assert save_recent_startup_mode(mode, config) is True
+        with config.open("rb") as file:
+            data = tomllib.load(file)
+        assert data["startup"]["recent"] == mode
+        assert data["models"]["default"] == "openai:gpt-5.5"
+        assert load_startup_mode(config) == mode
+
+    def test_save_recent_startup_mode_rejects_yolo(self, tmp_path: Path) -> None:
+        """YOLO must never be restored implicitly, so it cannot be stored.
+
+        The guard is the write-side half of `RECENT_STARTUP_MODES`; the read
+        side is covered above.
+        """
+        with pytest.raises(ValueError, match="Invalid recent startup mode"):
+            save_recent_startup_mode(STARTUP_MODE_YOLO, tmp_path / "config.toml")
 
     def test_explicit_manual(self, tmp_path: Path) -> None:
         """`mode = 'manual'` is returned verbatim."""
@@ -8477,15 +8771,18 @@ class TestLoadStartupMode:
         config.write_text("[startup]\nmode = 'dangerously-auto'\n")
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
 
-    def test_invalid_value_returns_default(
+    def test_invalid_explicit_mode_ignores_recent(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """An unrecognized mode logs a warning and falls back to the default."""
+        """An invalid explicit mode fails closed instead of restoring recent Auto."""
         config = tmp_path / "config.toml"
-        config.write_text("[startup]\nmode = 'hands-off'\n")
+        config.write_text("[startup]\nmode = 'hands-off'\nrecent = 'auto'\n")
         with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
             assert load_startup_mode(config) == STARTUP_MODE_MANUAL
-        assert any("startup" in r.getMessage().lower() for r in caplog.records)
+        # Assert on the `mode` warning specifically: matching bare "startup"
+        # would also pass on the `recent` warning, which must not fire here.
+        assert any("[startup].mode" in r.getMessage() for r in caplog.records)
+        assert not any("[startup].recent" in r.getMessage() for r in caplog.records)
 
     def test_malformed_startup_table_returns_default(self, tmp_path: Path) -> None:
         """A non-table `startup` value does not crash and falls back."""

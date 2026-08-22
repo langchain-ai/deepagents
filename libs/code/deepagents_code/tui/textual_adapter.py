@@ -106,6 +106,7 @@ from deepagents_code._tool_stream import (
     normalize_tool_status,
     tool_call_buffer_key,
 )
+from deepagents_code._tracing import stream_trace_config
 from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker, record_display_caveat
 from deepagents_code.hooks import (
@@ -1092,7 +1093,7 @@ def _require_approval_mode_key(value: str | None) -> str:
 
 
 def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401
-    """Return whether a custom event is a sanitized top-level Auto event."""
+    """Return whether a custom event is a sanitized Auto control-state notice."""
     if (
         not is_main_agent
         or not isinstance(data, dict)
@@ -1103,7 +1104,7 @@ def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  
     reason = data.get("reason")
     mode = data.get("mode")
     return (
-        event in {"denial", "unavailable", "fallback", "warning"}
+        event in {"fallback", "warning"}
         and (reason is None or isinstance(reason, str))
         and (mode is None or (event == "fallback" and mode == "manual"))
     )
@@ -1542,7 +1543,7 @@ async def execute_task_textual(
                 stream_input,
                 stream_mode=["messages", "updates", "custom"],
                 subgraphs=True,
-                config=config,
+                config=stream_trace_config(config, stream_input),
                 context=context,
                 durability="exit",
             )
@@ -3400,7 +3401,10 @@ async def _handle_interrupt_cleanup(
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
 
     if recover_interrupted_turn:
-        await adapter._mount_message(AppMessage("Interrupted by user"))
+        glyphs = get_glyphs()
+        await adapter._mount_message(
+            AppMessage(f"{glyphs.square_filled} Interrupted by user")
+        )
 
     # Proactively cancel server-side runs before persisting recovery state, so
     # the aupdate_state writes below don't 409 against a still-busy thread. This

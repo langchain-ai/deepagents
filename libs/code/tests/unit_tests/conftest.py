@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Generator
+    from collections.abc import Callable, Coroutine, Generator, Iterator
     from pathlib import Path
 
     from textual.pilot import Pilot
@@ -200,6 +200,38 @@ def _clear_project_mcp_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_hooks_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Prevent the developer's real hook config from reaching hook loading.
+
+    `_isolate_price_overrides` already redirects
+    `model_config.DEFAULT_CONFIG_DIR`, but `hooks.loading` and `hooks.runtime`
+    bind that name with a `from` import at module import. Whether they see the
+    redirect is therefore an ordering accident: imported lazily inside a test
+    they pick up `tmp_path`, but imported at collection -- which is what a
+    whole-suite run does -- they keep the developer's real `~/.deepagents`.
+
+    A `SessionEnd` entry there is the damaging case. Any `DeepAgentsApp` that
+    finishes startup during a test loads it, and `App.exit()` consults
+    `self._hooks.has_handlers(SESSION_END)` and takes the deferred-teardown
+    branch when handlers exist, so `TestExitGracefulWorkerHandoff`'s
+    synchronous-exit assertions fail. It reads as load-dependent flakiness
+    because those tests race app startup, and it never reproduces in CI, where
+    no such file exists.
+
+    Rebind both to the same `tmp_path` the price-override fixture uses, so all
+    three names agree on the user config directory, and drop the legacy
+    loader's parse cache in case it already holds real entries. Tests needing
+    hook config patch these explicitly, which still wins inside the test body.
+    """
+    for module in ("deepagents_code.hooks.loading", "deepagents_code.hooks.runtime"):
+        monkeypatch.setattr(f"{module}.DEFAULT_CONFIG_DIR", tmp_path)
+
+    import deepagents_code.hooks.legacy as hooks_legacy
+
+    monkeypatch.setattr(hooks_legacy, "_hooks_config", None)
 
 
 @pytest.fixture(autouse=True)
@@ -530,6 +562,54 @@ def _isolate_global_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         "deepagents_code.config._GLOBAL_DOTENV_PATH",
         tmp_path / "nonexistent-global.env",
     )
+
+
+def redirect_managed_config(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Point every managed-config seam at `path`.
+
+    The snapshot loader resolves through `resolve_managed_path`, error messages
+    render `managed_config_path`, and both names are also bound at import time
+    in the modules that read them. Patching one seam leaves a test reading the
+    developer's real host policy file — or, worse, silently reading nothing —
+    so they are redirected together.
+    """
+    from deepagents_code.configuration import paths, service
+    from deepagents_code.configuration.paths import ResolvedManagedPath
+
+    for module in (paths, service):
+        monkeypatch.setattr(module, "managed_config_path", lambda **_kwargs: path)
+        monkeypatch.setattr(
+            module,
+            "resolve_managed_path",
+            lambda **_kwargs: ResolvedManagedPath(path),
+        )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_managed_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Point managed config at a missing file and reset its process cache.
+
+    The managed path is fixed per platform, so without this the suite reads
+    whatever policy the developer's machine (or a CI image) has installed, and
+    unrelated tests change behavior. The snapshot is cached process-wide, so it
+    is also cleared on both sides of every test.
+    """
+    from deepagents_code.configuration import service
+
+    absent = tmp_path / "absent-managed_config.toml"
+    redirect_managed_config(monkeypatch, absent)
+    # The "expected a table" dedup set is process-global. Left alone, the first
+    # test to trip it decides what every later test sees, and the suite runs in
+    # random order.
+    from deepagents_code import config_manifest
+
+    config_manifest._warned_non_table_paths.clear()
+    service.invalidate_config_sources()
+    yield
+    config_manifest._warned_non_table_paths.clear()
+    service.invalidate_config_sources()
 
 
 @pytest.fixture(autouse=True)

@@ -15,7 +15,6 @@ import importlib.util
 import json
 import logging
 import os
-import shlex
 import shutil
 import signal
 import sys
@@ -42,6 +41,7 @@ if TYPE_CHECKING:
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
+from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
 from deepagents_code._version import __version__
 
 logger = logging.getLogger(__name__)
@@ -56,15 +56,16 @@ _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE = (
 
 
 class _TrustAction(Enum):
-    """Actions available in any project-scope trust prompt.
+    """Actions available in the shared pre-TUI decision picker.
 
-    Shared by the project MCP server and project hook prompts; both offer the
-    same allow-once / remember / deny choice over a different subject.
+    Project trust prompts use allow-once / remember / deny. The editable
+    dependency-floor prompt also offers an explicit environment refresh.
     """
 
     ALLOW_ONCE = "allow_once"
     REMEMBER = "remember"
     DENY = "deny"
+    REFRESH = "refresh"
 
 
 class _TrustPromptOutcome(Enum):
@@ -110,11 +111,6 @@ def _install_termination_signal_handlers() -> None:
     if sys.platform != "win32":
         for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
             signal.signal(signum, _handle_termination_signal)
-
-
-def _tail_log_command(log_path: Path | str) -> str:
-    """Return a copy-pasteable command for following a log file."""
-    return f"tail -f {shlex.quote(str(log_path))}"
 
 
 def build_version_text() -> str:
@@ -269,6 +265,53 @@ def _should_check_teardown_thread(
     return bool(thread_id)
 
 
+def _resume_term_program() -> str | None:
+    """Return the `TERM_PROGRAM` value to echo in the resume hint, if any.
+
+    Gated on `features.resume_term_program` (off unless the user opts in, on by
+    default in debug or experimental mode), so this reads `config.toml` from
+    disk. The value comes from `LAUNCH_TERM_PROGRAM` -- the snapshot `cli_main`
+    takes at process entry -- so a `TERM_PROGRAM` that only appears later, from
+    a project or global `.env` file, never reaches the hint.
+
+    Returns:
+        The printable launch-time value when the feature is enabled, else `None`.
+        A value carrying control characters is dropped rather than stripped:
+        stripping would both write raw escape sequences into teardown output and
+        name a terminal the environment never actually contained. Native Windows
+        shells also return `None` because they cannot parse the POSIX
+        `VAR=value` prefix. POSIX markers (`SHELL` from git-bash/MSYS,
+        `MSYSTEM`, `WSL_DISTRO_NAME`) restore the prefix there.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("features.resume_term_program")
+    if option is None:
+        # Unreachable unless the manifest key is renamed without updating this
+        # literal; log so that mismatch surfaces instead of silently defaulting.
+        logger.warning(
+            "Unknown config option %r; omitting TERM_PROGRAM from the resume hint",
+            "features.resume_term_program",
+        )
+        return None
+    enabled, _ = resolve_scalar(option, toml_data=load_config_toml())
+    if not enabled:
+        return None
+
+    raw = os.environ.get(LAUNCH_TERM_PROGRAM, "").strip()
+    if not raw or not raw.isprintable():
+        return None
+    if sys.platform == "win32" and not any(
+        os.environ.get(marker) for marker in ("SHELL", "MSYSTEM", "WSL_DISTRO_NAME")
+    ):
+        return None
+    return raw
+
+
 def _render_teardown_thread_hints(
     console: "Console",
     thread_id: str,
@@ -287,6 +330,8 @@ def _render_teardown_thread_hints(
         thread_id: Thread whose checkpoints back the hints.
         return_code: Process exit code; failed sessions add a resume safety caveat.
     """
+    import shlex
+
     from rich.style import Style
     from rich.text import Text
 
@@ -323,10 +368,25 @@ def _render_teardown_thread_hints(
     console.print("[dim]Resume this thread with:[/dim]")
     # Echo the command the user actually launched (a shim or the
     # `deepagents-code` alias), not a hardcoded `dcode` they may not have.
-    hint = Text(invoked_name(), style="cyan")
-    hint.append(" -r ", style="cyan")
-    hint.append(str(thread_id), style="cyan")
-    console.print(hint)
+    resume_command = shlex.join([invoked_name(), "-r", str(thread_id)])
+    # A shell alias that exports `TERM_PROGRAM` (to select a theme, say) is
+    # invisible to `invoked_name`, since an alias does not change `argv[0]`, so
+    # the bare command would resume without it. Carrying the launch-time value
+    # as an env prefix keeps the line pasteable as-is. Guarded because this
+    # reads `config.toml`: unlike the rest of this function, it can raise, and
+    # an exception here would replace whatever is already unwinding.
+    try:
+        term_program = _resume_term_program()
+    except Exception:
+        logger.debug(
+            "Could not resolve resume TERM_PROGRAM on teardown",
+            exc_info=True,
+        )
+        term_program = None
+    if term_program is not None:
+        resume_command = f"TERM_PROGRAM={shlex.quote(term_program)} {resume_command}"
+    console.print(Text(resume_command, style="cyan"))
+
     if return_code != 0:
         console.print(
             "[dim]Note: the session exited with a non-zero status. Attempting "
@@ -503,8 +563,9 @@ def _run_startup_auto_update(console: "Console") -> None:
     from deepagents_code.config import _is_editable_install
     from deepagents_code.update_check import (
         clear_startup_auto_update_failure,
-        create_update_log_path,
+        create_update_log_file,
         detect_shadowed_dcode_safe,
+        format_log_follow_command,
         format_release_age_parenthetical,
         format_shadowed_dcode_warning,
         get_cached_update_available,
@@ -650,15 +711,16 @@ def _run_startup_auto_update(console: "Console") -> None:
             if os.environ.get(DEBUG_UPDATE):
                 console.print("Skipped update install (debug mode).", style="dim")
                 return
-            log_path = create_update_log_path()
-            console.print(
-                f"Update log: {_tail_log_command(log_path)}",
-                style="dim",
-                highlight=False,
-                markup=False,
-            )
+            log_path = create_update_log_file()
+            if log_path is not None:
+                console.print(
+                    f"Update log: {format_log_follow_command(log_path)}",
+                    style="dim",
+                    highlight=False,
+                    markup=False,
+                )
             pending_failure_version = latest
-            success, output = asyncio.run(
+            success, output, _installed = asyncio.run(
                 perform_upgrade(log_path=log_path, target_version=latest)
             )
         if success:
@@ -2090,7 +2152,7 @@ def parse_args() -> argparse.Namespace:
         dest="auto_classifier_model",
         metavar="MODEL",
         help="Model the Auto approval classifier reviews actions with "
-        "(e.g. anthropic:claude-haiku-4-5). Interactive TUI only. Defaults to "
+        "(e.g. anthropic:claude-haiku-4-5). Local TUI or ACP only. Defaults to "
         "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
         "then the main agent model. A weaker model weakens Auto's review.",
     )
@@ -2240,14 +2302,14 @@ def parse_args() -> argparse.Namespace:
         "--auto-approve",
         action="store_true",
         default=None,
-        help="Interactive local TUI only: enable classifier-backed Auto mode.",
+        help="Enable classifier-backed Auto mode in the local TUI or ACP server.",
     )
     approval_group.add_argument(
         "--yolo",
         action="store_true",
         help=(
-            "Interactive mode only: run gated actions without review after the "
-            "one-time local risk acknowledgement."
+            "Run gated actions without review after the one-time local risk "
+            "acknowledgement (interactive TUI or ACP mode)."
         ),
     )
 
@@ -2291,7 +2353,7 @@ def parse_args() -> argparse.Namespace:
         metavar="LIST",
         help="Comma-separated list of shell commands to auto-approve, "
         "'recommended' for safe defaults, or 'all' to allow any command. "
-        "Applies to both -n and interactive modes.",
+        "Applies to both -n and interactive modes. Managed config overrides it.",
     )
     parser.add_argument(
         "--mcp-config",
@@ -2848,6 +2910,9 @@ async def _run_acp_cli_async(
     trust_project_mcp: bool | None = None,
     allow_fs_tools: "list[FsToolName] | None" = None,
     recursion_limit: int | None = None,
+    auto: bool = False,
+    yolo: bool = False,
+    auto_classifier_model: str | None = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 
@@ -2868,6 +2933,9 @@ async def _run_acp_cli_async(
             `None` leaves the SDK default (all tools).
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env/`config.toml`/default at agent-build time.
+        auto: Enable classifier-backed approval routing.
+        yolo: Disable approval prompts for this ACP server.
+        auto_classifier_model: Optional model for Auto approval classification.
 
     Returns:
         Exit code for ACP mode.
@@ -2972,6 +3040,9 @@ async def _run_acp_cli_async(
 
         async with get_checkpointer() as checkpointer:
             await checkpointer.setup()
+            from langgraph.store.memory import InMemoryStore
+
+            store = InMemoryStore() if auto else None
 
             def build_agent(
                 context: "AgentSessionContext",
@@ -2996,16 +3067,29 @@ async def _run_acp_cli_async(
                     async_subagents=async_subagents,
                     fs_tools=allow_fs_tools,
                     recursion_limit=recursion_limit,
+                    auto_approve=yolo,
+                    auto_mode_enabled=auto,
+                    auto_classifier_model=auto_classifier_model,
                     memory_auto_save=is_memory_auto_save_enabled(),
+                    store=store,
                     cwd=context.cwd,
                     project_context=ProjectContext.from_user_cwd(Path(context.cwd)),
                 )
                 return agent_graph
 
-            server = agent_server_cls(
+            if auto:
+                from deepagents_code.acp import AgentServerACP
+
+                server_cls = AgentServerACP
+                server_kwargs = {"store": cast("Any", store)}
+            else:
+                server_cls = agent_server_cls
+                server_kwargs = {}
+            server = server_cls(
                 build_agent,
                 models=models,
                 load_sessions=True,
+                **server_kwargs,
             )
             await run_acp_agent(server)
     except KeyboardInterrupt:
@@ -3204,15 +3288,41 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
 
 
 def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
-    """Print a session-level usage stats table to the console on TUI exit.
+    """Print the session usage stats table on TUI exit, unless it is disabled.
+
+    Gated by `[ui].show_usage_stats`, so this may print nothing. The payload
+    type guard stays ahead of that lookup: `stats` is typed `Any`, and a caller
+    passing something other than `SessionStats` should not trigger config I/O
+    to decide to print nothing.
+
+    That guard is unreachable as long as callers respect
+    `AppResult.session_stats`'s declared type — a dataclass annotation, not
+    runtime enforcement, which is exactly what `stats: Any` lets slip. If it
+    fires, something upstream is broken rather than merely disabled, so it
+    warns instead of returning silently: that keeps the two otherwise
+    indistinguishable empty outputs apart.
+
+    An exception escaping `usage_table_enabled` here would be caught by the
+    top-level handler that rewrites a clean exit into `1` plus a traceback,
+    which is why that call fails open.
 
     Args:
         stats: The cumulative session stats from the Textual app.
         console: Rich console for output.
     """
-    from deepagents_code._session_stats import SessionStats, print_usage_table
+    from deepagents_code._session_stats import (
+        SessionStats,
+        print_usage_table,
+        usage_table_enabled,
+    )
 
     if not isinstance(stats, SessionStats):
+        logger.warning(
+            "Skipping session stats table: expected SessionStats, got %s",
+            type(stats).__name__,
+        )
+        return
+    if not usage_table_enabled():
         return
     print_usage_table(stats, stats.wall_time_seconds, console)
 
@@ -3289,12 +3399,14 @@ def _run_trust_action_picker(
     remember_label: str = "Allow for this project — until changed",
     allow_label: str = "Allow once",
     deny_label: str = "Deny",
+    refresh_label: str | None = None,
     deny_first: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome | None:
-    """Show the inline allow-once / remember / deny picker for a trust prompt.
+    """Show the inline decision picker shared by pre-TUI prompts.
 
-    Subject-agnostic: callers describe what is being trusted before calling and
-    supply the label for the persistent option.
+    Subject-agnostic: callers describe the decision before calling and supply
+    labels that match what each action does. Trust prompts omit `refresh_label`
+    and keep their existing three choices.
 
     Args:
         console: Console to print fallback notices to (stderr).
@@ -3302,6 +3414,7 @@ def _run_trust_action_picker(
             what the caller actually persists, since scope differs by subject.
         allow_label: Label for the session-scoped allow option.
         deny_label: Label for the refuse option.
+        refresh_label: Label for an explicit environment refresh, when offered.
         deny_first: When `True`, list the deny option first; callers whose
             "deny" reads as a safe default (e.g. aborting a launch) put it in
             the leading position. The picker starts highlighted on the deny
@@ -3341,7 +3454,23 @@ def _run_trust_action_picker(
         (_TrustAction.REMEMBER, remember_label),
         (_TrustAction.DENY, deny_label),
     ]
-    if deny_first:
+    if refresh_label is not None:
+        actions = (
+            [
+                (_TrustAction.DENY, deny_label),
+                (_TrustAction.REFRESH, refresh_label),
+                (_TrustAction.ALLOW_ONCE, allow_label),
+                (_TrustAction.REMEMBER, remember_label),
+            ]
+            if deny_first
+            else [
+                (_TrustAction.ALLOW_ONCE, allow_label),
+                (_TrustAction.REMEMBER, remember_label),
+                (_TrustAction.REFRESH, refresh_label),
+                (_TrustAction.DENY, deny_label),
+            ]
+        )
+    elif deny_first:
         actions.reverse()
     # Highlight the refusing option by identity, not position: `deny_first`
     # moves it to the front, so a positional index would silently default to
@@ -3437,7 +3566,7 @@ def prompt_for_dep_floor_mismatch(
     console: "Console",
     violations: "Sequence[_FloorViolation]",
 ) -> _TrustAction | _TrustPromptOutcome:
-    """Block on a continue / mute / abort picker for a stale editable install.
+    """Block on a refresh / continue / mute / abort picker for stale dependencies.
 
     Lives here (not in `_dep_floor_check`) beside the other pre-TUI trust
     prompts so the picker implementation is shared. The prompt prints to
@@ -3449,11 +3578,11 @@ def prompt_for_dep_floor_mismatch(
         violations: The detected below-floor dependencies.
 
     Returns:
-        `ALLOW_ONCE` to continue this session, `REMEMBER` to mute this exact
-        mismatch for this checkout, `CANCELLED` to abort the launch (chosen
-        "Abort launch", Esc, or Ctrl+D — `abort_on_deny` collapses all three
-        into one outcome, so `DENY` is never returned), or `INTERRUPTED` on
-        Ctrl+C.
+        `REFRESH` to update the active environment, `ALLOW_ONCE` to continue
+        this session, `REMEMBER` to mute this exact mismatch for this checkout,
+        `CANCELLED` to abort the launch (chosen "Abort launch", Esc, or Ctrl+D —
+        `abort_on_deny` collapses all three into one outcome, so `DENY` is never
+        returned), or `INTERRUPTED` on Ctrl+C.
     """
     console.print()
     console.print(
@@ -3482,6 +3611,7 @@ def prompt_for_dep_floor_mismatch(
         remember_label="Continue and hide until versions change",
         allow_label="Continue this session only",
         deny_label="Abort launch",
+        refresh_label="Refresh environment now",
         deny_first=True,
         abort_on_deny=True,
     )
@@ -3493,10 +3623,11 @@ def _select_trust_action(
     remember_label: str = "Allow for this project — until changed",
     allow_label: str = "Allow once",
     deny_label: str = "Deny",
+    refresh_label: str | None = None,
     deny_first: bool = False,
     abort_on_deny: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome:
-    """Choose whether to allow once, remember, or deny a project-scoped subject.
+    """Choose an action for a project trust or dependency-floor prompt.
 
     Falls back to a text prompt when the inline picker cannot run. Every failure
     mode resolves to a decision the caller can act on without knowing which
@@ -3510,6 +3641,7 @@ def _select_trust_action(
             inline picker.
         allow_label: Label for the session-scoped allow option.
         deny_label: Label for the refuse option.
+        refresh_label: Label for an explicit environment refresh, when offered.
         deny_first: Forwarded to the picker to list the deny option first.
         abort_on_deny: When `True`, a deny answer is reported as `CANCELLED`
             on every input path (picker, typed answer, and EOF), so prompts
@@ -3526,6 +3658,7 @@ def _select_trust_action(
         remember_label=remember_label,
         allow_label=allow_label,
         deny_label=deny_label,
+        refresh_label=refresh_label,
         deny_first=deny_first,
     )
     if selected is not None:
@@ -3534,16 +3667,28 @@ def _select_trust_action(
         return selected
 
     # Mirror the caller's labels: for the dep-floor prompt the choices are
-    # continue / mute / abort, and a hardcoded "allow once / deny" would
+    # refresh / continue / mute / abort, and a hardcoded "allow once / deny" would
     # misdescribe what the default does. Both lines go to stderr, where the
     # rest of the prompt already went; passing the question to `input()`
     # instead would split it onto stdout, so `dcode 2>log` would show a bare
     # question with all of its context redirected away.
-    console.print(
-        f"[dim]{allow_label} [y] · {remember_label} [r] · {deny_label} [N][/dim]",
-        highlight=False,
-    )
-    console.print("Choose [y/r/N]: ", end="", highlight=False)
+    if refresh_label is None:
+        choices = f"{allow_label} [y] · {remember_label} [r] · {deny_label} [N]"
+        prompt = "Choose [y/r/N]: "
+    elif deny_first:
+        choices = (
+            f"{deny_label} [N] · {refresh_label} [u] · "
+            f"{allow_label} [y] · {remember_label} [r]"
+        )
+        prompt = "Choose [N/u/y/r]: "
+    else:
+        choices = (
+            f"{allow_label} [y] · {remember_label} [r] · "
+            f"{refresh_label} [u] · {deny_label} [N]"
+        )
+        prompt = "Choose [y/r/u/N]: "
+    console.print(f"[dim]{choices}[/dim]", highlight=False)
+    console.print(prompt, end="", highlight=False)
     try:
         answer = input().strip().lower()
     except KeyboardInterrupt:
@@ -3554,6 +3699,8 @@ def _select_trust_action(
         return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
         return _TrustAction.REMEMBER
+    if refresh_label is not None and answer in {"u", "update", "f", "refresh"}:
+        return _TrustAction.REFRESH
     return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
 
 
@@ -3931,6 +4078,7 @@ def _check_mcp_project_trust(
             f"[yellow]Warning: {escape(trust_lists.read_error)}; treating "
             "project MCP servers as untrusted.[/yellow]",
             highlight=False,
+            soft_wrap=True,
         )
         return False
 
@@ -4125,6 +4273,206 @@ def _verify_interpreter_or_exit() -> None:
         sys.exit(1)
 
 
+def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
+    """Replace lower-tier runtime arguments with managed values.
+
+    An enforced key whose managed value cannot be applied is not skipped.
+    Skipping leaves the user's flag in force. An administrator typo
+    (`startup.mode = "YOLO"`) would then grant the escalation the policy
+    forbade, and the CLI would report no managed value for the key. Those keys
+    stop the launch, the same way an unparseable managed file does. See
+    `configuration.service.ENFORCED_MANAGED_KEYS`. Keys that cannot grant
+    privilege keep the ordinary ignore-and-fall-through rule.
+
+    Raises:
+        AssertionError: If managed policy is unusable, which means the startup
+            health gate did not run first.
+    """
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_policy_violations,
+        resolve_managed_option,
+    )
+    from deepagents_code.configuration.types import Found, Invalid, Unset
+
+    snapshot = get_managed_snapshot()
+    if not snapshot.status.usable:
+        # `_require_managed_config_or_exit` ran ~35 lines earlier in `cli_main`,
+        # so this is unreachable. Assert it rather than inferring health from an
+        # empty table: an unusable snapshot carries `{}`, so the `if not
+        # managed_data: return` below would read "no policy to apply" and leave
+        # every user flag in force — the exact fail-open this function prevents.
+        # The ordering is a cross-module invariant with nothing else enforcing it.
+        msg = (
+            "managed policy is unusable when runtime policy is applied; the "
+            f"startup gate must run first (health: {snapshot.status.health.value})"
+        )
+        raise AssertionError(msg)
+    managed_data = snapshot.data
+    if not managed_data:
+        return
+
+    managed_results: dict[str, object] = {}
+
+    def managed_result(key: str) -> object:
+        """Return the managed tier's typed provider result for `key`."""
+        if key not in managed_results:
+            resolved = resolve_managed_option(
+                key,
+                managed_data,
+                status=snapshot.status,
+            )
+            managed_results[key] = (
+                resolved.tier_health.get(MANAGED_RANK, Unset())
+                if resolved is not None
+                else Unset()
+            )
+        return managed_results[key]
+
+    def declared(key: str) -> bool:
+        """Return whether managed policy sets `key`, valid or not."""
+        return isinstance(managed_result(key), (Found, Invalid))
+
+    def managed_value(key: str) -> tuple[bool, object]:
+        """Resolve one key against managed policy alone.
+
+        Returns:
+            Whether managed policy decided the value, and the value.
+        """
+        result = managed_result(key)
+        return (True, result.value) if isinstance(result, Found) else (False, None)
+
+    violations = managed_policy_violations(managed_data, status=snapshot.status)
+    if violations:
+        sys.stderr.write(
+            "Error: managed config rejects "
+            f"{', '.join(violations)}. "
+            "Ask your administrator to correct the value.\n"
+        )
+        sys.stderr.flush()
+        sys.exit(78)
+
+    # `models.auto_classifier` is cleared rather than assigned: with the flag
+    # unset, `build_server_config` falls through to
+    # `resolve_auto_classifier_model_with_problem`, which resolves the managed
+    # tier first. Assigning the managed spec onto the flag made the server name
+    # a flag the user never passed, and `--auto-classifier-model` without
+    # `--auto-approve` exits 2 in ACP mode — the same failure the
+    # `startup.mode` block below avoids.
+    if declared("models.auto_classifier") and hasattr(args, "auto_classifier_model"):
+        args.auto_classifier_model = None
+
+    for key, destination in {
+        "models.default": "model",
+        "interpreter.enable_interpreter": "interpreter",
+    }.items():
+        found, value = managed_value(key)
+        if found and hasattr(args, destination):
+            setattr(args, destination, value)
+
+    _apply_managed_sandbox(args, managed_value("sandboxes.default"))
+
+    limit_found, limit = managed_value("runtime.recursion_limit")
+    if limit_found and hasattr(args, "recursion_limit"):
+        args.recursion_limit = limit
+
+    if declared("interpreter.ptc") and hasattr(args, "interpreter_tools"):
+        args.interpreter_tools = None
+
+    if declared("shell.allow_list") and hasattr(args, "shell_allow_list"):
+        args.shell_allow_list = None
+
+    found, startup_mode = managed_value("startup.mode")
+    if found:
+        # Only *revoke*: `_resolve_approval_mode` ends at
+        # `coerce_approval_mode(load_startup_mode())`, which already reads
+        # merged managed policy, so the positive value needs no flag. Setting
+        # the flags positively also breaks every headless launch, because
+        # `--auto-approve` with `--non-interactive-message` exits 2 — naming a
+        # flag the user never passed.
+        if startup_mode != "auto":
+            args.auto_approve = False
+        if startup_mode != "yolo":
+            args.yolo = False
+
+
+def _apply_managed_sandbox(
+    args: argparse.Namespace, resolved: tuple[bool, object]
+) -> None:
+    """Pin the sandbox backend when the launch already uses a sandbox.
+
+    `sandboxes.default` names the backend a bare `--sandbox` selects; omitting
+    the flag runs unsandboxed. Assigning it unconditionally would force every
+    launch into a sandbox, which the key does not mean, so a launch that asked
+    for no sandbox is left alone. A bare `--sandbox` needs no assignment here
+    either: `SandboxRegistry.load` reads merged managed config, so
+    `registry.default` already carries the managed value.
+
+    The value is checked against the registry first. `parse_args` validates
+    `--sandbox`, but it runs before managed policy is applied, so an
+    unavailable managed name would otherwise skip `is_available` and reach the
+    sandbox factory instead of producing a curated error.
+
+    A launch that bypasses a named managed backend prints a note. The key does
+    not force containment, and an administrator who read it as if it did would
+    otherwise see an unsandboxed launch with no diagnostic at all.
+    """
+    found, value = resolved
+    # `--sandbox` defaults to the string `"none"`, so an omitted flag never
+    # leaves `args.sandbox` as `None`. Both spellings mean "no sandbox" to
+    # `_resolve_and_validate_sandbox`, and this must match it: checking only
+    # `None` forces a sandbox onto a launch that asked for none.
+    if not found:
+        return
+    if getattr(args, "sandbox", None) in {None, "none"}:
+        # Policy named a backend and this launch is not using one. That is the
+        # documented meaning of the key, but an administrator who set it
+        # believing it forces containment would otherwise get an unsandboxed
+        # launch, exit 0, and a green `dcode doctor` row.
+        if isinstance(value, str) and value not in {"", "none"}:
+            sys.stderr.write(
+                f"Note: managed config sets [sandboxes].default to '{value}', "
+                "which names the backend for a sandboxed launch. This launch "
+                "asked for no sandbox, so it runs on the host. Pass --sandbox "
+                "to use the managed backend.\n"
+            )
+            sys.stderr.flush()
+        return
+    if not isinstance(value, str) or not value:
+        return
+    if value != "none":
+        from deepagents_code.integrations.sandbox_registry import SandboxRegistry
+
+        registry = SandboxRegistry.load()
+        if not registry.is_available(value):
+            available = ", ".join(registry.available_providers())
+            sys.stderr.write(
+                f"Error: managed config sets [sandboxes].default to '{value}', "
+                "which is not available on this machine.\n"
+                f"Available providers: {available}.\n"
+                "Ask your administrator to correct the value.\n"
+            )
+            sys.stderr.flush()
+            sys.exit(78)
+    args.sandbox = value
+
+
+def _require_managed_config_or_exit() -> None:
+    """Fail an agent launch when present managed policy cannot be enforced."""
+    from deepagents_code.configuration.service import (
+        ManagedConfigError,
+        require_healthy_managed_config,
+    )
+
+    try:
+        require_healthy_managed_config(refresh=True)
+    except ManagedConfigError as exc:
+        sys.stderr.write(f"Error: {exc}\n")
+        sys.stderr.flush()
+        sys.exit(78)
+
+
 def cli_main() -> None:
     """Entry point for console script.
 
@@ -4139,6 +4487,14 @@ def cli_main() -> None:
     # https://github.com/grpc/grpc/issues/37642
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
+
+    # Snapshot `TERM_PROGRAM` before settings bootstrap loads any `.env` file,
+    # so the resume hint echoes the variable only when the launch environment
+    # (inline prefix, terminal export, or shell alias) supplied it. The app
+    # itself never sets `TERM_PROGRAM`, and the update re-exec inherits this
+    # sentinel, so a set value here always marks an explicit launch value.
+    if "TERM_PROGRAM" in os.environ and LAUNCH_TERM_PROGRAM not in os.environ:
+        os.environ[LAUNCH_TERM_PROGRAM] = os.environ["TERM_PROGRAM"]
 
     # Note: LANGSMITH_PROJECT override is handled lazily by config.py's
     # _ensure_bootstrap() (triggered on first access of `settings`).
@@ -4203,6 +4559,14 @@ def cli_main() -> None:
 
             sys.exit(run_doctor_command(args))
 
+        # Every remaining command can read or act on managed policy, so none
+        # may run while that policy is unenforceable. `config`, `doctor`, and
+        # `auth path` returned above because they are the tools for diagnosing
+        # a broken managed file. Gating them would leave an administrator no way
+        # to see what is wrong. `help` reads no policy.
+        if command != "help":
+            _require_managed_config_or_exit()
+
         if command == "tools":
             from deepagents_code.client.commands.tools import run_tools_command
 
@@ -4233,6 +4597,13 @@ def cli_main() -> None:
         # fast path so neither argparse's `--help`/`-h` exit nor
         # `deepagents <group>` pays the settings bootstrap cost.
         from deepagents_code.config import console, settings
+
+        if command is None:
+            # The health gate already ran above, for every command, so the
+            # violation check inside cannot fire. Kept as defense in depth: it
+            # is the only thing standing between a future entry point that
+            # forgets the gate and a launch that silently ignores policy.
+            _apply_managed_runtime_policy(args)
 
         if command == "auth":
             from deepagents_code.client.commands.auth import run_auth_command
@@ -4285,16 +4656,21 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
-            if getattr(args, "auto_approve", False) or getattr(args, "yolo", False):
-                flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
+            if getattr(args, "yolo", False):
+                from deepagents_code.approval_mode import has_yolo_acknowledgement
+
+                if not has_yolo_acknowledgement():
+                    sys.stderr.write(
+                        "Error: acknowledge YOLO in the interactive TUI before "
+                        "using it in ACP mode.\n"
+                    )
+                    sys.exit(2)
+            if getattr(args, "auto_classifier_model", None) is not None and not getattr(
+                args, "auto_approve", False
+            ):
                 sys.stderr.write(
-                    f"Error: {flag} is only supported by the interactive Textual TUI.\n"
-                )
-                sys.exit(2)
-            if getattr(args, "auto_classifier_model", None) is not None:
-                sys.stderr.write(
-                    "Error: --auto-classifier-model is only supported by the "
-                    "interactive Textual TUI.\n"
+                    "Error: --auto-classifier-model requires --auto-approve "
+                    "in ACP mode.\n"
                 )
                 sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
@@ -4335,6 +4711,9 @@ def cli_main() -> None:
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
                     allow_fs_tools=allow_fs_tools,
                     recursion_limit=getattr(args, "recursion_limit", None),
+                    auto=getattr(args, "auto_approve", False),
+                    yolo=getattr(args, "yolo", False),
+                    auto_classifier_model=getattr(args, "auto_classifier_model", None),
                 )
             )
             sys.exit(exit_code)
@@ -4583,9 +4962,10 @@ def cli_main() -> None:
                 from deepagents_code.config import _is_editable_install
                 from deepagents_code.update_check import (
                     _PRERELEASE_UNSUPPORTED_MESSAGE,
-                    create_update_log_path,
+                    create_update_log_file,
                     format_age_suffix,
                     format_installed_age_suffix,
+                    format_log_follow_command,
                     format_release_age_parenthetical,
                     is_update_available,
                     perform_upgrade,
@@ -4673,14 +5053,15 @@ def cli_main() -> None:
                             "Skipped update install (debug mode).", style="dim"
                         )
                         sys.exit(0)
-                    log_path = create_update_log_path()
-                    console.print(
-                        f"Update log: {_tail_log_command(log_path)}",
-                        style="dim",
-                        highlight=False,
-                        markup=False,
-                    )
-                    success, output = asyncio.run(
+                    log_path = create_update_log_file()
+                    if log_path is not None:
+                        console.print(
+                            f"Update log: {format_log_follow_command(log_path)}",
+                            style="dim",
+                            highlight=False,
+                            markup=False,
+                        )
+                    success, output, _installed = asyncio.run(
                         perform_upgrade(
                             log_path=log_path,
                             include_prereleases=include_prereleases,
@@ -4765,8 +5146,37 @@ def cli_main() -> None:
                 currently_enabled = is_auto_update_enabled()
                 new_state = not currently_enabled
                 set_auto_update(new_state)
-                label = "enabled" if new_state else "disabled"
-                console.print(f"Auto-updates {label}.")
+                effective_state = is_auto_update_enabled()
+                if effective_state != new_state:
+                    from deepagents_code._env_vars import AUTO_UPDATE
+                    from deepagents_code.configuration.service import (
+                        managed_config_status,
+                    )
+                    from deepagents_code.update_check import _managed_update_value
+
+                    # Managed config is only one of the layers that outrank the
+                    # saved preference. Naming it for an env-var override would
+                    # send the user to an administrator who set no policy. A
+                    # managed file that cannot be parsed also forces the setting
+                    # off, so name the parse failure rather than blaming policy
+                    # the administrator may never have written.
+                    managed_decides, _ = _managed_update_value("auto_update")
+                    if managed_decides and not managed_config_status().usable:
+                        blame = "a managed config file that could not be read"
+                    elif managed_decides:
+                        blame = "managed config"
+                    elif os.environ.get(AUTO_UPDATE) is not None:
+                        blame = AUTO_UPDATE
+                    else:
+                        blame = "a higher-precedence config source"
+                    effective_label = "enabled" if effective_state else "disabled"
+                    console.print(
+                        "Preference saved, but auto-updates remain "
+                        f"{effective_label} due to {blame}."
+                    )
+                else:
+                    label = "enabled" if new_state else "disabled"
+                    console.print(f"Auto-updates {label}.")
             except OSError:
                 logger.warning("--auto-update failed: filesystem error", exc_info=True)
                 console.print(
@@ -5049,9 +5459,8 @@ def cli_main() -> None:
                     )
                 )
             except TimeoutError:
-                # `asyncio.wait_for` raises `asyncio.TimeoutError`, which is
-                # an alias of the builtin on Python >= 3.11 (the project's
-                # minimum).
+                # `asyncio.wait_for` raises `asyncio.TimeoutError`, an alias
+                # of the builtin.
                 from rich.console import Console as _Console
 
                 _Console(stderr=True).print(

@@ -7,10 +7,12 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
+from textual import events
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.reactive import reactive
+from textual.style import Style
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -24,9 +26,9 @@ from deepagents_code.tui.widgets.loading import Spinner
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from textual import events
     from textual.app import ComposeResult, RenderResult
     from textual.geometry import Size
+    from textual.message import Message
     from textual.timer import Timer
 
 PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
@@ -43,6 +45,53 @@ CONNECTION_STATES = frozenset(get_args(ConnectionState))
 """Runtime view of `ConnectionState` for `set_connection`'s defensive guard.
 
 Derived from the `Literal` so the two can never drift."""
+
+PickerTarget = Literal["model", "effort"]
+"""Clickable spans in the model label that open their corresponding picker.
+
+Each member names both an entry in `_PICKER_ACTIONS` and one in
+`_PICKER_STYLES`, so the two mappings stay keyed by this `Literal`."""
+
+PICKER_TARGETS: frozenset[str] = frozenset(get_args(PickerTarget))
+"""Runtime view of `PickerTarget`, used to keep the picker mappings total.
+
+Derived from the `Literal` so the two can never drift."""
+
+_PICKER_TARGET_META = "status-picker-target"
+"""`Style.meta` key that carries a `PickerTarget` from `render` to mouse events.
+
+Textual round-trips the style under the pointer back on every mouse event, so
+this key is how a click resolves to the span it landed on. The namespace is
+screen-global, hence the `status-` prefix."""
+
+_PICKER_ACTIONS: dict[PickerTarget, str] = {
+    "model": "app.open_model_selector",
+    "effort": "app.open_effort_selector",
+}
+"""App action each target dispatches. Keys must cover `PickerTarget` in full.
+
+Textual resolves these names at dispatch time and only logs when a name is
+missing, so `TestStatusBarPickerActions` asserts they exist on the app."""
+
+_PICKER_STYLES = {
+    target: Style.from_meta({_PICKER_TARGET_META: target}) for target in PICKER_TARGETS
+}
+"""Hit-target style per target, holding only the metadata used for resolution.
+
+Derived from `PickerTarget` so a new member cannot be left without a style."""
+
+_PICKER_HOVER_STYLE = Style(underline=True)
+"""Added on top of a hit-target style while the pointer is over that span.
+
+Carries no metadata of its own, so merging it keeps the target resolvable."""
+
+_LEFT_BUTTON = 1
+"""Textual `MouseEvent.button` value for the left mouse button."""
+
+_SINGLE_CLICK_CHAIN = 1
+"""Textual `Click.chain` count for the first click of a sequence.
+
+Later counts are ignored, so a Ctrl+double-click opens one picker, not two."""
 
 StatusMessageSource = Literal["agent", "hooks"]
 """Owners that may write the shared status-message slot."""
@@ -69,11 +118,21 @@ class ModelLabel(Widget):
     participates in the same ladder: the effort suffix is preserved (with the
     model left-truncated to make room) and is only dropped once even the
     left-truncated model plus effort cannot fit.
+
+    Whatever text survives that ladder is also a hit target: clicking the model
+    span opens the model selector and clicking the effort span opens the reasoning
+    effort picker, via the `_PICKER_ACTIONS` app actions. A span that the ladder
+    dropped is not clickable, because only rendered text carries the metadata.
     """
 
     provider: reactive[str] = reactive("", layout=True)
     model: reactive[str] = reactive("", layout=True)
     effort: reactive[str] = reactive("", layout=True)
+    _hovered_target: reactive[PickerTarget | None] = reactive(None)
+    """Target under the pointer, or `None` when there is none."""
+
+    _refocus_press_pending = False
+    """Whether an app refocus is awaiting its adjacent input event."""
 
     def _clean_model(self) -> str:
         """Strip the provider's registered prefix so the status bar stays compact.
@@ -105,6 +164,129 @@ class ModelLabel(Widget):
         """
         return f"{text} {self.effort}" if self.effort else text
 
+    def _picker_style(self, target: PickerTarget) -> Style:
+        """Return the hit-target style for `target`.
+
+        Args:
+            target: Picker represented by the styled span.
+
+        Returns:
+            The cached hit-target style, underlined while the pointer is over
+                this span. `Style` is frozen, so the cached entry is never
+                mutated.
+        """
+        style = _PICKER_STYLES[target]
+        if self._hovered_target == target:
+            style += _PICKER_HOVER_STYLE
+        return style
+
+    @staticmethod
+    def _picker_target(event: events.MouseEvent) -> PickerTarget | None:
+        """Resolve a `PickerTarget` from the style under the pointer.
+
+        Args:
+            event: Mouse event carrying the style under the pointer.
+
+        Returns:
+            Target registered in `_PICKER_ACTIONS`, or `None` when the pointer is
+                outside a target span.
+        """
+        # `Style.meta` is `Mapping[str, Any]` and screen-global, so annotate the
+        # lookup to make the membership check a narrowing the type checker sees.
+        # Test against `_PICKER_ACTIONS`, whose `Literal` keys are what lets the
+        # checker narrow; `PICKER_TARGETS` keeps those keys total.
+        target: str | None = event.style.meta.get(_PICKER_TARGET_META)
+        return target if target in _PICKER_ACTIONS else None
+
+    def _clickable_content(self, model: str, *, effort: str = "") -> Content:
+        """Assemble the model and effort spans as separate picker hit-targets.
+
+        Args:
+            model: Text for the model span, which may carry the provider prefix,
+                a leading ellipsis, or both.
+            effort: Text for the effort span, or `""` on the rungs where the
+                ladder dropped the effort suffix. Must match what the caller
+                measured, since the separator adds a cell.
+
+        Returns:
+            The model span, followed by a space and the effort span when `effort`
+                is set.
+        """
+        model_content = Content.styled(model, self._picker_style("model"))
+        if not effort:
+            return model_content
+        return Content.assemble(
+            model_content,
+            " ",
+            Content.styled(effort, self._picker_style("effort")),
+        )
+
+    def on_mount(self) -> None:
+        """Track app input so a focus-restoring press stays inert."""
+        self.app.message_signal.subscribe(self, self._on_app_message, immediate=True)
+
+    def on_unmount(self) -> None:
+        """Stop tracking app input after the label is detached."""
+        self.app.message_signal.unsubscribe(self)
+
+    def _clear_refocus_press(self) -> None:
+        """Expire a refocus that had no adjacent input event."""
+        self._refocus_press_pending = False
+
+    def _on_app_message(self, message: Message) -> None:
+        """Associate an app refocus with its immediately queued mouse press.
+
+        Args:
+            message: App-level message that just finished processing.
+        """
+        if isinstance(message, events.AppFocus):
+            self._refocus_press_pending = True
+            self.app.call_later(self._clear_refocus_press)
+            return
+        if isinstance(message, events.AppBlur):
+            self._refocus_press_pending = False
+            return
+        if not self._refocus_press_pending or not isinstance(
+            message, events.InputEvent
+        ):
+            return
+        self._refocus_press_pending = False
+        if (
+            isinstance(message, events.MouseDown)
+            and message.button == _LEFT_BUTTON
+            and self._picker_target(message) is not None
+        ):
+            self.suppress_click()
+
+    async def on_click(self, event: events.Click) -> None:
+        """Open a picker for a left-click on a target span in the status bar.
+
+        Textual synthesizes `Click` for any button and posts one per release, so
+        filter on both: without the button check a right-click would open a picker,
+        and without the chain check a double-click would open two. A click that
+        restores terminal focus is consumed without opening anything.
+        """
+        target = self._picker_target(event)
+        if event.button != _LEFT_BUTTON or target is None:
+            return
+        # Stop every target click so it cannot bubble to the app handler that
+        # refocuses the chat input behind a picker.
+        event.stop()
+        if event.chain > _SINGLE_CLICK_CHAIN:
+            return
+        await self.run_action(_PICKER_ACTIONS[target])
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Underline the hovered target and show a pointer."""
+        target = self._picker_target(event)
+        self._hovered_target = target
+        self.styles.pointer = "pointer" if target is not None else "default"
+
+    def on_leave(self) -> None:
+        """Clear the underline and the pointer when the pointer leaves the label."""
+        self._hovered_target = None
+        self.styles.pointer = "default"
+
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width so `width: auto` works.
 
@@ -125,7 +307,9 @@ class ModelLabel(Widget):
         """Render the model label with width-aware truncation.
 
         Returns:
-            Text content, truncated from the left when necessary.
+            Text content, truncated from the left when necessary. Each rendered
+                span carries its `PickerTarget` metadata, so a rung that drops
+                the effort suffix leaves no effort target to click.
         """
         width = self.content_size.width
         if not self.model or width <= 0:
@@ -135,18 +319,19 @@ class ModelLabel(Widget):
         full_with_effort = self._with_effort(full)
         model_with_effort = self._with_effort(model)
         if len(full_with_effort) <= width:
-            return Content(full_with_effort)
+            return self._clickable_content(full, effort=self.effort)
         if len(model_with_effort) <= width:
-            return Content(model_with_effort)
+            return self._clickable_content(model, effort=self.effort)
         suffix = f" {self.effort}" if self.effort else ""
         if suffix and width > len(suffix) + 1:
             model_width = width - len(suffix)
-            return Content(f"\u2026{model[-(model_width - 1) :]}{suffix}")
+            truncated_model = f"\u2026{model[-(model_width - 1) :]}"
+            return self._clickable_content(truncated_model, effort=self.effort)
         if len(model) <= width:
-            return Content(model)
+            return self._clickable_content(model)
         if width > 1:
-            return Content("\u2026" + model[-(width - 1) :])
-        return Content("\u2026")
+            return self._clickable_content("\u2026" + model[-(width - 1) :])
+        return self._clickable_content("\u2026")
 
 
 class BranchLabel(Widget):

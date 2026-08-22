@@ -1,18 +1,23 @@
 """Lightweight session statistics, token formatting, and usage-table rendering.
 
-Holds `SessionStats`/`ModelStats`, the `format_token_count` formatter, and
-`print_usage_table` (which imports `rich.table` lazily). The module is
-intentionally kept free of heavy top-level dependencies (no pydantic, no
-config, no widget imports) so that `app.py` can import `SessionStats` and
-`format_token_count` at module level without pulling in the full
-`textual_adapter` dependency tree.
+Holds `SessionStats`/`ModelStats`, the `format_token_count` formatter,
+`print_usage_table` (which imports `rich.table` lazily), and
+`usage_table_enabled`, which decides whether that table is rendered at all.
+The module is intentionally kept free of heavy top-level dependencies (no
+pydantic, no config, no widget imports) so that `app.py` can import
+`SessionStats` and `format_token_count` at module level without pulling in the
+full `textual_adapter` dependency tree — hence the deferred `config_manifest`
+import inside `usage_table_enabled` rather than at the top.
 """
 
 from __future__ import annotations
 
 import logging
+import math
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from deepagents_code.formatting import format_duration
@@ -21,6 +26,9 @@ if TYPE_CHECKING:
     from rich.console import Console
 
 logger = logging.getLogger(__name__)
+
+_warned_usage_stats_rejections: set[str] = set()
+"""Rejection reasons already reported by `_warn_rejected_usage_stats_value`."""
 
 SpinnerStatus = (
     Literal[
@@ -915,6 +923,49 @@ def format_cost(cost_usd: float) -> str:
     return f"${cost_usd:.2f}"
 
 
+def format_cost_estimate(cost_usd: float) -> str:
+    """Format a speculative USD cost as a rounded, approximate upper bound.
+
+    Used where the figure is a worst-case estimate rather than recorded spend
+    (e.g. the cold-cache warning modal, whose cache may be partially warm):
+    rounds so the display does not imply false precision, and prefixes with `~`
+    to signal "approximately". Do not use for recorded session spend --
+    `format_cost` renders actuals exactly.
+
+    Rounding is upward to two significant figures at or above a dime so it can
+    safely appear in an upper-bound estimate. Between one cent and a dime the
+    figure keeps cent-level precision instead (`0.062` renders `~$0.07`); a
+    second digit there would be sub-cent noise.
+
+    Args:
+        cost_usd: Estimated cost in US dollars.
+
+    Returns:
+        A string such as `'~$0.62'` or `'~$12'`; non-positive values use
+        `'$0.00'` and positive sub-cent values use `'<$0.01'`, matching
+        `format_cost` edge conventions.
+    """
+    if cost_usd <= 0:
+        return "$0.00"
+    if cost_usd < 0.01:  # noqa: PLR2004  # Display floor for sub-cent estimates.
+        return "<$0.01"
+    if cost_usd < 0.1:  # noqa: PLR2004  # Keep cent-level precision under a dime.
+        rounded = Decimal(str(cost_usd)).quantize(
+            Decimal("0.01"), rounding=ROUND_CEILING
+        )
+        return f"~${rounded:.2f}"
+    # Quantize through `Decimal(str(...))` so floating-point representation
+    # cannot cause the upper-bound display to round down. `ROUND_CEILING` is
+    # appropriate here because all values that reach this branch are positive.
+    # `normalize().adjusted()` re-derives the magnitude from the rounded
+    # value so a decade carry (9.99 -> 10) renders as `$10`, not `$10.0`.
+    exponent = math.floor(math.log10(cost_usd))
+    quantum = Decimal(1).scaleb(exponent - 1)
+    rounded = Decimal(str(cost_usd)).quantize(quantum, rounding=ROUND_CEILING)
+    decimals = max(1 - rounded.normalize().adjusted(), 0)
+    return f"~${rounded:.{decimals}f}"
+
+
 def _recorded_cost(cost_usd: float, priced_request_count: int) -> str:
     """Format a cost cell, distinguishing unpriced requests from zero cost.
 
@@ -922,6 +973,84 @@ def _recorded_cost(cost_usd: float, priced_request_count: int) -> str:
         Formatted cost, or an em dash when no request was priceable.
     """
     return format_cost(cost_usd) if priced_request_count else "—"
+
+
+def _warn_rejected_usage_stats_value(reason: str) -> None:
+    """Report a rejected `show_usage_stats` value on stderr.
+
+    Every other rejection in this codebase is logged and left there, which is
+    right for an option that falls through to a cosmetic default. This one can
+    fall through to *showing the table* — the single outcome the user was
+    trying to prevent — and the log has no reader outside the TUI Debug
+    Console, so a quoted `"false"` or a bare `no` would otherwise look exactly
+    like never having set the option. `dcode config set` does not exist, so
+    hand-edited TOML is the only input path and typos are the expected case.
+
+    Both call sites are at teardown, where stderr is a plain stream rather than
+    a live interface, so this cannot land on top of the TUI.
+
+    The line states only the rejection, not the outcome: the resolver reports
+    rejections at or above the winning tier, so when a stronger source cleanly
+    disables the table the outcome half would contradict what the user sees.
+
+    Deduped per reason rather than per process: resolving once per session is
+    the norm, but `dcode config` walks the whole manifest, and a line repeated
+    verbatim reads as two separate problems. Two *different* reasons — managed
+    config and the user file both rejected — really are two problems and both
+    print.
+
+    Args:
+        reason: Rejection text from the resolver.
+    """
+    if reason in _warned_usage_stats_rejections:
+        return
+    _warned_usage_stats_rejections.add(reason)
+    print(f"Warning: {reason}", file=sys.stderr)  # noqa: T201
+    logger.warning("%s", reason)
+
+
+def usage_table_enabled() -> bool:
+    """Return whether the session usage table should be rendered.
+
+    Controlled by `[ui].show_usage_stats` or `DEEPAGENTS_CODE_SHOW_USAGE_STATS`.
+    Both the TUI teardown and the headless run call this rather than resolving
+    the option themselves, so the key and its fallback pair are written once
+    and the two surfaces cannot disagree about the default.
+
+    Fails open: both callers are at teardown, where an exception would cost far
+    more than the table is worth, so a broad catch is warranted for a leaf,
+    cosmetic decision with a safe default — provided it is logged rather than
+    swallowed. The call sites document what an escape would actually break.
+
+    `BlockingError` is excluded from that fail-open, matching
+    `configurable_model._resolve_openai_prompt_cache_key_enabled`: it signals
+    blocking I/O on the event loop, which is a real regression rather than a
+    config hiccup, and this is called directly from the async headless
+    teardown. It is matched by class name because `blockbuster` is not a
+    runtime dependency of this package.
+
+    The `config_manifest` import is deliberately outside the `try`, so an
+    `ImportError` propagates instead of being reported as a config failure.
+
+    Returns:
+        Whether to render the table.
+    """
+    from deepagents_code.config_manifest import load_bool_display_preference
+
+    try:
+        return load_bool_display_preference(
+            "display.show_usage_stats",
+            fallback=True,
+            on_rejected=_warn_rejected_usage_stats_value,
+        )
+    except Exception as exc:
+        if any(cls.__name__ == "BlockingError" for cls in type(exc).__mro__):
+            raise
+        logger.warning(
+            "Could not resolve display.show_usage_stats; showing the table",
+            exc_info=True,
+        )
+        return True
 
 
 def print_usage_table(

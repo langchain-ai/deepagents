@@ -1070,6 +1070,15 @@ class FilesystemState(AgentState):
     """Files in the filesystem. Uses DeltaChannel with snapshots every ~50 pregel steps to bound read depth."""
 
 
+def _uses_state_backend(backend: BackendProtocol) -> bool:
+    """Return whether a backend stores any files in agent state."""
+    if isinstance(backend, StateBackend):
+        return True
+    if not isinstance(backend, CompositeBackend):
+        return False
+    return _uses_state_backend(backend.default) or any(_uses_state_backend(route) for route in backend.routes.values())
+
+
 GREP_GLOB_DESCRIPTION = (
     "Glob pattern (NOT regex) limiting which files are searched (e.g. '*.py', "
     "'*.ts'). A pattern without '/' matches the file name at any depth; a pattern "
@@ -1160,7 +1169,16 @@ class DeleteSchema(BaseModel):
 class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
 
-    pattern: str = Field(description="Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').")
+    pattern: str = Field(
+        description=(
+            "Glob pattern to match files (e.g., '*.py', '**/*.py', '/subdir/**/*.md'). "
+            "A pattern without '/' matches the file name at any depth; a pattern containing "
+            "'/' matches the search-root-relative path; a leading '/' anchors to the search "
+            "root ('/*.py' matches only top-level files). Leading-dot names are excluded "
+            "unless the pattern segment starts with '.', so prefer the bare form '*.py' over "
+            "'**/*.py' -- '**' will not descend into dot-directories like '.github'."
+        )
+    )
 
     path: str | None = Field(default=None, description="Base directory to search from. Defaults to the backend's default root.")
 
@@ -1268,7 +1286,11 @@ Usage:
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern, returning absolute paths.
 
-Supports `*` (any characters), `**` (any directories), `?` (single character), e.g. `**/*.py`, `*.txt`, `/subdir/**/*.md`."""
+Supports `*` (any characters within a path segment), `**` (any directories), `?` (single character), `[abc]` (one character from a set), and `{a,b}` (alternatives), e.g. `*.py`, `src/**/*.py`, `*.{yml,yaml}`.
+
+A pattern without `/` matches the file name at any depth under the search root (`*.py` matches `src/app/main.py`). A pattern containing `/` matches the search-root-relative path (`src/**/*.py`). A leading `/` anchors to the search root (`/*.py` matches only top-level Python files).
+
+Leading-dot names are only matched when the pattern segment itself starts with `.` (use `.env`, or `.github/**/*.yml`). Because `**` will not descend into dot-directories, the bare form `*.yml` is *broader* than `**/*.yml` and is usually what you want."""
 
 # Carries its own leading newline so the empty-string substitution below drops
 # the whole line cleanly, with no blank line left behind.
@@ -1593,7 +1615,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ```
     """
 
-    state_schema = FilesystemState
+    state_schema: type[FilesystemState]
 
     def __init__(
         self,
@@ -1664,6 +1686,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 "CompositeBackend(...), or another BackendProtocol instance instead."
             )
             raise TypeError(msg)
+        self.state_schema = cast(
+            "type[FilesystemState]",
+            FilesystemState if _uses_state_backend(self.backend) else AgentState,
+        )
         if _permissions and supports_execution(self.backend) and not _all_paths_scoped_to_routes(_permissions, self.backend):
             msg = (
                 "FilesystemMiddleware does not yet support permissions with backends that "

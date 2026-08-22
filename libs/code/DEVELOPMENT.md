@@ -138,6 +138,10 @@ tail -f /tmp/deepagents_debug.log
 
 To send it elsewhere, also `export DEEPAGENTS_CODE_DEBUG_FILE=<path>`. The handler appends across runs, so a single file accumulates every session.
 
+The file is created or tightened to user-only access. A symlink at the path is refused. If the file cannot be secured, no file handler is attached and a warning goes to stderr. Use the in-app Debug Console in that case.
+
+Stdio MCP server stderr is captured here at `DEBUG`. This keeps server-side failures visible when the TUI cannot show process stderr. Each record is one line, capped at 4096 characters. Characters in the Unicode `C` categories are removed, which includes control and format characters. The ESC byte of an ANSI sequence is removed but the rest stays as literal text, so the log is not free of escape-sequence residue. The text comes from the server. It can contain credentials or other sensitive values. Enable `DEBUG` logging only if you accept that risk, and do not share the log file.
+
 ### In-app Debug Console (`Ctrl+\`)
 
 Press `Ctrl+\` (or run the hidden `/debug` command) inside a session to toggle a read-only Debug Console overlay. It shows a point-in-time session/runtime snapshot (version, model, thread, cwd, auto-approve, sandbox, MCP servers, token usage, debug-log path) plus a live tail of recent `deepagents_code.*` log records.
@@ -168,7 +172,7 @@ uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
 ln -sf ~/.local/share/dcode-dev/bin/dcode ~/.local/bin/dcode-dev
 ```
 
-The `--python 3.13` is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.11`) works; omit the flag to let `uv` pick.
+The `--python 3.13` is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.12`) works; omit the flag to let `uv` pick.
 
 > **Why `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable`?** This builds an isolated venv *outside* the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. (`uv pip` and `uv venv` are first-class `uv` subcommands here, not bare `pip`.)
 

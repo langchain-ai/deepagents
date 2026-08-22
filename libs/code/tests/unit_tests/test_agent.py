@@ -1496,6 +1496,32 @@ class TestGetSystemPromptModelIdentity:
         assert "may not be available" not in prompt
 
 
+class TestGetSystemPromptWebSearch:
+    """Tests for conditional web-search guidance."""
+
+    def test_omits_guidance_without_tavily(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.has_tavily = False
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Web Search Tool Usage" not in prompt
+        assert "{web_search_tool_guidance}" not in prompt
+
+    def test_includes_guidance_with_tavily(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.has_tavily = True
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Web Search Tool Usage" in prompt
+        assert "When you use the web_search tool:" in prompt
+
+
 class TestGetSystemPromptNonInteractive:
     """Tests for interactive vs non-interactive system prompt."""
 
@@ -2952,6 +2978,21 @@ class TestEnableAskUser:
         middleware = self._capture_middleware(tmp_path, enable_ask_user=False)
         assert not any(isinstance(mw, AskUserMiddleware) for mw in middleware)
 
+    def test_no_tool_error_middleware(self, tmp_path: Path) -> None:
+        """The stack must not install `ToolErrorMiddleware` for `ask_user`.
+
+        Argument validation lives on the tool schema (pydantic), and `ToolNode`
+        already converts bad `ask_user` arguments to an error `ToolMessage`. A
+        `ToolErrorMiddleware` here would be dead weight — and, sitting outermost
+        in the stack, would risk reporting an internal `ValueError` (e.g.
+        `ServerHooksMiddleware`'s "client answered a different request") to the
+        model as its own bad tool input.
+        """
+        from langchain.agents.middleware import ToolErrorMiddleware
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        assert not any(isinstance(mw, ToolErrorMiddleware) for mw in middleware)
+
 
 class TestLoadAsyncSubagents:
     def test_returns_empty_when_no_file(self, tmp_path: Path) -> None:
@@ -3618,7 +3659,12 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 ShellAllowListMiddleware,
                 ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
-            assert subagents_by_name[name]["middleware"][-1]._emit_stop is False
+            hooks = next(
+                mw
+                for mw in subagents_by_name[name]["middleware"]
+                if isinstance(mw, ServerHooksMiddleware)
+            )
+            assert hooks._emit_stop is False
             # Nested spend is priced once by the main agent, so a subagent's
             # instance must not also write the shared cost channel.
             assert all(
@@ -5060,15 +5106,15 @@ class TestCreateCliAgentInterpreterWiring:
 
         assert agent is not None
 
-    def test_auto_mode_omitted_outside_interactive(self, tmp_path: Path) -> None:
-        """Auto is refused (no middleware) in a non-interactive session."""
+    def test_auto_mode_wires_for_local_acp(self, tmp_path: Path) -> None:
+        """Local ACP can install classifier-backed Auto without the TUI."""
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
 
         middleware = self._capture_middleware(
             tmp_path, auto_mode_enabled=True, interactive=False
         )
 
-        assert not any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
+        assert any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
 
     def test_auto_mode_omitted_with_sandbox(self, tmp_path: Path) -> None:
         """Auto is refused (no middleware) when a sandbox backend is active.

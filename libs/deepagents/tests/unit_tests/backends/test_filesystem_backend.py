@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,31 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import DeleteResult, EditResult, GrepMatch, ReadResult, WriteResult
 from deepagents.backends.utils import format_grep_matches
 from deepagents.middleware.filesystem import GLOB_TIMEOUT, FilesystemMiddleware
+
+
+def require_ripgrep() -> None:
+    """Skip when ripgrep is absent, or fail when the runner promised it.
+
+    CI installs ripgrep and exports `DEEPAGENTS_RIPGREP_EXPECTED=1` on every
+    runner where the install is required to have succeeded. On those runners a
+    missing `rg` means the install silently regressed, so the tests below must
+    fail rather than skip: they are the only coverage of the *real binary*
+    contract (the rest of the ripgrep tests patch `subprocess.Popen`), and one
+    of them guards symlink containment. A skip would let a containment
+    regression merge with a green build.
+
+    Locally, and on runners where the install was allowed to fail, a missing
+    `rg` is expected and still skips. CI allows the failure in two cases: the
+    bounded install on an ordinary PR hit its two-minute timeout, or the
+    unbounded strict install on a release PR failed and was bypassed under the
+    `bypass-ripgrep-check` label.
+    """
+    if shutil.which("rg") is not None:
+        return
+    if os.environ.get("DEEPAGENTS_RIPGREP_EXPECTED") == "1":
+        msg = "CI installed ripgrep on this runner but `rg` is not on PATH"
+        pytest.fail(msg)
+    pytest.skip("ripgrep not installed")
 
 
 def write_file(p: Path, content: str):
@@ -87,21 +113,35 @@ def test_filesystem_backend_glob_default_matches_backend_root(tmp_path: Path) ->
     assert str(outside_root) not in omitted_paths
 
 
-def test_filesystem_backend_glob_matches_hidden_paths(tmp_path: Path) -> None:
+def test_filesystem_backend_glob_hidden_paths_require_explicit_dot_patterns(tmp_path: Path) -> None:
+    """Leading-dot names are not matched by bare `*` (shared grep include contract).
+
+    Hidden files remain reachable with explicit dot patterns (`.*`, `.github/**`).
+    This mirrors `compile_grep_include_glob` / bash without `dotglob`, not
+    pathlib `rglob` which does surface dotfiles under `*`.
+    """
     root = tmp_path
     write_file(root / ".env", "TOKEN=value")
     write_file(root / ".hidden.py", "print('hidden')")
+    write_file(root / "visible.py", "print('visible')")
     write_file(root / ".github" / "workflows" / "ci.yml", "name: ci")
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
-    root_matches = {info["path"] for info in be.glob("*", path="/").matches or []}
-    py_matches = {info["path"] for info in be.glob("*.py", path="/").matches or []}
-    yml_matches = {info["path"] for info in be.glob("**/*.yml", path="/").matches or []}
+    bare_root = {info["path"] for info in be.glob("*", path="/").matches or []}
+    bare_py = {info["path"] for info in be.glob("*.py", path="/").matches or []}
+    bare_yml = {info["path"] for info in be.glob("**/*.yml", path="/").matches or []}
+    assert "/.env" not in bare_root
+    assert "/.hidden.py" not in bare_py
+    assert "/visible.py" in bare_py
+    assert "/.github/workflows/ci.yml" not in bare_yml
 
-    assert "/.env" in root_matches
-    assert "/.hidden.py" in py_matches
-    assert "/.github/workflows/ci.yml" in yml_matches
+    explicit_dot = {info["path"] for info in be.glob(".*", path="/").matches or []}
+    explicit_py = {info["path"] for info in be.glob(".*.py", path="/").matches or []}
+    explicit_yml = {info["path"] for info in be.glob(".github/**/*.yml", path="/").matches or []}
+    assert "/.env" in explicit_dot
+    assert "/.hidden.py" in explicit_py
+    assert "/.github/workflows/ci.yml" in explicit_yml
 
 
 def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -760,8 +800,7 @@ def test_grep_ripgrep_glob_with_directory_component(tmp_path: Path, monkeypatch:
     ripgrep `--glob` patterns with a directory component (e.g. `docs/*.md`)
     must still match when the process cwd differs from the search root.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     root = tmp_path / "project"
     (root / "docs").mkdir(parents=True)
@@ -787,8 +826,7 @@ def test_grep_ripgrep_glob_virtual_mode(tmp_path: Path, monkeypatch: pytest.Monk
     Exercises the relative-path re-anchoring through `_to_virtual_path` so a
     regression in path handling can't silently drop results.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     root = tmp_path / "project"
     (root / "docs").mkdir(parents=True)
@@ -814,8 +852,7 @@ def test_grep_on_single_file_path(tmp_path: Path) -> None:
     Before #2732's fix, ripgrep was given the file path directly. Naively
     threading `cwd=base_full` would raise NotADirectoryError for file paths.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     target = tmp_path / "single.txt"
     target.write_text("hello single\n")
@@ -835,8 +872,7 @@ def test_grep_preserves_symlink_path_in_results(tmp_path: Path, monkeypatch: pyt
     `.resolve()` was applied — so users saw the symlinked path they searched
     under. The fix must preserve that behavior.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     real = tmp_path / "real"
     real.mkdir()
@@ -870,8 +906,7 @@ def test_grep_containment_check_blocks_escaping_symlink(tmp_path: Path, monkeypa
     access to files beyond the intended search boundary. The containment check
     must drop those results so they never surface to callers.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     outside = tmp_path / "outside"
     outside.mkdir()

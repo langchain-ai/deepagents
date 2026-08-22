@@ -280,6 +280,12 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
+            # Deliberately not the shared `modal_navigation_hint` copy: Tab
+            # autocompletes here, so advertising "Tab/Shift+Tab navigate"
+            # would misdescribe it. Shift+Tab still works via
+            # `_SupportsReverseNav`; it is simply unadvertised.
+            assert "navigate" in str(help_text.content)
+            assert "Tab/Shift+Tab navigate" not in str(help_text.content)
             assert "Tab autocomplete" in str(help_text.content)
             assert "Esc skip setup" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
@@ -1693,7 +1699,7 @@ class TestRecentModelsSection:
                 str(h.content)
                 for h in screen.query(".model-provider-header").results(Static)
             ]
-            assert any("OpenAI Codex (ChatGPT login)" in h for h in headers)
+            assert any("OpenAI (Subscription login)" in h for h in headers)
             assert not any("openai_codex" in h for h in headers)
 
     async def test_recent_row_shows_name_and_provider_tag(
@@ -1756,7 +1762,7 @@ class TestRecentModelsSection:
             text = str(recent.content)
             assert "(OpenAI Codex)" in text
             # The verbose auth label must not leak into the compact tag.
-            assert "ChatGPT login" not in text
+            assert "Subscription login" not in text
 
     async def test_recent_entries_appear_in_provider_section_too(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2476,10 +2482,10 @@ class TestModelSelectorFuzzyMatching:
     def test_fuzzy_matches_provider_friendly_label(self) -> None:
         """The provider display label — not just the key — is searchable.
 
-        Searches "chatgpt", which appears in neither the spec
+        Searches "subscription", which appears in neither the spec
         (`openai_codex:gpt-5.2`), the friendly model name ("GPT-5.2"), nor the
         provider key (`openai_codex`) — only in the resolved display label
-        "OpenAI Codex (ChatGPT login)". So a match proves the provider-label
+        "OpenAI (Subscription login)". So a match proves the provider-label
         branch of the haystack is doing the work; there is no other source for
         it. Guards against the label term being silently dropped.
         """
@@ -2493,12 +2499,12 @@ class TestModelSelectorFuzzyMatching:
             screen._filtered_models,
         ):
             models.append(codex)
-        screen._filter_text = "chatgpt"
+        screen._filter_text = "subscription"
         screen._update_filtered_list()
 
         specs = [spec for spec, _ in screen._filtered_models]
         assert specs == ["openai_codex:gpt-5.2"], (
-            f"'chatgpt' should match only via the provider label. Got: {specs}"
+            f"'subscription' should match only via the provider label. Got: {specs}"
         )
 
     async def test_tab_noop_when_no_matches(self) -> None:
@@ -2938,7 +2944,7 @@ class TestCuratedModelSelection:
             ("anthropic:claude-sonnet-4-5", "anthropic"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -2948,7 +2954,7 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.6-luna", "openai"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -3121,8 +3127,8 @@ class TestFormatOptionLabel:
         # The dim branch takes precedence over the blocks_start warning color.
         assert DARK_COLORS.warning not in label.markup
 
-    def test_install_required_yields_to_selection_styling(self) -> None:
-        """A selected row skips the install-required dim (CSS owns the highlight)."""
+    def test_selected_row_carries_no_inline_color(self) -> None:
+        """A highlighted row leaves color to CSS so the accent stays readable."""
         from deepagents_code.theme import DARK_COLORS
 
         label = ModelSelectorScreen._format_option_label(
@@ -3135,9 +3141,14 @@ class TestFormatOptionLabel:
                 env_var="BASETEN_API_KEY",
             ),
             install_required=True,
+            status="deprecated",
         )
-        # Not dimmed when selected; the missing-creds warning color applies.
-        assert DARK_COLORS.warning in label.markup
+        # Neither the install-required dim nor a semantic hue may survive the
+        # ($primary bg, $background fg) flip that CSS applies to the row.
+        assert "dim" not in label.markup
+        assert DARK_COLORS.warning not in label.markup
+        assert DARK_COLORS.error not in label.markup
+        assert "(deprecated)" in label.plain
 
     def test_uses_display_name_when_provided(self) -> None:
         """Provider-grouped rows render the profile name, not the full spec."""
@@ -3413,7 +3424,6 @@ class TestGetModelDisplayName:
         ("spec", "name"),
         [
             ("fireworks:accounts/fireworks/models/kimi-k3", "Kimi K3"),
-            ("meta:muse-spark-1.1", "Muse Spark 1.1"),
             ("meta:muse-spark-1.2", "Muse Spark 1.2"),
             ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),
@@ -3421,6 +3431,7 @@ class TestGetModelDisplayName:
             ("openai_codex:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai_codex:gpt-5.6-sol", "GPT-5.6 Sol"),
             ("openai_codex:gpt-5.6-terra", "GPT-5.6 Terra"),
+            ("openrouter:z-ai/glm-5.3", "GLM 5.3"),
             ("xai:grok-4.5", "Grok 4.5"),
         ],
     )

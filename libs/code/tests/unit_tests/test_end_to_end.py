@@ -1,5 +1,6 @@
 """End-to-end unit tests for deepagents-code with fake LLM models."""
 
+import logging
 import uuid
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
@@ -7,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -50,7 +52,12 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        """Override _generate to capture inputs and outputs."""
+        """Override _generate to capture inputs and outputs.
+
+        Only the non-streaming path is intercepted. `ainvoke` reaches this
+        through `BaseChatModel._agenerate`, but a future switch to streaming
+        would route through `_stream` instead and leave `captured_calls` empty.
+        """
         result = super()._generate(
             messages, stop=stop, run_manager=run_manager, **kwargs
         )
@@ -116,9 +123,18 @@ def mock_settings(
 
 
 class TestDeepAgentsCLIEndToEnd:
-    """Test suite for end-to-end deepagents-code functionality with fake LLM."""
+    """Test suite for end-to-end deepagents-code functionality with fake LLM.
 
-    def test_cli_agent_with_fake_llm_basic(self, tmp_path: Path) -> None:
+    These invoke the graph asynchronously because that is what the CLI does:
+    every production entrypoint streams (`app.py`, `tui/textual_adapter.py`,
+    `client/non_interactive.py`, `client/remote_client.py`), so the synchronous
+    path these tests once used covered a graph traversal no user reaches. Driving
+    the async path also keeps them off the bounded synchronous Pregel executor,
+    which starves under `pytest-xdist` oversubscription and presents as a hang.
+    Do not convert these back to `invoke`.
+    """
+
+    async def test_cli_agent_with_fake_llm_basic(self, tmp_path: Path) -> None:
         """Test basic CLI agent functionality with a fake LLM model.
 
         This test verifies that a CLI agent can be created and invoked with
@@ -156,7 +172,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Invoke the agent with a simple message
-            result = agent.invoke(
+            result = await agent.ainvoke(
                 {"messages": [HumanMessage(content="Hello, agent!")]},
                 {"configurable": {"thread_id": str(uuid.uuid4())}},
             )
@@ -173,7 +189,7 @@ class TestDeepAgentsCLIEndToEnd:
             final_ai_message = ai_messages[-1]
             assert "Task completed successfully!" in final_ai_message.content
 
-    def test_cli_agent_summarizes(self, tmp_path: Path) -> None:
+    async def test_cli_agent_summarizes(self, tmp_path: Path) -> None:
         """Test summarization."""
         with mock_settings(tmp_path):
             model = FixedGenericFakeChatModel(
@@ -207,7 +223,7 @@ class TestDeepAgentsCLIEndToEnd:
                 AIMessage(content=text_50_000_tokens),  # 180,000 tokens (summarizes)
                 HumanMessage(content="query"),
             ]
-            result = agent.invoke(
+            result = await agent.ainvoke(
                 {"messages": input_messages},
                 {"configurable": {"thread_id": thread_id}},
             )
@@ -246,7 +262,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
             assert history_files, "expected a session-id-named history file"
 
-    def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:
+    async def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:
         """Test CLI agent with tools using a fake LLM model.
 
         This test verifies that a CLI agent can handle tool calls correctly
@@ -284,7 +300,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Invoke the agent
-            result = agent.invoke(
+            result = await agent.ainvoke(
                 {"messages": [HumanMessage(content="Use the sample tool")]},
                 {"configurable": {"thread_id": "test-thread-2"}},
             )
@@ -299,7 +315,9 @@ class TestDeepAgentsCLIEndToEnd:
             # Verify the tool message contains our expected input
             assert any("test input" in msg.content for msg in tool_messages)
 
-    def test_cli_agent_with_fake_llm_filesystem_tool(self, tmp_path: Path) -> None:
+    async def test_cli_agent_with_fake_llm_filesystem_tool(
+        self, tmp_path: Path
+    ) -> None:
         """Test CLI agent with filesystem tools using a fake LLM model.
 
         This test verifies that a CLI agent can use the built-in filesystem
@@ -341,7 +359,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Invoke the agent
-            result = agent.invoke(
+            result = await agent.ainvoke(
                 {"messages": [HumanMessage(content="List files")]},
                 {"configurable": {"thread_id": "test-thread-3"}},
             )
@@ -353,7 +371,9 @@ class TestDeepAgentsCLIEndToEnd:
             tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
             assert len(tool_messages) > 0
 
-    def test_cli_agent_with_fake_llm_multiple_tool_calls(self, tmp_path: Path) -> None:
+    async def test_cli_agent_with_fake_llm_multiple_tool_calls(
+        self, tmp_path: Path
+    ) -> None:
         """Test CLI agent with multiple tool calls using a fake LLM model.
 
         This test verifies that a CLI agent can handle multiple sequential
@@ -401,7 +421,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Invoke the agent
-            result = agent.invoke(
+            result = await agent.ainvoke(
                 {"messages": [HumanMessage(content="Use sample tool twice")]},
                 {"configurable": {"thread_id": "test-thread-4"}},
             )
@@ -444,3 +464,145 @@ class TestDeepAgentsCLIEndToEnd:
 
             assert isinstance(backend, CompositeBackend)
             assert isinstance(backend.default, FilesystemBackend)
+
+    async def test_ask_user_argument_error_is_recoverable(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A malformed `ask_user` call must not abort the run.
+
+        The unit tests exercise the schema directly, so they cannot catch a
+        regression in how `ToolNode` surfaces the `ValidationError` on the real
+        execution path. Nothing on the tool handles the error: the conversion,
+        and the stripping of injected arguments from it, is the framework's.
+
+        The two "injected arguments are not echoed" assertions below are a
+        tripwire on the message *shape*, not proof that the filtering works.
+        `ToolNode` injects both arguments correctly on every real call, so
+        neither can ever be the thing that failed validation here. The
+        filtering itself is pinned in `test_ask_user_middleware`, where a
+        malformed injected argument can be forced.
+        """
+        with mock_settings(tmp_path):
+            model = FixedGenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="Let me ask.",
+                            tool_calls=[
+                                {
+                                    "name": "ask_user",
+                                    # No questions: the tool schema rejects
+                                    # the arguments before `interrupt()`.
+                                    "args": {"questions": []},
+                                    "id": "call_1",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="Recovered."),
+                    ]
+                )
+            )
+
+            agent, _ = create_cli_agent(
+                model=model,
+                assistant_id="test-agent",
+                tools=[],
+                checkpointer=InMemorySaver(),
+                enable_ask_user=True,
+            )
+
+            with caplog.at_level(logging.WARNING, logger="deepagents_code.ask_user"):
+                result = await agent.ainvoke(
+                    {"messages": [HumanMessage(content="Ask me something")]},
+                    {"configurable": {"thread_id": str(uuid.uuid4())}},
+                )
+
+            tool_messages = [m for m in result["messages"] if m.type == "tool"]
+            assert len(tool_messages) == 1
+            assert tool_messages[0].status == "error"
+            content = str(tool_messages[0].content)
+            assert "at least one question" in content
+            assert "Please fix the error and try again" in content
+            # The injected arguments are not named in the message the model
+            # sees. See the docstring: this is a shape check, not a test of the
+            # filtering.
+            assert "runtime" not in content
+            assert "tool_call_id" not in content
+
+            # The rejection is logged. `ToolNode` logs nothing itself, so
+            # without `AskUserMiddleware.wrap_tool_call` a model looping on
+            # malformed arguments would leave no operator-visible record.
+            assert [
+                r
+                for r in caplog.records
+                if "rejected the model's arguments" in r.message
+            ]
+
+            # The run continued instead of halting.
+            assert result["messages"][-1].content == "Recovered."
+
+    async def test_ask_user_interrupt_reaches_the_client(self, tmp_path: Path) -> None:
+        """A well-formed `ask_user` call must interrupt the run.
+
+        The counterpart to `test_ask_user_argument_error_is_recoverable`: that
+        one pins the recoverable path, this one pins that a valid call still
+        reaches `interrupt()` and surfaces as `__interrupt__`. Registering
+        `ToolNode` wraps the call in error handling, and `GraphBubbleUp`
+        escapes it only through an explicit `except GraphBubbleUp: raise`.
+        Setting `handle_tool_error` on the tool would break that silently, and
+        the tool would become a no-op.
+        """
+        with mock_settings(tmp_path):
+            model = FixedGenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="Let me ask.",
+                            tool_calls=[
+                                {
+                                    "name": "ask_user",
+                                    "args": {
+                                        "questions": [
+                                            {
+                                                "question": "Rebase or merge?",
+                                                "type": "multiple_choice",
+                                                "choices": [
+                                                    {"value": "rebase"},
+                                                    {"value": "merge"},
+                                                ],
+                                            }
+                                        ]
+                                    },
+                                    "id": "call_1",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="Unreached."),
+                    ]
+                )
+            )
+
+            agent, _ = create_cli_agent(
+                model=model,
+                assistant_id="test-agent",
+                tools=[],
+                checkpointer=InMemorySaver(),
+                enable_ask_user=True,
+            )
+
+            result = await agent.ainvoke(
+                {"messages": [HumanMessage(content="Ask me something")]},
+                {"configurable": {"thread_id": str(uuid.uuid4())}},
+            )
+
+            interrupts = result["__interrupt__"]
+            assert len(interrupts) == 1
+            payload = interrupts[0].value
+            assert payload["type"] == "ask_user"
+            assert payload["tool_call_id"] == "call_1"
+            assert payload["questions"][0]["question"] == "Rebase or merge?"
+
+            # The run paused rather than continuing past the tool.
+            assert not [m for m in result["messages"] if m.type == "tool"]

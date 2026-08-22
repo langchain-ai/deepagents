@@ -679,6 +679,105 @@ class TestReloadFromEnvironment:
         # The global file's other values still load.
         assert os.environ["GLOBAL_ONLY_KEY"] == "global-value"
 
+    def test_project_dotenv_skipped_via_persisted_skip_store(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A project `.env` parent in the skip store is skipped when the option is on.
+
+        This is the path a "never load in this project" answer takes on a future
+        (possibly headless) launch: no prompt, no env var, just the store. The
+        store is keyed to the discovered `.env`'s parent directory.
+        """
+        from deepagents_code.config import _load_dotenv
+        from deepagents_code.dotenv_skip import skip_project_dotenv
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".env").write_text("PROJECT_ONLY_KEY=project-value\n")
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
+
+        store = tmp_path / "state" / "dotenv_skip.json"
+        monkeypatch.setattr(
+            "deepagents_code.dotenv_skip._default_store_path", lambda: store
+        )
+        # The store key is the discovered `.env`'s parent directory.
+        skip_project_dotenv(project_dir, store_path=store)
+
+        _load_dotenv(start_path=project_dir)
+
+        assert "PROJECT_ONLY_KEY" not in os.environ
+
+    def test_project_dotenv_skip_store_keys_the_env_parent_not_launch_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A non-Git ancestor `.env` is skipped from a subdirectory launch.
+
+        Without a `.git`, `ProjectContext.project_root` is None, so the skip key
+        must be the `.env`'s own parent — otherwise launching from a subdirectory
+        would store/look up the launch dir and miss the ancestor file.
+        """
+        from deepagents_code.config import _load_dotenv
+        from deepagents_code.dotenv_skip import skip_project_dotenv
+
+        # No `.git` here, so `project_root` is None and the `.env` sits at the
+        # ancestor `project_dir` while the launch cwd is a subdirectory.
+        project_dir = tmp_path / "plain"
+        sub = project_dir / "sub" / "dir"
+        sub.mkdir(parents=True)
+        (project_dir / ".env").write_text("PROJECT_ONLY_KEY=project-value\n")
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
+
+        store = tmp_path / "state" / "dotenv_skip.json"
+        monkeypatch.setattr(
+            "deepagents_code.dotenv_skip._default_store_path", lambda: store
+        )
+        skip_project_dotenv(project_dir, store_path=store)
+
+        _load_dotenv(start_path=sub)
+
+        assert "PROJECT_ONLY_KEY" not in os.environ
+
+    def test_session_skip_survives_managed_true_without_crossing_projects(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A session skip beats managed true and remains scoped to one `.env`."""
+        from deepagents_code.config import _load_dotenv
+        from deepagents_code.dotenv_skip import skip_project_dotenv_for_session
+
+        skipped = tmp_path / "skipped"
+        allowed = tmp_path / "allowed"
+        skipped.mkdir()
+        allowed.mkdir()
+        (skipped / ".env").write_text("SESSION_SKIPPED_KEY=hidden\n")
+        (allowed / ".env").write_text("SESSION_ALLOWED_KEY=loaded\n")
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda **_kwargs: True,
+        )
+        monkeypatch.delenv("SESSION_SKIPPED_KEY", raising=False)
+        monkeypatch.delenv("SESSION_ALLOWED_KEY", raising=False)
+
+        skip_project_dotenv_for_session(skipped)
+        _load_dotenv(start_path=skipped)
+        _load_dotenv(start_path=allowed)
+
+        assert "SESSION_SKIPPED_KEY" not in os.environ
+        assert os.environ["SESSION_ALLOWED_KEY"] == "loaded"
+
     def test_preview_dotenv_skipped_when_read_project_dotenv_false(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -701,6 +800,35 @@ class TestReloadFromEnvironment:
             "deepagents_code.config_manifest.resolve_read_project_dotenv",
             lambda **_kw: False,
         )
+
+        env = _preview_dotenv_environ(start_path=tmp_path)
+
+        assert "PROJECT_ONLY_KEY" not in env
+
+    def test_preview_dotenv_skipped_via_persisted_skip_store(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Preview honors a persisted skip, matching the runtime loader.
+
+        The cwd-switch confirmation prompt is the only caller of
+        `preview_reload_from_environment`. Without this, it would preview
+        settings from a project `.env` that the confirmed reload then omits.
+        """
+        from deepagents_code.config import _preview_dotenv_environ
+        from deepagents_code.dotenv_skip import skip_project_dotenv
+
+        (tmp_path / ".env").write_text("PROJECT_ONLY_KEY=project-value\n")
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+
+        store = tmp_path / "state" / "dotenv_skip.json"
+        monkeypatch.setattr(
+            "deepagents_code.dotenv_skip._default_store_path", lambda: store
+        )
+        skip_project_dotenv(tmp_path, store_path=store)
 
         env = _preview_dotenv_environ(start_path=tmp_path)
 

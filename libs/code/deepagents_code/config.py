@@ -310,11 +310,67 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     return None
 
 
+def _dotenv_skip_key(start_path: Path | None) -> str | None:
+    """Resolve the persisted skip-store key for the `.env` found from a path.
+
+    Thin wrapper over `dotenv_skip.skip_key_for_start_path` so the loader and
+    the preview share one definition of which directory owns the discovered
+    `.env` (the file's parent, not the invocation directory).
+
+    Args:
+        start_path: Directory to start `.env` discovery from; cwd when `None`.
+
+    Returns:
+        The canonical key, or `None` when no project `.env` is present.
+    """
+    from deepagents_code.dotenv_skip import skip_key_for_start_path
+
+    return skip_key_for_start_path(start_path)
+
+
+def _project_dotenv_is_skipped(start_path: Path | None) -> bool:
+    """Return whether either skip store covers the discovered project `.env`."""
+    from deepagents_code.dotenv_skip import (
+        is_project_dotenv_skipped,
+        is_project_dotenv_skipped_for_session,
+    )
+
+    skip_key = _dotenv_skip_key(start_path)
+    return skip_key is not None and (
+        is_project_dotenv_skipped(skip_key)
+        or is_project_dotenv_skipped_for_session(skip_key)
+    )
+
+
 # Global user-level .env (~/.deepagents/.env); sentinel when Path.home() fails.
 try:
     _GLOBAL_DOTENV_PATH = Path.home() / ".deepagents" / ".env"
 except RuntimeError:
     _GLOBAL_DOTENV_PATH = Path("/nonexistent/.deepagents/.env")
+
+
+def _read_global_dotenv_toggle() -> dict[str, str]:
+    """Read only the trusted global project-dotenv loading toggle.
+
+    Returns:
+        A one-item environment mapping when the toggle is set, otherwise empty.
+    """
+    import dotenv
+
+    try:
+        if not _GLOBAL_DOTENV_PATH.is_file():
+            return {}
+        raw = dotenv.dotenv_values(dotenv_path=_GLOBAL_DOTENV_PATH).get(
+            READ_PROJECT_DOTENV
+        )
+    except (OSError, ValueError):
+        logger.warning(
+            "Could not read global dotenv at %s; global defaults will not be applied",
+            _GLOBAL_DOTENV_PATH,
+            exc_info=True,
+        )
+        return {}
+    return {READ_PROJECT_DOTENV: raw} if raw is not None else {}
 
 
 def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]:
@@ -326,7 +382,8 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
     Returns:
         Environment mapping with project and global dotenv values applied using
         the same first-write-wins precedence as `_load_dotenv`. The project
-        `.env` is skipped when `startup.read_project_dotenv` resolves false, so
+        `.env` is skipped when `startup.read_project_dotenv` resolves false or
+        when either skip store covers it (see `_project_dotenv_is_skipped`), so
         a preview never reports a value a real reload would not load.
     """
     import dotenv
@@ -368,7 +425,14 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
 
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
-    if resolve_read_project_dotenv():
+    read_project = resolve_read_project_dotenv()
+    # Mirror `_load_dotenv`: a persisted "never load" skip for this `.env` must
+    # keep the preview aligned with what a real reload would apply, or the
+    # cwd-switch prompt would report settings changes that never take effect.
+    if read_project and _project_dotenv_is_skipped(start_path):
+        read_project = False
+
+    if read_project:
         project_dotenv: Path | None = None
         try:
             project_dotenv = (
@@ -499,22 +563,22 @@ def _load_dotenv(
     # could pin the var true) before the trusted opt-out was ever seen.
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
-    global_toggle: dict[str, str] = {}
-    try:
-        if _GLOBAL_DOTENV_PATH.is_file():
-            raw = dotenv.dotenv_values(dotenv_path=_GLOBAL_DOTENV_PATH).get(
-                READ_PROJECT_DOTENV
-            )
-            if raw is not None:
-                global_toggle[READ_PROJECT_DOTENV] = raw
-    except (OSError, ValueError):
-        logger.warning(
-            "Could not read global dotenv at %s; global defaults will not be applied",
-            _GLOBAL_DOTENV_PATH,
-            exc_info=True,
-        )
+    read_project = resolve_read_project_dotenv(
+        global_dotenv=_read_global_dotenv_toggle()
+    )
 
-    read_project = resolve_read_project_dotenv(global_dotenv=global_toggle)
+    # A persisted "never load in this project" decision (recorded by the
+    # interactive opt-out prompt in `main._check_project_dotenv_trust`) is a
+    # second, independent skip source. The key is the discovered `.env`'s
+    # parent directory (see `skip_key_for_start_path`), so it follows the file
+    # whether the launch is from its directory or a subdirectory — including
+    # non-Git projects with no `ProjectContext.project_root`. Explicit
+    # `read_project_dotenv=false` (above) still wins; this store only ever
+    # skips, it never forces a load the option disabled.
+    if read_project and _project_dotenv_is_skipped(start_path):
+        logger.debug("Skipping project dotenv at %s: project is skipped", start_path)
+        read_project = False
+
     dotenv_path: Path | str | None = None
     if read_project:
         try:

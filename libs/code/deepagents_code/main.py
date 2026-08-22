@@ -3393,6 +3393,16 @@ def _trust_picker_has_terminal() -> bool:
     return sys.stdin.isatty() and sys.stderr.isatty()
 
 
+def _is_interactive_tui_launch(args: argparse.Namespace) -> bool:
+    """Return whether parsed root arguments will launch the Textual session."""
+    if getattr(args, "command", None) or getattr(args, "non_interactive_message", None):
+        return False
+    root_actions = ("acp", "update", "install", "auto_update", "clear_default_model")
+    if any(getattr(args, name, False) for name in root_actions):
+        return False
+    return getattr(args, "default_model", None) is None
+
+
 def _run_trust_action_picker(
     console: "Console",
     *,
@@ -3401,6 +3411,7 @@ def _run_trust_action_picker(
     deny_label: str = "Deny",
     refresh_label: str | None = None,
     deny_first: bool = False,
+    default_action: "_TrustAction | None" = None,
 ) -> _TrustAction | _TrustPromptOutcome | None:
     """Show the inline decision picker shared by pre-TUI prompts.
 
@@ -3419,12 +3430,17 @@ def _run_trust_action_picker(
             "deny" reads as a safe default (e.g. aborting a launch) put it in
             the leading position. The picker starts highlighted on the deny
             option in either ordering, so a bare Enter refuses.
+        default_action: Action to highlight initially. Defaults to `DENY` so a
+            bare Enter refuses for opt-in prompts; opt-out prompts (whose safe
+            default is to proceed) pass `ALLOW_ONCE` so Enter continues.
 
     Returns:
         The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
         Ctrl+C, or `None` when the inline picker cannot run and the caller should
         use the text fallback.
     """
+    if default_action is None:
+        default_action = _TrustAction.DENY
     if not _trust_picker_has_terminal():
         return None
 
@@ -3472,14 +3488,28 @@ def _run_trust_action_picker(
         )
     elif deny_first:
         actions.reverse()
-    # Highlight the refusing option by identity, not position: `deny_first`
-    # moves it to the front, so a positional index would silently default to
-    # "allow" for exactly the callers that asked for a safer ordering.
-    selected_index = next(
-        index
-        for index, (action, _) in enumerate(actions)
-        if action is _TrustAction.DENY
+    # Highlight the default action by identity, not position: `deny_first`
+    # reorders the list, so a positional index would silently default to the
+    # wrong action for exactly the callers that changed the ordering.
+    default_index = next(
+        (
+            index
+            for index, (action, _) in enumerate(actions)
+            if action is default_action
+        ),
+        -1,
     )
+    if default_index < 0:
+        # A caller asked for a default that is not offered (REFRESH without a
+        # `refresh_label`, say). Highlight the first row instead of letting a
+        # bare `next()` raise StopIteration out of a pre-TUI prompt.
+        logger.warning(
+            "Trust picker default %r is not an offered action; highlighting %r",
+            default_action,
+            actions[0][0],
+        )
+        default_index = 0
+    selected_index = default_index
 
     def _rows() -> FormattedText:
         rows: list[tuple[str, str]] = [
@@ -3626,14 +3656,14 @@ def _select_trust_action(
     refresh_label: str | None = None,
     deny_first: bool = False,
     abort_on_deny: bool = False,
+    default_action: "_TrustAction | None" = None,
 ) -> _TrustAction | _TrustPromptOutcome:
     """Choose an action for a project trust or dependency-floor prompt.
 
     Falls back to a text prompt when the inline picker cannot run. Every failure
     mode resolves to a decision the caller can act on without knowing which
     input path produced it: an unavailable picker degrades to text, and EOF on
-    the text prompt denies rather than aborting, so a non-interactive launch
-    fails closed instead of hanging.
+    the text prompt selects the caller's default action.
 
     Args:
         console: Console used by the text fallback.
@@ -3643,16 +3673,19 @@ def _select_trust_action(
         deny_label: Label for the refuse option.
         refresh_label: Label for an explicit environment refresh, when offered.
         deny_first: Forwarded to the picker to list the deny option first.
-        abort_on_deny: When `True`, a deny answer is reported as `CANCELLED`
-            on every input path (picker, typed answer, and EOF), so prompts
-            whose refuse option aborts the launch report exactly one outcome
-            and callers cannot mistake a deny for a decision to proceed.
+        abort_on_deny: When `True`, a `DENY` decision is reported as
+            `CANCELLED`, including blank or EOF input when `DENY` is the
+            default, so callers cannot mistake a deny for a decision to proceed.
+        default_action: Action a bare Enter selects and the picker highlights
+            first. Defaults to `DENY` so opt-in prompts fail closed; opt-out
+            prompts (whose safe default is to proceed) pass `ALLOW_ONCE`.
 
     Returns:
-        The selected trust action, `CANCELLED` when the user presses Esc or
-        Ctrl+D (or denies with `abort_on_deny`), or `INTERRUPTED` when the
-        user presses Ctrl+C.
+        The selected trust action, `CANCELLED` when the picker is aborted or a
+        deny is mapped by `abort_on_deny`, or `INTERRUPTED` on Ctrl+C.
     """
+    if default_action is None:
+        default_action = _TrustAction.DENY
     selected = _run_trust_action_picker(
         console,
         remember_label=remember_label,
@@ -3660,6 +3693,7 @@ def _select_trust_action(
         deny_label=deny_label,
         refresh_label=refresh_label,
         deny_first=deny_first,
+        default_action=default_action,
     )
     if selected is not None:
         if selected is _TrustAction.DENY and abort_on_deny:
@@ -3672,35 +3706,54 @@ def _select_trust_action(
     # rest of the prompt already went; passing the question to `input()`
     # instead would split it onto stdout, so `dcode 2>log` would show a bare
     # question with all of its context redirected away.
+    allow_token = "Y" if default_action is _TrustAction.ALLOW_ONCE else "y"
+    remember_token = "R" if default_action is _TrustAction.REMEMBER else "r"
+    refresh_token = "U" if default_action is _TrustAction.REFRESH else "u"
+    deny_token = "N" if default_action is _TrustAction.DENY else "n"
     if refresh_label is None:
-        choices = f"{allow_label} [y] · {remember_label} [r] · {deny_label} [N]"
-        prompt = "Choose [y/r/N]: "
+        choices = (
+            f"{allow_label} [{allow_token}] · "
+            f"{remember_label} [{remember_token}] · {deny_label} [{deny_token}]"
+        )
+        prompt = f"Choose [{allow_token}/{remember_token}/{deny_token}]: "
     elif deny_first:
         choices = (
-            f"{deny_label} [N] · {refresh_label} [u] · "
-            f"{allow_label} [y] · {remember_label} [r]"
+            f"{deny_label} [{deny_token}] · {refresh_label} [{refresh_token}] · "
+            f"{allow_label} [{allow_token}] · "
+            f"{remember_label} [{remember_token}]"
         )
-        prompt = "Choose [N/u/y/r]: "
+        prompt = (
+            f"Choose [{deny_token}/{refresh_token}/{allow_token}/{remember_token}]: "
+        )
     else:
         choices = (
-            f"{allow_label} [y] · {remember_label} [r] · "
-            f"{refresh_label} [u] · {deny_label} [N]"
+            f"{allow_label} [{allow_token}] · "
+            f"{remember_label} [{remember_token}] · "
+            f"{refresh_label} [{refresh_token}] · {deny_label} [{deny_token}]"
         )
-        prompt = "Choose [y/r/u/N]: "
-    console.print(f"[dim]{choices}[/dim]", highlight=False)
-    console.print(prompt, end="", highlight=False)
+        prompt = (
+            f"Choose [{allow_token}/{remember_token}/{refresh_token}/{deny_token}]: "
+        )
+    console.print(choices, style="dim", highlight=False, markup=False)
+    console.print(prompt, end="", highlight=False, markup=False)
     try:
         answer = input().strip().lower()
     except KeyboardInterrupt:
         return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
-        return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
+        if default_action is _TrustAction.DENY and abort_on_deny:
+            return _TrustPromptOutcome.CANCELLED
+        return default_action
     if answer in {"y", "yes"}:
         return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
         return _TrustAction.REMEMBER
     if refresh_label is not None and answer in {"u", "update", "f", "refresh"}:
         return _TrustAction.REFRESH
+    # A blank answer selects the default action: DENY for opt-in prompts (fail
+    # closed), the caller-chosen default for opt-out prompts (fail open).
+    if not answer and not (default_action is _TrustAction.DENY and abort_on_deny):
+        return default_action
     return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
 
 
@@ -4251,6 +4304,148 @@ def _check_project_hooks_trust(
     return WorkspaceTrust.none()
 
 
+_PROJECT_DOTENV_SKIP_SESSION_LABEL = "Don't load .env this session"
+_PROJECT_DOTENV_SKIP_ALWAYS_LABEL = "Never load .env in this project"
+
+
+def _check_project_dotenv_trust() -> None:
+    """Offer an interactive opt-out from loading the project `.env`.
+
+    Advisory by default: a bare Enter loads the file, preserving current
+    behavior. Every other non-answer refuses rather than consents — Esc and
+    Ctrl+D skip the file for this session, and Ctrl+C exits the process with
+    status 130. Runs before the settings bootstrap (which loads the project
+    `.env`) so the decision takes effect on the current launch.
+
+    Prompts only when this process has a terminal, a project `.env` is present,
+    and the file is not already governed by the `read_project_dotenv` opt-out
+    or the skip store. When the store already covers the `.env`, applies the
+    skip silently instead of prompting. Whether the launch is an interactive
+    TUI is the caller's decision (see `_is_interactive_tui_launch`); headless
+    launches never reach here, and suppressing the file there requires the
+    explicit `read_project_dotenv=false` flag.
+    """
+    # Only the interactive TUI can answer a prompt; everything else loads the
+    # file. Piped-stdin launches mount the TUI but have no TTY for the picker
+    # (see `_trust_picker_has_terminal`), so they fall through to loading too.
+    if not _trust_picker_has_terminal():
+        return
+
+    from deepagents_code.config import (
+        _find_dotenv_from_start_path,
+        _read_global_dotenv_toggle,
+    )
+    from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+    # An explicit opt-out (managed config, env, global dotenv, config.toml)
+    # already skips the file; the prompt would be redundant.
+    if not resolve_read_project_dotenv(global_dotenv=_read_global_dotenv_toggle()):
+        return
+
+    try:
+        dotenv_path = _find_dotenv_from_start_path(Path.cwd())
+    except OSError:
+        logger.debug("Could not locate a project .env for the trust prompt")
+        return
+    if dotenv_path is None:
+        return
+
+    from deepagents_code.dotenv_skip import (
+        is_project_dotenv_skipped,
+        skip_project_dotenv,
+    )
+
+    # Key the skip on the discovered `.env`'s parent — the directory that owns
+    # the file — not the invocation directory. A non-Git project has no
+    # `ProjectContext.project_root`, so keying on `user_cwd` would store the
+    # launch subdirectory and miss the ancestor `.env` on a later launch from
+    # the project root or a sibling. `dotenv_path` is already resolved by
+    # `_find_dotenv_from_start_path`, so its parent is canonical.
+    skip_key = str(dotenv_path.parent)
+
+    # A persisted "never load" decision already covers this `.env` (and every
+    # subdirectory launch, since discovery walks up to the same file).
+    if is_project_dotenv_skipped(skip_key):
+        _skip_project_dotenv_for_session(skip_key)
+        return
+
+    from rich.console import Console
+    from rich.markup import escape
+
+    from deepagents_code.unicode_security import sanitize_control_chars
+
+    prompt_console = Console(stderr=True)
+    prompt_console.print()
+    prompt_console.print(
+        "[bold yellow].env detected, load it?[/bold yellow]",
+        highlight=False,
+    )
+    # `dotenv_path`/`skip_key` come from a directory name that can carry ANSI
+    # escapes, control chars, or deceptive Unicode; strip them before printing
+    # so a crafted path cannot spoof which `.env` this prompt is about.
+    safe_dotenv_path = sanitize_control_chars(str(dotenv_path), keep_newlines=False)
+    safe_skip_key = sanitize_control_chars(skip_key, keep_newlines=False)
+    prompt_console.print(f"  {escape(safe_dotenv_path)}", highlight=False)
+    prompt_console.print()
+    prompt_console.print(
+        "Its values pass to subprocesses and can run code (shell startup hooks, "
+        "git config).",
+        style="yellow",
+        highlight=False,
+    )
+    prompt_console.print()
+    action = _select_trust_action(
+        prompt_console,
+        allow_label="Continue (load .env)",
+        remember_label=_PROJECT_DOTENV_SKIP_ALWAYS_LABEL,
+        deny_label=_PROJECT_DOTENV_SKIP_SESSION_LABEL,
+        default_action=_TrustAction.ALLOW_ONCE,
+    )
+    # Ctrl+C aborts like every sibling prompt: an interrupt must never be read
+    # as consent to load an untrusted file. CANCELLED (Esc/Ctrl+D in the picker)
+    # skips for the session, which is what the picker's own "abort" hint
+    # promises. Only ALLOW_ONCE — a bare Enter or an explicit "y" — loads, so
+    # the prompt stays advisory for anyone who just presses Enter.
+    if action is _TrustPromptOutcome.INTERRUPTED:
+        prompt_console.print("[dim]Aborted.[/dim]", highlight=False)
+        sys.exit(130)
+    if action in {_TrustAction.DENY, _TrustPromptOutcome.CANCELLED}:
+        prompt_console.print(
+            "[dim]Skipping the project .env for this session.[/dim]",
+            highlight=False,
+        )
+        _skip_project_dotenv_for_session(skip_key)
+    elif action is _TrustAction.REMEMBER:
+        if skip_project_dotenv(skip_key):
+            prompt_console.print(
+                f'[dim]The .env in "{escape(safe_skip_key)}" will be skipped '
+                "from now on.[/dim]",
+                highlight=False,
+            )
+        else:
+            prompt_console.print(
+                "[yellow]The skip could not be remembered; skipping this session "
+                "only.[/yellow]",
+                highlight=False,
+            )
+        _skip_project_dotenv_for_session(skip_key)
+
+
+def _skip_project_dotenv_for_session(skip_key: str) -> None:
+    """Skip one project's `.env` for the rest of this process.
+
+    The independent canonical key is checked after `read_project_dotenv`
+    resolution, so managed policy cannot override the user's session decision
+    and an in-process cwd switch cannot leak it into another project.
+
+    Args:
+        skip_key: Canonical directory that owns the discovered project `.env`.
+    """
+    from deepagents_code.dotenv_skip import skip_project_dotenv_for_session
+
+    skip_project_dotenv_for_session(skip_key)
+
+
 def _verify_interpreter_or_exit() -> None:
     """Run the interpreter pre-flight check; print and exit on failure.
 
@@ -4593,6 +4788,28 @@ def cli_main() -> None:
                 exc_info=True,
             )
 
+        # Advisory `.env` opt-out prompt. It has to run before the settings
+        # import below, which loads the project `.env`, so the decision applies
+        # to this launch. That ordering puts it *ahead* of `apply_stdin_pipe`,
+        # so `non_interactive_message` is not final here: `cat x | dcode` still
+        # reads as an interactive TUI launch at this point.
+        # `_trust_picker_has_terminal()` is what actually excludes those
+        # launches, because piped stdin is not a TTY. Both conditions are
+        # load-bearing; neither alone is sufficient.
+        #
+        # Wrapped for the same reason as the state migration above: an advisory
+        # prompt must never take down a launch. `SystemExit` from a Ctrl+C abort
+        # is a BaseException and still propagates.
+        if _is_interactive_tui_launch(args) and _trust_picker_has_terminal():
+            try:
+                _check_project_dotenv_trust()
+            except Exception:
+                logger.warning(
+                    "Could not run the project .env opt-out prompt; the file "
+                    "will load normally",
+                    exc_info=True,
+                )
+
         # Import console/settings AFTER arg parsing and after the bare-help
         # fast path so neither argparse's `--help`/`-h` exit nor
         # `deepagents <group>` pays the settings bootstrap cost.
@@ -4744,9 +4961,9 @@ def cli_main() -> None:
         # Prompting there would find no TTY for the picker, read EOF from the
         # text fallback, and abort the launch outright — with no way to answer
         # the prompt and mute it. Those launches get the warning instead.
-        interactive_tui = (
-            not getattr(args, "command", None) and not args.non_interactive_message
-        )
+        # Same predicate as the `.env` prompt above, so the two pre-TUI gates
+        # cannot drift. Here `non_interactive_message` is already final.
+        interactive_tui = _is_interactive_tui_launch(args)
         if interactive_tui and _trust_picker_has_terminal():
             from deepagents_code._dep_floor_check import prompt_if_editable_deps_stale
 

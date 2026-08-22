@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from deepagents_code.extensions.models import ExtensionError
+from deepagents_code.extensions.registry import ExtensionError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -15,11 +15,9 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.tools import BaseTool
 
-    from deepagents_code.extensions.models import SourceInfo
-    from deepagents_code.extensions.registry import ExtensionRegistry
+    from deepagents_code.extensions.registry import ExtensionRegistry, SourceInfo
 
 _ROUTE_PREFIX = re.compile(r"^/(?:[a-z0-9][a-z0-9_-]*/)+$")
-"""Accepted absolute, slash-terminated virtual route prefixes."""
 
 
 class ExtensionAPI:

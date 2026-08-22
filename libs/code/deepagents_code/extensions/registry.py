@@ -15,7 +15,16 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
-RegistrySnapshot = tuple[int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrySnapshot:
+    """Registration counts used to restore registry state."""
+
+    middleware: int
+    tools: int
+    backend_routes: int
+    shutdown_hooks: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,19 +67,18 @@ class ExtensionRegistry:
         self.shutdown_hooks: list[RegisteredUnit[Callable[[], Any]]] = []
 
     def _snapshot(self) -> RegistrySnapshot:
-        return (
-            len(self.middleware),
-            len(self.tools),
-            len(self.backend_routes),
-            len(self.shutdown_hooks),
+        return RegistrySnapshot(
+            middleware=len(self.middleware),
+            tools=len(self.tools),
+            backend_routes=len(self.backend_routes),
+            shutdown_hooks=len(self.shutdown_hooks),
         )
 
     def _rollback(self, snapshot: RegistrySnapshot) -> None:
-        middleware, tools, routes, hooks = snapshot
-        del self.middleware[middleware:]
-        del self.tools[tools:]
-        del self.backend_routes[routes:]
-        del self.shutdown_hooks[hooks:]
+        del self.middleware[snapshot.middleware :]
+        del self.tools[snapshot.tools :]
+        del self.backend_routes[snapshot.backend_routes :]
+        del self.shutdown_hooks[snapshot.shutdown_hooks :]
 
     @staticmethod
     def _add[T](

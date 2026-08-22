@@ -182,6 +182,7 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "perplexity": "Perplexity",
     "together": "Together AI",
     "xai": "xAI",
+    "xai_oauth": "xAI (Subscription login)",
 }
 
 
@@ -190,6 +191,7 @@ PROVIDER_SHORT_NAMES: dict[str, str] = {
     # compact tag need an entry here; everything else falls back to the display
     # name, which is already short.
     "openai_codex": "OpenAI Codex",
+    "xai_oauth": "xAI OAuth",
 }
 """Compact brand labels for space-constrained UI (e.g. the `/model` Recent tag).
 
@@ -2089,8 +2091,20 @@ class AuthManagerScreen(ModalScreen[None]):
             else set()
         )
 
+        # Once an OAuth sibling (`openai_codex`, `xai_oauth`) is available, the
+        # raw API-key provider it piggybacks on (`openai`, `xai`) is only
+        # useful as that gate — hide its own row unless it actually has real
+        # credentials of its own (`stored`/`config_providers`), so it doesn't
+        # clutter the list as a redundant "[missing]" entry the user will
+        # never fill in. Adding a real key later still surfaces it normally.
+        oauth_gated_only = {
+            base
+            for base, oauth in (("openai", codex_installed), ("xai", xai_oauth_installed))
+            if oauth and base not in stored and base not in config_providers
+        }
+
         shown = (
-            well_known_installed
+            (well_known_installed - oauth_gated_only)
             | codex_installed
             | xai_oauth_installed
             | stored

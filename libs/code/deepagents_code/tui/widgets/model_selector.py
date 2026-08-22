@@ -115,6 +115,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:z-ai/glm-5.2": "GLM 5.2",
     "openrouter:z-ai/glm-5.3": "GLM 5.3",
     "xai:grok-4.5": "Grok 4.5",
+    "xai_oauth:grok-4.5": "Grok 4.5",
 }
 """Hand-curated frontier-tier models promoted across the UI, mapped to a
 human-readable display name.

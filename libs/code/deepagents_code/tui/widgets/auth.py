@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from textual.events import Click, MouseMove
 
     from deepagents_code.tui.widgets.codex_auth import CodexSignedInAction
+    from deepagents_code.tui.widgets.xai_oauth_auth import XaiOAuthSignedInAction
 
 from deepagents_code import auth_store, theme
 from deepagents_code.auth_display import format_auth_badge
@@ -56,6 +57,7 @@ from deepagents_code.model_config import (
     PROVIDER_API_KEY_ENV,
     PROVIDERS_DOCS_URL as _PROVIDERS_DOCS_URL,
     SERVICE_API_KEY_ENV,
+    XAI_OAUTH_PROVIDER,
     ModelConfig,
     ProviderAuthSource,
     ProviderAuthState,
@@ -331,8 +333,9 @@ class AuthConfirmScreen(ModalScreen[bool]):
     that aren't detected, and starting the auth flow is disruptive enough
     that the user should opt in first (e.g. an OAuth flow that launches a
     browser and a multi-minute loopback wait). The caller supplies all copy
-    so the screen carries no provider assumptions; currently only the
-    `openai_codex` model-switcher path uses it.
+    so the screen carries no provider assumptions; it is used by both the
+    `openai_codex` model-switcher path and the xAI OAuth device-code
+    model-switcher path.
 
     Dismissal values:
 
@@ -1827,6 +1830,13 @@ class AuthManagerScreen(ModalScreen[None]):
             # callback wait on a worker.
             self._open_codex_screen()
             return
+        if provider == XAI_OAUTH_PROVIDER:
+            # xAI auth uses an OAuth device-code flow, not an API key. The
+            # selector dispatches to a dedicated modal that surfaces the
+            # verification URL and user code inline and runs the poll loop
+            # on a worker.
+            self._open_xai_oauth_screen()
+            return
         if is_service(provider):
             # Services (e.g. Tavily web search) use a plain API key, stored the
             # same way as a model-provider key.
@@ -1896,6 +1906,59 @@ class AuthManagerScreen(ModalScreen[None]):
         """Refresh the option list once the codex flow dismisses."""
         clear_caches()
         self._refresh_options()
+
+    def _open_xai_oauth_screen(self) -> None:
+        """Push the xAI OAuth flow modal and refresh on close.
+
+        When `xai_oauth` is already signed in, give the user a chance to
+        sign out before launching a fresh sign-in flow. Otherwise just run
+        the sign-in worker. Mirrors `_open_codex_screen`.
+        """
+        from deepagents_code.integrations import xai_oauth
+        from deepagents_code.tui.widgets.xai_oauth_auth import (
+            XaiOAuthAuthScreen,
+            XaiOAuthSignedInScreen,
+        )
+
+        status = xai_oauth.get_status()
+        if status.logged_in and not status.is_expired:
+            self.app.push_screen(
+                XaiOAuthSignedInScreen(),
+                self._on_xai_oauth_signed_in_closed,
+            )
+            return
+        self.app.push_screen(XaiOAuthAuthScreen(), self._on_xai_oauth_closed)
+
+    def _on_xai_oauth_closed(self, _result: bool | None) -> None:
+        """Refresh the option list once the xAI OAuth flow dismisses."""
+        clear_caches()
+        self._refresh_options()
+
+    def _on_xai_oauth_signed_in_closed(
+        self, action: XaiOAuthSignedInAction | None
+    ) -> None:
+        """Handle dismissal of the "already signed in" overlay.
+
+        Args:
+            action: `SIGN_OUT` to clear the token, `REAUTH` to run the
+                sign-in flow again, `None` to close cleanly.
+        """
+        from deepagents_code.tui.widgets.xai_oauth_auth import XaiOAuthSignedInAction
+
+        if action is XaiOAuthSignedInAction.SIGN_OUT:
+            from deepagents_code.integrations import xai_oauth
+
+            removed = xai_oauth.logout()
+            if removed:
+                self.app.notify("Signed out of xAI.", markup=False)
+            clear_caches()
+            self._refresh_options()
+        elif action is XaiOAuthSignedInAction.REAUTH:
+            from deepagents_code.tui.widgets.xai_oauth_auth import XaiOAuthAuthScreen
+
+            self.app.push_screen(XaiOAuthAuthScreen(), self._on_xai_oauth_closed)
+        else:
+            self._refresh_options()
 
     def _on_codex_signed_in_closed(self, action: CodexSignedInAction | None) -> None:
         """Handle dismissal of the "already signed in" overlay.
@@ -2016,8 +2079,23 @@ class AuthManagerScreen(ModalScreen[None]):
             and config.is_provider_enabled(CODEX_PROVIDER)
             else set()
         )
+        # Same reasoning as `openai_codex`: `xai_oauth` is gated on
+        # `langchain-xai` being installed (surfaced whenever `xai` was
+        # discovered) rather than on `PROVIDER_API_KEY_ENV`.
+        xai_oauth_installed = (
+            {XAI_OAUTH_PROVIDER}
+            if "xai" in well_known_installed
+            and config.is_provider_enabled(XAI_OAUTH_PROVIDER)
+            else set()
+        )
 
-        shown = well_known_installed | codex_installed | stored | config_providers
+        shown = (
+            well_known_installed
+            | codex_installed
+            | xai_oauth_installed
+            | stored
+            | config_providers
+        )
         # Surface well-known providers whose package isn't installed yet as
         # greyed-out, install-on-select entries so they stay
         # discoverable (mirrors the model selector). Disabled providers and

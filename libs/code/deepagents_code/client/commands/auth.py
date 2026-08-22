@@ -256,6 +256,7 @@ def _known_providers() -> tuple[list[str], str | None]:
         CODEX_PROVIDER,
         PROVIDER_API_KEY_ENV,
         SERVICE_API_KEY_ENV,
+        XAI_OAUTH_PROVIDER,
         ModelConfig,
         get_available_models,
     )
@@ -276,12 +277,20 @@ def _known_providers() -> tuple[list[str], str | None]:
     # no API-key env var entry. Mirror the TUI auth manager by showing it when
     # the OpenAI integration was discovered.
     codex_installed = {CODEX_PROVIDER} if "openai" in installed else set()
+    # Same reasoning as `openai_codex`: `xai_oauth` has no API-key env var
+    # entry, so it's shown when the `xai` integration was discovered.
+    xai_oauth_installed = {XAI_OAUTH_PROVIDER} if "xai" in installed else set()
     # Non-model services (Tavily web search, LangSmith tracing) are always
     # shown — they are configurable here regardless of any backing package —
     # so the CLI listing matches the TUI `/auth` manager.
     services = set(SERVICE_API_KEY_ENV)
     providers = sorted(
-        well_known_installed | codex_installed | stored | config_providers | services
+        well_known_installed
+        | codex_installed
+        | xai_oauth_installed
+        | stored
+        | config_providers
+        | services
     )
     return providers, warning
 
@@ -385,6 +394,7 @@ def _run_set(
     from deepagents_code.model_config import (
         CODEX_PROVIDER,
         LANGSMITH_SERVICE,
+        XAI_OAUTH_PROVIDER,
         is_langsmith,
     )
 
@@ -392,6 +402,14 @@ def _run_set(
         print(  # noqa: T201
             "Error: openai_codex uses ChatGPT OAuth, not API keys. "
             "Run `/auth` and select openai_codex to sign in.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if provider == XAI_OAUTH_PROVIDER:
+        print(  # noqa: T201
+            "Error: xai_oauth uses xAI OAuth device sign-in, not API keys. "
+            "Run `/auth` and select xai_oauth to sign in.",
             file=sys.stderr,
         )
         return 1
@@ -493,13 +511,30 @@ def _run_remove(provider: str) -> int:
     Returns:
         Process exit code (`0`).
     """
-    from deepagents_code.model_config import CODEX_PROVIDER
+    from deepagents_code.model_config import CODEX_PROVIDER, XAI_OAUTH_PROVIDER
 
     if provider == CODEX_PROVIDER:
         from deepagents_code.integrations import openai_codex
 
         try:
             removed = openai_codex.logout()
+        except OSError as exc:
+            print(  # noqa: T201
+                f"Error: failed to remove stored credential for {provider}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        if removed:
+            print(f"Removed stored credential for {provider}.")  # noqa: T201
+        else:
+            print(f"No stored credential for {provider}.")  # noqa: T201
+        return 0
+
+    if provider == XAI_OAUTH_PROVIDER:
+        from deepagents_code.integrations import xai_oauth
+
+        try:
+            removed = xai_oauth.logout()
         except OSError as exc:
             print(  # noqa: T201
                 f"Error: failed to remove stored credential for {provider}: {exc}",

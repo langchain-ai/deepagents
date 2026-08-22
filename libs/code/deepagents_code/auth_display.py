@@ -8,6 +8,7 @@ from textual.content import Content
 
 from deepagents_code.model_config import (
     CODEX_PROVIDER,
+    XAI_OAUTH_PROVIDER,
     ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
@@ -36,6 +37,11 @@ def format_auth_badge(status: ProviderAuthStatus) -> Content:
     # generic `[stored]`/`[missing]` as a literal API key on disk.
     if status.provider == CODEX_PROVIDER:
         return _format_codex_badge(status)
+    # Same reasoning as the codex badge above: xAI OAuth has no API key, so
+    # `[xai oauth]` / `[sign in to xai]` badges avoid the generic
+    # `[stored]`/`[missing]` reading as a literal key on disk.
+    if status.provider == XAI_OAUTH_PROVIDER:
+        return _format_xai_oauth_badge(status)
 
     state = status.state
     match state:
@@ -149,6 +155,24 @@ def _codex_plan_from_detail(detail: str) -> str | None:
     if not marker or not plan:
         return None
     return plan
+
+
+def _format_xai_oauth_badge(status: ProviderAuthStatus) -> Content:
+    """Format the auth manager badge for the xAI-OAuth provider.
+
+    xAI OAuth signs in through a device-code flow rather than an API key, so
+    a `CONFIGURED` status renders as `[xai oauth]` and any other state
+    renders as a `[sign in to xai]` prompt — mirroring `_format_codex_badge`.
+
+    Args:
+        status: The `xai_oauth` provider's auth status.
+
+    Returns:
+        A styled badge reflecting xAI OAuth sign-in state.
+    """
+    if status.state is ProviderAuthState.CONFIGURED:
+        return Content.styled("[xai oauth]", "bold $success")
+    return Content.styled("[sign in to xai]", "bold $warning")
 
 
 def _format_configured_badge(status: ProviderAuthStatus) -> Content:

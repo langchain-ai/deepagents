@@ -30,6 +30,7 @@ from deepagents_code.auth_display import format_auth_indicator
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
     CODEX_PROVIDER,
+    XAI_OAUTH_PROVIDER,
     ModelConfig,
     ModelProfileEntry,
     ModelSpec,
@@ -1941,6 +1942,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._prompt_codex_sign_in(model_spec, provider)
             return
 
+        if provider == XAI_OAUTH_PROVIDER:
+            # xAI auth is an OAuth device-code flow, not an API key, so the
+            # generic key/base-url prompt doesn't apply. Route to the
+            # dedicated sign-in modal (the same one the auth manager uses).
+            self._prompt_xai_oauth_sign_in(model_spec, provider)
+            return
+
         env_var = status.env_var or get_credential_env_var(provider)
 
         from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult
@@ -2035,6 +2043,55 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self.call_after_refresh(self._update_display)
 
         self.app.push_screen(CodexAuthScreen(), _on_codex_done)
+
+    def _prompt_xai_oauth_sign_in(self, model_spec: str, provider: str) -> None:
+        """Confirm, then run the xAI OAuth device-code flow for the selected model.
+
+        Mirrors `_prompt_codex_sign_in`. Signing in shows a verification URL
+        and code and polls for up to several minutes, so a confirmation
+        modal is shown first. If the user declines, refresh the credential
+        indicator and stay on the selector so they can retry or pick a
+        different provider.
+        """
+        from deepagents_code.tui.widgets.auth import AuthConfirmScreen
+
+        def _on_confirm(proceed: bool | None) -> None:
+            if proceed:
+                self._run_xai_oauth(model_spec, provider)
+                return
+            self.call_after_refresh(self._update_display)
+
+        confirm = AuthConfirmScreen(
+            title="No xAI sign-in detected",
+            body=Content.from_markup(
+                "[bold]$model[/bold] authenticates with xAI, but no "
+                "sign-in was detected. Sign in now, or return to the model "
+                "list.",
+                model=model_spec,
+            ),
+            help_text="Enter to sign in, Esc to return to model list",
+        )
+        self.app.push_screen(confirm, _on_confirm)
+
+    def _run_xai_oauth(self, model_spec: str, provider: str) -> None:
+        """Run the xAI OAuth sign-in flow for the selected xai_oauth model.
+
+        On a successful sign-in, dismiss with the originally-selected model.
+        On cancel or error, refresh the credential indicator and stay on the
+        selector so the user can retry or pick a different provider. Mirrors
+        `_run_codex_oauth`.
+        """
+        from deepagents_code.model_config import clear_caches
+        from deepagents_code.tui.widgets.xai_oauth_auth import XaiOAuthAuthScreen
+
+        def _on_xai_oauth_done(signed_in: bool | None) -> None:
+            clear_caches()
+            if signed_in:
+                self._dismiss_with_result((model_spec, provider))
+                return
+            self.call_after_refresh(self._update_display)
+
+        self.app.push_screen(XaiOAuthAuthScreen(), _on_xai_oauth_done)
 
     def is_stored_default(self, model_spec: str) -> bool:
         """Return whether `model_spec` is the preference stored by this screen."""

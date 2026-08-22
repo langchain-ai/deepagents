@@ -140,15 +140,14 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
     def _is_numbered_read_file_row(row: str) -> bool:
         """Return whether `row` looks like a formatted `read_file` source line.
 
-        Matches a primary source marker (`N`), optional spaces-only right-justify
-        padding in front of it, then the current two-space separator (emitted by
-        `format_content_with_line_numbers`) or the legacy `cat -n` tab.
-        Continuation rows (`N.M`) fail — the `.` follows the digits, so they are
-        not counted toward the source-line limit. The separator clause is matched
-        exactly (two spaces or a tab), in lockstep with the producer and with the
-        TUI `_compact_line_gutter` parser.
+        Matches a primary source marker (`N`) followed by the current pipe
+        separator (emitted by `format_content_with_line_numbers`) or a legacy
+        two-space or `cat -n` tab separator. Continuation rows (`N.M`) fail — the
+        `.` follows the digits, so they are not counted toward the source-line
+        limit. The separator clause is matched exactly, in lockstep with the
+        producer and with the TUI `_compact_line_gutter` parser.
         """
-        return re.match(r"^ *\d+(?:  |\t)", row) is not None
+        return re.match(r"^(?:\d+\|| *\d+(?:  |\t))", row) is not None
 
     @staticmethod
     def _annotate(
@@ -173,8 +172,12 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
         except (TypeError, ValueError):
             limit = _DEFAULT_READ_LIMIT
 
-        is_source_row = ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row
-        n_lines = sum(1 for row in content.split("\n") if is_source_row(row))
+        range_match = re.match(r"^@@ lines (\d+)-(\d+) @@(?:\n|$)", content)
+        if range_match:
+            n_lines = int(range_match.group(2)) - int(range_match.group(1)) + 1
+        else:
+            is_source_row = ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row
+            n_lines = sum(1 for row in content.split("\n") if is_source_row(row))
         if n_lines < limit:
             return result
 

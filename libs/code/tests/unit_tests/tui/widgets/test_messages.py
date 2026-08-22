@@ -3987,7 +3987,7 @@ class TestToolCallMessageFileOutput:
 
         # No tab, no 6-wide pad: `{num}  ` gutter, then the original source
         # indentation (the 4 spaces on line 3) preserved verbatim.
-        assert result.content.plain == '1  """doc"""\n2  \n3      indented'
+        assert result.content.plain == '1|"""doc"""\n2|\n3|    indented'
 
     def test_format_output_leaves_current_two_space_gutter_intact(self) -> None:
         r"""The current SDK gutter is already compact, so compaction is a no-op.
@@ -4004,7 +4004,7 @@ class TestToolCallMessageFileOutput:
         output = " 9  def build_config():\n10  \treturn {}"
         result = msg._format_output(output, is_preview=False)
 
-        assert result.content.plain == " 9  def build_config():\n10  \treturn {}"
+        assert result.content.plain == "9|def build_config():\n10|\treturn {}"
 
     def test_compact_line_gutter_right_justifies_to_widest_number(self) -> None:
         r"""Multi-digit line numbers set a uniform, right-justified gutter."""
@@ -4012,7 +4012,7 @@ class TestToolCallMessageFileOutput:
         output = "     9\tnine\n    10\tten"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == " 9  nine\n10  ten"
+        assert compacted == "9|nine\n10|ten"
 
     def test_compact_line_gutter_handles_continuation_markers(self) -> None:
         r"""`N.M` wrapped-line markers are gutters and drive the column width.
@@ -4024,7 +4024,7 @@ class TestToolCallMessageFileOutput:
         output = "     1\tfirst\n   1.1\twrapped"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "  1  first\n1.1  wrapped"
+        assert compacted == "1|first\n1.1|wrapped"
 
     def test_compact_line_gutter_preserves_source_tabs_legacy(self) -> None:
         r"""Only the gutter tab is consumed; a legacy row's source tab stays put.
@@ -4035,7 +4035,7 @@ class TestToolCallMessageFileOutput:
         output = "     1\t\tdef foo():"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "1  \tdef foo():"
+        assert compacted == "1|\tdef foo():"
 
     def test_compact_line_gutter_preserves_source_tabs_current(self) -> None:
         r"""A current-format row's leading source tab (and a blank row) survive.
@@ -4051,7 +4051,7 @@ class TestToolCallMessageFileOutput:
         output = "1  def foo():\n2  \treturn 1\n3  "
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "1  def foo():\n2  \treturn 1\n3  "
+        assert compacted == "1|def foo():\n2|\treturn 1\n3|"
 
     def test_compact_line_gutter_parses_real_producer_output(self) -> None:
         r"""Round-trip guard against producer/consumer separator drift.
@@ -4068,7 +4068,7 @@ class TestToolCallMessageFileOutput:
         )
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "1  def f():\n2  \treturn 1"
+        assert compacted == "1|def f():\n2|\treturn 1"
 
     def test_compact_line_gutter_round_trips_continuation_and_padding(self) -> None:
         r"""Real-producer round-trip exercising continuation + multi-digit padding.
@@ -4088,9 +4088,9 @@ class TestToolCallMessageFileOutput:
         compacted = ToolCallMessage._compact_line_gutter(output)
 
         lines = compacted.split("\n")
-        assert lines[0] == "   9  short"  # width 4, driven by the "10.1" marker
-        assert lines[2].startswith("10.1  ")
-        assert lines[-1] == "  11  \treturn 1"  # tab-indented source survives
+        assert lines[0] == "9|short"
+        assert lines[2].startswith("10.1|")
+        assert lines[-1] == "11|\treturn 1"
 
     def test_compact_line_gutter_preserves_double_spaced_source(self) -> None:
         r"""Only the first separator is consumed; the rest of the source is verbatim.
@@ -4106,7 +4106,15 @@ class TestToolCallMessageFileOutput:
         output = "5  42  meaning\n10  ok"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == " 5  42  meaning\n10  ok"
+        assert compacted == "5|42  meaning\n10|ok"
+
+    def test_compact_line_gutter_preserves_range_enclosed_source(self) -> None:
+        output = (
+            "@@ lines 100-101 @@\n1  source text\n2  more source\n"
+            "@@ end lines 100-101 @@"
+        )
+
+        assert ToolCallMessage._compact_line_gutter(output) == output
 
     def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
         """Output without a gutter is returned unchanged."""
@@ -4144,7 +4152,7 @@ class TestToolCallMessageFileOutput:
         result = msg._format_file_output(output, is_preview=True)
 
         rendered = result.content.plain.split("\n")
-        assert rendered[0] == " 1  line 1"  # width 2 (max line number is 20)
+        assert rendered[0] == "1|line 1"
         assert result.truncation == "16 more lines"
 
     def test_compact_line_gutter_empty_output(self) -> None:

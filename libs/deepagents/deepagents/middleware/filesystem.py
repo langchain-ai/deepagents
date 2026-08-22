@@ -69,7 +69,7 @@ from deepagents.backends.utils import (
     _glob_anchor,
     _paths_overlap,
     check_empty_content,
-    format_content_with_line_numbers,
+    format_content_with_line_range,
     format_grep_matches,
     regex_literal_hint,
     sanitize_tool_call_id as sanitize_tool_call_id,
@@ -922,9 +922,7 @@ def _truncate_paginated_read(
     not even one full source line fits.
 
     Args:
-        content: Line-numbered content produced by
-            `format_content_with_line_numbers` (a marker followed by two spaces
-            and the source content).
+        content: Source content enclosed by `@@ lines start-end @@` markers.
         file_path: Path used to format the truncation message.
         read_result: Backend read result carrying the window metadata; the
             adjusted `next_offset` is derived from its 1-indexed line range.
@@ -939,10 +937,6 @@ def _truncate_paginated_read(
         If the backend returns source lines 11-20 with `next_offset=20`, but
         the budget fits only through line 14, the returned notice reports lines
         11-14 and tells the caller to resume from offset 14 rather than 20.
-
-        A long source line may be rendered as rows `14` and `14.1`. If the
-        budget fits row `14` but not `14.1`, neither row is retained: the notice
-        reports line 13 as the last displayed line and resumes from offset 13.
     """
     notice = _remaining_lines_notice(read_result)
     if not token_limit or len(content) + len(notice) < NUM_CHARS_PER_TOKEN * token_limit:
@@ -951,37 +945,14 @@ def _truncate_paginated_read(
     truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
     threshold = NUM_CHARS_PER_TOKEN * token_limit
     if read_result.start_line is not None and read_result.end_line is not None:
-        # Build the safe places where the content can be truncated. A long source
-        # line may span rendered rows numbered `12`, `12.1`, and so on, so cutting
-        # at every newline could keep only part of that source line. `position`
-        # tracks each rendered row's end in `content`; comparing the integer part
-        # of adjacent row markers records a boundary only after the final row for
-        # a source line. The loop below uses these boundaries to find the latest
-        # complete source line that fits alongside the truncation message and the
-        # pagination notice.
-        rows = content.split("\n")
-        position = 0
+        header, *source_rows, _ = content.split("\n")
+        position = len(header) + 1
         boundaries: list[tuple[int, int]] = []
-        for index, row in enumerate(rows):
-            position += len(row)
-            marker = row.lstrip().partition("  ")[0].partition(".")[0]
-            source_line = int(marker)
-            # Rows numbered past the window's last source line are not file
-            # content: a byte-capped backend page appends its own truncation
-            # banner (preceded by a blank line), which `format_content_with_line_numbers`
-            # then numbers as `end_line + 1`, `end_line + 2`, .... Stop before
-            # them so a banner row is never chosen as a boundary — resuming from
-            # its inflated number would overshoot `total_lines` and skip real
-            # lines. Rows are numbered monotonically, so the first out-of-range
-            # row means the rest are banner too.
-            if source_line > read_result.end_line:
+        for index, row in enumerate(source_rows, start=read_result.start_line):
+            if index > read_result.end_line:
                 break
-            next_source_line = None
-            if index + 1 < len(rows):
-                next_marker = rows[index + 1].lstrip().partition("  ")[0].partition(".")[0]
-                next_source_line = int(next_marker)
-            if next_source_line != source_line:
-                boundaries.append((position, source_line))
+            position += len(row)
+            boundaries.append((position, index))
             position += 1
 
         # Only advertise source lines whose complete rendered rows fit. If the
@@ -997,8 +968,9 @@ def _truncate_paginated_read(
                 next_offset=end_line,
             )
             adjusted_notice = _remaining_lines_notice(adjusted_result)
-            if boundary + len(truncation_msg) + len(adjusted_notice) <= threshold:
-                return content[:boundary] + truncation_msg + adjusted_notice
+            footer = f"\n@@ end lines {read_result.start_line}-{end_line} @@"
+            if boundary + len(footer) + len(truncation_msg) + len(adjusted_notice) <= threshold:
+                return content[:boundary] + footer + truncation_msg + adjusted_notice
 
     # No complete source line fits. Keep the size warning but omit the
     # backend's stale pagination offset.
@@ -1228,8 +1200,8 @@ _READ_FILE_TOOL_DESCRIPTION_TEMPLATE = """Reads a file from the filesystem. Assu
 
 Usage:
 - {first_line}. Use `offset`/`limit` to page through large files instead of reading them whole.
-- Results are returned with line numbers starting at `offset` + 1 (1 by default), then two spaces, then the source line. Never include these line-number prefixes when editing.
-- Lines over 5,000 characters are split with continuation markers (e.g. 5.1, 5.2); `limit` counts source lines, so continuation rows do not consume the budget.
+- Text results enclose raw source in `@@ lines start-end @@` and `@@ end lines start-end @@` markers. The first source line is `offset` + 1 (1 by default); do not include the markers when editing.
+- Source lines are returned unchanged; `limit` counts source lines, not envelope markers.
 - Speculatively batch multiple `read_file` calls in one response when several files may be useful.
 - An empty file returns a system-reminder warning in place of contents.
 - Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.
@@ -1263,7 +1235,7 @@ EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
 Usage:
 - You must read the file before editing; this tool errors otherwise.
-- Preserve the exact indentation from the read output, and never include line-number prefixes in old_string or new_string.
+- Preserve the exact source indentation from the read output, and never include the `@@ lines ... @@` envelope markers in old_string or new_string.
 - Prefer editing an existing file over creating a new one.
 - Only use emojis if the user explicitly requests it."""
 
@@ -1935,14 +1907,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
-            # `max(offset, 0)` so the fallback gutter stays 1-indexed: a backend
-            # that returns numberable text without `start_line` would otherwise
-            # render a zero or negative line marker, which the row-marker
-            # parsers downstream assume never happens.
-            content = format_content_with_line_numbers(content, start_line=read_result.start_line or max(offset, 0) + 1)
+            # `max(offset, 0)` keeps the fallback source range 1-indexed when a
+            # backend returns text without `start_line`.
+            content = format_content_with_line_range(
+                content,
+                start_line=read_result.start_line or max(offset, 0) + 1,
+            )
             # `limit` already bounded raw source lines at the backend; do not
-            # re-truncate by row count here, or wrapped continuation rows would
-            # push real source lines off the end of the page (#2453).
+            # re-truncate by row count here.
             # The clamp notice is appended after truncation so it cannot be cut.
             return ToolMessage(
                 content=_truncate_paginated_read(content, validated_path, read_result, token_limit) + _clamped_offset_notice(offset),

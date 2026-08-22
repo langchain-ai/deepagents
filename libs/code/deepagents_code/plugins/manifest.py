@@ -23,6 +23,7 @@ _MANIFEST_RELATIVE_PATHS = (
     Path(".codex-plugin") / "plugin.json",
 )
 _PATH_COMPONENT_FIELDS = {"skills", "mcpServers", "hooks"}
+_PYTHON_EXTENSIONS_FIELD = "pythonExtensions"
 _UNSUPPORTED_COMPONENT_DIRS: tuple[UnsupportedComponent, ...] = (
     "agents",
     "commands",
@@ -109,7 +110,7 @@ def _resolve_component_path(
     try:
         root_resolved = plugin_root.resolve()
         resolved = (plugin_root / path).resolve()
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         warnings.append(
             f"ignoring {field_name}: could not resolve {declaration!r}: {exc}"
         )
@@ -186,6 +187,44 @@ def _inline_hooks(value: object) -> JsonObject:
     return {"hooks": normalized}
 
 
+def _python_extensions(
+    settings: object,
+    plugin_root: Path,
+    warnings: list[str],
+) -> tuple[Path, ...]:
+    """Resolve dcode Python entry files contained by a plugin install.
+
+    Args:
+        settings: Dcode-specific plugin manifest settings.
+        plugin_root: Root of the installed plugin snapshot.
+        warnings: Destination for invalid declaration diagnostics.
+
+    Returns:
+        Existing Python files contained by `plugin_root`.
+    """
+    if not isinstance(settings, dict):
+        return ()
+    declaration = settings.get(_PYTHON_EXTENSIONS_FIELD)
+    if declaration is None:
+        return ()
+    paths = _resolve_component_paths(
+        declaration,
+        plugin_root,
+        _PYTHON_EXTENSIONS_FIELD,
+        warnings,
+    )
+    entries: list[Path] = []
+    for path in paths:
+        if path.suffix != ".py" or not path.is_file():
+            warnings.append(
+                f"ignoring {_PYTHON_EXTENSIONS_FIELD}: "
+                f"{path} must be an existing Python file"
+            )
+            continue
+        entries.append(path)
+    return tuple(entries)
+
+
 def load_manifest(
     root: Path, *, fallback_name: str | None = None
 ) -> tuple[PluginManifest | None, Path | None, tuple[str, ...]]:
@@ -231,23 +270,33 @@ def load_manifest(
             component_paths[field_name] = paths
 
     version_value = raw.get("version")
-    version = version_value if isinstance(version_value, str) else None
+    version = (
+        version_value if isinstance(version_value, str) and version_value else None
+    )
     display_name_value = raw.get("displayName")
-    auto_update_settings = raw.get("extensions")
-    if isinstance(auto_update_settings, dict):
-        auto_update_settings = auto_update_settings.get("com.langchain.deepagents.code")
+    extension_settings = raw.get("extensions")
+    if isinstance(extension_settings, dict):
+        extension_settings = extension_settings.get("com.langchain.deepagents.code")
+    python_extensions = _python_extensions(extension_settings, root, warnings)
+    if python_extensions and version is None:
+        warnings.append(
+            f"ignoring {_PYTHON_EXTENSIONS_FIELD}: "
+            "Python extensions require a non-empty plugin version"
+        )
+        python_extensions = ()
     manifest = PluginManifest(
         name=name,
         version=version,
         component_paths=component_paths,
         inline_mcp=_inline_mcp(raw.get("mcpServers")),
         inline_hooks=_inline_hooks(raw.get("hooks")),
+        python_extensions=python_extensions,
         display_name=(
             display_name_value if isinstance(display_name_value, str) else None
         ),
         auto_update=(
-            isinstance(auto_update_settings, dict)
-            and auto_update_settings.get("autoUpdate") is True
+            isinstance(extension_settings, dict)
+            and extension_settings.get("autoUpdate") is True
         ),
     )
     return manifest, manifest_path, tuple(warnings)

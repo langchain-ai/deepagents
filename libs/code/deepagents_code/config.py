@@ -18,7 +18,7 @@ from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -2834,10 +2834,13 @@ class Settings:
         project_root = find_project_root(start_path)
 
         from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            get_config_options,
             get_option,
-            load_config_toml,
-            resolve_scalar,
         )
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        resolved_config = get_config_resolver().resolve_all()
 
         # No `is None` fallback for either enforced key below. The manifest is a
         # module-level constant, so a missing option is a programming error, not
@@ -2850,10 +2853,9 @@ class Settings:
         if shell_option is None:
             msg = "manifest is missing shell.allow_list; refusing to resolve it alone"
             raise RuntimeError(msg)
-        shell_allow_list, _ = resolve_scalar(
-            shell_option,
-            toml_data=load_config_toml(),
-        )
+        shell_resolved = resolved_config[shell_option.key]
+        _emit_ranked_diagnostics(shell_option, shell_resolved)
+        shell_allow_list = cast("list[str] | None", shell_resolved.value)
 
         # Parse extra skill containment roots from env var or config.toml.
         # These extend the path allowlist for load_skill_content but do not
@@ -2865,14 +2867,17 @@ class Settings:
                 "resolve it alone"
             )
             raise RuntimeError(msg)
-        extra_skills_dirs, _ = resolve_scalar(
-            skills_option,
-            toml_data=load_config_toml(),
-        )
+        skills_resolved = resolved_config[skills_option.key]
+        _emit_ranked_diagnostics(skills_option, skills_resolved)
+        extra_skills_dirs = cast("list[Path] | None", skills_resolved.value)
 
-        from deepagents_code.config_manifest import resolve_interpreter_kwargs
-
-        interpreter_kwargs = resolve_interpreter_kwargs()
+        interpreter_kwargs: dict[str, Any] = {}
+        for option in get_config_options():
+            if option.group != "Interpreter" or option.settings_field is None:
+                continue
+            resolved = resolved_config[option.key]
+            _emit_ranked_diagnostics(option, resolved)
+            interpreter_kwargs[option.settings_field] = resolved.value
 
         return cls(
             openai_api_key=openai_key,

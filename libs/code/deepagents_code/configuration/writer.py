@@ -144,4 +144,7 @@ def update_user_config(
             # install without the writer dependency must report "could not
             # update <path>" like any other write failure.
             return WriteResult(False, False, f"could not update {config_path}: {exc}")
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    get_config_resolver().reload()
     return WriteResult(True, True)

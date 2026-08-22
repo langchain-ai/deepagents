@@ -90,6 +90,11 @@ from deepagents_code._session_stats import (
 # etc. — are deferred to local imports at their call sites since they are only
 # accessed after user interaction begins.
 from deepagents_code._version import CHANGELOG_URL, DOCS_URL
+from deepagents_code.configuration.theme_resolution import (
+    as_toml_table as _as_toml_table,
+    resolve_terminal_mapping as _resolve_terminal_mapping,
+    resolve_theme_name as _resolve_theme_name,
+)
 from deepagents_code.formatting import format_message_timestamp
 from deepagents_code.goal_state_notice import (
     build_goal_continuation,
@@ -1198,103 +1203,6 @@ class _PluginFingerprint(NamedTuple):
     components: tuple[_PathStat, ...]
 
     __hash__ = None  # type: ignore[assignment]
-
-
-def _resolve_theme_name(value: object) -> str | None:
-    """Resolve a user-supplied theme name to a canonical registry key.
-
-    Accepts the registry key or the human-readable label, case-insensitive
-    on both, with surrounding whitespace stripped — config values
-    (especially `[ui.terminal_themes]`) and the `DEEPAGENTS_CODE_THEME`
-    env var are commonly hand-edited. Also applies the legacy
-    `textual-ansi` → `ansi-light` migration (pre-Textual 8.2.5).
-
-    Args:
-        value: Raw value read from TOML or an environment variable.
-
-    Returns:
-        The canonical registry key, or `None` if the value is not a string or
-            does not match any registered theme by key or label
-            (case-insensitive).
-    """
-    if not isinstance(value, str):
-        return None
-    name = value.strip()
-    if name == "textual-ansi":
-        name = "ansi-light"
-    registry = theme.get_registry()
-    if name in registry:
-        return name
-    folded = name.casefold()
-    for registered, entry in registry.items():
-        if registered.casefold() == folded or entry.label.casefold() == folded:
-            return registered
-    return None
-
-
-def _as_toml_table(value: object) -> dict[str, object] | None:
-    """Return `value` as a TOML table when it has the expected runtime shape."""
-    if not isinstance(value, dict):
-        return None
-    # `tomllib` parses TOML tables as string-keyed dicts; `ty` cannot infer
-    # that from a runtime `dict` check. Keep the cast at this boundary so it
-    # does not become a general-purpose escape hatch.
-    return cast("dict[str, object]", value)
-
-
-def _resolve_terminal_mapping(ui: Mapping[str, object]) -> str | None:
-    """Resolve `[ui.terminal_themes][TERM_PROGRAM]` to a registered theme.
-
-    Centralizes both the lookup and the misconfiguration warnings shared by
-    `_load_theme_preference` (startup) and `_load_terminal_default` (picker
-    badge). Misconfiguration is logged exactly once per call.
-
-    Args:
-        ui: The `[ui]` table parsed from `config.toml`.
-
-    Returns:
-        The canonical registry key, or `None` if `terminal_themes` is absent,
-            malformed, references an unknown theme, or `TERM_PROGRAM` is unset
-            despite a non-empty mapping.
-    """
-    terminal_themes = ui.get("terminal_themes")
-    if terminal_themes is None:
-        return None
-    terminal_themes_table = _as_toml_table(terminal_themes)
-    if terminal_themes_table is None:
-        logger.warning(
-            "[ui.terminal_themes] should be a table mapping TERM_PROGRAM "
-            "values to theme names; got %s",
-            type(terminal_themes).__name__,
-        )
-        return None
-    term_program = os.environ.get("TERM_PROGRAM", "").strip()
-    if not term_program:
-        if terminal_themes_table:
-            logger.warning(
-                "[ui.terminal_themes] is configured but TERM_PROGRAM is unset; "
-                "no per-terminal theme will be applied",
-            )
-        return None
-    mapped = terminal_themes_table.get(term_program)
-    resolved = _resolve_theme_name(mapped)
-    if resolved is not None:
-        return resolved
-    if isinstance(mapped, str):
-        logger.warning(
-            "Unknown theme '%s' mapped to TERM_PROGRAM='%s' "
-            "in [ui.terminal_themes]; ignoring",
-            mapped,
-            term_program,
-        )
-    elif mapped is not None:
-        logger.warning(
-            "Expected string theme name for TERM_PROGRAM='%s' in "
-            "[ui.terminal_themes], got %s; ignoring",
-            term_program,
-            type(mapped).__name__,
-        )
-    return None
 
 
 def _load_terminal_default() -> str | None:

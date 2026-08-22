@@ -604,29 +604,12 @@ def resolve_ranked_scalar(
 
     Returns:
         A rank-keyed `ResolvedValue`.
-
-    Raises:
-        RuntimeError: If the always-present default provider is unexpectedly unset.
     """
-    from deepagents_code.configuration.providers import (
-        ranked_default_value,
-        ranked_environment_value,
-        ranked_theme_environment_value,
-        ranked_theme_toml_value,
-        ranked_toml_value,
-    )
-    from deepagents_code.configuration.resolver import (
-        DEFAULT_RANK,
-        ENVIRONMENT_RANK,
-        MANAGED_RANK,
-        USER_RANK,
-        RankedProviderValue,
-        resolve_ranked,
-    )
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
     from deepagents_code.configuration.types import (
-        Found,
         ProviderHealth,
         ProviderStatus,
+        TomlSnapshot,
     )
 
     managed_status = managed_status or ProviderStatus(
@@ -636,58 +619,11 @@ def resolve_ranked_scalar(
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
-    if option.kind is OptionKind.THEME_DELEGATE:
-        providers = (
-            ranked_theme_toml_value(
-                managed_data,
-                rank=MANAGED_RANK,
-                durable=True,
-                status=managed_status,
-            ),
-            ranked_theme_environment_value(os.environ, rank=ENVIRONMENT_RANK),
-            ranked_theme_toml_value(
-                toml_data,
-                rank=USER_RANK,
-                durable=True,
-                status=user_status,
-            ),
-            ranked_default_value(option, rank=DEFAULT_RANK),
-        )
-    else:
-        providers = (
-            ranked_toml_value(
-                option,
-                managed_data,
-                rank=MANAGED_RANK,
-                durable=True,
-                status=managed_status,
-            ),
-            ranked_environment_value(option, os.environ, rank=ENVIRONMENT_RANK),
-            ranked_toml_value(
-                option,
-                toml_data,
-                rank=USER_RANK,
-                durable=True,
-                status=user_status,
-            ),
-            ranked_default_value(option, rank=DEFAULT_RANK),
-        )
-    resolved = resolve_ranked(providers, strategy=option.merge_strategy.value)
-    if resolved is None:
-        fallback = RankedProviderValue(
-            DEFAULT_RANK,
-            True,
-            ProviderStatus("default", None, ProviderHealth.OK),
-            Found(option.default),
-        )
-        resolved = resolve_ranked(
-            (*providers[:-1], fallback),
-            strategy=option.merge_strategy.value,
-        )
-    if resolved is None:
-        msg = f"fallback provider was unset for {option.key}"
-        raise RuntimeError(msg)
-    return resolved
+    resolver = resolver_from_snapshots(
+        TomlSnapshot(managed_data, managed_status),
+        TomlSnapshot(toml_data, user_status),
+    )
+    return resolver.get(option)
 
 
 def _ranked_source(resolved: ResolvedValue[object]) -> str:

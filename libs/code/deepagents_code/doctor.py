@@ -514,10 +514,27 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     Returns:
         Managed config diagnostic row.
     """
-    from deepagents_code.configuration.service import managed_health
+    from deepagents_code.configuration.resolver import (
+        MANAGED_RANK,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_snapshot_health,
+    )
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
 
-    health = managed_health(refresh=True)
-    status = health.status
+    snapshot = get_managed_snapshot(refresh=True)
+    user = TomlSnapshot(
+        {},
+        ProviderStatus("config.toml", None, ProviderHealth.MISSING),
+    )
+    status = resolver_from_snapshots(snapshot, user).provider_statuses()[MANAGED_RANK]
+    health = managed_snapshot_health(TomlSnapshot(snapshot.data, status))
     path = status.path or "(unknown)"
     suffix = status.health.value.lower()
     detail = f" - {status.detail}" if status.detail else ""

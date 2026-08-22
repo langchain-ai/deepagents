@@ -1,16 +1,32 @@
 """Unit tests for ranked config precedence and durable masking."""
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from deepagents_code.config_manifest import (
+    ConfigOption,
+    OptionKind,
+    get_config_options,
+    resolve_scalar,
+)
+from deepagents_code.configuration.provider import ConfigProvider
+from deepagents_code.configuration.providers import (
+    DefaultProvider,
+    EnvProvider,
+    TomlFileProvider,
+)
 from deepagents_code.configuration.resolver import (
     CLI_RANK,
+    DEFAULT_RANK,
     ENVIRONMENT_RANK,
     MANAGED_RANK,
     USER_RANK,
+    ConfigResolver,
     RankedProviderValue,
     resolve_ranked,
+    resolver_from_snapshots,
 )
 from deepagents_code.configuration.types import (
     Found,
@@ -18,6 +34,7 @@ from deepagents_code.configuration.types import (
     ProviderHealth,
     ProviderResult,
     ProviderStatus,
+    TomlSnapshot,
     Unset,
 )
 
@@ -213,3 +230,229 @@ def test_duplicate_provider_ranks_are_rejected() -> None:
 
     with pytest.raises(ValueError, match="unique ranks"):
         resolve_ranked(providers)
+
+
+class _TrackingProvider:
+    """Synthetic protocol implementation with observable calls."""
+
+    durable = True
+
+    def __init__(
+        self,
+        rank: int,
+        result: ProviderResult[Any],
+        calls: list[int] | None = None,
+    ) -> None:
+        """Store a fixed result and optional shared call log."""
+        self.name = f"rank {rank}"
+        self.rank = rank
+        self.result = result
+        self.calls = calls if calls is not None else []
+        self.reloads = 0
+
+    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+        """Return the fixed result and record provider order."""
+        del option
+        self.calls.append(self.rank)
+        return RankedProviderValue(
+            self.rank,
+            self.durable,
+            self.status(),
+            self.result,
+        )
+
+    def status(self) -> ProviderStatus:
+        """Return synthetic healthy status."""
+        return ProviderStatus(self.name, None, ProviderHealth.OK)
+
+    def reload(self) -> None:
+        """Record one propagated reload."""
+        self.reloads += 1
+
+
+def _bool_option(key: str, toml_key: str) -> ConfigOption:
+    """Build a synthetic boolean manifest option."""
+    return ConfigOption(
+        key=key,
+        group="Test",
+        summary="test option",
+        kind=OptionKind.BOOL,
+        default=False,
+        toml_keys=("test", toml_key),
+    )
+
+
+def test_concrete_providers_implement_protocol(tmp_path: Path) -> None:
+    """Every built-in source satisfies the structural provider contract."""
+    providers = (
+        TomlFileProvider("config.toml", tmp_path / "config.toml"),
+        EnvProvider(),
+        DefaultProvider(),
+    )
+
+    assert all(isinstance(provider, ConfigProvider) for provider in providers)
+    assert all(callable(provider.get) for provider in providers)
+    assert all(callable(provider.status) for provider in providers)
+    assert all(callable(provider.reload) for provider in providers)
+
+
+def test_config_resolver_sorts_providers_by_rank() -> None:
+    """Provider invocation and status mappings follow numeric precedence."""
+    calls: list[int] = []
+    user = _TrackingProvider(USER_RANK, Found("user"), calls)
+    managed = _TrackingProvider(MANAGED_RANK, Found("managed"), calls)
+    resolver = ConfigResolver((user, managed))
+
+    resolved = resolver.get(_bool_option("test.enabled", "enabled"))
+
+    assert resolved.value == "managed"
+    assert calls == [MANAGED_RANK, USER_RANK]
+    assert tuple(resolver.provider_statuses()) == (MANAGED_RANK, USER_RANK)
+
+
+def test_config_resolver_rejects_duplicate_provider_ranks() -> None:
+    """A colliding rank cannot overwrite provider health or provenance."""
+    with pytest.raises(ValueError, match="unique ranks"):
+        ConfigResolver(
+            (
+                _TrackingProvider(USER_RANK, Found("first")),
+                _TrackingProvider(USER_RANK, Found("second")),
+            )
+        )
+
+
+def test_config_resolver_reload_propagates_to_every_provider() -> None:
+    """Reload reaches every provider in precedence order."""
+    first = _TrackingProvider(MANAGED_RANK, Unset())
+    second = _TrackingProvider(DEFAULT_RANK, Found(False))
+    resolver = ConfigResolver((second, first))
+
+    resolver.reload()
+
+    assert first.reloads == 1
+    assert second.reloads == 1
+
+
+def test_resolve_all_uses_one_toml_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A full-manifest read cannot mix file generations."""
+    from deepagents_code import config_manifest
+
+    path = tmp_path / "config.toml"
+    path.write_text("[test]\nfirst = true\nsecond = false\n", encoding="utf-8")
+    user = TomlFileProvider("config.toml", path)
+    assert user.status().health is ProviderHealth.OK
+    path.write_text("[test]\nfirst = false\nsecond = true\n", encoding="utf-8")
+    options = (
+        _bool_option("test.first", "first"),
+        _bool_option("test.second", "second"),
+    )
+    monkeypatch.setattr(config_manifest, "get_config_options", lambda: options)
+    resolver = ConfigResolver((user, DefaultProvider()))
+
+    before = resolver.resolve_all()
+    resolver.reload()
+    after = resolver.resolve_all()
+
+    assert before["test.first"].value is True
+    assert before["test.second"].value is False
+    assert after["test.first"].value is False
+    assert after["test.second"].value is True
+
+
+def test_failed_toml_reload_keeps_the_last_usable_snapshot(tmp_path: Path) -> None:
+    """A corrupt re-read must not replace the values still being enforced.
+
+    An unusable candidate carries an empty table, which resolution reads as
+    "this source declares nothing"; installing it on reload would drop the
+    file's values and let lower ranks win.
+    """
+    path = tmp_path / "managed_config.toml"
+    path.write_text("[test]\nenabled = true\n", encoding="utf-8")
+    provider = TomlFileProvider("managed config", path, MANAGED_RANK)
+    option = _bool_option("test.enabled", "enabled")
+    assert provider.get(option).result == Found(True)
+
+    path.write_text("not toml [", encoding="utf-8")
+    provider.reload()
+
+    assert provider.get(option).result == Found(True)
+    status = provider.status()
+    assert status.health is ProviderHealth.CORRUPT
+
+    path.write_text("[test]\nenabled = false\n", encoding="utf-8")
+    provider.reload()
+
+    assert provider.get(option).result == Found(False)
+    assert provider.status().health is ProviderHealth.OK
+
+
+def test_failed_reload_keeps_managed_policy_enforced(tmp_path: Path) -> None:
+    """A failed managed reload through the resolver must not fail open.
+
+    Regression: `get_managed_snapshot(refresh=True)` returns the failed
+    candidate for diagnostics, and `reload` installed it, so the managed tier
+    read as unset and the user tier won until the file was repaired.
+    """
+    managed_path = tmp_path / "managed_config.toml"
+    user_path = tmp_path / "config.toml"
+    managed_path.write_text("[test]\nenabled = false\n", encoding="utf-8")
+    user_path.write_text("[test]\nenabled = true\n", encoding="utf-8")
+    managed = TomlFileProvider(
+        "managed config",
+        managed_path,
+        MANAGED_RANK,
+        True,
+        loader=lambda: TomlFileProvider("managed config", managed_path).load(),
+    )
+    user = TomlFileProvider(
+        "config.toml",
+        user_path,
+        USER_RANK,
+        True,
+        loader=lambda: TomlFileProvider("config.toml", user_path).load(),
+    )
+    resolver = ConfigResolver((managed, user))
+    option = _bool_option("test.enabled", "enabled")
+    assert resolver.get(option).value is False
+
+    managed_path.write_text("not toml [", encoding="utf-8")
+    resolver.reload()
+
+    resolved = resolver.get(option)
+    assert resolved.value is False
+    assert resolved.provider_status[MANAGED_RANK].health is ProviderHealth.OK
+    assert resolver.provider_statuses()[MANAGED_RANK].health is ProviderHealth.CORRUPT
+
+    managed_path.write_text("[test]\nenabled = false\n", encoding="utf-8")
+    resolver.reload()
+
+    assert resolver.provider_statuses()[MANAGED_RANK].health is ProviderHealth.OK
+
+
+def test_resolver_get_matches_resolve_scalar_for_every_manifest_option() -> None:
+    """The compatibility wrapper and provider resolver remain equivalent."""
+    managed = TomlSnapshot(
+        {},
+        ProviderStatus("managed config", None, ProviderHealth.OK),
+    )
+    user = TomlSnapshot(
+        {},
+        ProviderStatus("config.toml", None, ProviderHealth.OK),
+    )
+    resolver = resolver_from_snapshots(managed, user)
+    resolved = resolver.resolve_all()
+
+    for option in get_config_options():
+        value, source = resolve_scalar(
+            option,
+            toml_data=user.data,
+            managed_toml_data=managed.data,
+        )
+        actual = resolved[option.key]
+        actual_source = " + ".join(
+            actual.provider_status[rank].name for rank in actual.ranks
+        )
+        assert (actual.value, actual_source) == (value, source), option.key

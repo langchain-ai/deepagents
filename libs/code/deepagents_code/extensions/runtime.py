@@ -15,13 +15,12 @@ from deepagents_code.extensions.discovery import (
     project_extensions_dir,
 )
 from deepagents_code.extensions.loader import load_extension
-from deepagents_code.extensions.models import ExtensionError
-from deepagents_code.extensions.registry import ExtensionRegistry
+from deepagents_code.extensions.registry import ExtensionError, ExtensionRegistry
 from deepagents_code.extensions.settings import TrustPolicy, load_extension_settings
 from deepagents_code.extensions.trust import is_project_extensions_trusted
 
 if TYPE_CHECKING:
-    from deepagents_code.extensions.models import SourceInfo
+    from deepagents_code.extensions.registry import SourceInfo
 
 logger = logging.getLogger(__name__)
 INTERACTIVE_MODE = "interactive"

@@ -110,9 +110,10 @@ def _resolve_component_path(
     try:
         root_resolved = plugin_root.resolve()
         resolved = (plugin_root / path).resolve()
-    except (OSError, RuntimeError):
-        logger.debug("Could not resolve plugin component path", exc_info=True)
-        warnings.append(f"ignoring {field_name}: could not resolve {declaration!r}")
+    except (OSError, RuntimeError) as exc:
+        warnings.append(
+            f"ignoring {field_name}: could not resolve {declaration!r}: {exc}"
+        )
         return None
     if not resolved.is_relative_to(root_resolved):
         warnings.append(f"ignoring {field_name}: path escapes plugin root")
@@ -214,21 +215,14 @@ def _python_extensions(
     )
     entries: list[Path] = []
     for path in paths:
-        try:
-            valid = path.is_file() and path.suffix == ".py"
-        except OSError as exc:
-            warnings.append(
-                f"ignoring {_PYTHON_EXTENSIONS_FIELD}: could not inspect {path}: {exc}"
-            )
-            continue
-        if not valid:
+        if path.suffix != ".py" or not path.is_file():
             warnings.append(
                 f"ignoring {_PYTHON_EXTENSIONS_FIELD}: "
                 f"{path} must be an existing Python file"
             )
             continue
         entries.append(path)
-    return tuple(dict.fromkeys(entries))
+    return tuple(entries)
 
 
 def load_manifest(

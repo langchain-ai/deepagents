@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from deepagents_code.extensions.registry import ExtensionRegistry, SourceInfo
 
 _ROUTE_PREFIX = re.compile(r"^/(?:[a-z0-9][a-z0-9_-]*/)+$")
-"""Accepted absolute, slash-terminated virtual route prefixes."""
 
 
 class ExtensionAPI:

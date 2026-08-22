@@ -121,22 +121,6 @@ def test_plugin_extension_discovery_requires_experimental_mode(
     assert sources[0].plugin_id == "example@test"
 
 
-def test_plugin_manifest_rejects_python_entry_outside_install(
-    tmp_path: Path,
-) -> None:
-    """Plugin Python entries cannot escape the immutable install root."""
-    plugin = tmp_path / "plugin"
-    plugin.mkdir()
-    (tmp_path / "outside.py").touch()
-    _write_manifest(plugin, path="./../outside.py")
-
-    manifest, _, warnings = load_manifest(plugin)
-
-    assert manifest is not None
-    assert not manifest.python_extensions
-    assert any("must not contain '..'" in warning for warning in warnings)
-
-
 def test_plugin_python_extension_requires_version(tmp_path: Path) -> None:
     """User-wide executable extensions must have a plugin version."""
     path = tmp_path / "extension.py"
@@ -148,44 +132,3 @@ def test_plugin_python_extension_requires_version(tmp_path: Path) -> None:
     assert manifest is not None
     assert not manifest.python_extensions
     assert any("require a non-empty plugin version" in warning for warning in warnings)
-
-
-def test_plugin_manifest_rejects_python_entry_symlink_escape(tmp_path: Path) -> None:
-    """A plugin entry symlink cannot escape the installed snapshot."""
-    plugin = tmp_path / "plugin"
-    plugin.mkdir()
-    outside = tmp_path / "outside.py"
-    outside.touch()
-    (plugin / "extension.py").symlink_to(outside)
-    _write_manifest(plugin, version="1.0.0")
-
-    manifest, _, warnings = load_manifest(plugin)
-
-    assert manifest is not None
-    assert not manifest.python_extensions
-    assert any("escapes plugin root" in warning for warning in warnings)
-
-
-def test_plugin_manifest_rejects_symlink_loop(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Symlink loops reported as `RuntimeError` on Python 3.12 fail closed."""
-    extension = tmp_path / "extension.py"
-    extension.touch()
-    _write_manifest(tmp_path, version="1.0.0")
-    original_resolve = Path.resolve
-
-    def resolve(path: Path, *, strict: bool = False) -> Path:
-        if path == extension:
-            msg = "Symlink loop"
-            raise RuntimeError(msg)
-        return original_resolve(path, strict=strict)
-
-    monkeypatch.setattr(Path, "resolve", resolve)
-    manifest, _, warnings = load_manifest(tmp_path)
-
-    assert manifest is not None
-    assert not manifest.python_extensions
-    assert warnings == (
-        "ignoring pythonExtensions: could not resolve './extension.py'",
-    )

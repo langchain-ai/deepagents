@@ -97,6 +97,12 @@ from deepagents_code.cold_cache import (
     RewarmEstimate,
 )
 from deepagents_code.event_bus import ExternalEvent
+from deepagents_code.goal_state_limits import (
+    GOAL_APPLICATION_CHAR_LIMIT,
+    GOAL_OBJECTIVE_CHAR_LIMIT,
+    GOAL_STATUS_NOTE_CHAR_LIMIT,
+    RUBRIC_CHAR_LIMIT,
+)
 from deepagents_code.goal_state_notice import (
     GOAL_CONTROL_MESSAGE_SOURCE,
     goal_state_notice_info,
@@ -8366,7 +8372,9 @@ class TestWarnDiscardedGoalChannels:
         assert payload.pending_goal_kind is None
         assert payload.pending_goal_request_id is None
 
-    def test_legacy_pending_proposal_without_metadata_is_preserved(self) -> None:
+    async def test_legacy_pending_proposal_without_metadata_is_preserved(
+        self,
+    ) -> None:
         """Legacy proposals may omit kind and request ID without being discarded."""
         payload = DeepAgentsApp._goal_rubric_payload_from_state(
             {
@@ -8379,7 +8387,7 @@ class TestWarnDiscardedGoalChannels:
         )
         app = DeepAgentsApp()
 
-        app._restore_goal_rubric_state(payload)
+        await app._restore_goal_rubric_state(payload)
 
         assert app._pending_goal_objective == "ship login"
         assert app._pending_goal_rubric == "- tests pass"
@@ -8614,6 +8622,9 @@ class TestGoalCommand:
             message = send.await_args.args[0]
             kwargs = send.await_args.kwargs["message_kwargs"]
             assert "ship login" in message
+            # As in the accept path: with the save failed and no notice coming,
+            # this message is the model's only source for the criteria.
+            assert "- tests pass" in message
             assert "get_goal" not in message
             assert kwargs["additional_kwargs"]["lc_source"] == (
                 GOAL_CONTROL_MESSAGE_SOURCE
@@ -11060,7 +11071,7 @@ class TestGoalCommand:
                 pending_goal_rubric="- draft criteria",
             )
 
-            app._restore_goal_rubric_state(payload)
+            await app._restore_goal_rubric_state(payload)
 
             assert app._active_goal == "add refresh tokens"
             assert app._goal_status == "blocked"
@@ -11072,6 +11083,195 @@ class TestGoalCommand:
             assert app._status_bar.rubric_label == _rubric_status_label(
                 "warning", "Goal blocked"
             )
+
+    async def test_restore_unrecognized_goal_status_normalizes_to_resumable_paused(
+        self,
+    ) -> None:
+        """A corrupt or forward-version status must not leave the goal stuck.
+
+        `coerce_goal_status` drops an unknown status to `None`, while the
+        model-visible notice projects the same value as `paused`. Restoring
+        `None` directly would strand the goal: the notice withholds it from the
+        model, but `_resume_goal` requires exactly `"paused"` to continue.
+        Restore must normalize to the same recoverable `paused` the notice
+        shows and persist it so the checkpoint itself becomes resumable.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(aupdate_state=AsyncMock())
+            app._lc_thread_id = "thread-1"
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status=None,
+                goal_status_recorded=True,
+                goal_rubric="- tests pass",
+            )
+
+            await app._restore_goal_rubric_state(payload)
+
+            assert app._active_goal == "ship it"
+            assert app._goal_status == "paused"
+            # The normalized status is written back so the next resume does
+            # not re-derive it.
+            update = app._agent.aupdate_state.await_args
+            assert update is not None
+            assert update.args[1]["_goal_status"] == "paused"
+
+            await app._resume_goal()
+
+            assert app._goal_status == "active"
+
+    async def test_restore_legacy_goal_without_status_stays_active(self) -> None:
+        """A checkpoint with no `_goal_status` channel is legacy, not corrupt.
+
+        Goals predate the status channel, so a persisted objective with the
+        channel absent ran as `active` — the notice projects the same absence
+        as `active`. Restore must preserve that instead of normalizing it to
+        `paused`, and must not write a status the checkpoint never recorded.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(aupdate_state=AsyncMock())
+            app._lc_thread_id = "thread-1"
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status=None,
+                goal_rubric="- tests pass",
+            )
+
+            await app._restore_goal_rubric_state(payload)
+
+            assert app._active_goal == "ship it"
+            assert app._goal_status is None
+            app._agent.aupdate_state.assert_not_awaited()
+
+    async def test_load_oversized_legacy_goal_surfaces_recovery(self) -> None:
+        """Resuming old unsafe state stays usable and explains how to recover."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status="active",
+                goal_rubric="x" * (RUBRIC_CHAR_LIMIT + 1),
+            )
+
+            await app._load_thread_history(
+                thread_id="thread-1",
+                preloaded_payload=payload,
+            )
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "goal work and grading are disabled" in errors
+            assert "maximum is 12,000" in errors
+
+    async def test_oversized_legacy_goal_warns_with_history_present(self) -> None:
+        """The warning survives the branch every real resume actually takes.
+
+        A thread carrying oversized goal state also carries conversation
+        history, so the empty-history early return is the one path that never
+        runs in practice. `_restore_goal_rubric_state` has already made the
+        oversized goal live by this point, and every later turn ships a degraded
+        notice, so losing the warning here leaves the user with a silently
+        non-functional goal and no explanation.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        MessageType.USER,
+                        "do the thing",
+                        id="history-before-oversized-goal",
+                    )
+                ],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status="active",
+                goal_rubric="x" * (RUBRIC_CHAR_LIMIT + 1),
+            )
+
+            await app._load_thread_history(
+                thread_id="thread-1",
+                preloaded_payload=payload,
+            )
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "goal work and grading are disabled" in errors
+            assert "maximum is 12,000" in errors
+
+    async def test_oversized_legacy_goal_warns_when_transcript_render_fails(
+        self,
+    ) -> None:
+        """A failed transcript render cannot swallow the recovery warning.
+
+        `_restore_goal_rubric_state` runs before the render, so the oversized
+        goal is already live when the failure happens. Reporting only
+        "Could not load history" would leave the goal silently disabled.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        MessageType.USER,
+                        "do the thing",
+                        id="history-before-render-failure",
+                    )
+                ],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status="active",
+                goal_rubric="x" * (RUBRIC_CHAR_LIMIT + 1),
+            )
+            # Patched after the size check and before the transcript render, and
+            # unused by `_mount_message`, so the warning path stays intact.
+            with patch.object(
+                app,
+                "_reset_thread_usage",
+                side_effect=RuntimeError("history load exploded"),
+            ):
+                await app._load_thread_history(
+                    thread_id="thread-1",
+                    preloaded_payload=payload,
+                )
+
+            messages = "\n".join(
+                str(w._content)
+                for w in (*app.query(ErrorMessage), *app.query(AppMessage))
+            )
+            assert "Could not load history" in messages
+            assert "goal work and grading are disabled" in messages
+
+    async def test_oversized_paused_legacy_goal_cannot_resume(self) -> None:
+        """A paused old goal is rejected before becoming model-actionable."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship it"
+            app._goal_status = "paused"
+            app._active_rubric = "x" * (RUBRIC_CHAR_LIMIT + 1)
+
+            await app._resume_goal()
+
+            assert app._goal_status == "paused"
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "too large to resume safely" in errors
 
     async def test_load_thread_history_remounts_pending_goal_review(self) -> None:
         """Resumed pending goal proposals should be actionable in the prompt."""
@@ -11129,7 +11329,7 @@ class TestGoalCommand:
                 sticky_rubric_recorded=True,
             )
 
-            app._restore_goal_rubric_state(payload)
+            await app._restore_goal_rubric_state(payload)
 
             assert app._active_rubric == "- sticky"
             assert app._status_bar is not None
@@ -11144,7 +11344,7 @@ class TestGoalCommand:
             await pilot.pause()
             payload = _ThreadHistoryPayload([], 0, "", rubric="- legacy")
 
-            app._restore_goal_rubric_state(payload)
+            await app._restore_goal_rubric_state(payload)
 
             assert app._active_rubric == "- legacy"
             assert app._status_bar is not None
@@ -11734,7 +11934,7 @@ class TestGoalCommand:
                 rubric_grading_run_id="grade-stale",
             )
 
-            app._restore_goal_rubric_state(payload)
+            await app._restore_goal_rubric_state(payload)
 
             assert app._active_goal == "add refresh tokens"
             assert app._goal_status == "active"
@@ -11787,8 +11987,16 @@ class TestGoalCommand:
             assert "completion was not recorded" not in rendered
             assert "grading failed" not in rendered
 
-    async def test_sync_goal_rubric_state_drops_unknown_status(self) -> None:
-        """An unrecognized persisted goal status normalizes to None."""
+    async def test_sync_goal_rubric_state_normalizes_unknown_status_to_paused(
+        self,
+    ) -> None:
+        """An unrecognized persisted goal status restores as resumable `paused`.
+
+        Normalizing to `None` would strand the goal: the model-visible notice
+        already projects the same value as `paused`, while `_resume_goal`
+        requires exactly `"paused"`. Restore must converge on the notice's
+        recoverable value so the goal is not stuck until it is cleared.
+        """
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -11806,11 +12014,13 @@ class TestGoalCommand:
             with patch.object(app, "_get_thread_state_values", fetch):
                 await app._sync_goal_rubric_state_from_thread()
 
-            assert app._goal_status is None
+            assert app._goal_status == "paused"
             assert app._active_goal == "add refresh tokens"
 
-    async def test_sync_goal_rubric_state_drops_non_str_status(self) -> None:
-        """A non-string persisted goal status normalizes to None."""
+    async def test_sync_goal_rubric_state_normalizes_non_str_status_to_paused(
+        self,
+    ) -> None:
+        """A non-string persisted goal status restores as resumable `paused`."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -11828,7 +12038,62 @@ class TestGoalCommand:
             with patch.object(app, "_get_thread_state_values", fetch):
                 await app._sync_goal_rubric_state_from_thread()
 
+            assert app._goal_status == "paused"
+
+    async def test_sync_goal_rubric_state_keeps_missing_status_active(self) -> None:
+        """A checkpoint with no `_goal_status` channel is legacy, not corrupt.
+
+        The channel predates status persistence, so its absence means the goal
+        ran as `active` — matching what the notice projects. Sync must leave
+        the restored goal working instead of pausing it.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_rubric": "- tests pass",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
             assert app._goal_status is None
+            assert app._active_goal == "add refresh tokens"
+
+    async def test_sync_goal_rubric_state_normalizes_explicit_null_status_to_paused(
+        self,
+    ) -> None:
+        """An explicit `_goal_status: null` is recorded-but-unrecognized.
+
+        Unlike a missing channel (legacy), a present `null` went through
+        `coerce_goal_status` and failed, so restore normalizes it to the same
+        recoverable `paused` as any other unrecognized persisted value.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": None,
+                    "_goal_rubric": "- tests pass",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
+            assert app._goal_status == "paused"
+            assert app._active_goal == "add refresh tokens"
 
     async def test_sync_goal_rubric_state_notifies_on_corruption(self) -> None:
         """A discarded malformed channel surfaces a user-facing corruption notice.
@@ -12179,6 +12444,55 @@ class TestGoalCommand:
             assert app._active_goal == "existing goal"
             assert app._active_rubric == "- existing rubric"
 
+    @pytest.mark.parametrize("size_error", [True, False])
+    async def test_goal_proposal_worker_error_keeps_a_size_limit_message(
+        self, size_error: bool
+    ) -> None:
+        """A limit the user can act on must survive the worker-error net.
+
+        `_propose_goal_rubric` handles its own errors and normally ends in
+        SUCCESS, so this branch only runs when something already went wrong —
+        which is when an unhelpful "failed unexpectedly" costs the most. Only the
+        turn-handler twin of this branch was covered.
+        """
+        from textual.worker import WorkerState
+
+        from deepagents_code.goal_state_limits import GoalStateSizeError
+
+        error: Exception = (
+            GoalStateSizeError(
+                label="Goal objective and criteria combined",
+                actual=12_500,
+                limit=12_000,
+            )
+            if size_error
+            else RuntimeError("boom")
+        )
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            worker = SimpleNamespace(
+                group="",
+                error=error,
+                state=WorkerState.ERROR,
+            )
+            app._goal_proposal_worker = worker  # ty: ignore[invalid-assignment]
+
+            app.on_worker_state_changed(
+                SimpleNamespace(worker=worker, state=WorkerState.ERROR),  # ty: ignore[invalid-argument-type]
+            )
+            await pilot.pause()
+
+            rendered = " ".join(str(w._content) for w in app.query(ErrorMessage))
+            if size_error:
+                assert "Remove at least 500 characters" in rendered
+                assert "shorten the objective" in rendered
+                assert "failed unexpectedly" not in rendered
+            else:
+                assert "Drafting acceptance criteria failed unexpectedly" in rendered
+            # The worker handle is released either way, so a retry is possible.
+            assert app._goal_proposal_worker is None
+
     async def test_goal_accept_warns_when_persist_fails(self) -> None:
         """A failed write warns and continues without replaying the user turn."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -12230,6 +12544,12 @@ class TestGoalCommand:
             message = send.await_args.args[0]
             kwargs = send.await_args.kwargs["message_kwargs"]
             assert "add refresh tokens" in message
+            # The criteria must ride along, not just the objective. The save
+            # failed, so no goal-state notice will be written for this thread and
+            # the read tools are gone — criteria omitted here are unobtainable
+            # through any other channel, and the model would work toward a goal it
+            # cannot grade itself against.
+            assert "- tests pass" in message
             assert "get_goal" not in message
             assert kwargs["additional_kwargs"]["lc_source"] == (
                 GOAL_CONTROL_MESSAGE_SOURCE
@@ -12322,6 +12642,44 @@ class TestGoalCommand:
             assert "/goal max-iterations <N|clear>" in rendered
             assert "draft a checklist for it" in rendered
 
+    async def test_oversized_goal_is_rejected_before_generation(self) -> None:
+        """An oversized objective never opens policy review or starts a worker."""
+        app = DeepAgentsApp(agent=MagicMock())
+        objective = "x" * (GOAL_OBJECTIVE_CHAR_LIMIT + 1)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_start_goal_proposal") as start:
+                await app._handle_command(f"/goal {objective}")
+                await pilot.pause()
+
+            start.assert_not_called()
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 8,000" in errors
+
+    async def test_oversized_amendment_base_is_rejected_before_generation(
+        self,
+    ) -> None:
+        """Amending oversized saved state is refused before spending tokens.
+
+        `/goal amend` re-submits the current objective and criteria as the base
+        for a new proposal, so saved state that already exceeds the combined
+        budget would otherwise reach the criteria agent and fail only after
+        generation. This is also the path the rejection-retry loop re-enters.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship it"
+            app._active_rubric = "x" * (GOAL_APPLICATION_CHAR_LIMIT + 1)
+
+            with patch.object(app, "_run_goal_criteria_request") as run:
+                await app._propose_goal_amendment(feedback="tighten it")
+                await pilot.pause()
+
+            run.assert_not_called()
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 12,000" in errors
+
     async def test_accept_goal_rubric_without_pending_reports_nothing(self) -> None:
         """Accepting with no pending objective must not set a half-formed goal."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -12352,6 +12710,20 @@ class TestGoalCommand:
                 str(w._content) == "Cannot accept empty goal criteria."
                 for w in app.query(AppMessage)
             )
+
+    async def test_accept_goal_rubric_rejects_oversized_combination(self) -> None:
+        """Defense-in-depth validation prevents an invalid proposal write."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "goal"
+
+            accepted = await app._accept_goal_rubric("x" * GOAL_APPLICATION_CHAR_LIMIT)
+
+            assert accepted is False
+            assert app._active_goal is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "combined" in errors
 
     async def test_finish_goal_review_exception_surfaces_error(self) -> None:
         """An unexpected failure mid-review should surface a recovery message."""
@@ -12403,6 +12775,111 @@ class TestGoalCommand:
 
 class TestRubricCommand:
     """Tests for interactive rubric state and turn plumbing."""
+
+    @pytest.mark.parametrize("subcommand", ["set", "next"])
+    async def test_oversized_inline_rubric_preserves_current_state(
+        self,
+        subcommand: str,
+    ) -> None:
+        """Inline rubric entry points reject before mutating valid state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric set keep this")
+            oversized = "x" * (RUBRIC_CHAR_LIMIT + 1)
+
+            await app._handle_command(f"/rubric {subcommand} {oversized}")
+            await pilot.pause()
+
+            assert app._active_rubric == "keep this"
+            assert app._next_rubric is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 12,000" in errors
+
+    async def test_next_rubric_rejected_when_goal_notice_budget_exceeded(self) -> None:
+        """`/rubric next` must fit the combined notice budget with an active goal."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "g" * GOAL_OBJECTIVE_CHAR_LIMIT
+            app._goal_status = "active"
+            app._goal_status_note = "n" * GOAL_STATUS_NOTE_CHAR_LIMIT
+            criteria = "x" * (RUBRIC_CHAR_LIMIT - 1)
+
+            await app._handle_command(f"/rubric next {criteria}")
+            await pilot.pause()
+
+            assert app._next_rubric is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "cannot be applied to the next turn" in errors
+            assert "maximum is 12,000" in errors
+            assert "Rubric set for next turn." not in "\n".join(
+                str(w._content) for w in app.query(AppMessage)
+            )
+
+    async def test_next_rubric_accepted_when_goal_state_fits_budget(self) -> None:
+        """`/rubric next` still applies when the combined notice text fits."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the fix"
+            app._goal_status = "active"
+
+            await app._handle_command("/rubric next update docs")
+            await pilot.pause()
+
+            assert app._next_rubric == "update docs"
+            assert any(
+                "Rubric set for next turn." in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
+    async def test_next_rubric_revalidated_when_goal_grows_before_consumption(
+        self,
+    ) -> None:
+        """A rubric that fit at set time is re-checked when the turn actually runs.
+
+        `_next_rubric_size_error` validates against goal state as it stood when
+        the command was typed, and that state is mutable: amending the goal or
+        recording a blocker note afterwards can push the combined notice over
+        budget. Consuming it unchecked degrades the notice and silently disables
+        the one-shot grade the command promised.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._ui_adapter = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.hooks = HooksManager.inert()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the fix"
+            app._goal_status = "active"
+            # Fits beside a short objective, but not beside a maximal one: the
+            # pair has to cross GOAL_APPLICATION_CHAR_LIMIT once the goal grows.
+            criteria = "x" * (GOAL_APPLICATION_CHAR_LIMIT // 2)
+
+            await app._handle_command(f"/rubric next {criteria}")
+            await pilot.pause()
+            assert app._next_rubric == criteria
+
+            # The goal grows after the one-shot rubric was accepted.
+            app._active_goal = "g" * GOAL_OBJECTIVE_CHAR_LIMIT
+
+            assert app._next_rubric_size_error(app._next_rubric) is not None
+
+            # `_run_agent_task` owns the consumption check, so stub only the
+            # streaming call it makes afterwards.
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new=AsyncMock(),
+            ):
+                await app._run_agent_task("keep going")
+                await pilot.pause()
+
+            assert app._next_rubric is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "no longer fits alongside the current goal state" in errors
 
     async def test_bare_rubric_shows_usage(self) -> None:
         """Bare `/rubric` should teach the command instead of showing only state."""
@@ -13098,6 +13575,23 @@ class TestRubricCommand:
             assert app._status_bar.rubric_label == _rubric_status_label(
                 "checkmark", "Rubric set"
             )
+
+    async def test_oversized_rubric_file_preserves_current_state(
+        self, tmp_path: Path
+    ) -> None:
+        """A large file is refused without replacing the valid sticky rubric."""
+        rubric_file = tmp_path / "large.md"
+        rubric_file.write_text("x" * (RUBRIC_CHAR_LIMIT + 1), encoding="utf-8")
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric set keep this")
+            await app._handle_command(f"/rubric file {rubric_file}")
+            await pilot.pause()
+
+            assert app._active_rubric == "keep this"
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 12,000" in errors
 
     async def test_rubric_file_reports_unparsable_path(self) -> None:
         """An unbalanced quote in the path should report a parse error."""
@@ -38763,6 +39257,46 @@ class TestToolGroupCollapse:
             rendered = summaries[0].render()
             assert isinstance(rendered, Content)
             assert "Ran 1 shell command, read 1 file" in rendered.plain
+
+
+class TestUnsavedGoalContinuation:
+    """A failed goal save must still hand the model both halves of the goal."""
+
+    async def test_unsaved_creation_forwards_objective_and_criteria(self) -> None:
+        """Criteria omitted here are unobtainable through any other channel.
+
+        Both arguments are `str`-ish and positional at all three call sites, so
+        a swap or a dropped argument type-checks.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        inner = AsyncMock()
+
+        with patch.object(app, "_continue_goal_work", inner):
+            await app._continue_created_goal_work(
+                "ship login with passkeys",
+                "- passkeys work",
+                persisted=False,
+            )
+
+        inner.assert_awaited_once_with(
+            "created",
+            unsaved_objective="ship login with passkeys",
+            unsaved_criteria="- passkeys work",
+        )
+
+    async def test_persisted_creation_relies_on_the_state_notice(self) -> None:
+        """A successful save needs no fallback: the notice carries the state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        inner = AsyncMock()
+
+        with patch.object(app, "_continue_goal_work", inner):
+            await app._continue_created_goal_work(
+                "ship login with passkeys",
+                "- passkeys work",
+                persisted=True,
+            )
+
+        inner.assert_awaited_once_with("created")
 
 
 class TestForcedGoalCriteriaSync:

@@ -100,13 +100,50 @@ def _state() -> RubricState:
 
 
 def _satisfied_result() -> dict[str, Any]:
+    """A usable verdict: at least one per-criterion result, so no coverage retry."""
     return {
         "structured_response": GraderResponse(
             result="satisfied",
             explanation="all checks pass",
-            criteria=[],
+            criteria=[{"name": "tests pass", "passed": True}],
         )
     }
+
+
+def _frozen_criteria_state() -> RubricState:
+    """State whose frozen criteria list the grader is expected to cover exactly."""
+    state = _state()
+    state["_rubric_criteria"] = ["compiles", "tests pass"]
+    return state
+
+
+def _under_reported_result() -> dict[str, Any]:
+    """A `satisfied` verdict backed by fewer criteria than the rubric froze."""
+    return {
+        "structured_response": GraderResponse(
+            result="satisfied",
+            explanation="looks fine",
+            criteria=[{"name": "compiles", "passed": True}],
+        )
+    }
+
+
+def _fully_reported_result() -> dict[str, Any]:
+    return {
+        "structured_response": GraderResponse(
+            result="satisfied",
+            explanation="all checks pass",
+            criteria=[
+                {"name": "compiles", "passed": True},
+                {"name": "tests pass", "passed": True},
+            ],
+        )
+    }
+
+
+def _grader_payload(call: Any) -> str:  # noqa: ANN401
+    """Return the prompt text of the grader input passed to a recorded call."""
+    return str(call.args[0]["messages"][0].content)
 
 
 def _tool_satisfied_result() -> dict[str, Any]:
@@ -288,7 +325,7 @@ class TestReliableRubricMiddleware:
         )
         context = {"approval_mode": "manual"}
 
-        result = middleware._grade_once(_state(), 0, context=context)
+        result = middleware._invoke_grader(_state(), 0, context=context)
 
         assert result.result == "satisfied"
         assert grader.invoke.call_args.kwargs == {
@@ -332,7 +369,7 @@ class TestReliableRubricMiddleware:
         )
         context = {"approval_mode": "manual"}
 
-        result = await middleware._agrade_once(_state(), 0, context=context)
+        result = await middleware._ainvoke_grader(_state(), 0, context=context)
 
         assert result.result == "satisfied"
         assert grader.ainvoke.await_args.kwargs == {
@@ -371,6 +408,55 @@ class TestReliableRubricMiddleware:
             middleware._grade(_state(), 0)
 
         assert grader.invoke.call_count == 2
+
+    def test_inherits_sdk_coverage_retry_sync(self) -> None:
+        # The transport retry wraps a single grader call, so the SDK's coverage
+        # retry must still fire when the grader under-reports its criteria.
+        middleware = ReliableRubricMiddleware(model="fake-model")
+        grader = MagicMock()
+        grader.invoke.side_effect = [
+            _under_reported_result(),
+            _fully_reported_result(),
+        ]
+        middleware._grader = grader
+
+        result = middleware._grade(_frozen_criteria_state(), 0)
+
+        assert result.result == "satisfied"
+        assert grader.invoke.call_count == 2
+        assert "1 criteria" in _grader_payload(grader.invoke.call_args_list[1])
+
+    async def test_inherits_sdk_coverage_retry_async(self) -> None:
+        middleware = ReliableRubricMiddleware(model="fake-model")
+        grader = AsyncMock()
+        grader.ainvoke.side_effect = [
+            _under_reported_result(),
+            _fully_reported_result(),
+        ]
+        middleware._grader = grader
+
+        result = await middleware._agrade(_frozen_criteria_state(), 0)
+
+        assert result.result == "satisfied"
+        assert grader.ainvoke.await_count == 2
+        assert "1 criteria" in _grader_payload(grader.ainvoke.await_args_list[1])
+
+    def test_transport_retry_nests_inside_coverage_retry(self) -> None:
+        # A transport fault is retried within a call; an under-report is retried
+        # across calls. Both must be available in the same grading pass.
+        middleware = ReliableRubricMiddleware(model="fake-model")
+        grader = MagicMock()
+        grader.invoke.side_effect = [
+            _read_error(),
+            _under_reported_result(),
+            _fully_reported_result(),
+        ]
+        middleware._grader = grader
+
+        result = middleware._grade(_frozen_criteria_state(), 0)
+
+        assert result.result == "satisfied"
+        assert grader.invoke.call_count == 3
 
     def test_builds_context_aware_nested_grader(
         self,

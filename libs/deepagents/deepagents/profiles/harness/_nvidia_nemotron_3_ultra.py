@@ -140,15 +140,14 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
     def _is_numbered_read_file_row(row: str) -> bool:
         """Return whether `row` looks like a formatted `read_file` source line.
 
-        Matches a primary source marker (`N`), optional spaces-only right-justify
-        padding in front of it, then the current two-space separator (emitted by
-        `format_content_with_line_numbers`) or the legacy `cat -n` tab.
-        Continuation rows (`N.M`) fail — the `.` follows the digits, so they are
-        not counted toward the source-line limit. The separator clause is matched
-        exactly (two spaces or a tab), in lockstep with the producer and with the
-        TUI `_compact_line_gutter` parser.
+        Matches a primary source marker (`N`) followed by the current pipe
+        separator (emitted by `format_content_with_line_numbers`) or a legacy
+        two-space or `cat -n` tab separator. Continuation rows (`N.M`) fail — the
+        `.` follows the digits, so they are not counted toward the source-line
+        limit. The separator clause is matched exactly, in lockstep with the
+        producer and with the TUI `_compact_line_gutter` parser.
         """
-        return re.match(r"^ *\d+(?:  |\t)", row) is not None
+        return re.match(r"^(?:\d+\|| *\d+(?:  |\t))", row) is not None
 
     @staticmethod
     def _annotate(

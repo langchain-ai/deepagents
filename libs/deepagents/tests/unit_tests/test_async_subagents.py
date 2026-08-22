@@ -768,6 +768,38 @@ class TestCancelTool:
         assert "connection refused" in result
 
 
+class TestStaleAgentNameClientLookup:
+    """Regression test for a stale `agent_name` escaping as an unhandled `KeyError`.
+
+    A tracked task's `agent_name` may no longer be configured (the subagent was
+    renamed or removed). `_ClientCache.get_sync`/`get_async` raise `KeyError` in
+    that case; every tool entry point must turn it into an error string like any
+    other client-lookup failure, not let it escape. Covers the async entry points
+    of `check_async_task` and `cancel_async_task`.
+    """
+
+    @pytest.mark.parametrize(
+        ("tool_name", "entrypoint", "expected"),
+        [
+            ("check_async_task", "sync", "Failed to get run status: 'researcher'"),
+            ("check_async_task", "async", "Failed to get run status: 'researcher'"),
+            ("cancel_async_task", "sync", "Failed to cancel run: 'researcher'"),
+            ("cancel_async_task", "async", "Failed to cancel run: 'researcher'"),
+        ],
+    )
+    async def test_returns_error_string_instead_of_raising(self, tool_name: str, entrypoint: str, expected: str) -> None:
+        tools = _build_async_subagent_tools([_make_spec("worker")])
+        tool = _get_tool(tools, tool_name)
+        rt = _make_runtime_with_task(agent_name="researcher")
+
+        if entrypoint == "async":
+            result = await tool.coroutine(task_id="thread_abc", runtime=rt)
+        else:
+            result = tool.func(task_id="thread_abc", runtime=rt)
+
+        assert result == expected
+
+
 class TestUnknownTaskId:
     """Tests that check/update/cancel return error strings for unknown task IDs."""
 

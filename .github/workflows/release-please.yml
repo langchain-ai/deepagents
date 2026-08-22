@@ -131,6 +131,7 @@ jobs:
       talon-release: ${{ steps.check-releases.outputs.talon-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
+      microsandbox-release: ${{ steps.check-releases.outputs.microsandbox-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
       vercel-release: ${{ steps.check-releases.outputs.vercel-release }}
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
@@ -243,6 +244,14 @@ jobs:
             echo "Modal release detected: $COMMIT_MSG"
           else
             echo "modal-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/microsandbox/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-microsandbox\):"; then
+            echo "microsandbox-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
+            echo "Microsandbox release detected: $COMMIT_MSG"
+          else
+            echo "microsandbox-release=false" >> "$GITHUB_OUTPUT"
           fi
 
           if echo "$CHANGED" | grep -q "^libs/partners/runloop/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-runloop\):"; then
@@ -993,6 +1002,7 @@ jobs:
       needs.detect-release-commit.outputs.talon-release == 'true' ||
       needs.detect-release-commit.outputs.daytona-release == 'true' ||
       needs.detect-release-commit.outputs.modal-release == 'true' ||
+      needs.detect-release-commit.outputs.microsandbox-release == 'true' ||
       needs.detect-release-commit.outputs.runloop-release == 'true' ||
       needs.detect-release-commit.outputs.vercel-release == 'true' ||
       needs.detect-release-commit.outputs.quickjs-release == 'true'
@@ -1016,6 +1026,7 @@ jobs:
       TALON_RELEASE: ${{ needs.detect-release-commit.outputs.talon-release }}
       DAYTONA_RELEASE: ${{ needs.detect-release-commit.outputs.daytona-release }}
       MODAL_RELEASE: ${{ needs.detect-release-commit.outputs.modal-release }}
+      MICROSANDBOX_RELEASE: ${{ needs.detect-release-commit.outputs.microsandbox-release }}
       RUNLOOP_RELEASE: ${{ needs.detect-release-commit.outputs.runloop-release }}
       VERCEL_RELEASE: ${{ needs.detect-release-commit.outputs.vercel-release }}
       QUICKJS_RELEASE: ${{ needs.detect-release-commit.outputs.quickjs-release }}
@@ -1263,6 +1274,7 @@ jobs:
           TALON_RELEASE="${TALON_RELEASE:-false}";     assert_bool TALON_RELEASE   "$TALON_RELEASE"
           DAYTONA_RELEASE="${DAYTONA_RELEASE:-false}"; assert_bool DAYTONA_RELEASE "$DAYTONA_RELEASE"
           MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
+          MICROSANDBOX_RELEASE="${MICROSANDBOX_RELEASE:-false}"; assert_bool MICROSANDBOX_RELEASE "$MICROSANDBOX_RELEASE"
           RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
           VERCEL_RELEASE="${VERCEL_RELEASE:-false}";   assert_bool VERCEL_RELEASE  "$VERCEL_RELEASE"
           QUICKJS_RELEASE="${QUICKJS_RELEASE:-false}"; assert_bool QUICKJS_RELEASE "$QUICKJS_RELEASE"
@@ -1316,6 +1328,7 @@ jobs:
           if [ "$TALON_RELEASE" = "true" ];   then dispatch deepagents-talon;    fi
           if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
+          if [ "$MICROSANDBOX_RELEASE" = "true" ]; then dispatch langchain-microsandbox; fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
           if [ "$VERCEL_RELEASE" = "true" ];   then dispatch langchain-vercel-sandbox; fi
           if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi

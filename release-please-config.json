@@ -160,6 +160,21 @@
         "libs/partners/modal/tests"
       ]
     },
+    "libs/partners/microsandbox": {
+      "release-type": "python",
+      "package-name": "langchain-microsandbox",
+      "component": "langchain-microsandbox",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_microsandbox/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/microsandbox/tests"
+      ]
+    },
     "libs/partners/runloop": {
       "release-type": "python",
       "package-name": "langchain-runloop",

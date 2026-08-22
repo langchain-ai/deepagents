@@ -1,0 +1,99 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "langchain-microsandbox"
+description = "Microsandbox integration for Deep Agents"
+license = { text = "MIT" }
+readme = "README.md"
+
+classifiers = [
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+version = "0.0.1"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "deepagents>=0.7.0,<0.8.0",
+    "microsandbox>=0.6.8,<0.7.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["langchain_microsandbox"]
+
+[project.urls]
+Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/microsandbox"
+Repository = "https://github.com/langchain-ai/deepagents"
+Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/microsandbox"
+
+[dependency-groups]
+test = [
+    "pytest>=9.1.1,<10.0.0",
+    "pytest-cov",
+    "pytest-socket",
+    "pytest-timeout>=2.4.0,<3.0.0",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.15.20,<0.16.0",
+    "ty>=0.0.54,<1.0.0",
+    "langchain-tests>=1.1.9",
+]
+
+[tool.uv.sources]
+deepagents = { path = "../../deepagents", editable = true }
+
+[tool.ty.environment]
+python-version = "3.11"
+extra-paths = ["../../deepagents"]
+
+[tool.ty.rules]
+division-by-zero = "error"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",  # Messes with the formatter
+    "ISC001",  # Messes with the formatter
+]
+extend-safe-fixes = ["PLR6201"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.coverage.run]
+omit = ["tests/*"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config --durations=5"
+testpaths = ["tests"]
+markers = [
+    "requires: mark tests as requiring a specific library",
+    "compile: mark placeholder test used to compile integration tests without running them",
+    "scheduled: mark tests to run in scheduled testing",
+]
+asyncio_mode = "auto"
+filterwarnings = [
+    # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
+    "error",
+    # `langchain_core` imports `pydantic.v1` during collection on Python 3.14+.
+    "ignore:Core Pydantic V1 functionality isn't compatible:UserWarning",
+    # `google.genai.types` builds a deprecated private typing alias during import.
+    "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
+]
+
+[tool.ruff.lint.extend-per-file-ignores]
+"tests/**/*.py" = ["D", "S101"]

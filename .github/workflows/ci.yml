@@ -46,6 +46,7 @@ jobs:
       acp: ${{ steps.filter.outputs.acp }}
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
+      microsandbox: ${{ steps.filter.outputs.microsandbox }}
       runloop: ${{ steps.filter.outputs.runloop }}
       vercel: ${{ steps.filter.outputs.vercel }}
       quickjs: ${{ steps.filter.outputs.quickjs }}
@@ -135,6 +136,13 @@ jobs:
               - '.github/actions/**'
             modal:
               - 'libs/partners/modal/**'
+              - 'libs/deepagents/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            microsandbox:
+              - 'libs/partners/microsandbox/**'
               - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
@@ -232,6 +240,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/modal"
+      python-version: "3.11"
+
+  lint-microsandbox:
+    name: "🧹 Lint microsandbox"
+    needs: changes
+    if: needs.changes.outputs.microsandbox == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/microsandbox"
       python-version: "3.11"
 
   lint-runloop:
@@ -340,6 +357,16 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/modal"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
+  test-microsandbox:
+    name: "🧪 Test microsandbox"
+    needs: changes
+    if: needs.changes.outputs.microsandbox == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/microsandbox"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
@@ -539,6 +566,7 @@ jobs:
       - lint-acp
       - lint-daytona
       - lint-modal
+      - lint-microsandbox
       - lint-runloop
       - lint-vercel
       - lint-quickjs
@@ -550,6 +578,7 @@ jobs:
       - test-acp
       - test-daytona
       - test-modal
+      - test-microsandbox
       - test-runloop
       - test-vercel
       - test-quickjs

@@ -65,11 +65,13 @@
     "infra": "infra",
     "langchain-daytona": "daytona",
     "langchain-modal": "modal",
+    "langchain-microsandbox": "microsandbox",
     "langchain-quickjs": "quickjs",
     "langchain-runloop": "runloop",
     "langchain-vercel-sandbox": "vercel",
     "langsmith-sandbox": "langsmith-sandbox",
     "modal": "modal",
+    "microsandbox": "microsandbox",
     "quickjs": "quickjs",
     "runloop": "runloop",
     "sdk": "deepagents",
@@ -121,6 +123,11 @@
     {
       "label": "modal",
       "prefix": "libs/partners/modal/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "microsandbox",
+      "prefix": "libs/partners/microsandbox/",
       "skipExcludedFiles": true
     },
     {

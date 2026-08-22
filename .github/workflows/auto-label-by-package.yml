@@ -44,6 +44,7 @@ jobs:
               "harbor": "harbor",
               "daytona": "daytona",
               "modal": "modal",
+              "microsandbox": "microsandbox",
               "quickjs": "quickjs",
               "runloop": "runloop",
               "vercel": "vercel",

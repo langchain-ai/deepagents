@@ -53,6 +53,7 @@ PACKAGE_MAP = {
     "deepagents-evals": "libs/evals",
     "langchain-daytona": "libs/partners/daytona",
     "langchain-modal": "libs/partners/modal",
+    "langchain-microsandbox": "libs/partners/microsandbox",
     "langchain-quickjs": "libs/partners/quickjs",
     "langchain-runloop": "libs/partners/runloop",
     "langchain-vercel-sandbox": "libs/partners/vercel",

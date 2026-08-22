@@ -457,6 +457,13 @@ async def _plan(
     )
 
 
+def _capture_review_events(request: ModelRequest[Any]) -> list[dict[str, Any]]:
+    """Capture custom-stream events emitted by one model request."""
+    events: list[dict[str, Any]] = []
+    cast("Any", request.runtime).stream_writer = events.append
+    return events
+
+
 def _allow_result(call_id: str = "call-1") -> AutoDecisionBatch:
     return AutoDecisionBatch(
         decisions=[
@@ -489,6 +496,175 @@ def _deny_result(
             )
         ]
     )
+
+
+async def test_classifier_review_lifecycle_reports_only_opaque_ids(
+    tmp_path: Path,
+) -> None:
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "private/customer-secret.py"},
+    )
+    events = _capture_review_events(request)
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "private/customer-secret.py"},
+    )
+
+    assert [event["event"] for event in events] == [
+        "review_started",
+        "review_completed",
+    ]
+    assert events[0] == {
+        "type": "auto_mode",
+        "event": "review_started",
+        "batch_id": plan["batch_id"],
+        "tool_call_ids": ["call-1"],
+    }
+    assert events[1] == {
+        "type": "auto_mode",
+        "event": "review_completed",
+        "batch_id": plan["batch_id"],
+        "tool_call_ids": ["call-1"],
+        "approved_tool_call_ids": ["call-1"],
+    }
+    assert "customer-secret" not in json.dumps(events)
+
+
+@pytest.mark.parametrize(
+    ("result", "disposition"),
+    [
+        (_deny_result(), "policy_deny"),
+        (AutoDecisionBatch(decisions=[]), "classifier_unavailable"),
+    ],
+)
+async def test_classifier_review_lifecycle_balances_blocked_results(
+    tmp_path: Path,
+    result: AutoDecisionBatch,
+    disposition: str,
+) -> None:
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(result),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    events = _capture_review_events(request)
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == disposition
+    assert [event["event"] for event in events] == [
+        "review_started",
+        "review_completed",
+    ]
+    assert events[1]["approved_tool_call_ids"] == []
+
+
+async def test_classifier_review_lifecycle_completes_on_cancellation(
+    tmp_path: Path,
+) -> None:
+    started = asyncio.Event()
+
+    class _BlockingModel(_StructuredModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            _ = messages, kwargs
+            started.set()
+            await asyncio.Future()
+            return self.result
+
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_BlockingModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    events = _capture_review_events(request)
+    task = asyncio.create_task(
+        _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+    )
+
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert [event["event"] for event in events] == [
+        "review_started",
+        "review_completed",
+    ]
+    assert events[1]["approved_tool_call_ids"] == []
+
+
+@pytest.mark.parametrize("mode", ["manual", "yolo"])
+async def test_non_auto_modes_emit_no_classifier_review_lifecycle(
+    tmp_path: Path, mode: str
+) -> None:
+    middleware = _middleware(tmp_path)
+    request, store, key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": mode})
+    cast("dict[str, Any]", request.runtime.context)["approval_mode"] = mode
+    events = _capture_review_events(request)
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert events == []
+
+
+async def test_classifier_review_event_writer_failure_is_cosmetic(
+    tmp_path: Path,
+) -> None:
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    def fail_writer(_event: object) -> None:
+        msg = "custom stream unavailable"
+        raise RuntimeError(msg)
+
+    cast("Any", request.runtime).stream_writer = fail_writer
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert len(model.calls) == 1
 
 
 def _append_ask_user_exchange(
@@ -776,6 +952,7 @@ async def test_routine_in_worktree_write_is_deterministically_allowed(
         tool_name="write_file",
         args={"file_path": str(tmp_path / "src" / "module.py"), "content": "x = 1"},
     )
+    events = _capture_review_events(request)
 
     plan = await _plan(
         middleware,
@@ -785,6 +962,7 @@ async def test_routine_in_worktree_write_is_deterministically_allowed(
     )
 
     assert plan["decisions"][0]["disposition"] == "deterministic_allow"
+    assert events == []
 
 
 async def test_trusted_compaction_is_deterministically_allowed_without_human_review(
@@ -1862,6 +2040,36 @@ async def test_auto_async_counter_write_failure_routes_human(tmp_path: Path) -> 
 
     assert plan["fallback_reason"] == "control_state_unavailable"
     assert plan["decisions"][0]["disposition"] == "require_human"
+
+
+async def test_counter_write_failure_is_not_reported_as_classifier_approval(
+    tmp_path: Path,
+) -> None:
+    store = _FailingCounterStore()
+    middleware = _middleware(tmp_path)
+    request, _active_store, key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        store=store,
+    )
+    counters = _default_counters(ApprovalMode.AUTO)
+    counters["last_turn_id"] = "turn-1"
+    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, counters)
+    store.fail_counter_writes = True
+    events = _capture_review_events(request)
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "require_human"
+    assert events[-1]["event"] == "review_completed"
+    assert events[-1]["approved_tool_call_ids"] == []
 
 
 async def test_unavailable_auto_control_state_surfaces_manual_fallback(
@@ -3818,6 +4026,7 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
         tool_name="delete",
         args={"file_path": "old.py"},
     )
+    events = _capture_review_events(request)
 
     plan = await _plan(
         middleware,
@@ -3828,6 +4037,10 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     assert plan["decisions"][0]["reason"] == "classifier did not respond within 0.05s"
+    assert [event["event"] for event in events] == [
+        "review_started",
+        "review_completed",
+    ]
 
 
 @pytest.mark.parametrize("budget", [0, -1.0, float("nan"), float("inf")])

@@ -129,6 +129,8 @@ from deepagents_code.tui.widgets.messages import (
 
 logger = logging.getLogger(__name__)
 
+_MAX_COMPLETED_AUTO_REVIEWS = 64
+
 _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
 
@@ -757,6 +759,12 @@ class TextualUIAdapter:
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
         """Map of tool call IDs to their message widgets."""
 
+        self._active_auto_reviews: dict[str, frozenset[str]] = {}
+        """Reviewed tool IDs keyed by active Auto classifier batch."""
+
+        self._completed_auto_reviews: dict[str, None] = {}
+        """Recently completed batches used to reject late lifecycle events."""
+
         # Token display callbacks (set by the app after construction)
         self._on_tokens_update: _TokensUpdateCallback | None = None
         """Called with total context tokens after each LLM response."""
@@ -787,6 +795,57 @@ class TextualUIAdapter:
 
         self._on_stream_complete: Callable[[], None] | None = None
         """Called only after the agent stream reaches a clean end."""
+
+    def _reset_auto_mode_review_tracking(self) -> None:
+        """Start each graph turn with an empty lifecycle replay guard."""
+        self._active_auto_reviews.clear()
+        self._completed_auto_reviews.clear()
+
+    async def _handle_auto_mode_review_event(self, event: _AutoModeReviewEvent) -> None:
+        """Apply one validated Auto classifier lifecycle event."""
+        if event.phase == "review_started":
+            await self._start_auto_mode_review(event)
+        else:
+            await self._complete_auto_mode_review(event)
+
+    async def _start_auto_mode_review(self, event: _AutoModeReviewEvent) -> None:
+        """Pause reviewed tool rows and show classifier progress."""
+        if (
+            event.batch_id in self._active_auto_reviews
+            or event.batch_id in self._completed_auto_reviews
+        ):
+            return
+        self._active_auto_reviews[event.batch_id] = frozenset(event.tool_call_ids)
+        for tool_call_id in event.tool_call_ids:
+            if tool_msg := self._current_tool_messages.get(tool_call_id):
+                tool_msg.pause_running()
+                self._sync_tool_widget(tool_msg)
+        if self._set_spinner is not None:
+            await self._set_spinner("Reviewing approval request")
+
+    def _remember_completed_auto_review(self, batch_id: str) -> None:
+        """Bound the lifecycle replay guard for long-running sessions."""
+        self._completed_auto_reviews[batch_id] = None
+        if len(self._completed_auto_reviews) > _MAX_COMPLETED_AUTO_REVIEWS:
+            oldest_batch_id = next(iter(self._completed_auto_reviews))
+            del self._completed_auto_reviews[oldest_batch_id]
+
+    async def _complete_auto_mode_review(self, event: _AutoModeReviewEvent) -> None:
+        """Resume approved rows and restore the normal spinner state."""
+        self._remember_completed_auto_review(event.batch_id)
+        reviewed_ids = self._active_auto_reviews.pop(event.batch_id, None)
+        if reviewed_ids is None:
+            return
+        if reviewed_ids == frozenset(event.tool_call_ids):
+            for tool_call_id in event.approved_tool_call_ids:
+                if tool_msg := self._current_tool_messages.get(tool_call_id):
+                    tool_msg.set_running()
+                    self._sync_tool_widget(tool_msg)
+        status: _session_stats.SpinnerStatus = (
+            "Reviewing approval request" if self._active_auto_reviews else "Thinking"
+        )
+        if self._set_spinner is not None:
+            await self._set_spinner(status)
 
     def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
         """Sync a tool widget when the app provided a store callback.
@@ -1092,6 +1151,103 @@ def _require_approval_mode_key(value: str | None) -> str:
     return value
 
 
+class _AutoModeReviewEvent(NamedTuple):
+    """Validated lifecycle event for one Auto classifier review."""
+
+    phase: str
+    batch_id: str
+    tool_call_ids: tuple[str, ...]
+    approved_tool_call_ids: tuple[str, ...]
+
+
+def _opaque_ids(value: object, *, allow_empty: bool = False) -> tuple[str, ...] | None:
+    """Validate an ordered list of unique opaque identifiers.
+
+    Returns:
+        The validated identifiers, or `None` for an invalid value.
+    """
+    if not isinstance(value, list) or (not value and not allow_empty):
+        return None
+    if any(not isinstance(item, str) or not item for item in value):
+        return None
+    identifiers = tuple(item for item in value if isinstance(item, str))
+    return identifiers if len(set(identifiers)) == len(identifiers) else None
+
+
+def _validated_auto_mode_review_event(
+    data: Any,  # noqa: ANN401
+    *,
+    phase: str,
+) -> _AutoModeReviewEvent | None:
+    """Validate the body of a lifecycle payload with a known phase.
+
+    Args:
+        data: Payload already confirmed to be an Auto mode event dict.
+        phase: Lifecycle phase parsed from the payload.
+
+    Returns:
+        The validated lifecycle event, or `None` when the body is malformed.
+    """
+    expected_keys = {"type", "event", "batch_id", "tool_call_ids"}
+    if phase == "review_completed":
+        expected_keys.add("approved_tool_call_ids")
+    if set(data) != expected_keys:
+        return None
+    batch_id = data.get("batch_id")
+    tool_call_ids = _opaque_ids(data.get("tool_call_ids"))
+    if not isinstance(batch_id, str) or not batch_id or tool_call_ids is None:
+        return None
+    if phase == "review_started":
+        if "approved_tool_call_ids" in data:
+            return None
+        approved_tool_call_ids: tuple[str, ...] = ()
+    else:
+        approved_tool_call_ids = _opaque_ids(
+            data.get("approved_tool_call_ids"), allow_empty=True
+        )
+        if approved_tool_call_ids is None:
+            return None
+        if not set(approved_tool_call_ids).issubset(tool_call_ids):
+            return None
+    return _AutoModeReviewEvent(phase, batch_id, tool_call_ids, approved_tool_call_ids)
+
+
+def _parse_auto_mode_review_event(
+    data: object, *, is_main_agent: bool
+) -> _AutoModeReviewEvent | None:
+    """Validate an Auto classifier lifecycle event from the main agent.
+
+    Returns:
+        The validated lifecycle event, or `None` when the payload is not trusted.
+    """
+    if (
+        not is_main_agent
+        or not isinstance(data, dict)
+        or data.get("type") != "auto_mode"
+    ):
+        return None
+    phase = data.get("event")
+    if not isinstance(phase, str) or phase not in {
+        "review_started",
+        "review_completed",
+    }:
+        return None
+    event = _validated_auto_mode_review_event(data, phase=phase)
+    if event is None:
+        # `auto_mode` builds this payload by hand and we re-derive its exact key
+        # set here, so producer drift rejects the event instead of degrading it
+        # -- silently disabling the progress indicator, or worse, pausing rows
+        # that never resume. Past the phase check the payload is meant to be a
+        # lifecycle event, so a rejection is a defect rather than a foreign
+        # event, and it is the only signal that the two sides disagree.
+        logger.warning(
+            "Rejected malformed Auto review event: event=%s keys=%s",
+            phase,
+            list(data),
+        )
+    return event
+
+
 def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401
     """Return whether a custom event is a sanitized Auto control-state notice."""
     if (
@@ -1231,6 +1387,7 @@ async def execute_task_textual(
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
+    adapter._reset_auto_mode_review_tracking()
 
     message_content: str | list[dict[str, Any]] | None = None
     if graph_input is None:
@@ -1590,6 +1747,18 @@ async def execute_task_textual(
                                 logger.warning(
                                     "on_session_cost callback failed", exc_info=True
                                 )
+                        continue
+
+                    auto_review_event = _parse_auto_mode_review_event(
+                        data, is_main_agent=is_main_agent
+                    )
+                    if auto_review_event is not None:
+                        try:
+                            await adapter._handle_auto_mode_review_event(
+                                auto_review_event
+                            )
+                        except Exception:
+                            logger.exception("Auto review event handler failed")
                         continue
 
                     rubric_message = data if isinstance(data, dict) else None

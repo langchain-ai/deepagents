@@ -2338,10 +2338,11 @@ def _parse_interpreter_ptc(
 def _read_config_toml_retries() -> dict[str, Any] | None:
     """Read and lightly validate `[retries]` from managed config over user config.
 
-    Provider sub-table names are checked against the set of providers the app
-    knows how to authenticate so a mistyped provider (e.g. `[retries.fireorks]`)
-    surfaces a warning rather than being silently dropped. Value validation is
-    deferred to `_resolve_retry_kwargs`, which runs per active provider.
+    Provider sub-table names are checked against built-in retry integrations and
+    providers declared under `[models.providers]`, so a mistyped provider (e.g.
+    `[retries.fireorks]`) surfaces a warning without rejecting Bedrock or custom
+    providers. Value validation is deferred to `_resolve_config_retry_count`,
+    which runs per active provider.
 
     Returns:
         The merged `[retries]` mapping, or `None` when neither layer supplies
@@ -2382,6 +2383,11 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
         | set(IMPLICIT_AUTH_PROVIDERS)
         | set(RETRY_PARAM_BY_PROVIDER)
     )
+    models = data.get("models")
+    if isinstance(models, dict):
+        providers = models.get("providers")
+        if isinstance(providers, dict):
+            known_providers.update(providers)
     for key, value in section.items():
         if (
             isinstance(value, dict)
@@ -2413,14 +2419,14 @@ def _coerce_max_retries(raw: Any, *, source: str) -> int | None:  # noqa: ANN401
 
 
 def _coerce_retry_param(raw: Any, *, source: str) -> str | None:  # noqa: ANN401
-    """Validate a constructor kwarg name for retry configuration.
+    """Validate a provider constructor retry-parameter name.
 
     Args:
         raw: Value loaded from TOML.
         source: Human-readable config path for warnings.
 
     Returns:
-        The retry parameter name, or `None` when invalid.
+        The parameter name, or `None` when invalid.
     """
     if isinstance(raw, str) and raw.isidentifier() and not keyword.iskeyword(raw):
         return raw
@@ -2432,37 +2438,36 @@ def _coerce_retry_param(raw: Any, *, source: str) -> str | None:  # noqa: ANN401
     return None
 
 
-def _resolve_retry_kwargs(
+def _resolve_config_retry_count(
     section: dict[str, Any] | None,
     provider: str,
-) -> dict[str, int]:
-    """Resolve the retry-count kwarg for `provider` from a `[retries]` section.
+) -> int | None:
+    """Resolve the model-node retry count for `provider` from `[retries]`.
 
     A per-provider `[retries.<provider>].max_retries` overrides the global
-    `[retries].max_retries`. Known providers use `RETRY_PARAM_BY_PROVIDER`;
-    arbitrary providers can opt in with `[retries.<provider>].param`.
-    Unknown providers without a configured parameter receive nothing, and
-    unknown or malformed keys are dropped with a warning.
+    `[retries].max_retries`. The retry count now drives dcode's model-node retry
+    middleware rather than a provider constructor kwarg, so it applies uniformly
+    to every provider. Unknown or malformed keys are dropped with a warning.
+
+    `[retries.<provider>].param` identifies a custom provider's internal retry
+    constructor kwarg. It does not change the middleware count; dcode sets that
+    provider kwarg to zero so the middleware remains authoritative.
 
     Args:
         section: Raw `[retries]` mapping from `config.toml`, or `None`.
-        provider: Provider the kwargs are being resolved for.
+        provider: Provider the retry count is being resolved for.
 
     Returns:
-        `{retry_param_name: count}` when a valid retry count resolves, else an
-            empty dict.
+        The resolved retry count, or `None` when the config specifies none.
     """
     if not section:
-        return {}
-
-    from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
+        return None
 
     for key, value in section.items():
         if key == "max_retries" or isinstance(value, dict):
             continue
         logger.warning("Ignoring [retries].%s=%r in config.toml", key, value)
 
-    retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
     resolved: int | None = None
     if "max_retries" in section:
         resolved = _coerce_max_retries(
@@ -2478,7 +2483,9 @@ def _resolve_retry_kwargs(
         )
     elif provider_section:
         for key, value in provider_section.items():
-            if key not in {"max_retries", "param"}:
+            if key == "param":
+                continue
+            if key != "max_retries":
                 logger.warning(
                     "Ignoring [retries.%s].%s=%r in config.toml",
                     provider,
@@ -2492,61 +2499,30 @@ def _resolve_retry_kwargs(
             )
             if provider_value is not None:
                 resolved = provider_value
-        if "param" in provider_section:
-            provider_param = _coerce_retry_param(
-                provider_section["param"],
-                source=f"[retries.{provider}].param",
-            )
-            if provider_param is not None:
-                retry_param = provider_param
 
-    if retry_param is None:
-        logger.warning(
-            "Ignoring [retries] config for provider %r; provider does not support "
-            "a registered or configured retry parameter",
-            provider,
-        )
-        return {}
-
-    if resolved is None:
-        return {}
-    return {retry_param: resolved}
+    return resolved
 
 
-CLI_MAX_RETRIES_KEY = "__deepagents_cli_max_retries__"
-"""Internal carrier key for the `--max-retries` CLI flag.
-
-`cli_main` stashes the flag value under this key in the `model_params` dict it
-forwards to the run, and `create_model` pops it before constructing the model.
-This lets the CLI value ride the existing `model_params`/`extra_kwargs` carrier
-to the one place that authoritatively resolves the provider, where it can be
-folded under the provider's *resolved* retry-param name (see
-`_resolve_retry_param_name`) rather than a hardcoded `max_retries`.
-
-The key is internal-only: it is popped before reaching any model constructor and
-is never serialized or surfaced to users. It is deliberately unlikely to collide
-with a real constructor kwarg name.
-"""
-
-
-def _resolve_retry_param_name(provider: str) -> str:
-    """Resolve the constructor kwarg name that sets `provider`'s retry count.
-
-    Honors a `[retries.<provider>].param` override in `config.toml`, then the
-    registered `RETRY_PARAM_BY_PROVIDER` mapping, and finally falls back to
-    `max_retries` -- the near-universal LangChain chat-model kwarg -- for
-    providers that are neither registered nor configured.
+def _provider_retry_disable_kwargs(
+    section: dict[str, Any] | None,
+    provider: str,
+    model_kwargs: dict[str, Any],
+) -> dict[str, int]:
+    """Return the constructor kwarg that disables provider-owned retries.
 
     Args:
-        provider: Provider the retry kwarg name is being resolved for.
+        section: Raw `[retries]` mapping from `config.toml`, or `None`.
+        provider: Effective model provider.
+        model_kwargs: Constructor kwargs after all user overrides are merged.
 
     Returns:
-        The constructor kwarg name to use for the retry count.
+        A one-item mapping from retry parameter to zero when the provider's
+        retry control is known, otherwise an empty mapping.
     """
     from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
 
-    section = _read_config_toml_retries()
-    if section:
+    retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
+    if retry_param is None and section:
         provider_section = section.get(provider)
         if isinstance(provider_section, dict) and "param" in provider_section:
             configured = _coerce_retry_param(
@@ -2554,9 +2530,99 @@ def _resolve_retry_param_name(provider: str) -> str:
                 source=f"[retries.{provider}].param",
             )
             if configured is not None:
-                return configured
+                retry_param = configured
 
-    return RETRY_PARAM_BY_PROVIDER.get(provider, "max_retries")
+    # A custom provider that already exposes the conventional parameter has
+    # positively identified its retry control through model configuration.
+    if retry_param is None and "max_retries" in model_kwargs:
+        retry_param = "max_retries"
+    if retry_param is None:
+        # The provider's own SDK retry loop can't be identified, so it stays
+        # active and may multiply the middleware's attempts. Register the
+        # provider in `RETRY_PARAM_BY_PROVIDER` or set `[retries.<provider>].param`.
+        logger.debug(
+            "No retry-disable kwarg for provider %r; its SDK retries stay active",
+            provider,
+        )
+        return {}
+    return {retry_param: 0}
+
+
+CLI_MAX_RETRIES_KEY = "__deepagents_cli_max_retries__"
+"""Internal carrier key for the `--max-retries` CLI flag.
+
+`cli_main` stashes the flag value under this key in the `model_params` dict it
+forwards to the run, and `create_model` pops it before resolving the effective
+model-node retry count (see `resolve_model_retries`). This lets the CLI value
+ride the existing `model_params`/`extra_kwargs` carrier to the one place that
+authoritatively resolves the provider.
+
+The key is internal-only: it is popped before reaching any model constructor and
+is never serialized or surfaced to users. It is deliberately unlikely to collide
+with a real constructor kwarg name.
+"""
+
+
+DEFAULT_MODEL_RETRIES = 5
+"""Default model-node retry attempts after the first call when config is absent.
+
+Canonical source for the dcode retry default; `model_retry` re-exports it so the
+middleware and the config resolver never drift.
+"""
+
+MODEL_RETRIES_ATTR = "_deepagents_model_retries"
+"""Private model attribute carrying its resolved request-time retry budget."""
+
+MODEL_RETRY_OVERRIDE_ATTR = "_deepagents_model_retry_override"
+"""Private model attribute carrying an explicit CLI retry override, if any."""
+
+
+def _resolve_model_retries_from_section(
+    section: dict[str, Any] | None,
+    provider: str,
+    cli_max_retries: int | None,
+) -> int:
+    """Resolve a retry budget from already-loaded configuration.
+
+    Args:
+        section: Raw `[retries]` mapping from `config.toml`, or `None`.
+        provider: Effective model provider.
+        cli_max_retries: Explicit CLI override, or `None` when unset.
+
+    Returns:
+        The effective retry count.
+    """
+    if cli_max_retries is not None:
+        return cli_max_retries
+    configured = _resolve_config_retry_count(section, provider)
+    return configured if configured is not None else DEFAULT_MODEL_RETRIES
+
+
+def resolve_model_retries(
+    provider: str,
+    *,
+    cli_max_retries: int | None = None,
+) -> int:
+    """Resolve the effective model-node retry count for `provider`.
+
+    Precedence (highest first):
+
+    1. `cli_max_retries` (the `--max-retries` flag).
+    2. `[retries.<provider>].max_retries` in `config.toml`.
+    3. `[retries].max_retries` (global) in `config.toml`.
+    4. `DEFAULT_MODEL_RETRIES`.
+
+    A resolved value of `0` disables retries.
+
+    Args:
+        provider: Provider the retry count is being resolved for.
+        cli_max_retries: The `--max-retries` flag value, or `None` when unset.
+
+    Returns:
+        The effective retry count (always `>= 0`).
+    """
+    section = _read_config_toml_retries()
+    return _resolve_model_retries_from_section(section, provider, cli_max_retries)
 
 
 def _read_config_toml_skills_dirs() -> list[str] | None:
@@ -4956,11 +5022,6 @@ def _get_provider_kwargs(
                         client_kwargs["headers"] = headers
                         result["client_kwargs"] = client_kwargs
 
-    retry_section = _read_config_toml_retries()
-    retry_kwargs = _resolve_retry_kwargs(retry_section, provider)
-    for key, value in retry_kwargs.items():
-        result.setdefault(key, value)
-
     return result
 
 
@@ -5181,6 +5242,8 @@ class ModelResult:
         context_limit: Max input tokens from the model profile, or `None`.
         unsupported_modalities: Input modalities not indicated as supported by
             the model profile (e.g. `{"audio", "video"}`).
+        model_retries: Effective model-node retry count for the resolved
+            provider (see `resolve_model_retries`). `0` disables retries.
     """
 
     model: BaseChatModel
@@ -5188,6 +5251,21 @@ class ModelResult:
     provider: str
     context_limit: int | None = None
     unsupported_modalities: frozenset[str] = frozenset()
+    model_retries: int = DEFAULT_MODEL_RETRIES
+
+    def __post_init__(self) -> None:
+        """Enforce the middleware's non-negative retry-budget invariant.
+
+        `resolve_model_retries` never returns a negative count, so a negative
+        value here signals a caller constructing `ModelResult` by hand with a
+        budget the retry middleware could not honor.
+
+        Raises:
+            ValueError: If `model_retries` is negative.
+        """
+        if self.model_retries < 0:
+            msg = f"model_retries must be >= 0, got {self.model_retries}"
+            raise ValueError(msg)
 
     def apply_to_settings(self) -> None:
         """Commit this result's metadata to global `settings`."""
@@ -5272,9 +5350,10 @@ def create_model(
             These take highest priority, overriding values from the config file.
 
             A `CLI_MAX_RETRIES_KEY` entry (set by the `--max-retries` flag) is
-            treated specially: it is popped here and re-applied under the
-            provider's resolved retry-param name with top precedence, rather than
-            being forwarded verbatim to the constructor.
+            treated specially: it is popped here and used to resolve the model
+            retry count on the returned `ModelResult` (which drives dcode's
+            model-node retry middleware), rather than being forwarded to the
+            constructor.
         profile_overrides: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides (dcode wins).
@@ -5432,12 +5511,16 @@ def create_model(
         reasoning_override,
     )
 
-    # `--max-retries` outranks everything: fold it under the provider's resolved
-    # retry-param name (honoring `[retries.<provider>].param`) so a custom
-    # provider whose kwarg is not `max_retries` is still served. Applied after
-    # the `extra_kwargs` merge so it wins over a `max_retries` in `--model-params`.
-    if cli_max_retries is not None:
-        kwargs[_resolve_retry_param_name(provider)] = cli_max_retries
+    # dcode's model-node middleware owns the user-visible retry budget. Resolve
+    # that budget separately, then force the provider's own retry loop off so
+    # nested SDK retries cannot multiply the configured attempt count.
+    retry_section = _read_config_toml_retries()
+    model_retries = _resolve_model_retries_from_section(
+        retry_section,
+        provider,
+        cli_max_retries,
+    )
+    kwargs.update(_provider_retry_disable_kwargs(retry_section, provider, kwargs))
 
     # Check if this provider uses a custom BaseChatModel class
     class_path = config.get_class_path(provider) if provider else None
@@ -5513,6 +5596,17 @@ def create_model(
             raise_on_failure=True,
         )
 
+    # Keep retry policy metadata on the concrete model selected for the request.
+    # Runtime `/model` switches replace `request.model`, so the downstream retry
+    # middleware can read the matching budget without mutating shared middleware
+    # state or forwarding an internal key to a provider API.
+    object.__setattr__(  # noqa: PLC2801  # Pydantic models reject unknown fields through normal setattr
+        model, MODEL_RETRIES_ATTR, model_retries
+    )
+    object.__setattr__(  # noqa: PLC2801  # Pydantic models reject unknown fields through normal setattr
+        model, MODEL_RETRY_OVERRIDE_ATTR, cli_max_retries
+    )
+
     # Extract context limit and modality support from model profile
     context_limit: int | None = None
     unsupported_modalities: frozenset[str] = frozenset()
@@ -5537,6 +5631,7 @@ def create_model(
         provider=resolved_provider,
         context_limit=context_limit,
         unsupported_modalities=unsupported_modalities,
+        model_retries=model_retries,
     )
 
 

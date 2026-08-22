@@ -77,6 +77,7 @@ from deepagents_code.approval_mode import (
 )
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
+    DEFAULT_MODEL_RETRIES,
     _ShellAllowAll,
     config,
     console,
@@ -2242,6 +2243,7 @@ def create_cli_agent(
     async_subagents: list[AsyncSubAgent] | None = None,
     goal_criteria_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
     rubric_grader_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
+    model_retries: int = DEFAULT_MODEL_RETRIES,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -2390,6 +2392,8 @@ def create_cli_agent(
         rubric_grader_tools: External read-only context tools available to rubric
             grading for verifying work completed in MCP-backed or web-accessible
             systems.
+        model_retries: Model-node retry attempts after the first call. `0`
+            disables retries. Resolved upstream from config/CLI.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -2502,6 +2506,9 @@ def create_cli_agent(
         # activates only for the measured Fireworks GLM-5.2 endpoint.
         if not interactive:
             middleware.append(_GlmTerminalStallRecovery())
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Server-owned hooks must wrap subagent tools too; otherwise Pre/Post
@@ -2596,6 +2603,14 @@ def create_cli_agent(
 
         if gated_names := gated_mcp_tool_names(mcp_tools):
             agent_middleware.append(HeadlessMCPGuardMiddleware(gated_names))
+
+    # Model-node retry: wraps only the model call so transient connection
+    # failures are retried without replaying completed tool calls. Keep it in
+    # the stack when the startup budget is zero because a runtime `/model`
+    # switch may select a provider with a non-zero request-time budget.
+    from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+    agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
 
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata

@@ -1,0 +1,72 @@
+PromptClipboardScreen {
+    align: center middle;
+}
+
+PromptClipboardScreen > Vertical {
+    width: 90%;
+    max-width: 100;
+    height: auto;
+    /* No max-height here: a clamped auto container does not shrink its
+       children, so the list would keep its natural height and push the
+       preview/help past the border. `_fit_prompt_list` clamps the list
+       instead, same as the `/model` selector. */
+    background: $surface;
+    border: solid $primary;
+    padding: 1 2;
+}
+
+PromptClipboardScreen .prompt-title {
+    height: auto;
+    text-style: bold;
+    color: $primary;
+    text-align: center;
+    margin-bottom: 1;
+}
+
+PromptClipboardScreen #prompt-filter {
+    margin-bottom: 1;
+}
+
+PromptClipboardScreen #prompt-list {
+    height: auto;
+    min-height: 3;
+    max-height: 20;
+    background: $background;
+    scrollbar-gutter: stable;
+}
+
+PromptClipboardScreen .prompt-row {
+    height: 1;
+    padding: 0 1;
+}
+
+PromptClipboardScreen .prompt-row-selected {
+    background: $primary;
+    color: $background;
+}
+
+PromptClipboardScreen .prompt-preview-label {
+    height: auto;
+    color: $text-muted;
+    margin-top: 1;
+}
+
+PromptClipboardScreen #prompt-preview-scroll {
+    height: auto;
+    min-height: 3;
+    max-height: 8;
+    border: round $surface-lighten-2;
+    padding: 0 1;
+}
+
+PromptClipboardScreen #prompt-preview {
+    height: auto;
+}
+
+PromptClipboardScreen .prompt-help {
+    height: auto;
+    color: $text-muted;
+    text-style: italic;
+    text-align: center;
+    margin-top: 1;
+}

@@ -2001,6 +2001,32 @@ class TestSetValueAtEnd:
             assert text_area.cursor_location == (1, len("second"))
 
 
+class TestInsertAtCursor:
+    """Tests for undoable prompt insertion without submission."""
+
+    async def test_inserts_multiline_text_at_cursor_and_is_undoable(self) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+            text_area.insert("before after")
+            text_area.move_cursor((0, len("before ")))
+
+            assert chat_input.insert_at_cursor("saved\nprompt") is True
+            await pilot.pause()
+
+            assert chat_input.value == "before saved\npromptafter"
+            assert app.submitted == []
+
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == "before after"
+
+    def test_returns_false_before_text_area_is_mounted(self) -> None:
+        assert ChatInput().insert_at_cursor("saved prompt") is False
+
+
 class TestRefocusClickSuppression:
     """Clicks that re-focus the terminal window should not move the cursor."""
 

@@ -3069,6 +3069,13 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
+        Binding(
+            "ctrl+r",
+            "open_prompt_clipboard",
+            "Prompt Clipboard",
+            show=False,
+            priority=True,
+        ),
         # `check_action` steps this binding aside (returns `False`) while a
         # `ModelSelectorScreen` is active so the selector's own priority
         # `ctrl+n` (toggle_names) wins; keep the action name in sync there.
@@ -15164,6 +15171,7 @@ class DeepAgentsApp(App):
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
                 f"  Ctrl+X          {editor_help}\n"
+                "  Ctrl+R          Search and reuse submitted prompts\n"
                 "  Ctrl+N          Review pending notifications\n"
                 "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
@@ -15309,6 +15317,8 @@ class DeepAgentsApp(App):
                     else "Failed to copy latest assistant message to clipboard."
                 )
                 await self._mount_message(AppMessage(fail_msg))
+        elif cmd == "/prompts":
+            self.action_open_prompt_clipboard()
         elif cmd == "/editor":
             await self.action_open_editor()
         elif cmd in {"/offload", "/compact"}:
@@ -21816,6 +21826,42 @@ class DeepAgentsApp(App):
         finally:
             restore_focus()
 
+    def _prompt_clipboard_blocked(self) -> bool:
+        """Return whether another input surface currently owns keyboard input."""
+        return (
+            self._chat_input is None
+            or isinstance(self.screen, ModalScreen)
+            or self._pending_approval_widget is not None
+            or self._pending_ask_user_widget is not None
+            or self._pending_goal_review_widget is not None
+        )
+
+    def action_open_prompt_clipboard(self) -> None:
+        """Open searchable local prompt history without blocking the message pump."""
+        if self._prompt_clipboard_blocked():
+            return
+        chat_input = self._chat_input
+        if chat_input is None:
+            return
+
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        def handle_result(result: str | None) -> None:
+            def apply_result() -> None:
+                current_input = self._chat_input
+                if current_input is None:
+                    return
+                if result is not None:
+                    current_input.insert_at_cursor(result)
+                current_input.focus_input()
+
+            self.call_after_refresh(apply_result)
+
+        self.push_screen(
+            PromptClipboardScreen(chat_input.recent_prompts()),
+            handle_result,
+        )
+
     async def action_open_editor(self) -> None:
         """Open the focused editable surface in $VISUAL/$EDITOR."""
         goal_editor = self._focused_goal_review_editor()
@@ -23260,6 +23306,8 @@ class DeepAgentsApp(App):
         reverts to the active screen's own handling. Depending on the screen that
         is either a competing screen binding or default key handling:
 
+        - `open_prompt_clipboard` (`ctrl+r`): every modal and inline prompt keeps
+            ownership of the chord, including selectors with their own Ctrl+R.
         - `open_notifications` (`ctrl+n`): `ModelSelectorScreen` has its own
             priority `ctrl+n -> toggle_names` binding that then wins.
         - `toggle_auto_approve` (`shift+tab`): `DebugConsoleScreen` has no
@@ -23269,10 +23317,12 @@ class DeepAgentsApp(App):
             cursor-style modals via `_SupportsReverseNav` and otherwise no-ops
             under a `ModalScreen` that lacks dedicated `shift+tab` handling
             (as `DebugConsoleScreen` does), so the key would be silently
-            swallowed. Note this keys on the action, and `toggle_auto_approve`
-            is also bound to `ctrl+t`, so that (harmless, already a no-op
-            under modals) binding is stepped aside too while the console is
-            open.
+            swallowed. `PromptClipboardScreen` also steps aside so its
+            `action_move_up` method is not mistaken for reverse navigation. Note
+            this keys on the action, and `toggle_auto_approve` is also bound to
+            `ctrl+t`, so that binding is stepped aside under either screen.
+        - `quit_or_interrupt` (`ctrl+c`): the prompt clipboard owns this chord for
+            copying the selected prompt rather than the focused search text.
         - `approval_reject_with_reason` (`tab`): unlike the other approval keys
             this one must be `priority=True` to beat `Screen`'s
             `tab -> app.focus_next`, which means it would otherwise swallow
@@ -23288,15 +23338,27 @@ class DeepAgentsApp(App):
                 active screen or default key handling take the key); `True` to
                 leave it enabled.
         """
+        if action == "open_prompt_clipboard":
+            return not self._prompt_clipboard_blocked()
         if action == "open_notifications":
             from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
             if isinstance(self.screen, ModelSelectorScreen):
                 return False
         if action == "toggle_auto_approve":
+            from deepagents_code.tui.modals.prompt_clipboard import (
+                PromptClipboardScreen,
+            )
             from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
 
-            if isinstance(self.screen, DebugConsoleScreen):
+            if isinstance(self.screen, (DebugConsoleScreen, PromptClipboardScreen)):
+                return False
+        if action == "quit_or_interrupt":
+            from deepagents_code.tui.modals.prompt_clipboard import (
+                PromptClipboardScreen,
+            )
+
+            if isinstance(self.screen, PromptClipboardScreen):
                 return False
         if action == "approval_reject_with_reason":
             return self._pending_approval_widget is not None and (

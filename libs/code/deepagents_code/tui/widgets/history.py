@@ -29,15 +29,21 @@ class HistoryManager:
         self.history_file = history_file
         self.max_entries = max_entries
         self._entries: list[str] = []
+        self._failed_persist: set[str] = set()
         self._current_index: int = -1
         self._temp_input: str = ""
         self._query: str = ""
         self._load_history()
 
-    def _load_history(self) -> None:
-        """Load history from file."""
+    def _read_history(self) -> list[str] | None:
+        """Read all persisted entries, tolerating legacy malformed lines.
+
+        Returns:
+            Persisted entries in file order, or `None` when the file could
+            not be read.
+        """
         if not self.history_file.exists():
-            return
+            return None
 
         try:
             with self.history_file.open("r", encoding="utf-8") as f:
@@ -51,17 +57,56 @@ class HistoryManager:
                     except json.JSONDecodeError:
                         entry = line
                     entries.append(entry if isinstance(entry, str) else str(entry))
-                self._entries = entries[-self.max_entries :]
+                return entries
         except (OSError, UnicodeDecodeError):
             logger.warning(
                 "Failed to load history from %s; starting with empty history",
                 self.history_file,
                 exc_info=True,
             )
-            self._entries = []
+            return None
 
-    def _append_to_file(self, text: str) -> None:
-        """Append a single entry to history file (concurrent-safe)."""
+    def _load_history(self) -> None:
+        """Load the bounded navigation history from file."""
+        self._entries = (self._read_history() or [])[-self.max_entries :]
+
+    def recent_prompts(self) -> tuple[str, ...]:
+        """Refresh and return unique prompts in newest-first order.
+
+        On a read failure the in-memory entries are kept, so prompts whose
+        file append failed earlier in the session are not destroyed.
+
+        Returns:
+            A bounded immutable prompt snapshot.
+        """
+        entries = self._read_history()
+        if entries is None:
+            entries = list(self._entries)
+        else:
+            # Prompts whose append failed live only in memory; re-append them
+            # so the refresh does not silently drop them from navigation.
+            unpersisted = self._failed_persist - set(entries)
+            entries.extend(entry for entry in self._entries if entry in unpersisted)
+            self._entries = entries[-self.max_entries :]
+        self.reset_navigation()
+
+        recent: list[str] = []
+        seen: set[str] = set()
+        for entry in reversed(entries):
+            if entry in seen:
+                continue
+            seen.add(entry)
+            recent.append(entry)
+            if len(recent) == self.max_entries:
+                break
+        return tuple(recent)
+
+    def _append_to_file(self, text: str) -> bool:
+        """Append a single entry to history file (concurrent-safe).
+
+        Returns:
+            `True` when the entry was persisted, `False` otherwise.
+        """
         try:
             self.history_file.parent.mkdir(parents=True, exist_ok=True)
             with self.history_file.open("a", encoding="utf-8") as f:
@@ -72,6 +117,8 @@ class HistoryManager:
                 self.history_file,
                 exc_info=True,
             )
+            return False
+        return True
 
     def _compact_history(self) -> None:
         """Rewrite history file to remove old entries.
@@ -113,8 +160,12 @@ class HistoryManager:
 
         self._entries.append(text)
 
-        # Append to file (fast, concurrent-safe)
-        self._append_to_file(text)
+        # Append to file (fast, concurrent-safe). The entry stays in memory
+        # even when the write fails, so up-arrow recall keeps working for the
+        # session; `_failed_persist` lets a later `recent_prompts` refresh
+        # merge it back instead of dropping it.
+        if not self._append_to_file(text):
+            self._failed_persist.add(text)
 
         # Compact only when we have 2x max entries (rare operation)
         if len(self._entries) > self.max_entries * 2:

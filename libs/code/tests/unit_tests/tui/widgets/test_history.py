@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -134,6 +136,107 @@ class TestSkillInvocationHistory:
 
         reloaded = HistoryManager(history_file)
         assert reloaded._entries == ["/skill:web-research find cats"]
+
+
+class TestRecentPrompts:
+    """Prompt snapshots refresh, deduplicate, and bound persisted history."""
+
+    def test_returns_newest_first_and_deduplicates(self, tmp_path: Path) -> None:
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text(
+            "".join(
+                json.dumps(entry) + "\n"
+                for entry in ("first", "duplicate", "second", "duplicate")
+            ),
+            encoding="utf-8",
+        )
+
+        mgr = HistoryManager(history_file)
+
+        assert mgr.recent_prompts() == ("duplicate", "second", "first")
+
+    def test_refreshes_concurrent_appends(self, tmp_path: Path) -> None:
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file)
+        mgr.add("first")
+        with history_file.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps("from another process") + "\n")
+
+        assert mgr.recent_prompts() == ("from another process", "first")
+        assert mgr.get_previous("") == "from another process"
+
+    def test_bounds_unique_entries_after_deduplication(self, tmp_path: Path) -> None:
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text(
+            "".join(
+                json.dumps(entry) + "\n"
+                for entry in ("old unique", "repeat", "new unique", "repeat")
+            ),
+            encoding="utf-8",
+        )
+
+        mgr = HistoryManager(history_file, max_entries=3)
+
+        assert mgr.recent_prompts() == ("repeat", "new unique", "old unique")
+
+    def test_preserves_malformed_line_fallback(self, tmp_path: Path) -> None:
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text('"valid"\nnot-json\n', encoding="utf-8")
+
+        mgr = HistoryManager(history_file)
+
+        assert mgr.recent_prompts() == ("not-json", "valid")
+
+    def test_includes_only_slash_commands_eligible_for_history(
+        self, tmp_path: Path
+    ) -> None:
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("regular prompt")
+        mgr.add("/help")
+        mgr.add("/skill:remember this")
+
+        assert mgr.recent_prompts() == ("/skill:remember this", "regular prompt")
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores read-only mode")
+    def test_read_failure_preserves_session_prompts(self, tmp_path: Path) -> None:
+        """A failed refresh keeps in-memory prompts instead of wiping them."""
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text(json.dumps("persisted") + "\n", encoding="utf-8")
+
+        mgr = HistoryManager(history_file)
+        mgr.add("session only")
+        assert mgr._entries == ["persisted", "session only"]
+
+        history_file.chmod(0o000)
+        try:
+            assert mgr.recent_prompts() == ("session only", "persisted")
+            assert mgr._entries == ["persisted", "session only"]
+        finally:
+            history_file.chmod(0o600)
+
+    def test_failed_append_survives_refresh(self, tmp_path: Path) -> None:
+        """A prompt that could not be written stays through a later refresh."""
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file)
+        mgr.add("persisted")
+
+        # Point the manager at a path whose parent is a regular file, so the
+        # append's mkdir/open raises OSError and the entry stays in memory.
+        blocker = tmp_path / "blocker"
+        blocker.touch()
+        mgr.history_file = blocker / "history.jsonl"
+        mgr.add("append failed")
+
+        mgr.history_file = history_file
+        with history_file.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps("from another process") + "\n")
+
+        assert mgr.recent_prompts() == (
+            "append failed",
+            "from another process",
+            "persisted",
+        )
+        assert mgr.get_previous("") == "append failed"
 
 
 class TestSubstringMatch:

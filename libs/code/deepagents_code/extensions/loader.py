@@ -10,15 +10,14 @@ import sys
 from typing import TYPE_CHECKING
 
 from deepagents_code.extensions.api import ExtensionAPI
-from deepagents_code.extensions.models import ExtensionError
+from deepagents_code.extensions.registry import ExtensionError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
     from typing import Any
 
-    from deepagents_code.extensions.models import SourceInfo
-    from deepagents_code.extensions.registry import ExtensionRegistry
+    from deepagents_code.extensions.registry import ExtensionRegistry, SourceInfo
 
 
 def _module_name(path: Path) -> str:

@@ -10,8 +10,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
 from deepagents_code.agent import create_cli_agent
-from deepagents_code.extensions.models import SourceInfo
-from deepagents_code.extensions.registry import ExtensionRegistry
+from deepagents_code.extensions.registry import ExtensionRegistry, SourceInfo
 from deepagents_code.offload import _ArtifactsStorage
 
 
@@ -37,13 +36,7 @@ def test_extension_units_merge_without_overriding_internal_names(
     tmp_path: Path,
 ) -> None:
     """Built-ins win collisions while safe routes and unique units are hosted."""
-    source = SourceInfo(
-        tmp_path / "extension.py",
-        scope="plugin",
-        plugin_id="memory@test",
-        plugin_version="1.0.0",
-        package_root=tmp_path,
-    )
+    source = SourceInfo(tmp_path / "extension.py", plugin_id="memory@test")
     registry = ExtensionRegistry()
     registry.add_tool(_existing, source)
     registry.add_tool(_unique, source)

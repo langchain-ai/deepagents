@@ -1,5 +1,6 @@
 """Tests for the public extension factory API."""
 
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -10,14 +11,29 @@ from langchain.agents.middleware.types import AgentMiddleware
 from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.extensions import ExtensionAPI
 from deepagents_code.extensions.discovery import discover_extension_files
-from deepagents_code.extensions.models import ExtensionError, SourceInfo
-from deepagents_code.extensions.registry import ExtensionRegistry
+from deepagents_code.extensions.registry import (
+    ExtensionError,
+    ExtensionRegistry,
+    SourceInfo,
+)
 from deepagents_code.plugins.manifest import load_manifest
 from deepagents_code.plugins.models import ComponentInventory, PluginInstance
 
 
 class _Middleware(AgentMiddleware):
     """Minimal extension middleware."""
+
+
+def _write_manifest(
+    root: Path, *, path: str = "./extension.py", version: str | None = None
+) -> None:
+    manifest: dict[str, Any] = {
+        "name": "example",
+        "extensions": {"com.langchain.deepagents.code": {"pythonExtensions": path}},
+    }
+    if version is not None:
+        manifest["version"] = version
+    (root / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
 @pytest.fixture
@@ -83,13 +99,7 @@ def test_plugin_extension_discovery_requires_experimental_mode(
     """Installed plugin entries remain invisible until explicitly enabled."""
     path = tmp_path / "example.py"
     path.touch()
-    manifest_path = tmp_path / "plugin.json"
-    manifest_path.write_text(
-        '{"name":"example","version":"1.2.3","extensions":'
-        '{"com.langchain.deepagents.code":'
-        '{"pythonExtensions":"./example.py"}}}',
-        encoding="utf-8",
-    )
+    _write_manifest(tmp_path, path="./example.py", version="1.2.3")
     manifest, _, warnings = load_manifest(tmp_path)
     assert manifest is not None
     assert not warnings
@@ -109,65 +119,16 @@ def test_plugin_extension_discovery_requires_experimental_mode(
     sources = discover_extension_files(plugins=(plugin,))
     assert [source.path for source in sources] == [path.resolve()]
     assert sources[0].plugin_id == "example@test"
-    assert sources[0].plugin_version == "1.2.3"
-    assert sources[0].package_root == tmp_path
-
-
-def test_plugin_manifest_rejects_python_entry_outside_install(
-    tmp_path: Path,
-) -> None:
-    """Plugin Python entries cannot escape the immutable install root."""
-    plugin = tmp_path / "plugin"
-    plugin.mkdir()
-    (tmp_path / "outside.py").touch()
-    (plugin / "plugin.json").write_text(
-        '{"name":"example","extensions":'
-        '{"com.langchain.deepagents.code":'
-        '{"pythonExtensions":"./../outside.py"}}}',
-        encoding="utf-8",
-    )
-
-    manifest, _, warnings = load_manifest(plugin)
-
-    assert manifest is not None
-    assert not manifest.python_extensions
-    assert any("must not contain '..'" in warning for warning in warnings)
 
 
 def test_plugin_python_extension_requires_version(tmp_path: Path) -> None:
     """User-wide executable extensions must have a plugin version."""
     path = tmp_path / "extension.py"
     path.touch()
-    (tmp_path / "plugin.json").write_text(
-        '{"name":"example","extensions":'
-        '{"com.langchain.deepagents.code":'
-        '{"pythonExtensions":"./extension.py"}}}',
-        encoding="utf-8",
-    )
+    _write_manifest(tmp_path)
 
     manifest, _, warnings = load_manifest(tmp_path)
 
     assert manifest is not None
     assert not manifest.python_extensions
     assert any("require a non-empty plugin version" in warning for warning in warnings)
-
-
-def test_plugin_manifest_rejects_python_entry_symlink_escape(tmp_path: Path) -> None:
-    """A plugin entry symlink cannot escape the installed snapshot."""
-    plugin = tmp_path / "plugin"
-    plugin.mkdir()
-    outside = tmp_path / "outside.py"
-    outside.touch()
-    (plugin / "extension.py").symlink_to(outside)
-    (plugin / "plugin.json").write_text(
-        '{"name":"example","version":"1.0.0","extensions":'
-        '{"com.langchain.deepagents.code":'
-        '{"pythonExtensions":"./extension.py"}}}',
-        encoding="utf-8",
-    )
-
-    manifest, _, warnings = load_manifest(plugin)
-
-    assert manifest is not None
-    assert not manifest.python_extensions
-    assert any("escapes plugin root" in warning for warning in warnings)

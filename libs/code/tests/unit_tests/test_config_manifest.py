@@ -37,7 +37,6 @@ from deepagents_code.config_manifest import (
     options_with_key_prefix,
     provider_install_extra,
     provider_package_name,
-    resolve_interpreter_kwargs,
     resolve_scalar,
 )
 from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
@@ -1983,17 +1982,6 @@ def test_resolve_ptc_delegates_to_parser() -> None:
     # Invalid PTC value is rejected by the parser and falls back to default.
     value, source = resolve_scalar(opt, toml_data={"interpreter": {"ptc": "bogus"}})
     assert (value, source) == (opt.default, "default")
-
-
-def test_resolve_interpreter_kwargs_maps_settings_fields() -> None:
-    """The interpreter resolver returns Settings-constructor kwargs."""
-    kwargs = resolve_interpreter_kwargs(
-        toml_data={"interpreter": {"memory_limit_mb": 256, "enable_interpreter": True}}
-    )
-    assert kwargs["interpreter_memory_limit_mb"] == 256
-    assert kwargs["enable_interpreter"] is True
-    # Unspecified fields resolve to their manifest defaults.
-    assert kwargs["interpreter_timeout_seconds"] == pytest.approx(5.0)
 
 
 def test_resolve_theme_uses_terminal_mapping_before_saved_theme(monkeypatch) -> None:

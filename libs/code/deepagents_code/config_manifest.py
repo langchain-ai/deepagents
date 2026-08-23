@@ -900,42 +900,6 @@ def load_bool_display_preference(
     return resolved
 
 
-def resolve_interpreter_kwargs(
-    *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Resolve the `[interpreter]` options into `Settings` constructor kwargs.
-
-    Only the interpreter group is resolved through the manifest. Credentials,
-    the shell allow-list, and the LangSmith project keep their dedicated
-    loaders in `config.py` (their empty-string-to-`None` and reload semantics
-    do not fit the generic resolver), so this stays scoped to the section whose
-    defaults this module owns.
-
-    Args:
-        toml_data: Parsed `config.toml`; loaded automatically when omitted.
-        managed_toml_data: Parsed managed TOML; the process snapshot is used when
-            omitted.
-
-    Returns:
-        Mapping of `Settings` field name to resolved value for the interpreter
-        section, suitable for splatting into `Settings(...)`.
-    """
-    data = load_config_toml() if toml_data is None else toml_data
-    resolved: dict[str, Any] = {}
-    for option in get_config_options():
-        if option.group != "Interpreter" or option.settings_field is None:
-            continue
-        value, _ = resolve_scalar(
-            option,
-            toml_data=data,
-            managed_toml_data=managed_toml_data,
-        )
-        resolved[option.settings_field] = value
-    return resolved
-
-
 def _is_valid_auto_classifier_timeout(value: object) -> bool:
     """Return whether `value` is an accepted Auto classifier timeout.
 

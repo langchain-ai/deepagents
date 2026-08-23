@@ -558,3 +558,80 @@ def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> No
         env=env,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_corrupt_user_toml_warns_instead_of_defaulting_silently(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A file the reader rejected must not look like a file that says nothing.
+
+    An unusable source coerces to `Unset` for every option, which resolution
+    reads as "declares nothing". Without a diagnostic the user's typo silently
+    replaces their `shell.allow_list` with the manifest default.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[shell\nallow_list = []\n", encoding="utf-8")
+    provider = TomlFileProvider("config.toml", config_path)
+    resolver = ConfigResolver((provider, DefaultProvider()))
+    option = get_option("shell.allow_list")
+    assert option is not None
+
+    resolved = resolver.get(option)
+    assert resolved.ranks == (DEFAULT_RANK,)
+
+    with caplog.at_level("WARNING"):
+        _emit_ranked_diagnostics(option, resolved)
+
+    assert any("config.toml" in record.message for record in caplog.records)
+    assert any("CORRUPT" in record.message for record in caplog.records)
+
+
+def test_unusable_source_warning_is_emitted_once_per_process(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The rejection belongs to the file, not to each of its hundred options."""
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[shell\n", encoding="utf-8")
+    resolver = ConfigResolver(
+        (TomlFileProvider("config.toml", config_path), DefaultProvider())
+    )
+
+    with caplog.at_level("WARNING"):
+        for option in get_config_options():
+            _emit_ranked_diagnostics(option, resolver.get(option))
+
+    rejections = [
+        record for record in caplog.records if "using defaults" in record.message
+    ]
+    assert len(rejections) == 1
+
+
+def test_healthy_source_emits_no_rejection_warning(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A file that parses must stay quiet."""
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+    resolver = ConfigResolver(
+        (TomlFileProvider("config.toml", config_path), DefaultProvider())
+    )
+    option = get_option("shell.allow_list")
+    assert option is not None
+
+    with caplog.at_level("WARNING"):
+        resolved = resolver.get(option)
+        _emit_ranked_diagnostics(option, resolved)
+
+    assert resolved.value == ["ls"]
+    assert not [
+        record for record in caplog.records if "using defaults" in record.message
+    ]

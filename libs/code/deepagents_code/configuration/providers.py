@@ -40,6 +40,13 @@ reworded message that no longer matches would silently restore roughly one
 duplicated line per option for a single typo.
 """
 
+UNUSABLE_SOURCE_SUFFIX = "— using defaults for every option it would have set"
+"""Tail of the rejection raised when a whole TOML source could not be read.
+
+Deduplicated the same way, and for the same reason: a rejected file affects
+every option at once, so the warning belongs to the file, not to each key.
+"""
+
 
 def coerce_environment_value(
     option: ConfigOption, raw: str, name: str
@@ -573,19 +580,51 @@ class TomlFileProvider:
 
         snapshot = self._current_snapshot()
         if option.kind is OptionKind.THEME_DELEGATE:
-            return ranked_theme_toml_value(
+            ranked = ranked_theme_toml_value(
                 snapshot.data,
                 rank=self.rank,
                 durable=self.durable,
                 status=snapshot.status,
             )
-        return ranked_toml_value(
-            option,
-            snapshot.data,
-            rank=self.rank,
-            durable=self.durable,
-            status=snapshot.status,
+        else:
+            ranked = ranked_toml_value(
+                option,
+                snapshot.data,
+                rank=self.rank,
+                durable=self.durable,
+                status=snapshot.status,
+            )
+        return self._with_unusable_diagnostic(ranked, snapshot.status)
+
+    @staticmethod
+    def _with_unusable_diagnostic(
+        ranked: RankedProviderValue[object],
+        status: ProviderStatus,
+    ) -> RankedProviderValue[object]:
+        """Attach the rejection reason when the whole file could not be read.
+
+        A rejected file coerces to `Unset` for every option, which resolution
+        reads as "this source declares nothing" — indistinguishable from a file
+        that simply omits the key. Carrying the reason as a diagnostic lets
+        `_emit_ranked_diagnostics` tell the user their file was thrown away
+        instead of silently handing back defaults.
+
+        Args:
+            ranked: Result already coerced from the snapshot.
+            status: Health of the snapshot the result came from.
+
+        Returns:
+            The result, with a rejection diagnostic when the source is unusable.
+        """
+        if status.usable:
+            return ranked
+        location = f" ({status.path})" if status.path is not None else ""
+        detail = f": {status.detail}" if status.detail else ""
+        reason = (
+            f"Ignoring {status.name}{location} — it is "
+            f"{status.health.value}{detail} {UNUSABLE_SOURCE_SUFFIX}"
         )
+        return replace(ranked, diagnostics=(reason, *ranked.diagnostics))
 
     def status(self) -> ProviderStatus:
         """Return health for the current file snapshot.

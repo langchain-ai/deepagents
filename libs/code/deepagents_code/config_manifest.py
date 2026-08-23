@@ -645,35 +645,47 @@ def _emit_ranked_diagnostics(
     This compatibility boundary preserves `resolve_scalar`'s fall-through
     messages for callers that expect the historical logging behavior.
 
-    A scalar that shadows a whole table defaults *every* option beneath it, so
-    that rejection is emitted once per process. `config` resolves the full
-    manifest in one pass, and logging per option would print the same line
-    roughly a hundred times for a single typo.
+    Two rejections are file-wide rather than per-option and are therefore
+    emitted once per process: a scalar that shadows a whole table, and a source
+    that could not be read at all. `config` resolves the full manifest in one
+    pass, and logging per option would print the same line roughly a hundred
+    times for a single typo.
 
     Args:
         option: Manifest option being resolved.
         resolved: Rank-keyed provider results and selected value.
     """
-    from deepagents_code.configuration.providers import SHADOWED_TABLE_SUFFIX
+    from deepagents_code.configuration.providers import (
+        SHADOWED_TABLE_SUFFIX,
+        UNUSABLE_SOURCE_SUFFIX,
+    )
     from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
     from deepagents_code.configuration.types import Found, Invalid
+
+    once_per_process = (SHADOWED_TABLE_SUFFIX, UNUSABLE_SOURCE_SUFFIX)
+
+    def emit(reason: str) -> None:
+        """Log one provider rejection, at most once per process when marked."""
+        if any(suffix in reason for suffix in once_per_process):
+            warning_key = ("ranked provider", reason)
+            if warning_key in _warned_non_table_paths:
+                return
+            _warned_non_table_paths.add(warning_key)
+        logger.warning("%s", reason)
 
     accumulating = option.merge_strategy is not MergeStrategy.REPLACE
     for rank in sorted(resolved.tier_health):
         result = resolved.tier_health[rank]
         if isinstance(result, Invalid):
-            reasons = resolved.tier_diagnostics.get(rank) or (result.reason,)
-            for reason in reasons:
-                if SHADOWED_TABLE_SUFFIX in reason:
-                    warning_key = ("ranked provider", reason)
-                    if warning_key in _warned_non_table_paths:
-                        continue
-                    _warned_non_table_paths.add(warning_key)
-                logger.warning("%s", reason)
+            for reason in resolved.tier_diagnostics.get(rank) or (result.reason,):
+                emit(reason)
             continue
-        if isinstance(result, Found):
-            for reason in resolved.tier_diagnostics.get(rank, ()):
-                logger.warning("%s", reason)
+        # A source rejected as a whole coerces to `Unset` for every option, so
+        # its diagnostic has to be emitted from the unset branch too. Otherwise
+        # a corrupt `config.toml` is indistinguishable from one that simply
+        # omits the key, and the user is handed defaults in silence.
+        for reason in resolved.tier_diagnostics.get(rank, ()):
+            emit(reason)
         if not isinstance(result, Found):
             continue
         if rank == ENVIRONMENT_RANK and option.empty_env_is_false:

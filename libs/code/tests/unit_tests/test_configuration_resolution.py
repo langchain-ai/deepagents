@@ -24,14 +24,43 @@ import pytest
 from deepagents_code.config_manifest import (
     ConfigOption,
     OptionKind,
+    _emit_ranked_diagnostics,
+    _ranked_source,
     get_option,
-    resolve_scalar,
 )
+from deepagents_code.configuration.resolver import resolver_from_snapshots
 from deepagents_code.configuration.types import (
     ProviderHealth,
     ProviderStatus,
     TomlSnapshot,
 )
+
+
+def _resolve(
+    option: ConfigOption,
+    *,
+    toml_data: Mapping[str, Any],
+    managed_toml_data: Mapping[str, Any],
+) -> tuple[Any, str]:
+    """Resolve `option` through the ranked engine with a `(value, source)` pair.
+
+    Test-local stand-in for the retired `resolve_scalar` wrapper: builds an
+    ad-hoc resolver from the supplied snapshot generation and renders the
+    source through the same compatibility label.
+    """
+    resolved = resolver_from_snapshots(
+        TomlSnapshot(
+            managed_toml_data,
+            ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        TomlSnapshot(
+            toml_data,
+            ProviderStatus("config.toml", None, ProviderHealth.OK),
+        ),
+    ).get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return resolved.value, _ranked_source(resolved)
+
 
 _MANAGED_PATH = Path("/managed/managed_config.toml")
 
@@ -130,7 +159,7 @@ def test_every_enforced_key_exits_78_and_a_rejected_benign_key_falls_through(
     assert benign is not None
     managed = _at_path(benign.toml_keys, "beam")
     user = _at_path(benign.toml_keys, "underline")
-    assert resolve_scalar(benign, toml_data=user, managed_toml_data=managed) == (
+    assert _resolve(benign, toml_data=user, managed_toml_data=managed) == (
         "underline",
         "config.toml",
     )
@@ -235,7 +264,7 @@ def test_comma_string_denies_agree_across_scalar_merge_and_runtime_readers(
         assert option is not None
         user_data = {"mcp": {toml_key: ["user", "shared"]}}
         managed_data = {"mcp": {toml_key: "managed, shared"}}
-        scalar, _ = resolve_scalar(
+        scalar, _ = _resolve(
             option, toml_data=user_data, managed_toml_data=managed_data
         )
         merged, _ = service.ConfigSources(
@@ -293,7 +322,7 @@ def test_user_write_to_managed_key_succeeds_but_stays_masked(
     assert result.changed
     option = get_option("display.show_scrollbar")
     assert option is not None
-    value, source = resolve_scalar(
+    value, source = _resolve(
         option,
         toml_data={"ui": {"show_scrollbar": False}},
         managed_toml_data={"ui": {"show_scrollbar": True}},
@@ -463,9 +492,7 @@ def _resolve_in_stack(
     elif env == "invalid":
         environ[env_name] = _MATRIX_INVALID_ENV_VALUES[option_key]
     with patch.dict(os.environ, environ, clear=True):
-        return resolve_scalar(
-            option, toml_data=user_data, managed_toml_data=managed_data
-        )
+        return _resolve(option, toml_data=user_data, managed_toml_data=managed_data)
 
 
 @pytest.mark.parametrize("option_key", sorted(_MATRIX_ENV_VARS))

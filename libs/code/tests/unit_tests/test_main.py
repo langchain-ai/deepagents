@@ -2011,7 +2011,7 @@ class TestPrintSessionStats:
         The spy records rather than raises: `usage_table_enabled` catches
         exceptions and returns `True`, so a raising stub would make a regressed
         guard order pass vacuously. `load_config_toml` is the read being
-        trapped; it is evaluated as an argument before `resolve_scalar` runs, so
+        trapped; `load_bool_display_preference` loads it before resolving, so
         no lookup can slip past it.
         """
         calls: list[object] = []

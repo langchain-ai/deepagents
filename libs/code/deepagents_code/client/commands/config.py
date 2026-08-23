@@ -265,7 +265,7 @@ def _resolve(
     from deepagents_code.model_config import ProviderAuthSource
 
     # No managed branch for credentials: every `Credentials` option is built
-    # without `toml_keys` (see `_credential_options`), and `resolve_scalar`
+    # without `toml_keys` (see `_credential_options`), and resolution
     # consults managed policy only for an option that has them. A managed
     # check here could never fire, while implying to a reader that policy can
     # supply a credential. `test_no_credential_option_reads_managed_policy`
@@ -283,8 +283,8 @@ def _resolve(
             return True, ProviderAuthSource.STORED.value, key
 
     if option.key == "models.auto_classifier":
-        # A blank env var vetoes `config.toml` for this option, so `resolve_scalar`
-        # alone would report a classifier the runtime does not use. Share the
+        # A blank env var vetoes `config.toml` for this option, so plain
+        # resolution would report a classifier the runtime does not use. Share the
         # runtime's resolver instead — this option decides which model reviews
         # gated actions, so a wrong reading here is a security-relevant lie.
         spec, source = resolve_auto_classifier_model_with_source(
@@ -294,7 +294,7 @@ def _resolve(
         return source != "default", source, spec
 
     if option.key == "models.auto_classifier_timeout":
-        # `resolve_scalar` alone would credit an out-of-range env value that the
+        # Plain resolution would credit an out-of-range env value that the
         # runtime rejects; use the bounded resolver so the display matches what
         # the middleware actually enforces.
         timeout, source = resolve_auto_classifier_timeout_with_source(
@@ -304,7 +304,7 @@ def _resolve(
         return source != "default", source, timeout
 
     if option.key == "startup.mode":
-        # The manifest default that `resolve_scalar` returns ignores the
+        # The manifest default that plain resolution returns ignores the
         # app-managed `[startup].recent` fallback that `load_startup_mode`
         # restores on a bare launch. Report the effective mode instead, so
         # introspection matches what the next bare launch reads from the file.

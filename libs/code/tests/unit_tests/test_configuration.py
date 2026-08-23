@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from deepagents_code.config_manifest import ConfigOption, OptionKind, resolve_scalar
+from deepagents_code.config_manifest import (
+    ConfigOption,
+    OptionKind,
+    _emit_ranked_diagnostics,
+    _ranked_source,
+)
 from deepagents_code.configuration.paths import managed_config_path
 from deepagents_code.configuration.providers import TomlFileProvider
 from deepagents_code.configuration.resolver import merge_toml_tables
@@ -26,6 +31,39 @@ from unit_tests.conftest import redirect_managed_config
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
+
+
+def _resolve(
+    option: ConfigOption,
+    *,
+    toml_data: Mapping[str, Any],
+    managed_toml_data: Mapping[str, Any] | None = None,
+) -> tuple[Any, str]:
+    """Resolve `option` through the ranked engine with a `(value, source)` pair.
+
+    Test-local stand-in for the retired `resolve_scalar` wrapper: builds an
+    ad-hoc resolver from the supplied tables (managed defaults to the process
+    snapshot, which tests redirect through `redirect_managed_config`) and
+    renders the source through the same compatibility label.
+    """
+    from deepagents_code.config_manifest import load_managed_config_toml
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.types import (
+        ProviderStatus,
+        TomlSnapshot,
+    )
+
+    managed = (
+        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
+    )
+    resolved = resolver_from_snapshots(
+        TomlSnapshot(
+            managed, ProviderStatus("managed config", None, ProviderHealth.OK)
+        ),
+        TomlSnapshot(toml_data, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+    ).get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return resolved.value, _ranked_source(resolved)
 
 
 @pytest.mark.parametrize(
@@ -179,7 +217,7 @@ def test_deep_merge_tracks_managed_leaf_provenance() -> None:
     }
 
 
-def test_resolve_scalar_managed_beats_env_and_user(
+def test_resolve_managed_beats_env_and_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A valid managed scalar outranks both environment and user TOML."""
@@ -193,14 +231,14 @@ def test_resolve_scalar_managed_beats_env_and_user(
         kind=OptionKind.BOOL,
     )
     monkeypatch.setenv("DEEPAGENTS_CODE_FEATURE_ENABLED", "true")
-    assert resolve_scalar(
+    assert _resolve(
         option,
         toml_data={"feature": {"enabled": True}},
         managed_toml_data={"feature": {"enabled": False}},
     ) == (False, "managed config")
 
 
-def test_resolve_scalar_skips_one_wrong_typed_managed_value(
+def test_resolve_skips_one_wrong_typed_managed_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A malformed managed key falls through without discarding valid siblings."""
@@ -214,7 +252,7 @@ def test_resolve_scalar_skips_one_wrong_typed_managed_value(
         kind=OptionKind.BOOL,
     )
     monkeypatch.setenv("DEEPAGENTS_CODE_FEATURE_ENABLED", "true")
-    assert resolve_scalar(
+    assert _resolve(
         option,
         toml_data={"feature": {"enabled": False}},
         managed_toml_data={"feature": {"enabled": "not-a-bool", "other": 1}},
@@ -230,7 +268,7 @@ def test_managed_allow_list_empty_replaces_user_grants() -> None:
         toml_keys=("mcp", "approved_servers"),
         kind=OptionKind.STRUCTURED,
     )
-    assert resolve_scalar(
+    assert _resolve(
         option,
         toml_data={"mcp": {"approved_servers": ["user-grant"]}},
         managed_toml_data={"mcp": {"approved_servers": []}},
@@ -2107,18 +2145,18 @@ def test_structured_resolution_matches_the_effective_merge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`resolve_scalar` and `ConfigSources.merged` must not disagree.
+    """Ranked resolution and `ConfigSources.merged` must not disagree.
 
-    Regression: the structured branch of `resolve_scalar` merged without
+    Regression: the structured resolution branch merged without
     `higher_leaf_is_valid`, and the merger gates the "managed scalar displaces a
     user table" rule on that argument being `None`. So a managed scalar
     colliding with a user table resolved one way for the runtime (which reads
     `merged`) and the other way for `dcode config`, whose row takes `value` from
-    `resolve_scalar` and `provenance` from the validated merge — a row could show
+    the resolver and `provenance` from the validated merge — a row could show
     the user's table as effective while claiming managed policy owned that leaf.
     """
     from deepagents_code import model_config
-    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration import service
 
     user = tmp_path / "config.toml"
@@ -2137,7 +2175,7 @@ def test_structured_resolution_matches_the_effective_merge(
         assert option is not None
         sources = service.get_config_sources()
         merged, _ = sources.merged()
-        value, _source = resolve_scalar(
+        value, _source = _resolve(
             option,
             toml_data=dict(sources.user.data),
             managed_toml_data=sources.managed.data,
@@ -2442,7 +2480,7 @@ def test_managed_theme_outranks_the_environment(
 ) -> None:
     """A managed `[ui].theme` cannot be overridden by an exported variable."""
     from deepagents_code._env_vars import THEME
-    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration import service
 
     _managed_only(tmp_path, monkeypatch, '[ui]\ntheme = "textual-dark"\n')
@@ -2450,7 +2488,7 @@ def test_managed_theme_outranks_the_environment(
     option = get_option("display.theme")
     assert option is not None
     try:
-        value, source = resolve_scalar(option, toml_data={})
+        value, source = _resolve(option, toml_data={})
         assert value == "textual-dark"
         assert source.startswith("managed config")
     finally:
@@ -2464,7 +2502,7 @@ def test_managed_yolo_switcher_removes_yolo_from_the_approval_cycle(
     """A managed `yolo_switcher = false` must take YOLO out of Shift+Tab.
 
     The rejection half of this key was covered; the applied half was not. It
-    reaches the runtime through `resolve_scalar`'s implicit managed tier rather
+    reaches the runtime through the resolver's implicit managed tier rather
     than through `_apply_managed_runtime_policy`, so a reader switched to
     `managed_toml_data={}` — as two auto-classifier readers deliberately are —
     would make enforcement a silent no-op with the fail-closed test still green.
@@ -2524,7 +2562,6 @@ def test_managed_ptc_acknowledgement_outranks_a_user_grant(
     from deepagents_code.config_manifest import (
         get_option,
         load_config_toml,
-        resolve_scalar,
     )
     from deepagents_code.configuration import service
 
@@ -2540,7 +2577,7 @@ def test_managed_ptc_acknowledgement_outranks_a_user_grant(
     option = get_option("interpreter.ptc_acknowledge_unsafe")
     assert option is not None
     try:
-        value, source = resolve_scalar(option, toml_data=load_config_toml())
+        value, source = _resolve(option, toml_data=load_config_toml())
         assert value is False
         assert source == "managed config"
     finally:
@@ -2696,7 +2733,7 @@ def test_no_credential_option_reads_managed_policy() -> None:
     """Managed policy cannot supply a credential, so no reader may imply it.
 
     `_resolve` carried a managed branch ahead of the `auth.json` store that
-    could never fire: `resolve_scalar` consults managed policy only for an
+    could never fire: resolution consults managed policy only for an
     option with `toml_keys`, and no credential option has them. If a credential
     option ever gains `toml_keys`, that decision should be deliberate — the
     managed file is world-readable by design.
@@ -2806,7 +2843,7 @@ def test_shell_allow_list_reads_the_user_toml_below_the_environment(
     the new tier is a user-writable permission surface.
     """
     from deepagents_code._env_vars import SHELL_ALLOW_LIST
-    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.config_manifest import get_option
 
     user = tmp_path / "config.toml"
     user.write_text(user_toml, encoding="utf-8")
@@ -2820,7 +2857,7 @@ def test_shell_allow_list_reads_the_user_toml_below_the_environment(
 
     with user.open("rb") as handle:
         toml_data = tomllib.load(handle)
-    _, source = resolve_scalar(option, toml_data=toml_data, managed_toml_data={})
+    _, source = _resolve(option, toml_data=toml_data, managed_toml_data={})
     assert source.startswith(expected_source)
 
 
@@ -2830,7 +2867,7 @@ def test_managed_shell_allow_list_outranks_a_shell_export(
 ) -> None:
     """An exported allow list cannot defeat the managed one."""
     from deepagents_code._env_vars import SHELL_ALLOW_LIST
-    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration import service
 
     _managed_only(tmp_path, monkeypatch, '[shell]\nallow_list = ["ls"]\n')
@@ -2838,7 +2875,7 @@ def test_managed_shell_allow_list_outranks_a_shell_export(
     option = get_option("shell.allow_list")
     assert option is not None
     try:
-        value, source = resolve_scalar(option, toml_data={})
+        value, source = _resolve(option, toml_data={})
         assert value == ["ls"]
         assert source == "managed config"
     finally:
@@ -2851,7 +2888,7 @@ def test_empty_managed_shell_allow_list_is_a_lockdown(
 ) -> None:
     """`allow_list = []` must remove every grant, not fall through to one."""
     from deepagents_code._env_vars import SHELL_ALLOW_LIST
-    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration import service
 
     _managed_only(tmp_path, monkeypatch, "[shell]\nallow_list = []\n")
@@ -2859,7 +2896,7 @@ def test_empty_managed_shell_allow_list_is_a_lockdown(
     option = get_option("shell.allow_list")
     assert option is not None
     try:
-        value, source = resolve_scalar(option, toml_data={})
+        value, source = _resolve(option, toml_data={})
         assert value is None
         assert source == "managed config"
     finally:
@@ -3040,7 +3077,7 @@ def test_managed_recursion_limit_is_range_checked_before_it_wins(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A valid managed limit is applied; `resolve_scalar` alone never bounds it."""
+    """A valid managed limit is applied; the resolver alone never bounds it."""
     from deepagents_code import main
     from deepagents_code.configuration import service
 

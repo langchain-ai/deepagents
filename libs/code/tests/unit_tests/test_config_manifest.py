@@ -30,6 +30,8 @@ from deepagents_code.config_manifest import (
     NON_OPTION_ENV_VARS,
     ConfigOption,
     OptionKind,
+    _emit_ranked_diagnostics,
+    _ranked_source,
     get_config_options,
     get_option,
     is_provider_package_installed,
@@ -38,7 +40,6 @@ from deepagents_code.config_manifest import (
     options_with_key_prefix,
     provider_install_extra,
     provider_package_name,
-    resolve_scalar,
 )
 from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
 
@@ -50,6 +51,40 @@ if TYPE_CHECKING:
 # config file, or built-in defaults; adding the env var here would hide the
 # config/default cases these tests are trying to verify.
 pytestmark = pytest.mark.self_managed_update_check
+
+
+def _resolve_manifest_option(
+    option: ConfigOption,
+    *,
+    toml_data: dict[str, Any],
+    managed_toml_data: dict[str, Any] | None = None,
+) -> tuple[Any, str]:
+    """Resolve `option` through the ranked engine with a `(value, source)` pair.
+
+    Test-local stand-in for the retired `resolve_scalar` wrapper: builds an
+    ad-hoc resolver from the supplied tables (managed defaults to the process
+    snapshot, which `_isolate_managed_config` points at an absent file) and
+    renders the source through the same compatibility label.
+    """
+    from deepagents_code.config_manifest import load_managed_config_toml
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
+
+    managed = (
+        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
+    )
+    resolved = resolver_from_snapshots(
+        TomlSnapshot(
+            managed, ProviderStatus("managed config", None, ProviderHealth.OK)
+        ),
+        TomlSnapshot(toml_data, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+    ).get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return resolved.value, _ranked_source(resolved)
 
 
 def _declared_deepagents_env_vars() -> set[str]:
@@ -170,8 +205,8 @@ def test_no_hand_rolled_ui_config_readers() -> None:
 
     assert readers == _UI_READER_ALLOWLIST, (
         f"Unexpected `[ui]` readers: {sorted(readers - _UI_READER_ALLOWLIST)}. "
-        "Register the option in config_manifest.py and resolve it with "
-        "`resolve_scalar` instead of parsing config.toml by hand."
+        "Register the option in config_manifest.py and resolve it through the "
+        "shared resolver instead of parsing config.toml by hand."
     )
 
 
@@ -357,7 +392,9 @@ def test_negative_retry_count_is_not_reported_as_effective(caplog) -> None:
     option = get_option("retries.max_retries")
     assert option is not None
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        assert resolve_scalar(option, toml_data={"retries": {"max_retries": -1}}) == (
+        assert _resolve_manifest_option(
+            option, toml_data={"retries": {"max_retries": -1}}
+        ) == (
             None,
             "default",
         )
@@ -375,7 +412,9 @@ def test_blank_saved_agent_is_not_reported_as_effective(key: str, caplog) -> Non
     assert option is not None
     field = key.removeprefix("agents.")
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        assert resolve_scalar(option, toml_data={"agents": {field: "   "}}) == (
+        assert _resolve_manifest_option(
+            option, toml_data={"agents": {field: "   "}}
+        ) == (
             None,
             "default",
         )
@@ -388,7 +427,9 @@ def test_saved_agent_is_trimmed_like_the_launch_loader(key: str) -> None:
     option = get_option(key)
     assert option is not None
     field = key.removeprefix("agents.")
-    assert resolve_scalar(option, toml_data={"agents": {field: "  coder  "}}) == (
+    assert _resolve_manifest_option(
+        option, toml_data={"agents": {field: "  coder  "}}
+    ) == (
         "coder",
         "config.toml",
     )
@@ -399,7 +440,7 @@ def test_show_message_timestamps_env_overrides_config(monkeypatch) -> None:
     option = get_option("display.show_message_timestamps")
     assert option is not None
     monkeypatch.setenv(_env_vars.SHOW_MESSAGE_TIMESTAMPS, "1")
-    value, source = resolve_scalar(
+    value, source = _resolve_manifest_option(
         option, toml_data={"ui": {"show_message_timestamps": False}}
     )
     assert value is True
@@ -416,7 +457,7 @@ def test_cold_cache_warning_threshold_default() -> None:
     """Cold-cache warning uses the material incremental-cost default."""
     option = get_option("warnings.cold_cache_min_delta_usd")
     assert option is not None
-    assert resolve_scalar(option, toml_data={}) == (0.50, "default")
+    assert _resolve_manifest_option(option, toml_data={}) == (0.50, "default")
 
 
 def test_memory_auto_save_defaults_enabled(monkeypatch) -> None:
@@ -424,7 +465,7 @@ def test_memory_auto_save_defaults_enabled(monkeypatch) -> None:
     option = get_option("memory.auto_save")
     assert option is not None
     monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
-    assert resolve_scalar(option, toml_data={}) == (True, "default")
+    assert _resolve_manifest_option(option, toml_data={}) == (True, "default")
 
 
 def test_memory_auto_save_env_disables(monkeypatch) -> None:
@@ -432,7 +473,7 @@ def test_memory_auto_save_env_disables(monkeypatch) -> None:
     option = get_option("memory.auto_save")
     assert option is not None
     monkeypatch.setenv(_env_vars.MEMORY_AUTO_SAVE, "0")
-    value, _ = resolve_scalar(option, toml_data={})
+    value, _ = _resolve_manifest_option(option, toml_data={})
     assert value is False
 
 
@@ -441,7 +482,7 @@ def test_memory_auto_save_empty_env_disables(monkeypatch) -> None:
     option = get_option("memory.auto_save")
     assert option is not None
     monkeypatch.setenv(_env_vars.MEMORY_AUTO_SAVE, "")
-    assert resolve_scalar(option, toml_data={}) == (
+    assert _resolve_manifest_option(option, toml_data={}) == (
         False,
         f"env ({_env_vars.MEMORY_AUTO_SAVE})",
     )
@@ -452,7 +493,9 @@ def test_memory_auto_save_toml_disables(monkeypatch) -> None:
     option = get_option("memory.auto_save")
     assert option is not None
     monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
-    value, _ = resolve_scalar(option, toml_data={"memory": {"auto_save": False}})
+    value, _ = _resolve_manifest_option(
+        option, toml_data={"memory": {"auto_save": False}}
+    )
     assert value is False
 
 
@@ -624,7 +667,7 @@ def test_resolve_auto_classifier_model_reports_blank_problem(monkeypatch) -> Non
 def test_resolve_auto_classifier_model_reports_malformed_problem(monkeypatch) -> None:
     """A wrong-typed value must not silently revert to self-review.
 
-    `resolve_scalar` coerces a non-string to the option default, making a
+    TOML coercion drops a non-string to the option default, making a
     malformed entry indistinguishable from an absent one — so the agent resumed
     grading its own actions with nothing logged at all.
     """
@@ -665,7 +708,7 @@ def test_goal_auto_accept_criteria_defaults_to_review(monkeypatch) -> None:
     assert option is not None
     monkeypatch.delenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
 
-    assert resolve_scalar(option, toml_data={}) == (False, "default")
+    assert _resolve_manifest_option(option, toml_data={}) == (False, "default")
 
 
 def test_goal_auto_accept_criteria_reads_toml(monkeypatch) -> None:
@@ -674,7 +717,7 @@ def test_goal_auto_accept_criteria_reads_toml(monkeypatch) -> None:
     assert option is not None
     monkeypatch.delenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
 
-    assert resolve_scalar(
+    assert _resolve_manifest_option(
         option,
         toml_data={"goals": {"auto_accept_criteria": True}},
     ) == (True, "config.toml")
@@ -691,7 +734,7 @@ def test_goal_auto_accept_criteria_env_overrides_toml(
     assert option is not None
     monkeypatch.setenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, raw)
 
-    assert resolve_scalar(
+    assert _resolve_manifest_option(
         option,
         toml_data={"goals": {"auto_accept_criteria": not expected}},
     ) == (expected, f"env ({_env_vars.GOAL_AUTO_ACCEPT_CRITERIA})")
@@ -714,7 +757,7 @@ def test_invalid_goal_auto_accept_env_falls_through(
     assert option is not None
     monkeypatch.setenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, "maybe")
 
-    assert resolve_scalar(option, toml_data=toml_data) == expected
+    assert _resolve_manifest_option(option, toml_data=toml_data) == expected
 
 
 @pytest.mark.parametrize(
@@ -735,7 +778,7 @@ def test_resume_term_program_resolves_mode_default(
     if mode is not None:
         monkeypatch.setenv(mode, "1")
 
-    assert resolve_scalar(option, toml_data={}) == (expected, "default")
+    assert _resolve_manifest_option(option, toml_data={}) == (expected, "default")
 
 
 @pytest.mark.parametrize(("raw", "expected"), [("1", True), ("0", False), ("", False)])
@@ -751,7 +794,7 @@ def test_resume_term_program_env_overrides_mode_default(
     monkeypatch.setenv(_env_vars.EXPERIMENTAL, "1")
     monkeypatch.setenv(_env_vars.RESUME_TERM_PROGRAM, raw)
 
-    assert resolve_scalar(
+    assert _resolve_manifest_option(
         option,
         toml_data={"features": {"resume_term_program": not expected}},
     ) == (expected, f"env ({_env_vars.RESUME_TERM_PROGRAM})")
@@ -780,7 +823,7 @@ def test_resume_term_program_toml_overrides_mode_default(
     if mode is not None:
         monkeypatch.setenv(mode, "1")
 
-    assert resolve_scalar(
+    assert _resolve_manifest_option(
         option,
         toml_data={"features": {"resume_term_program": configured}},
     ) == (expected, "config.toml")
@@ -796,13 +839,13 @@ def test_resume_term_program_unrecognized_env_falls_through_to_mode_default(
     monkeypatch.setenv(_env_vars.DEBUG, "1")
     monkeypatch.setenv(_env_vars.RESUME_TERM_PROGRAM, "maybe")
 
-    assert resolve_scalar(option, toml_data={}) == (True, "default")
+    assert _resolve_manifest_option(option, toml_data={}) == (True, "default")
 
 
 def test_bool_mode_default_rejects_declared_default() -> None:
     """A declared default is dead for this kind, so it is rejected up front.
 
-    `resolve_scalar` derives the default from debug/experimental mode and
+    Resolution derives the default from debug/experimental mode and
     returns before reading `default` -- but `dcode config` still renders the
     declared value, advertising a default that contradicts the real one.
     """
@@ -827,10 +870,10 @@ def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
     monkeypatch.delenv(_env_vars.LOG_LEVEL, raising=False)
 
     monkeypatch.delenv(_env_vars.DEBUG, raising=False)
-    assert resolve_scalar(option, toml_data={}) == ("INFO", "default")
+    assert _resolve_manifest_option(option, toml_data={}) == ("INFO", "default")
 
     monkeypatch.setenv(_env_vars.DEBUG, "true")
-    assert resolve_scalar(option, toml_data={}) == ("DEBUG", "default")
+    assert _resolve_manifest_option(option, toml_data={}) == ("DEBUG", "default")
 
 
 def test_debug_log_level_validates_explicit_value(monkeypatch) -> None:
@@ -840,13 +883,13 @@ def test_debug_log_level_validates_explicit_value(monkeypatch) -> None:
     monkeypatch.setenv(_env_vars.DEBUG, "true")
 
     monkeypatch.setenv(_env_vars.LOG_LEVEL, " warning ")
-    assert resolve_scalar(option, toml_data={}) == (
+    assert _resolve_manifest_option(option, toml_data={}) == (
         "WARNING",
         f"env ({_env_vars.LOG_LEVEL})",
     )
 
     monkeypatch.setenv(_env_vars.LOG_LEVEL, "TRACE")
-    assert resolve_scalar(option, toml_data={}) == ("DEBUG", "default")
+    assert _resolve_manifest_option(option, toml_data={}) == ("DEBUG", "default")
 
 
 @pytest.mark.parametrize(("debug", "expected"), [(None, "INFO"), ("1", "DEBUG")])
@@ -1543,7 +1586,7 @@ def test_resolve_prefers_prefixed_env(monkeypatch) -> None:
     assert opt is not None
     monkeypatch.setenv("OPENAI_API_KEY", "canonical")
     monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "prefixed")
-    value, source = resolve_scalar(opt, toml_data={})
+    value, source = _resolve_manifest_option(opt, toml_data={})
     assert source == "env (DEEPAGENTS_CODE_OPENAI_API_KEY)"
     assert value == "prefixed"
 
@@ -1552,7 +1595,7 @@ def test_resolve_empty_env_is_unset_matching_resolve_env_var(monkeypatch) -> Non
     """An empty (prefixed) env var is unset for `config`, as the app sees it.
 
     The runtime `resolve_env_var` returns `None` for an empty prefixed var (and
-    a prefixed empty suppresses the canonical). `resolve_scalar` must agree, or
+    a prefixed empty suppresses the canonical). The resolver must agree, or
     `config` would report a credential as "set" that the app treats as
     unset — the exact drift this feature exists to prevent.
     """
@@ -1563,7 +1606,7 @@ def test_resolve_empty_env_is_unset_matching_resolve_env_var(monkeypatch) -> Non
     monkeypatch.setenv("OPENAI_API_KEY", "canonical")
     monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "")
 
-    value, source = resolve_scalar(opt, toml_data={})
+    value, source = _resolve_manifest_option(opt, toml_data={})
     assert resolve_env_var("OPENAI_API_KEY") is None
     assert source == "default"
     assert value is None
@@ -1575,7 +1618,7 @@ def test_langsmith_project_prefers_prefixed_env(monkeypatch) -> None:
     assert opt is not None
     monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "prefixed")
     monkeypatch.setenv("LANGSMITH_PROJECT", "bare")
-    value, source = resolve_scalar(opt, toml_data={})
+    value, source = _resolve_manifest_option(opt, toml_data={})
     assert (value, source) == ("prefixed", "env (DEEPAGENTS_CODE_LANGSMITH_PROJECT)")
 
 
@@ -1589,7 +1632,7 @@ def test_langsmith_project_falls_back_to_bare_env(monkeypatch) -> None:
     assert opt is not None
     monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
     monkeypatch.setenv("LANGSMITH_PROJECT", "bare")
-    value, source = resolve_scalar(opt, toml_data={})
+    value, source = _resolve_manifest_option(opt, toml_data={})
     assert (value, source) == ("bare", "env (LANGSMITH_PROJECT)")
 
 
@@ -1601,7 +1644,10 @@ def test_langsmith_project_default_when_unset(monkeypatch) -> None:
     assert opt is not None
     monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
     monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
-    assert resolve_scalar(opt, toml_data={}) == (LANGSMITH_PROJECT_DEFAULT, "default")
+    assert _resolve_manifest_option(opt, toml_data={}) == (
+        LANGSMITH_PROJECT_DEFAULT,
+        "default",
+    )
 
 
 def test_langsmith_project_empty_prefixed_falls_through_to_bare(monkeypatch) -> None:
@@ -1616,7 +1662,7 @@ def test_langsmith_project_empty_prefixed_falls_through_to_bare(monkeypatch) -> 
     assert opt is not None
     monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "")
     monkeypatch.setenv("LANGSMITH_PROJECT", "bare")
-    value, source = resolve_scalar(opt, toml_data={})
+    value, source = _resolve_manifest_option(opt, toml_data={})
     assert (value, source) == ("bare", "env (LANGSMITH_PROJECT)")
 
 
@@ -1628,7 +1674,10 @@ def test_langsmith_project_empty_bare_is_default(monkeypatch) -> None:
     assert opt is not None
     monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
     monkeypatch.setenv("LANGSMITH_PROJECT", "")
-    assert resolve_scalar(opt, toml_data={}) == (LANGSMITH_PROJECT_DEFAULT, "default")
+    assert _resolve_manifest_option(opt, toml_data={}) == (
+        LANGSMITH_PROJECT_DEFAULT,
+        "default",
+    )
 
 
 def test_onboarding_empty_env_reports_env_opt_out(monkeypatch) -> None:
@@ -1643,7 +1692,7 @@ def test_onboarding_empty_env_reports_env_opt_out(monkeypatch) -> None:
     opt = get_option("startup.onboarding")
     assert opt is not None
     monkeypatch.setenv("DEEPAGENTS_CODE_ONBOARDING", "")
-    value, source = resolve_scalar(opt, toml_data={})
+    value, source = _resolve_manifest_option(opt, toml_data={})
     assert (value, source) == (False, "env (DEEPAGENTS_CODE_ONBOARDING)")
     assert should_run_onboarding() is False
 
@@ -1668,10 +1717,13 @@ def test_fallback_env_vars_yield_to_toml_when_env_unset(monkeypatch) -> None:
     toml_data = {"synthetic": {"value": "from-toml"}}
 
     monkeypatch.setenv("SYNTHETIC_FALLBACK", "")
-    assert resolve_scalar(opt, toml_data=toml_data) == ("from-toml", "config.toml")
+    assert _resolve_manifest_option(opt, toml_data=toml_data) == (
+        "from-toml",
+        "config.toml",
+    )
 
     monkeypatch.setenv("SYNTHETIC_FALLBACK", "from-env")
-    assert resolve_scalar(opt, toml_data=toml_data) == (
+    assert _resolve_manifest_option(opt, toml_data=toml_data) == (
         "from-env",
         "env (SYNTHETIC_FALLBACK)",
     )
@@ -1754,11 +1806,13 @@ def test_resolve_int_falls_back_to_toml_then_default() -> None:
     """config.toml is consulted when env is unset; default is the last resort."""
     opt = get_option("interpreter.memory_limit_mb")
     assert opt is not None
-    assert resolve_scalar(opt, toml_data={"interpreter": {"memory_limit_mb": 128}}) == (
+    assert _resolve_manifest_option(
+        opt, toml_data={"interpreter": {"memory_limit_mb": 128}}
+    ) == (
         128,
         "config.toml",
     )
-    assert resolve_scalar(opt, toml_data={}) == (64, "default")
+    assert _resolve_manifest_option(opt, toml_data={}) == (64, "default")
 
 
 def test_resolve_malformed_toml_int_falls_back_with_warning(caplog) -> None:
@@ -1768,7 +1822,7 @@ def test_resolve_malformed_toml_int_falls_back_with_warning(caplog) -> None:
     opt = get_option("interpreter.memory_limit_mb")
     assert opt is not None
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(
+        value, source = _resolve_manifest_option(
             opt, toml_data={"interpreter": {"memory_limit_mb": "oops"}}
         )
     assert (value, source) == (64, "default")
@@ -1780,9 +1834,9 @@ def test_resolve_bool_env_uses_truthy_semantics(monkeypatch) -> None:
     opt = get_option("display.hide_cwd")
     assert opt is not None
     monkeypatch.setenv(opt.env_var, "1")
-    assert resolve_scalar(opt, toml_data={})[0] is True
+    assert _resolve_manifest_option(opt, toml_data={})[0] is True
     monkeypatch.setenv(opt.env_var, "0")
-    assert resolve_scalar(opt, toml_data={})[0] is False
+    assert _resolve_manifest_option(opt, toml_data={})[0] is False
 
 
 def test_cursor_style_option_definition() -> None:
@@ -1804,14 +1858,14 @@ def test_resolve_cursor_style_from_env(monkeypatch, caplog) -> None:
     toml_data = {"ui": {"cursor_style": "underline"}}
 
     monkeypatch.setenv(_env_vars.CURSOR_STYLE, "block")
-    assert resolve_scalar(opt, toml_data=toml_data) == (
+    assert _resolve_manifest_option(opt, toml_data=toml_data) == (
         "block",
         f"env ({_env_vars.CURSOR_STYLE})",
     )
 
     monkeypatch.setenv(_env_vars.CURSOR_STYLE, "bar")
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        assert resolve_scalar(opt, toml_data=toml_data) == (
+        assert _resolve_manifest_option(opt, toml_data=toml_data) == (
             "underline",
             "config.toml",
         )
@@ -1826,7 +1880,9 @@ def test_resolve_cursor_style_from_toml(caplog) -> None:
 
     opt = get_option("display.cursor_style")
     assert opt is not None
-    assert resolve_scalar(opt, toml_data={"ui": {"cursor_style": "underline"}}) == (
+    assert _resolve_manifest_option(
+        opt, toml_data={"ui": {"cursor_style": "underline"}}
+    ) == (
         "underline",
         "config.toml",
     )
@@ -1834,13 +1890,18 @@ def test_resolve_cursor_style_from_toml(caplog) -> None:
     for raw in ("bar", 1):
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-            value, source = resolve_scalar(opt, toml_data={"ui": {"cursor_style": raw}})
+            value, source = _resolve_manifest_option(
+                opt, toml_data={"ui": {"cursor_style": raw}}
+            )
         assert (value, source) == (CURSOR_STYLE_DEFAULT, "default")
         assert any(
             "[ui].cursor_style" in record.getMessage() for record in caplog.records
         )
 
-    assert resolve_scalar(opt, toml_data={}) == (CURSOR_STYLE_DEFAULT, "default")
+    assert _resolve_manifest_option(opt, toml_data={}) == (
+        CURSOR_STYLE_DEFAULT,
+        "default",
+    )
 
 
 def test_collapse_pastes_default_enabled() -> None:
@@ -1848,7 +1909,7 @@ def test_collapse_pastes_default_enabled() -> None:
     opt = get_option("display.collapse_pastes")
     assert opt is not None
     assert opt.kind is OptionKind.BOOL
-    assert resolve_scalar(opt, toml_data={}) == (True, "default")
+    assert _resolve_manifest_option(opt, toml_data={}) == (True, "default")
 
 
 def test_collapse_pastes_env_disables(monkeypatch) -> None:
@@ -1856,14 +1917,16 @@ def test_collapse_pastes_env_disables(monkeypatch) -> None:
     opt = get_option("display.collapse_pastes")
     assert opt is not None
     monkeypatch.setenv(opt.env_var, "0")
-    assert resolve_scalar(opt, toml_data={})[0] is False
+    assert _resolve_manifest_option(opt, toml_data={})[0] is False
 
 
 def test_collapse_pastes_toml_disables() -> None:
     """A `[ui].collapse_pastes = false` entry disables paste collapsing."""
     opt = get_option("display.collapse_pastes")
     assert opt is not None
-    assert resolve_scalar(opt, toml_data={"ui": {"collapse_pastes": False}}) == (
+    assert _resolve_manifest_option(
+        opt, toml_data={"ui": {"collapse_pastes": False}}
+    ) == (
         False,
         "config.toml",
     )
@@ -1873,14 +1936,16 @@ def test_thread_relative_time_default_matches_runtime_loader() -> None:
     """Fresh thread config shows relative timestamps by default."""
     opt = get_option("threads.relative_time")
     assert opt is not None
-    assert resolve_scalar(opt, toml_data={}) == (True, "default")
+    assert _resolve_manifest_option(opt, toml_data={}) == (True, "default")
 
 
 def test_auto_update_resolves_persisted_config() -> None:
     """`set_auto_update()` writes the TOML path surfaced by the manifest."""
     opt = get_option("update.auto_update")
     assert opt is not None
-    assert resolve_scalar(opt, toml_data={"update": {"auto_update": True}}) == (
+    assert _resolve_manifest_option(
+        opt, toml_data={"update": {"auto_update": True}}
+    ) == (
         True,
         "config.toml",
     )
@@ -1892,7 +1957,7 @@ def test_no_update_check_env_uses_presence_semantics(monkeypatch) -> None:
     assert opt is not None
     assert opt.kind is OptionKind.BOOL_PRESENCE
     monkeypatch.setenv(_env_vars.NO_UPDATE_CHECK, "0")
-    assert resolve_scalar(opt, toml_data={}) == (
+    assert _resolve_manifest_option(opt, toml_data={}) == (
         True,
         f"env ({_env_vars.NO_UPDATE_CHECK})",
     )
@@ -1902,11 +1967,11 @@ def test_no_update_check_resolves_inverted_persisted_check() -> None:
     """`[update].check = false` means the effective no-check flag is enabled."""
     opt = get_option("update.no_update_check")
     assert opt is not None
-    assert resolve_scalar(opt, toml_data={"update": {"check": False}}) == (
+    assert _resolve_manifest_option(opt, toml_data={"update": {"check": False}}) == (
         True,
         "config.toml",
     )
-    assert resolve_scalar(opt, toml_data={"update": {"check": True}}) == (
+    assert _resolve_manifest_option(opt, toml_data={"update": {"check": True}}) == (
         False,
         "config.toml",
     )
@@ -1949,7 +2014,9 @@ def test_prices_auto_update_persists_in_toml(monkeypatch) -> None:
     assert opt is not None
     monkeypatch.delenv(_env_vars.PRICES_AUTO_UPDATE, raising=False)
     assert opt.toml_keys == ("update", "prices_auto_update")
-    assert resolve_scalar(opt, toml_data={"update": {"prices_auto_update": False}}) == (
+    assert _resolve_manifest_option(
+        opt, toml_data={"update": {"prices_auto_update": False}}
+    ) == (
         False,
         "config.toml",
     )
@@ -1960,7 +2027,7 @@ def test_prices_auto_update_empty_env_disables(monkeypatch) -> None:
     opt = get_option("update.prices_auto_update")
     assert opt is not None
     monkeypatch.setenv(_env_vars.PRICES_AUTO_UPDATE, "")
-    assert resolve_scalar(opt, toml_data={}) == (
+    assert _resolve_manifest_option(opt, toml_data={}) == (
         False,
         f"env ({_env_vars.PRICES_AUTO_UPDATE})",
     )
@@ -1970,12 +2037,16 @@ def test_resolve_ptc_delegates_to_parser() -> None:
     """The PTC kind routes through the dedicated allowlist parser."""
     opt = get_option("interpreter.ptc")
     assert opt is not None
-    assert resolve_scalar(opt, toml_data={"interpreter": {"ptc": "safe"}}) == (
+    assert _resolve_manifest_option(
+        opt, toml_data={"interpreter": {"ptc": "safe"}}
+    ) == (
         "safe",
         "config.toml",
     )
     # Invalid PTC value is rejected by the parser and falls back to default.
-    value, source = resolve_scalar(opt, toml_data={"interpreter": {"ptc": "bogus"}})
+    value, source = _resolve_manifest_option(
+        opt, toml_data={"interpreter": {"ptc": "bogus"}}
+    )
     assert (value, source) == (opt.default, "default")
 
 
@@ -1986,7 +2057,7 @@ def test_resolve_theme_uses_terminal_mapping_before_saved_theme(monkeypatch) -> 
     monkeypatch.delenv("DEEPAGENTS_CODE_THEME", raising=False)
     monkeypatch.setenv("TERM_PROGRAM", "vscode")
 
-    value, source = resolve_scalar(
+    value, source = _resolve_manifest_option(
         opt,
         toml_data={
             "ui": {
@@ -2007,7 +2078,7 @@ def test_resolve_theme_uses_saved_theme_without_terminal_match(monkeypatch) -> N
     monkeypatch.delenv("DEEPAGENTS_CODE_THEME", raising=False)
     monkeypatch.setenv("TERM_PROGRAM", "unknown-terminal")
 
-    value, source = resolve_scalar(
+    value, source = _resolve_manifest_option(
         opt,
         toml_data={
             "ui": {
@@ -2028,7 +2099,7 @@ def test_resolve_theme_env_wins_over_config(monkeypatch) -> None:
     monkeypatch.setenv("DEEPAGENTS_CODE_THEME", "ansi-dark")
     monkeypatch.setenv("TERM_PROGRAM", "vscode")
 
-    value, source = resolve_scalar(
+    value, source = _resolve_manifest_option(
         opt,
         toml_data={
             "ui": {
@@ -2154,10 +2225,10 @@ def test_resolve_bool_presence_enables_on_any_value(monkeypatch) -> None:
     assert opt is not None
     assert opt.kind is OptionKind.BOOL_PRESENCE
     monkeypatch.setenv(opt.env_var, "0")
-    assert resolve_scalar(opt, toml_data={})[0] is True
+    assert _resolve_manifest_option(opt, toml_data={})[0] is True
     monkeypatch.setenv(opt.env_var, "")
-    # An empty value is unset (see resolve_scalar), so it falls back to default.
-    assert resolve_scalar(opt, toml_data={}) == (False, "default")
+    # An empty env value is unset, so resolution falls back to the default.
+    assert _resolve_manifest_option(opt, toml_data={}) == (False, "default")
 
 
 @pytest.mark.parametrize("value", ["0", "false"])
@@ -2167,7 +2238,7 @@ def test_debug_dep_floor_uses_boolean_semantics(monkeypatch, value: str) -> None
     assert opt is not None
     assert opt.kind is OptionKind.BOOL
     monkeypatch.setenv(_env_vars.DEBUG_DEP_FLOOR, value)
-    assert resolve_scalar(opt, toml_data={})[0] is False
+    assert _resolve_manifest_option(opt, toml_data={})[0] is False
 
 
 def test_resolve_malformed_int_env_falls_back_with_warning(monkeypatch, caplog) -> None:
@@ -2188,7 +2259,7 @@ def test_resolve_malformed_int_env_falls_back_with_warning(monkeypatch, caplog) 
     )
     monkeypatch.setenv("DEEPAGENTS_CODE_TEST_INT", "not-a-number")
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(int_opt, toml_data={})
+        value, source = _resolve_manifest_option(int_opt, toml_data={})
     assert (value, source) == (7, "default")
     assert any("TEST_INT" in r.getMessage() for r in caplog.records)
 
@@ -2197,7 +2268,7 @@ def test_resolve_toml_int_rejects_bool() -> None:
     """A TOML boolean must not coerce to an INT (bool is an int subclass)."""
     opt = get_option("interpreter.memory_limit_mb")
     assert opt is not None
-    assert resolve_scalar(
+    assert _resolve_manifest_option(
         opt, toml_data={"interpreter": {"memory_limit_mb": True}}
     ) == (64, "default")
 
@@ -2206,7 +2277,7 @@ def test_resolve_toml_float_rejects_bool() -> None:
     """A TOML boolean must not coerce to a FLOAT."""
     opt = get_option("interpreter.timeout_seconds")
     assert opt is not None
-    assert resolve_scalar(
+    assert _resolve_manifest_option(
         opt, toml_data={"interpreter": {"timeout_seconds": True}}
     ) == (5.0, "default")
 
@@ -2217,7 +2288,7 @@ def test_resolve_structured_passes_value_through() -> None:
     assert opt is not None
     assert opt.kind is OptionKind.STRUCTURED
     table = {"created": True, "updated": False}
-    assert resolve_scalar(opt, toml_data={"threads": {"columns": table}}) == (
+    assert _resolve_manifest_option(opt, toml_data={"threads": {"columns": table}}) == (
         table,
         "config.toml",
     )
@@ -2227,24 +2298,30 @@ def test_structured_fallback_preserves_invalid_tier(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A defaultless table fallback retains the rejected provider metadata."""
-    from deepagents_code.config_manifest import resolve_ranked_scalar
-    from deepagents_code.configuration.resolver import USER_RANK
-    from deepagents_code.configuration.types import Invalid
+    from deepagents_code.configuration.resolver import (
+        USER_RANK,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.types import (
+        Invalid,
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
 
     option = get_option("display.terminal_themes")
     assert option is not None
     toml_data = {"ui": "dark"}
 
-    resolved = resolve_ranked_scalar(
-        option,
-        toml_data=toml_data,
-        managed_toml_data={},
-    )
+    resolved = resolver_from_snapshots(
+        TomlSnapshot({}, ProviderStatus("managed config", None, ProviderHealth.OK)),
+        TomlSnapshot(toml_data, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+    ).get(option)
     assert resolved.value is None
     assert isinstance(resolved.tier_health[USER_RANK], Invalid)
 
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        assert resolve_scalar(
+        assert _resolve_manifest_option(
             option,
             toml_data=toml_data,
             managed_toml_data={},
@@ -2262,7 +2339,7 @@ def test_resolve_malformed_skills_dir_env_falls_back(monkeypatch, caplog) -> Non
     # RuntimeError, which the resolver must catch.
     monkeypatch.setenv(opt.env_var, "~nobodyuser_xyz/skills")
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(opt, toml_data={})
+        value, source = _resolve_manifest_option(opt, toml_data={})
     assert (value, source) == (None, "default")
     assert any("could not resolve" in r.getMessage() for r in caplog.records)
 
@@ -2274,7 +2351,7 @@ def test_resolve_malformed_skills_dir_toml_falls_back(caplog) -> None:
     opt = get_option("skills.extra_allowed_dirs")
     assert opt is not None
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(
+        value, source = _resolve_manifest_option(
             opt,
             toml_data={"skills": {"extra_allowed_dirs": ["~nobodyuser_xyz/skills"]}},
         )
@@ -2726,8 +2803,15 @@ def test_run_get_section_skips_store_when_no_credentials(monkeypatch) -> None:
     Pins the documented skip in `_run_get_section`: always loading would emit a
     spurious store warning for sections that cannot consult it, and the JSON
     would look identical either way.
+
+    Bootstrap is marked done first: `_ensure_bootstrap` applies stored
+    LangSmith auth (two store reads) only on the first call in the process, so
+    without the pin this test's counts depend on which tests ran earlier in
+    the same worker.
     """
-    from deepagents_code import auth_store
+    from deepagents_code import auth_store, config as config_mod
+
+    monkeypatch.setattr(config_mod._bootstrap_state, "done", True)
 
     calls = 0
     real_load = auth_store.load_credentials
@@ -2794,7 +2878,7 @@ def test_resolve_bool_unrecognized_env_falls_back_with_warning(
     assert opt is not None
     monkeypatch.setenv(opt.env_var, "maybe")
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(opt, toml_data={})
+        value, source = _resolve_manifest_option(opt, toml_data={})
     assert (value, source) == (False, "default")
     assert any("expected bool" in r.getMessage() for r in caplog.records)
 
@@ -2819,13 +2903,13 @@ def test_resolve_float_env_coerces_and_falls_back(monkeypatch, caplog) -> None:
         env_var="DEEPAGENTS_CODE_TEST_FLOAT",
     )
     monkeypatch.setenv("DEEPAGENTS_CODE_TEST_FLOAT", "2.5")
-    value, source = resolve_scalar(float_opt, toml_data={})
+    value, source = _resolve_manifest_option(float_opt, toml_data={})
     assert value == pytest.approx(2.5)
     assert source == "env (DEEPAGENTS_CODE_TEST_FLOAT)"
 
     monkeypatch.setenv("DEEPAGENTS_CODE_TEST_FLOAT", "not-a-number")
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(float_opt, toml_data={})
+        value, source = _resolve_manifest_option(float_opt, toml_data={})
     assert (value, source) == (1.5, "default")
     assert any("TEST_FLOAT" in r.getMessage() for r in caplog.records)
 
@@ -2837,7 +2921,7 @@ def test_resolve_shell_list_env_happy_and_invalid(monkeypatch, caplog) -> None:
     opt = get_option("shell.allow_list")
     assert opt is not None
     monkeypatch.setenv(opt.env_var, "git status,ls")
-    value, source = resolve_scalar(opt, toml_data={})
+    value, source = _resolve_manifest_option(opt, toml_data={})
     assert source == f"env ({opt.env_var})"
     assert isinstance(value, list)
     assert "ls" in value
@@ -2846,28 +2930,26 @@ def test_resolve_shell_list_env_happy_and_invalid(monkeypatch, caplog) -> None:
     # resolver logs + falls back rather than crashing.
     monkeypatch.setenv(opt.env_var, "all,ls")
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(opt, toml_data={})
+        value, source = _resolve_manifest_option(opt, toml_data={})
     assert source == "default"
     assert any("Ignoring invalid" in r.getMessage() for r in caplog.records)
 
 
-def test_coerce_env_delegate_returns_invalid_not_raw(caplog) -> None:
-    """A delegate kind reaching `_coerce_env` returns `_INVALID`, never raw.
+def test_coerce_env_delegate_returns_invalid_not_raw() -> None:
+    """A delegate kind reaching env coercion returns `Invalid`, never raw.
 
     PTC/STRUCTURED options declare no env var, so this branch is unreachable in
     the live manifest. The guard exists so that if one ever gains an env var,
     an uncoerced raw string cannot leak into a typed `Settings` field.
     """
-    import logging
-
-    from deepagents_code.config_manifest import _INVALID, _coerce_env
+    from deepagents_code.configuration.providers import coerce_environment_value
+    from deepagents_code.configuration.types import Invalid
 
     opt = get_option("interpreter.ptc")
     assert opt is not None
-    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        result = _coerce_env(opt, "safe", "DEEPAGENTS_CODE_FAKE")
-    assert result is _INVALID
-    assert any("not env-backed" in r.getMessage() for r in caplog.records)
+    result = coerce_environment_value(opt, "safe", "DEEPAGENTS_CODE_FAKE")
+    assert isinstance(result, Invalid)
+    assert "not env-backed" in result.reason
 
 
 # --- TOML coercion (success + mismatch) ------------------------------------
@@ -2879,13 +2961,17 @@ def test_resolve_toml_str_success_and_type_mismatch(caplog) -> None:
 
     opt = get_option("threads.sort_order")
     assert opt is not None
-    assert resolve_scalar(opt, toml_data={"threads": {"sort_order": "created_at"}}) == (
+    assert _resolve_manifest_option(
+        opt, toml_data={"threads": {"sort_order": "created_at"}}
+    ) == (
         "created_at",
         "config.toml",
     )
 
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(opt, toml_data={"threads": {"sort_order": 123}})
+        value, source = _resolve_manifest_option(
+            opt, toml_data={"threads": {"sort_order": 123}}
+        )
     assert (value, source) == ("updated_at", "default")
     assert any("sort_order" in r.getMessage() for r in caplog.records)
 
@@ -2910,7 +2996,7 @@ def test_startup_yolo_switcher_defaults_enabled(monkeypatch) -> None:
     assert option.env_var == _env_vars.YOLO_SWITCHER
     assert option.toml_keys == ("startup", "yolo_switcher")
     monkeypatch.delenv(_env_vars.YOLO_SWITCHER, raising=False)
-    assert resolve_scalar(option, toml_data={}) == (True, "default")
+    assert _resolve_manifest_option(option, toml_data={}) == (True, "default")
 
 
 def test_startup_yolo_switcher_env_disables(monkeypatch) -> None:
@@ -2918,7 +3004,7 @@ def test_startup_yolo_switcher_env_disables(monkeypatch) -> None:
     option = get_option("startup.yolo_switcher")
     assert option is not None
     monkeypatch.setenv(_env_vars.YOLO_SWITCHER, "0")
-    value, _ = resolve_scalar(option, toml_data={})
+    value, _ = _resolve_manifest_option(option, toml_data={})
     assert value is False
 
 
@@ -2927,7 +3013,7 @@ def test_startup_yolo_switcher_empty_env_disables(monkeypatch) -> None:
     option = get_option("startup.yolo_switcher")
     assert option is not None
     monkeypatch.setenv(_env_vars.YOLO_SWITCHER, "")
-    assert resolve_scalar(option, toml_data={}) == (
+    assert _resolve_manifest_option(option, toml_data={}) == (
         False,
         f"env ({_env_vars.YOLO_SWITCHER})",
     )
@@ -2938,7 +3024,9 @@ def test_startup_yolo_switcher_toml_disables(monkeypatch) -> None:
     option = get_option("startup.yolo_switcher")
     assert option is not None
     monkeypatch.delenv(_env_vars.YOLO_SWITCHER, raising=False)
-    value, _ = resolve_scalar(option, toml_data={"startup": {"yolo_switcher": False}})
+    value, _ = _resolve_manifest_option(
+        option, toml_data={"startup": {"yolo_switcher": False}}
+    )
     assert value is False
 
 
@@ -2973,12 +3061,12 @@ def test_resolve_startup_mode_from_toml(caplog) -> None:
     opt = get_option("startup.mode")
     assert opt is not None
     for mode in ("auto", "yolo"):
-        assert resolve_scalar(opt, toml_data={"startup": {"mode": mode}}) == (
+        assert _resolve_manifest_option(opt, toml_data={"startup": {"mode": mode}}) == (
             mode,
             "config.toml",
         )
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(
+        value, source = _resolve_manifest_option(
             opt, toml_data={"startup": {"mode": "dangerously-auto"}}
         )
     assert (value, source) == (DEFAULT_STARTUP_MODE, "default")
@@ -2989,11 +3077,16 @@ def test_resolve_startup_mode_from_toml(caplog) -> None:
     for raw in (["manual"], {"name": "manual"}):
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-            value, source = resolve_scalar(opt, toml_data={"startup": {"mode": raw}})
+            value, source = _resolve_manifest_option(
+                opt, toml_data={"startup": {"mode": raw}}
+            )
         assert (value, source) == (DEFAULT_STARTUP_MODE, "default")
         assert any("[startup].mode" in r.getMessage() for r in caplog.records)
 
-    assert resolve_scalar(opt, toml_data={}) == (DEFAULT_STARTUP_MODE, "default")
+    assert _resolve_manifest_option(opt, toml_data={}) == (
+        DEFAULT_STARTUP_MODE,
+        "default",
+    )
 
 
 @pytest.mark.parametrize(
@@ -3126,12 +3219,16 @@ def test_resolve_toml_float_success_non_bool() -> None:
     """A FLOAT option reads a real number from TOML and coerces an int to float."""
     opt = get_option("interpreter.timeout_seconds")
     assert opt is not None
-    assert resolve_scalar(opt, toml_data={"interpreter": {"timeout_seconds": 2.5}}) == (
+    assert _resolve_manifest_option(
+        opt, toml_data={"interpreter": {"timeout_seconds": 2.5}}
+    ) == (
         2.5,
         "config.toml",
     )
     # A bare TOML integer is accepted and coerced to float.
-    assert resolve_scalar(opt, toml_data={"interpreter": {"timeout_seconds": 3}}) == (
+    assert _resolve_manifest_option(
+        opt, toml_data={"interpreter": {"timeout_seconds": 3}}
+    ) == (
         3.0,
         "config.toml",
     )
@@ -3150,7 +3247,7 @@ def test_resolve_theme_unknown_env_warns(monkeypatch, caplog) -> None:
     assert opt is not None
     monkeypatch.setenv("DEEPAGENTS_CODE_THEME", "no-such-theme")
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(opt, toml_data={})
+        value, source = _resolve_manifest_option(opt, toml_data={})
     assert (value, source) == (theme.DEFAULT_THEME, "default")
     assert any("Unknown theme" in r.getMessage() for r in caplog.records)
 
@@ -3165,7 +3262,7 @@ def test_resolve_theme_non_table_ui_warns(monkeypatch, caplog) -> None:
     assert opt is not None
     monkeypatch.delenv("DEEPAGENTS_CODE_THEME", raising=False)
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(opt, toml_data={"ui": "oops"})
+        value, source = _resolve_manifest_option(opt, toml_data={"ui": "oops"})
     assert (value, source) == (theme.DEFAULT_THEME, "default")
     assert any("should be a table" in r.getMessage() for r in caplog.records)
 
@@ -3181,7 +3278,7 @@ def test_resolve_theme_unknown_saved_warns(monkeypatch, caplog) -> None:
     monkeypatch.delenv("DEEPAGENTS_CODE_THEME", raising=False)
     monkeypatch.setenv("TERM_PROGRAM", "no-mapping-terminal")
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(
+        value, source = _resolve_manifest_option(
             opt, toml_data={"ui": {"theme": "no-such-theme"}}
         )
     assert (value, source) == (theme.DEFAULT_THEME, "default")
@@ -3470,7 +3567,7 @@ def test_resolve_auto_classifier_timeout_malformed_env_falls_through_to_toml(
 ) -> None:
     """A malformed env value takes the other fall-through path than an out-of-range one.
 
-    `"soon"` is dropped inside `resolve_scalar`, so the env layer never reports
+    `"soon"` is dropped during env coercion, so the env layer never reports
     itself as the source and no `os.environ` pop happens; `"0"` coerces fine and
     is rejected later, taking the pop-and-re-resolve branch. Both must land on
     the valid TOML value.
@@ -3491,7 +3588,7 @@ def test_resolve_auto_classifier_timeout_guards_unpoppable_env_source(
     """A source label that is not an environ key must not recurse forever.
 
     Termination of the fall-through branch depends on the reconstructed env name
-    actually being the key `resolve_scalar` read. If it is not, the pop is a
+    actually being the key the resolver read. If it is not, the pop is a
     no-op and re-resolving would see the same rejected value again.
     """
     from deepagents_code import config_manifest
@@ -3499,12 +3596,24 @@ def test_resolve_auto_classifier_timeout_guards_unpoppable_env_source(
         AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
         resolve_auto_classifier_timeout,
     )
+    from deepagents_code.configuration.resolver import ENVIRONMENT_RANK, ResolvedValue
+    from deepagents_code.configuration.types import ProviderHealth, ProviderStatus
 
     monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
     monkeypatch.setattr(
         config_manifest,
-        "resolve_scalar",
-        lambda *_args, **_kwargs: (0.0, "env (NOT_AN_ENVIRON_KEY)"),
+        "_resolve_option",
+        lambda *_args, **_kwargs: ResolvedValue(
+            0.0,
+            {ENVIRONMENT_RANK: frozenset({()})},
+            {},
+            {
+                ENVIRONMENT_RANK: ProviderStatus(
+                    "env (NOT_AN_ENVIRON_KEY)", None, ProviderHealth.OK
+                )
+            },
+            selected_ranks=(ENVIRONMENT_RANK,),
+        ),
     )
     assert (
         resolve_auto_classifier_timeout(toml_data={})
@@ -3780,7 +3889,7 @@ def test_whitespace_env_is_ignored_with_a_warning(monkeypatch, caplog) -> None:
 
     Empty is a normal "unset" idiom, but whitespace-only is nearly always an
     accident (`export X="$UNSET "`). Discarding it without a word was the only
-    unlogged rejection path in `resolve_scalar`, so a user could lose an
+    unlogged rejection path in resolution, so a user could lose an
     override with no evidence anywhere.
     """
     option = get_option("models.auto_classifier")
@@ -3789,7 +3898,7 @@ def test_whitespace_env_is_ignored_with_a_warning(monkeypatch, caplog) -> None:
     monkeypatch.setenv(option.env_var, "   ")
 
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(
+        value, source = _resolve_manifest_option(
             option, toml_data={"models": {"auto_classifier": "openai:gpt-5"}}
         )
 
@@ -3809,7 +3918,9 @@ def test_whitespace_env_opts_out_when_empty_means_false(monkeypatch) -> None:
     assert option.env_var is not None
     monkeypatch.setenv(option.env_var, "  \t ")
 
-    assert resolve_scalar(option, toml_data={"ui": {"cursor_blink": True}}) == (
+    assert _resolve_manifest_option(
+        option, toml_data={"ui": {"cursor_blink": True}}
+    ) == (
         False,
         f"env ({option.env_var})",
     )
@@ -3825,7 +3936,7 @@ def test_invalid_primary_env_warns_before_valid_fallback(monkeypatch, caplog) ->
     monkeypatch.setenv(fallback, "fallback-project")
 
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(option, toml_data={})
+        value, source = _resolve_manifest_option(option, toml_data={})
 
     assert (value, source) == ("fallback-project", f"env ({fallback})")
     assert [
@@ -3852,8 +3963,14 @@ def test_non_table_toml_section_is_reported_once(caplog) -> None:
     assert blink is not None
 
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        assert resolve_scalar(scrollbar, toml_data={"ui": "dark"}) == (False, "default")
-        assert resolve_scalar(blink, toml_data={"ui": "dark"}) == (True, "default")
+        assert _resolve_manifest_option(scrollbar, toml_data={"ui": "dark"}) == (
+            False,
+            "default",
+        )
+        assert _resolve_manifest_option(blink, toml_data={"ui": "dark"}) == (
+            True,
+            "default",
+        )
 
     warnings = [r for r in caplog.records if "expected a table" in r.getMessage()]
     assert len(warnings) == 1

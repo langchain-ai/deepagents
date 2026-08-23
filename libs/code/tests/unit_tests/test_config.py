@@ -2139,7 +2139,7 @@ class TestGetLangsmithProjectName:
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_agrees_with_config_manifest_resolution(self) -> None:
-        """`get_langsmith_project_name` and `resolve_scalar` agree on the project.
+        """`get_langsmith_project_name` and the resolver agree on the project.
 
         The `fallback_env_vars` mechanism exists so `config`/`config get` report
         the project agent traces actually route to. This pins that parity for
@@ -2149,11 +2149,32 @@ class TestGetLangsmithProjectName:
         from deepagents_code.config_manifest import (
             LANGSMITH_PROJECT_DEFAULT,
             get_option,
-            resolve_scalar,
+        )
+        from deepagents_code.configuration.resolver import resolver_from_snapshots
+        from deepagents_code.configuration.types import (
+            ProviderHealth,
+            ProviderStatus,
+            TomlSnapshot,
         )
 
         opt = get_option("tracing.langsmith_project")
         assert opt is not None
+
+        def resolve() -> object:
+            return (
+                resolver_from_snapshots(
+                    TomlSnapshot(
+                        {},
+                        ProviderStatus("managed config", None, ProviderHealth.OK),
+                    ),
+                    TomlSnapshot(
+                        {},
+                        ProviderStatus("config.toml", None, ProviderHealth.OK),
+                    ),
+                )
+                .get(opt)
+                .value
+            )
 
         # Bare `LANGSMITH_PROJECT` set, no prefixed override, no settings value.
         bare_env = {
@@ -2167,7 +2188,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            manifest_value = resolve()
             assert get_langsmith_project_name() == manifest_value == "parity-bare"
 
         # Nothing configured: both fall back to the shared default.
@@ -2182,7 +2203,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            manifest_value = resolve()
             assert (
                 get_langsmith_project_name()
                 == manifest_value
@@ -3789,7 +3810,7 @@ class TestGetTracingStatus:
     def test_empty_prefixed_project_falls_through_to_canonical(self) -> None:
         """An empty prefixed project must not shadow a real `LANGSMITH_PROJECT`.
 
-        Mirrors the manifest/runtime contract: `resolve_scalar` skips an empty
+        Mirrors the manifest/runtime contract: the resolver skips an empty
         `DEEPAGENTS_CODE_LANGSMITH_PROJECT` and uses bare `LANGSMITH_PROJECT`,
         unlike `resolve_env_var`, which would shadow it and report the default.
         """

@@ -6,14 +6,16 @@ locations. The typed defaults for config-file-only options (notably the
 `[interpreter]` section) live here as module constants, and `Settings` derives
 its dataclass defaults from them — so a default is defined in exactly one place.
 
-`resolve_scalar` is the shared resolution engine used both by the runtime
-(`Settings.from_environment`) and by the `config` CLI command, so introspection
-can never drift from what the app actually reads. Resolution precedence mirrors
-the loaders: managed TOML beats `DEEPAGENTS_CODE_`-prefixed and canonical env,
-env beats user `config.toml`, and the typed default is the final fallback. A
-malformed numeric/list/PTC value, an unrecognized boolean token, or a
-wrong-typed TOML value is logged and falls back to the next layer rather than
-raising, so one bad entry does not discard valid sibling policy.
+Resolution runs through the shared `ConfigResolver` (see
+`configuration.resolver`): the runtime (`Settings.from_environment`) reads the
+shared process resolver and the `config` CLI command builds one from the
+generation it snapshots, so introspection can never drift from what the app
+actually reads. Resolution precedence mirrors the loaders: managed TOML beats
+`DEEPAGENTS_CODE_`-prefixed and canonical env, env beats user `config.toml`,
+and the typed default is the final fallback. A malformed numeric/list/PTC
+value, an unrecognized boolean token, or a wrong-typed TOML value is logged
+and falls back to the next layer rather than raising, so one bad entry does
+not discard valid sibling policy.
 
 Structured, user-defined config is *not* a flat scalar option and is parsed by
 dedicated typed loaders elsewhere; the manifest references those tables as
@@ -37,7 +39,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum, StrEnum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 from deepagents_code import _env_vars
 
@@ -45,7 +47,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
     from deepagents_code.configuration.resolver import ResolvedValue
-    from deepagents_code.configuration.types import ProviderStatus
 
 logger = logging.getLogger(__name__)
 
@@ -140,16 +141,16 @@ VALID_CURSOR_STYLES: frozenset[str] = frozenset(get_args(CursorStyle))
 class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
-    All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
+    All kinds flow through the ranked resolver. The scalar kinds (`BOOL`,
     `BOOL_MODE_DEFAULT`, `BOOL_PRESENCE`, `INT`, `NON_NEGATIVE_INT`, `FLOAT`,
-    `STR`, and `NON_EMPTY_STR`) are coerced by the source providers behind the
-    compatibility `_coerce_env`/`_coerce_toml` wrappers.
+    `STR`, and `NON_EMPTY_STR`) are coerced by the source providers (with
+    `_coerce_toml` kept as the public validation seam for `option_accepts_toml`).
     `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
     bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
     resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
     allowlists — do not compress into a generic coercion). `THEME_DELEGATE` is
-    resolved separately at the top of `resolve_scalar` and never reaches the
+    resolved by a dedicated provider branch and never reaches the
     inline coercers. `STRUCTURED` marks user-defined tables that the scalar
     resolver only passes through for display.
     """
@@ -160,7 +161,7 @@ class OptionKind(Enum):
 
     BOOL_MODE_DEFAULT = "bool_mode_default"
     """Same token handling as `BOOL`, but with no static default: when no env or
-    TOML value applies, `resolve_scalar` derives the default from debug or
+    TOML value applies, resolution derives the default from debug or
     experimental mode. Declaring a `default` is rejected at construction."""
 
     BOOL_PRESENCE = "bool_presence"
@@ -349,7 +350,8 @@ class ConfigOption:
         one would otherwise slip through to runtime — a wrong-typed default
         feeds `Settings` unchecked, and a mutable default is shared by reference
         through the `get_config_options` `lru_cache` and returned verbatim by
-        `resolve_scalar`. Catching it here fails the import (and the test suite).
+        the resolver's default provider. Catching it here fails the import (and
+        the test suite).
 
         Raises:
             TypeError: When `fallback_env_vars` is not a tuple of non-empty
@@ -398,7 +400,7 @@ class ConfigOption:
             msg = f"{self.key}: STRUCTURED options must not declare a default"
             raise TypeError(msg)
         if self.kind is OptionKind.BOOL_MODE_DEFAULT:
-            # `resolve_scalar` computes this kind's default from debug/experimental
+            # Resolution computes this kind's default from debug/experimental
             # mode and returns before reading `default`, so a declared value would
             # be dead -- yet `dcode config` still renders it, advertising a default
             # that contradicts the real one.
@@ -515,23 +517,6 @@ def load_managed_config_toml(*, refresh: bool = False) -> Mapping[str, Any]:
 _warned_non_table_paths: set[tuple[str, ...]] = set()
 
 
-def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
-    """Delegate environment coercion to the provider boundary.
-
-    Returns:
-        The typed value, or `_INVALID` when the raw value cannot be coerced.
-    """
-    from deepagents_code.configuration.providers import coerce_environment_value
-    from deepagents_code.configuration.types import Found, Invalid
-
-    result = coerce_environment_value(option, raw, name)
-    if isinstance(result, Found):
-        return result.value
-    if isinstance(result, Invalid):
-        logger.warning("%s", result.reason)
-    return _INVALID
-
-
 def _coerce_toml(
     option: ConfigOption, raw: object, *, source: str = "config.toml"
 ) -> object:
@@ -580,35 +565,26 @@ def _resolve_theme(
     return None
 
 
-def resolve_ranked_scalar(
+def _resolve_option(
     option: ConfigOption,
     *,
     toml_data: Mapping[str, Any],
     managed_toml_data: Mapping[str, Any] | None = None,
-    managed_status: ProviderStatus | None = None,
-    user_status: ProviderStatus | None = None,
 ) -> ResolvedValue[object]:
     """Resolve one option through the ranked durable-mask engine.
 
-    Consumers that need health or per-leaf provenance use this typed form;
-    `resolve_scalar` preserves the established `(value, source)` compatibility
-    surface by rendering from the same result.
-
-    Each table must be paired with the status of the source it came from.
-    `TomlSnapshot` rejects a non-`OK` status carrying a non-empty table with a
-    `ValueError`, because an unhealthy source is one every reader must treat as
-    declaring nothing. This is not hypothetical bookkeeping: the two halves are
-    separate parameters, so a caller can supply one snapshot's data beside
-    another's health. A missing default provider surfaces as a `RuntimeError`
-    from the resolver.
+    Shared by the manifest's remaining bespoke readers (bounded resolvers and
+    the display-preference loader), which take explicit parsed tables from
+    callers that snapshot one generation themselves. Each table pairs with a
+    default `OK` status, matching the health these readers historically
+    reported; callers with real health metadata use `resolver_from_snapshots`
+    directly.
 
     Args:
         option: Manifest option to resolve.
         toml_data: Parsed user `config.toml` mapping.
         managed_toml_data: Parsed managed mapping, or the process snapshot when
             omitted.
-        managed_status: Health/display metadata for the supplied managed table.
-        user_status: Health/display metadata for the supplied user table.
 
     Returns:
         A rank-keyed `ResolvedValue`.
@@ -620,16 +596,18 @@ def resolve_ranked_scalar(
         TomlSnapshot,
     )
 
-    managed_status = managed_status or ProviderStatus(
-        "managed config", None, ProviderHealth.OK
-    )
-    user_status = user_status or ProviderStatus("config.toml", None, ProviderHealth.OK)
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
     resolver = resolver_from_snapshots(
-        TomlSnapshot(managed_data, managed_status),
-        TomlSnapshot(toml_data, user_status),
+        TomlSnapshot(
+            managed_data,
+            ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        TomlSnapshot(
+            toml_data,
+            ProviderStatus("config.toml", None, ProviderHealth.OK),
+        ),
     )
     return resolver.get(option)
 
@@ -638,7 +616,7 @@ def _ranked_source(resolved: ResolvedValue[object]) -> str:
     """Render rank-keyed provenance through provider display metadata.
 
     Returns:
-        The compatibility source label for `resolve_scalar`.
+        The `(value, source)`-style compatibility source label.
     """
     return " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
 
@@ -650,8 +628,8 @@ def _emit_ranked_diagnostics(
 
     Providers retain rejection reasons without logging so resolution can be
     inspected by diagnostics and startup policy without duplicating warnings.
-    This compatibility boundary preserves `resolve_scalar`'s fall-through
-    messages for callers that expect the historical logging behavior.
+    Callers invoke this with the resolved value to preserve the historical
+    per-call logging behavior of the retired `resolve_scalar` wrapper.
 
     Two rejections are file-wide rather than per-option and are therefore
     emitted once per process: a scalar that shadows a whole table, and a source
@@ -718,37 +696,6 @@ def _emit_ranked_diagnostics(
             break
 
 
-def resolve_scalar(
-    option: ConfigOption,
-    *,
-    toml_data: Mapping[str, Any],
-    managed_toml_data: Mapping[str, Any] | None = None,
-) -> tuple[Any, str]:
-    """Resolve an option through ranked providers with a stable return shape.
-
-    The public-ish signature remains unchanged for embedders. Coercion happens
-    at provider boundaries, precedence is numeric, and durable providers mask
-    lower-priority ephemeral tiers structurally.
-
-    Args:
-        option: Manifest option to resolve.
-        toml_data: Parsed user `config.toml` mapping.
-        managed_toml_data: Parsed managed TOML mapping. The process snapshot is
-            used when omitted; pass an empty mapping for an isolated user source.
-
-    Returns:
-        `(value, source)` from the ranked engine. Human-readable source labels
-            are rendered from rank-keyed `ProviderStatus` metadata.
-    """
-    resolved = resolve_ranked_scalar(
-        option,
-        toml_data=toml_data,
-        managed_toml_data=managed_toml_data,
-    )
-    _emit_ranked_diagnostics(option, resolved)
-    return resolved.value, _ranked_source(resolved)
-
-
 def resolve_read_project_dotenv(
     *,
     toml_data: Mapping[str, Any] | None = None,
@@ -791,9 +738,11 @@ def resolve_read_project_dotenv(
     # file) through the standard engine, then layer the global dotenv between
     # the env and TOML to match the option's env-over-file precedence.
     data = load_config_toml() if toml_data is None else toml_data
-    value, source = resolve_scalar(
+    resolved = _resolve_option(
         option, toml_data=data, managed_toml_data=managed_toml_data
     )
+    _emit_ranked_diagnostics(option, resolved)
+    value, source = resolved.value, _ranked_source(resolved)
     if source.startswith(("managed", "env (")):
         return bool(value)
 
@@ -825,9 +774,9 @@ def load_bool_display_preference(
 ) -> bool:
     """Resolve a boolean `Display` option through the config manifest.
 
-    Precedence follows `resolve_scalar`: managed config wins, then the option's
-    `DEEPAGENTS_CODE_*` env var if it declares one (not all do), then its
-    `[ui]` key in `~/.deepagents/config.toml`, then the declared default.
+    Precedence follows the ranked resolver: managed config wins, then the
+    option's `DEEPAGENTS_CODE_*` env var if it declares one (not all do), then
+    its `[ui]` key in `~/.deepagents/config.toml`, then the declared default.
     Resolution is intentionally forgiving — an unreadable config, a non-table
     `[ui]`, or a wrong-typed value is logged and falls through, so a typo in a
     cosmetic setting never breaks startup.
@@ -876,9 +825,10 @@ def load_bool_display_preference(
             fallback,
         )
         return fallback
-    # Inlines `resolve_scalar` rather than calling it, because the rejection
-    # reasons `on_rejected` needs live on the ranked result that it discards.
-    ranked = resolve_ranked_scalar(option, toml_data=load_config_toml())
+    # Works on the ranked result rather than a plain `(value, source)` pair,
+    # because the rejection reasons `on_rejected` needs live on the tier
+    # health that pair discards.
+    ranked = _resolve_option(option, toml_data=load_config_toml())
     _emit_ranked_diagnostics(option, ranked)
     resolved = bool(ranked.value)
     # Keep the source: a display option turned off by managed policy is
@@ -904,7 +854,7 @@ def _is_valid_auto_classifier_timeout(value: object) -> bool:
     """Return whether `value` is an accepted Auto classifier timeout.
 
     Expects the `float` that `OptionKind.FLOAT` resolution produces on every
-    layer (`_coerce_env` and `_coerce_toml` both widen to `float`, and the typed
+    layer (env and TOML coercion both widen to `float`, and the typed
     default is a `float`); a bare `int` is rejected.
     """
     return (
@@ -942,13 +892,15 @@ def resolve_auto_classifier_timeout_with_source(
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
-    value, source = resolve_scalar(
+    resolved = _resolve_option(
         option,
         toml_data=data,
         managed_toml_data=managed_data,
     )
+    _emit_ranked_diagnostics(option, resolved)
+    value, source = resolved.value, _ranked_source(resolved)
     if _is_valid_auto_classifier_timeout(value):
-        return value, source
+        return cast("float", value), source
 
     from deepagents_code.configuration.service import managed_decided
 
@@ -981,7 +933,7 @@ def resolve_auto_classifier_timeout_with_source(
         )
         previous = os.environ.pop(env_name, None)
         if previous is None:
-            # The name reconstructed from `source` is not the key `resolve_scalar`
+            # The name reconstructed from `source` is not the key the resolver
             # read, so re-resolving would see the same rejected value and recurse
             # forever. Unreachable today (the source label is built from the
             # environ key), but this runs on the startup path where a
@@ -1049,8 +1001,8 @@ def blank_auto_classifier_env_name() -> str | None:
 
     A present-but-blank `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` means "inherit
     the main agent model" and deliberately outranks `config.toml`, unlike every
-    other option, where `resolve_scalar` treats a blank env value as unset. That
-    veto is why this cannot go through `resolve_scalar`.
+    other option, where the resolver treats a blank env value as unset. That
+    veto is why this reads the environment directly.
 
     Returns:
         The name of the blank env var, or `None` when no env var is set or the
@@ -1106,11 +1058,13 @@ def resolve_auto_classifier_model_with_source(
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
-    value, source = resolve_scalar(
+    resolved = _resolve_option(
         option,
         toml_data=data,
         managed_toml_data=managed_data,
     )
+    _emit_ranked_diagnostics(option, resolved)
+    value, source = resolved.value, _ranked_source(resolved)
     from deepagents_code.configuration.service import managed_decided
 
     if managed_decided(source):
@@ -1122,11 +1076,13 @@ def resolve_auto_classifier_model_with_source(
     if blank_env is not None:
         return None, f"env ({blank_env})"
 
-    value, source = resolve_scalar(
+    resolved = _resolve_option(
         option,
         toml_data=data,
         managed_toml_data={},
     )
+    _emit_ranked_diagnostics(option, resolved)
+    value, source = resolved.value, _ranked_source(resolved)
     if isinstance(value, str) and value.strip():
         return value.strip(), source
     # A blank or wrong-typed `config.toml` entry reverts to the main agent model;
@@ -1172,11 +1128,14 @@ def resolve_startup_mode_with_source(
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
-    value, source = resolve_scalar(
+    resolved = _resolve_option(
         option,
         toml_data=data,
         managed_toml_data=managed_data,
     )
+    _emit_ranked_diagnostics(option, resolved)
+    # STARTUP_MODE_DELEGATE coercion yields a `str` on every tier.
+    value, source = cast("str", resolved.value), _ranked_source(resolved)
     if source != "default":
         return value, source
 
@@ -1192,11 +1151,13 @@ def resolve_startup_mode_with_source(
     recent_option = get_option("startup.recent")
     if recent_option is None:
         return value, source
-    recent, recent_source = resolve_scalar(
+    recent_resolved = _resolve_option(
         recent_option,
         toml_data=data,
         managed_toml_data=managed_data,
     )
+    _emit_ranked_diagnostics(recent_option, recent_resolved)
+    recent, recent_source = recent_resolved.value, _ranked_source(recent_resolved)
     if isinstance(recent, str) and is_recent_startup_mode_restorable(recent):
         return recent, recent_source
     return value, source
@@ -1266,13 +1227,15 @@ def resolve_recursion_limit(
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
-    value, source = resolve_scalar(
+    resolved = _resolve_option(
         option,
         toml_data=data,
         managed_toml_data=managed_data,
     )
+    _emit_ranked_diagnostics(option, resolved)
+    value, source = resolved.value, _ranked_source(resolved)
     if is_valid_recursion_limit(value):
-        return value
+        return cast("int", value)
 
     from deepagents_code.configuration.service import managed_decided
 

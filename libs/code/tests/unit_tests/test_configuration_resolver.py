@@ -13,7 +13,6 @@ from deepagents_code.config_manifest import (
     OptionKind,
     get_config_options,
     get_option,
-    resolve_scalar,
 )
 from deepagents_code.configuration.provider import ConfigProvider
 from deepagents_code.configuration.providers import (
@@ -495,119 +494,6 @@ def test_rejected_managed_reload_keeps_last_enforceable_snapshot(
         assert resolver.get(option).value == "manual"
     finally:
         service.invalidate_config_sources()
-
-
-@pytest.mark.parametrize(
-    ("managed_data", "user_data"),
-    [
-        pytest.param({}, {}, id="both-empty"),
-        pytest.param(
-            {},
-            {
-                "interpreter": {"memory_limit_mb": 256, "enable_interpreter": True},
-                "shell": {"allow_list": ["ls", "cat"]},
-                "startup": {"mode": "auto"},
-                "ui": {"theme": "monokai"},
-                "mcp": {"disabled_servers": ["alpha"]},
-                "threads": {"columns": {"title": {"width": 20}}},
-            },
-            id="user-populated",
-        ),
-        pytest.param(
-            {
-                "interpreter": {"memory_limit_mb": 64},
-                "shell": {"allow_list": ["git"]},
-                "startup": {"mode": "manual"},
-                "mcp": {"disabled_servers": ["alpha"]},
-                "threads": {"columns": {"title": {"width": 10}}},
-            },
-            {
-                "interpreter": {"memory_limit_mb": 256},
-                "shell": {"allow_list": ["ls"]},
-                "startup": {"mode": "auto"},
-                "mcp": {"disabled_servers": ["beta"]},
-                "threads": {"columns": {"summary": {"width": 30}}},
-            },
-            id="both-populated-managed-wins",
-        ),
-    ],
-)
-def test_resolver_get_matches_resolve_scalar_for_every_manifest_option(
-    managed_data: dict[str, Any],
-    user_data: dict[str, Any],
-) -> None:
-    """The compatibility wrapper and provider resolver remain equivalent.
-
-    Parametrized with populated tiers on purpose. With both tables empty every
-    option takes the default path, so the union, deep-merge, and durable-mask
-    surfaces - the ones this extraction could actually regress - never run.
-    """
-    managed = TomlSnapshot(
-        managed_data,
-        ProviderStatus("managed config", None, ProviderHealth.OK),
-    )
-    user = TomlSnapshot(
-        user_data,
-        ProviderStatus("config.toml", None, ProviderHealth.OK),
-    )
-    resolver = resolver_from_snapshots(managed, user)
-    resolved = resolver.resolve_all()
-
-    for option in get_config_options():
-        value, source = resolve_scalar(
-            option,
-            toml_data=user.data,
-            managed_toml_data=managed.data,
-        )
-        actual = resolved[option.key]
-        actual_source = " + ".join(
-            actual.provider_status[rank].name for rank in actual.ranks
-        )
-        assert (actual.value, actual_source) == (value, source), option.key
-
-
-def test_populated_tiers_actually_reach_the_resolver() -> None:
-    """Guard the oracle above: its fixtures must not all resolve to defaults.
-
-    The equivalence test compares two paths that now share `_resolve`, so it
-    can only catch a regression in the layers above it - and only for options
-    the fixtures actually populate. If these keys ever stop being read, the
-    parametrization silently degrades back to a default-only sweep.
-    """
-    managed = TomlSnapshot(
-        {
-            "startup": {"mode": "manual"},
-            "mcp": {"disabled_servers": ["alpha"]},
-            "threads": {"columns": {"title": {"width": 10}}},
-        },
-        ProviderStatus("managed config", None, ProviderHealth.OK),
-    )
-    user = TomlSnapshot(
-        {
-            "startup": {"mode": "auto"},
-            "mcp": {"disabled_servers": ["beta"]},
-            "threads": {"columns": {"summary": {"width": 30}}},
-        },
-        ProviderStatus("config.toml", None, ProviderHealth.OK),
-    )
-    resolved = resolver_from_snapshots(managed, user).resolve_all()
-
-    startup = resolved["startup.mode"]
-    assert startup.value == "manual"
-    assert startup.ranks == (MANAGED_RANK,)
-
-    # A deny-list union keeps every tier's contribution rather than letting the
-    # stronger rank replace the weaker one.
-    disabled = resolved["mcp.disabled_servers"]
-    assert set(disabled.ranks) == {MANAGED_RANK, USER_RANK}
-    assert isinstance(disabled.value, list)
-    assert set(disabled.value) == {"alpha", "beta"}
-
-    # A deep merge composes sibling leaves from both tiers.
-    columns = resolved["threads.columns"]
-    assert set(columns.ranks) == {MANAGED_RANK, USER_RANK}
-    assert isinstance(columns.value, dict)
-    assert set(columns.value) == {"title", "summary"}
 
 
 def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> None:

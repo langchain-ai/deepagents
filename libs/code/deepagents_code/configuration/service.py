@@ -39,8 +39,8 @@ UNION_PATHS = frozenset(
 Deny lists must union across layers: replacing a managed deny list with a user
 one would be a fail-open.
 
-Governs the two *table merges* — `merge_managed_over_user` and
-`config_manifest.resolve_scalar`. It does not govern the two readers that union
+Governs the two *table merges* — `merge_managed_over_user` and the resolver's
+deep-merge strategy. It does not govern the two readers that union
 name sets rather than TOML tables: `model_config.load_mcp_server_trust_lists`
 and `mcp_disabled.get_disabled_servers` accumulate their own layers directly,
 including the env tier this set knows nothing about. A third deny list therefore

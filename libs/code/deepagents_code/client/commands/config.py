@@ -233,7 +233,8 @@ def _resolve(
     env override wins (the model factory reads it via `resolve_env_var` even
     after `apply_stored_credentials` bridges a stored key onto the canonical
     var), then a key stored via `/auth`, then the canonical env/`config.toml`.
-    Everything else delegates straight to `config_manifest.resolve_scalar`.
+    Everything else delegates straight to the ranked resolver built from the
+    caller's snapshots.
 
     Args:
         option: The option to resolve.
@@ -249,10 +250,17 @@ def _resolve(
         came from the typed default.
     """
     from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
         resolve_auto_classifier_model_with_source,
         resolve_auto_classifier_timeout_with_source,
-        resolve_scalar,
         resolve_startup_mode_with_source,
+    )
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
     )
     from deepagents_code.model_config import ProviderAuthSource
 
@@ -306,12 +314,23 @@ def _resolve(
         )
         return source != "default", source, mode
 
-    value, source = resolve_scalar(
-        option,
-        toml_data=toml_data,
-        managed_toml_data=managed_toml_data,
-    )
-    return source != "default", source, value
+    # The `config` command reports one generation: the caller snapshots the
+    # managed and user files once per invocation and every option resolves
+    # against those exact tables, so this builds an ad-hoc resolver from the
+    # supplied snapshots rather than reading the shared process cache.
+    resolved = resolver_from_snapshots(
+        TomlSnapshot(
+            managed_toml_data or {},
+            ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        TomlSnapshot(
+            toml_data,
+            ProviderStatus("config.toml", None, ProviderHealth.OK),
+        ),
+    ).get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    source = _ranked_source(resolved)
+    return source != "default", source, resolved.value
 
 
 def _has_prefixed_env_override(option: ConfigOption) -> bool:
@@ -470,7 +489,13 @@ def _option_provenance(
     Returns:
         Effective or dotted leaf-to-source mapping.
     """
-    from deepagents_code.config_manifest import OptionKind, resolve_ranked_scalar
+    from deepagents_code.config_manifest import OptionKind
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
 
     if (
         option.redacted
@@ -478,11 +503,19 @@ def _option_provenance(
         or option.toml_keys is None
     ):
         return {"effective": source}
-    resolved = resolve_ranked_scalar(
-        option,
-        toml_data=toml_data or {},
-        managed_toml_data=managed_toml_data or {},
-    )
+    # Per-leaf provenance must describe the same generation `_resolve` just
+    # reported, so it resolves against the caller's snapshots rather than the
+    # shared process cache.
+    resolved = resolver_from_snapshots(
+        TomlSnapshot(
+            managed_toml_data or {},
+            ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        TomlSnapshot(
+            toml_data or {},
+            ProviderStatus("config.toml", None, ProviderHealth.OK),
+        ),
+    ).get(option)
     ranks_by_path: dict[tuple[str, ...], list[int]] = {}
     for rank, paths in resolved.provenance.items():
         for path in paths:

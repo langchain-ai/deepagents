@@ -1672,21 +1672,32 @@ def _save_ui_bool_result(
         )
 
     from deepagents_code.config_manifest import (
+        _ranked_source,
         get_option,
         load_managed_config_toml,
-        resolve_scalar,
     )
 
     option = get_option(option_key)
     if option is not None:
+        from deepagents_code.configuration.resolver import resolver_from_snapshots
         from deepagents_code.configuration.service import managed_decided
-
-        _, source = resolve_scalar(
-            option,
-            toml_data={},
-            managed_toml_data=load_managed_config_toml(),
+        from deepagents_code.configuration.types import (
+            ProviderHealth,
+            ProviderStatus,
+            TomlSnapshot,
         )
-        if managed_decided(source):
+
+        # Only the managed tier is being probed ("does policy still decide
+        # this option after the save?"), so resolve the freshly loaded managed
+        # table against an empty user tier rather than the shared cache.
+        resolved = resolver_from_snapshots(
+            TomlSnapshot(
+                load_managed_config_toml(),
+                ProviderStatus("managed config", None, ProviderHealth.OK),
+            ),
+            TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+        ).get(option)
+        if managed_decided(_ranked_source(resolved)):
             return _ConfigWriteResult(
                 True,
                 "Preference saved, but managed config remains effective.",

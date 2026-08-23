@@ -357,17 +357,25 @@ def resolve_managed_option(
     Returns:
         The ranked resolution, or `None` when `key` is not manifest-backed.
     """
-    from deepagents_code.config_manifest import get_option, resolve_ranked_scalar
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
 
     option = get_option(key)
     if option is None:
         return None
-    return resolve_ranked_scalar(
-        option,
-        toml_data={},
-        managed_toml_data=managed_data,
-        managed_status=status,
-    )
+    # The caller is inspecting a specific managed generation — often a
+    # candidate being validated before it takes force — so resolution must not
+    # read the process-wide snapshots behind the shared resolver.
+    return resolver_from_snapshots(
+        TomlSnapshot(
+            managed_data,
+            status or ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        TomlSnapshot(
+            {},
+            ProviderStatus("config.toml", None, ProviderHealth.OK),
+        ),
+    ).get(option)
 
 
 def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:

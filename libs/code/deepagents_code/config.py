@@ -3804,14 +3804,14 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
     model, which is the historical behavior and the default.
 
     A configured-but-unusable value (blank, or a non-string such as
-    `auto_classifier = 3`, which `resolve_scalar` drops to the default) silently
+    `auto_classifier = 3`, which coercion drops to the default) silently
     reverts authorization review to the main agent model — the agent grading its
     own actions. The caller gets a description so it can say so on a surface the
     user actually reads; a log line alone is not that surface.
 
     A present-but-blank env var is an explicit "inherit" and outranks
     `config.toml`, so it is detected before resolution rather than being skipped
-    as unset the way `resolve_scalar` treats every other option's blank env
+    as unset the way the resolver treats every other option's blank env
     value. A managed value outranks that veto, so it is resolved first; a blank
     managed value also forces inherit, credited to managed policy. `dcode
     config` shares this order via `resolve_auto_classifier_model_with_source`,
@@ -3828,9 +3828,16 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
         blank_auto_classifier_env_name,
         get_option,
         load_config_toml,
-        resolve_scalar,
     )
-    from deepagents_code.configuration.resolver import get_config_resolver
+    from deepagents_code.configuration.resolver import (
+        get_config_resolver,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
 
     option = get_option("models.auto_classifier")
     if option is None:
@@ -3854,13 +3861,36 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
         )
         logger.warning("%s", problem)
         return None, problem
+
+    def resolve_without_managed() -> tuple[object, str]:
+        """Re-resolve against the user file with managed policy excluded.
+
+        The blank-env veto below names the user-level value it overrides, so
+        this deliberately resolves the already-read `toml_data` against an
+        empty managed tier rather than the shared process resolver (whose
+        managed tier is still in force).
+
+        Returns:
+            The resolved value and its compatibility source label.
+        """
+        resolved = resolver_from_snapshots(
+            TomlSnapshot(
+                {},
+                ProviderStatus("managed config", None, ProviderHealth.OK),
+            ),
+            TomlSnapshot(
+                toml_data,
+                ProviderStatus("config.toml", None, ProviderHealth.OK),
+            ),
+        ).get(option)
+        _emit_ranked_diagnostics(option, resolved)
+        return resolved.value, _ranked_source(resolved)
+
     blank_env = blank_auto_classifier_env_name()
     if blank_env is not None:
         # Name the config.toml value being overridden: without it the warning
         # sends the user to a config file that still shows their setting.
-        shadowed, shadowed_source = resolve_scalar(
-            option, toml_data=toml_data, managed_toml_data={}
-        )
+        shadowed, shadowed_source = resolve_without_managed()
         overridden = (
             f" (overriding {shadowed_source} {shadowed!r})"
             if isinstance(shadowed, str) and shadowed.strip()
@@ -3872,7 +3902,7 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
         )
         logger.warning("%s", problem)
         return None, problem
-    value, source = resolve_scalar(option, toml_data=toml_data, managed_toml_data={})
+    value, source = resolve_without_managed()
     if isinstance(value, str) and value.strip():
         return value.strip(), None
     if isinstance(value, str) and source != "default":
@@ -3882,7 +3912,7 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
         )
         logger.warning("%s", problem)
         return None, problem
-    # `resolve_scalar` coerces a wrong-typed TOML value to the option default, so
+    # TOML coercion drops a wrong-typed value to the option default, so
     # a malformed entry is indistinguishable here from an absent one. Re-read the
     # raw table to tell them apart rather than reverting in silence.
     raw = _raw_toml_auto_classifier(toml_data)

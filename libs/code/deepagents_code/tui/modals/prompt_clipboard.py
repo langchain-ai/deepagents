@@ -54,6 +54,13 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         Binding("enter", "select", "Insert", show=False, priority=True),
         Binding("ctrl+c", "copy", "Copy", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
+        # The search input is the only focusable widget, so focus traversal
+        # would just leave and re-enter it; swallow tab and shift+tab instead.
+        # Without the shift+tab binding the app's `check_action` steps its
+        # priority binding aside for this screen, and the key would fall
+        # through to `Screen.focus_previous`.
+        Binding("tab", "ignore", "Ignore", show=False, priority=True),
+        Binding("shift+tab", "ignore", "Ignore", show=False, priority=True),
     ]
 
     CSS_PATH = "prompt_clipboard.tcss"
@@ -226,3 +233,6 @@ class PromptClipboardScreen(ModalScreen[str | None]):
     def action_cancel(self) -> None:
         """Dismiss without selecting a prompt."""
         self.dismiss(None)
+
+    def action_ignore(self) -> None:
+        """Swallow a key that has no meaning in this modal."""

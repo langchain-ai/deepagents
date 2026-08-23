@@ -176,6 +176,24 @@ class TestPromptClipboardScreen:
             assert rows_list.show_vertical_scrollbar
             assert help_.region.bottom <= outer.region.bottom
 
+    async def test_tab_and_shift_tab_do_not_move_focus(self) -> None:
+        """Focus keys are swallowed; the search input keeps focus throughout."""
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("alpha", "beta"))
+            await pilot.pause()
+            search = screen.query_one("#prompt-filter", Input)
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen.focused is search
+            assert screen._selected_index == 0
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen.focused is search
+            assert screen._selected_index == 0
+
     async def test_ctrl_c_copies_selected_prompt_without_dismissing(self) -> None:
         app = _PromptClipboardApp()
         async with app.run_test() as pilot:

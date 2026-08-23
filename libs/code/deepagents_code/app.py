@@ -23221,10 +23221,11 @@ class DeepAgentsApp(App):
             cursor-style modals via `_SupportsReverseNav` and otherwise no-ops
             under a `ModalScreen` that lacks dedicated `shift+tab` handling
             (as `DebugConsoleScreen` does), so the key would be silently
-            swallowed. `PromptClipboardScreen` also steps aside so its
-            `action_move_up` method is not mistaken for reverse navigation. Note
-            this keys on the action, and `toggle_auto_approve` is also bound to
-            `ctrl+t`, so that binding is stepped aside under either screen.
+            swallowed. `PromptClipboardScreen` also steps aside so its own
+            priority `shift+tab -> ignore` binding wins and the key does not
+            fall through to `Screen.focus_previous`. Note this keys on the
+            action, and `toggle_auto_approve` is also bound to `ctrl+t`, so
+            that binding is stepped aside under either screen.
         - `quit_or_interrupt` (`ctrl+c`): the prompt clipboard owns this chord for
             copying the selected prompt rather than the focused search text.
         - `approval_reject_with_reason` (`tab`): unlike the other approval keys

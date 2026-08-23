@@ -104,7 +104,11 @@ class DotenvSkipEntry(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     skipped_at: str
-    """UTC ISO-8601 timestamp when the skip was recorded."""
+    """UTC ISO-8601 timestamp when the skip was recorded.
+
+    Forensic only — nothing reads it, so it is stored as written rather than
+    validated as a datetime.
+    """
 
 
 class DotenvAllowEntry(BaseModel):
@@ -113,7 +117,10 @@ class DotenvAllowEntry(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     allowed_at: str
-    """UTC ISO-8601 timestamp when the allow was recorded."""
+    """UTC ISO-8601 timestamp when the allow was recorded.
+
+    Forensic only, like `DotenvSkipEntry.skipped_at`.
+    """
 
 
 class DotenvSkipStore(BaseModel):
@@ -253,15 +260,31 @@ def is_project_dotenv_skipped_for_session(project_root: Path | str) -> bool:
         return key in _session_skips_locked()
 
 
-def skip_key_for_start_path(start_path: Path | None) -> str | None:
-    """Resolve the skip-store key that governs the `.env` found from a directory.
+def skip_key_for_dotenv_path(dotenv_path: Path) -> str:
+    """Return the key that governs one discovered `.env` file.
 
-    The key is the parent of the discovered `.env` file — the directory that
-    actually owns the file — not the invocation directory. A non-Git project
-    has no `ProjectContext.project_root`, so keying on `user_cwd` would miss
-    the ancestor `.env` that `_find_dotenv_from_start_path` walks up to; keying
-    on the file's parent makes "never load" follow the file whether the launch
-    is from its own directory or a subdirectory.
+    The key is the file's parent — the directory that actually owns it — not
+    the invocation directory. A non-Git project has no
+    `ProjectContext.project_root`, so keying on `user_cwd` would miss the
+    ancestor `.env` that `_find_dotenv_from_start_path` walks up to; keying on
+    the file's parent makes a remembered decision follow the file whether the
+    launch is from its own directory or a subdirectory.
+
+    Every producer of a key goes through here, so the canonical form is defined
+    once. A writer that derived its own key would silently stop matching the
+    readers, and the remembered decision would just quietly stop working.
+
+    Args:
+        dotenv_path: Path of a discovered project `.env`.
+
+    Returns:
+        The canonical key for that file.
+    """
+    return _project_key(dotenv_path.parent)
+
+
+def skip_key_for_start_path(start_path: Path | None) -> str | None:
+    """Resolve the key that governs the `.env` found from a directory.
 
     Args:
         start_path: Directory to start `.env` discovery from; cwd when `None`.
@@ -276,12 +299,18 @@ def skip_key_for_start_path(start_path: Path | None) -> str | None:
         dotenv_path = _find_dotenv_from_start_path(
             Path(start_path) if start_path is not None else Path.cwd()
         )
-    except OSError:
+    except (OSError, ValueError, RuntimeError):
+        # `_find_dotenv_from_start_path` resolves its start path outside its own
+        # guard, so an unusable path raises `ValueError` (embedded NUL) or
+        # `RuntimeError` (no resolvable home) as well as `OSError`. Returning
+        # `None` drops no decision: the loader's own discovery fails on the same
+        # path, so there is no `.env` to skip either way. Callers reach this
+        # before the loader's guard, so nothing here may escape.
         logger.debug("Could not locate a project .env for the skip key")
         return None
     if dotenv_path is None:
         return None
-    return _project_key(dotenv_path.parent)
+    return skip_key_for_dotenv_path(dotenv_path)
 
 
 def _warn_store_unusable(path: Path, reason: str) -> None:

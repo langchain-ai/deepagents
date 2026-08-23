@@ -397,3 +397,43 @@ def test_warnings_do_not_repeat_or_paint_over_the_tui(
 
     assert not is_project_dotenv_skipped(tmp_path, store_path=store)
     assert capsys.readouterr().err == ""
+
+
+def test_a_remembered_skip_survives_a_symlinked_launch_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Launching through a symlink must match a skip stored under the real path.
+
+    Both sides canonicalize today only because every key goes through
+    `skip_key_for_dotenv_path`. A refactor that dropped the `.resolve()` on
+    either side would leave the decision silently unmatched.
+    """
+    from deepagents_code.config import _load_dotenv
+
+    real = tmp_path / "real"
+    (real / "sub").mkdir(parents=True)
+    (real / ".env").write_text("SYMLINK_SKIP_CANARY=leaked\n", encoding="utf-8")
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    store = tmp_path / "state" / "dotenv_skip.json"
+    monkeypatch.setattr(
+        "deepagents_code.dotenv_skip._default_store_path", lambda: store
+    )
+    assert skip_project_dotenv(real, store_path=store)
+    monkeypatch.delenv("SYMLINK_SKIP_CANARY", raising=False)
+
+    _load_dotenv(start_path=link / "sub", refresh_loaded=True)
+
+    assert "SYMLINK_SKIP_CANARY" not in os.environ
+
+
+def test_an_unresolvable_start_path_yields_no_key(tmp_path: Path) -> None:
+    """Discovery failures must not escape into the loader.
+
+    The skip lookup runs before `_load_dotenv`'s own guard, so a `ValueError`
+    from an embedded NUL would otherwise propagate out of a reload.
+    """
+    from deepagents_code.dotenv_skip import skip_key_for_start_path
+
+    assert skip_key_for_start_path(tmp_path / "bad\x00name") is None

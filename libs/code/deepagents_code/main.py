@@ -4408,7 +4408,10 @@ def _check_project_dotenv_trust() -> None:
 
     try:
         dotenv_path = _find_dotenv_from_start_path(Path.cwd())
-    except OSError:
+    except (OSError, ValueError, RuntimeError):
+        # The same three failures `skip_key_for_start_path` documents. An
+        # advisory prompt has nothing useful to say about a cwd it cannot
+        # resolve, and the loader fails on it too.
         logger.debug("Could not locate a project .env for the trust prompt")
         return
     if dotenv_path is None:
@@ -4418,16 +4421,13 @@ def _check_project_dotenv_trust() -> None:
         allow_project_dotenv,
         is_project_dotenv_allowed,
         is_project_dotenv_skipped,
+        skip_key_for_dotenv_path,
         skip_project_dotenv,
     )
 
-    # Key the skip on the discovered `.env`'s parent — the directory that owns
-    # the file — not the invocation directory. A non-Git project has no
-    # `ProjectContext.project_root`, so keying on `user_cwd` would store the
-    # launch subdirectory and miss the ancestor `.env` on a later launch from
-    # the project root or a sibling. `dotenv_path` is already resolved by
-    # `_find_dotenv_from_start_path`, so its parent is canonical.
-    skip_key = str(dotenv_path.parent)
+    # One definition of the key, shared with the loader and the preview: a
+    # writer that derived its own would silently stop matching the readers.
+    skip_key = skip_key_for_dotenv_path(dotenv_path)
 
     # A persisted "never load" decision already covers this `.env` (and every
     # subdirectory launch, since discovery walks up to the same file).

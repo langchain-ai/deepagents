@@ -335,16 +335,25 @@ def _dotenv_skip_key(start_path: Path | None) -> str | None:
 
 
 def _project_dotenv_is_skipped(start_path: Path | None) -> bool:
-    """Return whether either skip store covers the discovered project `.env`."""
+    """Return whether either skip source covers the discovered project `.env`.
+
+    Args:
+        start_path: Directory to start `.env` discovery from; cwd when `None`.
+
+    Returns:
+        `True` when the session set or the persisted store covers the file.
+    """
     from deepagents_code.dotenv_skip import (
         is_project_dotenv_skipped,
         is_project_dotenv_skipped_for_session,
     )
 
     skip_key = _dotenv_skip_key(start_path)
+    # Session first: it needs no file read, so an already-answered launch never
+    # touches the store.
     return skip_key is not None and (
-        is_project_dotenv_skipped(skip_key)
-        or is_project_dotenv_skipped_for_session(skip_key)
+        is_project_dotenv_skipped_for_session(skip_key)
+        or is_project_dotenv_skipped(skip_key)
     )
 
 

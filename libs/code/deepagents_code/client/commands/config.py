@@ -1219,6 +1219,9 @@ def _config_paths() -> list[tuple[str, Any, bool]]:
         ("project hooks.json", project_hooks_path(project_root)),
         ("user hooks.json", base / "hooks.json"),
         ("hooks trust", DEFAULT_STATE_DIR / "hooks_trust.json"),
+        # Listed so a remembered `.env` decision is discoverable: it is the only
+        # way to undo one, since the prompt that recorded it no longer asks.
+        ("dotenv skip", DEFAULT_STATE_DIR / "dotenv_skip.json"),
         ("auth.json", DEFAULT_STATE_DIR / "auth.json"),
         ("recent models", DEFAULT_STATE_DIR / RECENT_MODELS_FILENAME),
     ]

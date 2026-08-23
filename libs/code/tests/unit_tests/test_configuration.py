@@ -2252,6 +2252,22 @@ def test_project_dotenv_path_reports_remembered_skip(
     assert rows[0]["status"] == "disabled"
 
 
+def test_path_lists_the_dotenv_decision_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remembered `.env` decision must be discoverable on disk.
+
+    The prompt that recorded it stops asking, so the file is the only way to
+    undo one — the same reason `hooks trust` is listed.
+    """
+    from deepagents_code.client.commands.config import _config_paths
+
+    monkeypatch.chdir(tmp_path)
+    labels = [label for label, _path, _exists in _config_paths()]
+
+    assert "dotenv skip" in labels
+
+
 def test_a_guessed_managed_path_is_not_a_clean_missing_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

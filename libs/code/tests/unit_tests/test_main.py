@@ -445,41 +445,24 @@ class TestCheckProjectDotenvTrust:
         assert "will be skipped" not in err
         assert "could not be remembered" not in err
 
-    def test_prompt_runs_before_the_dotenv_is_loaded(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The decision must precede the load it governs.
+    def test_prompt_runs_before_the_settings_import(self) -> None:
+        """The gate must precede the import that loads the project `.env`.
 
-        If this gate moved after the settings import, the prompt would still
-        ask and still persist while having no effect on the current launch.
+        If it moved after, the prompt would still ask and still persist while
+        having no effect on the current launch. Checked structurally because
+        `config` is imported once per process: by the time a test can call
+        `cli_main`, the module-level `_load_dotenv` has already run, so there is
+        no second load left to observe.
         """
-        from deepagents_code import config
+        import inspect
 
-        order: list[str] = []
-        monkeypatch.setattr(main_module, "_is_interactive_tui_launch", lambda _a: True)
-        monkeypatch.setattr(main_module, "_trust_picker_has_terminal", lambda: True)
-        monkeypatch.setattr(
-            main_module,
-            "_check_project_dotenv_trust",
-            lambda: order.append("prompt"),
-        )
-        real_load = config._load_dotenv
-        monkeypatch.setattr(
-            config,
-            "_load_dotenv",
-            lambda *a, **k: (order.append("load"), real_load(*a, **k))[1],
-        )
-        monkeypatch.setattr(
-            main_module.sys,
-            "argv",
-            ["dcode", "--no-mcp", "--mcp-config", "/nonexistent/mcp.json"],
+        source = inspect.getsource(main_module.cli_main)
+        gate = source.index("_check_project_dotenv_trust()")
+        settings_import = source.index(
+            "from deepagents_code.config import console, settings"
         )
 
-        with pytest.raises(SystemExit):
-            main_module.cli_main()
-
-        assert "load" in order, order
-        assert order.index("prompt") < order.index("load"), order
+        assert gate < settings_import
 
     def test_interrupt_escapes_the_prompt_guard(
         self, monkeypatch: pytest.MonkeyPatch

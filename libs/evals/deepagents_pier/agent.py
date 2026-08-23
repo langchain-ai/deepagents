@@ -192,7 +192,7 @@ class Dcode(BaseAgent):
             msg = f"LangGraph config file not found: {config_path}"
             raise ValueError(msg)
         self.config = config_path.relative_to(self.project_path).as_posix()
-        self._validate_graph()
+        self._graph_path()  # validates the graph name exists, fails fast
 
     @staticmethod
     def name() -> str:
@@ -508,12 +508,30 @@ mkdir -p {wheelhouse}
             ]
         return json.dumps(configurable)
 
+    def _graph_path(self) -> str:
+        """Resolve the graph's module:attribute path from ``langgraph.json``.
+
+        Needed because the installed ``harbor`` runner's CLI differs across
+        builds: some require ``--graph-path``, newer ones derive it from
+        ``--graph``. Passing ``--graph-path`` explicitly satisfies both (the
+        newer runner ignores it in favour of ``--graph``).
+        """
+        config_path = self.project_path / self.config
+        config = json.loads(config_path.read_text())
+        graphs = config.get("graphs")
+        if not isinstance(graphs, dict) or self.graph not in graphs:
+            available = ", ".join(sorted(graphs)) if isinstance(graphs, dict) else ""
+            msg = f"Unknown graph {self.graph!r}. Available graphs: {available}"
+            raise ValueError(msg)
+        return graphs[self.graph]
+
     def _runner_args(self, model: str | None) -> list[str]:
         """Build the runner CLI args.
 
-        The runner derives the graph's module:attribute path from
-        ``langgraph.json`` given ``--graph`` (and ``--config``), so there is no
-        separate ``--graph-path`` argument.
+        Pass both ``--graph`` and ``--graph-path`` (resolved from
+        ``langgraph.json``) to be robust to the harbor runner version skew seen
+        across environments: older builds require ``--graph-path``, newer builds
+        take ``--graph``. Supplying both works on either.
         """
         args = [
             "--project-dir",
@@ -522,6 +540,8 @@ mkdir -p {wheelhouse}
             self.config,
             "--graph",
             self.graph,
+            "--graph-path",
+            self._graph_path(),
             "--instruction-file",
             self._REMOTE_INSTRUCTION_PATH.as_posix(),
             "--result-path",
@@ -542,16 +562,6 @@ mkdir -p {wheelhouse}
             )
         )
         return args
-
-    def _validate_graph(self) -> None:
-        """Validate the graph name exists in ``langgraph.json`` (fail fast)."""
-        config_path = self.project_path / self.config
-        config = json.loads(config_path.read_text())
-        graphs = config.get("graphs")
-        if not isinstance(graphs, dict) or self.graph not in graphs:
-            available = ", ".join(sorted(graphs)) if isinstance(graphs, dict) else ""
-            msg = f"Unknown graph {self.graph!r}. Available graphs: {available}"
-            raise ValueError(msg)
 
     async def run(
         self,

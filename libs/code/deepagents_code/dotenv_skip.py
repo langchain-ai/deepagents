@@ -151,6 +151,16 @@ def _warn_store_unusable(path: Path, reason: str) -> None:
     logger.warning("%s", message)
 
 
+def _warn_entry_unusable(path: Path, reason: str) -> None:
+    """Report one ignored entry without implying the whole store was dropped."""
+    message = (
+        f"could not use an entry from {path}: {reason}. Only this entry is ignored; "
+        "other valid remembered project .env skips are still applied."
+    )
+    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+    logger.warning("%s", message)
+
+
 def _store_lock_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.lock")
 
@@ -198,12 +208,12 @@ def _parse_projects(raw_projects: object, *, path: Path) -> dict[str, DotenvSkip
     projects: dict[str, DotenvSkipEntry] = {}
     for key, value in raw_projects.items():
         if not isinstance(key, str):
-            _warn_store_unusable(path, f"a project key is not a string: {key!r}")
+            _warn_entry_unusable(path, f"a project key is not a string: {key!r}")
             continue
         try:
             projects[key] = DotenvSkipEntry.model_validate(value)
         except ValidationError as exc:
-            _warn_store_unusable(path, f"the entry for {key} is invalid: {exc}")
+            _warn_entry_unusable(path, f"the entry for {key} is invalid: {exc}")
     return projects
 
 

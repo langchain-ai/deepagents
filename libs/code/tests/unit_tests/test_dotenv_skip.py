@@ -105,7 +105,11 @@ def test_valid_entries_survive_one_invalid_entry(
 
     assert is_project_dotenv_skipped(good, store_path=store)
     assert not is_project_dotenv_skipped(bad, store_path=store)
-    assert "is invalid" in capsys.readouterr().err
+    warning = capsys.readouterr().err
+    assert "is invalid" in warning
+    assert "Only this entry is ignored" in warning
+    assert "other valid remembered project .env skips are still applied" in warning
+    assert "Remembered project .env skips are not applied" not in warning
 
 
 def test_concurrent_writes_preserve_every_entry(tmp_path: Path) -> None:

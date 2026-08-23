@@ -4966,6 +4966,14 @@ class DeepAgentsApp(App):
 
         self.run_worker(self._init_session_state, exclusive=True, group="session-init")
 
+        from deepagents_code.offload import sweep_offloaded_history
+
+        self.run_worker(
+            asyncio.to_thread(sweep_offloaded_history),
+            exclusive=True,
+            group="startup-history-sweep",
+        )
+
         # Server startup (model creation + server process)
         if self._server_kwargs is not None and not self._server_startup_deferred:
             self.run_worker(

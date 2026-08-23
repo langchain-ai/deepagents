@@ -6,6 +6,7 @@ import asyncio
 import os
 import stat
 import tempfile
+import time
 from contextlib import nullcontext
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,7 @@ from deepagents_code.offload import (
     _filesystem_tool_path,
     _offload_fallback_root,
     delete_offloaded_history,
+    sweep_offloaded_history,
 )
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
@@ -2008,6 +2010,132 @@ class TestDeleteOffloadedHistory:
         assert delete_offloaded_history("sub/thread") is False
         assert relative_decoy.exists()
         assert outside.exists()
+
+
+class TestSweepOffloadedHistory:
+    """Cover startup cleanup of expired conversation-history archives."""
+
+    @staticmethod
+    def _setup(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: str = ""
+    ) -> Path:
+        root = tmp_path / "offload"
+        archive_dir = root / offload.CONVERSATION_HISTORY_DIRNAME
+        archive_dir.mkdir(parents=True)
+        config_path = tmp_path / "config.toml"
+        if config:
+            config_path.write_text(config)
+        monkeypatch.setattr(offload, "_offload_fallback_root", lambda: root)
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        return archive_dir
+
+    def test_deletes_old_file_and_keeps_fresh_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only archives older than the configured retention are removed."""
+        archive_dir = self._setup(tmp_path, monkeypatch)
+        old = archive_dir / "old.md"
+        fresh = archive_dir / "fresh.md"
+        old.write_text("old")
+        fresh.write_text("fresh")
+        old_time = time.time() - 31 * 86_400
+        os.utime(old, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 1
+        assert not old.exists()
+        assert fresh.exists()
+
+    def test_nonzero_retention_override_is_applied(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A valid config value replaces the default retention window."""
+        archive_dir = self._setup(
+            tmp_path, monkeypatch, "[history]\nretention_days = 1\n"
+        )
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 2 * 86_400
+        os.utime(archive, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 1
+        assert not archive.exists()
+
+    def test_ignores_non_markdown_and_non_regular_entries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sweep ignores non-markdown files and markdown directories."""
+        archive_dir = self._setup(tmp_path, monkeypatch)
+        text_file = archive_dir / "old.txt"
+        markdown_dir = archive_dir / "old.md"
+        text_file.write_text("keep")
+        markdown_dir.mkdir()
+        old_time = time.time() - 31 * 86_400
+        os.utime(text_file, (old_time, old_time))
+        os.utime(markdown_dir, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 0
+        assert text_file.exists()
+        assert markdown_dir.exists()
+
+    def test_missing_archive_directory_is_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing archive directory does not raise."""
+        root = tmp_path / "offload"
+        monkeypatch.setattr(offload, "_offload_fallback_root", lambda: root)
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "missing.toml",
+        )
+
+        assert sweep_offloaded_history() == 0
+
+    def test_zero_retention_disables_sweep(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A zero-day retention setting avoids resolving archive storage."""
+        self._setup(tmp_path, monkeypatch, "[history]\nretention_days = 0\n")
+        resolver = MagicMock(side_effect=AssertionError("storage should not resolve"))
+        monkeypatch.setattr(offload, "_offload_fallback_root", resolver)
+
+        assert sweep_offloaded_history() == 0
+        resolver.assert_not_called()
+
+    def test_invalid_retention_uses_default(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Invalid retention config warns and falls back to 30 days."""
+        archive_dir = self._setup(
+            tmp_path, monkeypatch, '[history]\nretention_days = "forever"\n'
+        )
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 31 * 86_400
+        os.utime(archive, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 1
+        assert "Invalid [history].retention_days" in caplog.text
+
+    def test_unlink_failure_is_swallowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unlink failure leaves the archive and does not raise."""
+        archive_dir = self._setup(tmp_path, monkeypatch)
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 31 * 86_400
+        os.utime(archive, (old_time, old_time))
+        monkeypatch.setattr(
+            Path, "unlink", MagicMock(side_effect=PermissionError("read-only mount"))
+        )
+
+        assert sweep_offloaded_history() == 0
+        assert archive.exists()
 
 
 class TestArtifactsRoot:

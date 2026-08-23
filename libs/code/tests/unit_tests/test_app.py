@@ -577,6 +577,34 @@ class TestInitialPromptOnMount:
         assert "/model" in str(messages[0].content)
         assert "credentials" in str(messages[0].content)
 
+    async def test_post_paint_init_schedules_history_sweep(self) -> None:
+        """Startup runs the archive sweep as an exclusive background worker."""
+        app = DeepAgentsApp(defer_server_start=True)
+        scheduled: list[tuple[str | None, bool | None]] = []
+
+        def fake_run_worker(work: object, *args: object, **kwargs: object) -> MagicMock:
+            del args
+            group = kwargs.get("group")
+            exclusive = kwargs.get("exclusive")
+            scheduled.append(
+                (
+                    group if isinstance(group, str) else None,
+                    exclusive if isinstance(exclusive, bool) else None,
+                )
+            )
+            if inspect.iscoroutine(work):
+                work.close()
+            return MagicMock()
+
+        app.run_worker = fake_run_worker  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        with patch(
+            "deepagents_code.update_check.is_update_check_enabled", return_value=False
+        ):
+            await app._post_paint_init()
+
+        assert ("startup-history-sweep", True) in scheduled
+
 
 class TestStartupSequence:
     """Tests for post-connect startup sequencing."""

@@ -6,12 +6,18 @@ import logging
 import os
 import stat
 import tempfile
+import time
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePath
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
 _FALLBACK_ARTIFACTS_ROOT = "/dcode-artifacts-fallback"
+
+DEFAULT_HISTORY_RETENTION_DAYS = 30
+_SECONDS_PER_DAY = 86_400
 
 CONVERSATION_HISTORY_DIRNAME = "conversation_history"
 """Subdirectory of the offload root that holds per-thread conversation archives.
@@ -240,6 +246,105 @@ def _offload_fallback_root() -> Path:
         unique = Path(tempfile.mkdtemp(prefix=f"deepagents-{suffix}-", dir=temp_root))
         _UNIQUE_OFFLOAD_FALLBACK_ROOT = _prepare_temp_dir(unique)
         return _UNIQUE_OFFLOAD_FALLBACK_ROOT
+
+
+def _history_retention_days() -> int:
+    """Read the conversation-history retention window from user config.
+
+    Returns:
+        The configured non-negative retention window, or the default.
+    """
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as config_file:
+            config = cast("dict[str, object]", tomllib.load(config_file))
+    except FileNotFoundError:
+        return DEFAULT_HISTORY_RETENTION_DAYS
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.warning("Could not read [history] config; using default retention")
+        return DEFAULT_HISTORY_RETENTION_DAYS
+    history_value = config.get("history")
+    if history_value is None:
+        return DEFAULT_HISTORY_RETENTION_DAYS
+    if not isinstance(history_value, dict):
+        logger.warning("Invalid [history] config; using default retention")
+        return DEFAULT_HISTORY_RETENTION_DAYS
+    history = cast("dict[str, object]", history_value)
+    value = history.get("retention_days")
+    if value is None:
+        return DEFAULT_HISTORY_RETENTION_DAYS
+    if type(value) is int and value >= 0:
+        return value
+    logger.warning("Invalid [history].retention_days; using default retention")
+    return DEFAULT_HISTORY_RETENTION_DAYS
+
+
+def _delete_expired_archive(candidate: Path, archive_dir: Path, cutoff: float) -> bool:
+    """Delete one expired regular markdown archive.
+
+    Args:
+        candidate: Direct child of the archive directory to inspect.
+        archive_dir: Directory that candidates must remain inside.
+        cutoff: Oldest mtime to retain, as Unix seconds.
+
+    Returns:
+        Whether the candidate was deleted.
+    """
+    if candidate.parent != archive_dir or candidate.suffix != ".md":
+        return False
+    try:
+        info = candidate.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_mtime >= cutoff:
+            return False
+        candidate.unlink()
+    except OSError:
+        logger.warning(
+            "Failed to sweep offloaded history archive %s", candidate, exc_info=True
+        )
+        return False
+    return True
+
+
+def _sweep_offloaded_history(retention_days: int) -> int:
+    """Delete expired archives after retention config has been validated.
+
+    Args:
+        retention_days: Number of days of archives to retain.
+
+    Returns:
+        The number of archives deleted.
+    """
+    try:
+        archive_dir = _offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME
+        candidates = list(archive_dir.iterdir())
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Could not resolve offloaded history archives for sweep", exc_info=True
+        )
+        return 0
+    cutoff = time.time() - retention_days * _SECONDS_PER_DAY
+    return sum(
+        _delete_expired_archive(candidate, archive_dir, cutoff)
+        for candidate in candidates
+    )
+
+
+def sweep_offloaded_history() -> int:
+    """Delete conversation-history archives older than the configured retention.
+
+    Returns:
+        The number of archive files deleted. Failures return zero or omit the
+        affected file from the count rather than raising.
+    """
+    try:
+        retention_days = _history_retention_days()
+        if retention_days == 0:
+            return 0
+        return _sweep_offloaded_history(retention_days)
+    except Exception:
+        logger.warning("Unexpected failure sweeping offloaded history", exc_info=True)
+        return 0
 
 
 def delete_offloaded_history(thread_id: str) -> bool:

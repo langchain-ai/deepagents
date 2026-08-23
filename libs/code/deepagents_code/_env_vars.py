@@ -495,6 +495,16 @@ rely on their distro package / existing toolchain instead; the install script's
 reused under either setting. Unrecognized values fall back to `managed`. See
 `managed_tools.ripgrep_installer`."""
 
+SERVER_DOTENV_SESSION_SKIPS = "DEEPAGENTS_CODE_SERVER_DOTENV_SESSION_SKIPS"
+"""Internal relay of session-scoped project `.env` skips to the server subprocess.
+
+Not user-facing. The session skip recorded by the advisory `.env` prompt lives
+in client memory, but the server runs in its own interpreter and reloads
+settings itself, so without this relay it would load a file the user just
+refused. Holds a JSON array of canonical `.env` parent directories; the server
+seeds `dotenv_skip`'s session set from it. See `dotenv_skip`.
+"""
+
 SERVER_ENV_PREFIX = "DEEPAGENTS_CODE_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""
 

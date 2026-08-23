@@ -1,4 +1,10 @@
-"""Persistent per-project record of directories whose `.env` should be skipped.
+"""Records of project directories whose `.env` should be skipped.
+
+Two independent skip sources live here: a persistent store on disk ("never load
+in this project") and a process-local set ("not this session"). The session set
+is relayed to the server subprocess through
+`_env_vars.SERVER_DOTENV_SESSION_SKIPS`, because the server reloads settings in
+its own interpreter and would otherwise load a file the user just refused.
 
 Separate from the hooks trust store (`hooks/trust.py`): choosing not to load a
 project's `.env` is an independent decision from trusting its hooks, so the two
@@ -22,6 +28,8 @@ from typing import TYPE_CHECKING, Literal
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from deepagents_code._env_vars import SERVER_DOTENV_SESSION_SKIPS
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -37,6 +45,9 @@ _SESSION_SKIP_LOCK = threading.Lock()
 
 _SESSION_SKIPPED_PROJECTS: set[str] = set()
 """Canonical `.env` parent directories skipped for the current process."""
+
+_SESSION_SKIPS_SEEDED = False
+"""Whether the relayed skips from the launch environment were read yet."""
 
 
 class DotenvSkipEntry(BaseModel):
@@ -70,15 +81,97 @@ def _project_key(project_root: Path | str) -> str:
     return str(Path(project_root).expanduser().resolve())
 
 
+def _warn_relayed_skips_unusable(reason: str) -> None:
+    """Report relayed session skips that could not be read, visibly.
+
+    Every call means the user answered the advisory prompt in the client and
+    this process will load the `.env` anyway, so the warning uses the same
+    stderr + logger pairing as `_warn_store_unusable`.
+
+    Args:
+        reason: Short description of what was wrong with the relayed value.
+    """
+    message = (
+        f"could not read {SERVER_DOTENV_SESSION_SKIPS}: {reason}. "
+        "Session project .env skips are not applied in this process."
+    )
+    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+    logger.warning("%s", message)
+
+
+def _relayed_session_skips() -> set[str]:
+    """Read session skips relayed from the launching process.
+
+    Returns:
+        Canonical keys from `SERVER_DOTENV_SESSION_SKIPS`, or an empty set when
+        the variable is absent, empty, or unusable.
+    """
+    raw = os.environ.get(SERVER_DOTENV_SESSION_SKIPS)
+    if not raw:
+        return set()
+    try:
+        relayed: object = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _warn_relayed_skips_unusable(f"it is not valid JSON ({exc})")
+        return set()
+    if not isinstance(relayed, list):
+        _warn_relayed_skips_unusable("it is not a JSON array of strings")
+        return set()
+    keys: set[str] = set()
+    for key in relayed:
+        if not isinstance(key, str):
+            _warn_relayed_skips_unusable("it is not a JSON array of strings")
+            return set()
+        keys.add(key)
+    return keys
+
+
+def _session_skips_locked() -> set[str]:
+    """Return the session skip set, seeding it from the environment once.
+
+    The relayed value is read lazily rather than at import so a test (or a
+    caller that sets the variable after import) sees the same behavior as a
+    freshly launched server. Callers must hold `_SESSION_SKIP_LOCK`.
+    """
+    global _SESSION_SKIPS_SEEDED  # noqa: PLW0603
+    if not _SESSION_SKIPS_SEEDED:
+        _SESSION_SKIPS_SEEDED = True
+        _SESSION_SKIPPED_PROJECTS.update(_relayed_session_skips())
+    return _SESSION_SKIPPED_PROJECTS
+
+
+def reset_session_skips() -> None:
+    """Drop every session skip and re-arm seeding from the environment.
+
+    For tests only: the session set is process-global, so a test that records a
+    skip would otherwise leak it into every later test in the same process.
+    """
+    global _SESSION_SKIPS_SEEDED  # noqa: PLW0603
+    with _SESSION_SKIP_LOCK:
+        _SESSION_SKIPPED_PROJECTS.clear()
+        _SESSION_SKIPS_SEEDED = False
+    os.environ.pop(SERVER_DOTENV_SESSION_SKIPS, None)
+
+
 def skip_project_dotenv_for_session(project_root: Path | str) -> None:
     """Skip one project's `.env` for the rest of the current process.
+
+    Also exports the full session set to `SERVER_DOTENV_SESSION_SKIPS`, which
+    is how the decision reaches processes this one starts or becomes: the server
+    subprocess inherits `os.environ` (`client.launch.server._build_server_env`)
+    and so does the startup auto-update's `os.execv`. Without that the server
+    would reload settings in its own interpreter and load the very file the
+    user just refused.
 
     Args:
         project_root: Directory that owns the discovered project `.env`.
     """
     key = _project_key(project_root)
     with _SESSION_SKIP_LOCK:
-        _SESSION_SKIPPED_PROJECTS.add(key)
+        keys = _session_skips_locked()
+        keys.add(key)
+        exported = json.dumps(sorted(keys))
+    os.environ[SERVER_DOTENV_SESSION_SKIPS] = exported
 
 
 def is_project_dotenv_skipped_for_session(project_root: Path | str) -> bool:
@@ -88,11 +181,12 @@ def is_project_dotenv_skipped_for_session(project_root: Path | str) -> bool:
         project_root: Directory that owns the discovered project `.env`.
 
     Returns:
-        `True` when the canonical project key was skipped in this process.
+        `True` when the canonical project key was skipped in this process,
+        either by a prompt answered here or by a skip relayed from the client.
     """
     key = _project_key(project_root)
     with _SESSION_SKIP_LOCK:
-        return key in _SESSION_SKIPPED_PROJECTS
+        return key in _session_skips_locked()
 
 
 def skip_key_for_start_path(start_path: Path | None) -> str | None:

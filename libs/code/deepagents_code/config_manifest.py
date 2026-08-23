@@ -2502,6 +2502,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
 NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
     {
         _env_vars.SERVER_ENV_PREFIX,
+        # Internal relay of the advisory `.env` prompt's session decision to
+        # the server subprocess (see `dotenv_skip`); never user-configured.
+        _env_vars.SERVER_DOTENV_SESSION_SKIPS,
         # Set then popped during the self-update restart handshake (main.py);
         # never user-configured.
         _env_vars.RESTARTED_AFTER_UPDATE,

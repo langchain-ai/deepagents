@@ -344,6 +344,13 @@ def _build_server_env() -> dict[str, str]:
     before being stripped, so the value never reaches the server interpreter's
     `sys.path` but can still be re-applied to agent `execute` commands downstream.
 
+    Session-scoped project `.env` skips reach the server through the plain
+    `os.environ` copy: `dotenv_skip` exports them to
+    `SERVER_DOTENV_SESSION_SKIPS` when the decision is made, so nothing needs
+    relaying here. The server reloads settings in its own interpreter
+    (`server_graph`), so without that variable it would load a file the user
+    just refused in the advisory prompt.
+
     Returns:
         Environment dict for `subprocess.Popen`.
     """

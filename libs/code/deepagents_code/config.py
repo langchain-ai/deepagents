@@ -30,6 +30,7 @@ from deepagents_code._env_vars import (
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
     READ_PROJECT_DOTENV,
+    SERVER_DOTENV_SESSION_SKIPS,
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
@@ -145,6 +146,7 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "SYSTEMROOT",
         "WINDIR",
         READ_PROJECT_DOTENV,
+        SERVER_DOTENV_SESSION_SKIPS,
         _INHERITED_PYTHONPATH_ENV,
     }
 )
@@ -184,6 +186,10 @@ checking which category it belongs to:
 `_INHERITED_PYTHONPATH_ENV` is denied so a project `.env` cannot smuggle a
 `PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
 is only meant to relay a value the user set in their launch environment.
+`SERVER_DOTENV_SESSION_SKIPS` is denied for the same reason: it carries the
+advisory prompt's session decision to child processes, so only this process may
+write it. (Injecting it could only suppress `.env` loading, never force it, but
+a carrier var still has exactly one legitimate writer.)
 
 `READ_PROJECT_DOTENV` is denied from *every* `.env` (not just the project one)
 because it is a trust decision about the loader itself: if a project `.env`

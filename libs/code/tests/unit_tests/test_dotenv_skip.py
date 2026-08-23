@@ -8,15 +8,27 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+import pytest
+
 from deepagents_code.dotenv_skip import (
     is_project_dotenv_skipped,
+    reset_session_skips,
     skip_project_dotenv,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
+
+@pytest.fixture(autouse=True)
+def _clean_session_skips() -> Iterator[None]:
+    """Keep the process-global session skip set from leaking between tests."""
+    reset_session_skips()
+    yield
+    reset_session_skips()
 
 
 def test_skip_persists_under_canonical_key(tmp_path: Path) -> None:
@@ -170,3 +182,106 @@ def test_missing_store_reads_as_empty(tmp_path: Path) -> None:
     assert not is_project_dotenv_skipped(
         tmp_path / "any", store_path=tmp_path / "absent" / "dotenv_skip.json"
     )
+
+
+def test_session_skip_is_exported_for_child_processes(tmp_path: Path) -> None:
+    """A session decision must reach the processes this one starts.
+
+    The server runs in its own interpreter and reloads settings itself, so a
+    skip that lived only in client memory would let the server load the very
+    `.env` the user just refused.
+    """
+    from deepagents_code._env_vars import SERVER_DOTENV_SESSION_SKIPS
+    from deepagents_code.dotenv_skip import skip_project_dotenv_for_session
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    skip_project_dotenv_for_session(first)
+    skip_project_dotenv_for_session(second)
+
+    exported = json.loads(os.environ[SERVER_DOTENV_SESSION_SKIPS])
+    assert exported == sorted([str(first.resolve()), str(second.resolve())])
+
+
+def test_relayed_session_skip_applies_without_a_local_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The relay alone must skip the file, with no in-process prompt answer.
+
+    This is the server's situation: it never ran the prompt, so the env var is
+    the only record of the user's answer.
+    """
+    from deepagents_code._env_vars import SERVER_DOTENV_SESSION_SKIPS
+    from deepagents_code.dotenv_skip import is_project_dotenv_skipped_for_session
+
+    skipped = tmp_path / "skipped"
+    monkeypatch.setenv(
+        SERVER_DOTENV_SESSION_SKIPS, json.dumps([str(skipped.resolve())])
+    )
+
+    assert is_project_dotenv_skipped_for_session(skipped)
+    assert not is_project_dotenv_skipped_for_session(tmp_path / "other")
+
+
+def test_relayed_session_skip_reaches_the_dotenv_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The relayed key must suppress the real loader, not just the predicate."""
+    from deepagents_code._env_vars import SERVER_DOTENV_SESSION_SKIPS
+    from deepagents_code.config import _load_dotenv
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text("RELAYED_SKIP_CANARY=leaked\n", encoding="utf-8")
+    monkeypatch.delenv("RELAYED_SKIP_CANARY", raising=False)
+    monkeypatch.setenv(
+        SERVER_DOTENV_SESSION_SKIPS, json.dumps([str(project.resolve())])
+    )
+
+    _load_dotenv(start_path=project, refresh_loaded=True)
+
+    assert "RELAYED_SKIP_CANARY" not in os.environ
+
+
+def test_unusable_relayed_skips_are_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Dropping a relayed decision loads the file, so it cannot be silent."""
+    from deepagents_code._env_vars import SERVER_DOTENV_SESSION_SKIPS
+    from deepagents_code.dotenv_skip import is_project_dotenv_skipped_for_session
+
+    monkeypatch.setenv(SERVER_DOTENV_SESSION_SKIPS, "{not json")
+
+    assert not is_project_dotenv_skipped_for_session("/tmp")
+    assert "is not valid JSON" in capsys.readouterr().err
+
+
+def test_relayed_skips_of_the_wrong_shape_are_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from deepagents_code._env_vars import SERVER_DOTENV_SESSION_SKIPS
+    from deepagents_code.dotenv_skip import is_project_dotenv_skipped_for_session
+
+    monkeypatch.setenv(SERVER_DOTENV_SESSION_SKIPS, json.dumps({"a": 1}))
+
+    assert not is_project_dotenv_skipped_for_session("/tmp")
+    assert "not a JSON array of strings" in capsys.readouterr().err
+
+
+def test_project_dotenv_cannot_write_the_session_skip_carrier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only this process may write the carrier var (see `_INHERITED_PYTHONPATH_ENV`)."""
+    from deepagents_code._env_vars import SERVER_DOTENV_SESSION_SKIPS
+    from deepagents_code.config import _load_dotenv
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text(
+        f'{SERVER_DOTENV_SESSION_SKIPS}=["/injected"]\n', encoding="utf-8"
+    )
+    monkeypatch.delenv(SERVER_DOTENV_SESSION_SKIPS, raising=False)
+
+    _load_dotenv(start_path=project, refresh_loaded=True)
+
+    assert SERVER_DOTENV_SESSION_SKIPS not in os.environ

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import tomllib
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -32,6 +33,7 @@ from deepagents_code.config_manifest import (
     get_config_options,
     get_option,
     is_provider_package_installed,
+    load_bool_display_preference,
     option_keys,
     options_with_key_prefix,
     provider_install_extra,
@@ -113,12 +115,10 @@ def test_manifest_covers_every_provider_credential() -> None:
 
 _UI_READER_ALLOWLIST: frozenset[str] = frozenset(
     {
-        # Theme resolution predates the manifest and keeps bespoke semantics
-        # (terminal-program mapping, unknown-name fallback), so these read
-        # `[ui]` directly rather than through `resolve_scalar`.
+        # Terminal-default inspection and the theme provider retain bespoke
+        # terminal-program mapping semantics.
         "app.py:_load_terminal_default",
-        "app.py:_load_theme_preference",
-        "config_manifest.py:_resolve_theme",
+        "providers.py:ranked_theme_toml_value",
         # Reads `[ui]` only to repair and rewrite it; not a value reader.
         "app.py:_replace_malformed_ui",
     }
@@ -176,10 +176,160 @@ def test_no_hand_rolled_ui_config_readers() -> None:
     )
 
 
+# Six `app.py` display toggles plus `display.show_usage_stats` in
+# `_session_stats.py`. The `app.py` wrapper forwards variables, not literals,
+# so it is deliberately not counted. Exact, not a floor — see the test.
+_EXPECTED_LITERAL_CALL_SITES = 7
+
+
+def test_bool_display_preference_fallbacks_match_the_manifest() -> None:
+    """Every `load_bool_display_preference` call site must agree with the manifest.
+
+    The `fallback` argument duplicates the option's declared default, and a
+    mistyped key silently resolves to that fallback — with both in agreement
+    that produces no symptom at all until someone actually sets the option.
+
+    This walks the call sites instead of listing them, because a hand-kept list
+    is exactly how the drift gets in: the key can be added to the list while a
+    second call site with a different fallback goes unnoticed, or a new caller
+    can skip the list entirely.
+
+    The walk only sees literal arguments, so a refactor that passed keys or
+    fallbacks as variables would quietly shrink coverage while still passing on
+    whatever literal sites remained. `_EXPECTED_LITERAL_CALL_SITES` is an exact
+    count rather than a floor, so both a shrink and an unreviewed new literal
+    caller are loud — bump it when you add one. The blind spot it cannot close
+    is a *new* caller that passes a variable key: the count stays put and
+    nothing checks that caller's pair.
+    """
+    import ast
+    from pathlib import Path
+
+    from deepagents_code import config_manifest
+
+    package_root = Path(config_manifest.__file__).parent
+    call_sites: list[tuple[str, str, object]] = []
+    for source in sorted(package_root.rglob("*.py")):
+        text = source.read_text(encoding="utf-8")
+        if "load_bool_display_preference(" not in text:
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else getattr(func, "id", None)
+            )
+            if name not in {
+                "load_bool_display_preference",
+                "_load_bool_display_preference",
+            }:
+                continue
+            keys = [
+                arg.value
+                for arg in node.args
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            ] + [
+                kw.value.value
+                for kw in node.keywords
+                if kw.arg == "key"
+                and isinstance(kw.value, ast.Constant)
+                and isinstance(kw.value.value, str)
+            ]
+            fallbacks = [
+                kw.value.value
+                for kw in node.keywords
+                if kw.arg == "fallback" and isinstance(kw.value, ast.Constant)
+            ]
+            # The `app.py` wrapper forwards `key`/`fallback` variables rather
+            # than literals; only literal pairs are checkable here.
+            if keys and fallbacks:
+                call_sites.append((source.name, keys[0], fallbacks[0]))
+
+    assert len(call_sites) == _EXPECTED_LITERAL_CALL_SITES, (
+        f"found {len(call_sites)} literal call sites, expected "
+        f"{_EXPECTED_LITERAL_CALL_SITES}; a caller that stopped passing "
+        "literals is no longer checked here, and a new one has not been "
+        "reviewed — change the count deliberately"
+    )
+    for filename, key, fallback in call_sites:
+        option = get_option(key)
+        assert option is not None, f"{filename}: {key} is not in the manifest"
+        assert option.kind is OptionKind.BOOL, (
+            f"{filename}: {key} is {option.kind.value}, not a bool"
+        )
+        assert option.default is fallback, (
+            f"{filename}: {key} default {option.default!r} disagrees with the "
+            f"call-site fallback {fallback!r}; they must match or the fallback "
+            "path changes behavior"
+        )
+
+
+def test_bool_display_preference_unknown_key_falls_back(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unmapped key returns the fallback and says so in the log.
+
+    Nothing else exercises this branch: every real call site names a key that
+    is in the manifest, so the guard only ever fires after a rename. The
+    fallback is returned as given, not coerced, in both directions.
+    """
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert (
+            load_bool_display_preference("display.no_such_key", fallback=False) is False
+        )
+        assert (
+            load_bool_display_preference("display.no_such_key", fallback=True) is True
+        )
+
+    assert "display.no_such_key" in caplog.text
+
+
+def test_bool_display_preference_non_bool_key_falls_back(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A key naming a non-bool option returns the fallback rather than coercing.
+
+    Without the kind check, `display.charset` (a `STR` option defaulting to
+    `"auto"`) would resolve to `bool("auto")` — permanently `True`, with no
+    warning at all.
+    """
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert load_bool_display_preference("display.charset", fallback=False) is False
+
+    assert "display.charset" in caplog.text
+    assert "not a bool" in caplog.text
+
+
+def test_toml_only_bool_display_options_declare_no_env_var() -> None:
+    """`display.show_diff_line_numbers` is `config.toml`-only, deliberately.
+
+    It is TUI-only and toggled in-app with `/line-numbers`, so `config.toml` is
+    the natural place to preset it — unlike `display.show_usage_stats`, which
+    also gates headless output and therefore does declare an env var.
+
+    The promise lives in `app._load_show_diff_line_numbers` ("There is no env
+    var for this option."), which is what a failure here has to go fix;
+    `load_bool_display_preference` only says that not every option declares
+    one. Adding an `env_var` is a legitimate product change, but it should be a
+    decision rather than a drive-by, so it has to come through this test.
+    """
+    option = get_option("display.show_diff_line_numbers")
+    assert option is not None
+    assert option.env_var is None, (
+        "display.show_diff_line_numbers gained an env var; update the promise in "
+        "`app._load_show_diff_line_numbers`"
+    )
+    assert not option.fallback_env_vars
+
+
 @pytest.mark.parametrize(
     ("key", "toml_keys"),
     [
         ("display.show_message_timestamps", ("ui", "show_message_timestamps")),
+        ("display.show_usage_stats", ("ui", "show_usage_stats")),
         ("display.themes", ("themes",)),
         ("display.terminal_themes", ("ui", "terminal_themes")),
         ("models.providers", ("models", "providers")),
@@ -187,6 +337,7 @@ def test_no_hand_rolled_ui_config_readers() -> None:
         ("agents.default", ("agents", "default")),
         ("agents.recent", ("agents", "recent")),
         ("agents.async_subagents", ("async_subagents",)),
+        ("startup.recent", ("startup", "recent")),
         ("sandboxes.default", ("sandboxes", "default")),
         ("sandboxes.providers", ("sandboxes", "providers")),
     ],
@@ -1205,6 +1356,35 @@ def test_run_get_json_non_credential_omits_store_error(stored_auth_dir, capsys):
     assert "store_error" not in payload
 
 
+def test_run_get_pairs_values_and_health_from_one_managed_snapshot(
+    monkeypatch, capsys
+) -> None:
+    """A config invocation refreshes managed provider state exactly once."""
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
+
+    snapshot = TomlSnapshot(
+        {},
+        ProviderStatus("managed config", None, ProviderHealth.MISSING),
+    )
+    calls: list[bool] = []
+
+    def get_snapshot(*, refresh: bool = False, path: object = None) -> TomlSnapshot:
+        assert path is None
+        calls.append(refresh)
+        return snapshot
+
+    monkeypatch.setattr(service, "get_managed_snapshot", get_snapshot)
+
+    assert _run_get("display.show_header", "json") == 0
+    assert calls == [True]
+    capsys.readouterr()
+
+
 def test_run_config_json_flags_unreadable_store(stored_auth_dir, capsys):
     """`config --json` marks credential rows when the store is unreadable."""
     import json
@@ -2062,6 +2242,35 @@ def test_resolve_structured_passes_value_through() -> None:
     )
 
 
+def test_structured_fallback_preserves_invalid_tier(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A defaultless table fallback retains the rejected provider metadata."""
+    from deepagents_code.config_manifest import resolve_ranked_scalar
+    from deepagents_code.configuration.resolver import USER_RANK
+    from deepagents_code.configuration.types import Invalid
+
+    option = get_option("display.terminal_themes")
+    assert option is not None
+    toml_data = {"ui": "dark"}
+
+    resolved = resolve_ranked_scalar(
+        option,
+        toml_data=toml_data,
+        managed_toml_data={},
+    )
+    assert resolved.value is None
+    assert isinstance(resolved.tier_health[USER_RANK], Invalid)
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(
+            option,
+            toml_data=toml_data,
+            managed_toml_data={},
+        ) == (None, "default")
+    assert any("expected a table" in record.message for record in caplog.records)
+
+
 def test_resolve_malformed_skills_dir_env_falls_back(monkeypatch, caplog) -> None:
     """An unresolvable skills-dir env path logs and falls back, never raising."""
     import logging
@@ -2809,6 +3018,132 @@ def test_resolve_startup_mode_from_toml(caplog) -> None:
     assert resolve_scalar(opt, toml_data={}) == (DEFAULT_STARTUP_MODE, "default")
 
 
+@pytest.mark.parametrize(
+    ("toml_data", "managed_toml_data", "expected"),
+    [
+        # Only `recent` set: a bare launch runs Auto, so the display must agree.
+        ({"startup": {"recent": "auto"}}, {}, ("auto", "config.toml")),
+        # An explicit mode outranks `recent`.
+        (
+            {"startup": {"mode": "manual", "recent": "auto"}},
+            {},
+            ("manual", "config.toml"),
+        ),
+        # Nothing configured: the typed default stands.
+        ({}, {}, (DEFAULT_STARTUP_MODE, "default")),
+        # An unsafe `recent` fails closed rather than crediting config.toml.
+        ({"startup": {"recent": "yolo"}}, {}, (DEFAULT_STARTUP_MODE, "default")),
+        # A non-scalar `recent` cannot reach the membership test.
+        ({"startup": {"recent": ["auto"]}}, {}, (DEFAULT_STARTUP_MODE, "default")),
+        # An invalid explicit mode is fail-closed: `load_startup_mode` returns
+        # Manual without consulting `recent`, so the display must too.
+        (
+            {"startup": {"mode": "hands-off", "recent": "auto"}},
+            {},
+            (DEFAULT_STARTUP_MODE, "default"),
+        ),
+        # Managed `recent` participates in the same precedence as runtime loading.
+        ({}, {"startup": {"recent": "auto"}}, ("auto", "managed config")),
+        (
+            {"startup": {"recent": "auto"}},
+            {"startup": {"recent": "manual"}},
+            ("manual", "managed config"),
+        ),
+    ],
+    ids=[
+        "recent-only",
+        "explicit-outranks-recent",
+        "nothing-configured",
+        "unsafe-recent",
+        "non-scalar-recent",
+        "invalid-explicit-mode",
+        "managed-recent",
+        "managed-recent-outranks-user",
+    ],
+)
+def test_resolve_startup_mode_with_source_reports_recent_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    toml_data: dict,
+    managed_toml_data: dict,
+    expected: tuple[str, str],
+) -> None:
+    """`startup.mode` display reflects the `[startup].recent` restore."""
+    from deepagents_code import approval_mode
+    from deepagents_code.config_manifest import resolve_startup_mode_with_source
+
+    monkeypatch.setattr(approval_mode, "has_auto_mode_notice", lambda: True)
+
+    assert (
+        resolve_startup_mode_with_source(
+            toml_data=toml_data,
+            managed_toml_data=managed_toml_data,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        "",
+        "[startup]\n",
+        "[startup]\nrecent = 'auto'\n",
+        "[startup]\nrecent = 'manual'\n",
+        "[startup]\nrecent = 'yolo'\n",
+        "[startup]\nrecent = ['auto']\n",
+        # Whitespace and blanks: the display must not accept a value the
+        # loader's exact match rejects.
+        "[startup]\nrecent = ' auto '\n",
+        "[startup]\nrecent = 'AUTO'\n",
+        "[startup]\nrecent = ''\n",
+        "[startup]\nmode = 'auto'\n",
+        "[startup]\nmode = 'yolo'\nrecent = 'manual'\n",
+        "[startup]\nmode = 'hands-off'\nrecent = 'auto'\n",
+        "[startup]\nmode = ['auto']\nrecent = 'auto'\n",
+        "startup = 'nonsense'\n",
+    ],
+)
+def test_resolve_startup_mode_with_source_agrees_with_loader(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, config_text: str
+) -> None:
+    """The display resolver and the runtime loader must never disagree.
+
+    Both consult `[startup].mode`, `[startup].recent`, and the Auto notice, in
+    two separate implementations held together only by a docstring. Per-case
+    assertions cannot catch drift between them; this can.
+    """
+    from deepagents_code import approval_mode
+    from deepagents_code.config_manifest import resolve_startup_mode_with_source
+    from deepagents_code.model_config import load_startup_mode
+
+    monkeypatch.setattr(approval_mode, "has_auto_mode_notice", lambda: True)
+    config = tmp_path / "config.toml"
+    config.write_text(config_text)
+    with config.open("rb") as file:
+        toml_data = tomllib.load(file)
+
+    displayed, _ = resolve_startup_mode_with_source(
+        toml_data=toml_data,
+        managed_toml_data={},
+    )
+    assert displayed == load_startup_mode(config)
+
+
+def test_resolve_startup_mode_with_source_gates_recent_auto_on_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The displayed fallback matches a launch blocked by a stale notice."""
+    from deepagents_code import approval_mode
+    from deepagents_code.config_manifest import resolve_startup_mode_with_source
+
+    monkeypatch.setattr(approval_mode, "has_auto_mode_notice", lambda: False)
+
+    assert resolve_startup_mode_with_source(
+        toml_data={},
+        managed_toml_data={"startup": {"recent": "auto"}},
+    ) == (DEFAULT_STARTUP_MODE, "default")
+
+
 def test_resolve_toml_float_success_non_bool() -> None:
     """A FLOAT option reads a real number from TOML and coerces an int to float."""
     opt = get_option("interpreter.timeout_seconds")
@@ -2967,6 +3302,7 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     provider must produce a `credentials.<name>` option after the cache resets.
     """
     from deepagents_code import config_manifest, model_config
+    from deepagents_code.configuration import service
 
     patched = {
         **model_config.PROVIDER_API_KEY_ENV,
@@ -2974,7 +3310,9 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     }
     monkeypatch.setattr(model_config, "PROVIDER_API_KEY_ENV", patched)
     config_manifest.get_config_options.cache_clear()
+    service._managed_table_paths.cache_clear()
     config_manifest._options_by_key.cache_clear()
+    config_manifest._options_by_toml_path.cache_clear()
     try:
         opt = config_manifest.get_option("credentials.synthetic_xyz")
         assert opt is not None
@@ -2984,7 +3322,9 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     finally:
         # Restore the cache so later tests rebuild against the real registry.
         config_manifest.get_config_options.cache_clear()
+        service._managed_table_paths.cache_clear()
         config_manifest._options_by_key.cache_clear()
+        config_manifest._options_by_toml_path.cache_clear()
 
 
 def test_provider_dependency_metadata_is_exhaustive() -> None:
@@ -3266,6 +3606,34 @@ def test_config_resolve_discards_out_of_range_toml_auto_classifier_timeout(
     assert value == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 
 
+@pytest.mark.parametrize(
+    ("toml_data", "expected"),
+    [
+        # A file with no `mode` key still reports the mode the launch will use.
+        ({"startup": {"recent": "auto"}}, (True, "config.toml", "auto")),
+        ({}, (False, "default", DEFAULT_STARTUP_MODE)),
+        (
+            {"startup": {"mode": "hands-off", "recent": "auto"}},
+            (False, "default", DEFAULT_STARTUP_MODE),
+        ),
+    ],
+    ids=["recent-only", "nothing-configured", "invalid-explicit-mode"],
+)
+def test_config_resolve_reports_effective_startup_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    toml_data: dict,
+    expected: tuple[bool, str, str],
+) -> None:
+    """`config get startup.mode` must route through the recent-aware resolver."""
+    from deepagents_code import approval_mode
+
+    monkeypatch.setattr(approval_mode, "has_auto_mode_notice", lambda: True)
+    option = get_option("startup.mode")
+    assert option is not None
+
+    assert _resolve(option, toml_data) == expected
+
+
 def test_config_resolve_reports_valid_env_auto_classifier_timeout(
     monkeypatch,
 ) -> None:
@@ -3469,6 +3837,26 @@ def test_whitespace_env_opts_out_when_empty_means_false(monkeypatch) -> None:
     )
 
 
+def test_invalid_primary_env_warns_before_valid_fallback(monkeypatch, caplog) -> None:
+    """Alias fall-through retains diagnostics from earlier env candidates."""
+    option = get_option("tracing.langsmith_project")
+    assert option is not None
+    assert option.env_var is not None
+    fallback = option.fallback_env_vars[0]
+    monkeypatch.setenv(option.env_var, "  ")
+    monkeypatch.setenv(fallback, "fallback-project")
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(option, toml_data={})
+
+    assert (value, source) == ("fallback-project", f"env ({fallback})")
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if "whitespace-only" in record.getMessage()
+    ] == [f"Ignoring {option.env_var}='  ' (whitespace-only; treated as unset)"]
+
+
 def test_non_table_toml_section_is_reported_once(caplog) -> None:
     """A scalar shadowing a whole table is logged, not silently defaulted.
 
@@ -3493,6 +3881,25 @@ def test_non_table_toml_section_is_reported_once(caplog) -> None:
     assert len(warnings) == 1
     assert "[ui]" in warnings[0].getMessage()
     config_manifest._warned_non_table_paths.clear()
+
+
+def test_verbose_provenance_distinguishes_quoted_dotted_keys() -> None:
+    """Display labels retain the resolver's tuple-path distinction."""
+    from deepagents_code.client.commands.config import _option_provenance
+
+    option = get_option("display.themes")
+    assert option is not None
+
+    assert _option_provenance(
+        option,
+        source="managed config + config.toml",
+        toml_data={"themes": {"a": {"b": "user"}, "sibling": 1}},
+        managed_toml_data={"themes": {"a.b": "managed"}},
+    ) == {
+        '"a.b"': "managed config",
+        "a.b": "config.toml",
+        "sibling": "config.toml",
+    }
 
 
 def test_blank_env_auto_classifier_reports_a_problem(monkeypatch) -> None:

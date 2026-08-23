@@ -9,7 +9,6 @@ a `working_dir`, an optional install `package`, and `params` forwarded to
 from __future__ import annotations
 
 import logging
-import tomllib
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -113,48 +112,100 @@ class SandboxConfig:
         """Load the `[sandboxes]` section from a config file.
 
         Args:
-            config_path: Path to config file. Defaults to
+            config_path: Passing a path also excludes managed policy from
+                this read, so production callers must pass `None`. Defaults to
                 `~/.deepagents/config.toml`.
 
         Returns:
-            Parsed `SandboxConfig`. Returns an empty config if the file is
-                missing, unreadable, or contains invalid TOML.
+            Parsed `SandboxConfig`. A missing user file yields managed values
+                alone. An unreadable or invalid user file is reported through
+                `parse_error`, and managed values still apply.
+
+        Raises:
+            RuntimeError: If required sandbox options are missing from the manifest.
         """
+        is_default = config_path is None
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
 
-        if not config_path.exists():
-            return cls()
+        from deepagents_code.config_manifest import get_option, resolve_ranked_scalar
+        from deepagents_code.configuration.service import get_config_sources
+        from deepagents_code.configuration.types import Invalid, ProviderHealth
 
-        try:
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        except tomllib.TOMLDecodeError as e:
+        # `None` on the default path: that is what includes managed policy.
+        sources = get_config_sources(user_path=None if is_default else config_path)
+        # A bad user file is reported through `parse_error` but must not
+        # discard administrator policy, which parsed cleanly on its own.
+        parse_error: str | None = None
+        if sources.user.status.health is ProviderHealth.CORRUPT:
+            detail = sources.user.status.detail or "unknown parse error"
             logger.warning(
-                "Config file %s has invalid TOML syntax: %s. Ignoring sandbox config.",
+                "Config file %s has invalid TOML syntax: %s. "
+                "Ignoring user sandbox config.",
                 config_path,
-                e,
+                detail,
             )
-            return cls(parse_error=f"invalid TOML syntax: {e}")
-        except (PermissionError, OSError) as e:
-            logger.warning("Could not read config file %s: %s", config_path, e)
-            return cls(parse_error=f"could not read config file: {e}")
-
-        section = data.get("sandboxes", {})
+            parse_error = f"invalid TOML syntax: {detail}"
+        elif sources.user.status.health is ProviderHealth.UNREADABLE:
+            detail = sources.user.status.detail or "unknown read error"
+            logger.warning("Could not read config file %s: %s", config_path, detail)
+            parse_error = f"could not read config file: {detail}"
+        dropped = sources.dropped_managed_detail()
+        if dropped is not None:
+            logger.error(
+                "Managed policy from %s is not being applied: %s",
+                sources.managed.status.path,
+                dropped,
+            )
+        section = (
+            sources.managed.data.get("sandboxes")
+            if "sandboxes" in sources.managed.data
+            else sources.user.data.get("sandboxes", {})
+        )
         if not isinstance(section, dict):
             logger.warning("[sandboxes] is not a table; ignoring sandbox config")
-            return cls(parse_error="[sandboxes] is not a table")
+            return cls(parse_error=parse_error or "[sandboxes] is not a table")
 
-        providers = section.get("providers", {})
-        if not isinstance(providers, dict):
+        default_option = get_option("sandboxes.default")
+        providers_option = get_option("sandboxes.providers")
+        if default_option is None or providers_option is None:
+            msg = "sandbox options are missing from the config manifest"
+            raise RuntimeError(msg)
+        default = resolve_ranked_scalar(
+            default_option,
+            toml_data=sources.user.data,
+            managed_toml_data=sources.managed.data,
+            managed_status=sources.managed.status,
+            user_status=sources.user.status,
+        ).value
+        providers_resolved = resolve_ranked_scalar(
+            providers_option,
+            toml_data=sources.user.data,
+            managed_toml_data=sources.managed.data,
+            managed_status=sources.managed.status,
+            user_status=sources.user.status,
+        )
+        providers = providers_resolved.value
+        if providers is None:
+            if any(
+                isinstance(result, Invalid)
+                for result in providers_resolved.tier_health.values()
+            ):
+                logger.warning(
+                    "[sandboxes.providers] is not a table; ignoring sandbox providers"
+                )
+            providers = {}
+        elif not isinstance(providers, dict):
             logger.warning(
                 "[sandboxes.providers] is not a table; ignoring sandbox providers"
             )
             providers = {}
+        provider_table = cast("dict[str, Any]", providers)
 
         config = cls(
-            default=section.get("default"),
-            providers=_normalize_provider_configs(providers),
+            default=default if isinstance(default, str) else None,
+            providers=_normalize_provider_configs(provider_table),
+            parse_error=parse_error,
         )
         config._validate()
         return config

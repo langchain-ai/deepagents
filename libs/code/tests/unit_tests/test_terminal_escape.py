@@ -296,6 +296,16 @@ class TestTerminalBackground:
         assert fake.getvalue() == "\x1b]111\x1b\\"
         assert terminal_escape._terminal_background_active is False
 
+    def test_reset_background_is_no_op_when_never_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No `OSC 111` for a background this process never changed."""
+        fake = _FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        monkeypatch.setattr(terminal_escape, "_terminal_background_active", False)
+        assert reset_terminal_background() is False
+        assert fake.getvalue() == ""
+
     def test_empty_background_is_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeTTY()
         monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)

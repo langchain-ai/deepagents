@@ -323,6 +323,63 @@ class TestProjectDotenvDeniedKeys:
         assert env["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-from-project"
 
 
+class TestResolveReadProjectDotenv:
+    """`startup.read_project_dotenv` resolution across config layers."""
+
+    def test_default_is_true(self) -> None:
+        """Unset everywhere preserves the historical load-the-project-.env behavior."""
+        from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+        assert resolve_read_project_dotenv(toml_data={}, managed_toml_data={}) is True
+
+    def test_env_disables(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A falsy env value skips the project `.env`."""
+        from deepagents_code._env_vars import READ_PROJECT_DOTENV
+        from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "missing" / "config.toml",
+        )
+        monkeypatch.setenv(READ_PROJECT_DOTENV, "0")
+        assert resolve_read_project_dotenv(managed_toml_data={}) is False
+
+    def test_toml_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`[startup].read_project_dotenv = false` applies when env is unset."""
+        from deepagents_code._env_vars import READ_PROJECT_DOTENV
+        from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+        monkeypatch.delenv(READ_PROJECT_DOTENV, raising=False)
+        assert (
+            resolve_read_project_dotenv(
+                toml_data={"startup": {"read_project_dotenv": False}},
+                managed_toml_data={},
+            )
+            is False
+        )
+
+    def test_managed_beats_env(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A managed `false` overrides an env `true` (managed rank outranks env)."""
+        from deepagents_code._env_vars import READ_PROJECT_DOTENV
+        from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "missing" / "config.toml",
+        )
+        monkeypatch.setenv(READ_PROJECT_DOTENV, "1")
+        assert (
+            resolve_read_project_dotenv(
+                managed_toml_data={"startup": {"read_project_dotenv": False}}
+            )
+            is False
+        )
+
+
 class TestProjectRootDetection:
     """Test project root detection via .git directory."""
 
@@ -1912,6 +1969,20 @@ class TestGetLangsmithProjectName:
             "DEEPAGENTS_CODE_LANGCHAIN_TRACING_V2": "",
         }
         with patch.dict("os.environ", env, clear=False):
+            assert get_langsmith_project_name() is None
+
+    @pytest.mark.parametrize(
+        "flag",
+        ["LANGSMITH_TRACING", "DEEPAGENTS_CODE_LANGSMITH_TRACING"],
+    )
+    def test_returns_none_when_tracing_explicitly_disabled(self, flag: str) -> None:
+        """Recognized tracing opt-outs should disable project resolution."""
+        env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_PROJECT": "configured-project",
+            flag: "false",
+        }
+        with patch.dict("os.environ", env, clear=True):
             assert get_langsmith_project_name() is None
 
     def test_returns_project_from_settings(self) -> None:

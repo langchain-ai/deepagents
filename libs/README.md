@@ -22,7 +22,7 @@ If you'd rather build your own agent, reach for the [`deepagents`](deepagents/) 
 | --- | --- | --- |
 | [`deepagents`](deepagents/) | [`deepagents`](https://pypi.org/project/deepagents/) | Core SDK — `create_deep_agent`, middleware, and pluggable backends for building your own deep agents. |
 | [`code`](code/) | [`deepagents-code`](https://pypi.org/project/deepagents-code/) | **Deep Agents Code** — the pre-built terminal coding agent, run via the `dcode` command. Interactive Textual TUI, remote sandboxes, memory, skills, and headless mode. |
-| [`cli`](cli/) | [`deepagents-cli`](https://pypi.org/project/deepagents-cli/) | Deployment CLI — `init`, `dev`, and `deploy` subcommands for shipping agents to LangGraph Platform. |
+| [`cli`](cli/) | [`deepagents-cli`](https://pypi.org/project/deepagents-cli/) | Deployment CLI — `init`, `deploy`, `agents`, and `mcp-servers` subcommands for shipping managed agents. |
 | [`acp`](acp/) | — | Agent Client Protocol integration for running a Deep Agent inside editors like Zed (including exposing `dcode` as an ACP server). |
 | [`evals`](evals/) | — | Evaluation suite and Harbor integration for benchmarking agent behavior. |
 | [`talon`](talon/) | — | Experimental local runtime host for long-running agents (channel adapters, cron schedulers). |

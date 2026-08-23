@@ -29,6 +29,7 @@ from deepagents_code.extras_info import (
     SANDBOX_EXTRAS,
     STANDALONE_EXTRAS,
 )
+from deepagents_code.tui.key_hints import modal_navigation_hint
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,7 @@ class LaunchGoalCriteriaPreferenceScreen(ModalScreen[bool]):
                 classes="launch-init-note",
             )
             yield Static(
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab switch"
+                f"{modal_navigation_hint(glyphs)}"
                 f" {glyphs.bullet} Enter select"
                 f" {glyphs.bullet} Esc review",
                 classes="launch-init-help",

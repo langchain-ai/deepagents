@@ -392,9 +392,11 @@ def _load_approval_state(path: Path) -> dict[str, object]:
     """Load the install-local approval state file, or an empty dict.
 
     A missing file is the normal first-run case and returns `{}` silently.
-    Unreadable, corrupt, or non-object state also returns `{}` (so callers fail
-    closed and re-prompt) but is logged: the next save overwrites the file, so
-    this warning is the only surviving evidence of the corruption.
+    Unreadable, corrupt, or non-object state also returns `{}` but is logged:
+    the next save overwrites the file, so this warning is the only surviving
+    evidence of the corruption. Callers fail closed on `{}`. Most re-prompt;
+    `has_auto_mode_notice` callers may instead decline to restore Auto, so the
+    log must not promise a prompt.
 
     Args:
         path: Path to `approval.json`.
@@ -408,16 +410,16 @@ def _load_approval_state(path: Path) -> dict[str, object]:
         return {}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning(
-            "Ignoring unreadable or corrupt approval state at %s; a re-prompt "
-            "may follow and the file will be overwritten on the next save",
+            "Ignoring unreadable or corrupt approval state at %s; callers fail "
+            "closed and the file will be overwritten on the next save",
             path,
             exc_info=True,
         )
         return {}
     if not isinstance(data, dict):
         logger.warning(
-            "Ignoring non-object approval state at %s; a re-prompt may follow "
-            "and the file will be overwritten on the next save",
+            "Ignoring non-object approval state at %s; callers fail closed and "
+            "the file will be overwritten on the next save",
             path,
         )
         return {}

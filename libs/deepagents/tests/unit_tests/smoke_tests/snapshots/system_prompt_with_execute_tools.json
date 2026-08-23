@@ -223,7 +223,7 @@
   },
   {
     "function": {
-      "description": "Executes a shell command in an isolated sandbox and returns combined stdout/stderr with the exit code (truncated if very large).\n\nUsage:\n- Quote paths containing spaces (e.g. cd \"/path/with spaces\").\n- Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.\n- Use absolute paths and avoid `cd` so the working directory stays stable; use a positive timeout to override the default.\n- You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. Use read_file rather than cat/head/tail.\n    - execute(command=\"find . -name '*.py'\")  # Use glob tool instead\n    - execute(command=\"grep -r 'pattern' .\")  # Use grep tool instead\n\nOnly available on backends implementing SandboxBackendProtocol; otherwise it returns an error.",
+      "description": "Executes a shell command in an isolated sandbox and returns combined stdout/stderr with the exit code (truncated if very large).\n\nUsage:\n- Quote paths containing spaces (e.g. cd \"/path/with spaces\").\n- Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.\n- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.\n- You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. Use read_file rather than cat/head/tail.\n    - execute(command=\"find . -name '*.py'\")  # Use glob tool instead\n    - execute(command=\"grep -r 'pattern' .\")  # Use grep tool instead\n\nOnly available on backends implementing SandboxBackendProtocol; otherwise it returns an error.",
       "name": "execute",
       "parameters": {
         "properties": {
@@ -241,7 +241,7 @@
               }
             ],
             "default": null,
-            "description": "Optional positive timeout in seconds for this command. Overrides the default timeout."
+            "description": "Optional timeout in seconds for this command. Overrides the default timeout."
           }
         },
         "required": [

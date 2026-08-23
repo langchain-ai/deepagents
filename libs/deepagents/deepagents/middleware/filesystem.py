@@ -1215,7 +1215,7 @@ class ExecuteSchema(BaseModel):
 
     timeout: int | None = Field(
         default=None,
-        description="Optional positive timeout in seconds for this command. Overrides the default timeout.",
+        description="Optional timeout in seconds for this command. Overrides the default timeout.",
     )
 
 
@@ -1316,7 +1316,7 @@ _EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated 
 Usage:
 - Quote paths containing spaces (e.g. cd "/path/with spaces").
 - Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
-- Use absolute paths and avoid `cd` so the working directory stays stable; use a positive timeout to override the default.
+- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.
 - {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}
 
 Only available on backends implementing SandboxBackendProtocol; otherwise it returns an error."""

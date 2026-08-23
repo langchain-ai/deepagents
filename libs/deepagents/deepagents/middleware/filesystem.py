@@ -1215,7 +1215,11 @@ class ExecuteSchema(BaseModel):
 
     timeout: int | None = Field(
         default=None,
-        description="Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
+        description=(
+            "Optional timeout in seconds for this command. Overrides the default timeout. "
+            "Use a positive value unless the active backend explicitly supports 0. On "
+            "supported backends, 0 disables the command timeout and may wait indefinitely."
+        ),
     )
 
 
@@ -1316,7 +1320,7 @@ _EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated 
 Usage:
 - Quote paths containing spaces (e.g. cd "/path/with spaces").
 - Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
-- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default (0 disables it on backends that support that).
+- Use absolute paths and avoid `cd` so the working directory stays stable; timeout overrides should be positive unless the active backend explicitly supports 0 (which disables the command timeout and may wait indefinitely).
 - {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}
 
 Only available on backends implementing SandboxBackendProtocol; otherwise it returns an error."""

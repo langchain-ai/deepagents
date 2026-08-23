@@ -175,13 +175,12 @@ class TestCheckProjectDotenvTrust:
             "deepagents_code.config_manifest.resolve_read_project_dotenv",
             lambda **_kwargs: True,
         )
-        skipped = set(dotenv_skip._SESSION_SKIPPED_PROJECTS)
+        # The session skip lives in process-global state; do not leak it.
+        dotenv_skip.reset_session_skips()
         try:
             yield tmp_path
         finally:
-            # The session skip lives in a module-global set; do not leak it.
-            dotenv_skip._SESSION_SKIPPED_PROJECTS.clear()
-            dotenv_skip._SESSION_SKIPPED_PROJECTS.update(skipped)
+            dotenv_skip.reset_session_skips()
 
     @staticmethod
     def _answer(monkeypatch: pytest.MonkeyPatch, action: object) -> MagicMock:
@@ -306,6 +305,41 @@ class TestCheckProjectDotenvTrust:
 
         assert "could not be remembered" in capsys.readouterr().err
         assert self._session_skipped(project)
+
+    @pytest.mark.usefixtures("project")
+    @pytest.mark.parametrize(
+        "action",
+        [_TrustAction.DENY, _TrustAction.REMEMBER],
+    )
+    def test_skip_is_applied_before_it_is_confirmed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        action: object,
+    ) -> None:
+        """A failed skip must not print a confirmation the launch contradicts.
+
+        The caller wraps this function in `except Exception`, so confirming
+        first would leave the user told the `.env` was skipped while it loaded.
+        """
+        from deepagents_code import dotenv_skip
+
+        self._answer(monkeypatch, action)
+
+        def _boom(_key: str) -> None:
+            msg = "cannot canonicalize"
+            raise OSError(msg)
+
+        monkeypatch.setattr(dotenv_skip, "skip_project_dotenv_for_session", _boom)
+
+        with pytest.raises(OSError, match="cannot canonicalize"):
+            main_module._check_project_dotenv_trust()
+
+        # No branch may claim an outcome the failed skip did not deliver.
+        err = capsys.readouterr().err
+        assert "Skipping the project .env" not in err
+        assert "will be skipped" not in err
+        assert "could not be remembered" not in err
 
     def test_prompt_neutralizes_escapes_in_the_dotenv_path(
         self,

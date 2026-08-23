@@ -4415,13 +4415,21 @@ def _check_project_dotenv_trust() -> None:
     if action is _TrustPromptOutcome.INTERRUPTED:
         prompt_console.print("[dim]Aborted.[/dim]", highlight=False)
         sys.exit(130)
+
+    # Apply each decision *before* confirming it. Printing first would let a
+    # failure inside the skip (a path that cannot be canonicalized, say) be
+    # swallowed by the caller's `except Exception` after the user had already
+    # been told the file was skipped — the one outcome worse than not asking.
     if action in {_TrustAction.DENY, _TrustPromptOutcome.CANCELLED}:
+        _skip_project_dotenv_for_session(skip_key)
         prompt_console.print(
             "[dim]Skipping the project .env for this session.[/dim]",
             highlight=False,
         )
-        _skip_project_dotenv_for_session(skip_key)
     elif action is _TrustAction.REMEMBER:
+        # The session skip covers this launch even when persistence fails, so
+        # record it before attempting the write.
+        _skip_project_dotenv_for_session(skip_key)
         if skip_project_dotenv(skip_key):
             prompt_console.print(
                 f'[dim]The .env in "{escape(safe_skip_key)}" will be skipped '
@@ -4434,7 +4442,6 @@ def _check_project_dotenv_trust() -> None:
                 "only.[/yellow]",
                 highlight=False,
             )
-        _skip_project_dotenv_for_session(skip_key)
 
 
 def _skip_project_dotenv_for_session(skip_key: str) -> None:

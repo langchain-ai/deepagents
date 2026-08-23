@@ -71,6 +71,7 @@ from deepagents_code.model_config import (
     is_service,
     resolved_env_var_name,
 )
+from deepagents_code.tui.key_hints import modal_navigation_hint
 from deepagents_code.tui.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
@@ -1588,6 +1589,7 @@ class AuthManagerScreen(ModalScreen[None]):
     }
 
     AuthManagerScreen .auth-manager-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;
@@ -1666,7 +1668,7 @@ class AuthManagerScreen(ModalScreen[None]):
         glyphs = get_glyphs()
         action = self._action_for_provider(provider)
         return (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab/Shift+Tab navigate "
+            f"{modal_navigation_hint(glyphs)} "
             f"{glyphs.bullet} Enter {action} {glyphs.bullet} Esc close"
         )
 

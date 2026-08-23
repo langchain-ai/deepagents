@@ -159,6 +159,13 @@ class _SupportsReverseNav(Protocol):
     `shift+tab` in mind. A screen that wants different behavior -- or none --
     needs an explicit branch ahead of the protocol check in
     `action_toggle_auto_approve`.
+
+    Enrollment is by method *name*, so it covers only one of the two cursor
+    conventions in this codebase. `OptionList`-hosting modals name their action
+    `action_cursor_up` instead; those never match this protocol, fall through
+    to the `ModalScreen` catch-all, and swallow `shift+tab` with no error while
+    their footer still advertises it. Such a screen must be added to the
+    explicit `isinstance` tuple in `action_toggle_auto_approve`.
     """
 
     def action_move_up(self) -> None: ...
@@ -3608,9 +3615,18 @@ class DeepAgentsApp(App):
         self._sandbox_type: str | None = raw if raw and raw != "none" else None
         """Normalized sandbox type (or `None`), attached to trace metadata."""
         self._auto_mode_eligible = self._sandbox_type is None
+        self._auto_downgraded_by_sandbox = False
+        """Whether a startup Auto was downgraded because a sandbox is active."""
+        self._persisted_startup_mode: str | None = None
+        """Last mode this session wrote to `[startup].recent`, if any."""
         if self._approval_mode is ApprovalMode.AUTO and not self._auto_mode_eligible:
             self._approval_mode = ApprovalMode.MANUAL
             self._auto_approve = False
+            # `notify` is unavailable this early, so defer the explanation to
+            # `_notify_auto_mode_not_restored`. A restored `[startup].recent`
+            # makes this reachable without the user choosing Auto this launch,
+            # so a silent downgrade reads as the preference being forgotten.
+            self._auto_downgraded_by_sandbox = True
         self._approval_mode_blocked = False
         self._auto_mode_notice_pending = False
         self._yolo_mode_notice_pending = False
@@ -4626,6 +4642,7 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
         self.call_after_refresh(self._notify_interpreter_disabled_by_sandbox)
         self.call_after_refresh(self._notify_orphaned_tracing_disabled)
+        self.call_after_refresh(self._notify_auto_mode_not_restored)
 
         # Surface a `-m`/`--message` prompt as a queued message right away,
         # while the server is still connecting, instead of waiting for
@@ -4659,6 +4676,34 @@ class DeepAgentsApp(App):
             self.notify(notice, severity="warning", timeout=8, markup=False)
         except Exception:
             logger.exception("Failed to surface orphaned-tracing disabled notice")
+
+    def _notify_auto_mode_not_restored(self) -> None:
+        """Toast when a remembered Auto mode did not survive startup.
+
+        Two independent causes land here, and neither is visible on its own:
+        the notice gate declined a stored `[startup].recent = "auto"` (recorded
+        in `model_config`), or a sandbox made Auto ineligible. Both leave the
+        status bar reading `MANUAL` with nothing to explain it, which reads as
+        the preference not being remembered at all.
+        """
+        from deepagents_code.model_config import (
+            consume_recent_auto_not_restored_notice,
+        )
+
+        notice = consume_recent_auto_not_restored_notice()
+        if self._auto_downgraded_by_sandbox:
+            self._auto_downgraded_by_sandbox = False
+            # The sandbox is the operative reason: it blocks Auto for the whole
+            # session, so it outranks a stale notice the user could re-confirm.
+            notice = "Auto is unavailable with a sandbox; starting in Manual."
+        if notice is None:
+            return
+        # Best-effort, like the other deferred advisories: the durable channel
+        # is the `logger.warning` at each mutation site.
+        try:
+            self.notify(notice, severity="warning", timeout=8, markup=False)
+        except Exception:
+            logger.exception("Failed to surface Auto-not-restored notice")
 
     def _notify_interpreter_tools_without_interpreter(self) -> None:
         """Toast when `--interpreter-tools` was set while the interpreter is off.
@@ -9423,6 +9468,37 @@ class DeepAgentsApp(App):
         self._session_state.approval_mode_key = live_key
         return True
 
+    async def _persist_startup_approval_mode(self, mode: ApprovalMode) -> None:
+        """Persist a safe app-selected mode for the next bare launch.
+
+        YOLO returns before any await, so callers that must warn before
+        suspending are unaffected when they select it.
+
+        Args:
+            mode: Mode the user just selected.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.model_config import save_recent_startup_mode
+
+        if mode is ApprovalMode.YOLO:
+            return
+        if mode.value == self._persisted_startup_mode:
+            # Two entry points can activate Auto from one confirmation modal
+            # (the awaiting caller and the task the modal result schedules), so
+            # skip the duplicate round-trip. Without this, a read-only config
+            # directory reports the same failure twice as two distinct toasts.
+            return
+        if not await asyncio.to_thread(save_recent_startup_mode, mode.value):
+            self.notify(
+                "Approval mode changed for this session, but the startup "
+                "preference could not be saved. Check permissions for "
+                "~/.deepagents/.",
+                severity="warning",
+                markup=False,
+            )
+            return
+        self._persisted_startup_mode = mode.value
+
     def _warn_live_approval_mode_unavailable(self, message: str) -> None:
         """Surface live approval-mode degradation to the user."""
         self.notify(message, severity="warning", timeout=8, markup=False)
@@ -9555,12 +9631,20 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(ApprovalMode.AUTO.value)
         if self._session_state:
             self._session_state.approval_mode = ApprovalMode.AUTO
+        # Notify before the awaits below. State is already committed above, so
+        # the classifier notice must be attempted before a suspension point that
+        # can raise or be cancelled.
         self._notify_auto_classifier_active()
+        await self._persist_startup_approval_mode(ApprovalMode.AUTO)
         await self._auto_accept_pending_goal_rubric()
         return True
 
     async def _switch_to_manual_from_fallback(self) -> bool:
         """Persist Manual before asking again about a fallback action.
+
+        Manual also becomes the next launch's startup mode, replacing a stored
+        Auto. The user chose Manual at this prompt, so the preference follows
+        the choice.
 
         Returns:
             `True` when Manual is active.
@@ -9582,6 +9666,7 @@ class DeepAgentsApp(App):
             self._session_state.approval_mode = ApprovalMode.MANUAL
         if self._status_bar:
             self._status_bar.set_approval_mode(ApprovalMode.MANUAL.value)
+        await self._persist_startup_approval_mode(ApprovalMode.MANUAL)
         return True
 
     async def _remove_inline_prompt_widget(  # noqa: PLR6301  # Shared inline-prompt cleanup; kept an instance method for handler symmetry
@@ -16105,13 +16190,25 @@ class DeepAgentsApp(App):
         """Check whether the current thread has at least one human message.
 
         Returns:
-            `True` if the conversation contains a `HumanMessage`, `False`
+            `True` if the conversation contains a `HumanMessage` or a local user
+                turn is still in flight (its worker has started), `False`
                 otherwise. On transient errors (network, corrupt state) returns
                 `True` so callers do not block or warn based on an unreliable
                 empty-thread check.
         """
         if not self._agent or not self._lc_thread_id:
             return False
+        # `_agent_turn_started` (not just `_agent_running`) is required: a
+        # message that failed to send (agent unavailable) leaves
+        # `_active_user_message` mounted, and a later non-message operation
+        # such as goal-criteria generation also sets `_agent_running`. Only a
+        # turn whose worker actually started means the prompt is in flight.
+        if (
+            self._agent_running
+            and self._agent_turn_started
+            and self._active_user_message is not None
+        ):
+            return True
         try:
             # Use the shared helper so the thread is registered first
             # (`aensure_thread`, remote agents only) in server mode — otherwise
@@ -20713,6 +20810,12 @@ class DeepAgentsApp(App):
 
                 persisted = await self._write_live_approval_mode(ApprovalMode.MANUAL)
                 self._on_approval_mode_fallback(ApprovalMode.MANUAL.value)
+                # A stored `[startup].recent = "auto"` would otherwise put the
+                # next launch straight back into the mode the server just
+                # refused, discarding this safety decision at the session
+                # boundary. The user is told about the fallback below, so the
+                # startup preference has to follow it.
+                await self._persist_startup_approval_mode(ApprovalMode.MANUAL)
                 if not persisted:
                     logger.warning("Could not persist server-requested Manual fallback")
                 text = f"Auto fell back to Manual: {reason}"
@@ -20752,6 +20855,10 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
         from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+        from deepagents_code.tui.widgets.launch_init import (
+            LaunchGoalCriteriaPreferenceScreen,
+        )
         from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
         from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
@@ -20761,7 +20868,13 @@ class DeepAgentsApp(App):
             return
         if isinstance(
             self.screen,
-            (ThemeSelectorScreen, AgentSelectorScreen, AuthManagerScreen),
+            (
+                ThemeSelectorScreen,
+                AgentSelectorScreen,
+                AuthManagerScreen,
+                EffortSelectorScreen,
+                LaunchGoalCriteriaPreferenceScreen,
+            ),
         ):
             self.screen.action_cursor_up()
             return
@@ -20853,6 +20966,11 @@ class DeepAgentsApp(App):
     async def _set_approval_mode(self, target: ApprovalMode) -> bool:
         """Apply an approval-mode change after optional live Store acknowledgement.
 
+        On success this also records Manual or Auto as the startup preference
+        for the next launch, and can warn that the record could not be written.
+        YOLO is never recorded. A rejected live write returns early, so nothing
+        durable is written for a mode the session did not enter.
+
         Args:
             target: Mode to select.
 
@@ -20897,18 +21015,26 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
             self._notify_auto_classifier_active()
-            if should_persist_live:
-                await self._auto_accept_pending_goal_rubric()
         elif target is ApprovalMode.YOLO:
-            # Warn before the await below. State is already committed above,
+            # Warn before the awaits below. State is already committed above,
             # so if goal-rubric auto-accept raises, YOLO is active and the "no
             # review" warning has already been attempted. AUTO notifies before
-            # its await for the same reason. Both can legitimately no-op — the
+            # its awaits for the same reason. Both can legitimately no-op — the
             # YOLO toast when suppressed, the AUTO notice after its first run —
             # so this ordering guarantees the attempt, not the delivery.
             self._warn_yolo_active(timeout=8)
-            if should_persist_live:
-                await self._auto_accept_pending_goal_rubric()
+        # Persist after the live-write gate and the notices, but before the
+        # goal-rubric await: that helper is cancellable and can raise, which
+        # would otherwise commit the mode for this session while leaving
+        # `[startup].recent` on the previous one, so the next bare launch would
+        # revert a selection that succeeded. `_on_auto_approve_enabled` orders
+        # these the same way.
+        await self._persist_startup_approval_mode(target)
+        if should_persist_live and target in {
+            ApprovalMode.AUTO,
+            ApprovalMode.YOLO,
+        }:
+            await self._auto_accept_pending_goal_rubric()
         return True
 
     def _auto_classifier_display_spec(self) -> str | None:

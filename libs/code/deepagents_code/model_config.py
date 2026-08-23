@@ -5613,24 +5613,74 @@ STARTUP_MODE_AUTO = "auto"
 STARTUP_MODE_YOLO = "yolo"
 """Startup approval mode that executes gated actions without review."""
 
-STARTUP_MODE_DANGEROUSLY_AUTO = "dangerously-auto"
-"""Rejected legacy spelling retained only for migration diagnostics."""
-
 VALID_STARTUP_MODES = frozenset(
     {STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO, STARTUP_MODE_YOLO}
 )
 """Accepted values for the `[startup].mode` config option."""
 
+RECENT_STARTUP_MODES = frozenset({STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO})
+"""Modes the app may restore implicitly from `[startup].recent`."""
+
+_RECENT_AUTO_NOT_RESTORED_NOTICE = (
+    "Auto was not restored for this session because its guidance notice is "
+    "missing or out of date. Press Shift+Tab to review it and re-enable Auto."
+)
+"""User-facing copy for a remembered Auto that the notice gate declined."""
+
+_recent_auto_not_restored_notice: str | None = None
+"""One-shot TUI notice populated when the notice gate declines a stored Auto."""
+
+
+def consume_recent_auto_not_restored_notice() -> str | None:
+    """Return and clear the pending not-restored notice, if any."""
+    global _recent_auto_not_restored_notice  # noqa: PLW0603
+
+    notice = _recent_auto_not_restored_notice
+    _recent_auto_not_restored_notice = None
+    return notice
+
+
 DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
-"""Fallback startup mode when `[startup].mode` is missing, unreadable, or invalid."""
+"""Fail-closed startup mode.
+
+Returned when no mode resolves, when `[startup]` is absent or is not a table,
+when the config is unreadable, and when a stored recent Auto is not restorable.
+"""
+
+
+def is_recent_startup_mode_restorable(mode: str) -> bool:
+    """Return whether an app-managed recent mode may be restored.
+
+    Auto restoration requires the current versioned education notice. Manual
+    remains safe to restore without one. No caller prompts: `False` means the
+    caller falls back to `manual`.
+
+    Args:
+        mode: Candidate value from `[startup].recent`.
+
+    Returns:
+        Whether startup may restore the mode.
+    """
+    if mode not in RECENT_STARTUP_MODES:
+        return False
+    if mode != STARTUP_MODE_AUTO:
+        return True
+
+    # Function-local: `approval_mode` imports this module, so a module-level
+    # import would close the cycle.
+    from deepagents_code.approval_mode import has_auto_mode_notice
+
+    return has_auto_mode_notice()
 
 
 def load_startup_mode(config_path: Path | None = None) -> str:
-    """Load the default startup approval mode from config.toml.
+    """Load the startup approval mode from config.toml.
 
-    Reads `[startup].mode`, which accepts fail-closed `manual`, classifier-backed
-    `auto`, or unrestricted `yolo`. The removed `dangerously-auto` spelling is
-    invalid and falls back to `manual`.
+    An explicit `[startup].mode` outranks the app-managed `[startup].recent`
+    value. An invalid explicit mode fails closed to `manual` and never consults
+    `recent`. `recent` restores `manual`, or classifier-backed `auto` once the
+    current notice has been shown. Unrestricted `yolo` must stay explicitly
+    configured.
 
     Args:
         config_path: Path to config file.
@@ -5646,10 +5696,13 @@ def load_startup_mode(config_path: Path | None = None) -> str:
     try:
         data, _ = _load_effective_config_data(config_path)
         startup = data.get("startup")
-        value = startup.get("mode") if isinstance(startup, dict) else None
-        # `value` may be any TOML type; guard against non-strings (e.g. an
-        # array or table) before the frozenset membership test, which would
-        # otherwise raise `TypeError: unhashable type` and crash startup.
+        if not isinstance(startup, dict):
+            return DEFAULT_STARTUP_MODE
+        # TOML values carry any type. The isinstance guards here and on
+        # `recent` below keep an array or table out of the frozenset membership
+        # tests, which would raise `TypeError: unhashable type` — uncaught by
+        # the handler below — and crash startup.
+        value = startup.get("mode")
         if isinstance(value, str) and value in VALID_STARTUP_MODES:
             return value
         if value is not None:
@@ -5657,9 +5710,55 @@ def load_startup_mode(config_path: Path | None = None) -> str:
                 "Ignoring [startup].mode=%r (expected 'manual', 'auto', or 'yolo')",
                 value,
             )
+            return DEFAULT_STARTUP_MODE
+        recent = startup.get("recent")
+        # Re-test membership here so only an invalid value takes the warning
+        # below; a valid-but-notice-blocked Auto is a normal fail-closed, and
+        # gets its own diagnostic instead of being reported as a config error.
+        if isinstance(recent, str) and recent in RECENT_STARTUP_MODES:
+            if is_recent_startup_mode_restorable(recent):
+                return recent
+            # The only exit that discards a *valid* user-earned preference.
+            # Without this it is indistinguishable from the feature not working:
+            # a notice-version bump silently returns every Auto user to Manual.
+            global _recent_auto_not_restored_notice  # noqa: PLW0603
+
+            logger.warning(
+                "Not restoring [startup].recent=%r: the Auto notice is missing "
+                "or out of date; starting in %s",
+                recent,
+                DEFAULT_STARTUP_MODE,
+            )
+            _recent_auto_not_restored_notice = _RECENT_AUTO_NOT_RESTORED_NOTICE
+            return DEFAULT_STARTUP_MODE
+        if recent is not None:
+            logger.warning(
+                "Ignoring [startup].recent=%r (expected 'manual' or 'auto')",
+                recent,
+            )
     except (OSError, tomllib.TOMLDecodeError):
         logger.debug("Could not read startup mode config", exc_info=True)
     return DEFAULT_STARTUP_MODE
+
+
+def save_recent_startup_mode(mode: str, config_path: Path | None = None) -> bool:
+    """Save the most recently selected safe startup approval mode.
+
+    Args:
+        mode: `"manual"` or `"auto"`.
+        config_path: Path to config file.
+
+    Returns:
+        `True` when the preference was saved, otherwise `False`.
+
+    Raises:
+        ValueError: If `mode` is not `"manual"` or `"auto"`. `yolo` must stay
+            explicitly configured, so it is never stored as a recent mode.
+    """
+    if mode not in RECENT_STARTUP_MODES:
+        msg = f"Invalid recent startup mode: {mode!r}"
+        raise ValueError(msg)
+    return _save_toml_field("startup", "recent", mode, config_path)
 
 
 def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> bool:

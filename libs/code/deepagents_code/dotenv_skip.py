@@ -59,8 +59,17 @@ class DotenvSkipEntry(BaseModel):
     """UTC ISO-8601 timestamp when the skip was recorded."""
 
 
+class DotenvAllowEntry(BaseModel):
+    """Persisted record for one canonical project root whose `.env` is trusted."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    allowed_at: str
+    """UTC ISO-8601 timestamp when the allow was recorded."""
+
+
 class DotenvSkipStore(BaseModel):
-    """Versioned on-disk store of project roots that skip the project `.env`."""
+    """Versioned on-disk store of remembered project `.env` decisions."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -69,6 +78,15 @@ class DotenvSkipStore(BaseModel):
 
     projects: dict[str, DotenvSkipEntry] = {}
     """Map of canonical project roots to skip entries."""
+
+    allowed: dict[str, DotenvAllowEntry] = {}
+    """Map of canonical project roots whose `.env` should load without asking.
+
+    Read only by the prompt, never by the loader: an allow suppresses the
+    question, it does not grant a load that `startup.read_project_dotenv` or a
+    skip already refused. That keeps the store one-directional — it can silence
+    or skip, never force.
+    """
 
 
 def _default_store_path() -> Path:
@@ -279,36 +297,53 @@ def _store_lock(path: Path) -> Iterator[None]:
         yield
 
 
-def _parse_projects(raw_projects: object, *, path: Path) -> dict[str, DotenvSkipEntry]:
-    """Parse skip entries, dropping structurally invalid ones.
+class _InvalidEntryMapError(Exception):
+    """One of the store's entry maps is present but not an object.
+
+    A dedicated type rather than `TypeError` so the caller's handler cannot
+    also swallow an unrelated `TypeError` from validation and then misreport it
+    as a malformed field.
+    """
+
+
+def _parse_entries[EntryT: BaseModel](
+    raw_entries: object,
+    entry_model: type[EntryT],
+    *,
+    field: str,
+    path: Path,
+) -> dict[str, EntryT]:
+    """Parse one of the store's entry maps, dropping structurally invalid rows.
 
     Args:
-        raw_projects: The store's `projects` field, straight from JSON.
+        raw_entries: The map, straight from JSON.
+        entry_model: Model each value must validate against.
+        field: Field name, used to identify the map in messages.
         path: Store path, used only to identify the file in warnings.
 
     Returns:
-        Validated project map, with unusable entries dropped. Empty when
-        `raw_projects` is `None`.
+        Validated map, with unusable entries dropped. Empty when `raw_entries`
+        is `None`.
 
     Raises:
-        TypeError: When `raw_projects` is present but not a mapping.
+        _InvalidEntryMapError: When `raw_entries` is present but not a mapping.
     """
-    if raw_projects is None:
+    if raw_entries is None:
         return {}
-    if not isinstance(raw_projects, dict):
-        msg = f"dotenv skip store projects must be an object: {path}"
-        raise TypeError(msg)
+    if not isinstance(raw_entries, dict):
+        msg = f"its {field} field is not an object"
+        raise _InvalidEntryMapError(msg)
 
-    projects: dict[str, DotenvSkipEntry] = {}
-    for key, value in raw_projects.items():
+    entries: dict[str, EntryT] = {}
+    for key, value in raw_entries.items():
         if not isinstance(key, str):
-            _warn_entry_unusable(path, f"a project key is not a string: {key!r}")
+            _warn_entry_unusable(path, f"a {field} key is not a string: {key!r}")
             continue
         try:
-            projects[key] = DotenvSkipEntry.model_validate(value)
+            entries[key] = entry_model.model_validate(value)
         except ValidationError as exc:
-            _warn_entry_unusable(path, f"the entry for {key} is invalid: {exc}")
-    return projects
+            _warn_entry_unusable(path, f"the {field} entry for {key} is invalid: {exc}")
+    return entries
 
 
 def _load_store(path: Path, *, strict: bool = False) -> DotenvSkipStore:
@@ -326,8 +361,10 @@ def _load_store(path: Path, *, strict: bool = False) -> DotenvSkipStore:
     Raises:
         OSError: When `strict` and the file exists but cannot be read; a
             missing file always yields an empty store.
-        TypeError: When `strict` and `projects` or the top-level shape is not a
-            mapping.
+        TypeError: When `strict` and the top-level shape is not a mapping.
+        _InvalidEntryMapError: When `strict` and `projects` or `allowed` is present
+            but not a mapping. Individual invalid *entries* are dropped with a
+            warning in both modes, so a write silently discards them.
         ValueError: When `strict` and the version is unsupported.
         json.JSONDecodeError: When `strict` and the file is not valid JSON.
         UnicodeDecodeError: When `strict` and the file is not UTF-8 text.
@@ -366,14 +403,19 @@ def _load_store(path: Path, *, strict: bool = False) -> DotenvSkipStore:
         return DotenvSkipStore()
 
     try:
-        projects = _parse_projects(data.get("projects"), path=path)
-    except TypeError:
+        projects = _parse_entries(
+            data.get("projects"), DotenvSkipEntry, field="projects", path=path
+        )
+        allowed = _parse_entries(
+            data.get("allowed"), DotenvAllowEntry, field="allowed", path=path
+        )
+    except _InvalidEntryMapError as exc:
         if strict:
             raise
-        _warn_store_unusable(path, "its projects field is not an object")
+        _warn_store_unusable(path, str(exc))
         return DotenvSkipStore()
 
-    return DotenvSkipStore(version=_STORE_VERSION, projects=projects)
+    return DotenvSkipStore(version=_STORE_VERSION, projects=projects, allowed=allowed)
 
 
 def _write_store(path: Path, store: DotenvSkipStore) -> None:
@@ -452,19 +494,103 @@ def skip_project_dotenv(
                 json.JSONDecodeError,
                 TypeError,
                 ValueError,
+                _InvalidEntryMapError,
             ):
                 logger.exception(
                     "Refusing to overwrite unreadable dotenv skip store %s", path
                 )
                 return False
 
+            key = _project_key(project_root)
             projects = dict(store.projects)
-            projects[_project_key(project_root)] = DotenvSkipEntry(
-                skipped_at=datetime.now(UTC).isoformat()
-            )
+            projects[key] = DotenvSkipEntry(skipped_at=datetime.now(UTC).isoformat())
+            # A skip and an allow are contradictory answers to the same
+            # question, so the newer one replaces the older.
+            allowed = {k: v for k, v in store.allowed.items() if k != key}
             _write_store(
                 path,
-                DotenvSkipStore(version=_STORE_VERSION, projects=projects),
+                DotenvSkipStore(
+                    version=_STORE_VERSION, projects=projects, allowed=allowed
+                ),
+            )
+    except Timeout:
+        logger.exception("Timed out waiting to persist dotenv skip store %s", path)
+        return False
+    except OSError:
+        logger.exception("Could not save dotenv skip store %s", path)
+        return False
+    return True
+
+
+def is_project_dotenv_allowed(
+    project_root: Path | str,
+    *,
+    store_path: Path | None = None,
+) -> bool:
+    """Return whether the project `.env` is trusted for a canonical key.
+
+    Read by the advisory prompt only. It answers "stop asking about this
+    `.env`", not "load it": `startup.read_project_dotenv` and both skip sources
+    are checked first and still win.
+
+    Args:
+        project_root: The key to inspect — the parent directory of the
+            discovered `.env` (see `skip_key_for_start_path`).
+        store_path: Alternate store path for tests.
+
+    Returns:
+        `True` when the key is in the allow map.
+    """
+    path = store_path or _default_store_path()
+    store = _load_store(path)
+    return _project_key(project_root) in store.allowed
+
+
+def allow_project_dotenv(
+    project_root: Path | str,
+    *,
+    store_path: Path | None = None,
+) -> bool:
+    """Persist loading the project `.env` without asking again.
+
+    Args:
+        project_root: Project root whose `.env` should load without a prompt.
+        store_path: Alternate store path for tests.
+
+    Returns:
+        `True` when the decision was saved. Failures return `False` without
+        mutating the on-disk store, exactly as `skip_project_dotenv` does; the
+        caller reports that the answer was not remembered rather than implying
+        it was.
+    """
+    path = store_path or _default_store_path()
+    try:
+        with _store_lock(path):
+            try:
+                store = _load_store(path, strict=True)
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+                _InvalidEntryMapError,
+            ):
+                logger.exception(
+                    "Refusing to overwrite unreadable dotenv skip store %s", path
+                )
+                return False
+
+            key = _project_key(project_root)
+            allowed = dict(store.allowed)
+            allowed[key] = DotenvAllowEntry(allowed_at=datetime.now(UTC).isoformat())
+            # Contradictory answers to the same question; the newer one wins.
+            projects = {k: v for k, v in store.projects.items() if k != key}
+            _write_store(
+                path,
+                DotenvSkipStore(
+                    version=_STORE_VERSION, projects=projects, allowed=allowed
+                ),
             )
     except Timeout:
         logger.exception("Timed out waiting to persist dotenv skip store %s", path)

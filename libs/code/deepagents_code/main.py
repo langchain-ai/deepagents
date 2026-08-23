@@ -59,11 +59,19 @@ class _TrustAction(Enum):
     """Actions available in the shared pre-TUI decision picker.
 
     Project trust prompts use allow-once / remember / deny. The editable
-    dependency-floor prompt also offers an explicit environment refresh.
+    dependency-floor prompt also offers an explicit environment refresh, and
+    the advisory `.env` prompt also offers a persistent allow.
     """
 
     ALLOW_ONCE = "allow_once"
     REMEMBER = "remember"
+    REMEMBER_ALLOW = "remember_allow"
+    """Persist the *permissive* answer, so the prompt stops asking.
+
+    Distinct from `REMEMBER`, which persists whatever the caller's remember
+    label describes — for the `.env` prompt that is a refusal, so a single
+    "remember" action could not express both decisions.
+    """
     DENY = "deny"
     REFRESH = "refresh"
 
@@ -3416,6 +3424,7 @@ def _run_trust_action_picker(
     allow_label: str = "Allow once",
     deny_label: str = "Deny",
     refresh_label: str | None = None,
+    remember_allow_label: str | None = None,
     deny_first: bool = False,
     default_action: "_TrustAction | None" = None,
 ) -> _TrustAction | _TrustPromptOutcome | None:
@@ -3432,6 +3441,9 @@ def _run_trust_action_picker(
         allow_label: Label for the session-scoped allow option.
         deny_label: Label for the refuse option.
         refresh_label: Label for an explicit environment refresh, when offered.
+        remember_allow_label: Label for a persistent *allow*, when offered.
+            Only prompts whose `remember_label` describes a refusal need this
+            second remembered choice; omitting it keeps the existing rows.
         deny_first: When `True`, list the deny option first; callers whose
             "deny" reads as a safe default (e.g. aborting a launch) put it in
             the leading position. Ordering only — what a bare Enter selects is
@@ -3494,6 +3506,17 @@ def _run_trust_action_picker(
         )
     elif deny_first:
         actions.reverse()
+    if remember_allow_label is not None:
+        # Placed after the ordering above so it lands next to the one-off allow
+        # in whichever list the caller's other options produced.
+        allow_index = next(
+            index
+            for index, (action, _) in enumerate(actions)
+            if action is _TrustAction.ALLOW_ONCE
+        )
+        actions.insert(
+            allow_index + 1, (_TrustAction.REMEMBER_ALLOW, remember_allow_label)
+        )
     # Highlight the default action by identity, not position: `deny_first`
     # reorders the list, so a positional index would silently default to the
     # wrong action for exactly the callers that changed the ordering.
@@ -3660,6 +3683,7 @@ def _select_trust_action(
     allow_label: str = "Allow once",
     deny_label: str = "Deny",
     refresh_label: str | None = None,
+    remember_allow_label: str | None = None,
     deny_first: bool = False,
     abort_on_deny: bool = False,
     default_action: "_TrustAction | None" = None,
@@ -3680,6 +3704,9 @@ def _select_trust_action(
         allow_label: Label for the session-scoped allow option.
         deny_label: Label for the refuse option.
         refresh_label: Label for an explicit environment refresh, when offered.
+        remember_allow_label: Label for a persistent *allow*, when offered.
+            Answering `a`/`always` selects it; without this option those tokens
+            keep selecting `REMEMBER`.
         deny_first: Forwarded to the picker to list the deny option first.
         abort_on_deny: When `True`, a `DENY` decision is reported as
             `CANCELLED`, including blank or EOF input when `DENY` is the
@@ -3701,6 +3728,7 @@ def _select_trust_action(
         allow_label=allow_label,
         deny_label=deny_label,
         refresh_label=refresh_label,
+        remember_allow_label=remember_allow_label,
         deny_first=deny_first,
         default_action=default_action,
     )
@@ -3719,7 +3747,19 @@ def _select_trust_action(
     remember_token = "R" if default_action is _TrustAction.REMEMBER else "r"
     refresh_token = "U" if default_action is _TrustAction.REFRESH else "u"
     deny_token = "N" if default_action is _TrustAction.DENY else "n"
-    if refresh_label is None:
+    always_token = "A" if default_action is _TrustAction.REMEMBER_ALLOW else "a"
+    if remember_allow_label is not None:
+        # Every token is spelled out on screen because `r` and `a` are opposite
+        # decisions for the one caller that offers both.
+        choices = (
+            f"{allow_label} [{allow_token}] · "
+            f"{remember_allow_label} [{always_token}] · "
+            f"{remember_label} [{remember_token}] · {deny_label} [{deny_token}]"
+        )
+        prompt = (
+            f"Choose [{allow_token}/{always_token}/{remember_token}/{deny_token}]: "
+        )
+    elif refresh_label is None:
         choices = (
             f"{allow_label} [{allow_token}] · "
             f"{remember_label} [{remember_token}] · {deny_label} [{deny_token}]"
@@ -3757,7 +3797,16 @@ def _select_trust_action(
         return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
     if answer in {"y", "yes"}:
         return _TrustAction.ALLOW_ONCE
-    if answer in {"r", "remember", "a", "always"}:
+    if remember_allow_label is not None and answer in {"a", "always"}:
+        # "always" means always *allow*. Callers whose `remember_label` is a
+        # refusal must not collect these tokens for it.
+        return _TrustAction.REMEMBER_ALLOW
+    remember_tokens = (
+        {"r", "remember"}
+        if remember_allow_label is not None
+        else {"r", "remember", "a", "always"}
+    )
+    if answer in remember_tokens:
         return _TrustAction.REMEMBER
     if refresh_label is not None and answer in {"u", "update", "f", "refresh"}:
         return _TrustAction.REFRESH
@@ -4317,6 +4366,7 @@ def _check_project_hooks_trust(
 
 _PROJECT_DOTENV_SKIP_SESSION_LABEL = "Don't load .env this session"
 _PROJECT_DOTENV_SKIP_ALWAYS_LABEL = "Never load .env in this project"
+_PROJECT_DOTENV_ALLOW_ALWAYS_LABEL = "Always load .env in this project"
 
 
 def _check_project_dotenv_trust() -> None:
@@ -4331,8 +4381,10 @@ def _check_project_dotenv_trust() -> None:
 
     Prompts only when this process has a terminal, a project `.env` is present,
     and the file is not already governed by the `read_project_dotenv` opt-out
-    or the skip store. When the store already covers the `.env`, applies the
-    skip silently instead of prompting. Whether the launch is an interactive
+    or a remembered decision. When the store already holds a skip for the
+    `.env`, applies it silently; when it holds an allow, loads the file
+    silently, so a trusted project is asked about once rather than every
+    launch. Whether the launch is an interactive
     TUI is the caller's decision (see `_is_interactive_tui_launch`); headless
     launches never reach here, and suppressing the file there requires the
     explicit `read_project_dotenv=false` flag.
@@ -4363,6 +4415,8 @@ def _check_project_dotenv_trust() -> None:
         return
 
     from deepagents_code.dotenv_skip import (
+        allow_project_dotenv,
+        is_project_dotenv_allowed,
         is_project_dotenv_skipped,
         skip_project_dotenv,
     )
@@ -4379,6 +4433,12 @@ def _check_project_dotenv_trust() -> None:
     # subdirectory launch, since discovery walks up to the same file).
     if is_project_dotenv_skipped(skip_key):
         _skip_project_dotenv_for_session(skip_key)
+        return
+
+    # A remembered "always load" only silences the prompt. It cannot grant a
+    # load, because every opt-out above already returned.
+    if is_project_dotenv_allowed(skip_key):
+        logger.debug("Project .env at %s is remembered as allowed", skip_key)
         return
 
     from rich.console import Console
@@ -4409,6 +4469,7 @@ def _check_project_dotenv_trust() -> None:
     action = _select_trust_action(
         prompt_console,
         allow_label="Continue (load .env)",
+        remember_allow_label=_PROJECT_DOTENV_ALLOW_ALWAYS_LABEL,
         remember_label=_PROJECT_DOTENV_SKIP_ALWAYS_LABEL,
         deny_label=_PROJECT_DOTENV_SKIP_SESSION_LABEL,
         default_action=_TrustAction.ALLOW_ONCE,
@@ -4446,6 +4507,21 @@ def _check_project_dotenv_trust() -> None:
             prompt_console.print(
                 "[yellow]The skip could not be remembered; skipping this session "
                 "only.[/yellow]",
+                highlight=False,
+            )
+    elif action is _TrustAction.REMEMBER_ALLOW:
+        # Nothing to apply for this launch — the file loads either way — so the
+        # only outcome to report is whether the prompt will stop asking.
+        if allow_project_dotenv(skip_key):
+            prompt_console.print(
+                f'[dim]The .env in "{escape(safe_skip_key)}" will load without '
+                "asking from now on.[/dim]",
+                highlight=False,
+            )
+        else:
+            prompt_console.print(
+                "[yellow]The choice could not be remembered; loading this "
+                "session only.[/yellow]",
                 highlight=False,
             )
 

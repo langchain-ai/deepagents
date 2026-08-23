@@ -306,6 +306,79 @@ class TestCheckProjectDotenvTrust:
         assert "could not be remembered" in capsys.readouterr().err
         assert self._session_skipped(project)
 
+    def test_remembered_allow_stops_the_prompt_without_skipping(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A trusted project is asked once, not on every launch."""
+        from deepagents_code.dotenv_skip import allow_project_dotenv
+
+        assert allow_project_dotenv(project)
+        select = self._answer(monkeypatch, _TrustAction.DENY)
+
+        main_module._check_project_dotenv_trust()
+
+        select.assert_not_called()
+        assert not self._session_skipped(project)
+
+    def test_remember_allow_persists_the_permissive_answer(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.dotenv_skip import (
+            is_project_dotenv_allowed,
+            is_project_dotenv_skipped,
+        )
+
+        self._answer(monkeypatch, _TrustAction.REMEMBER_ALLOW)
+
+        main_module._check_project_dotenv_trust()
+
+        assert is_project_dotenv_allowed(project)
+        assert not is_project_dotenv_skipped(project)
+        assert not self._session_skipped(project)
+
+    def test_failed_remember_allow_is_reported(
+        self,
+        project: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An unwritable store must not be reported as a remembered decision."""
+        from deepagents_code import dotenv_skip
+
+        self._answer(monkeypatch, _TrustAction.REMEMBER_ALLOW)
+        monkeypatch.setattr(
+            dotenv_skip, "allow_project_dotenv", lambda *_a, **_k: False
+        )
+
+        main_module._check_project_dotenv_trust()
+
+        assert "could not be remembered" in capsys.readouterr().err
+        assert not self._session_skipped(project)
+
+    def test_a_later_skip_replaces_a_remembered_allow(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The two decisions answer the same question; the newer one wins."""
+        from deepagents_code.dotenv_skip import (
+            allow_project_dotenv,
+            is_project_dotenv_allowed,
+            is_project_dotenv_skipped,
+        )
+
+        assert allow_project_dotenv(project)
+        # An allow silences the prompt, so the user has to reach the decision
+        # some other way; the store-level replacement is what matters here.
+        self._answer(monkeypatch, _TrustAction.REMEMBER)
+        monkeypatch.setattr(
+            "deepagents_code.dotenv_skip.is_project_dotenv_allowed",
+            lambda *_a, **_k: False,
+        )
+
+        main_module._check_project_dotenv_trust()
+
+        assert is_project_dotenv_skipped(project)
+        assert not is_project_dotenv_allowed(project)
+
     @pytest.mark.usefixtures("project")
     @pytest.mark.parametrize(
         "action",
@@ -6600,6 +6673,56 @@ class TestSelectProjectMcpTrustAction:
         assert "Allow once [Y]" in output.getvalue()
         assert "Deny [n]" in output.getvalue()
         assert "Choose [Y/r/n]" in output.getvalue()
+
+    def test_text_fallback_always_selects_the_persistent_allow(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `always` token must select the persistent allow, not REMEMBER.
+
+        For the `.env` prompt `remember_label` is a refusal, so collecting
+        `a`/`always` for it would give the user the opposite of what they typed.
+        """
+        from deepagents_code.main import _select_trust_action, _TrustAction
+
+        output = StringIO()
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "always")
+
+        result = _select_trust_action(
+            Console(file=output, width=200),
+            remember_label="Never load .env in this project",
+            remember_allow_label="Always load .env in this project",
+            default_action=_TrustAction.ALLOW_ONCE,
+        )
+
+        assert result is _TrustAction.REMEMBER_ALLOW
+        # Both opposite tokens are spelled out on screen.
+        assert "Always load .env in this project [a]" in output.getvalue()
+        assert "Never load .env in this project [r]" in output.getvalue()
+        assert "Choose [Y/a/r/n]" in output.getvalue()
+
+    def test_text_fallback_always_still_remembers_for_allow_prompts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the extra row, `always` keeps selecting REMEMBER.
+
+        The hooks and MCP prompts remember a permissive decision under
+        `remember_label`, so their token mapping must not change.
+        """
+        from deepagents_code.main import _select_trust_action, _TrustAction
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "always")
+
+        result = _select_trust_action(Console(file=StringIO()))
+
+        assert result is _TrustAction.REMEMBER
 
     def test_text_fallback_eof_refuses_despite_an_allow_default(
         self, monkeypatch: pytest.MonkeyPatch

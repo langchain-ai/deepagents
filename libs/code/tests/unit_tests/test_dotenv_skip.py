@@ -285,3 +285,74 @@ def test_project_dotenv_cannot_write_the_session_skip_carrier(
     _load_dotenv(start_path=project, refresh_loaded=True)
 
     assert SERVER_DOTENV_SESSION_SKIPS not in os.environ
+
+
+def test_allow_persists_and_replaces_a_skip(tmp_path: Path) -> None:
+    from deepagents_code.dotenv_skip import (
+        allow_project_dotenv,
+        is_project_dotenv_allowed,
+    )
+
+    root = tmp_path / "project"
+    root.mkdir()
+    store = tmp_path / "state" / "dotenv_skip.json"
+
+    assert skip_project_dotenv(root, store_path=store)
+    assert allow_project_dotenv(root / ".", store_path=store)
+
+    # Contradictory answers to one question: the newer one replaces the older,
+    # so a stale skip cannot outlive the allow that overrode it.
+    assert is_project_dotenv_allowed(root, store_path=store)
+    assert not is_project_dotenv_skipped(root, store_path=store)
+
+    assert skip_project_dotenv(root, store_path=store)
+    assert not is_project_dotenv_allowed(root, store_path=store)
+    assert is_project_dotenv_skipped(root, store_path=store)
+
+
+def test_allow_never_forces_a_load_the_option_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An allow silences the prompt; it is not a grant.
+
+    The loader must never read the allow map, or a remembered "stop asking"
+    would override `startup.read_project_dotenv=false` and managed policy.
+    """
+    from deepagents_code.config import _load_dotenv
+    from deepagents_code.dotenv_skip import allow_project_dotenv
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text("ALLOW_GRANT_CANARY=leaked\n", encoding="utf-8")
+    monkeypatch.delenv("ALLOW_GRANT_CANARY", raising=False)
+
+    store = tmp_path / "state" / "dotenv_skip.json"
+    monkeypatch.setattr(
+        "deepagents_code.dotenv_skip._default_store_path", lambda: store
+    )
+    assert allow_project_dotenv(project, store_path=store)
+    monkeypatch.setattr(
+        "deepagents_code.config_manifest.resolve_read_project_dotenv",
+        lambda **_kwargs: False,
+    )
+
+    _load_dotenv(start_path=project, refresh_loaded=True)
+
+    assert "ALLOW_GRANT_CANARY" not in os.environ
+
+
+def test_a_malformed_allow_map_is_reported_and_never_overwritten(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from deepagents_code.dotenv_skip import allow_project_dotenv
+
+    store = tmp_path / "dotenv_skip.json"
+    store.write_text(
+        json.dumps({"version": 1, "allowed": "not-an-object"}), encoding="utf-8"
+    )
+    original = store.read_text(encoding="utf-8")
+
+    assert not is_project_dotenv_skipped(tmp_path, store_path=store)
+    assert "allowed field is not an object" in capsys.readouterr().err
+    assert not allow_project_dotenv(tmp_path, store_path=store)
+    assert store.read_text(encoding="utf-8") == original

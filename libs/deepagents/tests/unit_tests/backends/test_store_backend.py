@@ -201,8 +201,7 @@ def test_store_backend_edit_empty_old_string_returns_error() -> None:
     result = be.edit("/legacy.txt", "", "there")
 
     assert result.error is not None
-    assert "old_string" in result.error
-    assert "empty" in result.error
+    assert "old_string cannot be empty" in result.error
     stored = mem_store.get(("filesystem",), "/legacy.txt")
     assert stored is not None
     assert stored.value["content"] == ["hello", "world"]

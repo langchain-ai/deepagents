@@ -121,6 +121,5 @@ def test_state_backend_edit_empty_old_string_returns_error(monkeypatch: pytest.M
     result = backend.edit("/legacy.txt", "", "there")
 
     assert result.error is not None
-    assert "old_string" in result.error
-    assert "empty" in result.error
+    assert "old_string cannot be empty" in result.error
     assert updates == []

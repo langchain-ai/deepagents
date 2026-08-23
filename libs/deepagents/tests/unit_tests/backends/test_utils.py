@@ -411,20 +411,19 @@ class TestPerformStringReplacement:
         """
         result = perform_string_replacement("hello world", "", "x")
         assert isinstance(result, str)
-        assert "old_string" in result
-        assert "empty" in result
+        assert "old_string cannot be empty" in result
 
     def test_empty_old_string_with_replace_all_returns_error(self) -> None:
         """The `replace_all` path must never run `content.replace("", new)`."""
         result = perform_string_replacement("hello world", "", "x", replace_all=True)
         assert isinstance(result, str)
-        assert "empty" in result
+        assert "old_string cannot be empty" in result
 
     def test_empty_old_string_on_empty_file_returns_error(self) -> None:
         """An empty file must not silently "succeed" an empty search."""
         result = perform_string_replacement("", "", "x")
         assert isinstance(result, str)
-        assert "empty" in result
+        assert "old_string cannot be empty" in result
 
     def test_not_found_returns_error_string(self) -> None:
         result = perform_string_replacement("hello world", "missing", "x")

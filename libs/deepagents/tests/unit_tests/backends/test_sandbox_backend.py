@@ -875,8 +875,7 @@ def test_sandbox_edit_empty_old_string_never_dispatches() -> None:
     result = sandbox.edit("/test/file.txt", "", "new")
 
     assert result.error is not None
-    assert "old_string" in result.error
-    assert "empty" in result.error
+    assert "old_string cannot be empty" in result.error
     assert sandbox.last_command is None
     assert len(sandbox._uploaded) == 0
 
@@ -889,8 +888,7 @@ async def test_sandbox_aedit_empty_old_string_never_dispatches() -> None:
     result = await sandbox.aedit("/foo/bar.txt", "", "new")
 
     assert result.error is not None
-    assert "old_string" in result.error
-    assert "empty" in result.error
+    assert "old_string cannot be empty" in result.error
     assert len(sandbox._aexecute_calls) == 0
 
 

@@ -2580,8 +2580,7 @@ class TestReadTrailingNewlineRoundtrip:
         result = be.edit(str(target), "", "x", replace_all=True)
 
         assert result.error is not None
-        assert "old_string" in result.error
-        assert "empty" in result.error
+        assert "old_string cannot be empty" in result.error
         assert target.read_text() == "hello world"
 
 

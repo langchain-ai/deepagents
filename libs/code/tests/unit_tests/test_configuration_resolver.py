@@ -635,3 +635,106 @@ def test_healthy_source_emits_no_rejection_warning(
     assert not [
         record for record in caplog.records if "using defaults" in record.message
     ]
+
+
+def test_default_path_write_is_visible_to_the_shared_resolver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A committed settings write must not leave the process serving stale values."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import (
+        resolver as resolver_module,
+        service,
+        writer,
+    )
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        service,
+        "get_managed_snapshot",
+        lambda refresh=False: TomlSnapshot(  # noqa: ARG005
+            {},
+            ProviderStatus("managed config", None, ProviderHealth.MISSING),
+        ),
+    )
+    service.invalidate_config_sources()
+    try:
+        option = get_option("startup.mode")
+        assert option is not None
+        assert resolver_module.get_config_resolver().get(option).value == "manual"
+
+        def set_auto(data: dict[str, Any]) -> bool:
+            data.setdefault("startup", {})["mode"] = "auto"
+            return True
+
+        assert writer.update_user_config(set_auto, config_path=config_path).ok
+        assert resolver_module.get_config_resolver().get(option).value == "auto"
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_write_to_an_override_path_leaves_the_default_resolver_alone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An override write must not re-read the real user and managed configs.
+
+    `get_config_resolver` is keyed on `DEFAULT_CONFIG_PATH`, so reloading it
+    after a write elsewhere touches files the caller never named - live reads
+    from a test that deliberately passed a `tmp_path`.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import resolver as resolver_module, writer
+
+    default_path = tmp_path / "default.toml"
+    other_path = tmp_path / "other.toml"
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", default_path)
+    calls: list[int] = []
+
+    def record(**_: object) -> ConfigResolver:
+        calls.append(1)
+        msg = "the shared resolver must not be built for an override write"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(resolver_module, "get_config_resolver", record)
+
+    def set_auto(data: dict[str, Any]) -> bool:
+        data.setdefault("startup", {})["mode"] = "auto"
+        return True
+
+    assert writer.update_user_config(set_auto, config_path=other_path).ok
+    assert calls == []
+
+
+def test_a_failed_resolver_refresh_does_not_fail_a_landed_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The bytes are already on disk; reporting failure sends the user to retry."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import resolver as resolver_module, writer
+
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+
+    def explode(**_: object) -> ConfigResolver:
+        msg = "disk went away"
+        raise OSError(msg)
+
+    monkeypatch.setattr(resolver_module, "get_config_resolver", explode)
+
+    def set_auto(data: dict[str, Any]) -> bool:
+        data.setdefault("startup", {})["mode"] = "auto"
+        return True
+
+    with caplog.at_level("WARNING"):
+        result = writer.update_user_config(set_auto, config_path=config_path)
+
+    assert result.ok
+    assert result.changed
+    assert 'mode = "auto"' in config_path.read_text(encoding="utf-8")
+    assert any("could not refresh" in record.message for record in caplog.records)

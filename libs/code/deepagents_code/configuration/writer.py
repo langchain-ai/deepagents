@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import tempfile
 import threading
@@ -13,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
 
 USER_CONFIG_WRITE_LOCK = threading.RLock()
 
@@ -56,6 +59,11 @@ def update_user_config(
 
     Writes the user tier only. The managed path is refused rather than trusted
     to be unreachable.
+
+    A committed write to the default path also refreshes the shared process
+    resolver, so later reads see the new value. That refresh is best-effort and
+    never turns a landed write into a reported failure; see
+    `_refresh_shared_resolver`.
 
     Args:
         mutate: Edit applied to the table parsed inside the write lock. It must
@@ -144,7 +152,38 @@ def update_user_config(
             # install without the writer dependency must report "could not
             # update <path>" like any other write failure.
             return WriteResult(False, False, f"could not update {config_path}: {exc}")
+    _refresh_shared_resolver(config_path)
+    return WriteResult(True, True)
+
+
+def _refresh_shared_resolver(config_path: Path) -> None:
+    """Make a committed write visible to the shared process resolver.
+
+    Only the default path is refreshed. `get_config_resolver` is keyed on
+    `DEFAULT_CONFIG_PATH`, so reloading it after a write to an override path
+    would re-read the real user config and the managed policy file - live
+    filesystem reads inside tests that passed a `tmp_path` - while leaving the
+    written path's own view stale anyway.
+
+    Failures are logged rather than returned. The write already landed and was
+    replaced into place; reporting a stale in-process view as a failed write
+    sends the user to retry or hand-edit a file that is already correct.
+
+    Args:
+        config_path: Path the caller just wrote.
+    """
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    if config_path != DEFAULT_CONFIG_PATH:
+        return
     from deepagents_code.configuration.resolver import get_config_resolver
 
-    get_config_resolver().reload()
-    return WriteResult(True, True)
+    try:
+        get_config_resolver().reload()
+    except OSError as exc:
+        logger.warning(
+            "Wrote %s but could not refresh the shared config resolver: %s. "
+            "This process keeps serving the previous values until it restarts.",
+            config_path,
+            exc,
+        )

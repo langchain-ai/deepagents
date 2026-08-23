@@ -239,20 +239,21 @@ class Dcode(BaseAgent):
         return target
 
     def _load_runner_script(self) -> Path:
-        """Read Harbor's LangGraph runner from the installed harbor package."""
-        try:
-            # Lazy: harbor supplies the runner script but pier drives the run, so
-            # only the setup path (not module import) should require harbor.
-            from harbor.agents.installed import langgraph_runner  # noqa: PLC0415
-        except ImportError as exc:
-            msg = (
-                "The harbor package is required to source langgraph_runner.py; "
-                "install harbor in the dcode Pier environment"
-            )
-            raise RuntimeError(msg) from exc
-        runner_path = Path(langgraph_runner.__file__).resolve()
+        """Stage the vendored LangGraph runner for upload.
+
+        The runner is vendored at ``langgraph_runner.py`` beside this module to
+        pin a single, known CLI variant (``--graph``/``--config``, no
+        ``--graph-path``). Reading it from the installed ``harbor`` package was
+        the original approach, but harbor's runner CLI skewed across
+        environments reporting the same version, which is exactly the failure
+        this vendoring prevents.
+        """
+        vendored = Path(__file__).resolve().parent / "langgraph_runner.py"
+        if not vendored.is_file():
+            msg = f"Vendored runner not found: {vendored}"
+            raise RuntimeError(msg)
         local_copy = self.logs_dir / "langgraph_runner.py"
-        local_copy.write_text(runner_path.read_text())
+        local_copy.write_text(vendored.read_text())
         return local_copy
 
     def _normalized_model_name(self) -> str | None:
@@ -509,13 +510,7 @@ mkdir -p {wheelhouse}
         return json.dumps(configurable)
 
     def _graph_path(self) -> str:
-        """Resolve the graph's module:attribute path from ``langgraph.json``.
-
-        Needed because the installed ``harbor`` runner's CLI differs across
-        builds: some require ``--graph-path``, newer ones derive it from
-        ``--graph``. Passing ``--graph-path`` explicitly satisfies both (the
-        newer runner ignores it in favour of ``--graph``).
-        """
+        """Resolve the graph's module:attribute path from ``langgraph.json``."""
         config_path = self.project_path / self.config
         config = json.loads(config_path.read_text())
         graphs = config.get("graphs")
@@ -528,10 +523,12 @@ mkdir -p {wheelhouse}
     def _runner_args(self, model: str | None) -> list[str]:
         """Build the runner CLI args.
 
-        Pass both ``--graph`` and ``--graph-path`` (resolved from
-        ``langgraph.json``) to be robust to the harbor runner version skew seen
-        across environments: older builds require ``--graph-path``, newer builds
-        take ``--graph``. Supplying both works on either.
+        The canonical runner (vendored as ``langgraph_runner.py`` beside this
+        module) takes ``--graph``/``--config`` and derives the graph path from
+        ``langgraph.json`` itself. There is no ``--graph-path`` flag — do not add
+        one; the runner is vendored precisely to pin a single CLI variant and
+        avoid the harbor version skew that produced both "unrecognized arguments:
+        --graph-path" and "required: --graph-path" failures.
         """
         args = [
             "--project-dir",
@@ -540,8 +537,6 @@ mkdir -p {wheelhouse}
             self.config,
             "--graph",
             self.graph,
-            "--graph-path",
-            self._graph_path(),
             "--instruction-file",
             self._REMOTE_INSTRUCTION_PATH.as_posix(),
             "--result-path",

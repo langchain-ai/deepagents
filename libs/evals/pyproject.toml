@@ -159,13 +159,15 @@ division-by-zero = "error"
 [tool.ty.src]
 # clbench integration code targets the external benchmark's package layout
 # (src.interface / src.registry), not this project's — exclude it from type checks.
-exclude = ["deepagents_clbench"]
+# deepagents_pier/langgraph_runner.py is vendored verbatim from the `harbor`
+# package (upstream code), not type-checked here.
+exclude = ["deepagents_clbench", "deepagents_pier/langgraph_runner.py"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 # Vendored BFCL benchmark files + external-benchmark integration code — skip lint and format
-exclude = ["tests/evals/data/bfcl_apis", "deepagents_clbench"]
+exclude = ["tests/evals/data/bfcl_apis", "deepagents_clbench", "deepagents_pier/langgraph_runner.py"]
 force-exclude = true
 
 [tool.ruff.format]
@@ -226,6 +228,12 @@ ban-relative-imports = "all"
     "INP001",  # Standalone script copied into each task's sandbox, not an importable module
     "T201",    # `print` is the verifier's stdout diagnostic channel (captured in verifier logs)
     "D",       # Docstring conventions — a copied-into-sandbox script, not library API
+]
+# Vendored verbatim from the installed `harbor` package to pin a single runner
+# CLI variant (see deepagents_pier/agent.py `_load_runner_script`). It is
+# upstream Harbor code, not ours — lint it as such.
+"deepagents_pier/langgraph_runner.py" = [
+    "ALL",
 ]
 
 [tool.ruff.lint.isort]

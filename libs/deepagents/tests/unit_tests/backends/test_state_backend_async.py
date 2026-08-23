@@ -16,3 +16,10 @@ async def test_state_backend_raises_outside_graph_context_async():
     be = StateBackend()
     with pytest.raises(RuntimeError, match="inside a LangGraph graph execution"):
         await be.aread("/anything.txt")
+
+
+async def test_state_backend_amove_raises_outside_graph_context_async():
+    """`amove` (default `asyncio.to_thread` wrapper) surfaces the same RuntimeError as `move`."""
+    be = StateBackend()
+    with pytest.raises(RuntimeError, match="inside a LangGraph graph execution"):
+        await be.amove("/a.txt", "/b.txt")

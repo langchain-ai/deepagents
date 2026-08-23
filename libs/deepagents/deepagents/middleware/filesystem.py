@@ -50,12 +50,14 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
     _apply_grep_max_count,
     _method_accepts_max_count,
     _supports_delete,
+    _supports_move,
     execute_accepts_timeout,
 )
 from deepagents.backends.sandbox import BaseSandbox
@@ -128,6 +130,7 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "write_file": "write",
     "edit_file": "write",
     "delete": "write",
+    "move": "write",
 }
 """Default mapping from filesystem tool name to its operation category."""
 
@@ -1166,6 +1169,13 @@ class DeleteSchema(BaseModel):
     file_path: str = Field(description="Absolute path to the file to delete. Must be absolute, not relative.")
 
 
+class MoveSchema(BaseModel):
+    """Input schema for the `move` tool."""
+
+    source_path: str = Field(description="Absolute path to the file or directory to move. Must be absolute, not relative.")
+    destination_path: str = Field(description="Absolute destination path. Must be absolute, not relative, and must not already exist.")
+
+
 class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
 
@@ -1284,6 +1294,17 @@ Usage:
 - This cannot be undone, so only delete paths you are sure are no longer needed.
 """
 
+MOVE_TOOL_DESCRIPTION = """Moves or renames a file or directory.
+
+Usage:
+- Relocates the file or directory at `source_path` to `destination_path`, preserving content.
+- Moving a directory relocates it and everything inside it, recursively. Prefer
+  moving a directory in one call over moving each file individually.
+- `destination_path` must not already exist -- this does not overwrite.
+- Prefer this over reading a file and writing it back out at a new path: moving
+  preserves content exactly and avoids round-tripping large files through context.
+"""
+
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern, returning absolute paths.
 
 Supports `*` (any characters within a path segment), `**` (any directories), `?` (single character), `[abc]` (one character from a set), and `{a,b}` (alternatives), e.g. `*.py`, `src/**/*.py`, `*.{yml,yaml}`.
@@ -1342,10 +1363,10 @@ _EXECUTE_TOOL_DESCRIPTION_WITHOUT_SEARCH = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.fo
     grep_bad_example="",
 )
 
-FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"]
+FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "move", "glob", "grep", "execute"]
 """Names of the built-in filesystem tools that can be passed to `FilesystemMiddleware(tools=...)`."""
 
-_FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
+_FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "move", "glob", "grep")
 _ALL_FS_TOOL_NAMES: frozenset[str] = frozenset(_FS_TOOL_ORDER) | {"execute"}
 
 
@@ -1491,6 +1512,7 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
     "edit_file",
     "write_file",
     "delete",
+    "move",
 )
 
 
@@ -1655,12 +1677,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             tools: Allowlist of tool names to expose to the model.
                 ``"all"` indicates all tools. If unset, defaults to `"all"`.
                 Pass a list containing any of `"ls"`, `"read_file"`,
-                `"write_file"`, `"edit_file"`, `"delete"`, `"glob"`,
+                `"write_file"`, `"edit_file"`, `"delete"`, `"move"`, `"glob"`,
                 `"grep"`, `"execute"` to restrict the model to only those
                 tools; all others are hidden. `read_file` must be included
-                in any list. Backend capability checks for `execute` and
-                `delete` still apply; listing them when the backend does not
-                support them is a no-op.
+                in any list. Backend capability checks for `execute`,
+                `delete`, and `move` still apply; listing them when the
+                backend does not support them is a no-op.
             _permissions: Optional filesystem permission rules enforced directly
                 by this middleware's tool implementations.
 
@@ -1734,6 +1756,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             ("write_file", self._create_write_file_tool),
             ("edit_file", self._create_edit_file_tool),
             ("delete", self._create_delete_tool),
+            ("move", self._create_move_tool),
             ("glob", self._create_glob_tool),
             ("grep", self._create_grep_tool),
             ("execute", self._create_execute_tool),
@@ -2297,6 +2320,119 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=DeleteSchema,
         )
 
+    def _create_move_tool(self) -> BaseTool:  # noqa: C901  # Tool wiring + permission/support handling (source and destination)
+        """Create the move tool."""
+        tool_description = self._custom_tool_descriptions.get("move") or MOVE_TOOL_DESCRIPTION
+
+        def sync_move(
+            source_path: str,
+            destination_path: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Synchronous wrapper for move tool."""
+            resolved_backend = self.backend
+            try:
+                validated_source = validate_path(source_path)
+                validated_destination = validate_path(destination_path)
+            except ValueError as e:
+                return ToolMessage(
+                    content=f"Error: {e}",
+                    name="move",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
+            has_descendants = _delete_target_may_have_descendants(resolved_backend, validated_source, permissions_configured=bool(self._permissions))
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_source, has_descendants=has_descendants)
+            if denying_patterns:
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_source} (matches deny rule(s): {', '.join(denying_patterns)})",
+                    name="move",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            if _check_fs_permission(self._permissions, "write", validated_destination) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_destination}",
+                    name="move",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            res: MoveResult = resolved_backend.move(validated_source, validated_destination)
+            if res.error:
+                return ToolMessage(
+                    content=res.error,
+                    name="move",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            return ToolMessage(
+                content=f"Moved {res.source_path} to {res.destination_path}",
+                name="move",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        async def async_move(
+            source_path: str,
+            destination_path: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Asynchronous wrapper for move tool."""
+            resolved_backend = self.backend
+            try:
+                validated_source = validate_path(source_path)
+                validated_destination = validate_path(destination_path)
+            except ValueError as e:
+                return ToolMessage(
+                    content=f"Error: {e}",
+                    name="move",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
+            has_descendants = await _adelete_target_may_have_descendants(
+                resolved_backend, validated_source, permissions_configured=bool(self._permissions)
+            )
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_source, has_descendants=has_descendants)
+            if denying_patterns:
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_source} (matches deny rule(s): {', '.join(denying_patterns)})",
+                    name="move",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            if _check_fs_permission(self._permissions, "write", validated_destination) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_destination}",
+                    name="move",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            res: MoveResult = await resolved_backend.amove(validated_source, validated_destination)
+            if res.error:
+                return ToolMessage(
+                    content=res.error,
+                    name="move",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            return ToolMessage(
+                content=f"Moved {res.source_path} to {res.destination_path}",
+                name="move",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        return StructuredTool.from_function(
+            name="move",
+            description=tool_description,
+            func=sync_move,
+            coroutine=async_move,
+            infer_schema=False,
+            args_schema=MoveSchema,
+        )
+
     def _create_glob_tool(self) -> BaseTool:  # noqa: C901, PLR0915  # Tool wiring + permission/result shaping + timeout handling
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
@@ -2724,14 +2860,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Return unsupported filesystem tools and whether execute remains active."""
         # `tools=` exclusions are enforced at `__init__` (absent from
         # `self.tools` entirely), so only backend-capability gating
-        # `execute`/`delete` on a backend that doesn't support them is
+        # `execute`/`delete`/`move` on a backend that doesn't support them is
         # computed here.
         unsupported: set[str | None] = set()
         execution_active = False
         backend = None
         has_execute_tool = "execute" in tool_names
         has_delete_tool = "delete" in tool_names
-        if not has_delete_tool and not has_execute_tool:
+        has_move_tool = "move" in tool_names
+        if not has_delete_tool and not has_execute_tool and not has_move_tool:
             return unsupported, execution_active, backend
 
         backend = self.backend
@@ -2741,6 +2878,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 unsupported.add("execute")
         if has_delete_tool and "delete" not in unsupported and not _supports_delete(backend):
             unsupported.add("delete")
+        if has_move_tool and "move" not in unsupported and not _supports_move(backend):
+            unsupported.add("move")
         return unsupported, execution_active, backend
 
     def _resolve_capture(self, resolved_backend: BackendProtocol, tool_call_id: str | None) -> tuple[BaseSandbox, str] | None:

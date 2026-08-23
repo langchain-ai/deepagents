@@ -18,6 +18,7 @@ from deepagents.backends.protocol import (
     GlobResult,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     WriteResult,
 )
@@ -271,6 +272,46 @@ class StateBackend(BackendProtocol):
 
         self._send_files_update(dict.fromkeys(to_delete, None))
         return DeleteResult(path=file_path)
+
+    def move(self, source_path: str, destination_path: str) -> MoveResult:
+        """Move or rename a file or directory within state.
+
+        Moving a path relocates the exact file at `source_path` plus every
+        nested key under it (the prefix `source_path` + "/"), rewriting each
+        matched key's `source_path` prefix to `destination_path`. Queued via
+        `CONFIG_KEY_SEND` as a single update: matched source keys are cleared
+        (`None`) and their destination equivalents are set, in one call so a
+        directory move is applied atomically from the reducer's perspective.
+
+        Args:
+            source_path: Path of the file or directory to move.
+            destination_path: Destination path. Must not already exist.
+
+        Returns:
+            `MoveResult` with the source and destination paths on success, or
+                an error if nothing is stored at or under `source_path`, or
+                something is already stored at or under `destination_path`.
+        """
+        files = self._read_files()
+
+        source_base = source_path.rstrip("/")
+        source_prefix = source_base + "/"
+        to_move = [key for key in files if key == source_base or key.startswith(source_prefix)]
+        if not to_move:
+            return MoveResult(error=f"Error: File '{source_path}' not found")
+
+        destination_base = destination_path.rstrip("/")
+        destination_prefix = destination_base + "/"
+        if any(key == destination_base or key.startswith(destination_prefix) for key in files):
+            return MoveResult(error=f"Error: File '{destination_path}' already exists")
+
+        update: dict[str, Any] = dict.fromkeys(to_move, None)
+        for key in to_move:
+            new_key = destination_base + key[len(source_base) :]
+            update[new_key] = files[key]
+
+        self._send_files_update(update)
+        return MoveResult(source_path=source_path, destination_path=destination_path)
 
     def grep(
         self,

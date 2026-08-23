@@ -138,27 +138,27 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 8  # All tools including execute and delete
+        assert len(middleware.tools) == 9  # All tools including execute, delete, and move
 
     def test_init_with_composite_backend(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))})
         middleware = FilesystemMiddleware(backend=backend)
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 8  # All tools including execute and delete
+        assert len(middleware.tools) == 9  # All tools including execute, delete, and move
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 8  # All tools including execute and delete
+        assert len(middleware.tools) == 9  # All tools including execute, delete, and move
 
     def test_init_custom_system_prompt_with_composite(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 8  # All tools including execute and delete
+        assert len(middleware.tools) == 9  # All tools including execute, delete, and move
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})
@@ -2496,6 +2496,51 @@ class TestFilesystemMiddleware:
         # tool filtering — and with an empty system prompt, no override at all.
         request.override.assert_not_called()
 
+    def test_move_filtered_when_backend_lacks_move(self):
+        """Move is removed from the request when the backend can't move.
+
+        Mirrors `test_delete_filtered_when_backend_lacks_delete`.
+        """
+
+        class _NoMoveBackend(StateBackend):
+            # Opt out of move support by inheriting the protocol's default.
+            move = BackendProtocol.move
+
+        middleware = FilesystemMiddleware(backend=_NoMoveBackend(), system_prompt="")
+
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        move_tool = MagicMock()
+        move_tool.name = "move"
+        request = MagicMock()
+        request.tools = [ls_tool, move_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        request.override.assert_called_once()
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "move" not in filtered_names
+        assert "ls" in filtered_names
+
+    def test_move_kept_when_backend_supports_move(self):
+        """Move stays in the request when the backend supports it."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        move_tool = MagicMock()
+        move_tool.name = "move"
+        request = MagicMock()
+        request.tools = [ls_tool, move_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        # StateBackend supports move (and no execute tool is present), so no
+        # tool filtering — and with an empty system prompt, no override at all.
+        request.override.assert_not_called()
+
     def test_enabled_tools_raises_when_read_file_excluded(self):
         """read_file must be in tools when a non-empty allowlist is given."""
         with pytest.raises(ValueError, match="read_file must be included in tools"):
@@ -2511,6 +2556,7 @@ class TestFilesystemMiddleware:
         names = {tool.name for tool in middleware.tools}
         assert "write_file" not in names
         assert "delete" not in names
+        assert "move" not in names
         assert "ls" in names
         assert "grep" in names
 
@@ -2588,13 +2634,13 @@ class TestFilesystemMiddleware:
         """tools=None (default) still registers every filesystem tool."""
         middleware = FilesystemMiddleware(backend=StateBackend())
         names = {tool.name for tool in middleware.tools}
-        assert names == {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+        assert names == {"ls", "read_file", "write_file", "edit_file", "delete", "move", "glob", "grep", "execute"}
 
     def test_enabled_tools_all_keeps_all_self_tools(self):
         """tools="all" registers every filesystem tool, same as the default."""
         middleware = FilesystemMiddleware(backend=StateBackend(), tools="all")
         names = {tool.name for tool in middleware.tools}
-        assert names == {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+        assert names == {"ls", "read_file", "write_file", "edit_file", "delete", "move", "glob", "grep", "execute"}
 
     def test_enabled_tools_execute_listed_but_backend_unsupported_is_noop(self):
         """Execute in tools list is still filtered when the backend doesn't support execution."""
@@ -2861,6 +2907,24 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
         delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
         result = delete_tool.invoke({"file_path": "../etc/passwd", "runtime": _runtime("d1")})
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "traversal" in result.content
+
+    def test_move_invalid_source_path_returns_error(self):
+        """The sync move tool rejects a traversal source path before moving."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+        move_tool = next(tool for tool in middleware.tools if tool.name == "move")
+        result = move_tool.invoke({"source_path": "../etc/passwd", "destination_path": "/b.txt", "runtime": _runtime("m1")})
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "traversal" in result.content
+
+    def test_move_invalid_destination_path_returns_error(self):
+        """The sync move tool rejects a traversal destination path before moving."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+        move_tool = next(tool for tool in middleware.tools if tool.name == "move")
+        result = move_tool.invoke({"source_path": "/a.txt", "destination_path": "../etc/passwd", "runtime": _runtime("m2")})
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert "traversal" in result.content

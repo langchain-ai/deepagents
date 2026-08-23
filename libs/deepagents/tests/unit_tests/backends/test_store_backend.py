@@ -6,7 +6,7 @@ from langgraph.runtime import Runtime
 from langgraph.store.base import PutOp
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
+from deepagents.backends.protocol import EditResult, MoveResult, ReadResult, WriteResult
 from deepagents.backends.store import StoreBackend, _validate_namespace
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
@@ -669,6 +669,119 @@ async def test_store_backend_adelete() -> None:
 
     missing = await be.adelete("/a.md")
     assert missing.error is not None and "not found" in missing.error
+
+
+def test_store_backend_move_renames_key() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/docs/readme.md", "hello store")
+
+    result = be.move("/docs/readme.md", "/docs/README.md")
+    assert isinstance(result, MoveResult)
+    assert result.error is None
+    assert result.source_path == "/docs/readme.md"
+    assert result.destination_path == "/docs/README.md"
+    assert be.read("/docs/readme.md").error is not None
+    read_result = be.read("/docs/README.md")
+    assert read_result.error is None
+    assert read_result.file_data is not None
+    assert "hello store" in read_result.file_data["content"]
+
+
+def test_store_backend_move_directory_recursive() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/work/a.txt", "a")
+    be.write("/work/sub/b.txt", "b")
+    be.write("/keep.txt", "k")
+
+    result = be.move("/work", "/archive")
+    assert result.error is None
+    assert be.read("/work/a.txt").error is not None
+    assert be.read("/work/sub/b.txt").error is not None
+    assert be.read("/archive/a.txt").file_data is not None
+    assert be.read("/archive/sub/b.txt").file_data is not None
+    # A sibling outside the subtree is untouched.
+    assert be.read("/keep.txt").error is None
+
+
+async def test_store_backend_amove_directory_recursive() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/work/a.txt", "a")
+    await be.awrite("/work/sub/b.txt", "b")
+    await be.awrite("/keep.txt", "k")
+
+    result = await be.amove("/work", "/archive")
+    assert result.error is None
+    assert (await be.aread("/work/a.txt")).error is not None
+    assert (await be.aread("/archive/a.txt")).file_data is not None
+    assert (await be.aread("/archive/sub/b.txt")).file_data is not None
+    assert (await be.aread("/keep.txt")).error is None
+
+
+def test_store_backend_move_missing_source_returns_error() -> None:
+    be = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    result = be.move("/nope.md", "/dest.md")
+    assert result.source_path is None
+    assert result.destination_path is None
+    assert result.error is not None
+    assert "not found" in result.error
+
+
+def test_store_backend_move_existing_destination_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/a.md", "a")
+    be.write("/b.md", "b")
+
+    result = be.move("/a.md", "/b.md")
+    assert result.error is not None
+    assert "already exists" in result.error
+    # Neither side was mutated by the rejected move.
+    assert be.read("/a.md").file_data is not None
+    assert be.read("/b.md").file_data is not None
+
+
+def test_store_backend_move_uses_single_batch_call() -> None:
+    """A recursive move issues one batched store write, not one call per key."""
+    store = _RecordingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    be.write("/work/a.txt", "a")
+    be.write("/work/sub/b.txt", "b")
+    be.write("/keep.txt", "k")
+    store.batch_calls.clear()  # ignore the setup writes
+
+    result = be.move("/work", "/archive")
+    assert result.error is None
+
+    # The move (deletes + puts) happened in exactly one batch call.
+    move_batches = [
+        ops
+        for ops in store.batch_calls
+        if any(isinstance(op, PutOp) and op.value is None for op in ops) and any(isinstance(op, PutOp) and op.value is not None for op in ops)
+    ]
+    assert len(move_batches) == 1
+    ops = move_batches[0]
+    deleted_keys = {op.key for op in ops if op.value is None}
+    put_keys = {op.key for op in ops if op.value is not None}
+    assert deleted_keys == {"/work/a.txt", "/work/sub/b.txt"}
+    assert put_keys == {"/archive/a.txt", "/archive/sub/b.txt"}
+
+
+def test_store_backend_move_treats_wildcard_as_literal_key() -> None:
+    """`*` is used as an exact store key, not a wildcard, on both source and destination."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/a.md", "a")
+    be.write("*", "literal star")
+
+    result = be.move("*", "/star.md")
+    assert result.error is None
+    assert be.read("/a.md").file_data is not None
+    star_result = be.read("/star.md")
+    assert star_result.file_data is not None
+    assert "literal star" in star_result.file_data["content"]
 
 
 def test_store_backend_delete_treats_wildcard_as_literal_key() -> None:

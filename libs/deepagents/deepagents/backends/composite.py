@@ -21,6 +21,7 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -31,6 +32,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.state import StateBackend
 
 _DELETE_UNSUPPORTED_ERROR = "Error: deletion is not supported for '{file_path}'."
+_MOVE_UNSUPPORTED_ERROR = "Error: moving is not supported for '{source_path}'."
 
 
 def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
@@ -746,6 +748,73 @@ class CompositeBackend(BackendProtocol):
             return DeleteResult(error=_DELETE_UNSUPPORTED_ERROR.format(file_path=file_path))
         if res.path is not None:
             res.path = file_path
+        return res
+
+    def move(self, source_path: str, destination_path: str) -> MoveResult:
+        """Move a file, routing to the appropriate backend.
+
+        `CompositeBackend` always advertises move support (it overrides this
+        method), so the `move` tool is never filtered out for it. A route may
+        still point at a backend that does not implement `move`; rather than
+        letting `NotImplementedError` escape to the caller, that case is
+        converted into a `MoveResult` error.
+
+        Cross-backend moves (where `source_path` and `destination_path` route
+        to different backends) are not supported — there is no atomic
+        primitive for relocating an entry between two independent storage
+        backends, so this returns a clear error rather than composing a
+        partial read+write+delete that could leave state split across both
+        backends on failure.
+
+        Args:
+            source_path: Absolute source path.
+            destination_path: Absolute destination path.
+
+        Returns:
+            `MoveResult` with the original paths on success, or an error
+            (including when the routed backend does not support moving, or
+            source and destination route to different backends).
+        """
+        source_backend, stripped_source = self._get_backend_and_key(source_path)
+        destination_backend, stripped_destination = self._get_backend_and_key(destination_path)
+        if source_backend is not destination_backend:
+            return MoveResult(
+                error=(
+                    f"Error: cannot move '{source_path}' to '{destination_path}' — "
+                    "they are routed to different backends, and cross-backend moves "
+                    "are not supported."
+                )
+            )
+        try:
+            res = source_backend.move(stripped_source, stripped_destination)
+        except NotImplementedError:
+            return MoveResult(error=_MOVE_UNSUPPORTED_ERROR.format(source_path=source_path))
+        if res.source_path is not None:
+            res.source_path = source_path
+        if res.destination_path is not None:
+            res.destination_path = destination_path
+        return res
+
+    async def amove(self, source_path: str, destination_path: str) -> MoveResult:
+        """Async version of move."""
+        source_backend, stripped_source = self._get_backend_and_key(source_path)
+        destination_backend, stripped_destination = self._get_backend_and_key(destination_path)
+        if source_backend is not destination_backend:
+            return MoveResult(
+                error=(
+                    f"Error: cannot move '{source_path}' to '{destination_path}' — "
+                    "they are routed to different backends, and cross-backend moves "
+                    "are not supported."
+                )
+            )
+        try:
+            res = await source_backend.amove(stripped_source, stripped_destination)
+        except NotImplementedError:
+            return MoveResult(error=_MOVE_UNSUPPORTED_ERROR.format(source_path=source_path))
+        if res.source_path is not None:
+            res.source_path = source_path
+        if res.destination_path is not None:
+            res.destination_path = destination_path
         return res
 
     def execute(

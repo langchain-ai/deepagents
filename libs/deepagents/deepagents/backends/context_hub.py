@@ -34,6 +34,7 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     WriteResult,
 )
@@ -73,11 +74,17 @@ class _DeleteIntent:
     path: str
 
 
+@dataclass(frozen=True)
+class _MoveIntent:
+    source_path: str
+    destination_path: str
+
+
 @dataclass
 class _Mutation:
     """One accepted mutation and the caller waiting for its durability."""
 
-    intent: _WriteIntent | _EditIntent | _DeleteIntent
+    intent: _WriteIntent | _EditIntent | _DeleteIntent | _MoveIntent
     changes: dict[str, str | None]
     occurrences: int | None = None
     done: threading.Event = field(default_factory=threading.Event)
@@ -185,7 +192,7 @@ class ContextHubBackend(BackendProtocol):
         self,
         changes: dict[str, str | None],
         *,
-        intent: _WriteIntent | _EditIntent | _DeleteIntent | None = None,
+        intent: _WriteIntent | _EditIntent | _DeleteIntent | _MoveIntent | None = None,
         occurrences: int | None = None,
     ) -> _Mutation:
         accepted_changes = dict(changes)
@@ -278,6 +285,21 @@ class ContextHubBackend(BackendProtocol):
                 raise conflict
             content, occurrences = result
             return {intent.path: content}, occurrences
+
+        if isinstance(intent, _MoveIntent):
+            source_base = intent.source_path
+            source_prefix = source_base + "/"
+            matched = [path for path in cache if path == source_base or path.startswith(source_prefix)]
+            if not matched:
+                raise conflict
+            destination_base = intent.destination_path
+            destination_prefix = destination_base + "/"
+            if any(path == destination_base or path.startswith(destination_prefix) for path in cache):
+                raise conflict
+            changes: dict[str, str | None] = dict.fromkeys(matched, None)
+            for path in matched:
+                changes[destination_base + path[len(source_base) :]] = cache[path]
+            return changes, None
 
         base = intent.path
         prefix = base + "/"
@@ -556,6 +578,55 @@ class ContextHubBackend(BackendProtocol):
             logger.exception("Hub delete failed for %r", self._identifier)
             return DeleteResult(error=f"Hub unavailable: {exc}")
         return DeleteResult(path=file_path)
+
+    def move(self, source_path: str, destination_path: str) -> MoveResult:
+        """Move or rename a file or directory by committing the relocation to the hub repo.
+
+        Moving a path relocates the exact file plus every nested entry under it
+        (the prefix `source_path` + "/"), rewriting each matched entry's
+        `source_path` prefix to `destination_path`. Committed as a single
+        mutation covering both the source removals and destination additions,
+        so a directory move lands as one commit.
+
+        Args:
+            source_path: Path of the file or directory to move.
+            destination_path: Destination path. Must not already exist.
+
+        Returns:
+            `MoveResult` with the source and destination paths on success, or
+                an error if nothing is stored at or under `source_path`,
+                something is already stored at or under `destination_path`, or
+                the hub is unavailable.
+        """
+        hub_source = self._strip_prefix(source_path)
+        hub_destination = self._strip_prefix(destination_path)
+        try:
+            with self._mutations.condition:
+                cache = self._visible_cache_locked()
+                source_base = hub_source.rstrip("/")
+                source_prefix = source_base + "/"
+                to_move = [key for key in cache if key == source_base or key.startswith(source_prefix)]
+                if not to_move:
+                    return MoveResult(error=f"Error: File '{source_path}' not found")
+
+                destination_base = hub_destination.rstrip("/")
+                destination_prefix = destination_base + "/"
+                if any(key == destination_base or key.startswith(destination_prefix) for key in cache):
+                    return MoveResult(error=f"Error: File '{destination_path}' already exists")
+
+                changes: dict[str, str | None] = dict.fromkeys(to_move, None)
+                for key in to_move:
+                    changes[destination_base + key[len(source_base) :]] = cache[key]
+
+                mutation = self._queue_changes_locked(
+                    changes,
+                    intent=_MoveIntent(source_path=source_base, destination_path=destination_base),
+                )
+            self._wait_for_mutation(mutation)
+        except LangSmithError as exc:
+            logger.exception("Hub move failed for %r", self._identifier)
+            return MoveResult(error=f"Hub unavailable: {exc}")
+        return MoveResult(source_path=source_path, destination_path=destination_path)
 
     def ls(self, path: str = "/") -> LsResult:
         """List immediate files and subdirectories under `path` (non-recursive)."""

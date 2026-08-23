@@ -834,6 +834,77 @@ class TestFilesystemMiddlewareAsync:
         # The file is left untouched since deletion was blocked.
         assert mem_store.get(("filesystem",), "/test.txt") is not None
 
+    async def test_amove(self):
+        """Async move relocates the file and reports success."""
+        files = {"/test.txt": FileData(content="bye", modified_at="2021-01-01", created_at="2021-01-01")}
+        backend, mem_store = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        move_tool = next(tool for tool in middleware.tools if tool.name == "move")
+        result = await move_tool.ainvoke(
+            {
+                "source_path": "/test.txt",
+                "destination_path": "/moved.txt",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="mv1", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert "Moved" in result.content
+        assert mem_store.get(("filesystem",), "/test.txt") is None
+        assert mem_store.get(("filesystem",), "/moved.txt") is not None
+
+    async def test_amove_invalid_source_path(self):
+        """Async move rejects a traversal source path with an error."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        move_tool = next(tool for tool in middleware.tools if tool.name == "move")
+        result = await move_tool.ainvoke(
+            {
+                "source_path": "../etc/passwd",
+                "destination_path": "/b.txt",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="mv2", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert result.status == "error"
+        assert "traversal" in result.content
+
+    async def test_amove_missing_source_returns_error(self):
+        """Async move surfaces the backend's not-found error."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        move_tool = next(tool for tool in middleware.tools if tool.name == "move")
+        result = await move_tool.ainvoke(
+            {
+                "source_path": "/ghost.txt",
+                "destination_path": "/dest.txt",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="mv3", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert result.status == "error"
+        assert "not found" in result.content
+
+    async def test_amove_permission_denied_on_source(self):
+        """Async move is blocked by a deny write permission covering the source."""
+        files = {"/test.txt": FileData(content="bye", modified_at="2021-01-01", created_at="2021-01-01")}
+        backend, mem_store = _make_backend(files)
+        middleware = FilesystemMiddleware(
+            backend=backend,
+            _permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+        )
+        move_tool = next(tool for tool in middleware.tools if tool.name == "move")
+        result = await move_tool.ainvoke(
+            {
+                "source_path": "/test.txt",
+                "destination_path": "/moved.txt",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="mv5", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert result.status == "error"
+        assert "permission denied for write" in result.content
+        # The file is left untouched since the move was blocked.
+        assert mem_store.get(("filesystem",), "/test.txt") is not None
+        assert mem_store.get(("filesystem",), "/moved.txt") is None
+
     async def test_aexecute_tool_returns_error_when_backend_doesnt_support(self):
         """Test async execute tool returns friendly error instead of raising exception."""
         backend, _ = _make_backend()

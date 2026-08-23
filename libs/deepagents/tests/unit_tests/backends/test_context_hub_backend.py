@@ -915,6 +915,169 @@ async def test_adelete_missing_returns_not_found() -> None:
     mock_client.push_agent.assert_not_called()
 
 
+def test_move_commits_source_removal_and_destination_addition() -> None:
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="hello")})
+    result = backend.move("/a.md", "/b.md")
+
+    assert result.error is None
+    assert result.source_path == "/a.md"
+    assert result.destination_path == "/b.md"
+    mock_client.push_agent.assert_called_once()
+    files_arg = mock_client.push_agent.call_args.kwargs["files"]
+    # Source is marked for deletion, destination carries the moved content.
+    assert files_arg["a.md"] is None
+    assert files_arg["b.md"].content == "hello"
+
+
+def test_move_directory_commits_all_nested_entries() -> None:
+    backend, mock_client = _make_backend(
+        **{
+            "work/a.md": FileEntry(type="file", content="a"),
+            "work/sub/b.md": FileEntry(type="file", content="b"),
+            "keep.md": FileEntry(type="file", content="k"),
+        }
+    )
+    result = backend.move("/work", "/archive")
+
+    assert result.error is None
+    files_arg = mock_client.push_agent.call_args.kwargs["files"]
+    # Every nested source entry is marked for deletion, rewritten under /archive...
+    assert files_arg["work/a.md"] is None
+    assert files_arg["work/sub/b.md"] is None
+    assert files_arg["archive/a.md"].content == "a"
+    assert files_arg["archive/sub/b.md"].content == "b"
+    # ...and the sibling outside the subtree is left alone.
+    assert "keep.md" not in files_arg
+
+
+def test_move_missing_source_returns_not_found() -> None:
+    backend, mock_client = _make_backend()
+    result = backend.move("/ghost.md", "/dest.md")
+
+    assert result.source_path is None
+    assert result.destination_path is None
+    assert result.error is not None
+    assert "not found" in result.error
+    mock_client.push_agent.assert_not_called()
+
+
+def test_move_existing_destination_returns_error() -> None:
+    backend, mock_client = _make_backend(
+        **{
+            "a.md": FileEntry(type="file", content="a"),
+            "b.md": FileEntry(type="file", content="b"),
+        }
+    )
+    result = backend.move("/a.md", "/b.md")
+
+    assert result.error is not None
+    assert "already exists" in result.error
+    mock_client.push_agent.assert_not_called()
+
+
+def test_move_updates_cache_after_commit() -> None:
+    backend, _ = _make_backend(**{"a.md": FileEntry(type="file", content="hello")})
+    assert backend.read("/a.md").error is None
+
+    backend.move("/a.md", "/b.md")
+
+    # Source is gone and destination is visible from the cache; no re-pull needed.
+    assert backend.read("/a.md").error is not None
+    moved = backend.read("/b.md")
+    assert moved.file_data is not None
+    assert moved.file_data["content"] == "hello"
+
+
+def test_move_failure_invalidates_cache() -> None:
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="a")})
+    mock_client.push_agent.side_effect = LangSmithAPIError("500")
+
+    result = backend.move("/a.md", "/b.md")
+    assert result.error is not None
+    assert "Hub unavailable" in result.error
+
+    backend.read("/a.md")
+    assert mock_client.pull_agent.call_count == 2
+
+
+async def test_amove_commits_source_removal_and_destination_addition() -> None:
+    """Async move (protocol default `asyncio.to_thread`) behaves like sync."""
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="hello")})
+    result = await backend.amove("/a.md", "/b.md")
+
+    assert result.error is None
+    assert result.source_path == "/a.md"
+    assert result.destination_path == "/b.md"
+    files_arg = mock_client.push_agent.call_args.kwargs["files"]
+    assert files_arg["a.md"] is None
+    assert files_arg["b.md"].content == "hello"
+    assert backend.read("/a.md").error is not None
+
+
+async def test_amove_missing_returns_not_found() -> None:
+    backend, mock_client = _make_backend()
+    result = await backend.amove("/ghost.md", "/dest.md")
+
+    assert result.source_path is None
+    assert result.error is not None
+    assert "not found" in result.error
+    mock_client.push_agent.assert_not_called()
+
+
+def test_move_conflict_rematerializes_against_remote_cache() -> None:
+    """A concurrent remote change during a move is rebased, not blindly replayed.
+
+    Mirrors `test_conflict_replays_in_flight_batch_and_rejects_invalid_pending_edit`'s
+    structure, scoped to a single move so the `_MoveIntent` branch of
+    `_rematerialize_mutation` is exercised: the retried commit must reflect
+    which keys are *actually* under `/folder` in the reloaded remote tree, not
+    the stale set computed before the conflict.
+    """
+    initial = SimpleNamespace(
+        commit_id="initial",
+        commit_hash=_COMMIT_HASH,
+        files={
+            "folder/old.md": FileEntry(type="file", content="old"),
+            "keep.md": FileEntry(type="file", content="keep"),
+        },
+    )
+    remote_hash = "feedface" * 8
+    reloaded = SimpleNamespace(
+        commit_id="remote",
+        commit_hash=remote_hash,
+        files={
+            # A file was added remotely under /folder after the move was queued locally.
+            "folder/old.md": FileEntry(type="file", content="old"),
+            "folder/new.md": FileEntry(type="file", content="new"),
+            "keep.md": FileEntry(type="file", content="keep"),
+        },
+    )
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = [initial, reloaded]
+    mock_client.push_agent.side_effect = [LangSmithConflictError("409"), _COMMIT_URL]
+    backend = ContextHubBackend("-/test-agent", client=mock_client)
+
+    result = backend.move("/folder", "/archive")
+
+    assert result.error is None
+    assert mock_client.push_agent.call_count == 2
+    first, second = mock_client.push_agent.call_args_list
+    assert first.kwargs["parent_commit"] == _COMMIT_HASH
+    assert second.kwargs["parent_commit"] == remote_hash
+    # The retried commit picks up the remotely-added file too, not just the
+    # entries known at the time the move was originally queued.
+    assert set(second.kwargs["files"]) == {
+        "folder/old.md",
+        "folder/new.md",
+        "archive/old.md",
+        "archive/new.md",
+    }
+    assert second.kwargs["files"]["folder/old.md"] is None
+    assert second.kwargs["files"]["folder/new.md"] is None
+    assert second.kwargs["files"]["archive/old.md"].content == "old"
+    assert second.kwargs["files"]["archive/new.md"].content == "new"
+
+
 def test_batch_window_is_anchored_to_first_mutation() -> None:
     backend, mock_client = _make_backend()
     backend.read("/missing.md")

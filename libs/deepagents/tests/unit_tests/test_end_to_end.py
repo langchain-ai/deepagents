@@ -1580,6 +1580,233 @@ class TestDeleteFileTool:
         # The file must still be present after a denied delete.
         assert "/secrets/key.txt" in result["files"]
 
+    def test_move_renames_file(self) -> None:
+        """Move relocates a file to a new path and reports success."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "move",
+                                "args": {"source_path": "/a.txt", "destination_path": "/b.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="rename it")],
+                "files": {
+                    "/a.txt": create_file_data("hello"),
+                    "/other.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "success"
+        assert tool_messages[0].content == "Moved /a.txt to /b.txt"
+        assert set(result["files"].keys()) == {"/b.txt", "/other.txt"}
+        assert result["files"]["/b.txt"]["content"] == "hello"
+
+    def test_move_directory_moves_nested_files(self) -> None:
+        """Move on a directory relocates every nested file (StateBackend)."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "move",
+                                "args": {"source_path": "/work", "destination_path": "/archive"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="archive the work dir")],
+                "files": {
+                    "/work/a.txt": create_file_data("a"),
+                    "/work/sub/b.txt": create_file_data("b"),
+                    "/keep.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert tool_messages[0].status == "success"
+        assert set(result["files"].keys()) == {"/archive/a.txt", "/archive/sub/b.txt", "/keep.txt"}
+        assert result["files"]["/archive/a.txt"]["content"] == "a"
+        assert result["files"]["/archive/sub/b.txt"]["content"] == "b"
+
+    def test_move_missing_source_returns_error(self) -> None:
+        """Move on a missing source path returns an error tool message."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "move",
+                                "args": {"source_path": "/nope.txt", "destination_path": "/b.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="rename it")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "not found" in tool_messages[0].content
+
+    def test_move_existing_destination_returns_error(self) -> None:
+        """Move onto an already-occupied destination path is rejected, not overwritten."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "move",
+                                "args": {"source_path": "/a.txt", "destination_path": "/b.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="rename it")],
+                "files": {
+                    "/a.txt": create_file_data("a"),
+                    "/b.txt": create_file_data("b"),
+                },
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert tool_messages[0].status == "error"
+        assert "already exists" in tool_messages[0].content
+        assert result["files"]["/a.txt"]["content"] == "a"
+        assert result["files"]["/b.txt"]["content"] == "b"
+
+    def test_move_permission_deny_blocks_move_from_denied_source(self) -> None:
+        """FilesystemPermission deny write blocks moving out of a denied source path."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "move",
+                                "args": {"source_path": "/secrets/key.txt", "destination_path": "/key.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="move secret")],
+                "files": {"/secrets/key.txt": create_file_data("data")},
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "permission denied" in tool_messages[0].content
+        # The file must still be present after a denied move.
+        assert "/secrets/key.txt" in result["files"]
+
+    def test_move_permission_deny_blocks_move_into_denied_destination(self) -> None:
+        """FilesystemPermission deny write blocks moving into a denied destination path."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "move",
+                                "args": {"source_path": "/notes.txt", "destination_path": "/secrets/notes.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="move notes into secrets")],
+                "files": {"/notes.txt": create_file_data("data")},
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "permission denied" in tool_messages[0].content
+        # The file must still be present at its original path after a denied move.
+        assert "/notes.txt" in result["files"]
+
 
 class TestDeepAgentPermissionsEndToEnd:
     """End-to-end tests for create_deep_agent with FilesystemPermission."""

@@ -17,7 +17,7 @@ from langchain_core.messages import ToolMessage
 
 from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import DeleteResult, EditResult, GrepMatch, ReadResult, WriteResult
+from deepagents.backends.protocol import DeleteResult, EditResult, GrepMatch, MoveResult, ReadResult, WriteResult
 from deepagents.backends.utils import format_grep_matches
 from deepagents.middleware.filesystem import GLOB_TIMEOUT, FilesystemMiddleware
 
@@ -2686,3 +2686,92 @@ class TestFilesystemDelete:
         assert result.error is not None
         assert "Error deleting" in result.error
         assert f.exists()
+
+
+class TestFilesystemMove:
+    """Tests for FilesystemBackend.move."""
+
+    def test_move_renames_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "a.txt"
+        write_file(f, "hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.move("/a.txt", "/b.txt")
+        assert isinstance(result, MoveResult)
+        assert result.error is None
+        assert result.source_path == "/a.txt"
+        assert result.destination_path == "/b.txt"
+        assert not f.exists()
+        assert (tmp_path / "b.txt").read_text() == "hello"
+
+    def test_move_missing_source_returns_error(self, tmp_path: Path) -> None:
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        result = be.move("/missing.txt", "/b.txt")
+        assert result.source_path is None
+        assert result.destination_path is None
+        assert result.error is not None
+        assert "not found" in result.error
+
+    def test_move_existing_destination_returns_error(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "a.txt", "a")
+        write_file(tmp_path / "b.txt", "b")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.move("/a.txt", "/b.txt")
+        assert result.error is not None
+        assert "already exists" in result.error
+        assert (tmp_path / "a.txt").exists()
+        assert (tmp_path / "b.txt").read_text() == "b"
+
+    def test_move_directory_recursively(self, tmp_path: Path) -> None:
+        sub = tmp_path / "sub"
+        (sub / "deep").mkdir(parents=True)
+        write_file(sub / "b.txt", "b")
+        write_file(sub / "deep" / "d.txt", "d")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.move("/sub", "/moved")
+        assert result.error is None
+        assert not sub.exists()
+        assert (tmp_path / "moved" / "b.txt").read_text() == "b"
+        assert (tmp_path / "moved" / "deep" / "d.txt").read_text() == "d"
+
+    def test_move_creates_destination_parent_dirs(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "a.txt", "a")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.move("/a.txt", "/nested/dir/b.txt")
+        assert result.error is None
+        assert (tmp_path / "nested" / "dir" / "b.txt").read_text() == "a"
+
+    def test_move_leaves_siblings(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "keep.txt", "keep")
+        write_file(tmp_path / "a.txt", "a")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        assert be.move("/a.txt", "/moved.txt").error is None
+        assert (tmp_path / "keep.txt").exists()
+
+    async def test_amove_renames_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "a.txt"
+        write_file(f, "hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = await be.amove("/a.txt", "/b.txt")
+        assert result.error is None
+        assert result.source_path == "/a.txt"
+        assert result.destination_path == "/b.txt"
+        assert not f.exists()
+        assert (tmp_path / "b.txt").read_text() == "hello"
+
+    def test_move_resolve_failure_returns_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        def _boom(_path: str) -> Path:
+            raise OSError
+
+        monkeypatch.setattr(be, "_resolve_path", _boom)
+        result = be.move("/a.txt", "/b.txt")
+        assert result.source_path is None
+        assert result.error is not None
+        assert "Error moving" in result.error

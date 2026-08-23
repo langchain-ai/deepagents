@@ -21,6 +21,7 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
+    MoveResult,
 )
 from deepagents.backends.sandbox import (
     _EDIT_COMMAND_TEMPLATE,
@@ -2395,5 +2396,126 @@ class TestSandboxDelete:
         sandbox._next_exit_code = 1  # test -e reports path absent
         result = await sandbox.adelete("/missing.txt")
         assert result.path is None
+        assert result.error is not None
+        assert "not found" in result.error
+
+
+class TestSandboxMove:
+    """BaseSandbox.move probes both paths, `mkdir -p`s the destination parent, then `mv`s."""
+
+    def test_move_success(self) -> None:
+        sandbox = MockSandbox()
+        # source exists, destination absent, mkdir ok, mv ok.
+        sandbox._responses = [("", 0), ("", 1), ("", 0), ("", 0)]
+        result = sandbox.move("/a.txt", "/b.txt")
+        assert isinstance(result, MoveResult)
+        assert result.error is None
+        assert result.source_path == "/a.txt"
+        assert result.destination_path == "/b.txt"
+        assert len(sandbox.commands) == 4
+        assert "mkdir -p" in sandbox.commands[2]
+        assert "mv" in sandbox.commands[3]
+        assert "/a.txt" in sandbox.commands[3]
+        assert "/b.txt" in sandbox.commands[3]
+
+    def test_move_directory_relocates_via_mv(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._responses = [("", 0), ("", 1), ("", 0), ("", 0)]
+        result = sandbox.move("/some/dir", "/archive/dir")
+        assert result.error is None
+        assert "mv" in sandbox.last_command
+        assert "/some/dir" in sandbox.last_command
+        assert "/archive/dir" in sandbox.last_command
+
+    def test_move_missing_source_returns_not_found(self) -> None:
+        # `test -e` exits 1 for a missing source; move must return a not-found
+        # error and never reach the destination probe / mkdir / mv.
+        sandbox = MockSandbox()
+        sandbox._next_exit_code = 1  # source probe reports path absent
+        result = sandbox.move("/missing.txt", "/b.txt")
+        assert result.source_path is None
+        assert result.error is not None
+        assert "not found" in result.error
+        assert len(sandbox.commands) == 1  # short-circuited before further probes
+
+    def test_move_existing_destination_returns_error(self) -> None:
+        sandbox = MockSandbox()
+        # source exists, destination also exists.
+        sandbox._responses = [("", 0), ("", 0)]
+        result = sandbox.move("/a.txt", "/b.txt")
+        assert result.error is not None
+        assert "already exists" in result.error
+        assert len(sandbox.commands) == 2  # short-circuited before mkdir/mv
+
+    def test_move_source_probe_checks_broken_symlink(self) -> None:
+        # Guards the `|| test -L` clause on the source probe.
+        sandbox = MockSandbox()
+        sandbox._responses = [("", 0), ("", 1), ("", 0), ("", 0)]
+        sandbox.move("/link", "/dest")
+        probe = sandbox.commands[0]
+        assert "test -e" in probe
+        assert "test -L" in probe
+
+    def test_move_unknown_source_probe_exit_is_not_treated_as_missing(self) -> None:
+        # An unknown source-probe result must NOT be reported as not-found; it
+        # falls through to the destination probe instead of fabricating a diagnosis.
+        sandbox = MockSandbox()
+        sandbox._responses = [("", None), ("", 1), ("", 0), ("", 0)]
+        result = sandbox.move("/a.txt", "/b.txt")
+        assert result.error is None
+        assert len(sandbox.commands) == 4  # probe did not short-circuit
+
+    def test_move_mkdir_failure_reports_output(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._responses = [
+            ("", 0),
+            ("", 1),
+            ("mkdir: cannot create directory '/nope': Permission denied", 1),
+        ]
+        result = sandbox.move("/a.txt", "/nope/b.txt")
+        assert result.source_path is None
+        assert result.error is not None
+        assert "Error moving" in result.error
+        assert "Permission denied" in result.error
+        assert len(sandbox.commands) == 3  # short-circuited before mv
+
+    def test_move_failure_reports_output(self) -> None:
+        # A non-zero exit from mv (e.g. a permission error) surfaces mv's stderr.
+        sandbox = MockSandbox()
+        sandbox._responses = [
+            ("", 0),
+            ("", 1),
+            ("", 0),
+            ("mv: cannot move '/a.txt' to '/b.txt': Permission denied", 1),
+        ]
+        result = sandbox.move("/a.txt", "/b.txt")
+        assert result.source_path is None
+        assert result.error is not None
+        assert "Error moving" in result.error
+        assert "Permission denied" in result.error
+
+    def test_move_failure_unknown_error(self) -> None:
+        # Non-zero exit from mv with no output falls back to a generic message.
+        sandbox = MockSandbox()
+        sandbox._responses = [("", 0), ("", 1), ("", 0), ("", 1)]
+        result = sandbox.move("/a.txt", "/b.txt")
+        assert result.source_path is None
+        assert result.error is not None
+        assert "unknown error" in result.error
+
+    async def test_amove_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._responses = [("", 0), ("", 1), ("", 0), ("", 0)]
+        result = await sandbox.amove("/a.txt", "/b.txt")
+        assert result.error is None
+        assert result.source_path == "/a.txt"
+        assert result.destination_path == "/b.txt"
+
+    async def test_amove_missing_source_returns_not_found(self) -> None:
+        # `amove` delegates to `move` via the default asyncio.to_thread wrapper.
+        sandbox = MockSandbox()
+        sandbox._next_exit_code = 1
+        result = await sandbox.amove("/missing.txt", "/b.txt")
+        assert result.source_path is None
         assert result.error is not None
         assert "not found" in result.error

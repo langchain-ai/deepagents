@@ -35,6 +35,7 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     WriteResult,
 )
@@ -613,6 +614,39 @@ class FilesystemBackend(BackendProtocol):
             return DeleteResult(path=file_path)
         except (OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+
+    def move(self, source_path: str, destination_path: str) -> MoveResult:
+        """Move or rename a file or directory on the filesystem.
+
+        Files and directories are relocated in place via `shutil.move`, which
+        falls back to a copy+delete when `source_path` and `destination_path`
+        span different filesystems. Symlinks are moved as links, not followed.
+
+        Args:
+            source_path: Path to the file or directory to move.
+            destination_path: Destination path. Must not already exist.
+
+        Returns:
+            `MoveResult` with the source and destination paths on success, or
+                an error if `source_path` does not exist, `destination_path`
+                already exists, or the move fails.
+        """
+        try:
+            resolved_source = self._resolve_path(source_path)
+            resolved_destination = self._resolve_path(destination_path)
+        except (OSError, RuntimeError) as e:
+            return MoveResult(error=f"Error moving '{source_path}' to '{destination_path}': {e}")
+
+        try:
+            if not resolved_source.exists() and not resolved_source.is_symlink():
+                return MoveResult(error=f"Error: '{source_path}' not found")
+            if resolved_destination.exists() or resolved_destination.is_symlink():
+                return MoveResult(error=f"Error: '{destination_path}' already exists")
+            resolved_destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(resolved_source), str(resolved_destination))
+            return MoveResult(source_path=source_path, destination_path=destination_path)
+        except (OSError, RuntimeError) as e:
+            return MoveResult(error=f"Error moving '{source_path}' to '{destination_path}': {e}")
 
     def grep(
         self,

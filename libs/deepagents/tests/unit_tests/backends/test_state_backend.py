@@ -109,3 +109,69 @@ def test_state_backend_edit_migrates_legacy_list_content(monkeypatch: pytest.Mon
     assert result.error is None
     assert updates[0]["/legacy.txt"]["content"] == "hello\nthere"
     assert updates[0]["/legacy.txt"]["encoding"] == "utf-8"
+
+
+def test_state_backend_move_renames_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = StateBackend()
+    files = {"/a.txt": {"content": "hello", "encoding": "utf-8"}}
+    updates: list[dict[str, Any]] = []
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", updates.append)
+
+    result = backend.move("/a.txt", "/b.txt")
+
+    assert result.error is None
+    assert result.source_path == "/a.txt"
+    assert result.destination_path == "/b.txt"
+    assert updates[0]["/a.txt"] is None
+    assert updates[0]["/b.txt"]["content"] == "hello"
+
+
+def test_state_backend_move_missing_source_returns_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = StateBackend()
+    monkeypatch.setattr(backend, "_read_files", dict)
+
+    result = backend.move("/missing.txt", "/b.txt")
+
+    assert result.error is not None
+    assert "not found" in result.error
+
+
+def test_state_backend_move_existing_destination_returns_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = StateBackend()
+    files = {
+        "/a.txt": {"content": "a", "encoding": "utf-8"},
+        "/b.txt": {"content": "b", "encoding": "utf-8"},
+    }
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+
+    result = backend.move("/a.txt", "/b.txt")
+
+    assert result.error is not None
+    assert "already exists" in result.error
+
+
+def test_state_backend_move_rewrites_nested_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Moving a directory rewrites every nested key's prefix, not just the base path."""
+    backend = StateBackend()
+    files = {
+        "/sub": {"content": "", "encoding": "utf-8"},
+        "/sub/a.txt": {"content": "a", "encoding": "utf-8"},
+        "/sub/deep/b.txt": {"content": "b", "encoding": "utf-8"},
+        "/keep.txt": {"content": "keep", "encoding": "utf-8"},
+    }
+    updates: list[dict[str, Any]] = []
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", updates.append)
+
+    result = backend.move("/sub", "/moved")
+
+    assert result.error is None
+    update = updates[0]
+    assert update["/sub"] is None
+    assert update["/sub/a.txt"] is None
+    assert update["/sub/deep/b.txt"] is None
+    assert update["/moved"]["content"] == ""
+    assert update["/moved/a.txt"]["content"] == "a"
+    assert update["/moved/deep/b.txt"]["content"] == "b"
+    assert "/keep.txt" not in update

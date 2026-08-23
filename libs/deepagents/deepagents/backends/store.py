@@ -20,6 +20,7 @@ from deepagents.backends.protocol import (
     GlobResult,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     WriteResult,
 )
@@ -586,6 +587,67 @@ class StoreBackend(BackendProtocol):
 
         await store.abatch([PutOp(namespace, key, None) for key in to_delete])
         return DeleteResult(path=file_path)
+
+    def move(self, source_path: str, destination_path: str) -> MoveResult:
+        """Move or rename a file or directory within the store.
+
+        Moving a path relocates the exact key `source_path` plus every key
+        nested under it (the prefix `source_path` + "/"), rewriting each
+        matched key's `source_path` prefix to `destination_path`. Applied as a
+        single `store.batch` call: matched source keys are cleared (`None`)
+        and their destination equivalents are put, so a directory move is one
+        atomic batch from the store's perspective.
+
+        Args:
+            source_path: Path of the file or directory to move.
+            destination_path: Destination path. Must not already exist.
+
+        Returns:
+            `MoveResult` with the source and destination paths on success, or
+                an error if no key is stored at or under `source_path`, or a
+                key is already stored at or under `destination_path`.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        items = self._search_store_paginated(store, namespace)
+        source_base = source_path.rstrip("/")
+        source_prefix = source_base + "/"
+        to_move = [item for item in items if (key := str(item.key)) == source_base or key.startswith(source_prefix)]
+        if not to_move:
+            return MoveResult(error=f"Error: File '{source_path}' not found")
+
+        destination_base = destination_path.rstrip("/")
+        destination_prefix = destination_base + "/"
+        if any(str(item.key) == destination_base or str(item.key).startswith(destination_prefix) for item in items):
+            return MoveResult(error=f"Error: File '{destination_path}' already exists")
+
+        ops = [PutOp(namespace, str(item.key), None) for item in to_move]
+        ops += [PutOp(namespace, destination_base + str(item.key)[len(source_base) :], item.value) for item in to_move]
+        store.batch(ops)
+        return MoveResult(source_path=source_path, destination_path=destination_path)
+
+    async def amove(self, source_path: str, destination_path: str) -> MoveResult:
+        """Async version of `move` using native store async methods."""
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        items = await self._asearch_store_paginated(store, namespace)
+        source_base = source_path.rstrip("/")
+        source_prefix = source_base + "/"
+        to_move = [item for item in items if (key := str(item.key)) == source_base or key.startswith(source_prefix)]
+        if not to_move:
+            return MoveResult(error=f"Error: File '{source_path}' not found")
+
+        destination_base = destination_path.rstrip("/")
+        destination_prefix = destination_base + "/"
+        if any(str(item.key) == destination_base or str(item.key).startswith(destination_prefix) for item in items):
+            return MoveResult(error=f"Error: File '{destination_path}' already exists")
+
+        ops = [PutOp(namespace, str(item.key), None) for item in to_move]
+        ops += [PutOp(namespace, destination_base + str(item.key)[len(source_base) :], item.value) for item in to_move]
+        await store.abatch(ops)
+        return MoveResult(source_path=source_path, destination_path=destination_path)
 
     # Removed legacy grep() convenience to keep lean surface
 

@@ -157,6 +157,29 @@ class ConfigResolver:
             raise RuntimeError(msg)
         return resolved
 
+    def resolve_options(
+        self,
+        options: Sequence[ConfigOption],
+    ) -> Mapping[ConfigKey, ResolvedValue[object]]:
+        """Resolve selected options against one provider generation.
+
+        Resolving an option is not uniformly cheap: `THEME_DELEGATE` reaches
+        the theme registry, which imports Textual (~470ms). Callers on the
+        startup hot path ask for the options they need rather than the whole
+        manifest, and keep the single-generation guarantee either way.
+
+        Args:
+            options: Manifest options to resolve together.
+
+        Returns:
+            Immutable mapping from canonical option key to resolved value.
+        """
+        with self._lock:
+            resolved = {
+                option.key: self._resolve(option, self._providers) for option in options
+            }
+        return MappingProxyType(resolved)
+
     def resolve_all(self) -> Mapping[ConfigKey, ResolvedValue[object]]:
         """Resolve the full manifest against one provider generation.
 
@@ -165,12 +188,7 @@ class ConfigResolver:
         """
         from deepagents_code.config_manifest import get_config_options
 
-        with self._lock:
-            resolved = {
-                option.key: self._resolve(option, self._providers)
-                for option in get_config_options()
-            }
-        return MappingProxyType(resolved)
+        return self.resolve_options(get_config_options())
 
     def reload(self) -> None:
         """Propagate a source refresh to every provider."""

@@ -2837,7 +2837,18 @@ class Settings:
         )
         from deepagents_code.configuration.resolver import get_config_resolver
 
-        resolved_config = get_config_resolver().resolve_all()
+        # Resolve only the options this constructor reads. `resolve_all()`
+        # would also resolve `display.theme`, whose `THEME_DELEGATE` coercion
+        # reaches the theme registry and imports Textual (~470ms) — see
+        # `libs/code/AGENTS.md` on the startup hot path. Four CLI entry points
+        # in `skills/commands.py` build `Settings` without ever drawing a UI.
+        wanted = tuple(
+            option
+            for option in get_config_options()
+            if option.key in {"shell.allow_list", "skills.extra_allowed_dirs"}
+            or (option.group == "Interpreter" and option.settings_field is not None)
+        )
+        resolved_config = get_config_resolver().resolve_options(wanted)
 
         # No `is None` fallback for either enforced key below. The manifest is a
         # module-level constant, so a missing option is a programming error, not

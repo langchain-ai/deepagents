@@ -1,5 +1,8 @@
 """Unit tests for ranked config precedence and durable masking."""
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -517,3 +520,41 @@ def test_resolver_get_matches_resolve_scalar_for_every_manifest_option() -> None
             actual.provider_status[rank].name for rank in actual.ranks
         )
         assert (actual.value, actual_source) == (value, source), option.key
+
+
+def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> None:
+    """Building `Settings` must not drag the theme registry onto the hot path.
+
+    `resolve_all()` would resolve `display.theme`, whose `THEME_DELEGATE`
+    coercion reaches the theme registry and imports Textual (~470ms). The four
+    CLI entry points in `skills/commands.py` build `Settings` without drawing
+    a UI, so they must not pay for it.
+    """
+    home = tmp_path / "home"
+    (home / ".deepagents").mkdir(parents=True)
+    (home / ".deepagents" / "config.toml").write_text(
+        '[ui]\ntheme = "monokai"\n',
+        encoding="utf-8",
+    )
+    env: dict[str, str] = os.environ.copy()
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    env.pop("DEEPAGENTS_CODE_THEME", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys\n"
+                "from deepagents_code.config import Settings\n"
+                "Settings.from_environment()\n"
+                "assert 'textual' not in sys.modules, 'Textual reached the "
+                "startup path'\n"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr

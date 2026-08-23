@@ -379,6 +379,37 @@ class TestCheckProjectDotenvTrust:
         assert is_project_dotenv_skipped(project)
         assert not is_project_dotenv_allowed(project)
 
+    def test_prompt_escapes_rich_markup_in_the_dotenv_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A directory name cannot inject Rich markup into the prompt."""
+        from deepagents_code import dotenv_skip
+
+        hostile = tmp_path / "repo[red]spoofed[bold]"
+        hostile.mkdir()
+        (hostile / ".env").write_text("K=v\n", encoding="utf-8")
+        monkeypatch.chdir(hostile)
+        monkeypatch.setattr(
+            dotenv_skip,
+            "_default_store_path",
+            lambda: tmp_path / "state" / "dotenv_skip.json",
+        )
+        monkeypatch.setattr(main_module, "_trust_picker_has_terminal", lambda: True)
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda **_kwargs: True,
+        )
+        self._answer(monkeypatch, _TrustAction.REMEMBER)
+
+        main_module._check_project_dotenv_trust()
+
+        # The literal tag survives; it is never interpreted as a style.
+        err = capsys.readouterr().err
+        assert "repo[red]spoofed[bold]" in err
+
     @pytest.mark.usefixtures("project")
     @pytest.mark.parametrize(
         "action",
@@ -413,6 +444,65 @@ class TestCheckProjectDotenvTrust:
         assert "Skipping the project .env" not in err
         assert "will be skipped" not in err
         assert "could not be remembered" not in err
+
+    def test_prompt_runs_before_the_dotenv_is_loaded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The decision must precede the load it governs.
+
+        If this gate moved after the settings import, the prompt would still
+        ask and still persist while having no effect on the current launch.
+        """
+        from deepagents_code import config
+
+        order: list[str] = []
+        monkeypatch.setattr(main_module, "_is_interactive_tui_launch", lambda _a: True)
+        monkeypatch.setattr(main_module, "_trust_picker_has_terminal", lambda: True)
+        monkeypatch.setattr(
+            main_module,
+            "_check_project_dotenv_trust",
+            lambda: order.append("prompt"),
+        )
+        real_load = config._load_dotenv
+        monkeypatch.setattr(
+            config,
+            "_load_dotenv",
+            lambda *a, **k: (order.append("load"), real_load(*a, **k))[1],
+        )
+        monkeypatch.setattr(
+            main_module.sys,
+            "argv",
+            ["dcode", "--no-mcp", "--mcp-config", "/nonexistent/mcp.json"],
+        )
+
+        with pytest.raises(SystemExit):
+            main_module.cli_main()
+
+        assert "load" in order, order
+        assert order.index("prompt") < order.index("load"), order
+
+    def test_interrupt_escapes_the_prompt_guard(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+C must abort the launch, not be swallowed as a prompt failure.
+
+        `sys.exit(130)` raises `SystemExit`, a `BaseException`, so the guard's
+        `except Exception` lets it through. Widening that guard would turn an
+        interrupt into "continue and load the file".
+        """
+        monkeypatch.setattr(main_module, "_is_interactive_tui_launch", lambda _a: True)
+        monkeypatch.setattr(main_module, "_trust_picker_has_terminal", lambda: True)
+
+        def _interrupted() -> None:
+            raise SystemExit(130)
+
+        monkeypatch.setattr(main_module, "_check_project_dotenv_trust", _interrupted)
+        monkeypatch.setattr(main_module.sys, "argv", ["dcode"])
+
+        with pytest.raises(SystemExit) as exc:
+            main_module.cli_main()
+
+        assert exc.value.code == 130
 
     def test_prompt_failure_is_visible_not_only_logged(
         self,
@@ -6673,6 +6763,90 @@ class TestSelectProjectMcpTrustAction:
         assert "Allow once [Y]" in output.getvalue()
         assert "Deny [n]" in output.getvalue()
         assert "Choose [Y/r/n]" in output.getvalue()
+
+    @pytest.mark.parametrize("deny_first", [False, True])
+    def test_picker_confirms_the_caller_default_without_moving(
+        self, monkeypatch: pytest.MonkeyPatch, deny_first: bool
+    ) -> None:
+        """Enter in the picker must select the caller's default action.
+
+        This is the path every real interactive user takes, and the whole
+        advisory promise ("a bare Enter loads the file") rests on it. The
+        highlight is looked up by identity, so a regression to a positional
+        index would silently skip the `.env` instead.
+        """
+        from deepagents_code.main import _run_trust_action_picker, _TrustAction
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> object:
+                # prompt_toolkit normalizes "enter", so match the handler.
+                confirm = next(
+                    binding.handler
+                    for binding in captured["key_bindings"].bindings
+                    if binding.handler.__name__ == "_confirm"
+                )
+                outcome: dict[str, object] = {}
+                confirm(
+                    SimpleNamespace(
+                        app=SimpleNamespace(
+                            exit=lambda **kwargs: outcome.update(kwargs)
+                        )
+                    )
+                )
+                return outcome.get("result")
+
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "prompt_toolkit.output.defaults.create_output",
+            lambda **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        result = _run_trust_action_picker(
+            Console(file=StringIO()),
+            allow_label="Continue (load .env)",
+            remember_allow_label="Always load .env in this project",
+            remember_label="Never load .env in this project",
+            deny_label="Don't load .env this session",
+            deny_first=deny_first,
+            default_action=_TrustAction.ALLOW_ONCE,
+        )
+
+        # `deny_first` reorders the rows, so a positional default would return
+        # the wrong action for exactly the callers that changed the ordering.
+        assert result is _TrustAction.ALLOW_ONCE
+
+    @pytest.mark.parametrize("answer", ["", "   "])
+    def test_text_fallback_blank_still_denies_for_opt_in_prompts(
+        self, monkeypatch: pytest.MonkeyPatch, answer: str
+    ) -> None:
+        """The hooks and MCP prompts must stay fail-closed on a bare Enter.
+
+        They pass no `default_action`, so DENY is the default; dropping that
+        would turn both into allow-by-default with a green suite.
+        """
+        from deepagents_code.main import _select_trust_action, _TrustAction
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": answer)
+
+        assert _select_trust_action(Console(file=StringIO())) is _TrustAction.DENY
 
     def test_text_fallback_always_selects_the_persistent_allow(
         self, monkeypatch: pytest.MonkeyPatch

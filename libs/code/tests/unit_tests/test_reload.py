@@ -858,6 +858,25 @@ class TestReloadFromEnvironment:
 
         assert "PROJECT_ONLY_KEY" not in env
 
+    def test_an_unreadable_global_dotenv_does_not_break_the_toggle(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An unreadable global `.env` falls back rather than raising.
+
+        The toggle reader now has three callers — the loader, the preview, and
+        `config path` — so a directory where the file should be must not take
+        any of them down.
+        """
+        from deepagents_code.config import _read_global_dotenv_toggle
+
+        as_a_directory = tmp_path / ".env"
+        as_a_directory.mkdir()
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH", as_a_directory
+        )
+
+        assert _read_global_dotenv_toggle() == {}
+
     def test_project_dotenv_cannot_set_mcp_trust_lists(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

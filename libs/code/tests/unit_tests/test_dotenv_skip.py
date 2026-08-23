@@ -437,3 +437,67 @@ def test_an_unresolvable_start_path_yields_no_key(tmp_path: Path) -> None:
     from deepagents_code.dotenv_skip import skip_key_for_start_path
 
     assert skip_key_for_start_path(tmp_path / "bad\x00name") is None
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ("[]", "not a JSON object"),
+        ('{"version": 1, "projects": "nope"}', "projects field is not an object"),
+        ('{"projects": {}}', "version None is not supported"),
+    ],
+)
+def test_malformed_store_shapes_are_reported(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    payload: str,
+    expected: str,
+) -> None:
+    """Each shape drops every remembered decision, so none may be silent."""
+    store = tmp_path / "dotenv_skip.json"
+    store.write_text(payload, encoding="utf-8")
+
+    assert not is_project_dotenv_skipped(tmp_path, store_path=store)
+    assert expected in capsys.readouterr().err
+
+
+def test_an_unreadable_store_is_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A store that is not UTF-8 text still has to announce itself."""
+    store = tmp_path / "dotenv_skip.json"
+    store.write_bytes(b"\xff\xfe not utf-8")
+
+    assert not is_project_dotenv_skipped(tmp_path, store_path=store)
+    assert "could not read" in capsys.readouterr().err
+
+
+def test_a_write_refuses_an_unsupported_version(tmp_path: Path) -> None:
+    """A future store version must be preserved, not silently downgraded.
+
+    Every write returns `False` after a version bump, so the caller reports
+    "could not be remembered" instead of destroying the newer file.
+    """
+    store = tmp_path / "dotenv_skip.json"
+    store.write_text(json.dumps({"version": 2, "projects": {}}), encoding="utf-8")
+    original = store.read_text(encoding="utf-8")
+
+    assert not skip_project_dotenv(tmp_path, store_path=store)
+    assert store.read_text(encoding="utf-8") == original
+
+
+def test_a_lock_timeout_reports_a_persistence_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A contended lock is a real failure, not a silent success."""
+    from filelock import Timeout
+
+    from deepagents_code import dotenv_skip
+
+    def _timeout(_path: Path) -> object:
+        msg = "held"
+        raise Timeout(msg)
+
+    monkeypatch.setattr(dotenv_skip, "_store_lock", _timeout)
+
+    assert not skip_project_dotenv(tmp_path, store_path=tmp_path / "s.json")

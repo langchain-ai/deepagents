@@ -23,7 +23,7 @@ if TYPE_CHECKING:
         Sequence,
     )
     from pathlib import Path
-    from typing import Protocol
+    from typing import Literal, Protocol
 
     from langchain.agents.middleware.human_in_the_loop import (
         ActionRequest,
@@ -797,7 +797,12 @@ class TextualUIAdapter:
         """Called only after the agent stream reaches a clean end."""
 
     def _reset_auto_mode_review_tracking(self) -> None:
-        """Start each graph turn with an empty lifecycle replay guard."""
+        """Start each graph turn with no in-flight batch and no replay guard.
+
+        Rows paused by a batch that never completed are left alone: their own
+        `ToolMessage` still resolves them, and this runs before the new turn has
+        any lifecycle event to act on.
+        """
         self._active_auto_reviews.clear()
         self._completed_auto_reviews.clear()
 
@@ -817,35 +822,86 @@ class TextualUIAdapter:
             return
         self._active_auto_reviews[event.batch_id] = frozenset(event.tool_call_ids)
         for tool_call_id in event.tool_call_ids:
-            if tool_msg := self._current_tool_messages.get(tool_call_id):
-                tool_msg.pause_running()
-                self._sync_tool_widget(tool_msg)
+            self._move_reviewed_row(tool_call_id, running=False)
         if self._set_spinner is not None:
             await self._set_spinner("Reviewing approval request")
 
+    def _move_reviewed_row(self, tool_call_id: str, *, running: bool) -> None:
+        """Pause or resume one reviewed row, never raising to its caller.
+
+        Guard each row individually so a single bad widget cannot strand the
+        rest of the batch in the state this sweep is moving them out of.
+        """
+        tool_msg = self._current_tool_messages.get(tool_call_id)
+        if tool_msg is None:
+            return
+        try:
+            if running:
+                _set_running_unless_deferred(tool_msg)
+            else:
+                tool_msg.pause_running()
+        except Exception:
+            logger.exception("Could not move Auto reviewed row %s", tool_call_id)
+            return
+        self._sync_tool_widget(tool_msg)
+
     def _remember_completed_auto_review(self, batch_id: str) -> None:
-        """Bound the lifecycle replay guard for long-running sessions."""
+        """Bound the replay guard for a turn that runs many classifier batches."""
         self._completed_auto_reviews[batch_id] = None
         if len(self._completed_auto_reviews) > _MAX_COMPLETED_AUTO_REVIEWS:
             oldest_batch_id = next(iter(self._completed_auto_reviews))
             del self._completed_auto_reviews[oldest_batch_id]
+            logger.debug(
+                "Auto review batch %s left the completion cap; a late replay of "
+                "it may re-pause its rows",
+                oldest_batch_id,
+            )
 
     async def _complete_auto_mode_review(self, event: _AutoModeReviewEvent) -> None:
-        """Resume approved rows and restore the normal spinner state."""
+        """Resume the rows this batch may still run, then restore the spinner.
+
+        Anything other than an exact match between the start's tool IDs and the
+        completion's means the two sides disagree, so the approval list cannot be
+        trusted. Resume every row the batch paused instead: a row that turns out
+        to be denied corrects itself when its `ToolMessage` lands, while a row
+        left paused stays frozen with no recovery path.
+        """
         self._remember_completed_auto_review(event.batch_id)
         reviewed_ids = self._active_auto_reviews.pop(event.batch_id, None)
         if reviewed_ids is None:
+            # Expected for a replayed completion, and the only trace left by a
+            # start that the validator rejected or the writer dropped. Leave the
+            # spinner alone: this batch never claimed it.
+            logger.debug(
+                "Auto review completion for batch %s matched no active batch",
+                event.batch_id,
+            )
             return
-        if reviewed_ids == frozenset(event.tool_call_ids):
-            for tool_call_id in event.approved_tool_call_ids:
-                if tool_msg := self._current_tool_messages.get(tool_call_id):
-                    tool_msg.set_running()
-                    self._sync_tool_widget(tool_msg)
-        status: _session_stats.SpinnerStatus = (
-            "Reviewing approval request" if self._active_auto_reviews else "Thinking"
-        )
-        if self._set_spinner is not None:
-            await self._set_spinner(status)
+        try:
+            if event.recovered:
+                resumed_ids: Iterable[str] = reviewed_ids
+            elif reviewed_ids == frozenset(event.tool_call_ids):
+                resumed_ids = event.approved_tool_call_ids
+            else:
+                logger.warning(
+                    "Auto review completion for batch %s covers a different tool "
+                    "set than its start (started=%d, completed=%d); resuming "
+                    "every reviewed row",
+                    event.batch_id,
+                    len(reviewed_ids),
+                    len(event.tool_call_ids),
+                )
+                resumed_ids = reviewed_ids
+            for tool_call_id in resumed_ids:
+                self._move_reviewed_row(tool_call_id, running=True)
+        finally:
+            status: _session_stats.SpinnerStatus = (
+                "Reviewing approval request"
+                if self._active_auto_reviews
+                else "Thinking"
+            )
+            if self._set_spinner is not None:
+                await self._set_spinner(status)
 
     def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
         """Sync a tool widget when the app provided a store callback.
@@ -1154,14 +1210,19 @@ def _require_approval_mode_key(value: str | None) -> str:
 class _AutoModeReviewEvent(NamedTuple):
     """Validated lifecycle event for one Auto classifier review."""
 
-    phase: str
+    phase: Literal["review_started", "review_completed"]
     batch_id: str
     tool_call_ids: tuple[str, ...]
     approved_tool_call_ids: tuple[str, ...]
+    recovered: bool = False
+    """Synthesized from a rejected completion, so its ID lists carry no meaning."""
 
 
 def _opaque_ids(value: object, *, allow_empty: bool = False) -> tuple[str, ...] | None:
     """Validate an ordered list of unique opaque identifiers.
+
+    Empty strings are rejected along with non-strings: an ID that cannot key a
+    tool row is malformed, not merely unusable.
 
     Returns:
         The validated identifiers, or `None` for an invalid value.
@@ -1170,14 +1231,15 @@ def _opaque_ids(value: object, *, allow_empty: bool = False) -> tuple[str, ...] 
         return None
     if any(not isinstance(item, str) or not item for item in value):
         return None
-    identifiers = tuple(item for item in value if isinstance(item, str))
+    # The check above proved every item is a non-empty `str`.
+    identifiers = cast("tuple[str, ...]", tuple(value))
     return identifiers if len(set(identifiers)) == len(identifiers) else None
 
 
 def _validated_auto_mode_review_event(
     data: Any,  # noqa: ANN401
     *,
-    phase: str,
+    phase: Literal["review_started", "review_completed"],
 ) -> _AutoModeReviewEvent | None:
     """Validate the body of a lifecycle payload with a known phase.
 
@@ -1198,8 +1260,8 @@ def _validated_auto_mode_review_event(
     if not isinstance(batch_id, str) or not batch_id or tool_call_ids is None:
         return None
     if phase == "review_started":
-        if "approved_tool_call_ids" in data:
-            return None
+        # The key-set check above already rejected `approved_tool_call_ids`
+        # here, because `expected_keys` omits it for this phase.
         approved_tool_call_ids: tuple[str, ...] = ()
     else:
         approved_tool_call_ids = _opaque_ids(
@@ -1233,19 +1295,26 @@ def _parse_auto_mode_review_event(
     }:
         return None
     event = _validated_auto_mode_review_event(data, phase=phase)
-    if event is None:
-        # `auto_mode` builds this payload by hand and we re-derive its exact key
-        # set here, so producer drift rejects the event instead of degrading it
-        # -- silently disabling the progress indicator, or worse, pausing rows
-        # that never resume. Past the phase check the payload is meant to be a
-        # lifecycle event, so a rejection is a defect rather than a foreign
-        # event, and it is the only signal that the two sides disagree.
-        logger.warning(
-            "Rejected malformed Auto review event: event=%s keys=%s",
-            phase,
-            list(data),
-        )
-    return event
+    if event is not None:
+        return event
+    # `auto_mode` builds this payload by hand. This function re-derives its exact
+    # key set. Producer drift is therefore rejected rather than degraded. Past
+    # the phase check the payload is meant to be a lifecycle event, so a
+    # rejection is a defect, not a foreign event. This warning is the only
+    # signal that the two sides disagree.
+    batch_id = data.get("batch_id")
+    logger.warning(
+        "Rejected malformed Auto review event: event=%s batch_id=%s keys=%s",
+        phase,
+        batch_id,
+        list(data),
+    )
+    if phase == "review_started" or not isinstance(batch_id, str) or not batch_id:
+        return None
+    # Dropping a rejected completion is the unsafe direction: rows paused by a
+    # valid start would never resume. Recover the batch instead, and let the ID
+    # lists stay empty because nothing in this payload can be trusted.
+    return _AutoModeReviewEvent(phase, batch_id, (), (), recovered=True)
 
 
 def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401
@@ -1758,7 +1827,13 @@ async def execute_task_textual(
                                 auto_review_event
                             )
                         except Exception:
-                            logger.exception("Auto review event handler failed")
+                            logger.exception(
+                                "Auto review event handler failed: phase=%s "
+                                "batch_id=%s tools=%d",
+                                auto_review_event.phase,
+                                auto_review_event.batch_id,
+                                len(auto_review_event.tool_call_ids),
+                            )
                         continue
 
                     rubric_message = data if isinstance(data, dict) else None

@@ -701,6 +701,40 @@ async def test_classifier_review_lifecycle_completes_on_cancellation(
     assert events[1]["approved_tool_call_ids"] == []
 
 
+async def test_classifier_review_lifecycle_completes_on_base_exception(
+    tmp_path: Path,
+) -> None:
+    """`aafter_model` never runs for a batch that dies here, so this must emit."""
+
+    class _InterruptedModel(_StructuredModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            _ = messages, kwargs
+            raise KeyboardInterrupt
+
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_InterruptedModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    events = _capture_review_events(request)
+
+    with pytest.raises(KeyboardInterrupt):
+        await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert [event["event"] for event in events] == [
+        "review_started",
+        "review_completed",
+    ]
+    assert events[1]["approved_tool_call_ids"] == []
+
+
 @pytest.mark.parametrize("mode", ["manual", "yolo"])
 async def test_non_auto_modes_emit_no_classifier_review_lifecycle(
     tmp_path: Path, mode: str
@@ -726,7 +760,7 @@ async def test_non_auto_modes_emit_no_classifier_review_lifecycle(
     assert events == []
 
 
-async def test_classifier_review_event_writer_failure_is_cosmetic(
+async def test_classifier_review_event_writer_failure_does_not_block_the_batch(
     tmp_path: Path,
 ) -> None:
     model = _StructuredModel(_allow_result())
@@ -759,6 +793,92 @@ async def test_classifier_review_event_writer_failure_is_cosmetic(
 
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
     assert len(model.calls) == 1
+
+
+async def test_a_lost_classifier_review_completion_is_logged(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A lost start is cosmetic, but a lost completion strands paused rows."""
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    def drop_completions(event: dict[str, Any]) -> None:
+        if event.get("event") == "review_completed":
+            msg = "custom stream unavailable"
+            raise RuntimeError(msg)
+
+    cast("Any", request.runtime).stream_writer = drop_completions
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    with caplog.at_level("WARNING", logger="deepagents_code.auto_mode"):
+        await _route_plan(
+            middleware,
+            request,
+            plan,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if "Auto review completion" in record.getMessage()
+    ] == [
+        (
+            "Could not emit the Auto review completion for batch "
+            f"{plan['batch_id']}; the client may hold its reviewed tool rows "
+            "paused until the turn ends"
+        )
+    ]
+
+
+async def test_deterministic_siblings_stay_out_of_the_review_lifecycle(
+    tmp_path: Path,
+) -> None:
+    """Pausing an unreviewed row would freeze it: nothing ever resumes it."""
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result("call-reviewed")),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    events = _capture_review_events(request)
+
+    plan = await _plan_calls(
+        middleware,
+        request,
+        [
+            {
+                "name": "write_file",
+                "args": {
+                    "file_path": str(tmp_path / "src" / "module.py"),
+                    "content": "x = 1",
+                },
+                "id": "call-deterministic",
+                "type": "tool_call",
+            },
+            {
+                "name": "delete",
+                "args": {"file_path": "old.py"},
+                "id": "call-reviewed",
+                "type": "tool_call",
+            },
+        ],
+    )
+
+    assert plan["review_tool_call_ids"] == ["call-reviewed"]
+    assert [event["tool_call_ids"] for event in events] == [["call-reviewed"]]
 
 
 def _append_ask_user_exchange(

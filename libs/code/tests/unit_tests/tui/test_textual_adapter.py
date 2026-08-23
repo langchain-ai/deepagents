@@ -57,6 +57,7 @@ from deepagents_code.hooks.models.domain import (
 )
 from deepagents_code.hooks.permissions import PermissionPlan, permission_hook_outcome
 from deepagents_code.tui.textual_adapter import (
+    _MAX_COMPLETED_AUTO_REVIEWS,
     RubricEvaluationEnd,
     TextualUIAdapter,
     _AutoModeReviewEvent,
@@ -1598,6 +1599,50 @@ class TestParseAutoModeReviewEvent:
             },
             {
                 "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": [],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": "call-1",
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": [123],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": [""],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": 123,
+                "tool_call_ids": ["call-1"],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "",
+                "tool_call_ids": ["call-1"],
+            },
+        ],
+    )
+    def test_rejects_malformed_lifecycle(self, payload: object) -> None:
+        assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {
+                "type": "auto_mode",
                 "event": "review_completed",
                 "batch_id": "batch-1",
                 "tool_call_ids": ["call-1"],
@@ -1609,10 +1654,26 @@ class TestParseAutoModeReviewEvent:
                 "tool_call_ids": ["call-1"],
                 "approved_tool_call_ids": ["call-2"],
             },
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1"],
+                "approved_tool_call_ids": ["call-1", "call-1"],
+            },
         ],
     )
-    def test_rejects_malformed_lifecycle(self, payload: object) -> None:
-        assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
+    def test_recovers_the_batch_from_a_malformed_completion(
+        self, payload: object
+    ) -> None:
+        """Dropping a completion would strand paused rows, so recover instead."""
+        event = _parse_auto_mode_review_event(payload, is_main_agent=True)
+
+        assert event is not None
+        assert event.recovered
+        assert event.batch_id == "batch-1"
+        assert event.tool_call_ids == ()
+        assert event.approved_tool_call_ids == ()
 
     def test_rejects_nested_agent_lifecycle(self) -> None:
         payload = {
@@ -1644,7 +1705,8 @@ class TestParseAutoModeReviewEvent:
             if "Auto review event" in record.getMessage()
         ] == [
             (
-                "Rejected malformed Auto review event: event=review_started "
+                "Rejected malformed Auto review event: "
+                "event=review_started batch_id=batch-1 "
                 "keys=['type', 'event', 'batch_id', 'tool_call_ids', 'latency_ms']"
             )
         ]
@@ -1670,7 +1732,8 @@ class TestParseAutoModeReviewEvent:
             if "Auto review event" in record.getMessage()
         ] == [
             (
-                "Rejected malformed Auto review event: event=review_started "
+                "Rejected malformed Auto review event: "
+                "event=review_started batch_id=batch-1 "
                 "keys=['type', 'event', 'batch_id', 'tool_call_ids', 1]"
             )
         ]
@@ -1829,6 +1892,257 @@ class TestAutoModeReviewLifecycle:
             call("Reviewing approval request"),
             call("Thinking"),
         ]
+
+    async def test_overlapping_batches_keep_the_review_spinner(self) -> None:
+        """A second in-flight batch still owns the spinner when the first ends."""
+        spinner = AsyncMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=spinner,
+        )
+
+        for batch_id, tool_call_id in (("batch-1", "call-1"), ("batch-2", "call-2")):
+            await adapter._handle_auto_mode_review_event(
+                self._event(
+                    {
+                        "type": "auto_mode",
+                        "event": "review_started",
+                        "batch_id": batch_id,
+                        "tool_call_ids": [tool_call_id],
+                    }
+                )
+            )
+        for batch_id, tool_call_id in (("batch-1", "call-1"), ("batch-2", "call-2")):
+            await adapter._handle_auto_mode_review_event(
+                self._event(
+                    {
+                        "type": "auto_mode",
+                        "event": "review_completed",
+                        "batch_id": batch_id,
+                        "tool_call_ids": [tool_call_id],
+                        "approved_tool_call_ids": [tool_call_id],
+                    }
+                )
+            )
+
+        assert spinner.await_args_list == [
+            call("Reviewing approval request"),
+            call("Reviewing approval request"),
+            call("Reviewing approval request"),
+            call("Thinking"),
+        ]
+
+    async def test_mismatched_completion_resumes_every_reviewed_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disagreeing ID set makes the approval list untrustworthy."""
+        adapter, running_mocks = self._adapter_with_rows(
+            monkeypatch, ["call-1", "call-2"]
+        )
+
+        await adapter._handle_auto_mode_review_event(
+            self._event(
+                {
+                    "type": "auto_mode",
+                    "event": "review_started",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1", "call-2"],
+                }
+            )
+        )
+        await adapter._handle_auto_mode_review_event(
+            self._event(
+                {
+                    "type": "auto_mode",
+                    "event": "review_completed",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1"],
+                    "approved_tool_call_ids": [],
+                }
+            )
+        )
+
+        running_mocks["call-1"].assert_called_once_with()
+        running_mocks["call-2"].assert_called_once_with()
+
+    async def test_recovered_completion_resumes_every_reviewed_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rejected completion must not strand the rows its start paused."""
+        adapter, running_mocks = self._adapter_with_rows(
+            monkeypatch, ["call-1", "call-2"]
+        )
+
+        await adapter._handle_auto_mode_review_event(
+            self._event(
+                {
+                    "type": "auto_mode",
+                    "event": "review_started",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1", "call-2"],
+                }
+            )
+        )
+        recovery = _parse_auto_mode_review_event(
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1", "call-2"],
+                "latency_ms": 42,
+            },
+            is_main_agent=True,
+        )
+        assert recovery is not None
+        assert recovery.recovered
+        await adapter._handle_auto_mode_review_event(recovery)
+
+        running_mocks["call-1"].assert_called_once_with()
+        running_mocks["call-2"].assert_called_once_with()
+
+    async def test_one_failing_row_does_not_strand_its_batch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bad widget must not hold the rest of the batch paused."""
+        spinner = AsyncMock()
+        adapter, running_mocks = self._adapter_with_rows(
+            monkeypatch, ["call-1", "call-2"], spinner=spinner
+        )
+        running_mocks["call-1"].side_effect = RuntimeError("unmounted")
+
+        await adapter._handle_auto_mode_review_event(
+            self._event(
+                {
+                    "type": "auto_mode",
+                    "event": "review_started",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1", "call-2"],
+                }
+            )
+        )
+        await adapter._handle_auto_mode_review_event(
+            self._event(
+                {
+                    "type": "auto_mode",
+                    "event": "review_completed",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1", "call-2"],
+                    "approved_tool_call_ids": ["call-1", "call-2"],
+                }
+            )
+        )
+
+        running_mocks["call-2"].assert_called_once_with()
+        assert spinner.await_args_list == [
+            call("Reviewing approval request"),
+            call("Thinking"),
+        ]
+
+    async def test_reset_clears_lifecycle_tracking(self) -> None:
+        """A reused batch ID must not be swallowed by the previous turn."""
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        adapter._active_auto_reviews["batch-1"] = frozenset({"call-1"})
+        adapter._completed_auto_reviews["batch-0"] = None
+
+        adapter._reset_auto_mode_review_tracking()
+
+        assert adapter._active_auto_reviews == {}
+        assert adapter._completed_auto_reviews == {}
+
+    def test_completed_batches_stay_bounded(self) -> None:
+        """Eviction is oldest-first, so recent batches keep their replay guard."""
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        for index in range(_MAX_COMPLETED_AUTO_REVIEWS + 5):
+            adapter._remember_completed_auto_review(f"batch-{index}")
+
+        assert len(adapter._completed_auto_reviews) == _MAX_COMPLETED_AUTO_REVIEWS
+        assert "batch-0" not in adapter._completed_auto_reviews
+        assert f"batch-{_MAX_COMPLETED_AUTO_REVIEWS + 4}" in (
+            adapter._completed_auto_reviews
+        )
+
+    async def test_the_stream_loop_routes_lifecycle_events(self) -> None:
+        """The turn resets stale tracking, then dispatches lifecycle chunks."""
+        spinner = AsyncMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=spinner,
+        )
+        # A stale guard from an earlier turn would swallow this batch ID.
+        adapter._completed_auto_reviews["batch-1"] = None
+        chunks = [
+            (
+                (),
+                "custom",
+                {
+                    "type": "auto_mode",
+                    "event": "review_started",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1"],
+                },
+            ),
+            (
+                (),
+                "custom",
+                {
+                    "type": "auto_mode",
+                    "event": "review_completed",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1"],
+                    "approved_tool_call_ids": ["call-1"],
+                },
+            ),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+            turn_stats=SessionStats(),
+        )
+
+        assert call("Reviewing approval request") in spinner.await_args_list
+        assert adapter._active_auto_reviews == {}
+        assert adapter._completed_auto_reviews == {"batch-1": None}
+
+    @staticmethod
+    def _adapter_with_rows(
+        monkeypatch: pytest.MonkeyPatch,
+        tool_call_ids: list[str],
+        *,
+        spinner: AsyncMock | None = None,
+    ) -> tuple[TextualUIAdapter, dict[str, MagicMock]]:
+        """Build an adapter whose rows record their pause/resume calls."""
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=spinner or AsyncMock(),
+        )
+        running_mocks: dict[str, MagicMock] = {}
+        for tool_call_id in tool_call_ids:
+            row = ToolCallMessage("delete", {"file_path": f"{tool_call_id}.py"})
+            running_mocks[tool_call_id] = MagicMock()
+            monkeypatch.setattr(row, "pause_running", MagicMock())
+            monkeypatch.setattr(row, "set_running", running_mocks[tool_call_id])
+            adapter._current_tool_messages[tool_call_id] = row
+        return adapter, running_mocks
 
 
 class TestFormatRubricEvent:

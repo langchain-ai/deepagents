@@ -2516,9 +2516,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         Returns:
             Primary response with a private decision-plan state update.
-
-        Raises:
-            asyncio.CancelledError: If the primary or classifier call is cancelled.
         """
         await self._reconcile_routed_plan(request)
         response = await handler(request)
@@ -2703,196 +2700,197 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         )
         started = time.monotonic()
         try:
-            classified = await self._classify(
-                request,
-                review_calls,
-                calls,
-                deterministic_dispositions,
-                tools,
-            )
-            expected_ids = {_tool_call_id(call) for call in review_calls}
-            _validate_classifier_ids(classified, expected_ids)
-        except asyncio.CancelledError:
-            self._emit_review_event(
-                request.runtime,
-                event="review_completed",
-                batch_id=batch_id,
-                tool_call_ids=review_tool_call_ids,
-            )
-            raise
-        # Providers expose heterogeneous error types; all failures block review.
-        except Exception as exc:
-            latency_ms = int((time.monotonic() - started) * 1000)
-            # A construction failure is a permanent configuration fault, so it
-            # latches instead of feeding the transient counter: the counter is
-            # reset whenever the user approves a fallback, which would otherwise
-            # leave a bad spec denying two batches for every one it asks about,
-            # forever. The first occurrence still denies; once latched, every
-            # later batch escalates to human approval. Construction is retried
-            # each batch either way, so the latch clears as soon as a review
-            # succeeds.
-            config_fault = (
-                exc if isinstance(exc, _ClassifierModelUnavailableError) else None
-            )
-            classifier_label = self._distinct_classifier_label(request)
-            if config_fault is None and classifier_label is not None:
-                # Invoke-time failure against a distinct classifier: the cached
-                # model may have been built against a since-revoked credential,
-                # so forget it rather than failing identically every batch until
-                # the process restarts.
-                try:
-                    await self._evict_classifier_model(classifier_label)
-                except asyncio.CancelledError:
-                    self._emit_review_event(
-                        request.runtime,
-                        event="review_completed",
-                        batch_id=batch_id,
-                        tool_call_ids=review_tool_call_ids,
-                    )
-                    raise
-            latched = (
-                config_fault is not None
-                and counters["classifier_config_failed_spec"] == config_fault.spec
-            )
-            if config_fault is not None:
-                counters["classifier_config_failed_spec"] = config_fault.spec
-            else:
-                counters["consecutive_unavailable"] += 1
-            counters["last_batch_id"] = batch_id
             try:
+                classified = await self._classify(
+                    request,
+                    review_calls,
+                    calls,
+                    deterministic_dispositions,
+                    tools,
+                )
+                expected_ids = {_tool_call_id(call) for call in review_calls}
+                _validate_classifier_ids(classified, expected_ids)
+            # Providers expose heterogeneous error types; all failures block review.
+            except Exception as exc:
+                latency_ms = int((time.monotonic() - started) * 1000)
+                # A construction failure is a permanent configuration fault, so it
+                # latches instead of feeding the transient counter: the counter is
+                # reset whenever the user approves a fallback, which would otherwise
+                # leave a bad spec denying two batches for every one it asks about,
+                # forever. The first occurrence still denies; once latched, every
+                # later batch escalates to human approval. Construction is retried
+                # each batch either way, so the latch clears as soon as a review
+                # succeeds.
+                config_fault = (
+                    exc if isinstance(exc, _ClassifierModelUnavailableError) else None
+                )
+                classifier_label = self._distinct_classifier_label(request)
+                if config_fault is None and classifier_label is not None:
+                    # Invoke-time failure against a distinct classifier: the cached
+                    # model may have been built against a since-revoked credential,
+                    # so forget it rather than failing identically every batch until
+                    # the process restarts.
+                    await self._evict_classifier_model(classifier_label)
+                latched = (
+                    config_fault is not None
+                    and counters["classifier_config_failed_spec"] == config_fault.spec
+                )
+                if config_fault is not None:
+                    counters["classifier_config_failed_spec"] = config_fault.spec
+                else:
+                    counters["consecutive_unavailable"] += 1
+                counters["last_batch_id"] = batch_id
                 counters_saved = await _write_counters(
                     request.runtime.store, thread_key, counters
                 )
-            except asyncio.CancelledError:
-                self._emit_review_event(
-                    request.runtime,
-                    event="review_completed",
-                    batch_id=batch_id,
-                    tool_call_ids=review_tool_call_ids,
+                if not counters_saved:
+                    plan["fallback_reason"] = "control_state_unavailable"
+                # Agent/UI reasons stay non-provider text (type, or our timeout
+                # budget). Concrete provider failure text belongs in logs only.
+                error_detail = sanitize_auto_reason(
+                    f"{type(exc).__name__}: {exc}",
+                    known_secrets=self._known_secrets,
                 )
-                raise
-            if not counters_saved:
-                plan["fallback_reason"] = "control_state_unavailable"
-            # Agent/UI reasons stay non-provider text (type, or our timeout
-            # budget). Concrete provider failure text belongs in logs only.
-            error_detail = sanitize_auto_reason(
-                f"{type(exc).__name__}: {exc}",
-                known_secrets=self._known_secrets,
-            )
-            reason = sanitize_auto_reason(
-                classifier_unavailable_reason(
-                    exc,
-                    timeout_seconds=self._classifier_timeout_seconds,
-                    spec=classifier_label,
-                ),
-                known_secrets=self._known_secrets,
-            )
-            # A failed counter write routes to human approval, but the classifier
-            # diagnostic is the actionable half of the two faults: control state
-            # tends to recover on its own, a misconfigured spec never does. Carry
-            # both so fixing the disk does not just surface the same wall again.
-            # Re-sanitized as one string so the combined text still respects the
-            # reason length cap.
-            unavailable_reason = sanitize_auto_reason(
-                f"Auto control state was unavailable ({reason}); "
-                "human approval is required.",
-                known_secrets=self._known_secrets,
-            )
-            # A repeat construction failure for the same spec will not fix
-            # itself, so stop denying silently and ask instead. Names the spec
-            # and how to change it — the reason appears in an approval prompt, so
-            # it stays one short sentence rather than enumerating every remedy.
-            latched_reason = sanitize_auto_reason(
-                f"{reason}; Auto asks for approval until it is fixed. Switch it "
-                "with `/auto model <provider:model>`.",
-                known_secrets=self._known_secrets,
-            )
-            if not counters_saved:
-                disposition: DecisionDisposition = "require_human"
-                decision_reason = unavailable_reason
-                path: Literal["classifier", "fallback"] = "fallback"
-            elif latched:
-                disposition = "require_human"
-                decision_reason = latched_reason
-                path = "fallback"
-                # Also the batch-level fallback reason: the approval prompt
-                # renders that, not each decision's own reason, so without this
-                # the user gets the generic "human approval threshold reached"
-                # and never learns the classifier spec is broken.
-                plan["fallback_reason"] = latched_reason
-            else:
-                disposition = "classifier_unavailable"
-                decision_reason = reason
-                path = "classifier"
+                reason = sanitize_auto_reason(
+                    classifier_unavailable_reason(
+                        exc,
+                        timeout_seconds=self._classifier_timeout_seconds,
+                        spec=classifier_label,
+                    ),
+                    known_secrets=self._known_secrets,
+                )
+                # A failed counter write routes to human approval, but the classifier
+                # diagnostic is the actionable half of the two faults: control state
+                # tends to recover on its own, a misconfigured spec never does. Carry
+                # both so fixing the disk does not just surface the same wall again.
+                # Re-sanitized as one string so the combined text still respects the
+                # reason length cap.
+                unavailable_reason = sanitize_auto_reason(
+                    f"Auto control state was unavailable ({reason}); "
+                    "human approval is required.",
+                    known_secrets=self._known_secrets,
+                )
+                # A repeat construction failure for the same spec will not fix
+                # itself, so stop denying silently and ask instead. Names the spec
+                # and how to change it — the reason appears in an approval prompt, so
+                # it stays one short sentence rather than enumerating every remedy.
+                latched_reason = sanitize_auto_reason(
+                    f"{reason}; Auto asks for approval until it is fixed. Switch it "
+                    "with `/auto model <provider:model>`.",
+                    known_secrets=self._known_secrets,
+                )
+                if not counters_saved:
+                    disposition: DecisionDisposition = "require_human"
+                    decision_reason = unavailable_reason
+                    path: Literal["classifier", "fallback"] = "fallback"
+                elif latched:
+                    disposition = "require_human"
+                    decision_reason = latched_reason
+                    path = "fallback"
+                    # Also the batch-level fallback reason: the approval prompt
+                    # renders that, not each decision's own reason, so without this
+                    # the user gets the generic "human approval threshold reached"
+                    # and never learns the classifier spec is broken.
+                    plan["fallback_reason"] = latched_reason
+                else:
+                    disposition = "classifier_unavailable"
+                    decision_reason = reason
+                    path = "classifier"
+                for call in review_calls:
+                    plan["decisions"].append(
+                        {
+                            "tool_call_id": _tool_call_id(call),
+                            "disposition": disposition,
+                            "category": AutoDecisionCategory.OTHER_POLICY.value,
+                            "reason": decision_reason,
+                            "path": path,
+                        }
+                    )
+                plan["counters_applied"] = True
+                logger.info(
+                    "Auto decision mode=auto model=%s classifier_model=%s tools=%d "
+                    "path=classifier decision=unavailable latency_ms=%d error=%s",
+                    _extract_model_name(request.model),
+                    self._classifier_model_label(request),
+                    len(review_calls),
+                    latency_ms,
+                    error_detail,
+                    exc_info=True,
+                )
+                return ExtendedModelResponse(
+                    model_response=response,
+                    command=Command(update={"_auto_decision_plan": plan}),
+                )
+
+            latency_ms = int((time.monotonic() - started) * 1000)
+            counters["consecutive_unavailable"] = 0
+            # A completed review proves the configured classifier builds and answers,
+            # so any latched construction fault is genuinely resolved.
+            counters["classifier_config_failed_spec"] = None
+            by_id = {
+                decision.tool_call_id: decision for decision in classified.decisions
+            }
             for call in review_calls:
+                decision = by_id[_tool_call_id(call)]
+                if decision.decision == "allow":
+                    plan["decisions"].append(
+                        {
+                            "tool_call_id": _tool_call_id(call),
+                            "disposition": "classifier_allow",
+                            "category": decision.category.value,
+                            "reason": "",
+                            "path": "classifier",
+                        }
+                    )
+                    plan["pending_result_ids"].append(_tool_call_id(call))
+                    continue
+                counters["consecutive_denials"] += 1
+                counters["total_denials"] += 1
+                disposition: DecisionDisposition = "policy_deny"
+                if counters["total_denials"] >= _TOTAL_DENIAL_FALLBACK:
+                    disposition = "require_human"
+                    plan["fallback_reason"] = "total_policy_denials"
                 plan["decisions"].append(
                     {
                         "tool_call_id": _tool_call_id(call),
                         "disposition": disposition,
-                        "category": AutoDecisionCategory.OTHER_POLICY.value,
-                        "reason": decision_reason,
-                        "path": path,
+                        "category": decision.category.value,
+                        "reason": sanitize_auto_reason(
+                            decision.reason, known_secrets=self._known_secrets
+                        ),
+                        "path": "classifier",
                     }
                 )
+            counters["last_batch_id"] = batch_id
+            counters_saved = await _write_counters(
+                request.runtime.store, thread_key, counters
+            )
+            if not counters_saved:
+                for decision in plan["decisions"]:
+                    if decision["path"] == "classifier":
+                        decision["disposition"] = "require_human"
+                        decision["reason"] = (
+                            "Auto could not persist its decision counters; human "
+                            "approval is required."
+                        )
+                plan["fallback_reason"] = "control_state_unavailable"
             plan["counters_applied"] = True
             logger.info(
                 "Auto decision mode=auto model=%s classifier_model=%s tools=%d "
-                "path=classifier decision=unavailable latency_ms=%d error=%s",
+                "path=classifier decision=valid latency_ms=%d",
                 _extract_model_name(request.model),
                 self._classifier_model_label(request),
                 len(review_calls),
                 latency_ms,
-                error_detail,
-                exc_info=True,
             )
             return ExtendedModelResponse(
                 model_response=response,
                 command=Command(update={"_auto_decision_plan": plan}),
             )
-
-        latency_ms = int((time.monotonic() - started) * 1000)
-        counters["consecutive_unavailable"] = 0
-        # A completed review proves the configured classifier builds and answers,
-        # so any latched construction fault is genuinely resolved.
-        counters["classifier_config_failed_spec"] = None
-        by_id = {decision.tool_call_id: decision for decision in classified.decisions}
-        for call in review_calls:
-            decision = by_id[_tool_call_id(call)]
-            if decision.decision == "allow":
-                plan["decisions"].append(
-                    {
-                        "tool_call_id": _tool_call_id(call),
-                        "disposition": "classifier_allow",
-                        "category": decision.category.value,
-                        "reason": "",
-                        "path": "classifier",
-                    }
-                )
-                plan["pending_result_ids"].append(_tool_call_id(call))
-                continue
-            counters["consecutive_denials"] += 1
-            counters["total_denials"] += 1
-            disposition: DecisionDisposition = "policy_deny"
-            if counters["total_denials"] >= _TOTAL_DENIAL_FALLBACK:
-                disposition = "require_human"
-                plan["fallback_reason"] = "total_policy_denials"
-            plan["decisions"].append(
-                {
-                    "tool_call_id": _tool_call_id(call),
-                    "disposition": disposition,
-                    "category": decision.category.value,
-                    "reason": sanitize_auto_reason(
-                        decision.reason, known_secrets=self._known_secrets
-                    ),
-                    "path": "classifier",
-                }
-            )
-        counters["last_batch_id"] = batch_id
-        try:
-            counters_saved = await _write_counters(
-                request.runtime.store, thread_key, counters
-            )
-        except asyncio.CancelledError:
+        except BaseException:
+            # `aafter_model` emits the completion for every batch that reaches
+            # final routing. A batch that dies here never gets there, so the
+            # client would hold its reviewed rows paused until the turn ends.
             self._emit_review_event(
                 request.runtime,
                 event="review_completed",
@@ -2900,28 +2898,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 tool_call_ids=review_tool_call_ids,
             )
             raise
-        if not counters_saved:
-            for decision in plan["decisions"]:
-                if decision["path"] == "classifier":
-                    decision["disposition"] = "require_human"
-                    decision["reason"] = (
-                        "Auto could not persist its decision counters; human "
-                        "approval is required."
-                    )
-            plan["fallback_reason"] = "control_state_unavailable"
-        plan["counters_applied"] = True
-        logger.info(
-            "Auto decision mode=auto model=%s classifier_model=%s tools=%d "
-            "path=classifier decision=valid latency_ms=%d",
-            _extract_model_name(request.model),
-            self._classifier_model_label(request),
-            len(review_calls),
-            latency_ms,
-        )
-        return ExtendedModelResponse(
-            model_response=response,
-            command=Command(update={"_auto_decision_plan": plan}),
-        )
 
     def _emit_review_event(
         self,
@@ -2940,7 +2916,15 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         }
         if event == "review_completed":
             payload["approved_tool_call_ids"] = list(approved_tool_call_ids)
-        self._emit_event(runtime, payload)
+        if self._emit_event(runtime, payload) or event == "review_started":
+            return
+        # A lost start is cosmetic: the client simply never pauses the rows. A
+        # lost completion leaves them paused, so it needs a default-visible log.
+        logger.warning(
+            "Could not emit the Auto review completion for batch %s; the client "
+            "may hold its reviewed tool rows paused until the turn ends",
+            batch_id,
+        )
 
     def _emit_routed_review_event(
         self,

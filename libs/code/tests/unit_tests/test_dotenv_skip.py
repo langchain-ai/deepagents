@@ -24,9 +24,19 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
-def _clean_session_skips() -> Iterator[None]:
-    """Keep the process-global session skip set from leaking between tests."""
+def _clean_session_skips(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Isolate the module's process-global state between tests."""
+    from deepagents_code import dotenv_skip
+
     reset_session_skips()
+    # Warnings reach stderr at most once per process, so a test that asserts on
+    # one has to start from an empty cache.
+    dotenv_skip._STDERR_WARNED.clear()
+    # The shared conftest leaves a Textual app active for every unit test,
+    # which would suppress the stderr half everywhere. These tests are about
+    # the pre-TUI launch, so state that explicitly; the TUI path has its own
+    # test below.
+    monkeypatch.setattr(dotenv_skip, "_tui_owns_the_terminal", lambda: False)
     yield
     reset_session_skips()
 
@@ -120,7 +130,7 @@ def test_valid_entries_survive_one_invalid_entry(
     warning = capsys.readouterr().err
     assert "is invalid" in warning
     assert "Only this entry is ignored" in warning
-    assert "other valid remembered project .env skips are still applied" in warning
+    assert "other valid remembered project .env decisions still apply" in warning
     assert "Remembered project .env skips are not applied" not in warning
 
 
@@ -356,3 +366,34 @@ def test_a_malformed_allow_map_is_reported_and_never_overwritten(
     assert "allowed field is not an object" in capsys.readouterr().err
     assert not allow_project_dotenv(tmp_path, store_path=store)
     assert store.read_text(encoding="utf-8") == original
+
+
+def test_warnings_do_not_repeat_or_paint_over_the_tui(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The store is read on every reload and preview, so stderr must be bounded.
+
+    Raw stderr inside the alternate screen paints over the interface, and an
+    unthrottled warning would do it once per lookup.
+    """
+    from deepagents_code import dotenv_skip
+
+    store = tmp_path / "dotenv_skip.json"
+    store.write_text("{not json", encoding="utf-8")
+
+    assert not is_project_dotenv_skipped(tmp_path, store_path=store)
+    first = capsys.readouterr().err
+    assert "not valid JSON" in first
+
+    # Same message again: logged, but not reprinted.
+    assert not is_project_dotenv_skipped(tmp_path, store_path=store)
+    assert capsys.readouterr().err == ""
+
+    # With the TUI up, a brand-new message stays off the screen entirely.
+    dotenv_skip._STDERR_WARNED.clear()
+    monkeypatch.setattr(dotenv_skip, "_tui_owns_the_terminal", lambda: True)
+
+    assert not is_project_dotenv_skipped(tmp_path, store_path=store)
+    assert capsys.readouterr().err == ""

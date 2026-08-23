@@ -49,6 +49,54 @@ _SESSION_SKIPPED_PROJECTS: set[str] = set()
 _SESSION_SKIPS_SEEDED = False
 """Whether the relayed skips from the launch environment were read yet."""
 
+_STDERR_WARN_LOCK = threading.Lock()
+_STDERR_WARNED: set[str] = set()
+"""Warnings already written to stderr, so a reload cannot repeat them."""
+
+
+def _tui_owns_the_terminal() -> bool:
+    """Return whether a Textual app is currently mounted.
+
+    Read through `sys.modules` so a pre-TUI launch — the case the stderr
+    pairing exists for — does not pay a `textual` import to find out.
+    """
+    app_module = sys.modules.get("textual.app")
+    active_app = getattr(app_module, "active_app", None)
+    if active_app is None:
+        return False
+    try:
+        return active_app.get(None) is not None
+    except LookupError:  # pragma: no cover - defensive
+        return False
+
+
+def _warn_dropped_decision(message: str) -> None:
+    """Report a dropped `.env` decision where the user can see it.
+
+    Every caller means a decision the user made is not being applied, so a bare
+    `logger.warning` will not do: `deepagents_code.__init__` attaches an
+    in-memory handler to the package logger, which suppresses the stderr
+    `lastResort` fallback, and these paths run before the TUI (and its Debug
+    Console) exists. Pairing the log with an explicit stderr line matches
+    `_debug`.
+
+    The store is also read on every reload and cwd-switch preview, when Textual
+    does own the terminal. Raw stderr there would paint over the interface, so
+    the stderr half is skipped once the TUI is up — the Debug Console shows the
+    logged copy instead — and never repeats a message it already printed.
+
+    Args:
+        message: The warning text, without the `Warning: ` prefix.
+    """
+    logger.warning("%s", message)
+    if _tui_owns_the_terminal():
+        return
+    with _STDERR_WARN_LOCK:
+        if message in _STDERR_WARNED:
+            return
+        _STDERR_WARNED.add(message)
+    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+
 
 class DotenvSkipEntry(BaseModel):
     """Persisted record for one canonical project root whose `.env` is skipped."""
@@ -109,12 +157,10 @@ def _warn_relayed_skips_unusable(reason: str) -> None:
     Args:
         reason: Short description of what was wrong with the relayed value.
     """
-    message = (
+    _warn_dropped_decision(
         f"could not read {SERVER_DOTENV_SESSION_SKIPS}: {reason}. "
         "Session project .env skips are not applied in this process."
     )
-    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
-    logger.warning("%s", message)
 
 
 def _relayed_session_skips() -> set[str]:
@@ -242,35 +288,25 @@ def _warn_store_unusable(path: Path, reason: str) -> None:
     """Report a skip store that could not be used, visibly.
 
     Every call means a remembered "never load this project's `.env`" decision
-    was dropped and the file will load, so the user has to be able to see it.
-    A bare `logger.warning` cannot do that: `deepagents_code.__init__` attaches
-    an in-memory handler to the package logger, which suppresses the stderr
-    `lastResort` fallback, and this runs before the TUI (and its Debug Console)
-    exists. Pairing the log with an explicit stderr line matches `_debug`.
+    was dropped and the file will load, so the user has to be able to see it
+    (see `_warn_dropped_decision`).
 
     Args:
         path: Store path that could not be used.
         reason: Short description of what was wrong with it.
     """
-    message = (
+    _warn_dropped_decision(
         f"could not read {path}: {reason}. "
         f"Remembered project .env skips are not applied."
     )
-    # stderr for headless / pre-TUI visibility; the logger so it also lands in
-    # the always-on in-memory buffer and surfaces in the Debug Console (see
-    # `_debug`, which uses this same pairing for the same reason).
-    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
-    logger.warning("%s", message)
 
 
 def _warn_entry_unusable(path: Path, reason: str) -> None:
     """Report one ignored entry without implying the whole store was dropped."""
-    message = (
-        f"could not use an entry from {path}: {reason}. Only this entry is ignored; "
-        "other valid remembered project .env skips are still applied."
+    _warn_dropped_decision(
+        f"could not use an entry from {path}: {reason}. Only this entry is "
+        "ignored; other valid remembered project .env decisions still apply."
     )
-    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
-    logger.warning("%s", message)
 
 
 def _store_lock_path(path: Path) -> Path:

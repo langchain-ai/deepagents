@@ -642,14 +642,21 @@ def get_config_sources(
 
 
 def invalidate_config_sources() -> None:
-    """Drop the cached managed snapshot.
+    """Drop the cached managed snapshot and the shared process resolver.
 
     Test-only. Production reloads pass `refresh=True` instead, which keeps the
     last snapshot that parsed cleanly if the new one fails; clearing the cache
     first would leave readers with an empty managed table on a failed reload.
+
+    Both caches are cleared together because they are keyed differently:
+    dropping only the managed snapshot leaves the resolver holding the previous
+    generation, which is the half most tests actually read.
     """
+    from deepagents_code.configuration.resolver import reset_config_resolver
+
     with _snapshot_lock:
         _snapshot_state.managed = None
+    reset_config_resolver()
 
 
 def require_healthy_managed_config(*, refresh: bool = False) -> None:

@@ -262,10 +262,14 @@ def resolver_from_snapshots(
 
 @dataclass(slots=True)
 class _ResolverCache:
-    """Mutable process resolver cache guarded by one lifecycle lock."""
+    """Mutable process resolver cache guarded by one lifecycle lock.
 
-    key: tuple[object, ...] | None = None
-    resolver: ConfigResolver | None = None
+    One field, not a key and a resolver side by side: those admit a populated
+    key with no resolver, and a lookup that trusts either half alone would then
+    read a stale generation or rebuild one that already exists.
+    """
+
+    entry: tuple[tuple[object, ...], ConfigResolver] | None = None
 
 
 _resolver_cache_lock = threading.RLock()
@@ -302,21 +306,38 @@ def get_config_resolver(*, refresh_managed: bool = False) -> ConfigResolver:
     from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
     managed = get_managed_snapshot(refresh=refresh_managed)
-    key = (DEFAULT_CONFIG_PATH, managed.status.path, id(get_managed_snapshot))
+    key = (DEFAULT_CONFIG_PATH, managed.status.path)
     with _resolver_cache_lock:
-        if _resolver_cache.resolver is None or _resolver_cache.key != key:
+        entry = _resolver_cache.entry
+        if entry is None or entry[0] != key:
             user_provider = TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH)
             user = user_provider.load()
-            _resolver_cache.resolver = resolver_from_snapshots(
+            resolver = resolver_from_snapshots(
                 managed,
                 user,
                 managed_loader=_reload_enforceable_managed_snapshot,
                 user_loader=user_provider.load,
             )
-            _resolver_cache.key = key
-        elif refresh_managed:
-            _resolver_cache.resolver.reload()
-        return _resolver_cache.resolver
+            _resolver_cache.entry = (key, resolver)
+            return resolver
+        resolver = entry[1]
+        if refresh_managed:
+            resolver.reload()
+        return resolver
+
+
+def reset_config_resolver() -> None:
+    """Drop the cached process resolver.
+
+    Test-only, and paired with `service.invalidate_config_sources`: the two
+    caches are keyed differently, so clearing only the managed snapshot leaves
+    this one serving the previous test's generation. Tests escaped that today
+    only by incidentally monkeypatching `DEFAULT_CONFIG_PATH`, which changes
+    the key; one that exercises the resolver at an unchanged path would inherit
+    stale state.
+    """
+    with _resolver_cache_lock:
+        _resolver_cache.entry = None
 
 
 def resolve_ranked[T](

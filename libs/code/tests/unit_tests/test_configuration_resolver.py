@@ -949,3 +949,44 @@ def test_doctor_is_green_for_a_config_that_parses(
 
     config_path.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
     assert doctor._user_config_diagnostic().ok
+
+
+def test_invalidate_config_sources_also_drops_the_resolver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clearing only the managed snapshot leaves the resolver serving stale values.
+
+    The two caches are keyed differently. Tests escape pollution today only by
+    incidentally monkeypatching `DEFAULT_CONFIG_PATH`; one that exercises the
+    resolver at an unchanged path would inherit the previous test's generation.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import resolver as resolver_module, service
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        service,
+        "get_managed_snapshot",
+        lambda refresh=False: TomlSnapshot(  # noqa: ARG005
+            {},
+            ProviderStatus("managed config", None, ProviderHealth.MISSING),
+        ),
+    )
+    service.invalidate_config_sources()
+    try:
+        option = get_option("startup.mode")
+        assert option is not None
+        assert resolver_module.get_config_resolver().get(option).value == "manual"
+
+        # Same path, so the cache key is unchanged: only an explicit reset can
+        # make the edit visible.
+        config_path.write_text('[startup]\nmode = "auto"\n', encoding="utf-8")
+        assert resolver_module.get_config_resolver().get(option).value == "manual"
+
+        service.invalidate_config_sources()
+        assert resolver_module.get_config_resolver().get(option).value == "auto"
+    finally:
+        service.invalidate_config_sources()

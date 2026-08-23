@@ -372,7 +372,7 @@ class StoreBackend(BackendProtocol):
 
         Args:
             file_path: Absolute file path.
-            offset: Line offset to start reading from (0-indexed).
+            offset: Line number to start reading from (1-indexed, with `0` as the first line).
             limit: Maximum number of lines to read.
 
         Returns:

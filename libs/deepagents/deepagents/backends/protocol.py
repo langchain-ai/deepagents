@@ -211,7 +211,7 @@ class ReadResult:
     """1-indexed last source line returned in `file_data`."""
 
     next_offset: int | None = None
-    """0-indexed offset for the next unread source line."""
+    """1-indexed line number for the next unread source line."""
 
     no_lines_requested: bool = False
     """The read asked for zero lines and the file was never inspected.
@@ -227,12 +227,12 @@ class ReadResult:
 
         The window fields are not independent: `start_line`/`end_line` are a
         pair, and neither `next_offset` nor `total_lines` describes anything
-        without the window it refers to. Beyond co-presence, the values must
+        without the window it refers to. Beyond co-presence, present window values must
         agree numerically: a window runs forward (`1 <= start_line <=
         end_line`), the file is at least as long as the window
-        (`total_lines >= end_line`), and the resume point is the 0-indexed line
-        immediately after the last one shown (`next_offset == end_line`, since
-        `end_line` is 1-indexed). Fail loudly here to keep a backend from
+        (`total_lines >= end_line`), and the resume point is the 1-indexed line
+        immediately after the last one shown (`next_offset == end_line + 1`,
+        since `end_line` is 1-indexed). Fail loudly here to keep a backend from
         emitting a `next_offset` that would silently skip unshown source lines
         once it reaches the middleware.
         """
@@ -247,10 +247,6 @@ class ReadResult:
         if self.next_offset is not None and self.start_line is None:
             msg = "ReadResult.next_offset requires start_line and end_line to be set"
             raise ValueError(msg)
-        if self.total_lines is not None and self.start_line is None:
-            msg = "ReadResult.total_lines requires start_line and end_line to be set"
-            raise ValueError(msg)
-
         # Numeric consistency of a present window. `start_line`/`end_line` are
         # bound together above, so testing `start_line` covers both.
         if self.start_line is not None and self.end_line is not None:
@@ -260,8 +256,11 @@ class ReadResult:
             if self.total_lines is not None and self.total_lines < self.end_line:
                 msg = f"ReadResult.total_lines ({self.total_lines}) cannot be less than end_line ({self.end_line})"
                 raise ValueError(msg)
-            if self.next_offset is not None and self.next_offset != self.end_line:
-                msg = f"ReadResult.next_offset ({self.next_offset}) must equal end_line ({self.end_line}), the 0-indexed line after the last shown"
+            if self.next_offset is not None and self.next_offset != self.end_line + 1:
+                msg = (
+                    f"ReadResult.next_offset ({self.next_offset}) must equal end_line + 1 "
+                    f"({self.end_line + 1}), the 1-indexed line after the last shown"
+                )
                 raise ValueError(msg)
 
 
@@ -446,7 +445,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         Args:
             file_path: Absolute path to the file to read. Must start with `'/'`.
-            offset: Line number to start reading from (0-indexed).
+            offset: Line number to start reading from (1-indexed, with `0` as the first line).
             limit: Maximum number of lines to read.
 
         Returns:
@@ -455,7 +454,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
                 Line-number formatting is applied downstream by the filesystem
                 middleware (`format_content_with_line_numbers`), not by backends:
-                it adds the gutter, starts numbering at `offset + 1`, and splits
+                it adds the gutter, starts numbering at the requested line, and splits
                 lines longer than 5000 characters into continuation rows
                 (e.g., `5.1`, `5.2`).
         """

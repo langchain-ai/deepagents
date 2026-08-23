@@ -20,7 +20,7 @@
   },
   {
     "function": {
-      "description": "Reads a file from the filesystem. Assume any path the user provides is valid; reading a missing file returns an error.\n\nUsage:\n- By default, it reads up to 100 lines starting from the beginning of the file. Use `offset`/`limit` to page through large files instead of reading them whole.\n- Results are returned with line numbers starting at `offset` + 1 (1 by default), then two spaces, then the source line. Never include these line-number prefixes when editing.\n- Lines over 5,000 characters are split with continuation markers (e.g. 5.1, 5.2); `limit` counts source lines, so continuation rows do not consume the budget.\n- Speculatively batch multiple `read_file` calls in one response when several files may be useful.\n- An empty file returns a system-reminder warning in place of contents.\n- Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.\n- Images (`.png`, `.jpg`, etc.), audio, video, and PDFs return multimodal content blocks (https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only\n- Always read a file before editing it.",
+      "description": "Reads a file from the filesystem. Assume any path the user provides is valid; reading a missing file returns an error.\n\nUsage:\n- By default, it reads up to 100 lines starting from the beginning of the file. Use `offset`/`limit` to page through large files instead of reading them whole.\n- Results are returned with line numbers starting at `offset` (1-indexed, matching the line numbers in the output; `0` also starts at line 1), then two spaces, then the source line. Never include these line-number prefixes when editing.\n- Lines over 5,000 characters are split with continuation markers (e.g. 5.1, 5.2); `limit` counts source lines, so continuation rows do not consume the budget.\n- Speculatively batch multiple `read_file` calls in one response when several files may be useful.\n- An empty file returns a system-reminder warning in place of contents.\n- Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.\n- Images (`.png`, `.jpg`, etc.), audio, video, and PDFs return multimodal content blocks (https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only\n- Always read a file before editing it.",
       "name": "read_file",
       "parameters": {
         "properties": {
@@ -35,7 +35,7 @@
           },
           "offset": {
             "default": 0,
-            "description": "Line number to start reading from (0-indexed). Use for pagination of large files.",
+            "description": "Line number to start reading from (1-indexed, matching the line numbers in the output). Use for pagination of large files.",
             "type": "integer"
           }
         },

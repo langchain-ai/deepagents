@@ -460,7 +460,7 @@ class ContextHubBackend(BackendProtocol):
 
         Args:
             file_path: Absolute file path.
-            offset: 0-indexed starting line.
+            offset: 1-indexed starting line, with `0` as the first line.
             limit: Maximum number of lines.
 
         Returns:

@@ -388,7 +388,7 @@ def _copy_file_data_with_content(file_data: FileData, content: str) -> FileData:
 
 
 def normalize_read_bounds(offset: int, limit: int) -> tuple[int, int]:
-    """Floor a requested read window at a zero offset and zero lines.
+    """Normalize a requested read window to internal zero-based bounds.
 
     Models occasionally emit degenerate `read_file` arguments (`offset=-1`,
     `limit=0`). Clamping `offset` keeps backends from reporting a line range
@@ -407,13 +407,13 @@ def normalize_read_bounds(offset: int, limit: int) -> tuple[int, int]:
     script it executes (`_READ_COMMAND_TEMPLATE`). Do not remove it.
 
     Args:
-        offset: Requested 0-indexed line offset.
+        offset: Requested 1-indexed line number, with `0` as the first line.
         limit: Requested maximum number of lines.
 
     Returns:
         Tuple of `(offset, limit)`, each coerced to `int` and floored at `0`.
     """
-    normalized_offset, normalized_limit = max(int(offset), 0), max(int(limit), 0)
+    normalized_offset, normalized_limit = max(int(offset) - 1, 0), max(int(limit), 0)
     if (normalized_offset, normalized_limit) != (offset, limit):
         logger.debug(
             "Clamped degenerate read window: offset %r -> %d, limit %r -> %d",
@@ -438,12 +438,12 @@ def slice_read_response(
 
     Args:
         file_data: `FileData` dict.
-        offset: Line offset (0-indexed).
+        offset: Line number to start reading from (1-indexed, with `0` as the first line).
         limit: Maximum number of lines.
 
     Both bounds are clamped through `normalize_read_bounds` before slicing, so
-    a negative `offset` reads from the first line and a negative `limit` is
-    treated as `0`.
+    `0` or `1` reads from the first line and a negative `limit` is treated as
+    `0`.
 
     Returns:
         `ReadResult` with the sliced raw content and pagination metadata
@@ -483,13 +483,16 @@ def slice_read_response(
     total_lines = len(lines)
 
     if start_idx >= total_lines:
-        return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
+        return ReadResult(
+            file_data=_copy_file_data_with_content(file_data, ""),
+            total_lines=total_lines,
+        )
 
     # Normalize line endings to LF, but only across the requested window.
     # State/Store backends may carry CRLF or CR content as written;
     # downstream tooling (edit match, grep, format) assumes LF.
     sliced = "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
-    next_offset = end_idx if end_idx < total_lines else None
+    next_offset = end_idx + 1 if end_idx < total_lines else None
     return ReadResult(
         file_data=_copy_file_data_with_content(file_data, sliced),
         total_lines=total_lines,

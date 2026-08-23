@@ -1520,7 +1520,7 @@ class TestFilesystemMiddleware:
         long_line = "m" * 12000
         content = f"line1\nline2\n{long_line}\nline4"
         file_data = create_file_data(content)
-        sliced = slice_read_response(file_data, offset=2, limit=10)
+        sliced = slice_read_response(file_data, offset=3, limit=10)
         assert sliced.file_data is not None
         result = format_content_with_line_numbers(sliced.file_data["content"], start_line=3)
         lines = result.split("\n")
@@ -1547,7 +1547,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("1  one\n2  two\n\n[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]")
+        assert result.content == ("1  one\n2  two\n\n[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 3.]")
 
     def test_read_file_full_window_omits_remaining_lines_notice(self):
         files = {
@@ -1566,6 +1566,19 @@ class TestFilesystemMiddleware:
         assert result.content == "1  one\n2  two\n3  three"
         assert "remaining from offset" not in result.content
 
+    @pytest.mark.parametrize("offset", [0, 1])
+    def test_read_file_zero_and_one_offsets_include_first_line(self, offset):
+        result = self._read_notes(offset=offset, limit=1)
+
+        assert result.status == "success"
+        assert result.content.startswith("1  one")
+
+    def test_read_file_offset_beyond_file_returns_success_with_total_lines(self):
+        result = self._read_notes(offset=10, limit=1)
+
+        assert result.status == "success"
+        assert result.content == "No lines returned; the file has 3 total lines."
+
     def test_read_file_offset_window_reports_source_line_range(self):
         files = {
             "/notes.txt": FileData(
@@ -1577,10 +1590,10 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
 
-        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 2, "limit": 2})
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 3, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("3  three\n4  four\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 4.]")
+        assert result.content == ("3  three\n4  four\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 5.]")
 
     def test_read_file_single_line_window_uses_singular_read_unit(self):
         files = {
@@ -1596,7 +1609,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("1  one\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
+        assert result.content == ("1  one\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 2.]")
 
     def _read_notes(self, *, offset: int, limit: int) -> ToolMessage:
         """Invoke `read_file` against a fixed 3-line file with the given window."""
@@ -1701,7 +1714,7 @@ class TestFilesystemMiddleware:
             file_data=FileData(content="one", encoding="utf-8"),
             start_line=1,
             end_line=1,
-            next_offset=1,
+            next_offset=2,
         )
         middleware = FilesystemMiddleware(backend=backend)
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
@@ -1710,7 +1723,7 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == "1  one\n\n[Read 1 line (lines 1-1). More lines remain from offset 1.]"
+        assert result.content == "1  one\n\n[Read 1 line (lines 1-1). More lines remain from offset 2.]"
 
     def test_read_file_truncation_omits_notice_when_no_complete_line_fits(self):
         backend, _ = _make_backend()
@@ -1719,7 +1732,7 @@ class TestFilesystemMiddleware:
             total_lines=2,
             start_line=1,
             end_line=1,
-            next_offset=1,
+            next_offset=2,
         )
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
@@ -1741,7 +1754,7 @@ class TestFilesystemMiddleware:
             total_lines=120,
             start_line=1,
             end_line=100,
-            next_offset=100,
+            next_offset=101,
         )
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=500)
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
@@ -1753,7 +1766,7 @@ class TestFilesystemMiddleware:
         numbered_lines = [line for line in result.content.splitlines() if line.lstrip().partition("  ")[0].isdigit()]
         last_displayed_line = int(numbered_lines[-1].lstrip().partition("  ")[0])
         assert last_displayed_line < 100
-        assert f"remaining from offset {last_displayed_line}.]" in result.content
+        assert f"remaining from offset {last_displayed_line + 1}.]" in result.content
 
     def test_read_file_truncation_adds_notice_when_backend_reached_eof(self):
         backend, _ = _make_backend()
@@ -1778,7 +1791,7 @@ class TestFilesystemMiddleware:
         last_displayed_line = int(numbered_lines[-1].lstrip().partition("  ")[0])
         assert last_displayed_line < 100
         assert numbered_lines[-1].endswith("x" * 80)
-        assert f"remaining from offset {last_displayed_line}.]" in result.content
+        assert f"remaining from offset {last_displayed_line + 1}.]" in result.content
 
     def test_read_file_truncation_never_splits_a_wrapped_source_line(self):
         """When the budget cuts inside a wrapped line's rows, resume before that line.
@@ -1797,7 +1810,7 @@ class TestFilesystemMiddleware:
             total_lines=10,
             start_line=1,
             end_line=4,
-            next_offset=4,
+            next_offset=5,
         )
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=400)
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
@@ -1809,7 +1822,7 @@ class TestFilesystemMiddleware:
         assert "Output was truncated due to size limits" in result.content
         # Line 2 is the last complete source line that fits; the wrapped line 3
         # is dropped whole and the resume offset points at it, not inside it.
-        assert "[Read 2 lines (lines 1-2 of 10 total). 8 lines remaining from offset 2.]" in result.content
+        assert "[Read 2 lines (lines 1-2 of 10 total). 8 lines remaining from offset 3.]" in result.content
         # No partial rendering of the wrapped line leaked through.
         assert "c" * 5000 not in result.content
 

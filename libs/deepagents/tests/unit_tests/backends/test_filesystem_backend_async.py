@@ -476,7 +476,7 @@ async def test_filesystem_aread_with_offset_and_limit(tmp_path: Path):
     test_file.write_text(lines)
 
     # Read with offset and limit
-    result = await be.aread("/multi.txt", offset=2, limit=3)
+    result = await be.aread("/multi.txt", offset=3, limit=3)
     content = result.file_data["content"]
     assert "Line 3" in content
     assert "Line 4" in content

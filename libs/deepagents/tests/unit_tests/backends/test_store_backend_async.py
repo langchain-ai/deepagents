@@ -123,13 +123,13 @@ async def test_store_backend_aread_surfaces_pagination_metadata():
     be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     await be.awrite("/notes.txt", "one\ntwo\nthree\nfour\nfive")
 
-    result = await be.aread("/notes.txt", offset=1, limit=2)
+    result = await be.aread("/notes.txt", offset=2, limit=2)
 
     assert result.error is None
     assert result.total_lines == 5
     assert result.start_line == 2
     assert result.end_line == 3
-    assert result.next_offset == 3
+    assert result.next_offset == 4
 
 
 async def test_store_backend_als_nested_directories():
@@ -263,7 +263,7 @@ async def test_store_backend_aread_with_offset_and_limit():
     assert res.error is None
 
     # Read with offset
-    read_result = await be.aread("/multi.txt", offset=2, limit=3)
+    read_result = await be.aread("/multi.txt", offset=3, limit=3)
     assert read_result.file_data is not None
     content_offset = read_result.file_data["content"]
     assert "Line 3" in content_offset

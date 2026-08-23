@@ -986,15 +986,14 @@ def _truncate_paginated_read(
 
         # Only advertise source lines whose complete rendered rows fit. If the
         # byte cut landed partway through a row, resuming after that row would
-        # silently skip its undisplayed tail. `next_offset` is the 0-indexed line
-        # after the last one shown, which for a 1-indexed `end_line` is exactly
-        # `end_line` (no reliance on how the request `offset` maps to `start_line`).
+        # silently skip its undisplayed tail. `next_offset` is the 1-indexed line
+        # after the last one shown, which is `end_line + 1`.
         for boundary, end_line in reversed(boundaries):
             adjusted_result = ReadResult(
                 total_lines=read_result.total_lines,
                 start_line=read_result.start_line,
                 end_line=end_line,
-                next_offset=end_line,
+                next_offset=end_line + 1,
             )
             adjusted_notice = _remaining_lines_notice(adjusted_result)
             if boundary + len(truncation_msg) + len(adjusted_notice) <= threshold:
@@ -1110,7 +1109,7 @@ class ReadFileSchema(BaseModel):
 
     offset: int = Field(
         default=DEFAULT_READ_OFFSET,
-        description="Line number to start reading from (0-indexed). Use for pagination of large files.",
+        description="Line number to start reading from (1-indexed, matching the line numbers in the output). Use for pagination of large files.",
     )
 
     limit: int = Field(
@@ -1128,7 +1127,7 @@ class ReadVideoFileSchema(ReadFileSchema):
 
     offset: int = Field(
         default=DEFAULT_READ_OFFSET,
-        description="Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling.",
+        description="Line number to start reading from (1-indexed, matching the line numbers in the output). For videos, seconds into the source to start sampling.",
     )
 
     limit: int = Field(
@@ -1228,7 +1227,7 @@ _READ_FILE_TOOL_DESCRIPTION_TEMPLATE = """Reads a file from the filesystem. Assu
 
 Usage:
 - {first_line}. Use `offset`/`limit` to page through large files instead of reading them whole.
-- Results are returned with line numbers starting at `offset` + 1 (1 by default), then two spaces, then the source line. Never include these line-number prefixes when editing.
+- Results are returned with line numbers starting at `offset` (1-indexed, matching the line numbers in the output; `0` also starts at line 1), then two spaces, then the source line. Never include these line-number prefixes when editing.
 - Lines over 5,000 characters are split with continuation markers (e.g. 5.1, 5.2); `limit` counts source lines, so continuation rows do not consume the budget.
 - Speculatively batch multiple `read_file` calls in one response when several files may be useful.
 - An empty file returns a system-reminder warning in place of contents.
@@ -1900,6 +1899,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 # reminder.
                 if not content and read_result.no_lines_requested:
                     empty_msg = NO_LINES_REQUESTED_WARNING.format(limit=limit)
+                elif read_result.total_lines is not None:
+                    empty_msg = f"No lines returned; the file has {read_result.total_lines} total lines."
                 return ToolMessage(
                     content=empty_msg,
                     name="read_file",

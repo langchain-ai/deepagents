@@ -296,7 +296,7 @@ def test_parse_read_output_plumbs_pagination_fields() -> None:
             "total_lines": 10,
             "start_line": 1,
             "end_line": 2,
-            "next_offset": 2,
+            "next_offset": 3,
         }
     )
 
@@ -306,7 +306,7 @@ def test_parse_read_output_plumbs_pagination_fields() -> None:
     assert result.total_lines == 10
     assert result.start_line == 1
     assert result.end_line == 2
-    assert result.next_offset == 2
+    assert result.next_offset == 3
 
 
 def test_parse_read_output_defaults_pagination_fields_to_none() -> None:
@@ -1492,7 +1492,7 @@ def test_read_script_reports_pagination_metadata(tmp_path: Path) -> None:
     assert result["total_lines"] == 5
     assert result["start_line"] == 2
     assert result["end_line"] == 3
-    assert result["next_offset"] == 3
+    assert result["next_offset"] == 4
 
 
 def test_read_script_final_window_has_null_next_offset(tmp_path: Path) -> None:
@@ -1571,7 +1571,7 @@ def test_read_script_bounds_total_count_and_does_not_decode_unrequested_bytes(tm
     assert result["total_lines"] is None
     assert result["start_line"] == 1
     assert result["end_line"] == 1
-    assert result["next_offset"] == 1
+    assert result["next_offset"] == 2
 
 
 def test_read_script_truncation_next_offset_reflects_rendered_lines(tmp_path: Path) -> None:
@@ -1591,8 +1591,8 @@ def test_read_script_truncation_next_offset_reflects_rendered_lines(tmp_path: Pa
     assert "truncated" in result["content"].lower()
     assert result["next_offset"] is not None
     # Resume at the count of fully rendered lines, short of the 8-line window.
-    assert result["end_line"] == result["next_offset"]
-    assert 0 < result["next_offset"] < 8
+    assert result["end_line"] + 1 == result["next_offset"]
+    assert 1 < result["next_offset"] <= 8
 
 
 def test_read_script_single_oversized_line_advances_to_avoid_loop(tmp_path: Path) -> None:
@@ -1606,7 +1606,7 @@ def test_read_script_single_oversized_line_advances_to_avoid_loop(tmp_path: Path
     assert result["start_line"] == 2
     # The oversized line cannot be paginated within, so resume past it.
     assert result["end_line"] == 2
-    assert result["next_offset"] == 2
+    assert result["next_offset"] == 3
 
 
 # -- script-level permission/error tests --------------------------------------

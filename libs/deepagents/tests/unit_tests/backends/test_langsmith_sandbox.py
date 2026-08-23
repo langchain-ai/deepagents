@@ -225,7 +225,7 @@ def test_read_with_pagination() -> None:
     sb, mock_sdk = _make_sandbox()
     mock_sdk.read.return_value = b"line0\nline1\nline2\nline3\nline4"
 
-    result = sb.read("/app/test.txt", offset=1, limit=2)
+    result = sb.read("/app/test.txt", offset=2, limit=2)
 
     assert result.error is None
     assert result.file_data is not None
@@ -236,7 +236,7 @@ def test_read_trailing_newline_does_not_add_extra_line() -> None:
     sb, mock_sdk = _make_sandbox()
     mock_sdk.read.return_value = b"line0\nline1\nline2\n"
 
-    result = sb.read("/app/test.txt", offset=2, limit=10)
+    result = sb.read("/app/test.txt", offset=3, limit=10)
 
     assert result.error is None
     assert result.file_data is not None
@@ -314,8 +314,10 @@ def test_read_offset_exceeds_length() -> None:
 
     result = sb.read("/app/test.txt", offset=5)
 
-    assert result.error is not None
-    assert "offset" in result.error.lower()
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.total_lines == 1
 
 
 @pytest.mark.parametrize("limit", [0, -3])
@@ -352,7 +354,7 @@ def test_read_negative_offset_starts_at_first_line() -> None:
     assert result.file_data["content"] == "line1\nline2"
     assert result.start_line == 1
     assert result.end_line == 2
-    assert result.next_offset == 2
+    assert result.next_offset == 3
 
 
 def test_read_normalizes_crlf_to_lf() -> None:
@@ -416,12 +418,12 @@ def test_read_pagination_metadata_partial_window() -> None:
     sb, mock_sdk = _make_sandbox()
     mock_sdk.read.return_value = b"line0\nline1\nline2\nline3\nline4"
 
-    result = sb.read("/app/test.txt", offset=1, limit=2)
+    result = sb.read("/app/test.txt", offset=2, limit=2)
 
     assert result.total_lines == 5
     assert result.start_line == 2
     assert result.end_line == 3
-    assert result.next_offset == 3
+    assert result.next_offset == 4
 
 
 def test_read_pagination_metadata_final_window_has_no_next_offset() -> None:
@@ -429,7 +431,7 @@ def test_read_pagination_metadata_final_window_has_no_next_offset() -> None:
     sb, mock_sdk = _make_sandbox()
     mock_sdk.read.return_value = b"line0\nline1\nline2"
 
-    result = sb.read("/app/test.txt", offset=2, limit=10)
+    result = sb.read("/app/test.txt", offset=3, limit=10)
 
     assert result.total_lines == 3
     assert result.start_line == 3
@@ -460,7 +462,7 @@ def test_read_truncation_next_offset_reflects_rendered_lines() -> None:
     assert result.start_line == 1
     assert result.next_offset is not None
     # Resume offset is the count of fully rendered lines, not the full window.
-    assert result.end_line == result.next_offset
+    assert result.end_line + 1 == result.next_offset
     assert 0 < result.next_offset < 8
 
 
@@ -484,7 +486,7 @@ def test_read_oversized_first_line_advances_next_offset() -> None:
     assert result.start_line == 1
     # The oversized line cannot be paginated within, so resume just past it.
     assert result.end_line == 1
-    assert result.next_offset == 1
+    assert result.next_offset == 2
 
 
 def test_read_binary_at_exact_max_size_succeeds() -> None:

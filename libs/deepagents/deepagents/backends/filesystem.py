@@ -421,7 +421,7 @@ class FilesystemBackend(BackendProtocol):
 
         Args:
             file_path: Absolute or relative file path.
-            offset: Line offset to start reading from (0-indexed).
+            offset: Line number to start reading from (1-indexed, with `0` as the first line).
 
                 Only applied to text files, and clamped to the start of the file
                 when negative.

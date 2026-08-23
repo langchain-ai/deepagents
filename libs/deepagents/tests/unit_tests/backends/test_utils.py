@@ -529,27 +529,27 @@ class TestSliceReadResponse:
 
     def test_partial_window_keeps_terminator_on_internal_lines(self) -> None:
         """A window ending on a non-terminal line still ends with that line's terminator."""
-        result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=1, limit=2)
+        result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=2, limit=2)
         assert self._content(result) == "b\nc\n"
 
     def test_partial_window_normalizes_crlf(self) -> None:
         """An internal CRLF slice is LF-normalized even though only the window is rewritten."""
-        result = slice_read_response(self._file("a\r\nb\r\nc\r\nd\r\n"), offset=1, limit=2)
+        result = slice_read_response(self._file("a\r\nb\r\nc\r\nd\r\n"), offset=2, limit=2)
         content = self._content(result)
         assert content == "b\nc\n"
         assert "\r" not in content
 
     def test_partial_window_ending_on_unterminated_last_line(self) -> None:
         """A window covering the last line keeps that line's missing-terminator state."""
-        result = slice_read_response(self._file("a\nb\nc"), offset=2, limit=1)
+        result = slice_read_response(self._file("a\nb\nc"), offset=3, limit=1)
         assert self._content(result) == "c"
 
     def test_partial_window_includes_pagination_metadata(self) -> None:
-        result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=1, limit=2)
+        result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=2, limit=2)
         assert result.total_lines == 4
         assert result.start_line == 2
         assert result.end_line == 3
-        assert result.next_offset == 3
+        assert result.next_offset == 4
 
     def test_empty_content_returns_result_without_pagination(self) -> None:
         """Empty files short-circuit to a success result with no pagination metadata."""
@@ -578,10 +578,11 @@ class TestSliceReadResponse:
         assert result.file_data.get("created_at") == "t0"
         assert result.file_data.get("modified_at") == "t1"
 
-    def test_offset_beyond_file_returns_error_result(self) -> None:
+    def test_offset_beyond_file_returns_empty_result_with_total(self) -> None:
         result = slice_read_response(self._file("a\nb"), offset=10, limit=5)
-        assert result.error is not None
-        assert "exceeds file length" in result.error
+        assert result.error is None
+        assert self._content(result) == ""
+        assert result.total_lines == 2
 
     @pytest.mark.parametrize("limit", [0, -3])
     def test_non_positive_limit_returns_empty_read(self, limit: int) -> None:
@@ -607,7 +608,14 @@ class TestSliceReadResponse:
         assert self._content(result) == "a\nb\n"
         assert result.start_line == 1
         assert result.end_line == 2
-        assert result.next_offset == 2
+        assert result.next_offset == 3
+
+    @pytest.mark.parametrize("offset", [0, 1])
+    def test_zero_and_one_offsets_read_from_first_line(self, offset: int) -> None:
+        result = slice_read_response(self._file("a\nb\nc"), offset=offset, limit=1)
+        assert result.error is None
+        assert self._content(result) == "a\n"
+        assert result.start_line == 1
 
     def test_negative_offset_and_non_positive_limit_combine(self) -> None:
         """Both bounds degenerate at once still yields an empty read."""

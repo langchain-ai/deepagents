@@ -324,14 +324,14 @@ def test_filesystem_backend_read_populates_pagination_metadata(tmp_path: Path) -
     target.write_text("one\ntwo\nthree\nfour\nfive")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
-    partial = be.read(str(target), offset=1, limit=2)
+    partial = be.read(str(target), offset=2, limit=2)
     assert partial.error is None
     assert partial.total_lines == 5
     assert partial.start_line == 2
     assert partial.end_line == 3
-    assert partial.next_offset == 3
+    assert partial.next_offset == 4
 
-    final = be.read(str(target), offset=3, limit=10)
+    final = be.read(str(target), offset=4, limit=10)
     assert final.error is None
     assert final.total_lines == 5
     assert final.start_line == 4
@@ -339,7 +339,7 @@ def test_filesystem_backend_read_populates_pagination_metadata(tmp_path: Path) -
     assert final.next_offset is None
 
 
-def test_filesystem_backend_read_offset_beyond_eof_errors_with_total(tmp_path: Path) -> None:
+def test_filesystem_backend_read_offset_beyond_eof_returns_empty_with_total(tmp_path: Path) -> None:
     """An offset past EOF reports the file's line count and leaves metadata unset."""
     target = tmp_path / "notes.txt"
     target.write_text("one\ntwo\nthree\nfour\nfive")
@@ -347,9 +347,10 @@ def test_filesystem_backend_read_offset_beyond_eof_errors_with_total(tmp_path: P
 
     result = be.read(str(target), offset=99, limit=10)
 
-    assert result.error == "Line offset 99 exceeds file length (5 lines)"
-    assert result.file_data is None
-    assert result.total_lines is None
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.total_lines == 5
     assert result.next_offset is None
 
 
@@ -401,7 +402,7 @@ def test_filesystem_backend_read_negative_offset_starts_at_first_line(tmp_path: 
     assert result.file_data["content"] == "one\ntwo\n"
     assert result.start_line == 1
     assert result.end_line == 2
-    assert result.next_offset == 2
+    assert result.next_offset == 3
 
 
 def test_filesystem_backend_read_zero_limit_on_empty_file_reports_empty_file(tmp_path: Path) -> None:

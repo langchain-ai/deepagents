@@ -721,7 +721,7 @@ try:
             at_eof = f.tell() == st.st_size
 
     if returned_lines == 0 and not truncated:
-        print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
+        print(json.dumps({{'encoding': 'utf-8', 'content': '', 'total_lines': line_count}}))
         sys.exit(0)
 
     # When the page already reached EOF, reuse its scan's count for free.
@@ -752,12 +752,12 @@ try:
 
     end_line = offset + returned_lines
     if total_lines is not None:
-        next_offset = end_line if end_line < total_lines else None
+        next_offset = end_line + 1 if end_line < total_lines else None
     else:
         # total_lines is None only via the large-file branch above, which is
         # reached only when the page stopped short of EOF, so lines always
         # remain here.
-        next_offset = end_line
+        next_offset = end_line + 1
     print(json.dumps({{
         'encoding': 'utf-8',
         'content': text,
@@ -783,7 +783,7 @@ literals, and must not be removed.
 
 Output: single-line JSON. On success (text): `{{"encoding", "content",
 "total_lines", "start_line", "end_line", "next_offset"}}`, where `start_line`
-and `end_line` are 1-indexed and `next_offset` is the 0-indexed offset of the
+and `end_line` are 1-indexed and `next_offset` is the 1-indexed line number of the
 next unread line (`null` once the file is fully read). `total_lines` is `null`
 when the file is large enough that a full re-scan to count its lines would be
 unbounded. On success
@@ -1407,7 +1407,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
         Args:
             file_path: Absolute path to the file to read.
-            offset: Starting line number (0-indexed).
+            offset: Starting line number (1-indexed, with `0` as the first line).
 
                 Only applied to text files, and clamped to the start of the file
                 when negative.

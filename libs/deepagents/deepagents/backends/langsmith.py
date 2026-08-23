@@ -256,7 +256,7 @@ class LangSmithSandbox(BaseSandbox):
 
         total_lines = len(lines)
         if not lines or offset >= total_lines:
-            return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({total_lines} lines)")
+            return ReadResult(file_data=FileData(content="", encoding="utf-8"), total_lines=total_lines)
 
         page = lines[offset : offset + limit]
         content = "\n".join(page)
@@ -281,7 +281,7 @@ class LangSmithSandbox(BaseSandbox):
             content = truncated + TRUNCATION_MSG
 
         end_line = offset + returned_lines
-        next_offset = end_line if end_line < total_lines else None
+        next_offset = end_line + 1 if end_line < total_lines else None
 
         return ReadResult(
             file_data=FileData(content=content, encoding="utf-8"),

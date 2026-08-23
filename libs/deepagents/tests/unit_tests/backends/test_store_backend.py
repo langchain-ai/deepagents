@@ -52,13 +52,13 @@ def test_store_backend_read_surfaces_pagination_metadata():
     be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     be.write("/notes.txt", "one\ntwo\nthree\nfour\nfive")
 
-    result = be.read("/notes.txt", offset=1, limit=2)
+    result = be.read("/notes.txt", offset=2, limit=2)
 
     assert result.error is None
     assert result.total_lines == 5
     assert result.start_line == 2
     assert result.end_line == 3
-    assert result.next_offset == 3
+    assert result.next_offset == 4
 
 
 @pytest.mark.parametrize(("offset", "limit"), [(0, 0), (0, -3), (-1, 0)])

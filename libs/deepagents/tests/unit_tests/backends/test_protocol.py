@@ -292,8 +292,8 @@ class TestReadResultPaginationInvariants:
 
     def test_full_valid_window(self) -> None:
         """A well-formed window with matching metadata is accepted."""
-        result = ReadResult(total_lines=5, start_line=2, end_line=3, next_offset=3)
-        assert result.next_offset == result.end_line
+        result = ReadResult(total_lines=5, start_line=2, end_line=3, next_offset=4)
+        assert result.next_offset == result.end_line + 1
 
     def test_terminal_window_has_no_next_offset(self) -> None:
         """The final page (`next_offset` unset) is valid even when it reaches EOF."""
@@ -306,7 +306,6 @@ class TestReadResultPaginationInvariants:
             pytest.param({"start_line": 1}, id="start_without_end"),
             pytest.param({"end_line": 1}, id="end_without_start"),
             pytest.param({"next_offset": 5}, id="next_offset_without_window"),
-            pytest.param({"total_lines": 10}, id="total_without_window"),
             pytest.param({"start_line": 3, "end_line": 2}, id="start_after_end"),
             pytest.param({"start_line": 0, "end_line": 2}, id="start_below_one"),
             pytest.param(
@@ -315,7 +314,7 @@ class TestReadResultPaginationInvariants:
             ),
             pytest.param(
                 {"start_line": 1, "end_line": 3, "next_offset": 99},
-                id="next_offset_not_end_line",
+                id="next_offset_not_after_end_line",
             ),
         ],
     )

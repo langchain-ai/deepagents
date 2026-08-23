@@ -39926,27 +39926,28 @@ class TestColdCacheWarningFlow:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A bad threshold must not silently disable or spam the warning."""
-        from deepagents_code import config_manifest
         from deepagents_code.config_manifest import (
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
             ConfigOption,
         )
+        from deepagents_code.configuration.resolver import (
+            ConfigResolver,
+            ResolvedValue,
+        )
 
-        real_resolve = config_manifest.resolve_scalar
+        real_get = ConfigResolver.get
 
         # Override only this option: `DeepAgentsApp.__init__` resolves many
-        # others through the same function, and returning `configured` for all
+        # others through the same resolver, and returning `configured` for all
         # of them makes the result depend on unrelated construction details.
-        def fake_resolve(
-            option: ConfigOption,
-            *,
-            toml_data: dict[str, Any],
-        ) -> tuple[Any, str]:
+        def fake_get(
+            self: ConfigResolver, option: ConfigOption
+        ) -> ResolvedValue[object]:
             if option.key == "warnings.cold_cache_min_delta_usd":
-                return (configured, "config")
-            return real_resolve(option, toml_data=toml_data)
+                return ResolvedValue(configured, {}, {}, {})
+            return real_get(self, option)
 
-        monkeypatch.setattr(config_manifest, "resolve_scalar", fake_resolve)
+        monkeypatch.setattr(ConfigResolver, "get", fake_get)
 
         app = DeepAgentsApp()
 

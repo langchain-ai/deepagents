@@ -596,15 +596,17 @@ def load_trusted_cache_endpoints(
     """
     if config is None:
         from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
             get_option,
-            load_config_toml,
-            resolve_scalar,
         )
+        from deepagents_code.configuration.resolver import get_config_resolver
 
         option = get_option("warnings.trusted_cache_endpoints")
         if option is None:
             return frozenset()
-        entries, _ = resolve_scalar(option, toml_data=load_config_toml())
+        resolved = get_config_resolver().get(option)
+        _emit_ranked_diagnostics(option, resolved)
+        entries = resolved.value
         # The manifest has no default for this optional structured setting.
         # Preserve the absent-setting behavior without changing diagnostics
         # for malformed configured values.

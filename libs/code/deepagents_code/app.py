@@ -367,7 +367,6 @@ def _load_float_option(
     default: float,
     *,
     label: str,
-    toml_data: dict[str, Any],
     minimum: float | None = None,
 ) -> float:
     """Resolve a float config option, falling back to *default* when unusable.
@@ -376,19 +375,20 @@ def _load_float_option(
         key: Manifest option key.
         default: Value used when the option is absent or fails validation.
         label: Human-readable option name for the invalid-value warning.
-        toml_data: Pre-loaded config data, so callers reading several options
-            parse `config.toml` once.
         minimum: Lowest accepted value, or `None` to accept any finite float.
 
     Returns:
         The configured value, or *default* when it is missing or invalid.
     """
-    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option(key)
     value: object = default
     if option is not None:
-        value, _ = resolve_scalar(option, toml_data=toml_data)
+        resolved = get_config_resolver().get(option)
+        _emit_ranked_diagnostics(option, resolved)
+        value = resolved.value
     if (
         not isinstance(value, float)
         or not math.isfinite(value)
@@ -1496,19 +1496,19 @@ def _load_cursor_blink_preference() -> bool:
 def _load_cursor_style_preference() -> CursorStyle:
     """Resolve the chat input cursor style.
 
-    Precedence follows `resolve_scalar`: the `DEEPAGENTS_CODE_CURSOR_STYLE` env
-    var wins, then `[ui].cursor_style` in `~/.deepagents/config.toml`, falling
-    back to `"block"` when unset or invalid.
+    Precedence follows the shared resolver: the `DEEPAGENTS_CODE_CURSOR_STYLE`
+    env var wins, then `[ui].cursor_style` in `~/.deepagents/config.toml`,
+    falling back to `"block"` when unset or invalid.
 
     Returns:
         The resolved cursor style.
     """
     from deepagents_code.config_manifest import (
         CURSOR_STYLE_DEFAULT,
+        _emit_ranked_diagnostics,
         get_option,
-        load_config_toml,
-        resolve_scalar,
     )
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("display.cursor_style")
     if option is None:
@@ -1516,8 +1516,9 @@ def _load_cursor_style_preference() -> CursorStyle:
             "Unknown config option %r; using block cursor", "display.cursor_style"
         )
         return CURSOR_STYLE_DEFAULT
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return cast("CursorStyle", value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return cast("CursorStyle", resolved.value)
 
 
 def _load_terminal_progress_preference() -> bool:
@@ -4096,15 +4097,12 @@ class DeepAgentsApp(App):
         from deepagents_code.config_manifest import (
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
             SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
-            load_config_toml,
         )
 
-        toml_data = load_config_toml()
         self._session_cost_warning_threshold_usd = _load_float_option(
             "warnings.session_cost_threshold_usd",
             SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
             label="session cost warning threshold",
-            toml_data=toml_data,
         )
         """Configured soft limit for the active thread's estimated cost."""
 
@@ -4115,7 +4113,6 @@ class DeepAgentsApp(App):
             "warnings.cold_cache_min_delta_usd",
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
             label="cold-cache warning threshold",
-            toml_data=toml_data,
             minimum=0.0,
         )
         """Minimum estimated cold-versus-warm cost delta that opens the modal."""
@@ -27215,17 +27212,18 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.config_manifest import (
             COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
+            _emit_ranked_diagnostics,
             get_option,
-            load_config_toml,
-            resolve_scalar,
         )
+        from deepagents_code.configuration.resolver import get_config_resolver
 
         threshold = COMPACT_ON_RESUME_THRESHOLD_DEFAULT
         option = get_option("threads.compact_on_resume_threshold")
         if option is not None:
-            resolved, _ = resolve_scalar(option, toml_data=load_config_toml())
-            if isinstance(resolved, int):
-                threshold = resolved
+            resolved = get_config_resolver().get(option)
+            _emit_ranked_diagnostics(option, resolved)
+            if isinstance(resolved.value, int):
+                threshold = resolved.value
         if threshold <= 0 or self._context_tokens <= threshold:
             return
 

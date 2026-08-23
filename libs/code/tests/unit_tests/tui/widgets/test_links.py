@@ -2,6 +2,7 @@
 
 import os
 import webbrowser
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
@@ -203,16 +204,15 @@ def test_open_style_link_opens_markdown_link_action() -> None:
     event.app.notify.assert_called_once()
 
 
-def test_open_style_link_env_can_suppress_success_toast() -> None:
+def test_open_style_link_env_can_suppress_success_toast(tmp_path: Path) -> None:
     """The env var can disable success toasts while still opening URLs."""
     event = _event_with_link("https://example.com")
+    (tmp_path / "config.toml").write_text(
+        "[ui]\nshow_url_open_toast = true\n", encoding="utf-8"
+    )
 
     with (
         patch.dict(os.environ, {SHOW_URL_OPEN_TOAST: "0"}),
-        patch(
-            "deepagents_code.config_manifest.load_config_toml",
-            return_value={"ui": {"show_url_open_toast": True}},
-        ),
         patch("deepagents_code.tui.widgets._links.webbrowser.open", return_value=True),
     ):
         open_style_link(event)  # ty: ignore
@@ -221,16 +221,17 @@ def test_open_style_link_env_can_suppress_success_toast() -> None:
     event.app.notify.assert_not_called()
 
 
-def test_open_style_link_config_can_suppress_success_toast() -> None:
+def test_open_style_link_config_can_suppress_success_toast(tmp_path: Path) -> None:
     """The config file can disable success toasts when env is unset."""
     event = _event_with_link("https://example.com")
+    # The resolver's user tier is the `DEFAULT_CONFIG_PATH` file that the
+    # `_isolate_state_dir` fixture redirects under `tmp_path`.
+    (tmp_path / "config.toml").write_text(
+        "[ui]\nshow_url_open_toast = false\n", encoding="utf-8"
+    )
 
     with (
         patch.dict(os.environ, {SHOW_URL_OPEN_TOAST: ""}),
-        patch(
-            "deepagents_code.config_manifest.load_config_toml",
-            return_value={"ui": {"show_url_open_toast": False}},
-        ),
         patch("deepagents_code.tui.widgets._links.webbrowser.open", return_value=True),
     ):
         open_style_link(event)  # ty: ignore

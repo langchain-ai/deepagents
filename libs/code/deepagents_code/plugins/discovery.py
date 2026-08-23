@@ -324,16 +324,18 @@ def plugin_auto_update_setting() -> tuple[bool, str]:
         The enabled state and its configuration source.
     """
     from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
         get_option,
-        load_config_toml,
-        resolve_scalar,
     )
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("plugins.auto_update")
     if option is None:
         return True, "default"
-    enabled, source = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(enabled), source
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value), _ranked_source(resolved)
 
 
 def auto_update_plugins() -> tuple[str, ...]:

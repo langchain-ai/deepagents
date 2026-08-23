@@ -2942,7 +2942,6 @@ class Settings:
         )
         from deepagents_code.configuration.service import (
             ManagedConfigError,
-            get_managed_snapshot,
             managed_decided,
             require_healthy_managed_config,
         )
@@ -2964,13 +2963,23 @@ class Settings:
             # as "nothing changed", so the user would be told the reload
             # succeeded while their environment edits were discarded.
             return dict(previous), f"Kept previous settings: {exc}"
-        managed_data = get_managed_snapshot().data
 
         from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            _ranked_source,
             get_option,
-            load_config_toml,
-            resolve_scalar,
         )
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        # A real `/reload` exists to pick up file edits made since the shared
+        # resolver's snapshot was taken. Refreshing every provider here is what
+        # lets this method and later `get_config_resolver()` readers observe the
+        # same generation; a preview must not refresh, because re-reading
+        # replaces the process-wide snapshots before the user has accepted
+        # anything.
+        if refresh_managed:
+            get_config_resolver(refresh_managed=True).reload()
+        resolver = get_config_resolver()
 
         try:
             shell_allow_list = parse_shell_allow_list(env.get(SHELL_ALLOW_LIST))
@@ -2983,43 +2992,26 @@ class Settings:
 
         shell_option = get_option("shell.allow_list")
         if shell_option is not None:
-            # Read the user layer too, not just managed. `shell.allow_list`
-            # gained `toml_keys`, and `Settings.from_environment` resolves it
-            # through the shared resolver's user tier; passing `toml_data={}`
-            # here reset a user's `[shell].allow_list` to `None` on every
-            # `/reload` and accepted cwd switch, and reported a change that
-            # never happened.
-            #
-            # This method deliberately stays on `load_config_toml()` rather
-            # than the shared resolver: `get_config_resolver` caches its user
-            # snapshot for the process, and `/reload` exists to pick up an edit
-            # made since then. Unifying the two read paths would silently make
-            # `/reload` a no-op for file changes.
-            #
             # Accepting an *env*-tier hit would defeat the `env` argument this
-            # method exists to honor: `resolve_scalar` reads `os.environ`
-            # directly, so a preview of a `.env` edit reported the value live in
-            # the process instead of the one being previewed. Managed policy and
-            # the user's file are file-backed and safe to take from here; the
-            # env tier stays with the `env`-derived value computed above.
-            resolved_shell, shell_source = resolve_scalar(
-                shell_option,
-                toml_data=load_config_toml(),
-                managed_toml_data=managed_data,
-            )
+            # method exists to honor: the resolver's env provider reads
+            # `os.environ` directly, so a preview of a `.env` edit reported the
+            # value live in the process instead of the one being previewed.
+            # Managed policy and the user's file are file-backed and safe to
+            # take from here; the env tier stays with the `env`-derived value
+            # computed above.
+            shell_resolved = resolver.get(shell_option)
+            _emit_ranked_diagnostics(shell_option, shell_resolved)
+            shell_source = _ranked_source(shell_resolved)
             if managed_decided(shell_source) or shell_source == "config.toml":
-                shell_allow_list = resolved_shell
+                shell_allow_list = cast("list[str] | None", shell_resolved.value)
 
         skills_option = get_option("skills.extra_allowed_dirs")
         managed_skills: list[Path] | None = None
         if skills_option is not None:
-            resolved_skills, skills_source = resolve_scalar(
-                skills_option,
-                toml_data={},
-                managed_toml_data=managed_data,
-            )
-            if managed_decided(skills_source):
-                managed_skills = resolved_skills
+            skills_resolved = resolver.get(skills_option)
+            _emit_ranked_diagnostics(skills_option, skills_resolved)
+            if managed_decided(_ranked_source(skills_resolved)):
+                managed_skills = cast("list[Path] | None", skills_resolved.value)
 
         try:
             from deepagents_code.project_utils import find_project_root
@@ -3736,17 +3728,15 @@ def langsmith_key_shadowed_by_empty_override() -> LangsmithShadowResult:
 
 def is_langsmith_redaction_enabled() -> bool:
     """Return whether LangSmith secret redaction is enabled for agent traces."""
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("tracing.langsmith_redact")
     if option is None:
         return False
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def is_memory_auto_save_enabled() -> bool:
@@ -3756,17 +3746,15 @@ def is_memory_auto_save_enabled() -> bool:
     enabled. When disabled, memory is still loaded into context but the agent is
     told not to auto-save.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("memory.auto_save")
     if option is None:
         return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def is_yolo_switcher_enabled() -> bool:
@@ -3777,17 +3765,15 @@ def is_yolo_switcher_enabled() -> bool:
     Auto only (or Manual alone when Auto is ineligible). Sessions already in
     YOLO (for example via `--yolo`) can still leave it with Shift+Tab.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("startup.yolo_switcher")
     if option is None:
         return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def is_openai_prompt_cache_key_enabled() -> bool:
@@ -3799,17 +3785,15 @@ def is_openai_prompt_cache_key_enabled() -> bool:
     is still forwarded). This is the opt-out for OpenAI-compatible endpoints that
     reject unknown request fields.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("models.openai_prompt_cache_key")
     if option is None:
         return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None]:
@@ -3839,11 +3823,14 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
             configured value was ignored, else `None`.
     """
     from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
         blank_auto_classifier_env_name,
         get_option,
         load_config_toml,
         resolve_scalar,
     )
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("models.auto_classifier")
     if option is None:
@@ -3851,7 +3838,10 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
     toml_data = load_config_toml()
     from deepagents_code.configuration.service import managed_decided
 
-    managed_value, managed_source = resolve_scalar(option, toml_data=toml_data)
+    managed_resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, managed_resolved)
+    managed_value = managed_resolved.value
+    managed_source = _ranked_source(managed_resolved)
     if managed_decided(managed_source):
         if isinstance(managed_value, str) and managed_value.strip():
             return managed_value.strip(), None
@@ -3933,10 +3923,11 @@ def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
         to disabled if the manifest entry is unavailable.
     """
     from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
         get_option,
-        load_config_toml,
-        resolve_scalar,
     )
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("goals.auto_accept_criteria")
     if option is None:
@@ -3946,8 +3937,9 @@ def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
             "ignored.",
         )
         return False, "default"
-    value, source = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value), source
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value), _ranked_source(resolved)
 
 
 def configure_langsmith_secret_redaction() -> bool:

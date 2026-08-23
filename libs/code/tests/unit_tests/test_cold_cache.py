@@ -1056,16 +1056,21 @@ def test_load_trusted_cache_endpoints_reads_config_from_disk(
 
 def test_load_trusted_cache_endpoints_prefers_managed_configuration(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Managed endpoint trust replaces a conflicting user configuration."""
-    monkeypatch.setattr(
-        "deepagents_code.config_manifest.load_config_toml",
-        lambda: {"warnings": {"trusted_cache_endpoints": ["user.example.com"]}},
+    from unit_tests.conftest import redirect_managed_config
+
+    (tmp_path / "config.toml").write_text(
+        '[warnings]\ntrusted_cache_endpoints = ["user.example.com"]\n',
+        encoding="utf-8",
     )
-    monkeypatch.setattr(
-        "deepagents_code.config_manifest.load_managed_config_toml",
-        lambda: {"warnings": {"trusted_cache_endpoints": ["managed.example.com"]}},
+    managed = tmp_path / "managed_config.toml"
+    managed.write_text(
+        '[warnings]\ntrusted_cache_endpoints = ["managed.example.com"]\n',
+        encoding="utf-8",
     )
+    redirect_managed_config(monkeypatch, managed)
 
     assert load_trusted_cache_endpoints() == frozenset({"managed.example.com"})
 

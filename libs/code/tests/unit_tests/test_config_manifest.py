@@ -469,16 +469,13 @@ def test_is_memory_auto_save_enabled_reads_env(monkeypatch) -> None:
     assert is_memory_auto_save_enabled() is False
 
 
-def test_is_memory_auto_save_enabled_reads_toml(monkeypatch) -> None:
+def test_is_memory_auto_save_enabled_reads_toml(monkeypatch, tmp_path: Path) -> None:
     """The helper honors `[memory].auto_save` from `config.toml` when env is unset."""
-    from deepagents_code import config_manifest
     from deepagents_code.config import is_memory_auto_save_enabled
 
     monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
-    monkeypatch.setattr(
-        config_manifest,
-        "load_config_toml",
-        lambda: {"memory": {"auto_save": False}},
+    (tmp_path / "config.toml").write_text(
+        "[memory]\nauto_save = false\n", encoding="utf-8"
     )
     assert is_memory_auto_save_enabled() is False
 
@@ -496,16 +493,15 @@ def test_is_openai_prompt_cache_key_enabled_reads_env(monkeypatch) -> None:
     assert is_openai_prompt_cache_key_enabled() is False
 
 
-def test_is_openai_prompt_cache_key_enabled_reads_toml(monkeypatch) -> None:
+def test_is_openai_prompt_cache_key_enabled_reads_toml(
+    monkeypatch, tmp_path: Path
+) -> None:
     """The helper honors `[models].openai_prompt_cache_key` when env is unset."""
-    from deepagents_code import config_manifest
     from deepagents_code.config import is_openai_prompt_cache_key_enabled
 
     monkeypatch.delenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, raising=False)
-    monkeypatch.setattr(
-        config_manifest,
-        "load_config_toml",
-        lambda: {"models": {"openai_prompt_cache_key": False}},
+    (tmp_path / "config.toml").write_text(
+        "[models]\nopenai_prompt_cache_key = false\n", encoding="utf-8"
     )
     assert is_openai_prompt_cache_key_enabled() is False
 
@@ -521,17 +517,14 @@ def test_is_openai_prompt_cache_key_enabled_empty_env_opts_out(monkeypatch) -> N
 
 
 def test_is_openai_prompt_cache_key_enabled_unrecognized_env_falls_through(
-    monkeypatch,
+    monkeypatch, tmp_path: Path
 ) -> None:
     """An unrecognized env token is ignored, so config.toml decides."""
-    from deepagents_code import config_manifest
     from deepagents_code.config import is_openai_prompt_cache_key_enabled
 
     monkeypatch.setenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, "banana")
-    monkeypatch.setattr(
-        config_manifest,
-        "load_config_toml",
-        lambda: {"models": {"openai_prompt_cache_key": False}},
+    (tmp_path / "config.toml").write_text(
+        "[models]\nopenai_prompt_cache_key = false\n", encoding="utf-8"
     )
     assert is_openai_prompt_cache_key_enabled() is False
 
@@ -2962,16 +2955,13 @@ def test_is_yolo_switcher_enabled_reads_env(monkeypatch) -> None:
     assert is_yolo_switcher_enabled() is False
 
 
-def test_is_yolo_switcher_enabled_reads_toml(monkeypatch) -> None:
+def test_is_yolo_switcher_enabled_reads_toml(monkeypatch, tmp_path: Path) -> None:
     """The helper honors `[startup].yolo_switcher` when env is unset."""
-    from deepagents_code import config_manifest
     from deepagents_code.config import is_yolo_switcher_enabled
 
     monkeypatch.delenv(_env_vars.YOLO_SWITCHER, raising=False)
-    monkeypatch.setattr(
-        config_manifest,
-        "load_config_toml",
-        lambda: {"startup": {"yolo_switcher": False}},
+    (tmp_path / "config.toml").write_text(
+        "[startup]\nyolo_switcher = false\n", encoding="utf-8"
     )
     assert is_yolo_switcher_enabled() is False
 

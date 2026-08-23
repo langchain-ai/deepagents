@@ -2750,26 +2750,26 @@ class TestLangsmithSecretRedaction:
     def test_redaction_can_be_enabled_by_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """A `[tracing] langsmith_redact = true` in config.toml opts in."""
         monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
-        with patch(
-            "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": True}},
-        ):
-            assert is_langsmith_redaction_enabled() is True
+        (tmp_path / "config.toml").write_text(
+            "[tracing]\nlangsmith_redact = true\n", encoding="utf-8"
+        )
+        assert is_langsmith_redaction_enabled() is True
 
     def test_env_redaction_toggle_overrides_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """The redaction env var takes precedence over a conflicting config.toml."""
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
-        with patch(
-            "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": True}},
-        ):
-            assert is_langsmith_redaction_enabled() is False
+        (tmp_path / "config.toml").write_text(
+            "[tracing]\nlangsmith_redact = true\n", encoding="utf-8"
+        )
+        assert is_langsmith_redaction_enabled() is False
 
     def test_fail_closed_clears_env_when_sdk_disable_also_fails(
         self,

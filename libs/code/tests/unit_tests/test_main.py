@@ -2824,6 +2824,60 @@ class TestRunTextualCliAsyncMcp:
         assert problem is not None
         assert "administrator-managed" in problem
 
+    def test_policy_blocked_classifier_does_not_reach_agent_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blocked classifier is neutralized, not warned about and forwarded.
+
+        `create_cli_agent` raises on a blocked classifier spec, so forwarding it
+        after printing an advisory would kill the session the advisory was
+        warning about. The runtime model -- already policy-checked -- is used
+        instead, matching how the other two classifier problems degrade.
+        """
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+        from deepagents_code.model_config import ModelConfig
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        from deepagents_code.main import _classifier_model_after_policy
+
+        # Blocked -> inherit the (already checked) runtime model.
+        assert (
+            _classifier_model_after_policy("openai:blocked") == INHERIT_CLASSIFIER_MODEL
+        )
+        # Allowed, absent, and the sentinel itself all pass through untouched.
+        assert _classifier_model_after_policy("anthropic:allowed") == (
+            "anthropic:allowed"
+        )
+        assert _classifier_model_after_policy(None) is None
+        assert (
+            _classifier_model_after_policy(INHERIT_CLASSIFIER_MODEL)
+            == INHERIT_CLASSIFIER_MODEL
+        )
+
+    def test_classifier_policy_is_a_no_op_without_an_allowlist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no policy, any resolved classifier spec is forwarded unchanged."""
+        from deepagents_code.main import _classifier_model_after_policy
+        from deepagents_code.model_config import ModelConfig
+
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: ModelConfig()),
+        )
+
+        assert _classifier_model_after_policy("openai:anything") == "openai:anything"
+
     async def test_resolves_configured_auto_classifier_before_tui_launch(self) -> None:
         """The TUI and server receive the same effective env/TOML classifier."""
         app_result = AppResult(return_code=0, thread_id="thread-123")

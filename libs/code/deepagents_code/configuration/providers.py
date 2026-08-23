@@ -143,11 +143,16 @@ def coerce_environment_value(
         OptionKind.PTC_DELEGATE,
         OptionKind.STRUCTURED,
     }:
-        # None of these kinds declares an `env_var`, so the `if option.env_var`
-        # guard upstream means this is unreachable today. If a future option
-        # ever adds an env var for one of these, reject rather than pass the
-        # raw string through: an uncoerced value would bypass the delegate
-        # parser's validation. Falling back to the validated default is safe.
+        # No option of these kinds declares `env_var` *or* `fallback_env_vars`,
+        # so the env provider never reaches this branch; only the `_coerce_env`
+        # compatibility wrapper, which has no env-var guard, can. If a future
+        # option gains either name, reject rather than pass the raw string
+        # through: an uncoerced value would bypass the delegate parser's
+        # validation. Rejection drops to the next-weaker tier (TOML, then the
+        # manifest default) -- note that for a policy option such as
+        # `models.allowed` the default is "unrestricted", so what keeps that
+        # fallback safe is managed config outranking the environment, not the
+        # default itself being conservative.
         return Invalid(f"{option.key} is not env-backed; ignoring {name}={raw!r}")
     if kind is OptionKind.STARTUP_MODE_DELEGATE:
         from deepagents_code.model_config import VALID_STARTUP_MODES

@@ -292,9 +292,17 @@ def managed_policy_violations(
     """Return managed settings whose declaration cannot be safely applied.
 
     A key is a violation when an enforced managed policy declaration cannot be
-    applied, or when a known managed section has a non-table value. The shape
-    cases matter because "wrong shape" is not "absent": merging such a value
-    can erase a user subtree before a reader falls back to a default.
+    applied, when a known managed section has a non-table value, or when a
+    managed `[models]` default, recent, or auto-classifier value contradicts a
+    managed `models.allowed` list. The shape cases matter because "wrong shape"
+    is not "absent": merging such a value can erase a user subtree before a
+    reader falls back to a default.
+
+    That last case is the only one that reports a key which is not itself in
+    `ENFORCED_MANAGED_KEYS` (`models.default`, `models.recent`): the value is
+    individually valid and merely inconsistent with the administrator's own
+    ceiling, which would otherwise start a session whose pinned model the same
+    policy forbids.
 
     Required rather than defaulted to the process snapshot: `managed_health`
     pairs this with the health of the *same* snapshot, and a default that
@@ -360,7 +368,7 @@ def managed_policy_violations(
             toml_data={},
             managed_toml_data=managed_data,
         )
-        if allowed_source == "managed config" and isinstance(allowed_value, tuple):
+        if allowed_source == MANAGED_SOURCE and isinstance(allowed_value, tuple):
             models = managed_data.get("models")
             if isinstance(models, dict):
                 allowed = set(allowed_value)

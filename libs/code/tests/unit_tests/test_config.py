@@ -1071,6 +1071,99 @@ class TestCreateModelAllowlist:
             create_model("unknown-model")
 
 
+class TestDefaultModelSpecAllowlist:
+    """Default resolution under an active `models.allowed` policy."""
+
+    def _pin(self, monkeypatch: pytest.MonkeyPatch, policy: ModelConfig) -> None:
+        monkeypatch.setattr(
+            model_config.ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+    def test_empty_policy_error_does_not_invent_a_spec(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A deny-all policy reports itself, not a placeholder model name.
+
+        The message reaches the terminal verbatim, and `<default>` reads like a
+        bug in dcode rather than a policy the user configured.
+        """
+        from deepagents_code.config import _get_default_model_spec
+
+        self._pin(
+            monkeypatch,
+            ModelConfig(allowed_models=(), allowed_models_source="config.toml"),
+        )
+
+        with pytest.raises(ModelNotAllowedError) as excinfo:
+            _get_default_model_spec()
+
+        assert "<default>" not in str(excinfo.value)
+        assert "No model can be used" in str(excinfo.value)
+
+    def test_all_allowed_providers_missing_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every candidate definitively lacking auth is a distinct failure.
+
+        Distinguishable from the bare no-credentials case because the remedy
+        differs: only a credential for an allowlisted provider helps.
+        """
+        from deepagents_code.config import _get_default_model_spec
+
+        self._pin(
+            monkeypatch,
+            ModelConfig(
+                allowed_models=("openai:gpt-5.6-terra", "anthropic:claude-opus-5"),
+                allowed_models_source="config.toml",
+            ),
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_provider_auth_status",
+            lambda provider: model_config.ProviderAuthStatus(
+                state=model_config.ProviderAuthState.MISSING,
+                source=None,
+                provider=provider,
+            ),
+        )
+
+        with pytest.raises(model_config.NoAllowedModelCredentialsError) as excinfo:
+            _get_default_model_spec()
+
+        # Names what would fix it, and stays catchable as the base class so the
+        # existing deferred-start recovery keeps working.
+        assert "openai:gpt-5.6-terra" in str(excinfo.value)
+        assert isinstance(excinfo.value, model_config.NoCredentialsConfiguredError)
+
+    def test_disallowed_stored_default_is_skipped_for_an_allowed_candidate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale `[models].default` outside policy does not win."""
+        from deepagents_code.config import _get_default_model_spec
+
+        self._pin(
+            monkeypatch,
+            ModelConfig(
+                default_model="openai:blocked",
+                allowed_models=("anthropic:claude-opus-5",),
+                allowed_models_source="config.toml",
+            ),
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_provider_auth_status",
+            lambda provider: model_config.ProviderAuthStatus(
+                state=model_config.ProviderAuthState.CONFIGURED,
+                source=model_config.ProviderAuthSource.ENV,
+                provider=provider,
+            ),
+        )
+
+        assert _get_default_model_spec() == "anthropic:claude-opus-5"
+
+
 class TestCreateModelProfileExtraction:
     """Tests for profile extraction in create_model.
 

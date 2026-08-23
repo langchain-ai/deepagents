@@ -558,6 +558,10 @@ def _apply_overrides(
         try:
             model_result = create_model(model, **model_kwargs)
         except ModelNotAllowedError:
+            # `ModelNotAllowedError` is a `ModelConfigError`; without this
+            # clause the handler below would swallow a policy denial, log it,
+            # and silently continue on the *current* model while the UI
+            # reported a switch. Not redundant -- do not remove.
             raise
         except ModelConfigError:
             logger.exception(
@@ -630,6 +634,10 @@ async def _apply_overrides_async(
                 **model_kwargs,
             )
         except ModelNotAllowedError:
+            # `ModelNotAllowedError` is a `ModelConfigError`; without this
+            # clause the handler below would swallow a policy denial, log it,
+            # and silently continue on the *current* model while the UI
+            # reported a switch. Not redundant -- do not remove.
             raise
         except ModelConfigError:
             logger.exception(

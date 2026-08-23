@@ -263,23 +263,48 @@ def test_rejected_model_allowlist_reload_keeps_previous_policy(
         model_config.clear_caches()
 
 
-def test_managed_default_must_be_in_managed_model_allowlist(
+@pytest.mark.parametrize("field", ["default", "recent", "auto_classifier"])
+def test_managed_model_field_must_be_in_managed_model_allowlist(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    field: str,
 ) -> None:
-    """A contradictory managed default is unenforceable policy."""
-    from deepagents_code.configuration import service
+    """A contradictory managed `[models]` value is unenforceable policy.
 
+    Parametrized over all three fields the check covers. `auto_classifier` is
+    the one that matters most: it is itself an enforced managed key, so an
+    administrator pinning a classifier outside their own allowlist would
+    otherwise produce policy that contradicts itself.
+    """
     managed = tmp_path / "managed.toml"
     managed.write_text(
         '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n'
-        'default = "openai:gpt-5.6-terra"\n'
+        f'{field} = "openai:gpt-5.6-terra"\n'
     )
     redirect_managed_config(monkeypatch, managed)
     invalidate_config_sources()
     try:
-        with pytest.raises(ManagedConfigError, match=r"models\.default"):
+        with pytest.raises(ManagedConfigError, match=rf"models\.{field}"):
             require_healthy_managed_config(refresh=True)
+    finally:
+        invalidate_config_sources()
+
+
+def test_managed_allowlist_permits_consistent_model_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed policy consistent with its own ceiling starts normally."""
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n'
+        'default = "anthropic:claude-sonnet-5"\n'
+        'auto_classifier = "anthropic:claude-sonnet-5"\n'
+    )
+    redirect_managed_config(monkeypatch, managed)
+    invalidate_config_sources()
+    try:
+        require_healthy_managed_config(refresh=True)
     finally:
         invalidate_config_sources()
 

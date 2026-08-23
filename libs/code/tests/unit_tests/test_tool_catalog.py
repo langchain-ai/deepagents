@@ -66,6 +66,44 @@ class TestCollectBuiltInTools:
             assert tool.description
             assert "\n" not in tool.description
 
+    def test_enumeration_survives_a_policy_blocked_subagent_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Listing tools must not raise because a subagent names a blocked model.
+
+        `collect_built_in_tools` compiles a graph with a placeholder model purely
+        to read its bound tool node -- nothing is ever invoked. Enforcing
+        `models.allowed` here turned `dcode tools list` into a crash and made
+        `/tools` report a false reason.
+        """
+        from deepagents_code.model_config import ModelConfig
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.agent.list_subagents",
+            lambda **_kwargs: [
+                {
+                    "name": "blocked",
+                    "description": "Names a model the policy forbids",
+                    "system_prompt": "Help.",
+                    "model": "openai:blocked",
+                    "path": "/agents/blocked/AGENTS.md",
+                }
+            ],
+        )
+
+        names = {tool.name for tool in collect_built_in_tools()}
+
+        assert names >= _CORE_BUILT_IN
+
     def test_respects_filesystem_allowlist(self) -> None:
         """The catalog listing is narrowed to an explicit allowlist.
 

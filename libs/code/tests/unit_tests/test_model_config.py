@@ -18,6 +18,7 @@ from deepagents_code.json_types import JsonObject
 from deepagents_code.model_config import (
     DEFAULT_STARTUP_MODE,
     IMPLICIT_AUTH_PROVIDERS,
+    MANAGED_CONFIG_SOURCE,
     NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
     PROVIDER_BASE_URL_ENV,
@@ -62,7 +63,9 @@ from deepagents_code.model_config import (
     load_thread_columns,
     normalize_mcp_project_root,
     parse_model_allowlist,
+    save_auto_classifier_model,
     save_default_agent,
+    save_default_model,
     save_effort_for_model,
     save_recent_agent,
     save_recent_model,
@@ -311,6 +314,93 @@ class TestModelAllowlist:
         assert config.is_model_allowed("openai:gpt-5.6-sol") is False
         with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
             config.require_model_allowed("openai:gpt-5.6-sol")
+
+    def test_managed_source_label_matches_the_resolver(self) -> None:
+        """`MANAGED_CONFIG_SOURCE` must track the label the resolver produces.
+
+        The constant is duplicated to keep the configuration service off
+        `model_config`'s import path. A rename on either side would silently
+        degrade every administrator-worded message to generic wording.
+        """
+        from deepagents_code.configuration.service import MANAGED_SOURCE
+
+        assert MANAGED_CONFIG_SOURCE == MANAGED_SOURCE
+
+    def test_parser_rejects_bare_bedrock_ids(self) -> None:
+        """A bare Bedrock ID would split at its version colon and never match.
+
+        `create_model` normalizes the same input to `bedrock:<id>`, so accepting
+        it here would turn the allowlist into a silent deny-all.
+        """
+        with pytest.raises(ValueError, match="bedrock:"):
+            parse_model_allowlist(["anthropic.claude-3-5-sonnet-20241022-v2:0"])
+
+    def test_parser_accepts_prefixed_bedrock_ids(self) -> None:
+        """The explicit `bedrock:` form round-trips, version colon included."""
+        assert parse_model_allowlist(
+            ["bedrock:anthropic.claude-3-5-sonnet-20241022-v2:0"]
+        ) == ("bedrock:anthropic.claude-3-5-sonnet-20241022-v2:0",)
+
+    def test_matching_is_case_sensitive(self) -> None:
+        """Exact matching does not fold case; document it so it is not a surprise."""
+        config = ModelConfig(
+            allowed_models=("openai:gpt-5.6-terra",),
+            allowed_models_source="config.toml",
+        )
+        assert config.is_model_allowed("OpenAI:gpt-5.6-terra") is False
+        assert config.is_model_allowed("openai:GPT-5.6-TERRA") is False
+
+    def test_incoherent_policy_pair_is_unconstructible(self) -> None:
+        """The policy and its provenance vary together, so a half-set pair raises."""
+        with pytest.raises(ValueError, match="both be set or"):
+            ModelConfig(allowed_models=None, allowed_models_source="managed config")
+        with pytest.raises(ValueError, match="both be set or"):
+            ModelConfig(allowed_models=("openai:gpt-5",), allowed_models_source=None)
+
+    def test_deny_all_error_names_no_spec(self) -> None:
+        """`policy_error(None)` describes the policy without inventing a spec."""
+        config = ModelConfig(allowed_models=(), allowed_models_source="config.toml")
+
+        error = config.policy_error(None)
+
+        assert error is not None
+        assert error.model_spec is None
+        assert "<default>" not in str(error)
+        assert "No model can be used" in str(error)
+
+    def test_policy_error_is_none_when_allowed(self) -> None:
+        """The single error factory stays silent for a permitted spec."""
+        config = ModelConfig(
+            allowed_models=("openai:gpt-5.6-terra",),
+            allowed_models_source="config.toml",
+        )
+
+        assert config.policy_error("openai:gpt-5.6-terra") is None
+        assert ModelConfig().policy_error("anything:goes") is None
+
+    def test_error_context_names_the_declaring_file(self) -> None:
+        """A rejection inside a loop over files says which file to edit."""
+        config = ModelConfig(
+            allowed_models=("openai:gpt-5.6-terra",),
+            allowed_models_source="config.toml",
+        )
+
+        with pytest.raises(ModelNotAllowedError, match=r"subagent 'rev' \(a/b\.md\)"):
+            config.require_model_allowed(
+                "openai:blocked", context="subagent 'rev' (a/b.md)"
+            )
+
+    def test_error_lists_the_allowed_models(self) -> None:
+        """The message names what *is* permitted, not only what is not."""
+        config = ModelConfig(
+            allowed_models=("openai:a", "anthropic:b"),
+            allowed_models_source="config.toml",
+        )
+
+        error = config.policy_error("openai:blocked")
+
+        assert error is not None
+        assert "openai:a, anthropic:b" in str(error)
 
 
 class TestHasProviderCredentials:
@@ -1910,15 +2000,53 @@ default = "claude-sonnet-4-5"
         assert config.allowed_models == ()
         assert config.allowed_models_source == "config.toml"
 
-    def test_malformed_user_allowlist_is_ignored(self, tmp_path: Path) -> None:
-        """A malformed voluntary list does not crash configuration loading."""
+    @pytest.mark.parametrize(
+        "declaration",
+        [
+            pytest.param('allowed = ["openai:gpt", "broken"]', id="bad-entry"),
+            pytest.param('allowed = "openai:gpt"', id="string-not-list"),
+            pytest.param("allowed = 3", id="wrong-type"),
+        ],
+    )
+    def test_malformed_user_allowlist_denies_all(
+        self, tmp_path: Path, declaration: str
+    ) -> None:
+        """A malformed voluntary list fails closed instead of disabling policy.
+
+        `models.allowed` has no manifest default, so an unparseable list would
+        otherwise resolve to `None` -- which means *unrestricted*. A typo must
+        not silently switch off the guardrail the user asked for.
+        """
         config_path = tmp_path / "config.toml"
-        config_path.write_text('[models]\nallowed = ["openai:gpt", "broken"]\n')
+        config_path.write_text(f"[models]\n{declaration}\n")
+
+        config = ModelConfig.load(config_path)
+
+        assert config.allowed_models == ()
+        assert config.allowed_models_source is not None
+        assert "malformed" in config.allowed_models_source
+        assert not config.is_model_allowed("openai:gpt")
+
+    def test_malformed_allowlist_error_names_the_defect(self, tmp_path: Path) -> None:
+        """The resulting error says the list is malformed, not merely empty."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\nallowed = ["broken"]\n')
+
+        error = ModelConfig.load(config_path).policy_error("openai:gpt-5")
+
+        assert error is not None
+        assert "[models].allowed is malformed" in str(error)
+
+    def test_absent_allowlist_stays_unrestricted(self, tmp_path: Path) -> None:
+        """No declaration at all is unrestricted, unlike a malformed one."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\ndefault = 'openai:gpt-5'\n")
 
         config = ModelConfig.load(config_path)
 
         assert config.allowed_models is None
         assert config.allowed_models_source is None
+        assert config.is_model_allowed("anything:at-all")
 
     def test_loads_providers(self, tmp_path):
         """Loads provider configurations."""
@@ -5889,12 +6017,39 @@ default = "ollama:qwen3:4b"
         assert config_path.exists()
 
     def test_refuses_model_outside_allowlist(self, tmp_path: Path) -> None:
-        """Persistence cannot save a stale value that policy rejects."""
+        """Persistence raises rather than reporting a policy block as I/O failure.
+
+        A `False` return is indistinguishable from an unwritable file, which is
+        how callers came to tell the user to check directory permissions that
+        were already correct.
+        """
         config_path = tmp_path / "config.toml"
         config_path.write_text('[models]\nallowed = ["anthropic:claude-sonnet-5"]\n')
 
-        assert save_recent_model("openai:gpt-5.6-terra", config_path) is False
+        with pytest.raises(ModelNotAllowedError) as excinfo:
+            save_recent_model("openai:gpt-5.6-terra", config_path)
+
+        assert "not included in" in str(excinfo.value)
+        assert "anthropic:claude-sonnet-5" in str(excinfo.value)
         assert "recent" not in config_path.read_text()
+
+    def test_refusal_is_raised_by_every_models_writer(self, tmp_path: Path) -> None:
+        """All three `[models]` writers share the gate, including the classifier.
+
+        `README` claimed only the default and recent writers refused; they route
+        through one helper, so the Auto-classifier writer refuses too.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\nallowed = ["anthropic:claude-sonnet-5"]\n')
+
+        for writer in (
+            save_default_model,
+            save_recent_model,
+            save_auto_classifier_model,
+        ):
+            with pytest.raises(ModelNotAllowedError):
+                writer("openai:gpt-5.6-terra", config_path)
+        assert "openai" not in config_path.read_text()
 
 
 class TestRecentModelsMRU:
@@ -5913,6 +6068,20 @@ class TestRecentModelsMRU:
         )
 
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert load_recent_models(state_dir=tmp_path) == ["anthropic:allowed"]
+
+    def test_touch_refuses_entry_outside_allowlist(self, tmp_path: Path) -> None:
+        """The write side of the MRU is gated too, not just the read side.
+
+        Without this, a blocked spec could re-enter `recent_models.json` and be
+        offered by the selector on the next launch.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\nallowed = ["anthropic:allowed"]\n')
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert touch_recent_model("openai:blocked", state_dir=tmp_path) is False
+            assert touch_recent_model("anthropic:allowed", state_dir=tmp_path) is True
             assert load_recent_models(state_dir=tmp_path) == ["anthropic:allowed"]
 
     def test_touch_creates_file_with_single_entry(self, tmp_path):

@@ -2565,6 +2565,32 @@ def _resolve_and_validate_sandbox(
         parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
 
 
+def _classifier_model_after_policy(spec: str | None) -> str | None:
+    """Downgrade a policy-blocked classifier spec to "inherit the runtime model".
+
+    The other problems `_auto_classifier_spec_problem` detects are advisory:
+    launch proceeds and the Auto middleware fails closed per-action. A blocked
+    spec is different -- `create_cli_agent` raises on it -- so forwarding it
+    after printing a warning would kill the session the warning was about. The
+    runtime model has already been checked against the same policy, making it a
+    safe fallback.
+
+    Args:
+        spec: The resolved classifier spec, the inherit sentinel, or `None`.
+
+    Returns:
+        `spec` unchanged when it is usable, otherwise `INHERIT_CLASSIFIER_MODEL`.
+    """
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+    from deepagents_code.model_config import ModelConfig
+
+    if spec is None or spec == INHERIT_CLASSIFIER_MODEL:
+        return spec
+    if ModelConfig.load().is_model_allowed(spec):
+        return spec
+    return INHERIT_CLASSIFIER_MODEL
+
+
 def _auto_classifier_spec_problem(spec: str) -> str | None:
     """Return why a configured Auto classifier spec looks unusable, if it does.
 
@@ -2574,12 +2600,15 @@ def _auto_classifier_spec_problem(spec: str) -> str | None:
     announced as the active reviewer and only surfaced as a denied tool call
     mid-turn.
 
-    This is the cheap half of what the slash command does: parse the spec and
-    check the provider's credentials. It deliberately does not call
-    `create_model`, which would pull LangChain onto the launch path (see
-    `AGENTS.md`), so it catches the two common mistakes — unknown provider and
+    This is the cheap half of what the slash command does: check the spec
+    against `models.allowed`, then parse it and check the provider's
+    credentials. It deliberately does not call `create_model`, which would pull
+    LangChain onto the launch path (see `AGENTS.md`), so it catches the three
+    common mistakes — a policy-blocked model, an unknown provider, and a
     missing credential — and leaves the rest to the middleware's fail-closed
-    path.
+    path. The policy check runs first: it is the only one whose failure the
+    caller must act on rather than merely report, because a blocked classifier
+    would otherwise abort agent construction.
 
     Args:
         spec: Resolved `provider:model` specification.
@@ -2590,20 +2619,13 @@ def _auto_classifier_spec_problem(spec: str) -> str | None:
     from deepagents_code.config import detect_provider
     from deepagents_code.model_config import (
         ModelConfig,
-        ModelNotAllowedError,
         ModelSpec,
         get_provider_auth_status,
     )
 
-    policy = ModelConfig.load()
-    if not policy.is_model_allowed(spec):
-        return str(
-            ModelNotAllowedError(
-                model_spec=spec,
-                source=policy.allowed_models_source,
-                allowed_models=policy.allowed_models or (),
-            )
-        )
+    blocked = ModelConfig.load().policy_error(spec)
+    if blocked is not None:
+        return str(blocked)
 
     parsed = ModelSpec.try_parse(spec)
     provider = parsed.provider if parsed else detect_provider(spec)
@@ -2828,6 +2850,9 @@ async def run_textual_cli_async(
         _WarnConsole(stderr=True).print(
             f"[bold yellow]Warning:[/bold yellow] {escape(auto_classifier_problem)}"
         )
+        resolved_auto_classifier_model = _classifier_model_after_policy(
+            resolved_auto_classifier_model
+        )
 
     model_kwargs: dict[str, Any] | None = None
     if not defer_server_start:
@@ -2963,6 +2988,7 @@ async def _run_acp_cli_async(
     )
     from deepagents_code.model_config import (
         ModelConfigError,
+        ModelNotAllowedError,
         get_available_models,
         save_recent_model,
         touch_recent_model,
@@ -2996,7 +3022,11 @@ async def _run_acp_cli_async(
 
     # Persist the resolved model so [models].recent is always populated.
     resolved_spec = f"{model_result.provider}:{model_result.model_name}"
-    save_recent_model(resolved_spec)
+    # Best-effort persistence. `resolved_spec` came out of `create_model`, so
+    # it already passed the policy gate; a refusal here means the config changed
+    # mid-session, which must not take down a session that is already running.
+    with contextlib.suppress(ModelNotAllowedError):
+        save_recent_model(resolved_spec)
     touch_recent_model(resolved_spec)
     models = [
         {"value": spec, "name": spec}
@@ -5231,6 +5261,13 @@ def cli_main() -> None:
                 config = ModelConfig.load()
                 if config.default_model:
                     console.print(f"Default model: {config.default_model}")
+                    # Reporting a stored value the next launch will skip is
+                    # worse than reporting nothing, so say so here.
+                    if not config.is_model_allowed(config.default_model):
+                        console.print(
+                            "[bold yellow]Warning:[/bold yellow] this value is "
+                            "outside models.allowed and will be ignored."
+                        )
                 else:
                     console.print("No default model set.")
                 sys.exit(0)
@@ -5246,7 +5283,16 @@ def cli_main() -> None:
                 if provider:
                     model_spec = f"{provider}:{model_spec}"
 
-            if save_default_model(model_spec):
+            from deepagents_code.model_config import ModelNotAllowedError
+
+            try:
+                saved = save_default_model(model_spec)
+            except ModelNotAllowedError as exc:
+                # A policy refusal is not an I/O problem; sending the user to
+                # check directory permissions would be actively misleading.
+                console.print(f"[bold red]Error:[/bold red] {exc}")
+                sys.exit(1)
+            if saved:
                 console.print(f"Default model set to {model_spec}")
             else:
                 console.print(

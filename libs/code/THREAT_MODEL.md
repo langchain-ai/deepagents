@@ -43,7 +43,7 @@
 ### Assumptions
 
 1. The CLI runs locally on the user's machine; the user is a developer who invoked `deepagents` themselves.
-2. The project provides the HITL approval framework; users control model selection unless an administrator deploys `[models].allowed`, API keys, and whether to disable approval gates unless managed policy narrows those settings.
+2. The project provides the HITL approval framework. Users control model selection, API keys, and whether to disable approval gates. Managed policy can narrow each of these; `[models].allowed` narrows model selection.
 3. `~/.deepagents/` is only writable by the authenticated local user — no multi-user shared home directories.
 4. Sandbox backends are trusted third-party services. CLI responsibility ends at correctly constructing and dispatching requests to them.
 5. LangSmith tracing, if enabled, is user-opted-in via environment variables.
@@ -267,7 +267,12 @@
 
 - **Inside**: The resolver reads one fixed OS path. The writer rejects that path, so the managed source is read-only by guard and not only by convention. Valid managed values take the highest precedence. The rules are:
   - Tables deep-merge. Deny lists union. An explicit managed allow or trust list replaces lower-precedence grants.
-  - `[models].allowed` is an exact local-model ceiling. Discovery and selector filtering improve usability, while `create_model` checks the canonical `provider:model` before credential bridging, provider hooks, imports, or constructors. Rubric grader and explicit local-subagent strings are checked before they enter SDK paths that bypass `create_model`; runtime-context switches are rechecked server-side. Remote async-subagent deployments select their models outside this local boundary.
+  - `[models].allowed` is an exact local-model ceiling. Discovery and selector filtering improve usability only.
+  - `create_model` is authoritative. It checks the canonical `provider:model` before credential bridging, provider hooks, imports, or constructors, so a blocked specification touches no stored key and runs no provider hook.
+  - `create_cli_agent` checks every model *string* it forwards: the primary model, the Auto classifier, the rubric grader, and an explicit local-subagent model. The SDK resolves a string through `init_chat_model`, which does not pass through `create_model`. A prebuilt model object came from a path that already checked.
+  - Runtime-context switches are rechecked server-side. A policy denial propagates instead of falling back to the previous model.
+  - A malformed `[models].allowed` blocks all model use at either layer. The managed layer also refuses to start.
+  - Remote async-subagent deployments select their models outside this local boundary. Tool enumeration also skips the check, because it compiles a graph it never invokes.
   - A managed scalar replaces a colliding user table at any depth, so a user cannot defeat policy by changing the shape of a key. This holds on the top-level merge and inside a structured table: both apply the manifest validator, so the effective value and the audited provenance agree.
   - A wrong-typed managed scalar is skipped, and the lower-precedence value stays in effect.
   - Inside a structured table (`[models.providers]`, `[themes]`, `[async_subagents]`, `[sandboxes.providers]`, `[ui.terminal_themes]`, `[threads.columns]`) the dedicated typed reader validates instead. A wrong-typed managed leaf there can displace a valid user leaf, after which the reader falls back to the built-in default.

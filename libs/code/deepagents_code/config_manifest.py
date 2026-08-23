@@ -1735,7 +1735,10 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="models.allowed",
         group="Models",
-        summary="Exact model specs ('provider:model') available to dcode.",
+        summary=(
+            "Exact model specs ('provider:model') dcode may use; "
+            "unset allows all, empty list allows none."
+        ),
         kind=OptionKind.MODEL_LIST_DELEGATE,
         toml_keys=("models", "allowed"),
     ),

@@ -72,8 +72,8 @@ through the merged configuration, so a headless launch still works. Subcommand
 display flags such as `dcode threads --relative` are not overridden.
 
 Tables merge recursively. Deny lists are unioned. An explicitly managed allow or
-trust list replaces lower-precedence grants. An empty managed list is a
-lockdown: it removes every lower-precedence grant.
+trust list replaces lower-precedence grants. An empty managed list removes every
+lower-precedence grant.
 
 A managed value whose type contradicts the manifest is ignored, and the
 lower-precedence value stays in effect. Two exceptions:
@@ -85,8 +85,9 @@ lower-precedence value stays in effect. Two exceptions:
   `models.auto_classifier`, `runtime.recursion_limit`, `sandboxes.default`,
   `tracing.langsmith_redact`)
   stop every command except `config`, `doctor`, `auth path`, and the help
-  screens. Ignoring one leaves the user's flag or environment variable in force,
-  which grants the escalation or removes the boundary the policy declared. Three
+  screens. If one is ignored, the user's flag or environment variable stays in
+  force. This grants the escalation, or it removes the boundary that the policy
+  declared. Three
   cases stop the launch and block `/reload`: a value the manifest rejects, a
   `runtime.recursion_limit` outside its bounds, and a key shadowed by a scalar
   ancestor (`startup = "manual"` in place of `[startup]` and `mode`). A managed
@@ -102,11 +103,10 @@ lower-precedence value stays in effect. Two exceptions:
   still replaces a colliding user table there, the same as on the top-level
   merge.
 
-`[shell].allow_list` is now read from `~/.deepagents/config.toml` as well as
-from `DEEPAGENTS_CODE_SHELL_ALLOW_LIST`, so a managed file can enforce it. A
-user can therefore also grant themselves shell auto-approval from their own
-config file, where an exported variable was needed before. An empty managed
-list removes every lower-precedence grant.
+`[shell].allow_list` is read from `~/.deepagents/config.toml` and from
+`DEEPAGENTS_CODE_SHELL_ALLOW_LIST`, so a managed file can enforce it. A user can
+also grant themselves shell auto-approval from their own config file. An empty
+managed list removes every lower-precedence grant.
 
 `[models].allowed` narrows dcode to exact `provider:model` specifications:
 
@@ -115,21 +115,31 @@ list removes every lower-precedence grant.
 allowed = ["acme:production", "acme:production-fast"]
 ```
 
-A missing key preserves unrestricted model selection; an empty list blocks all
-local model use. Matching is exact and splits only the first colon, so model
-identifiers may contain additional colons. The list filters model discovery and
-the selector, but construction-time checks are authoritative for CLI flags,
-runtime switches, Auto classifiers, rubric graders, and explicit local subagent
-models. A managed list replaces a user list, and managed default, recent, or
-Auto-classifier models must also appear in it. `[models.providers.<name>].models`
-still registers models additively; it does not grant permission, so a custom
-model may need both registration and allowlist entries.
+The rules:
+
+- A missing key preserves unrestricted model selection.
+- An empty list blocks all local model use.
+- A list that dcode cannot parse also blocks all local model use. A typo must not
+  silently remove the restriction the user asked for. Fix or remove the key.
+- Matching is exact and splits only the first colon, so model identifiers may
+  contain additional colons. Matching is also case-sensitive.
+- Write a Bedrock model as `bedrock:<id>`. A bare Bedrock ID is rejected,
+  because its version colon would make it a specification that nothing matches.
+- The list filters model discovery and the selector. Construction-time checks
+  are authoritative for CLI flags, runtime switches, Auto classifiers, rubric
+  graders, and explicit local subagent models.
+- A managed list replaces a user list. Managed default, recent, and
+  Auto-classifier models must also appear in it.
+- `[models.providers.<name>].models` registers models additively. It does not
+  grant permission, so a custom model may need both registration and an
+  allowlist entry.
 
 `dcode` never writes the managed file. Users can still save a preference. The
 theme, terminal-mapping, UI-toggle, and MCP-server screens, and the
 `--auto-update` flag, report when a managed value keeps a saved preference from
-taking effect. Model-default and recent-model writers refuse values outside the
-effective allowlist. Other save paths do not.
+taking effect. The model-default, recent-model, and Auto-classifier writers
+refuse a value outside the effective allowlist, and report the policy as the
+reason. Other save paths do not check the allowlist.
 
 A missing managed file applies no policy. If one exists but is unreadable, not
 UTF-8, or invalid TOML, every command fails closed except the ones needed to

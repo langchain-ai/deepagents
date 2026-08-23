@@ -160,12 +160,33 @@ class TestPromptClipboardScreen:
             assert rows_list.show_vertical_scrollbar
             assert preview.region.width == rows_list.region.width
 
-    async def test_list_shrinks_to_keep_controls_visible(self) -> None:
-        """A short terminal caps the list instead of pushing help off-modal."""
+    async def test_modal_height_is_constant_while_previewing(self) -> None:
+        """Selecting prompts of different lengths must not resize the modal."""
+        app = _PromptClipboardApp()
+        async with app.run_test(size=(80, 40)) as pilot:
+            screen = app.open(("short", "long\n" + "line\n" * 20))
+            await pilot.pause()
+
+            outer = screen.query_one(Vertical)
+            preview = screen.query_one("#prompt-preview-scroll", VerticalScroll)
+            initial_outer = outer.region.height
+            initial_preview = preview.region.height
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            assert str(screen.query_one("#prompt-preview", Static).content).startswith(
+                "long"
+            )
+            assert outer.region.height == initial_outer
+            assert preview.region.height == initial_preview
+            assert preview.is_scrollable
+
+    async def test_list_fills_fixed_modal_and_scrolls(self) -> None:
+        """The list takes the fixed modal's leftover space and clips rows."""
         app = _PromptClipboardApp()
         async with app.run_test(size=(80, 18)) as pilot:
             screen = app.open(tuple(f"prompt {index}" for index in range(30)))
-            await pilot.pause()
             await pilot.pause()
             await pilot.pause()
 

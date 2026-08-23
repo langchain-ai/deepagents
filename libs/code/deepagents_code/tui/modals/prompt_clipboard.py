@@ -15,12 +15,6 @@ if TYPE_CHECKING:
 
 _TITLE_MAX = 72
 
-_PROMPT_LIST_MAX_HEIGHT = 20
-"""Upper bound (in cells) for the prompt list; mirrors the tcss max-height."""
-
-_PROMPT_LIST_MIN_HEIGHT = 1
-"""Floor (in cells) so the prompt list never collapses to zero."""
-
 
 class _PromptRow(Static):
     """One prompt summary row."""
@@ -100,34 +94,6 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         """Render the initial rows and focus search."""
         await self._render_rows()
         self.query_one("#prompt-filter", Input).focus()
-        self.call_after_refresh(self._fit_prompt_list)
-
-    def on_resize(self) -> None:
-        """Refit the prompt list when terminal dimensions change."""
-        self.call_after_refresh(self._fit_prompt_list)
-
-    def _fit_prompt_list(self) -> None:
-        """Cap the list so preview and help stay on screen.
-
-        The outer `Vertical` is `height: auto`, so it always grows to its
-        natural content height even when that exceeds the terminal; clamping
-        the container would not shrink its auto-height children. The list is
-        the only child meant to give up space, so its `max-height` is shrunk
-        to what the terminal can actually fit, keeping every control visible
-        — the same approach as the `/model` selector's `_fit_model_list`.
-        """
-        container = self.query_one(Vertical)
-        body = self.query_one("#prompt-list", VerticalScroll)
-        non_body_height = max(0, container.region.height - body.region.height)
-        available_height = self.size.height - non_body_height
-        max_height = max(
-            _PROMPT_LIST_MIN_HEIGHT,
-            min(_PROMPT_LIST_MAX_HEIGHT, available_height),
-        )
-        current = body.styles.max_height
-        if current is not None and current.cells == max_height:
-            return
-        body.styles.max_height = max_height
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Filter prompts using the current search value."""

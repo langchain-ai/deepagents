@@ -5,11 +5,9 @@ PromptClipboardScreen {
 PromptClipboardScreen > Vertical {
     width: 90%;
     max-width: 100;
-    height: auto;
-    /* No max-height here: a clamped auto container does not shrink its
-       children, so the list would keep its natural height and push the
-       preview/help past the border. `_fit_prompt_list` clamps the list
-       instead, same as the `/model` selector. */
+    /* Fixed size: the modal must not grow or shrink with the selected
+       prompt's preview length, so the list below takes all leftover space. */
+    height: 80%;
     background: $surface;
     border: solid $primary;
     padding: 1 2;
@@ -20,16 +18,26 @@ PromptClipboardScreen .prompt-title {
     text-style: bold;
     color: $primary;
     text-align: center;
-    margin-bottom: 1;
 }
 
 PromptClipboardScreen #prompt-filter {
-    margin-bottom: 1;
+    /* Vertical spacing lives on the two fixed-height boxes (this input and the
+       preview) as padding. Margins and padding on auto-height widgets are not
+       deducted from the fr list's share, so they would push the controls below
+       past the fixed modal's edge; border-box fixed boxes absorb padding
+       without inflating their footprint. */
+    padding-bottom: 1;
 }
 
 PromptClipboardScreen #prompt-list {
-    height: auto;
-    min-height: 3;
+    /* Absorbs the fixed-size modal's leftover space so the outer height never
+       depends on prompt content. max-height caps the row count the list
+       requests — fr units share space by requested height, so an uncapped
+       long list would force the fixed-height container to overflow.
+       min-height: 0 lets the list collapse below one row on very short
+       terminals so the controls below stay inside the fixed modal. */
+    height: 1fr;
+    min-height: 0;
     max-height: 20;
     background: $background;
     scrollbar-gutter: stable;
@@ -48,15 +56,20 @@ PromptClipboardScreen .prompt-row-selected {
 PromptClipboardScreen .prompt-preview-label {
     height: auto;
     color: $text-muted;
-    margin-top: 1;
 }
 
 PromptClipboardScreen #prompt-preview-scroll {
-    height: auto;
-    min-height: 3;
+    /* Preferred height so the modal size stays constant no matter which prompt
+       is previewed; longer prompts scroll inside the box. It shares the
+       leftover as a fraction with the list (min-height: 0) so that on very
+       short terminals both scrollable panes give space back and the controls
+       stay inside the fixed modal. padding-top here (not margin on the
+       label/help) keeps the box model exact — see #prompt-filter. */
+    height: 1fr;
+    min-height: 0;
     max-height: 8;
     border: round $surface-lighten-2;
-    padding: 0 1;
+    padding: 1 1 0 1;
     /* Match the prompt list's content width: the list reserves a stable
        gutter for its vertical scrollbar, so the preview box would otherwise
        render two cells wider than the rows above it. */
@@ -64,6 +77,8 @@ PromptClipboardScreen #prompt-preview-scroll {
 }
 
 PromptClipboardScreen #prompt-preview {
+    /* Content stays auto-height inside the fixed preview box so long prompts
+       scroll instead of growing the modal. */
     height: auto;
 }
 
@@ -72,5 +87,4 @@ PromptClipboardScreen .prompt-help {
     color: $text-muted;
     text-style: italic;
     text-align: center;
-    margin-top: 1;
 }

@@ -46,8 +46,10 @@ PromptClipboardScreen #prompt-list {
 PromptClipboardScreen .prompt-row {
     height: 1;
     padding: 0 1;
-    /* Rows are one cell high, so titles longer than the row clip; an ellipsis
-       marks the clipped end without a fixed character cap. */
+    /* Rows are one cell high, so overlong titles clip visually. Textual only
+       ellipsizes truncated (nowrap) lines, so nowrap must accompany
+       text-overflow: ellipsis for the clipped end to be marked. */
+    text-wrap: nowrap;
     text-overflow: ellipsis;
 }
 

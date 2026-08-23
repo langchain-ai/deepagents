@@ -798,3 +798,67 @@ def test_stateless_provider_durability_cannot_be_overridden(
     overridden: dict[str, Any] = {"durable": not expected}
     with pytest.raises((TypeError, AttributeError)):
         type(provider)(**overridden)
+
+
+def test_a_failed_reload_warns_that_the_edit_did_not_take_effect(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Retaining the last good generation must not be silent.
+
+    Resolution keeps returning the previous values, so nothing looks wrong -
+    while the edit the user just saved is not in effect and the file on disk no
+    longer describes what the process enforces.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    provider = TomlFileProvider("config.toml", config_path)
+    resolver = ConfigResolver((provider, DefaultProvider()))
+    option = get_option("startup.mode")
+    assert option is not None
+    assert resolver.get(option).value == "manual"
+
+    config_path.write_text("[startup\n", encoding="utf-8")
+    resolver.reload()
+
+    with caplog.at_level("WARNING"):
+        resolved = resolver.get(option)
+        _emit_ranked_diagnostics(option, resolved)
+
+    assert resolved.value == "manual"
+    assert any("still applying" in record.message for record in caplog.records)
+    assert any("CORRUPT" in record.message for record in caplog.records)
+
+
+def test_doctor_reports_a_corrupt_user_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The command a user runs when settings do not apply must say the file broke."""
+    from deepagents_code import doctor, model_config
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[shell\n", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+
+    item = doctor._user_config_diagnostic()
+
+    assert not item.ok
+    assert "corrupt" in item.value.lower()
+
+
+def test_doctor_is_green_for_a_config_that_parses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A healthy or absent file must not be reported as a problem."""
+    from deepagents_code import doctor, model_config
+
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+    assert doctor._user_config_diagnostic().ok
+
+    config_path.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    assert doctor._user_config_diagnostic().ok

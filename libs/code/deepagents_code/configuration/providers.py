@@ -47,6 +47,14 @@ Deduplicated the same way, and for the same reason: a rejected file affects
 every option at once, so the warning belongs to the file, not to each key.
 """
 
+RETAINED_SOURCE_SUFFIX = "— still applying the last readable version of it"
+"""Tail of the rejection raised when a failed reload kept the previous values.
+
+Distinct from `UNUSABLE_SOURCE_SUFFIX` because the consequence is different:
+nothing fell back to a default, but the file on disk no longer describes what
+the process is enforcing, and an edit the user just made is not in effect.
+"""
+
 
 def coerce_environment_value(
     option: ConfigOption, raw: str, name: str
@@ -613,24 +621,41 @@ class TomlFileProvider:
                 durable=self.durable,
                 status=snapshot.status,
             )
-        return self._with_unusable_diagnostic(ranked, snapshot.status)
+        # The status of the file on disk, which is not the status of the
+        # snapshot resolution just read: a failed reload keeps enforcing the
+        # last readable generation while `failure` records why the current
+        # contents were refused.
+        failure = self._state.failure
+        return self._with_rejection_diagnostic(
+            ranked,
+            failure or snapshot.status,
+            # Values were retained only when the generation in hand is itself
+            # usable. A first read that fails records a failure too, but there
+            # is no earlier generation behind it - those options fall back.
+            retained=snapshot.status.usable,
+        )
 
     @staticmethod
-    def _with_unusable_diagnostic(
+    def _with_rejection_diagnostic(
         ranked: RankedProviderValue[object],
         status: ProviderStatus,
+        *,
+        retained: bool,
     ) -> RankedProviderValue[object]:
-        """Attach the rejection reason when the whole file could not be read.
+        """Attach the reason when the file on disk was rejected as a whole.
 
-        A rejected file coerces to `Unset` for every option, which resolution
-        reads as "this source declares nothing" — indistinguishable from a file
-        that simply omits the key. Carrying the reason as a diagnostic lets
-        `_emit_ranked_diagnostics` tell the user their file was thrown away
-        instead of silently handing back defaults.
+        Neither rejection is visible in the result otherwise. A file refused on
+        first read coerces to `Unset` for every option, which resolution reads
+        as "this source declares nothing" — indistinguishable from a file that
+        omits the key. A file refused on *reload* is quieter still: resolution
+        keeps returning the previous generation's values, so nothing looks
+        wrong at all while the user's latest edit silently fails to apply.
 
         Args:
             ranked: Result already coerced from the snapshot.
-            status: Health of the snapshot the result came from.
+            status: Health of the file on disk.
+            retained: Whether resolution is still serving an earlier generation
+                rather than falling through to lower tiers.
 
         Returns:
             The result, with a rejection diagnostic when the source is unusable.
@@ -639,9 +664,10 @@ class TomlFileProvider:
             return ranked
         location = f" ({status.path})" if status.path is not None else ""
         detail = f": {status.detail}" if status.detail else ""
+        suffix = RETAINED_SOURCE_SUFFIX if retained else UNUSABLE_SOURCE_SUFFIX
         reason = (
             f"Ignoring {status.name}{location} — it is "
-            f"{status.health.value}{detail} {UNUSABLE_SOURCE_SUFFIX}"
+            f"{status.health.value}{detail} {suffix}"
         )
         return replace(ranked, diagnostics=(reason, *ranked.diagnostics))
 

@@ -656,13 +656,18 @@ def _emit_ranked_diagnostics(
         resolved: Rank-keyed provider results and selected value.
     """
     from deepagents_code.configuration.providers import (
+        RETAINED_SOURCE_SUFFIX,
         SHADOWED_TABLE_SUFFIX,
         UNUSABLE_SOURCE_SUFFIX,
     )
     from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
     from deepagents_code.configuration.types import Found, Invalid
 
-    once_per_process = (SHADOWED_TABLE_SUFFIX, UNUSABLE_SOURCE_SUFFIX)
+    once_per_process = (
+        SHADOWED_TABLE_SUFFIX,
+        UNUSABLE_SOURCE_SUFFIX,
+        RETAINED_SOURCE_SUFFIX,
+    )
 
     def emit(reason: str) -> None:
         """Log one provider rejection, at most once per process when marked."""

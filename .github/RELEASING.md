@@ -310,6 +310,19 @@ Because `skip-github-release: true` is set in the release-please config (we crea
 
 This label transition signals to release-please that the merged PR has been fully processed, allowing it to create new release PRs for subsequent commits to `main`.
 
+### CI guardrails around releases
+
+These workflows guard releases. Each one explains a failed check you may see on a PR:
+
+- **PR title lint** (`pr_lint.yml`) — enforces Conventional Commits with a mandatory scope on PR titles; its allowed types and scopes are the canonical list.
+- **Release-please parse check** (`release_please_parse_check.yml`) — runs `@conventional-commits/parser` on the would-be squash-merge message (`<title> (#<num>)` + body) at PR time. Fails the check and posts a sticky comment with a paste-ready `BEGIN_COMMIT_OVERRIDE` block when the parser would reject the body, preventing silent changelog drops. The parser is exact-pinned and must stay in lock-step with the version release-please itself depends on, declared in its own `package.json` upstream in `googleapis/release-please`.
+- **Fan-out guards** — one workflow per row; see [Multi-component fan-out](#multi-component-fan-out).
+  - `release_please_scope_check.yml` — blocks a bump-worthy PR that touches real files in more than one managed component, or only lockfiles inside a managed package. Bypass label: `allow-lockfile-release`.
+  - `pr_scope_file_check.yml` — checks the PR scope against the files touched. Bypass label: `allow-scope-mismatch`.
+  - `release_fanout_bypass_warn.yml` — posts a loud sticky when either bypass label is applied.
+  - `release_please_fanout_watch.yml` — post-merge safety net; comments on open release PRs whose package delta is lockfile-only.
+- **Auto-labeling** — `pr_labeler.yml` (unified PR labeler: size, file, title, external/internal, contributor tier) and `pr_labeler_backfill.yml` (manual backfill on open PRs). These apply labels for triage only; they do not gate releases (the guard workflows above honor their own bypass labels). Issue labeling is not release-gated; see [`LAYOUT.md`](./LAYOUT.md).
+
 ## Manual Release
 
 For hotfixes or exceptional cases, you can trigger a release manually. Use the `hotfix` commit type so as to not trigger a further PR update/version bump.

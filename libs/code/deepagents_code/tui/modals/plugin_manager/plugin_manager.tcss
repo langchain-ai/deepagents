@@ -88,6 +88,7 @@ PluginManagerScreen #plugin-marketplace-source:focus {
 }
 
 PluginManagerScreen .plugin-manager-help {
+    dock: bottom;
     height: auto;
     color: $text-muted;
     text-style: italic;

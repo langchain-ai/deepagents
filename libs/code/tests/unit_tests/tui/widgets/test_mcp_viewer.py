@@ -1908,6 +1908,7 @@ class TestMCPViewerScreen:
             help_widget = help_widgets[0]
             text = _widget_text(help_widget).lower()
             assert "navigate" in text
+            assert "tab/shift+tab servers" in text
             assert "enter" not in text
             assert "f2" in text
             assert "ctrl+e" in text

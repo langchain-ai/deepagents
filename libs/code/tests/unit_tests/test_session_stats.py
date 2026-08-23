@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from io import StringIO
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -20,7 +22,11 @@ from deepagents_code._session_stats import (
     format_token_count,
     print_usage_table,
     record_message_usage,
+    usage_table_enabled,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestFormatCost:
@@ -977,3 +983,241 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
+
+
+class TestUsageTableEnabled:
+    """Test the gate that decides whether the usage table renders."""
+
+    def test_enabled_by_default(self) -> None:
+        """With no configuration in play the table renders."""
+        assert usage_table_enabled() is True
+
+    def test_resolution_failure_keeps_the_table(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A raising resolver logs and returns `True` instead of propagating.
+
+        Both callers run at teardown: in the TUI an escaping exception is caught
+        by the handler that rewrites a clean exit into `1` plus a traceback, and
+        in the headless run it would skip the `AGENT_COMPLETED` notification and
+        the `session.end` hooks. Failing open on a cosmetic table is the cheap
+        outcome; failing shut on session teardown is not.
+        """
+
+        def _boom(
+            _key: str,
+            *,
+            fallback: bool,  # noqa: ARG001
+            on_rejected: object = None,  # noqa: ARG001
+        ) -> bool:
+            msg = "managed policy refresh exploded"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_bool_display_preference", _boom
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code._session_stats"):
+            assert usage_table_enabled() is True
+
+        assert "show_usage_stats" in caplog.text
+        # `exc_info=True`, so the cause is diagnosable rather than swallowed.
+        assert "managed policy refresh exploded" in caplog.text
+
+    def test_blocking_error_is_not_swallowed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`BlockingError` propagates instead of failing open.
+
+        The fail-open exists for config hiccups. Blocking I/O on the event loop
+        is a regression in the caller — this runs directly inside the async
+        headless teardown — and swallowing it would hide the violation *and*
+        silently ignore the user's opt-out. Matched by class name because
+        `blockbuster` is not a runtime dependency here, so the test defines its
+        own class rather than importing one.
+        """
+
+        class BlockingError(Exception):
+            """Stands in for `blockbuster.BlockingError`."""
+
+        def _blocked(
+            _key: str,
+            *,
+            fallback: bool,  # noqa: ARG001
+            on_rejected: object = None,  # noqa: ARG001
+        ) -> bool:
+            msg = "blocking call to io.TextIOWrapper.read"
+            raise BlockingError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_bool_display_preference", _blocked
+        )
+
+        with pytest.raises(BlockingError):
+            usage_table_enabled()
+
+    def test_import_error_is_not_reported_as_a_config_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken `config_manifest` import propagates, not fails open.
+
+        The deferred import sits outside the `try` on purpose: an `ImportError`
+        means the package is broken, not that the option could not be read, and
+        reporting it as the latter would send a debugger to the wrong place.
+
+        A `None` entry in `sys.modules` is the documented way to make an import
+        of an otherwise-importable module fail.
+        """
+        import sys
+
+        monkeypatch.setitem(sys.modules, "deepagents_code.config_manifest", None)
+
+        with pytest.raises(ImportError):
+            usage_table_enabled()
+
+    def test_rejected_value_warns_on_stderr(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A misparsed value reaches the user, not just the log buffer.
+
+        `show_usage_stats = "false"` is the expected typo — there is no
+        `dcode config set`, so the only way to set this is hand-edited TOML.
+        Falling through to `True` produces exactly the table the user meant to
+        hide, and the resolver's own warning has no reader outside the TUI
+        Debug Console. This is the one bool display option where that silence
+        is the whole bug, so it is the one that prints.
+        """
+        import deepagents_code._session_stats as session_stats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[ui]\nshow_usage_stats = "false"\n', encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        # Process-wide dedupe, so a leaked entry from another test would make
+        # this pass for the wrong reason.
+        monkeypatch.setattr(session_stats, "_warned_usage_stats_rejections", set())
+
+        assert usage_table_enabled() is True
+
+        captured = capsys.readouterr()
+        assert "show_usage_stats" in captured.err
+        # The warning is the entire point; it must not go to stdout, which a
+        # headless caller may be piping as the agent's answer.
+        assert captured.out == ""
+
+    def test_rejected_value_warns_once_per_process(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Repeated resolution does not repeat an identical warning.
+
+        Teardown resolves once per session today, but `dcode config` walks the
+        whole manifest, and a line repeated verbatim reads as two separate
+        problems. Dedupe is per reason, so two genuinely different rejections
+        still both print.
+        """
+        import deepagents_code._session_stats as session_stats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[ui]\nshow_usage_stats = 0\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        monkeypatch.setattr(session_stats, "_warned_usage_stats_rejections", set())
+
+        assert usage_table_enabled() is True
+        assert usage_table_enabled() is True
+
+        assert capsys.readouterr().err.count("Warning: ") == 1
+
+    def test_shadowed_rejection_prints_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A rejection at a tier that lost stays silent.
+
+        With `DEEPAGENTS_CODE_SHOW_USAGE_STATS=0` winning over a user config
+        holding the quoted `"false"` typo, the table is off and a warning
+        announcing it would contradict what the user sees. The rejection is
+        still logged through `_emit_ranked_diagnostics`; it just does not
+        reach stderr.
+        """
+        import deepagents_code._session_stats as session_stats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[ui]\nshow_usage_stats = "false"\n', encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_USAGE_STATS", "0")
+        monkeypatch.setattr(session_stats, "_warned_usage_stats_rejections", set())
+
+        assert usage_table_enabled() is False
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+    def test_valid_value_prints_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A value that parses stays silent on both streams.
+
+        Guards the obvious regression in the other direction: a warning that
+        fires for every well-formed config would be worse than no warning.
+        """
+        import deepagents_code._session_stats as session_stats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[ui]\nshow_usage_stats = false\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        monkeypatch.setattr(session_stats, "_warned_usage_stats_rejections", set())
+
+        assert usage_table_enabled() is False
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+    def test_env_var_overrides_the_config_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The env var outranks `config.toml`, per the resolver's tiers.
+
+        This is the option's reason for declaring an env var at all: the
+        headless run is where suppression matters, and a CI runner has env vars
+        rather than a `~/.deepagents/config.toml`.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[ui]\nshow_usage_stats = true\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_USAGE_STATS", "0")
+
+        assert usage_table_enabled() is False
+
+    def test_empty_env_var_disables_the_table(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty env var reads as off, matching the other default-on toggles.
+
+        `empty_env_is_false` is what makes a bare `DEEPAGENTS_CODE_SHOW_USAGE_STATS=`
+        in a CI env file mean "off" rather than falling through to the default.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_USAGE_STATS", "")
+
+        assert usage_table_enabled() is False

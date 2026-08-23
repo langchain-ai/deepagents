@@ -251,6 +251,22 @@ _resolver_cache_lock = threading.RLock()
 _resolver_cache = _ResolverCache()
 
 
+def _reload_enforceable_managed_snapshot() -> TomlSnapshot:
+    """Return a refreshed managed snapshot only when policy can enforce it."""
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_policy_violations,
+    )
+
+    candidate = get_managed_snapshot(refresh=True)
+    if candidate.status.usable and managed_policy_violations(
+        candidate.data,
+        status=candidate.status,
+    ):
+        return get_managed_snapshot()
+    return candidate
+
+
 def get_config_resolver(*, refresh_managed: bool = False) -> ConfigResolver:
     """Return the shared process resolver for the active config paths.
 
@@ -273,7 +289,7 @@ def get_config_resolver(*, refresh_managed: bool = False) -> ConfigResolver:
             _resolver_cache.resolver = resolver_from_snapshots(
                 managed,
                 user,
-                managed_loader=lambda: get_managed_snapshot(refresh=True),
+                managed_loader=_reload_enforceable_managed_snapshot,
                 user_loader=user_provider.load,
             )
             _resolver_cache.key = key

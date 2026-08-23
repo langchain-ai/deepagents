@@ -9,6 +9,7 @@ from deepagents_code.config_manifest import (
     ConfigOption,
     OptionKind,
     get_config_options,
+    get_option,
     resolve_scalar,
 )
 from deepagents_code.configuration.provider import ConfigProvider
@@ -430,6 +431,41 @@ def test_failed_reload_keeps_managed_policy_enforced(tmp_path: Path) -> None:
     resolver.reload()
 
     assert resolver.provider_statuses()[MANAGED_RANK].health is ProviderHealth.OK
+
+
+def test_rejected_managed_reload_keeps_last_enforceable_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parseable policy violation must not replace managed resolution."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import resolver as resolver_module, service
+    from unit_tests.conftest import redirect_managed_config
+
+    managed_path = tmp_path / "managed_config.toml"
+    user_path = tmp_path / "config.toml"
+    managed_path.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    user_path.write_text('[startup]\nmode = "yolo"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed_path)
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_path)
+    monkeypatch.setattr(
+        resolver_module,
+        "_resolver_cache",
+        resolver_module._ResolverCache(),
+    )
+    service.invalidate_config_sources()
+    try:
+        resolver = resolver_module.get_config_resolver()
+        option = get_option("startup.mode")
+        assert option is not None
+        assert resolver.get(option).value == "manual"
+
+        managed_path.write_text("startup.mode = 5\n", encoding="utf-8")
+        resolver.reload()
+
+        assert resolver.get(option).value == "manual"
+    finally:
+        service.invalidate_config_sources()
 
 
 def test_resolver_get_matches_resolve_scalar_for_every_manifest_option() -> None:

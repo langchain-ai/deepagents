@@ -57,6 +57,10 @@ PromptClipboardScreen #prompt-preview-scroll {
     max-height: 8;
     border: round $surface-lighten-2;
     padding: 0 1;
+    /* Match the prompt list's content width: the list reserves a stable
+       gutter for its vertical scrollbar, so the preview box would otherwise
+       render two cells wider than the rows above it. */
+    scrollbar-gutter: stable;
 }
 
 PromptClipboardScreen #prompt-preview {

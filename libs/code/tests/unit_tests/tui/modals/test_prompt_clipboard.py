@@ -147,6 +147,19 @@ class TestPromptClipboardScreen:
             await pilot.pause()
             assert screen._rows[1].region.height > 0
 
+    async def test_preview_matches_list_width_when_rows_scroll(self) -> None:
+        """The preview box spans the same width as the scrollable prompt list."""
+        app = _PromptClipboardApp()
+        async with app.run_test(size=(80, 40)) as pilot:
+            app.open(tuple(f"prompt {index}" for index in range(30)))
+            await pilot.pause()
+            await pilot.pause()
+
+            rows_list = app.screen.query_one("#prompt-list", VerticalScroll)
+            preview = app.screen.query_one("#prompt-preview-scroll", VerticalScroll)
+            assert rows_list.show_vertical_scrollbar
+            assert preview.region.width == rows_list.region.width
+
     async def test_list_shrinks_to_keep_controls_visible(self) -> None:
         """A short terminal caps the list instead of pushing help off-modal."""
         app = _PromptClipboardApp()

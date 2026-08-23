@@ -4817,6 +4817,17 @@ def cli_main() -> None:
             try:
                 _check_project_dotenv_trust()
             except Exception:
+                # Pair the log with stderr for the same reason as
+                # `dotenv_skip._warn_store_unusable`: the package logger has an
+                # in-memory handler attached (which suppresses the `lastResort`
+                # stderr fallback) and the TUI's Debug Console does not exist
+                # yet, so a bare `logger.warning` would be invisible at exactly
+                # the moment the prompt silently did not run.
+                message = (
+                    "Warning: could not run the project .env opt-out prompt; "
+                    "the file will load normally."
+                )
+                print(message, file=sys.stderr)  # noqa: T201  # Pre-TUI visibility
                 logger.warning(
                     "Could not run the project .env opt-out prompt; the file "
                     "will load normally",

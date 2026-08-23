@@ -341,6 +341,36 @@ class TestCheckProjectDotenvTrust:
         assert "will be skipped" not in err
         assert "could not be remembered" not in err
 
+    def test_prompt_failure_is_visible_not_only_logged(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A prompt that never ran must say so where the user can see it.
+
+        The package logger has a handler attached, so `logger.warning` alone is
+        invisible before the TUI starts — the one window this gate runs in.
+        """
+        monkeypatch.setattr(main_module, "_is_interactive_tui_launch", lambda _a: True)
+        monkeypatch.setattr(main_module, "_trust_picker_has_terminal", lambda: True)
+
+        def _boom() -> None:
+            msg = "prompt exploded"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(main_module, "_check_project_dotenv_trust", _boom)
+        # A missing `--mcp-config` exits right after the gate, so the launch
+        # stops without mounting the TUI (same trick as the dep-floor tests).
+        monkeypatch.setattr(
+            main_module.sys,
+            "argv",
+            ["dcode", "--no-mcp", "--mcp-config", "/nonexistent/mcp.json"],
+        )
+        with pytest.raises(SystemExit):
+            main_module.cli_main()
+
+        assert "will load normally" in capsys.readouterr().err
+
     def test_prompt_neutralizes_escapes_in_the_dotenv_path(
         self,
         tmp_path: Path,

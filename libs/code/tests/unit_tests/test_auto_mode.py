@@ -457,6 +457,41 @@ async def _plan(
     )
 
 
+async def _route_plan(
+    middleware: AutoModeHITLMiddleware,
+    request: ModelRequest[Any],
+    plan: dict[str, Any],
+    *,
+    tool_name: str,
+    args: dict[str, object],
+    call_id: str = "call-1",
+    hook_behavior: Literal["allow", "deny"] | None = None,
+) -> dict[str, Any] | None:
+    """Apply a plan after optional server-hook permission routing."""
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": tool_name,
+                "args": args,
+                "id": call_id,
+                "type": "tool_call",
+            }
+        ],
+    )
+    state: dict[str, Any] = {
+        "messages": [ai_message],
+        "_auto_decision_plan": plan,
+    }
+    if hook_behavior is not None:
+        state["_hooks_pre_tool_outcomes"] = {
+            call_id: {"behavior": hook_behavior, "context": []}
+        }
+    return await middleware.aafter_model(
+        cast("AgentState[Any]", state), request.runtime
+    )
+
+
 def _capture_review_events(request: ModelRequest[Any]) -> list[dict[str, Any]]:
     """Capture custom-stream events emitted by one model request."""
     events: list[dict[str, Any]] = []
@@ -516,6 +551,15 @@ async def test_classifier_review_lifecycle_reports_only_opaque_ids(
         tool_name="delete",
         args={"file_path": "private/customer-secret.py"},
     )
+    assert [event["event"] for event in events] == ["review_started"]
+
+    await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "private/customer-secret.py"},
+    )
 
     assert [event["event"] for event in events] == [
         "review_started",
@@ -564,13 +608,56 @@ async def test_classifier_review_lifecycle_balances_blocked_results(
         tool_name="delete",
         args={"file_path": "old.py"},
     )
+    await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
 
     assert plan["decisions"][0]["disposition"] == disposition
-    assert [event["event"] for event in events] == [
+    lifecycle = [event for event in events if event["event"].startswith("review_")]
+    assert [event["event"] for event in lifecycle] == [
         "review_started",
         "review_completed",
     ]
-    assert events[1]["approved_tool_call_ids"] == []
+    assert lifecycle[1]["approved_tool_call_ids"] == []
+
+
+async def test_classifier_review_completion_uses_hook_permission(
+    tmp_path: Path,
+) -> None:
+    """A final hook allow resumes a row even when the classifier denied it."""
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_deny_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    events = _capture_review_events(request)
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    update = await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        hook_behavior="allow",
+    )
+
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+    assert events[-1]["event"] == "review_completed"
+    assert events[-1]["approved_tool_call_ids"] == ["call-1"]
+    assert update is not None
+    assert not any(isinstance(message, ToolMessage) for message in update["messages"])
 
 
 async def test_classifier_review_lifecycle_completes_on_cancellation(
@@ -659,6 +746,13 @@ async def test_classifier_review_event_writer_failure_is_cosmetic(
     plan = await _plan(
         middleware,
         request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    await _route_plan(
+        middleware,
+        request,
+        plan,
         tool_name="delete",
         args={"file_path": "old.py"},
     )
@@ -2067,9 +2161,21 @@ async def test_counter_write_failure_is_not_reported_as_classifier_approval(
         args={"file_path": "old.py"},
     )
 
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ):
+        await _route_plan(
+            middleware,
+            request,
+            plan,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
     assert plan["decisions"][0]["disposition"] == "require_human"
-    assert events[-1]["event"] == "review_completed"
-    assert events[-1]["approved_tool_call_ids"] == []
+    completed = next(event for event in events if event["event"] == "review_completed")
+    assert completed["approved_tool_call_ids"] == []
 
 
 async def test_unavailable_auto_control_state_surfaces_manual_fallback(
@@ -3871,7 +3977,6 @@ async def test_malformed_classifier_batch_blocks_call_and_increments_unavailable
         tool_name="delete",
         args={"file_path": "old.py"},
     )
-
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
     assert counters["consecutive_unavailable"] == 1
@@ -4034,10 +4139,18 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
         tool_name="delete",
         args={"file_path": "old.py"},
     )
+    await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     assert plan["decisions"][0]["reason"] == "classifier did not respond within 0.05s"
-    assert [event["event"] for event in events] == [
+    lifecycle = [event for event in events if event["event"].startswith("review_")]
+    assert [event["event"] for event in lifecycle] == [
         "review_started",
         "review_completed",
     ]

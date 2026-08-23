@@ -324,6 +324,8 @@ class AutoDecisionPlan(TypedDict):
     processed_result_ids: list[str]
     counters_applied: bool
     fallback_reason: str | None
+    review_tool_call_ids: NotRequired[list[str]]
+    """Calls whose classifier lifecycle event is active for this plan."""
 
 
 class AutoTempArtifact(TypedDict):
@@ -2559,6 +2561,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 == ApprovalMode.AUTO.value
                 else None
             ),
+            "review_tool_call_ids": [],
         }
 
         counter_context = await self._counter_context(request, mode)
@@ -2691,6 +2694,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             )
 
         review_tool_call_ids = [_tool_call_id(call) for call in review_calls]
+        plan["review_tool_call_ids"] = review_tool_call_ids
         self._emit_review_event(
             request.runtime,
             event="review_started",
@@ -2841,12 +2845,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 error_detail,
                 exc_info=True,
             )
-            self._emit_review_event(
-                request.runtime,
-                event="review_completed",
-                batch_id=batch_id,
-                tool_call_ids=review_tool_call_ids,
-            )
             return ExtendedModelResponse(
                 model_response=response,
                 command=Command(update={"_auto_decision_plan": plan}),
@@ -2920,18 +2918,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             len(review_calls),
             latency_ms,
         )
-        approved_tool_call_ids = [
-            decision["tool_call_id"]
-            for decision in plan["decisions"]
-            if decision["disposition"] == "classifier_allow"
-        ]
-        self._emit_review_event(
-            request.runtime,
-            event="review_completed",
-            batch_id=batch_id,
-            tool_call_ids=review_tool_call_ids,
-            approved_tool_call_ids=approved_tool_call_ids,
-        )
         return ExtendedModelResponse(
             model_response=response,
             command=Command(update={"_auto_decision_plan": plan}),
@@ -2955,6 +2941,27 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if event == "review_completed":
             payload["approved_tool_call_ids"] = list(approved_tool_call_ids)
         self._emit_event(runtime, payload)
+
+    def _emit_routed_review_event(
+        self,
+        runtime: object,
+        *,
+        batch_id: str,
+        tool_call_ids: Sequence[str],
+        resumed_tool_call_ids: set[str],
+    ) -> None:
+        """Complete a classifier review with the calls final routing will run."""
+        if not tool_call_ids:
+            return
+        self._emit_review_event(
+            runtime,
+            event="review_completed",
+            batch_id=batch_id,
+            tool_call_ids=tool_call_ids,
+            approved_tool_call_ids=[
+                tool_id for tool_id in tool_call_ids if tool_id in resumed_tool_call_ids
+            ],
+        )
 
     def _emit_event(  # noqa: PLR6301
         self, runtime: object, payload: Mapping[str, object]
@@ -3233,9 +3240,16 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         manual_ids = raw.get("manual_gated_ids")
         pending_ids = raw.get("pending_result_ids")
         processed_ids = raw.get("processed_result_ids")
+        review_ids = raw.get("review_tool_call_ids", [])
         if not all(
             isinstance(value, list)
-            for value in (decisions, manual_ids, pending_ids, processed_ids)
+            for value in (
+                decisions,
+                manual_ids,
+                pending_ids,
+                processed_ids,
+                review_ids,
+            )
         ):
             return None
         valid_ids = {_tool_call_id(call) for call in ai_message.tool_calls}
@@ -3251,6 +3265,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 isinstance(tool_id, str) and tool_id in valid_ids
                 for tool_id in [*pending_ids, *processed_ids]
             )
+            or not all(
+                isinstance(tool_id, str) and tool_id in valid_ids
+                for tool_id in review_ids
+            )
+            or len(review_ids) != len(set(review_ids))
         ):
             return None
         dispositions = {
@@ -3317,13 +3336,41 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         )
         if ai_message is None or not ai_message.tool_calls:
             return {"_auto_decision_plan": None}
-        from deepagents_code.hooks.server_middleware import hook_decided_permission
+        from deepagents_code.hooks.server_middleware import hook_permission_behavior
 
-        hook_bypass_ids = {
-            _tool_call_id(call)
+        hook_permissions = {
+            tool_call_id: behavior
             for call in ai_message.tool_calls
-            if hook_decided_permission(state, _tool_call_id(call))
+            if (
+                behavior := hook_permission_behavior(
+                    state, tool_call_id := _tool_call_id(call)
+                )
+            )
+            is not None
         }
+        hook_bypass_ids = set(hook_permissions)
+        hook_allow_ids = {
+            tool_call_id
+            for tool_call_id, behavior in hook_permissions.items()
+            if behavior == "allow"
+        }
+        valid_tool_call_ids = {_tool_call_id(call) for call in ai_message.tool_calls}
+        raw_plan = state.get("_auto_decision_plan")
+        raw_review_tool_call_ids = (
+            raw_plan.get("review_tool_call_ids")
+            if isinstance(raw_plan, Mapping)
+            else None
+        )
+        review_tool_call_ids = (
+            [
+                tool_call_id
+                for tool_call_id in raw_review_tool_call_ids
+                if isinstance(tool_call_id, str) and tool_call_id in valid_tool_call_ids
+            ]
+            if isinstance(raw_review_tool_call_ids, list)
+            else []
+        )
+        batch_id = _batch_id(ai_message.tool_calls)
         thread_key = _thread_key(runtime)
         # Derive the emission scope once for the whole node run. Deriving it
         # again inside `_human_review` would silently desync the two ledgers if
@@ -3338,6 +3385,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             and _tool_call_id(call) not in hook_bypass_ids
         }
         if plan is None:
+            self._emit_routed_review_event(
+                runtime,
+                batch_id=batch_id,
+                tool_call_ids=review_tool_call_ids,
+                resumed_tool_call_ids=hook_allow_ids,
+            )
             if not manual_ids:
                 return {"_auto_decision_plan": None}
             logger.warning(
@@ -3386,6 +3439,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 current_mode = ApprovalMode.MANUAL
 
         if proposal_mode is ApprovalMode.MANUAL or current_mode is ApprovalMode.MANUAL:
+            self._emit_routed_review_event(
+                runtime,
+                batch_id=batch_id,
+                tool_call_ids=review_tool_call_ids,
+                resumed_tool_call_ids=hook_allow_ids,
+            )
             review_ids = set(plan["manual_gated_ids"]) - hook_bypass_ids
             if not review_ids:
                 return {"_auto_decision_plan": None}
@@ -3415,6 +3474,17 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 "_auto_decision_plan": None,
             }
         if proposal_mode is ApprovalMode.YOLO or current_mode is ApprovalMode.YOLO:
+            self._emit_routed_review_event(
+                runtime,
+                batch_id=batch_id,
+                tool_call_ids=review_tool_call_ids,
+                resumed_tool_call_ids=valid_tool_call_ids
+                - {
+                    tool_call_id
+                    for tool_call_id, behavior in hook_permissions.items()
+                    if behavior == "deny"
+                },
+            )
             return {"_auto_decision_plan": None}
 
         decision_by_id = {
@@ -3427,6 +3497,17 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             for tool_id, decision in decision_by_id.items()
             if decision["disposition"] == "require_human"
         }
+        self._emit_routed_review_event(
+            runtime,
+            batch_id=batch_id,
+            tool_call_ids=review_tool_call_ids,
+            resumed_tool_call_ids=hook_allow_ids
+            | {
+                tool_id
+                for tool_id, decision in decision_by_id.items()
+                if decision["disposition"] == "classifier_allow"
+            },
+        )
         denied_messages: list[ToolMessage] = []
         # A classifier timeout (and often a uniform policy denial) stamps every
         # tool call in the batch with the same disposition and reason. Each call

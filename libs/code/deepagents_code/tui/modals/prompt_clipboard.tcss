@@ -21,12 +21,19 @@ PromptClipboardScreen .prompt-title {
 }
 
 PromptClipboardScreen #prompt-filter {
-    /* Vertical spacing lives on the two fixed-height boxes (this input and the
-       preview) as padding. Margins and padding on auto-height widgets are not
-       deducted from the fr list's share, so they would push the controls below
-       past the fixed modal's edge; border-box fixed boxes absorb padding
-       without inflating their footprint. */
-    padding-bottom: 1;
+    /* The input is 3 rows tall and its default `tall` border occupies the top
+       and bottom rows, leaving exactly one row for text. Any vertical padding
+       would consume that row and collapse the content region to zero height,
+       hiding the placeholder and typed text entirely — so padding stays
+       zero. */
+    padding: 0;
+}
+
+PromptClipboardScreen #prompt-filter > .input--placeholder {
+    /* The default placeholder color is $text-disabled (dim gray), which is
+       nearly invisible on the dark input background. Use muted text so the
+       "Search submitted prompts" hint is actually readable. */
+    color: $text-muted;
 }
 
 PromptClipboardScreen #prompt-list {
@@ -73,7 +80,7 @@ PromptClipboardScreen #prompt-preview-scroll {
     height: 1fr;
     min-height: 0;
     max-height: 8;
-    border: round $surface-lighten-2;
+    border: solid $surface-lighten-2;
     padding: 1 1 0 1;
     /* Match the prompt list's content width: the list reserves a stable
        gutter for its vertical scrollbar, so the preview box would otherwise

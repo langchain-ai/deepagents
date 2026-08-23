@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
-    from deepagents_code.configuration.resolver import ResolvedValue
+    from deepagents_code.configuration.resolver import ConfigResolver, ResolvedValue
 
 from deepagents_code.configuration.paths import (
     managed_config_path,
@@ -671,14 +671,21 @@ def get_config_sources(
 
 
 def invalidate_config_sources() -> None:
-    """Drop the cached managed snapshot.
+    """Drop the cached managed snapshot and the shared process resolver.
 
     Test-only. Production reloads pass `refresh=True` instead, which keeps the
     last snapshot that parsed cleanly if the new one fails; clearing the cache
     first would leave readers with an empty managed table on a failed reload.
+
+    Both caches are cleared together because they are keyed differently:
+    dropping only the managed snapshot leaves the resolver holding the previous
+    generation, which is the half most tests actually read.
     """
+    from deepagents_code.configuration.resolver import reset_config_resolver
+
     with _snapshot_lock:
         _snapshot_state.managed = None
+    reset_config_resolver()
 
 
 def require_healthy_managed_config(*, refresh: bool = False) -> None:
@@ -704,9 +711,27 @@ def require_healthy_managed_config(*, refresh: bool = False) -> None:
         raise ManagedPolicyError(status, violations)
 
 
+def _managed_resolver(snapshot: TomlSnapshot) -> ConfigResolver:
+    """Build a resolver whose managed provider owns `snapshot`.
+
+    Returns:
+        Resolver bound to the supplied managed generation.
+    """
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+
+    user = TomlSnapshot(
+        {},
+        ProviderStatus("config.toml", None, ProviderHealth.MISSING),
+    )
+    return resolver_from_snapshots(snapshot, user)
+
+
 def managed_config_status(*, refresh: bool = False) -> ProviderStatus:
     """Return managed provider health for diagnostics and config inspection."""
-    return get_managed_snapshot(refresh=refresh).status
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+
+    snapshot = get_managed_snapshot(refresh=refresh)
+    return _managed_resolver(snapshot).provider_statuses()[MANAGED_RANK]
 
 
 @dataclass(frozen=True, slots=True)
@@ -742,7 +767,11 @@ def managed_health(*, refresh: bool = False) -> ManagedHealth:
     Returns:
         Health, violations, and ignored rejections that cannot disagree.
     """
-    return managed_snapshot_health(get_managed_snapshot(refresh=refresh))
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+
+    snapshot = get_managed_snapshot(refresh=refresh)
+    status = _managed_resolver(snapshot).provider_statuses()[MANAGED_RANK]
+    return managed_snapshot_health(replace(snapshot, status=status))
 
 
 def managed_snapshot_health(snapshot: TomlSnapshot) -> ManagedHealth:

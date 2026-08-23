@@ -598,6 +598,14 @@ def resolve_ranked_scalar(
     `resolve_scalar` preserves the established `(value, source)` compatibility
     surface by rendering from the same result.
 
+    Each table must be paired with the status of the source it came from.
+    `TomlSnapshot` rejects a non-`OK` status carrying a non-empty table with a
+    `ValueError`, because an unhealthy source is one every reader must treat as
+    declaring nothing. This is not hypothetical bookkeeping: the two halves are
+    separate parameters, so a caller can supply one snapshot's data beside
+    another's health. A missing default provider surfaces as a `RuntimeError`
+    from the resolver.
+
     Args:
         option: Manifest option to resolve.
         toml_data: Parsed user `config.toml` mapping.
@@ -608,29 +616,12 @@ def resolve_ranked_scalar(
 
     Returns:
         A rank-keyed `ResolvedValue`.
-
-    Raises:
-        RuntimeError: If the always-present default provider is unexpectedly unset.
     """
-    from deepagents_code.configuration.providers import (
-        ranked_default_value,
-        ranked_environment_value,
-        ranked_theme_environment_value,
-        ranked_theme_toml_value,
-        ranked_toml_value,
-    )
-    from deepagents_code.configuration.resolver import (
-        DEFAULT_RANK,
-        ENVIRONMENT_RANK,
-        MANAGED_RANK,
-        USER_RANK,
-        RankedProviderValue,
-        resolve_ranked,
-    )
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
     from deepagents_code.configuration.types import (
-        Found,
         ProviderHealth,
         ProviderStatus,
+        TomlSnapshot,
     )
 
     managed_status = managed_status or ProviderStatus(
@@ -640,58 +631,11 @@ def resolve_ranked_scalar(
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
-    if option.kind is OptionKind.THEME_DELEGATE:
-        providers = (
-            ranked_theme_toml_value(
-                managed_data,
-                rank=MANAGED_RANK,
-                durable=True,
-                status=managed_status,
-            ),
-            ranked_theme_environment_value(os.environ, rank=ENVIRONMENT_RANK),
-            ranked_theme_toml_value(
-                toml_data,
-                rank=USER_RANK,
-                durable=True,
-                status=user_status,
-            ),
-            ranked_default_value(option, rank=DEFAULT_RANK),
-        )
-    else:
-        providers = (
-            ranked_toml_value(
-                option,
-                managed_data,
-                rank=MANAGED_RANK,
-                durable=True,
-                status=managed_status,
-            ),
-            ranked_environment_value(option, os.environ, rank=ENVIRONMENT_RANK),
-            ranked_toml_value(
-                option,
-                toml_data,
-                rank=USER_RANK,
-                durable=True,
-                status=user_status,
-            ),
-            ranked_default_value(option, rank=DEFAULT_RANK),
-        )
-    resolved = resolve_ranked(providers, strategy=option.merge_strategy.value)
-    if resolved is None:
-        fallback = RankedProviderValue(
-            DEFAULT_RANK,
-            True,
-            ProviderStatus("default", None, ProviderHealth.OK),
-            Found(option.default),
-        )
-        resolved = resolve_ranked(
-            (*providers[:-1], fallback),
-            strategy=option.merge_strategy.value,
-        )
-    if resolved is None:
-        msg = f"fallback provider was unset for {option.key}"
-        raise RuntimeError(msg)
-    return resolved
+    resolver = resolver_from_snapshots(
+        TomlSnapshot(managed_data, managed_status),
+        TomlSnapshot(toml_data, user_status),
+    )
+    return resolver.get(option)
 
 
 def _ranked_source(resolved: ResolvedValue[object]) -> str:
@@ -713,35 +657,52 @@ def _emit_ranked_diagnostics(
     This compatibility boundary preserves `resolve_scalar`'s fall-through
     messages for callers that expect the historical logging behavior.
 
-    A scalar that shadows a whole table defaults *every* option beneath it, so
-    that rejection is emitted once per process. `config` resolves the full
-    manifest in one pass, and logging per option would print the same line
-    roughly a hundred times for a single typo.
+    Two rejections are file-wide rather than per-option and are therefore
+    emitted once per process: a scalar that shadows a whole table, and a source
+    that could not be read at all. `config` resolves the full manifest in one
+    pass, and logging per option would print the same line roughly a hundred
+    times for a single typo.
 
     Args:
         option: Manifest option being resolved.
         resolved: Rank-keyed provider results and selected value.
     """
-    from deepagents_code.configuration.providers import SHADOWED_TABLE_SUFFIX
+    from deepagents_code.configuration.providers import (
+        RETAINED_SOURCE_SUFFIX,
+        SHADOWED_TABLE_SUFFIX,
+        UNUSABLE_SOURCE_SUFFIX,
+    )
     from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
     from deepagents_code.configuration.types import Found, Invalid
+
+    once_per_process = (
+        SHADOWED_TABLE_SUFFIX,
+        UNUSABLE_SOURCE_SUFFIX,
+        RETAINED_SOURCE_SUFFIX,
+    )
+
+    def emit(reason: str) -> None:
+        """Log one provider rejection, at most once per process when marked."""
+        if any(suffix in reason for suffix in once_per_process):
+            warning_key = ("ranked provider", reason)
+            if warning_key in _warned_non_table_paths:
+                return
+            _warned_non_table_paths.add(warning_key)
+        logger.warning("%s", reason)
 
     accumulating = option.merge_strategy is not MergeStrategy.REPLACE
     for rank in sorted(resolved.tier_health):
         result = resolved.tier_health[rank]
         if isinstance(result, Invalid):
-            reasons = resolved.tier_diagnostics.get(rank) or (result.reason,)
-            for reason in reasons:
-                if SHADOWED_TABLE_SUFFIX in reason:
-                    warning_key = ("ranked provider", reason)
-                    if warning_key in _warned_non_table_paths:
-                        continue
-                    _warned_non_table_paths.add(warning_key)
-                logger.warning("%s", reason)
+            for reason in resolved.tier_diagnostics.get(rank) or (result.reason,):
+                emit(reason)
             continue
-        if isinstance(result, Found):
-            for reason in resolved.tier_diagnostics.get(rank, ()):
-                logger.warning("%s", reason)
+        # A source rejected as a whole coerces to `Unset` for every option, so
+        # its diagnostic has to be emitted from the unset branch too. Otherwise
+        # a corrupt `config.toml` is indistinguishable from one that simply
+        # omits the key, and the user is handed defaults in silence.
+        for reason in resolved.tier_diagnostics.get(rank, ()):
+            emit(reason)
         if not isinstance(result, Found):
             continue
         if rank == ENVIRONMENT_RANK and option.empty_env_is_false:
@@ -940,42 +901,6 @@ def load_bool_display_preference(
             if isinstance(result, Invalid):
                 for reason in ranked.tier_diagnostics.get(rank) or (result.reason,):
                     on_rejected(reason)
-    return resolved
-
-
-def resolve_interpreter_kwargs(
-    *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Resolve the `[interpreter]` options into `Settings` constructor kwargs.
-
-    Only the interpreter group is resolved through the manifest. Credentials,
-    the shell allow-list, and the LangSmith project keep their dedicated
-    loaders in `config.py` (their empty-string-to-`None` and reload semantics
-    do not fit the generic resolver), so this stays scoped to the section whose
-    defaults this module owns.
-
-    Args:
-        toml_data: Parsed `config.toml`; loaded automatically when omitted.
-        managed_toml_data: Parsed managed TOML; the process snapshot is used when
-            omitted.
-
-    Returns:
-        Mapping of `Settings` field name to resolved value for the interpreter
-        section, suitable for splatting into `Settings(...)`.
-    """
-    data = load_config_toml() if toml_data is None else toml_data
-    resolved: dict[str, Any] = {}
-    for option in get_config_options():
-        if option.group != "Interpreter" or option.settings_field is None:
-            continue
-        value, _ = resolve_scalar(
-            option,
-            toml_data=data,
-            managed_toml_data=managed_toml_data,
-        )
-        resolved[option.settings_field] = value
     return resolved
 
 

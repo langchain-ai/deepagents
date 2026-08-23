@@ -9,6 +9,7 @@ numeric ranks.
 
 from __future__ import annotations
 
+import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -17,8 +18,13 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
+    from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.provider import ConfigProvider
+    from deepagents_code.configuration.types import TomlSnapshot
+
 from deepagents_code.configuration.types import (
     Found,
+    ProviderHealth,
     ProviderResult,
     ProviderStatus,
 )
@@ -53,7 +59,16 @@ class RankedProviderValue[T]:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedValue[T]:
-    """Resolved value with rank-keyed provenance and provider health."""
+    """Resolved value with rank-keyed provenance and provider health.
+
+    Six of the seven fields are parallel rank-keyed collections whose mutual
+    consistency is the entire meaning of the type, and consumers index straight
+    into them: `config_manifest._ranked_source` reads
+    `provider_status[rank] for rank in ranks` to render the source column, so
+    an inconsistent instance is a `KeyError` in user-facing output. The
+    invariants are checked at construction rather than documented, following
+    `TomlSnapshot` in the same package.
+    """
 
     value: T
     provenance: Mapping[int, frozenset[tuple[str, ...]]]
@@ -65,10 +80,305 @@ class ResolvedValue[T]:
         default_factory=lambda: MappingProxyType({})
     )
 
+    def __post_init__(self) -> None:
+        """Reject a value whose rank-keyed halves disagree.
+
+        Also copies each mapping behind a `MappingProxyType`. `frozen=True`
+        protects the field bindings, not the contents: without the copy a
+        caller keeps a live reference to a dict this type presents as a
+        read-only snapshot.
+
+        Raises:
+            ValueError: If a selected rank is missing provider status, or is
+                also reported as masked.
+        """
+        for name in (
+            "provenance",
+            "tier_health",
+            "provider_status",
+            "tier_diagnostics",
+        ):
+            frozen = MappingProxyType(dict(getattr(self, name)))
+            object.__setattr__(self, name, frozen)
+        missing = set(self.selected_ranks) - self.provider_status.keys()
+        if missing:
+            msg = (
+                f"selected ranks {sorted(missing)} have no provider status; "
+                "rendering provenance would raise KeyError"
+            )
+            raise ValueError(msg)
+        both = self.masked_ranks & set(self.selected_ranks)
+        if both:
+            msg = f"ranks {sorted(both)} cannot be both selected and masked"
+            raise ValueError(msg)
+
     @property
     def ranks(self) -> tuple[int, ...]:
         """Contributing ranks in precedence order."""
         return self.selected_ranks or tuple(sorted(self.provenance))
+
+
+type ConfigKey = str
+"""Canonical dotted manifest key."""
+
+
+class ConfigResolver:
+    """Resolve manifest options through an ordered provider chain."""
+
+    def __init__(self, providers: Sequence[ConfigProvider]) -> None:
+        """Build a resolver with providers sorted by precedence.
+
+        Args:
+            providers: Configuration providers with unique numeric ranks.
+
+        Raises:
+            ValueError: If two providers declare the same rank.
+        """
+        ordered = tuple(sorted(providers, key=lambda provider: provider.rank))
+        ranks = tuple(provider.rank for provider in ordered)
+        if len(set(ranks)) != len(ranks):
+            msg = "config providers must have unique ranks"
+            raise ValueError(msg)
+        self._providers = ordered
+        self._lock = threading.RLock()
+
+    def get(self, option: ConfigOption) -> ResolvedValue[object]:
+        """Resolve one option through every provider.
+
+        Args:
+            option: Manifest option to resolve.
+
+        Returns:
+            Resolved value with rank-keyed provenance and health.
+        """
+        with self._lock:
+            return self._resolve(option, self._providers)
+
+    @staticmethod
+    def _resolve(
+        option: ConfigOption,
+        providers: Sequence[ConfigProvider],
+    ) -> ResolvedValue[object]:
+        """Resolve one option against a lock-held provider generation.
+
+        Args:
+            option: Manifest option to resolve.
+            providers: Providers frozen to one generation.
+
+        Returns:
+            Resolved value with rank-keyed provenance and health.
+
+        Raises:
+            RuntimeError: If no provider returns a value.
+        """
+        values = tuple(provider.get(option) for provider in providers)
+        strategy = option.merge_strategy.value
+        effective_values = (
+            tuple(value for value in values if value.rank != DEFAULT_RANK)
+            if strategy in {"union", "deep_merge"}
+            else values
+        )
+        resolved = resolve_ranked(effective_values, strategy=strategy)
+        if resolved is None:
+            fallback = RankedProviderValue(
+                DEFAULT_RANK,
+                True,
+                ProviderStatus("default", None, ProviderHealth.OK),
+                Found(option.default),
+            )
+            without_default = tuple(
+                value for value in values if value.rank != DEFAULT_RANK
+            )
+            resolved = resolve_ranked(
+                (*without_default, fallback),
+                strategy=strategy,
+            )
+        if resolved is None:
+            msg = f"fallback provider was unset for {option.key}"
+            raise RuntimeError(msg)
+        return resolved
+
+    def resolve_options(
+        self,
+        options: Sequence[ConfigOption],
+    ) -> Mapping[ConfigKey, ResolvedValue[object]]:
+        """Resolve selected options against one provider generation.
+
+        Resolving an option is not uniformly cheap: `THEME_DELEGATE` reaches
+        the theme registry, which imports Textual (~470ms). Callers on the
+        startup hot path ask for the options they need rather than the whole
+        manifest, and keep the single-generation guarantee either way.
+
+        Args:
+            options: Manifest options to resolve together.
+
+        Returns:
+            Immutable mapping from canonical option key to resolved value.
+        """
+        with self._lock:
+            resolved = {
+                option.key: self._resolve(option, self._providers) for option in options
+            }
+        return MappingProxyType(resolved)
+
+    def resolve_all(self) -> Mapping[ConfigKey, ResolvedValue[object]]:
+        """Resolve the full manifest against one provider generation.
+
+        Returns:
+            Immutable mapping from canonical option key to resolved value.
+        """
+        from deepagents_code.config_manifest import get_config_options
+
+        return self.resolve_options(get_config_options())
+
+    def reload(self) -> None:
+        """Propagate a source refresh to every provider."""
+        with self._lock:
+            for provider in self._providers:
+                provider.reload()
+
+    def provider_statuses(self) -> Mapping[int, ProviderStatus]:
+        """Return immutable provider health keyed by precedence rank."""
+        with self._lock:
+            statuses = {
+                provider.rank: provider.status() for provider in self._providers
+            }
+        return MappingProxyType(statuses)
+
+
+def resolver_from_snapshots(
+    managed: TomlSnapshot,
+    user: TomlSnapshot,
+    *,
+    managed_loader: Callable[[], TomlSnapshot] | None = None,
+    user_loader: Callable[[], TomlSnapshot] | None = None,
+) -> ConfigResolver:
+    """Build the standard provider chain from one file-snapshot generation.
+
+    Args:
+        managed: Managed TOML snapshot.
+        user: User TOML snapshot.
+        managed_loader: Optional managed reload operation.
+        user_loader: Optional user reload operation.
+
+    Returns:
+        Resolver containing managed, environment, user, and default providers.
+    """
+    from deepagents_code.configuration.providers import (
+        DefaultProvider,
+        EnvProvider,
+        TomlFileProvider,
+    )
+
+    # Snapshots built in-memory carry no path. Pass that through rather than
+    # inventing a relative filename: `TomlFileProvider.load` would resolve it
+    # against the process working directory, so a later `reload()` on a
+    # diagnostic resolver would read whatever `./managed_config.toml` happens
+    # to sit in the repo the agent is running in and treat it as policy.
+    managed_path = managed.status.path
+    user_path = user.status.path
+    return ConfigResolver(
+        (
+            TomlFileProvider(
+                managed.status.name,
+                managed_path,
+                MANAGED_RANK,
+                True,
+                managed,
+                managed_loader,
+            ),
+            EnvProvider(),
+            TomlFileProvider(
+                user.status.name,
+                user_path,
+                USER_RANK,
+                True,
+                user,
+                user_loader,
+            ),
+            DefaultProvider(),
+        )
+    )
+
+
+@dataclass(slots=True)
+class _ResolverCache:
+    """Mutable process resolver cache guarded by one lifecycle lock.
+
+    One field, not a key and a resolver side by side: those admit a populated
+    key with no resolver, and a lookup that trusts either half alone would then
+    read a stale generation or rebuild one that already exists.
+    """
+
+    entry: tuple[tuple[object, ...], ConfigResolver] | None = None
+
+
+_resolver_cache_lock = threading.RLock()
+_resolver_cache = _ResolverCache()
+
+
+def _reload_enforceable_managed_snapshot() -> TomlSnapshot:
+    """Return a refreshed managed snapshot only when policy can enforce it."""
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_policy_violations,
+    )
+
+    candidate = get_managed_snapshot(refresh=True)
+    if candidate.status.usable and managed_policy_violations(
+        candidate.data,
+        status=candidate.status,
+    ):
+        return get_managed_snapshot()
+    return candidate
+
+
+def get_config_resolver(*, refresh_managed: bool = False) -> ConfigResolver:
+    """Return the shared process resolver for the active config paths.
+
+    Args:
+        refresh_managed: Re-read all providers on an existing matching resolver.
+
+    Returns:
+        Resolver shared by consumers of the active managed and user paths.
+    """
+    from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.service import get_managed_snapshot
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    managed = get_managed_snapshot(refresh=refresh_managed)
+    key = (DEFAULT_CONFIG_PATH, managed.status.path)
+    with _resolver_cache_lock:
+        entry = _resolver_cache.entry
+        if entry is None or entry[0] != key:
+            user_provider = TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH)
+            user = user_provider.load()
+            resolver = resolver_from_snapshots(
+                managed,
+                user,
+                managed_loader=_reload_enforceable_managed_snapshot,
+                user_loader=user_provider.load,
+            )
+            _resolver_cache.entry = (key, resolver)
+            return resolver
+        resolver = entry[1]
+        if refresh_managed:
+            resolver.reload()
+        return resolver
+
+
+def reset_config_resolver() -> None:
+    """Drop the cached process resolver.
+
+    Test-only, and paired with `service.invalidate_config_sources`: the two
+    caches are keyed differently, so clearing only the managed snapshot leaves
+    this one serving the previous test's generation. Tests escaped that today
+    only by incidentally monkeypatching `DEFAULT_CONFIG_PATH`, which changes
+    the key; one that exercises the resolver at an unchanged path would inherit
+    stale state.
+    """
+    with _resolver_cache_lock:
+        _resolver_cache.entry = None
 
 
 def resolve_ranked[T](

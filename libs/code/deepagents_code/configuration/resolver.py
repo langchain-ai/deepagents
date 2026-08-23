@@ -59,7 +59,16 @@ class RankedProviderValue[T]:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedValue[T]:
-    """Resolved value with rank-keyed provenance and provider health."""
+    """Resolved value with rank-keyed provenance and provider health.
+
+    Six of the seven fields are parallel rank-keyed collections whose mutual
+    consistency is the entire meaning of the type, and consumers index straight
+    into them: `config_manifest._ranked_source` reads
+    `provider_status[rank] for rank in ranks` to render the source column, so
+    an inconsistent instance is a `KeyError` in user-facing output. The
+    invariants are checked at construction rather than documented, following
+    `TomlSnapshot` in the same package.
+    """
 
     value: T
     provenance: Mapping[int, frozenset[tuple[str, ...]]]
@@ -70,6 +79,38 @@ class ResolvedValue[T]:
     tier_diagnostics: Mapping[int, tuple[str, ...]] = field(
         default_factory=lambda: MappingProxyType({})
     )
+
+    def __post_init__(self) -> None:
+        """Reject a value whose rank-keyed halves disagree.
+
+        Also copies each mapping behind a `MappingProxyType`. `frozen=True`
+        protects the field bindings, not the contents: without the copy a
+        caller keeps a live reference to a dict this type presents as a
+        read-only snapshot.
+
+        Raises:
+            ValueError: If a selected rank is missing provider status, or is
+                also reported as masked.
+        """
+        for name in (
+            "provenance",
+            "tier_health",
+            "provider_status",
+            "tier_diagnostics",
+        ):
+            frozen = MappingProxyType(dict(getattr(self, name)))
+            object.__setattr__(self, name, frozen)
+        missing = set(self.selected_ranks) - self.provider_status.keys()
+        if missing:
+            msg = (
+                f"selected ranks {sorted(missing)} have no provider status; "
+                "rendering provenance would raise KeyError"
+            )
+            raise ValueError(msg)
+        both = self.masked_ranks & set(self.selected_ranks)
+        if both:
+            msg = f"ranks {sorted(both)} cannot be both selected and masked"
+            raise ValueError(msg)
 
     @property
     def ranks(self) -> tuple[int, ...]:

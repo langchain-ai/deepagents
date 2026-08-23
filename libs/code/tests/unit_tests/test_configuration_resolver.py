@@ -29,6 +29,7 @@ from deepagents_code.configuration.resolver import (
     USER_RANK,
     ConfigResolver,
     RankedProviderValue,
+    ResolvedValue,
     resolve_ranked,
     resolver_from_snapshots,
 )
@@ -990,3 +991,56 @@ def test_invalidate_config_sources_also_drops_the_resolver(
         assert resolver_module.get_config_resolver().get(option).value == "auto"
     finally:
         service.invalidate_config_sources()
+
+
+def test_resolved_value_rejects_a_selected_rank_with_no_provider_status() -> None:
+    """`_ranked_source` indexes `provider_status` by every selected rank.
+
+    An instance whose halves disagree is a `KeyError` in the source column of
+    user-facing `config` output, so it must not be constructible.
+    """
+    with pytest.raises(ValueError, match="no provider status"):
+        ResolvedValue(
+            "value",
+            {USER_RANK: frozenset({()})},
+            {},
+            {},
+            frozenset(),
+            (USER_RANK,),
+        )
+
+
+def test_resolved_value_rejects_a_rank_that_is_both_selected_and_masked() -> None:
+    """A tier cannot have won and been hidden by a stronger durable tier."""
+    status = ProviderStatus("config.toml", None, ProviderHealth.OK)
+    with pytest.raises(ValueError, match="both selected and masked"):
+        ResolvedValue(
+            "value",
+            {USER_RANK: frozenset({()})},
+            {USER_RANK: Found("value")},
+            {USER_RANK: status},
+            frozenset({USER_RANK}),
+            (USER_RANK,),
+        )
+
+
+def test_resolved_value_does_not_alias_the_mappings_it_was_given() -> None:
+    """`frozen=True` protects the bindings, not the contents."""
+    status = ProviderStatus("config.toml", None, ProviderHealth.OK)
+    provider_status = {USER_RANK: status}
+    resolved = ResolvedValue(
+        "value",
+        {USER_RANK: frozenset({()})},
+        {USER_RANK: Found("value")},
+        provider_status,
+        frozenset(),
+        (USER_RANK,),
+    )
+
+    provider_status[MANAGED_RANK] = ProviderStatus(
+        "managed config",
+        None,
+        ProviderHealth.OK,
+    )
+
+    assert set(resolved.provider_status) == {USER_RANK}

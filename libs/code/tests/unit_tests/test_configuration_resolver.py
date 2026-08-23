@@ -363,6 +363,31 @@ def test_resolve_all_uses_one_toml_snapshot(
     assert after["test.second"].value is True
 
 
+@pytest.mark.parametrize(
+    "health",
+    [ProviderHealth.CORRUPT, ProviderHealth.UNREADABLE],
+)
+def test_initial_failed_toml_snapshot_falls_through_to_default(
+    health: ProviderHealth,
+    tmp_path: Path,
+) -> None:
+    """A failed first read must remain an empty resolvable generation."""
+    path = tmp_path / "config.toml"
+    snapshot = TomlSnapshot({}, ProviderStatus("config.toml", path, health))
+    provider = TomlFileProvider(
+        "config.toml",
+        path,
+        loader=lambda: snapshot,
+    )
+    option = _bool_option("test.enabled", "enabled")
+
+    resolved = ConfigResolver((provider, DefaultProvider())).get(option)
+
+    assert resolved.value is False
+    assert resolved.ranks == (DEFAULT_RANK,)
+    assert resolved.provider_status[USER_RANK].health is health
+
+
 def test_failed_toml_reload_keeps_the_last_usable_snapshot(tmp_path: Path) -> None:
     """A corrupt re-read must not replace the values still being enforced.
 

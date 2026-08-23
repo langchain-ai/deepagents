@@ -473,7 +473,7 @@ class _TomlSnapshotState:
     """Mutable snapshot cell owned by a frozen provider."""
 
     value: TomlSnapshot | None = None
-    """Snapshot used to resolve values; always the last usable generation."""
+    """Last usable snapshot, or the empty failed snapshot from an initial read."""
 
     failure: ProviderStatus | None = None
     """Status of the most recent failed reload, kept for health reporting."""
@@ -623,6 +623,8 @@ class TomlFileProvider:
             self._state.value = snapshot
             self._state.failure = None
         else:
+            if self._state.value is None:
+                self._state.value = snapshot
             self._state.failure = snapshot.status
 
     def _current_snapshot(self) -> TomlSnapshot:

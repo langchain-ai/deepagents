@@ -2,15 +2,15 @@
 type: Engineering Workflow
 title: Deep Agents Code runtime, approvals, and MCP trust
 description: Maintainer guide to dcode’s Textual transcript client and LangGraph server, user-message rendering and selection, approval modes, experimental Auto policy, sandboxes, and MCP configuration trust.
-tags: [dcode, security, approvals, mcp, workflow, tui, transcript]
+tags: [dcode, security, approvals, mcp, workflow, tui, transcript, tracing]
 openwiki:
   roles: [workflow, integration]
-  change_kinds: [ui, transcript, client-server]
-  source_paths: [libs/code/deepagents_code/config_manifest.py, libs/code/deepagents_code/configuration/resolver.py, libs/code/deepagents_code/_ask_user_types.py, libs/code/deepagents_code/tui/widgets/messages.py, libs/code/deepagents_code/app.py, libs/code/deepagents_code/server_graph.py]
-  symbols: [resolve_ranked, require_healthy_managed_config, encode_multi_select_answer, ask_user_answer_is_empty, UserMessage, QueuedUserMessage, create_cli_agent, make_graph]
-  test_paths: [libs/code/tests/unit_tests/test_configuration.py, libs/code/tests/unit_tests/test_configuration_resolver.py, libs/code/tests/unit_tests/test_ask_user_types.py, libs/code/tests/unit_tests/tui/widgets/test_messages.py, libs/code/tests/unit_tests/test_app.py]
-  invariants: ["A valid managed policy masks lower-precedence environment values for replacement options.", "An empty or malformed multi-select answer never becomes Auto consent evidence.", "Sent-prompt continuation lines align under the message body, not the prefix glyph.", "Full-message selection returns submitted text rather than display-truncated content."]
-  validation_commands: ["cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_configuration.py tests/unit_tests/test_configuration_resolver.py -k 'managed_provider_failure_is_fail_closed or corrupt_managed_config_does_not_empty_the_mcp_deny_set or durable_found_masks_only_lower_priority_ephemeral_tiers'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_ask_user_types.py -k 'MultiSelectAnswerEncoding or AskUserAnswerIsEmpty'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k UserMessageAppearance"]
+  change_kinds: [ui, transcript, client-server, trace-metadata]
+  source_paths: [libs/code/deepagents_code/config.py, libs/code/deepagents_code/config_manifest.py, libs/code/deepagents_code/configuration/resolver.py, libs/code/deepagents_code/_ask_user_types.py, libs/code/deepagents_code/tui/widgets/messages.py, libs/code/deepagents_code/app.py, libs/code/deepagents_code/server_graph.py]
+  symbols: [build_stream_config, resolve_ranked, require_healthy_managed_config, encode_multi_select_answer, ask_user_answer_is_empty, UserMessage, QueuedUserMessage, create_cli_agent, make_graph]
+  test_paths: [libs/code/tests/unit_tests/test_coding_agent_metadata.py, libs/code/tests/unit_tests/test_configuration.py, libs/code/tests/unit_tests/test_configuration_resolver.py, libs/code/tests/unit_tests/test_ask_user_types.py, libs/code/tests/unit_tests/tui/test_textual_adapter.py, libs/code/tests/unit_tests/tui/widgets/test_messages.py, libs/code/tests/unit_tests/test_app.py]
+  invariants: ["A valid managed policy masks lower-precedence environment values for replacement options.", "An empty or malformed multi-select answer never becomes Auto consent evidence.", "Sent-prompt continuation lines align under the message body, not the prefix glyph.", "Full-message selection returns submitted text rather than display-truncated content.", "Trace-wide editable metadata is always a boolean and agrees with the dcode lc_versions value."]
+  validation_commands: ["cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_coding_agent_metadata.py tests/unit_tests/tui/test_textual_adapter.py -k 'ContractCompliance or versions_contains_cli_version or versions_marks_editable_cli_version'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_configuration.py tests/unit_tests/test_configuration_resolver.py -k 'managed_provider_failure_is_fail_closed or corrupt_managed_config_does_not_empty_the_mcp_deny_set or durable_found_masks_only_lower_priority_ephemeral_tiers'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_ask_user_types.py -k 'MultiSelectAnswerEncoding or AskUserAnswerIsEmpty'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k UserMessageAppearance"]
 ---
 # Deep Agents Code: runtime, approvals, and MCP trust
 
@@ -35,6 +35,37 @@ CLI parsing (`main.py`)
 - Local execution uses `LocalShellBackend` rooted at the working directory; remote execution delegates filesystem and shell operations to the selected sandbox.
 
 `libs/code/ARCHITECTURE.md` and `DEVELOPMENT.md` are the first primary docs to read when changing this path. Changes to the server-side graph construction should also account for the core assembly rules in [Runtime and package architecture](../architecture/overview.md).
+
+## Trace metadata and editable-install attribution
+
+Consult this section when changing LangSmith/LangGraph trace fields, per-turn attribution, or editable-install detection. `config.py::build_stream_config()` is the single assembly point for the `RunnableConfig` passed to graph execution. Both interactive `tui/textual_adapter.py` and headless `client/non_interactive.py` call it, so changing a metadata key affects both user-facing execution paths.
+
+```mermaid
+sequenceDiagram
+    participant TUI as Textual client
+    participant Headless as Non-interactive client
+    participant Config as build_stream_config
+    participant Graph as LangGraph execution
+    TUI->>Config: build config once per submitted prompt
+    Headless->>Config: build config once per process turn
+    Config->>Config: read cached PEP 610 editable state
+    Config->>Graph: configurable thread id and metadata
+    Graph-->>Graph: propagate metadata to descendant runs
+```
+
+This shows the shared configuration boundary: the metadata block is trace-wide, not a root-run-only payload.
+
+`_resolve_editable_info()` reads `deepagents-code` PEP 610 `direct_url.json` once per process and caches `(is_editable, source_path)`. `build_stream_config()` writes `metadata["editable"]` on **every** invocation, including `False` for ordinary installations. The same cached boolean controls the `+editable` local-version marker in `metadata["lc_versions"]["deepagents-code"]`; trace consumers should filter on the boolean instead of parsing that string. This is diagnostic attribution, not a security or approval-policy signal.
+
+The interactive adapter advances its per-thread turn markers before calling the builder off the Textual event loop. The non-interactive client creates one UUID turn ID and uses turn number `1` for its one-process run. `build_stream_config()` deliberately omits contract keys that apply only to selected run types (`approval_policy`, `ls_subagent_id`, and `ls_subagent_type`), because LangGraph propagates this metadata to root, LLM, tool, subagent, and interrupted runs. Adding a scope-limited key here would leak it into invalid run types.
+
+When extending trace metadata, add it at `build_stream_config()` only if it is valid on every propagated run; otherwise locate a genuinely scoped runtime seam. Preserve the shared editable lookup rather than performing another PEP 610 read or deriving a potentially divergent value. Validate both value states and propagation safety with the focused quiet check:
+
+```bash
+cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_coding_agent_metadata.py tests/unit_tests/tui/test_textual_adapter.py -k 'ContractCompliance or versions_contains_cli_version or versions_marks_editable_cli_version'
+```
+
+`TestBuildStreamConfig` in `tests/unit_tests/tui/test_textual_adapter.py` exercises editable and non-editable values and their version representation. `TestContractCompliance` in `tests/unit_tests/test_coding_agent_metadata.py` checks the shared metadata against the vendored `coding-agent-v1` validator for every propagated run type. A live trace validation is conditional on changing the external contract or its validator; the unit tests explicitly describe that external check as end-to-end acceptance rather than a default local check.
 
 ## Configuration and managed policy
 

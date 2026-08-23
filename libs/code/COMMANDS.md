@@ -33,7 +33,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/manual` |  | Switch to Manual approval mode |
 | `/mcp` |  | Manage MCP servers and authentication |
 | `/model` |  | Switch models or edit model settings |
-| `/notifications` |  | Configure warning notifications |
+| `/notifications` |  | Review notifications and configure warning settings |
 | `/offload` | `/compact` | Summarize and offload older messages to free context |
 | `/plugins` |  | Manage plugins |
 | `/quit` | `/q` | Exit app |

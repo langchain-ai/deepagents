@@ -71,6 +71,7 @@ from deepagents_code.model_config import (
     is_service,
     resolved_env_var_name,
 )
+from deepagents_code.tui.key_hints import modal_navigation_hint
 from deepagents_code.tui.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
@@ -1588,6 +1589,7 @@ class AuthManagerScreen(ModalScreen[None]):
     }
 
     AuthManagerScreen .auth-manager-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;
@@ -1610,6 +1612,13 @@ class AuthManagerScreen(ModalScreen[None]):
         # populated each time the option list is built. Selecting one routes
         # to the install confirmation instead of the key prompt.
         self._install_extras: dict[str, str] = {}
+        # Resolved auth status per provider/service key, and the set of keys
+        # with a credential in `auth_store`. Both are side effects of
+        # building the option list, so both are empty until then — hence the
+        # `.get()` fallback in `_action_for_provider`, and the reason
+        # `compose` builds the options before the footer.
+        self._auth_statuses: dict[str, ProviderAuthStatus] = {}
+        self._stored_providers: set[str] = set()
         # Set when the user confirms installing a provider's extra; the app
         # reads these off the screen after dismissal to install then reopen
         # the manager with the just-installed provider highlighted.
@@ -1623,7 +1632,6 @@ class AuthManagerScreen(ModalScreen[None]):
         Yields:
             Widgets for the manager listing.
         """
-        glyphs = get_glyphs()
         options, store_warning = self._build_options_with_warning()
         with Vertical():
             yield Static("Manage API keys", classes="auth-manager-title")
@@ -1637,12 +1645,77 @@ class AuthManagerScreen(ModalScreen[None]):
                     classes="auth-manager-warning",
                 )
             yield OptionList(*options, id="auth-manager-options")
+            # `OptionList` highlights its first row on construction, so the
+            # mount-time `OptionHighlighted` recomputes this footer before the
+            # first frame. Seeding it with the same provider keeps that frame
+            # from flashing a generic label.
+            first_provider = options[0].id if options else None
             yield Static(
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab/Shift+Tab "
-                f"navigate {glyphs.bullet} Enter add/replace/delete/install "
-                f"{glyphs.bullet} Esc close",
+                self._build_manager_help(first_provider),
                 classes="auth-manager-help",
+                id="auth-manager-help",
             )
+
+    def _build_manager_help(self, provider: str | None) -> str:
+        """Build the manager footer for the highlighted provider.
+
+        Args:
+            provider: Highlighted provider or service config key, if any.
+
+        Returns:
+            Navigation help naming the highlighted row's Enter action.
+        """
+        glyphs = get_glyphs()
+        action = self._action_for_provider(provider)
+        return (
+            f"{modal_navigation_hint(glyphs)} "
+            f"{glyphs.bullet} Enter {action} {glyphs.bullet} Esc close"
+        )
+
+    def _action_for_provider(self, provider: str | None) -> str:
+        """Return the action exposed by selecting a provider row.
+
+        Args:
+            provider: Highlighted provider or service config key, if any.
+
+        Returns:
+            Short action label for the manager footer.
+        """
+        if provider is None:
+            return "select"
+        if provider in self._install_extras:
+            return "install"
+
+        if provider == CODEX_PROVIDER:
+            return "manage" if self._codex_session_is_active() else "sign in"
+
+        status = self._auth_statuses.get(provider)
+        if provider in self._stored_providers or (
+            status is not None and status.source is ProviderAuthSource.STORED
+        ):
+            # Enter opens the key prompt, which is where the delete action
+            # lives (`Ctrl+D`); the manager itself never deletes a key.
+            return "replace/delete"
+        if status is not None and status.state is ProviderAuthState.CONFIGURED:
+            return "replace"
+        return "add"
+
+    def _codex_session_is_active(self) -> bool:
+        """Return whether a usable ChatGPT token is stored on disk.
+
+        An expired *access* token still counts. `_get_codex_auth_status`
+        reports it as `CONFIGURED` because the saved refresh token renews it
+        when a model is constructed, and the row's badge says so. Treating
+        expiry as signed-out would contradict that badge and hide sign-out
+        behind a re-authorization the user does not need. Reads the status
+        resolved when the option list was built, so highlighting a row never
+        touches the token file.
+
+        Returns:
+            `True` when a ChatGPT token is stored and refreshable.
+        """
+        status = self._auth_statuses.get(CODEX_PROVIDER)
+        return status is not None and status.state is ProviderAuthState.CONFIGURED
 
     def _build_description(self) -> Content:
         """Build the description line with an inline docs hyperlink.
@@ -1706,6 +1779,31 @@ class AuthManagerScreen(ModalScreen[None]):
     def on_leave(self) -> None:
         """Reset the pointer shape when the mouse leaves the manager."""
         self.styles.pointer = "default"
+
+    def on_option_list_option_highlighted(
+        self, event: OptionList.OptionHighlighted
+    ) -> None:
+        """Update the footer for the highlighted provider row."""
+        self._update_manager_help(event.option.id)
+
+    def _update_manager_help(self, provider: str | None) -> None:
+        """Rewrite the footer for `provider`, if the manager is still mounted.
+
+        Guarded against the user having dismissed the manager before a
+        queued `OptionHighlighted` was dispatched; without the guard,
+        `query_one` would raise `NoMatches` and Textual would surface it as
+        a callback error.
+
+        Args:
+            provider: Highlighted provider or service config key, if any.
+        """
+        from textual.css.query import NoMatches
+
+        try:
+            help_widget = self.query_one("#auth-manager-help", Static)
+        except NoMatches:
+            return
+        help_widget.update(self._build_manager_help(provider))
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Open the prompt for the selected provider.
@@ -1777,18 +1875,16 @@ class AuthManagerScreen(ModalScreen[None]):
     def _open_codex_screen(self) -> None:
         """Push the ChatGPT OAuth flow modal and refresh on close.
 
-        When `openai_codex` is already signed in, give the user a chance to
-        sign out before launching a fresh sign-in flow. Otherwise just run
-        the sign-in worker.
+        When a ChatGPT token is already stored, give the user a chance to
+        sign out (or switch account) before launching a fresh sign-in flow.
+        Otherwise just run the sign-in worker.
         """
-        from deepagents_code.integrations import openai_codex
         from deepagents_code.tui.widgets.codex_auth import (
             CodexAuthScreen,
             CodexSignedInScreen,
         )
 
-        status = openai_codex.get_status()
-        if status.logged_in and not status.is_expired:
+        if self._codex_session_is_active():
             self.app.push_screen(
                 CodexSignedInScreen(),
                 self._on_codex_signed_in_closed,
@@ -1851,7 +1947,7 @@ class AuthManagerScreen(ModalScreen[None]):
             self.post_message(self.CredentialDeleted(provider))
 
     def _refresh_options(self) -> None:
-        """Rebuild option labels from current store state."""
+        """Rebuild option labels, and the footer, from current store state."""
         option_list = self.query_one("#auth-manager-options", OptionList)
         highlighted = option_list.highlighted
         option_list.clear_options()
@@ -1860,6 +1956,17 @@ class AuthManagerScreen(ModalScreen[None]):
             option_list.add_option(option)
         if highlighted is not None and option_list.option_count:
             option_list.highlighted = min(highlighted, option_list.option_count - 1)
+        # Restoring the index re-posts `OptionHighlighted`, but only on a
+        # non-empty list, and only a frame later. Rewrite the footer here so
+        # an emptied list can't keep a stale action, and so a saved key can't
+        # leave the old label on screen for a frame — the rows resort, so the
+        # provider under an unmoved cursor may have changed.
+        restored = option_list.highlighted
+        self._update_manager_help(
+            option_list.get_option_at_index(restored).id
+            if restored is not None
+            else None
+        )
 
     def _build_options_with_warning(self) -> tuple[list[Option], str | None]:
         """Render the option list, returning a corruption warning if any.
@@ -1880,6 +1987,7 @@ class AuthManagerScreen(ModalScreen[None]):
                 f"Credential file is unreadable ({exc}). "
                 "Saving a key here will overwrite it."
             )
+        self._stored_providers = stored
 
         config = ModelConfig.load()
         config_providers = {
@@ -1917,12 +2025,14 @@ class AuthManagerScreen(ModalScreen[None]):
         self._install_extras = self._uninstalled_known_providers(config, shown)
 
         # Resolve each manageable entry's auth status once and reuse it for
-        # both ordering and badge rendering. `_auth_status_for` reads the
-        # credential file, so resolving it separately in the sort key and in
-        # `_format_label` would read `auth.json` twice per row (and, on a
-        # corrupt store, log the same warning twice). A single pass halves both.
+        # ordering, badge rendering, and the footer's Enter action.
+        # `_auth_status_for` reads the credential file, so resolving it
+        # separately in the sort key and in `_format_label` would read
+        # `auth.json` twice per row (and, on a corrupt store, log the same
+        # warning twice). A single pass halves both.
         services = set(SERVICE_API_KEY_ENV) - shown - set(self._install_extras)
         status_by_key = {key: _auth_status_for(key) for key in shown | services}
+        self._auth_statuses = status_by_key
 
         # Float entries that already have a credential configured to the top so
         # the keys a user is actively using are easiest to find; everything else

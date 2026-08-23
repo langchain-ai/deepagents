@@ -252,6 +252,7 @@ def _resolve(
         resolve_auto_classifier_model_with_source,
         resolve_auto_classifier_timeout_with_source,
         resolve_scalar,
+        resolve_startup_mode_with_source,
     )
     from deepagents_code.model_config import ProviderAuthSource
 
@@ -293,6 +294,17 @@ def _resolve(
             managed_toml_data=managed_toml_data,
         )
         return source != "default", source, timeout
+
+    if option.key == "startup.mode":
+        # The manifest default that `resolve_scalar` returns ignores the
+        # app-managed `[startup].recent` fallback that `load_startup_mode`
+        # restores on a bare launch. Report the effective mode instead, so
+        # introspection matches what the next bare launch reads from the file.
+        mode, source = resolve_startup_mode_with_source(
+            toml_data=toml_data,
+            managed_toml_data=managed_toml_data,
+        )
+        return source != "default", source, mode
 
     value, source = resolve_scalar(
         option,

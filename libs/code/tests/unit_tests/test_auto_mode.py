@@ -75,6 +75,7 @@ from deepagents_code.auto_mode import (
     _default_counters,
     _fixed_repo_command_allowed,
     _merge_temp_artifacts,
+    _resolve_path,
     classifier_unavailable_reason,
     gated_mcp_tool_names,
     mcp_tool_is_coherently_read_only,
@@ -723,6 +724,14 @@ def test_fixed_repo_commands_allow_only_read_only_git_operations(
     assert not _fixed_repo_command_allowed("git diff ../other", tmp_path)
     assert not _fixed_repo_command_allowed("git status && rm -rf .", tmp_path)
     assert not _fixed_repo_command_allowed("git status & rm -rf .", tmp_path)
+
+
+def test_resolve_path_rejects_unknown_home_directory(tmp_path: Path) -> None:
+    assert _resolve_path(tmp_path, "~nonexistentuser/foo") is None
+
+
+def test_fixed_repo_commands_reject_unknown_home_directory(tmp_path: Path) -> None:
+    assert not _fixed_repo_command_allowed("git show ~nonexistentuser/x", tmp_path)
 
 
 def test_classifier_schema_requires_every_object_property() -> None:

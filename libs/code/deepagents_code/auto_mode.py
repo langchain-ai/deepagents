@@ -1592,12 +1592,12 @@ def _resolved_tools(request: ModelRequest) -> dict[str, BaseTool]:
 def _resolve_path(root: Path, raw: object) -> Path | None:
     if not isinstance(raw, str) or not raw:
         return None
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = root / candidate
     try:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
         return candidate.resolve(strict=False)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return None
 
 
@@ -2594,14 +2594,22 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     }
                 )
                 continue
-            if await asyncio.to_thread(
-                _deterministic_allow,
-                self._worktree_root,
-                call,
-                tool,
-                self._shell_allow_list,
-                self._trusted_compaction_tool,
-            ):
+            try:
+                deterministic_allow = await asyncio.to_thread(
+                    _deterministic_allow,
+                    self._worktree_root,
+                    call,
+                    tool,
+                    self._shell_allow_list,
+                    self._trusted_compaction_tool,
+                )
+            except Exception:
+                logger.debug(
+                    "Auto deterministic approval failed; requiring review",
+                    exc_info=True,
+                )
+                deterministic_allow = False
+            if deterministic_allow:
                 trusted_compaction_seen = (
                     trusted_compaction_seen or is_trusted_compaction
                 )

@@ -6601,10 +6601,16 @@ class TestSelectProjectMcpTrustAction:
         assert "Deny [n]" in output.getvalue()
         assert "Choose [Y/r/n]" in output.getvalue()
 
-    def test_text_fallback_eof_uses_allow_default(
+    def test_text_fallback_eof_refuses_despite_an_allow_default(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """EOF selects the same opt-out default as Enter."""
+        """Ctrl+D must refuse in the text fallback as it does in the picker.
+
+        The gate only runs with a TTY, so EOF here is a deliberate keypress —
+        not an absent human. Taking the opt-out default would load the `.env`
+        the user just backed out of, and the prompt's own text promises the
+        opposite.
+        """
         from deepagents_code.main import _select_trust_action, _TrustAction
 
         monkeypatch.setattr(
@@ -6617,7 +6623,7 @@ class TestSelectProjectMcpTrustAction:
             Console(file=StringIO()), default_action=_TrustAction.ALLOW_ONCE
         )
 
-        assert result is _TrustAction.ALLOW_ONCE
+        assert result is _TrustAction.DENY
 
 
 class TestCheckMcpProjectTrustDedupe:

@@ -3434,8 +3434,8 @@ def _run_trust_action_picker(
         refresh_label: Label for an explicit environment refresh, when offered.
         deny_first: When `True`, list the deny option first; callers whose
             "deny" reads as a safe default (e.g. aborting a launch) put it in
-            the leading position. The picker starts highlighted on the deny
-            option in either ordering, so a bare Enter refuses.
+            the leading position. Ordering only — what a bare Enter selects is
+            `default_action`, which is highlighted by identity in either order.
         default_action: Action to highlight initially. Defaults to `DENY` so a
             bare Enter refuses for opt-in prompts; opt-out prompts (whose safe
             default is to proceed) pass `ALLOW_ONCE` so Enter continues.
@@ -3669,7 +3669,9 @@ def _select_trust_action(
     Falls back to a text prompt when the inline picker cannot run. Every failure
     mode resolves to a decision the caller can act on without knowing which
     input path produced it: an unavailable picker degrades to text, and EOF on
-    the text prompt selects the caller's default action.
+    the text prompt refuses (`CANCELLED` under `abort_on_deny`) rather than
+    taking the caller's default, so Ctrl+D means the same thing in both input
+    paths.
 
     Args:
         console: Console used by the text fallback.
@@ -3684,7 +3686,8 @@ def _select_trust_action(
             default, so callers cannot mistake a deny for a decision to proceed.
         default_action: Action a bare Enter selects and the picker highlights
             first. Defaults to `DENY` so opt-in prompts fail closed; opt-out
-            prompts (whose safe default is to proceed) pass `ALLOW_ONCE`.
+            prompts (whose safe default is to proceed) pass `ALLOW_ONCE`. It
+            governs Enter only — EOF always refuses.
 
     Returns:
         The selected trust action, `CANCELLED` when the picker is aborted or a
@@ -3747,9 +3750,11 @@ def _select_trust_action(
     except KeyboardInterrupt:
         return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
-        if default_action is _TrustAction.DENY and abort_on_deny:
-            return _TrustPromptOutcome.CANCELLED
-        return default_action
+        # Ctrl+D refuses, exactly as Esc/Ctrl+D does in the picker. Only a bare
+        # Enter takes the caller's default: an opt-out prompt is advisory about
+        # *not answering*, not about backing out. Both callers of this prompt
+        # reach it with a TTY, so EOF here is a deliberate keypress.
+        return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
     if answer in {"y", "yes"}:
         return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
@@ -4319,9 +4324,10 @@ def _check_project_dotenv_trust() -> None:
 
     Advisory by default: a bare Enter loads the file, preserving current
     behavior. Every other non-answer refuses rather than consents — Esc and
-    Ctrl+D skip the file for this session, and Ctrl+C exits the process with
-    status 130. Runs before the settings bootstrap (which loads the project
-    `.env`) so the decision takes effect on the current launch.
+    Ctrl+D skip the file for this session in both the picker and the text
+    fallback, and Ctrl+C exits the process with status 130. Runs before the
+    settings bootstrap (which loads the project `.env`) so the decision takes
+    effect on the current launch.
 
     Prompts only when this process has a terminal, a project `.env` is present,
     and the file is not already governed by the `read_project_dotenv` opt-out

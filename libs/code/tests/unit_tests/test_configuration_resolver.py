@@ -738,3 +738,36 @@ def test_a_failed_resolver_refresh_does_not_fail_a_landed_write(
     assert result.changed
     assert 'mode = "auto"' in config_path.read_text(encoding="utf-8")
     assert any("could not refresh" in record.message for record in caplog.records)
+
+
+def test_a_pathless_provider_does_not_read_the_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A snapshot with no known origin must not be reloaded from a guessed path.
+
+    `resolver_from_snapshots` used to substitute a bare relative filename, so
+    reloading a diagnostic resolver would read `./managed_config.toml` from
+    whatever directory the process was launched in and enforce it as policy.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "managed_config.toml").write_text(
+        '[startup]\nmode = "auto"\n',
+        encoding="utf-8",
+    )
+    managed = TomlSnapshot(
+        {},
+        ProviderStatus("managed config", None, ProviderHealth.MISSING),
+    )
+    user = TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.MISSING))
+    resolver = resolver_from_snapshots(managed, user)
+    option = get_option("startup.mode")
+    assert option is not None
+
+    resolver.reload()
+
+    assert resolver.get(option).ranks == (DEFAULT_RANK,)
+    assert (
+        resolver.provider_statuses()[MANAGED_RANK].health
+        is ProviderHealth.INDETERMINATE
+    )

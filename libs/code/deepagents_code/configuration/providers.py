@@ -491,7 +491,14 @@ class TomlFileProvider:
     """Ranked provider backed by one local TOML file snapshot."""
 
     name: str
-    path: Path
+    path: Path | None
+    """File this provider reads, or `None` for a snapshot with no known origin.
+
+    A `None` path is not a filename to guess at. Inventing one would make
+    `load` read a relative path against the process working directory, and for
+    the managed tier that is a trust boundary, not a cosmetic default.
+    """
+
     rank: int = USER_RANK
     durable: bool = True
     snapshot: TomlSnapshot | None = field(default=None, repr=False, compare=False)
@@ -515,8 +522,20 @@ class TomlFileProvider:
         """Parse the file and classify missing, unreadable, or corrupt states.
 
         Returns:
-            Parsed data and provider health.
+            Parsed data and provider health. A provider with no path reports
+            `INDETERMINATE`, which is not usable: an empty read proves nothing
+            about a file whose location is unknown.
         """
+        if self.path is None:
+            return TomlSnapshot(
+                {},
+                ProviderStatus(
+                    self.name,
+                    None,
+                    ProviderHealth.INDETERMINATE,
+                    "no path is known for this source, so it cannot be re-read",
+                ),
+            )
         try:
             with self.path.open("rb") as handle:
                 data = tomllib.load(handle)

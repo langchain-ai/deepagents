@@ -223,16 +223,19 @@ def resolver_from_snapshots(
     Returns:
         Resolver containing managed, environment, user, and default providers.
     """
-    from pathlib import Path
-
     from deepagents_code.configuration.providers import (
         DefaultProvider,
         EnvProvider,
         TomlFileProvider,
     )
 
-    managed_path = managed.status.path or Path("managed_config.toml")
-    user_path = user.status.path or Path("config.toml")
+    # Snapshots built in-memory carry no path. Pass that through rather than
+    # inventing a relative filename: `TomlFileProvider.load` would resolve it
+    # against the process working directory, so a later `reload()` on a
+    # diagnostic resolver would read whatever `./managed_config.toml` happens
+    # to sit in the repo the agent is running in and treat it as policy.
+    managed_path = managed.status.path
+    user_path = user.status.path
     return ConfigResolver(
         (
             TomlFileProvider(

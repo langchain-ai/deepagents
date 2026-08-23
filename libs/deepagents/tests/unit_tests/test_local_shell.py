@@ -63,16 +63,20 @@ class TestPerCommandTimeout:
         assert result.exit_code == 124
         assert "timed out" in result.output.lower()
 
-    def test_per_command_zero_timeout_raises(self) -> None:
-        """Zero per-command timeout should raise ValueError."""
+    def test_per_command_zero_timeout_disables_timeout(self) -> None:
+        """Zero per-command timeout should disable the subprocess timeout."""
         backend = LocalShellBackend(inherit_env=True)
-        with pytest.raises(ValueError, match="timeout must be positive"):
-            backend.execute("echo hello", timeout=0)
+        completed_process = subprocess.CompletedProcess("echo hello", 0, "hello\n", "")
+        with patch("subprocess.run", return_value=completed_process) as run:
+            result = backend.execute("echo hello", timeout=0)
+
+        assert result.exit_code == 0
+        assert run.call_args.kwargs["timeout"] is None
 
     def test_per_command_negative_timeout_raises(self) -> None:
         """Negative per-command timeout should raise ValueError."""
         backend = LocalShellBackend(inherit_env=True)
-        with pytest.raises(ValueError, match="timeout must be positive"):
+        with pytest.raises(ValueError, match="timeout must be non-negative"):
             backend.execute("echo hello", timeout=-5)
 
 

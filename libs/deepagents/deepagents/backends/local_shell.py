@@ -261,7 +261,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 - `truncated`: `True` if output was truncated due to size limits
 
         Raises:
-            ValueError: If per-command timeout is not positive.
+            ValueError: If per-command timeout is negative.
 
         Examples:
             ```python
@@ -294,9 +294,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 truncated=False,
             )
 
-        effective_timeout = timeout if timeout is not None else self._default_timeout
-        if effective_timeout <= 0:
-            msg = f"timeout must be positive, got {effective_timeout}"
+        effective_timeout = timeout if timeout not in (None, 0) else None
+        if effective_timeout is None and timeout is None:
+            effective_timeout = self._default_timeout
+        if effective_timeout is not None and effective_timeout < 0:
+            msg = f"timeout must be non-negative, got {effective_timeout}"
             raise ValueError(msg)
 
         try:

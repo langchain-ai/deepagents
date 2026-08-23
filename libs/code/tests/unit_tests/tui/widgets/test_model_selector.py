@@ -2254,6 +2254,38 @@ class TestModelSelectorFiltering:
 
         assert result == ("custom:my-model", "custom")
 
+    @pytest.mark.parametrize("custom_input", ["custom:blocked", "blocked"])
+    def test_disallowed_custom_model_spec_is_not_selected(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        custom_input: str,
+    ) -> None:
+        """Enter has no selection side effects for custom models denied by policy."""
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["custom:allowed"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        screen = _model_selector_for_filtering()
+
+        class FakeInput:
+            value = custom_input
+
+        screen._filtered_models = []
+        monkeypatch.setattr(screen, "query_one", lambda *_args, **_kwargs: FakeInput())
+        select = MagicMock()
+        dismiss = MagicMock()
+        monkeypatch.setattr(screen, "_select_with_auth_check", select)
+        monkeypatch.setattr(screen, "_dismiss_with_result", dismiss)
+
+        screen.action_select()
+
+        select.assert_not_called()
+        dismiss.assert_not_called()
+
     def test_enter_selects_highlighted_model_not_filter_text(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

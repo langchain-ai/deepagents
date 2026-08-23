@@ -1911,6 +1911,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         filter_input = self.query_one("#model-filter", Input)
         custom_input = filter_input.value.strip()
 
+        if custom_input and not ModelConfig.load().is_model_allowed(custom_input):
+            return
+
         if custom_input and ":" in custom_input:
             provider = custom_input.split(":", 1)[0]
             self._select_with_auth_check(custom_input, provider)

@@ -1503,9 +1503,9 @@ def test_managed_auto_mode_does_not_set_the_headless_incompatible_flag(
 ) -> None:
     """Managed policy revokes flags; it never sets `--auto-approve`.
 
-    Regression: assigning the flag positively made every headless launch exit 2
-    with "--auto-approve is only supported in interactive mode", naming a flag
-    the user never passed. `_resolve_approval_mode` already ends at
+    Regression: assigning the flag positively made every headless launch warn
+    that `--auto-approve` was ignored, naming a flag the user never passed.
+    `_resolve_approval_mode` already ends at
     `coerce_approval_mode(load_startup_mode())`, which reads merged managed
     policy, so the positive value needs no flag.
     """

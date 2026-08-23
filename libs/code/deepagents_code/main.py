@@ -2302,14 +2302,18 @@ def parse_args() -> argparse.Namespace:
         "--auto-approve",
         action="store_true",
         default=None,
-        help="Enable classifier-backed Auto mode in the local TUI or ACP server.",
+        help=(
+            "Enable classifier-backed Auto mode in the local TUI or ACP server; "
+            "ignored with a warning in headless mode."
+        ),
     )
     approval_group.add_argument(
         "--yolo",
         action="store_true",
         help=(
             "Run gated actions without review after the one-time local risk "
-            "acknowledgement (interactive TUI or ACP mode)."
+            "acknowledgement (interactive TUI or ACP mode); ignored with a "
+            "warning in headless mode."
         ),
     )
 
@@ -4388,9 +4392,8 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
         # Only *revoke*: `_resolve_approval_mode` ends at
         # `coerce_approval_mode(load_startup_mode())`, which already reads
         # merged managed policy, so the positive value needs no flag. Setting
-        # the flags positively also breaks every headless launch, because
-        # `--auto-approve` with `--non-interactive-message` exits 2 — naming a
-        # flag the user never passed.
+        # the flags positively would also make every headless launch warn about
+        # and ignore a flag the user never passed.
         if startup_mode != "auto":
             args.auto_approve = False
         if startup_mode != "yolo":
@@ -4766,11 +4769,11 @@ def cli_main() -> None:
 
             warn_if_editable_deps_stale()
 
-        # Validated here, before mode dispatch and any heavy session setup:
+        # Handled here, before mode dispatch and any heavy session setup:
         # `apply_stdin_pipe` has finalized `non_interactive_message` (the same
         # predicate that selects the headless branch below), so this reliably
-        # rejects `--auto-approve` on both the `-n` and piped-stdin paths while
-        # leaving interactive launches untouched.
+        # clears interactive approval flags on both the `-n` and piped-stdin
+        # paths while leaving interactive launches untouched.
         if (
             args.auto_approve or getattr(args, "yolo", False)
         ) and args.non_interactive_message:
@@ -4778,11 +4781,12 @@ def cli_main() -> None:
 
             flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
             _Console(stderr=True).print(
-                f"[bold red]Error:[/bold red] {flag} is only supported in "
-                "interactive mode. Headless mode uses fail-closed MCP routing and "
-                "--shell-allow-list for shell access."
+                f"[bold yellow]Warning:[/bold yellow] {flag} has no effect in "
+                "headless mode; ignoring it. Shell access is governed by "
+                "--shell-allow-list, and MCP routing is fail-closed."
             )
-            sys.exit(2)
+            args.auto_approve = False
+            args.yolo = False
 
         if getattr(args, "no_mcp", False) and getattr(args, "mcp_config", None):
             from rich.console import Console as _Console

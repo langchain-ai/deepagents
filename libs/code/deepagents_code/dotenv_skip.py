@@ -545,8 +545,9 @@ def skip_project_dotenv(
 
     Note:
         Failures (unreadable store, lock timeout, I/O errors) return `False`
-        without mutating the on-disk store; callers treat `False` as a real
-        persistence failure, not an implicit session decision.
+        without mutating the on-disk store. This function records nothing on
+        failure; whether to fall back to a session skip is the caller's
+        decision, so `False` is never a silent substitution.
     """
     path = store_path or _default_store_path()
     try:

@@ -3531,7 +3531,10 @@ def _run_trust_action_picker(
     if default_index < 0:
         # A caller asked for a default that is not offered (REFRESH without a
         # `refresh_label`, say). Highlight the first row instead of letting a
-        # bare `next()` raise StopIteration out of a pre-TUI prompt.
+        # bare `next()` raise StopIteration out of a pre-TUI prompt. The first
+        # row is DENY only under `deny_first`; otherwise this highlights
+        # ALLOW_ONCE, so the warning below is the only signal that a caller is
+        # misconfigured on a security prompt.
         logger.warning(
             "Trust picker default %r is not an offered action; highlighting %r",
             default_action,
@@ -4529,10 +4532,6 @@ def _check_project_dotenv_trust() -> None:
 def _skip_project_dotenv_for_session(skip_key: str) -> None:
     """Skip one project's `.env` for the rest of this process.
 
-    The independent canonical key is checked after `read_project_dotenv`
-    resolution, so managed policy cannot override the user's session decision
-    and an in-process cwd switch cannot leak it into another project.
-
     Args:
         skip_key: Canonical directory that owns the discovered project `.env`.
     """
@@ -5055,10 +5054,12 @@ def cli_main() -> None:
         # `non_interactive_message` is final. An interactive launch that can
         # actually answer a prompt gets a blocking pre-TUI continue/mute/abort
         # prompt (printed to stderr before the alternate screen mounts);
-        # headless (`-n`) launches and subcommands print the full warning to
-        # stderr once instead — they have no TUI to prompt in and must never
-        # block. Subcommands are warned earlier, before the `config`/`update`
-        # fast paths exit. (ACP exits above, before this point.)
+        # headless (`-n`) launches, subcommands, and root actions like
+        # `--update`/`--install` print the full warning to stderr once instead
+        # — they have no TUI to prompt in and must never block. Subcommands are
+        # warned earlier, before the `config`/`update` fast paths exit. (ACP
+        # exits above, before this point; `_is_interactive_tui_launch` still
+        # lists it, defensively, for callers that run earlier.)
         #
         # `_trust_picker_has_terminal()` is part of the condition because a
         # piped-stdin interactive launch still mounts the TUI: per

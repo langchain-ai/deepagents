@@ -596,14 +596,18 @@ def _load_dotenv(
         global_dotenv=_read_global_dotenv_toggle()
     )
 
-    # A persisted "never load in this project" decision (recorded by the
-    # interactive opt-out prompt in `main._check_project_dotenv_trust`) is a
-    # second, independent skip source. The key is the discovered `.env`'s
-    # parent directory (see `skip_key_for_start_path`), so it follows the file
-    # whether the launch is from its directory or a subdirectory — including
-    # non-Git projects with no `ProjectContext.project_root`. Explicit
-    # `read_project_dotenv=false` (above) still wins; this store only ever
-    # skips, it never forces a load the option disabled.
+    # A "never load in this project" decision — persisted, or session-scoped
+    # from the interactive opt-out prompt in `main._check_project_dotenv_trust`
+    # — is a second, independent skip source. The key is the discovered
+    # `.env`'s parent directory (see `skip_key_for_dotenv_path`), so it follows
+    # the file whether the launch is from its directory or a subdirectory —
+    # including non-Git projects with no `ProjectContext.project_root`.
+    #
+    # Checked *after* `read_project_dotenv` resolves, which is what makes the
+    # two orderings safe: managed policy cannot override the user's session
+    # decision, and an in-process cwd switch cannot leak it into another
+    # project. Explicit `read_project_dotenv=false` (above) still wins, because
+    # this only ever skips — it never forces a load the option disabled.
     if read_project and _project_dotenv_is_skipped(start_path):
         logger.debug("Skipping project dotenv at %s: project is skipped", start_path)
         read_project = False

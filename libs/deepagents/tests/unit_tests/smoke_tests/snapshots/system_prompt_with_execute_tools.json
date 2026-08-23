@@ -86,7 +86,8 @@
             "type": "string"
           },
           "old_string": {
-            "description": "The exact text to find and replace. Must be unique in the file unless replace_all is True.",
+            "description": "The exact text to find and replace. Must be unique in the file unless replace_all is True. Must not be empty.",
+            "minLength": 1,
             "type": "string"
           },
           "replace_all": {

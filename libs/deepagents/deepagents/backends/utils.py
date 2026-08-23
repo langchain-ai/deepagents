@@ -516,6 +516,9 @@ def perform_string_replacement(
     Returns:
         Tuple of `(new_content, occurrences)` on success, or error message string
     """
+    if not old_string:
+        return "Error: old_string cannot be empty. Provide the exact text to replace."
+
     occurrences = content.count(old_string)
 
     if occurrences == 0:

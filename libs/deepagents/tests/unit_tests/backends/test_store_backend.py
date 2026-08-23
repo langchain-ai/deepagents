@@ -193,6 +193,21 @@ def test_store_backend_edit_migrates_legacy_list_content() -> None:
     assert stored.value["encoding"] == "utf-8"
 
 
+def test_store_backend_edit_empty_old_string_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/legacy.txt", {"content": ["hello", "world"]})
+
+    result = be.edit("/legacy.txt", "", "there")
+
+    assert result.error is not None
+    assert "old_string" in result.error
+    assert "empty" in result.error
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == ["hello", "world"]
+
+
 def test_store_backend_write_overwrites_existing_file():
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))

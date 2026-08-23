@@ -2571,6 +2571,19 @@ class TestReadTrailingNewlineRoundtrip:
         assert "old_string ends with a newline" in result.error
         assert target.read_text() == "# Agent Role:\nyou are an assistant"
 
+    def test_edit_empty_old_string_leaves_file_unchanged(self, tmp_path: Path) -> None:
+        """Empty `old_string` must error and never modify the file on disk."""
+        target = tmp_path / "a.txt"
+        target.write_text("hello world")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        result = be.edit(str(target), "", "x", replace_all=True)
+
+        assert result.error is not None
+        assert "old_string" in result.error
+        assert "empty" in result.error
+        assert target.read_text() == "hello world"
+
 
 class TestFilesystemDelete:
     """Tests for FilesystemBackend.delete."""

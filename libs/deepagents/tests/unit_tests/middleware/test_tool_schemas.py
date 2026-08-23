@@ -95,3 +95,13 @@ class TestFilesystemToolSchemas:
         assert path_schema["default"] is None
         assert {"type": "null"} in path_schema["anyOf"]
         assert "backend's default root" in path_schema["description"]
+
+    def test_edit_file_old_string_requires_min_length_1(self) -> None:
+        """`edit_file.old_string` must be non-empty in the model-facing schema."""
+        middleware = FilesystemMiddleware(backend=StateBackend())
+        edit_tool = next(tool for tool in middleware.tools if tool.name == "edit_file")
+
+        schema = edit_tool.tool_call_schema.model_json_schema()
+        old_string_schema = schema["properties"]["old_string"]
+
+        assert old_string_schema["minLength"] == 1

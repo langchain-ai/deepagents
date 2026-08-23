@@ -594,6 +594,14 @@ def resolve_ranked_scalar(
     `resolve_scalar` preserves the established `(value, source)` compatibility
     surface by rendering from the same result.
 
+    Each table must be paired with the status of the source it came from.
+    `TomlSnapshot` rejects a non-`OK` status carrying a non-empty table with a
+    `ValueError`, because an unhealthy source is one every reader must treat as
+    declaring nothing. This is not hypothetical bookkeeping: the two halves are
+    separate parameters, so a caller can supply one snapshot's data beside
+    another's health. A missing default provider surfaces as a `RuntimeError`
+    from the resolver.
+
     Args:
         option: Manifest option to resolve.
         toml_data: Parsed user `config.toml` mapping.

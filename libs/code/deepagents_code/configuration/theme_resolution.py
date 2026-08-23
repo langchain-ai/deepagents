@@ -17,11 +17,19 @@ logger = logging.getLogger(__name__)
 def resolve_theme_name(value: object) -> str | None:
     """Resolve a user-supplied theme name to a canonical registry key.
 
+    Accepts the registry key or the human-readable label, case-insensitive on
+    both, with surrounding whitespace stripped - config values (especially
+    `[ui.terminal_themes]`) and the `DEEPAGENTS_CODE_THEME` env var are commonly
+    hand-edited. Also applies the legacy `textual-ansi` to `ansi-light`
+    migration, which predates Textual 8.2.5 and can be dropped once no
+    supported config can still carry the old name.
+
     Args:
         value: Raw value read from TOML or an environment variable.
 
     Returns:
-        Canonical registry key, or `None` when the value is not registered.
+        Canonical registry key, or `None` when the value is not a string or
+        names no registered theme.
     """
     if not isinstance(value, str):
         return None
@@ -39,7 +47,13 @@ def resolve_theme_name(value: object) -> str | None:
 
 
 def as_toml_table(value: object) -> dict[str, object] | None:
-    """Return `value` as a TOML table when it has the expected runtime shape."""
+    """Return `value` as a TOML table when it has the expected runtime shape.
+
+    `tomllib` parses TOML tables as string-keyed dicts, which `ty` cannot infer
+    from a runtime `dict` check. Keep the cast at this boundary so it does not
+    become a general-purpose escape hatch - now more important, not less, since
+    the helper became importable from a shared module.
+    """
     if not isinstance(value, dict):
         return None
     return cast("dict[str, object]", value)
@@ -48,8 +62,12 @@ def as_toml_table(value: object) -> dict[str, object] | None:
 def resolve_terminal_mapping(ui: Mapping[str, object]) -> str | None:
     """Resolve `[ui.terminal_themes][TERM_PROGRAM]` to a registered theme.
 
+    Centralizes both the lookup and the misconfiguration warnings, which are
+    logged exactly once per call. Three callers now share that contract: the
+    managed and user TOML tiers and the UI.
+
     Args:
-        ui: The `[ui]` table parsed from `config.toml`.
+        ui: An `[ui]` table parsed from a managed or user TOML source.
 
     Returns:
         Canonical registry key, or `None` when no valid mapping applies.

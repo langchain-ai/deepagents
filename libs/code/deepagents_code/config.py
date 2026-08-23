@@ -2865,9 +2865,9 @@ class Settings:
         _emit_ranked_diagnostics(shell_option, shell_resolved)
         shell_allow_list = cast("list[str] | None", shell_resolved.value)
 
-        # Parse extra skill containment roots from env var or config.toml.
-        # These extend the path allowlist for load_skill_content but do not
-        # add new skill discovery locations.
+        # Parse extra skill containment roots from managed policy, the env
+        # var, or config.toml. These extend the path allowlist for
+        # load_skill_content but do not add new skill discovery locations.
         skills_option = get_option("skills.extra_allowed_dirs")
         if skills_option is None:
             msg = (
@@ -2879,6 +2879,10 @@ class Settings:
         _emit_ranked_diagnostics(skills_option, skills_resolved)
         extra_skills_dirs = cast("list[Path] | None", skills_resolved.value)
 
+        # Only the Interpreter group is manifest-resolved here. Credentials,
+        # the shell allow-list, and the LangSmith project keep their dedicated
+        # loaders above: their empty-string-to-`None` and reload semantics do
+        # not fit the generic resolver.
         interpreter_kwargs: dict[str, Any] = {}
         for option in get_config_options():
             if option.group != "Interpreter" or option.settings_field is None:
@@ -2978,9 +2982,16 @@ class Settings:
         if shell_option is not None:
             # Read the user layer too, not just managed. `shell.allow_list`
             # gained `toml_keys`, and `Settings.from_environment` resolves it
-            # through `load_config_toml()`; passing `toml_data={}` here reset a
-            # user's `[shell].allow_list` to `None` on every `/reload` and
-            # accepted cwd switch, and reported a change that never happened.
+            # through the shared resolver's user tier; passing `toml_data={}`
+            # here reset a user's `[shell].allow_list` to `None` on every
+            # `/reload` and accepted cwd switch, and reported a change that
+            # never happened.
+            #
+            # This method deliberately stays on `load_config_toml()` rather
+            # than the shared resolver: `get_config_resolver` caches its user
+            # snapshot for the process, and `/reload` exists to pick up an edit
+            # made since then. Unifying the two read paths would silently make
+            # `/reload` a no-op for file changes.
             #
             # Accepting an *env*-tier hit would defeat the `env` argument this
             # method exists to honor: `resolve_scalar` reads `os.environ`

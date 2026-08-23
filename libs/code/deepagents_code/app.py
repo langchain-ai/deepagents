@@ -88,8 +88,14 @@ from deepagents_code._session_stats import (
 
 # All config imports — settings, create_model, detect_provider, is_ascii_mode,
 # etc. — are deferred to local imports at their call sites since they are only
-# accessed after user interaction begins.
+# accessed after user interaction begins. The one exception is
+# `configuration.theme_resolution` below: the theme helpers run before the
+# first frame, and it pulls the `configuration` package but neither
+# `config_manifest` nor `config`.
 from deepagents_code._version import CHANGELOG_URL, DOCS_URL
+
+# Aliased to the names these helpers had while they lived in this module;
+# `tests/unit_tests/test_theme.py` still imports them from here.
 from deepagents_code.configuration.theme_resolution import (
     as_toml_table as _as_toml_table,
     resolve_terminal_mapping as _resolve_terminal_mapping,

@@ -13,8 +13,6 @@ from textual.widgets import Input, Static
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-_TITLE_MAX = 72
-
 
 class _PromptRow(Static):
     """One prompt summary row."""
@@ -25,17 +23,17 @@ class _PromptRow(Static):
 
     @staticmethod
     def _content(prompt: str) -> Content:
-        """Build a bounded literal-text title.
+        """Build a single-line literal-text title.
 
         Rows show only the title; the full prompt renders in the preview pane.
+        The row is one cell high, so overlong titles clip visually; the
+        `text-overflow: ellipsis` rule on `.prompt-row` marks the clipped end.
 
         Returns:
             Safe Textual content for the row.
         """
         nonempty = [line.strip() for line in prompt.splitlines() if line.strip()]
         title = nonempty[0] if nonempty else prompt.strip()
-        if len(title) > _TITLE_MAX:
-            title = title[: _TITLE_MAX - 1] + "…"
         return Content.styled(title or "(empty prompt)", "bold")
 
 

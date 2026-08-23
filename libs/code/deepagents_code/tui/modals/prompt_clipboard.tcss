@@ -46,6 +46,9 @@ PromptClipboardScreen #prompt-list {
 PromptClipboardScreen .prompt-row {
     height: 1;
     padding: 0 1;
+    /* Rows are one cell high, so titles longer than the row clip; an ellipsis
+       marks the clipped end without a fixed character cap. */
+    text-overflow: ellipsis;
 }
 
 PromptClipboardScreen .prompt-row-selected {

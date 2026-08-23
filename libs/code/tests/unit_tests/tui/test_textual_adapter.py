@@ -1214,6 +1214,7 @@ class TestBuildStreamConfig:
             patch("deepagents_code.config._get_deepagents_version", return_value=None),
         ):
             config = build_stream_config("t-ver", assistant_id=None)
+        assert config["metadata"]["editable"] is False
         assert config["metadata"]["lc_versions"] == {"deepagents-code": __version__}
 
     def test_versions_marks_editable_cli_version(self) -> None:
@@ -1225,6 +1226,7 @@ class TestBuildStreamConfig:
             patch("deepagents_code.config._get_deepagents_version", return_value=None),
         ):
             config = build_stream_config("t-editable", assistant_id=None)
+        assert config["metadata"]["editable"] is True
         assert config["metadata"]["lc_versions"] == {
             "deepagents-code": f"{__version__}+editable"
         }
@@ -6484,10 +6486,13 @@ class TestExecuteTaskTextualAskUser:
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
 
+    # No zero-question case: `AskUserRequest.questions` rejects an empty list,
+    # so a cancelled call always carries at least one question and the count can
+    # never be zero here. Zero and one took the same singular branch anyway
+    # (`dismissed_question_count > 1`), so the case below still covers it.
     @pytest.mark.parametrize(
         ("question_count", "expected_message"),
         [
-            (0, "Question dismissed. Tell the agent what you'd like instead."),
             (1, "Question dismissed. Tell the agent what you'd like instead."),
             (2, "Questions dismissed. Tell the agent what you'd like instead."),
         ],

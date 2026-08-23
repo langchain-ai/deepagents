@@ -834,6 +834,30 @@ class TestReloadFromEnvironment:
 
         assert "PROJECT_ONLY_KEY" not in env
 
+    def test_preview_honors_the_global_dotenv_opt_out(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The trusted global `.env` can disable project loading in a preview too.
+
+        `READ_PROJECT_DOTENV` is denied from every `.env`, so it never reaches
+        `os.environ`. A preview that did not read the global file itself would
+        report a project value the real reload refuses to load.
+        """
+        from deepagents_code._env_vars import READ_PROJECT_DOTENV
+        from deepagents_code.config import _preview_dotenv_environ
+
+        (tmp_path / ".env").write_text("PROJECT_ONLY_KEY=project-value\n")
+        global_dotenv = tmp_path / "global" / ".env"
+        global_dotenv.parent.mkdir()
+        global_dotenv.write_text(f"{READ_PROJECT_DOTENV}=false\n")
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_dotenv)
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+        monkeypatch.delenv(READ_PROJECT_DOTENV, raising=False)
+
+        env = _preview_dotenv_environ(start_path=tmp_path)
+
+        assert "PROJECT_ONLY_KEY" not in env
+
     def test_project_dotenv_cannot_set_mcp_trust_lists(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

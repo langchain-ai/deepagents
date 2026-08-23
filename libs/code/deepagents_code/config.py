@@ -388,9 +388,11 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
     Returns:
         Environment mapping with project and global dotenv values applied using
         the same first-write-wins precedence as `_load_dotenv`. The project
-        `.env` is skipped when `startup.read_project_dotenv` resolves false or
-        when either skip store covers it (see `_project_dotenv_is_skipped`), so
-        a preview never reports a value a real reload would not load.
+        `.env` is skipped when `startup.read_project_dotenv` resolves false —
+        including from the trusted global `.env`, which is read here the same
+        way the loader reads it — or when either skip store covers it (see
+        `_project_dotenv_is_skipped`), so a preview never reports a value a
+        real reload would not load.
     """
     import dotenv
 
@@ -431,11 +433,18 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
 
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
-    read_project = resolve_read_project_dotenv()
-    # Mirror `_load_dotenv`: a persisted "never load" skip for this `.env` must
-    # keep the preview aligned with what a real reload would apply, or the
-    # cwd-switch prompt would report settings changes that never take effect.
-    if read_project and _project_dotenv_is_skipped(start_path):
+    # Mirror `_load_dotenv` on both tiers, or the preview reports a value a
+    # real reload would never load: the option's own env var is denied from
+    # every `.env` (`_DOTENV_DENIED_ENV_KEYS`), so the trusted global file's
+    # opt-out reaches the resolver only when it is passed in.
+    read_project = resolve_read_project_dotenv(
+        global_dotenv=_read_global_dotenv_toggle()
+    )
+    # A persisted or session "never load" skip for this `.env` must keep the
+    # preview aligned with what a real reload would apply, or the cwd-switch
+    # prompt would report settings changes that never take effect.
+    is_skipped = read_project and _project_dotenv_is_skipped(start_path)
+    if is_skipped:
         read_project = False
 
     if read_project:
@@ -454,6 +463,14 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 exc_info=True,
             )
         apply_dotenv(project_dotenv, is_project=True)
+    elif is_skipped:
+        # Distinct from the option branch below: naming an option the user
+        # never set sends anyone debugging "why is my .env ignored" to audit
+        # managed policy and config.toml for a setting that is not there.
+        logger.debug(
+            "Skipping project dotenv preview at %s: project is skipped",
+            start_path or "cwd",
+        )
     else:
         logger.debug(
             "Skipping project dotenv preview at %s: startup.read_project_dotenv "

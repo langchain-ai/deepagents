@@ -1,4 +1,10 @@
-"""Canonical internal messages for goal state and work continuation."""
+"""Canonical internal model-context messages for goal state and continuation.
+
+Goal context is represented as a `HumanMessage` so it participates in the
+provider's normal turn ordering. Its `lc_source` marks it as framework-owned
+model context rather than conversational user input; transcript, title, and
+derived-conversation projections must therefore hide it.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +31,12 @@ logger = logging.getLogger(__name__)
 
 GOAL_CONTROL_MESSAGE_SOURCE: Final = "goal_control"
 GOAL_STATE_MESSAGE_SOURCE: Final = "goal_state"
+"""Source for framework-owned goal context shown only to the model.
+
+Despite the `HumanMessage` transport role, messages with this source are never
+user transcript content. Keep this source in the internal-message filters when
+adding a new transcript or history projection.
+"""
 SUPERSEDED_GOAL_STATE_SOURCE: Final = "goal_state_superseded"
 """Source for the stand-in that replaces a superseded notice in a request.
 
@@ -613,7 +625,9 @@ def build_goal_state_notice(
         prior_blocker: Optional blocker context retained when a goal resumes.
 
     Returns:
-        Internal `HumanMessage` carrying goal/rubric state and identity metadata.
+        Internal model-context `HumanMessage` carrying goal/rubric state and
+        identity metadata. Its `lc_source` ensures the generated context is
+        excluded from user-facing transcript and title projections.
         An actionable goal embeds its objective and status note; an active rubric
         embeds its acceptance criteria, independent of goal actionability (a
         one-shot rubric stays active over a paused goal). Embedded text is escaped

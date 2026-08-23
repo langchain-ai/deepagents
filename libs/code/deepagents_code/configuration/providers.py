@@ -709,12 +709,22 @@ class EnvProvider:
 
     name: str = "environment"
     rank: int = ENVIRONMENT_RANK
-    durable: bool = False
     environ: Mapping[str, str] = field(
         default_factory=lambda: os.environ,
         repr=False,
         compare=False,
     )
+
+    @property
+    def durable(self) -> bool:
+        """Never durable: the environment does not survive the process.
+
+        A property rather than a field because the coercion helpers below stamp
+        durability onto every value they emit. A settable field would
+        type-check, enter `__eq__`, and change nothing about masking - a lie in
+        the one attribute that decides whether a tier can hide another.
+        """
+        return False
 
     def get(self, option: ConfigOption) -> RankedProviderValue[object]:
         """Read one option from the live environment.
@@ -745,7 +755,16 @@ class DefaultProvider:
 
     name: str = "default"
     rank: int = DEFAULT_RANK
-    durable: bool = True
+
+    @property
+    def durable(self) -> bool:
+        """Always durable: manifest defaults are compiled into the process.
+
+        A property for the same reason as `EnvProvider.durable`: the value the
+        helpers stamp on each result is the truth, so the attribute must not be
+        able to disagree with it.
+        """
+        return True
 
     def get(self, option: ConfigOption) -> RankedProviderValue[object]:
         """Return one option's manifest default.

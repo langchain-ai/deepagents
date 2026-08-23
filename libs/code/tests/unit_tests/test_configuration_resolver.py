@@ -771,3 +771,30 @@ def test_a_pathless_provider_does_not_read_the_working_directory(
         resolver.provider_statuses()[MANAGED_RANK].health
         is ProviderHealth.INDETERMINATE
     )
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected"),
+    [(EnvProvider(), False), (DefaultProvider(), True)],
+)
+def test_stateless_provider_durability_cannot_be_overridden(
+    provider: ConfigProvider,
+    *,
+    expected: bool,
+) -> None:
+    """Durability decides masking, so the attribute must not be able to lie.
+
+    Both providers delegate to helpers that stamp a hardcoded durability onto
+    every result. While `durable` was a settable field, passing the opposite
+    value type-checked and changed nothing.
+    """
+    option = get_option("startup.mode")
+    assert option is not None
+
+    assert provider.durable is expected
+    assert provider.get(option).durable is expected
+    # Built dynamically so the type checker does not reject the call before
+    # the test can prove the constructor does.
+    overridden: dict[str, Any] = {"durable": not expected}
+    with pytest.raises((TypeError, AttributeError)):
+        type(provider)(**overridden)

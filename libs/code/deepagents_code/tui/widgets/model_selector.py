@@ -591,9 +591,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Curated/onboarding mode omits the Ctrl+S, Ctrl+R, and Ctrl+N hints.
         Escape stays bound but is left off the hint line — modal dismissal via
         Escape is conventional, and advertising it would only lengthen an
-        already-wrapping line. In standard mode the full line exceeds the modal
-        width, so the help `Static` is sized to grow (auto height) and wraps to
-        two rows rather than clipping the trailing hints.
+        already-wrapping line. Shift+Tab is likewise bound (`action_move_up`,
+        routed by `_SupportsReverseNav`) but omitted: this modal binds Tab to
+        autocomplete, so the shared "Tab/Shift+Tab navigate" phrasing from
+        `tui.key_hints` would misdescribe Tab here. In standard mode the full
+        line exceeds the modal width, so the help `Static` is sized to grow
+        (auto height) and wraps to two rows rather than clipping the trailing
+        hints.
 
         The Ctrl+N hint names what the next press *does* rather than the
         current mode, so it reads "Ctrl+N IDs" while friendly names are shown

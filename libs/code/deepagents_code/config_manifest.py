@@ -1213,6 +1213,74 @@ def resolve_auto_classifier_model_with_source(
     return None, source
 
 
+def resolve_startup_mode_with_source(
+    *,
+    toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Resolve the effective startup approval mode and its source for display.
+
+    Mirrors `model_config.load_startup_mode`. An explicit `[startup].mode`
+    wins, from the user file or from managed policy. Otherwise the app-managed
+    `[startup].recent` value restores `manual` or notice-approved `auto`. So
+    `dcode config get startup.mode` reports the mode the next bare launch reads
+    from configuration, instead of the manifest default.
+
+    `startup.mode` declares no environment variable, so no env tier applies
+    here. The `--auto-approve` flag outranks configuration at launch and is out
+    of scope for this function.
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+        managed_toml_data: Parsed managed TOML; the process snapshot is used when
+            omitted.
+
+    Returns:
+        `(mode, source)`. `source` credits the managed or user configuration
+        layer that supplied either the explicit mode or the recent fallback,
+        and is `"default"` when nothing resolves and when an invalid explicit
+        mode fails closed.
+    """
+    from deepagents_code.model_config import is_recent_startup_mode_restorable
+
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("startup.mode")
+    if option is None:
+        return "manual", "default"
+
+    managed_data = (
+        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
+    )
+    value, source = resolve_scalar(
+        option,
+        toml_data=data,
+        managed_toml_data=managed_data,
+    )
+    if source != "default":
+        return value, source
+
+    # No explicit mode resolved. An invalid user mode is fail-closed in
+    # `load_startup_mode`, so introspection must not consult `recent` either.
+    # Only the user layer is probed: `merge_managed_over_user` drops a managed
+    # leaf that fails its manifest kind, so a present-but-invalid mode can only
+    # come from the user file, and the loader cannot see one that this misses.
+    startup = data.get("startup")
+    if isinstance(startup, dict) and startup.get("mode") is not None:
+        return value, source
+
+    recent_option = get_option("startup.recent")
+    if recent_option is None:
+        return value, source
+    recent, recent_source = resolve_scalar(
+        recent_option,
+        toml_data=data,
+        managed_toml_data=managed_data,
+    )
+    if isinstance(recent, str) and is_recent_startup_mode_restorable(recent):
+        return recent, recent_source
+    return value, source
+
+
 def option_accepts_toml(
     option: ConfigOption, value: object, *, source: str = "config.toml"
 ) -> bool:
@@ -2336,6 +2404,22 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=True,
         env_var=_env_vars.READ_PROJECT_DOTENV,
         toml_keys=("startup", "read_project_dotenv"),
+    ),
+    ConfigOption(
+        key="startup.recent",
+        group="Startup",
+        summary=(
+            "Most recently selected Manual or Auto mode (managed by the app; "
+            "only `manual` and `auto` are restored)."
+        ),
+        # Deliberately `STR`, not the `NON_EMPTY_STR` used by the sibling
+        # app-managed `agents.recent`: that kind strips, while
+        # `load_startup_mode` matches `recent` exactly. Stripping here would
+        # make `recent = " auto "` display as Auto while the launch fails closed
+        # to Manual. Exact coercion keeps introspection and startup on the same
+        # boundary, and an unmatched value fails closed either way.
+        kind=OptionKind.STR,
+        toml_keys=("startup", "recent"),
     ),
     ConfigOption(
         key="startup.yolo_switcher",

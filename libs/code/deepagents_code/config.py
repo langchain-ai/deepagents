@@ -524,10 +524,7 @@ def _load_dotenv(
     loaded = False
 
     if refresh_loaded:
-        for key, value in list(_dotenv_loaded_values.items()):
-            if os.environ.get(key) == value:
-                os.environ.pop(key)
-        _dotenv_loaded_values.clear()
+        _remove_loaded_dotenv_values()
 
     def apply_dotenv(dotenv_path: Path, *, is_project: bool) -> bool:
         values = dotenv.dotenv_values(dotenv_path=dotenv_path)
@@ -622,6 +619,14 @@ def _load_dotenv(
         )
 
     return loaded
+
+
+def _remove_loaded_dotenv_values() -> None:
+    """Remove unchanged environment values injected by the dotenv loader."""
+    for key, value in list(_dotenv_loaded_values.items()):
+        if os.environ.get(key) == value:
+            os.environ.pop(key)
+    _dotenv_loaded_values.clear()
 
 
 _TRACING_ENABLE_ENV_VARS = (

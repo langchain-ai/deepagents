@@ -209,6 +209,7 @@ def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
     """
     from deepagents_code._env_vars import INVOKED_AS
     from deepagents_code._invocation import invoked_name
+    from deepagents_code.config import _remove_loaded_dotenv_values
 
     if restart_path is None:
         executable = sys.executable
@@ -222,6 +223,11 @@ def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
     # `-m` discards argv[0], so the launch name would be lost across the exec
     # and post-update resume hints would fall back to `dcode`. Hand it to the
     # next generation explicitly.
+    #
+    # Drop values this generation loaded from dotenv first. Otherwise the next
+    # generation sees them as caller-supplied environment values, so refusing
+    # the project `.env` at its fresh trust prompt cannot remove them.
+    _remove_loaded_dotenv_values()
     os.environ[INVOKED_AS] = invoked_name()
     # Re-exec the trusted current interpreter or uv-managed shim with the
     # user's own argv verbatim; the only "input" is the command the user

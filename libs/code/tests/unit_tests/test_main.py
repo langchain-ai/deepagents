@@ -787,6 +787,36 @@ class TestStartupAutoUpdate:
 
         assert os.environ[INVOKED_AS] == "abc"
 
+    def test_restart_drops_values_loaded_from_dotenv(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The restarted trust prompt must not inherit previously loaded values."""
+        import deepagents_code.config as config_module
+
+        loaded_key = "DEEPAGENTS_CODE_TEST_DOTENV_LOADED"
+        changed_key = "DEEPAGENTS_CODE_TEST_DOTENV_CHANGED"
+        previous_values = dict(config_module._dotenv_loaded_values)
+        monkeypatch.setenv(loaded_key, "loaded")
+        monkeypatch.setenv(changed_key, "changed-after-load")
+        config_module._dotenv_loaded_values.clear()
+        config_module._dotenv_loaded_values.update(
+            {loaded_key: "loaded", changed_key: "loaded"}
+        )
+
+        try:
+            with (
+                patch("os.execv", side_effect=SystemExit(0)),
+                pytest.raises(SystemExit),
+            ):
+                _restart_current_process()
+
+            assert loaded_key not in os.environ
+            assert os.environ[changed_key] == "changed-after-load"
+            assert config_module._dotenv_loaded_values == {}
+        finally:
+            config_module._dotenv_loaded_values.clear()
+            config_module._dotenv_loaded_values.update(previous_values)
+
     def test_failed_update_does_not_restart_and_continues(self) -> None:
         """A failed upgrade must not restart; it surfaces the error and returns."""
         console = MagicMock()

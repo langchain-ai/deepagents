@@ -13,6 +13,9 @@ from textual.widgets import Input, Static
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
+_PAGE_SIZE = 5
+"""Rows Tab/Shift+Tab jump through the filtered list, matching the inline panel."""
+
 
 class _PromptRow(Static):
     """One prompt summary row."""
@@ -43,16 +46,11 @@ class PromptClipboardScreen(ModalScreen[str | None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
+        Binding("tab", "page_down", "Page Down", show=False, priority=True),
+        Binding("shift+tab", "page_up", "Page Up", show=False, priority=True),
         Binding("enter", "select", "Insert", show=False, priority=True),
         Binding("ctrl+c", "copy", "Copy", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
-        # The search input is the only focusable widget, so focus traversal
-        # would just leave and re-enter it; swallow tab and shift+tab instead.
-        # Without the shift+tab binding the app's `check_action` steps its
-        # priority binding aside for this screen, and the key would fall
-        # through to `Screen.focus_previous`.
-        Binding("tab", "ignore", "Ignore", show=False, priority=True),
-        Binding("shift+tab", "ignore", "Ignore", show=False, priority=True),
     ]
 
     CSS_PATH = "prompt_clipboard.tcss"
@@ -185,6 +183,14 @@ class PromptClipboardScreen(ModalScreen[str | None]):
     def action_move_down(self) -> None:
         """Move selection toward older prompts."""
         self._move(1)
+
+    def action_page_up(self) -> None:
+        """Jump selection one page toward newer prompts."""
+        self._move(-_PAGE_SIZE)
+
+    def action_page_down(self) -> None:
+        """Jump selection one page toward older prompts."""
+        self._move(_PAGE_SIZE)
 
     def action_select(self) -> None:
         """Dismiss with the selected prompt."""

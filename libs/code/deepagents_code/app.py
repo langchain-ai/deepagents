@@ -21710,6 +21710,11 @@ class DeepAgentsApp(App):
             or self._pending_goal_review_widget is not None
         )
 
+    def _inline_prompt_search_active(self) -> bool:
+        """Return whether the composer's inline prompt search panel is open."""
+        chat_input = self._chat_input
+        return chat_input is not None and chat_input._prompt_search_active
+
     def action_open_prompt_clipboard(self) -> None:
         """Open prompt history: inline panel first, full modal on a second press.
 
@@ -23254,6 +23259,12 @@ class DeepAgentsApp(App):
             that binding is stepped aside under either screen.
         - `quit_or_interrupt` (`ctrl+c`): the prompt clipboard owns this chord for
             copying the selected prompt rather than the focused search text.
+        - `interrupt` (`escape`): while the composer's inline prompt search is
+            open, escape belongs to the query input's abandon-search binding,
+            not the global interrupt cascade.
+        - `toggle_auto_approve` (`shift+tab`): while the inline prompt search
+            is open, shift+tab pages its results (the same step-aside the
+            prompt clipboard modal and debug console already get).
         - `approval_reject_with_reason` (`tab`): unlike the other approval keys
             this one must be `priority=True` to beat `Screen`'s
             `tab -> app.focus_next`, which means it would otherwise swallow
@@ -23284,6 +23295,13 @@ class DeepAgentsApp(App):
 
             if isinstance(self.screen, (DebugConsoleScreen, PromptClipboardScreen)):
                 return False
+            # The inline prompt search pages its results with shift+tab.
+            if self._inline_prompt_search_active():
+                return False
+        # The inline prompt search owns escape (abandon + restore draft) while
+        # open; the focused query input's own binding handles it.
+        if action == "interrupt" and self._inline_prompt_search_active():
+            return False
         if action == "quit_or_interrupt":
             from deepagents_code.tui.modals.prompt_clipboard import (
                 PromptClipboardScreen,

@@ -24,7 +24,7 @@ from textual.highlight import highlight
 from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
-from textual.widgets import Static, TextArea
+from textual.widgets import Input, Static, TextArea
 
 from deepagents_code import theme
 from deepagents_code.command_registry import CommandEntry, get_slash_commands
@@ -60,7 +60,9 @@ from deepagents_code.tui.widgets.autocomplete import (
 from deepagents_code.tui.widgets.history import HistoryManager
 from deepagents_code.tui.widgets.prompt_search import (
     PROMPT_SEARCH_MAX_ROWS,
+    PROMPT_SEARCH_PAGE_SIZE,
     PROMPT_SEARCH_PANEL_ROWS,
+    PromptSearchInput,
     PromptSearchPanel,
     filter_prompts,
     prompt_title,
@@ -2352,6 +2354,7 @@ class ChatInput(Vertical):
         # grabbed in `on_mount` (it is composed with the input box).
         self._prompt_search: PromptSearchPanel | None = None
         self._prompt_search_draft: str | None = None
+        self._prompt_search_cursor: tuple[int, int] | None = None
         self._prompt_search_query = ""
         self._prompt_search_prompts: tuple[str, ...] = ()
         self._prompt_search_filtered: list[str] = []
@@ -3724,10 +3727,15 @@ class ChatInput(Vertical):
             return "modal"
 
         self._prompt_search_draft = self._text_area.text
+        self._prompt_search_cursor = self._text_area.cursor_location
         self._prompt_search_prompts = self._history.recent_prompts()
         self._prompt_search_query = ""
         self._prompt_search_index = 0
         self._refresh_prompt_search_panel()
+        # The query field is a real Input, so the blinking cursor lives in it
+        # while the search is open rather than in the frozen draft above.
+        if self._prompt_search._query_input is not None:
+            self._prompt_search._query_input.focus()
         return "inline"
 
     def escalate_prompt_search(self) -> str:
@@ -3737,15 +3745,19 @@ class ChatInput(Vertical):
             The typed query, so the modal's filter can be seeded with it.
         """
         query = self._prompt_search_query
-        self._close_prompt_search(restore_draft=False)
+        self._close_prompt_search(restore_draft=False, refocus=False)
         return query
 
-    def _close_prompt_search(self, *, restore_draft: bool) -> None:
+    def _close_prompt_search(
+        self, *, restore_draft: bool, refocus: bool = True
+    ) -> None:
         """Hide the inline panel and clear search state.
 
         Args:
             restore_draft: Whether to put the snapshot from `open_prompt_search`
                 back. Only Escape does; other exits leave the draft alone.
+            refocus: Whether to return focus to the composer. Escalating to the
+                modal skips this so the modal's own filter input takes focus.
         """
         draft = self._prompt_search_draft
         self._prompt_search_draft = None
@@ -3758,7 +3770,14 @@ class ChatInput(Vertical):
         if restore_draft and draft is not None and self._text_area is not None:
             self._text_area._skip_history_change_events += 1
             self._text_area.text = draft
-            self._text_area.move_cursor_to_end()
+            # Restore the exact cursor position from the snapshot, matching
+            # readline/codex cancel semantics rather than jumping to the end.
+            cursor = self._prompt_search_cursor
+            if cursor is not None:
+                self._text_area.move_cursor(cursor)
+            self._prompt_search_cursor = None
+        if refocus:
+            self.focus_input()
 
     def _refresh_prompt_search_panel(self) -> None:
         """Filter the snapshot by the query and re-render the panel."""
@@ -3823,46 +3842,79 @@ class ChatInput(Vertical):
                 self.app.bell()
             return True
 
-        if event.key == "up":
+        if event.key in {"up", "down"}:
             event.prevent_default()
             event.stop()
-            if self._prompt_search_index > 0:
-                self._prompt_search_index -= 1
-                if self._prompt_search is not None:
-                    self._prompt_search.update_selection(self._prompt_search_index)
-            return True
-
-        if event.key == "down":
-            event.prevent_default()
-            event.stop()
-            if self._prompt_search_index < len(self._prompt_search_filtered) - 1:
-                self._prompt_search_index += 1
-                if self._prompt_search is not None:
-                    self._prompt_search.update_selection(self._prompt_search_index)
-            return True
-
-        if event.key == "backspace":
-            event.prevent_default()
-            event.stop()
-            if not self._prompt_search_query:
-                # Readline-style affordance: backspace on an empty query
-                # abandons the search instead of eating the draft.
-                self._close_prompt_search(restore_draft=True)
+            last = len(self._prompt_search_filtered) - 1
+            if last < 0:
                 return True
-            self._prompt_search_query = self._prompt_search_query[:-1]
-            self._prompt_search_index = 0
-            self._refresh_prompt_search_panel()
-            return True
-
-        if event.is_printable and event.character is not None:
-            event.prevent_default()
-            event.stop()
-            self._prompt_search_query += event.character
-            self._prompt_search_index = 0
-            self._refresh_prompt_search_panel()
+            new_index = (
+                max(0, self._prompt_search_index - 1)
+                if event.key == "up"
+                else min(last, self._prompt_search_index + 1)
+            )
+            if new_index != self._prompt_search_index:
+                self._prompt_search_index = new_index
+                if self._prompt_search is not None:
+                    self._prompt_search.update_selection(new_index)
             return True
 
         return False
+
+    def _page_prompt_search(self, *, older: bool) -> None:
+        """Move the selection one page through the filtered prompts."""
+        last = len(self._prompt_search_filtered) - 1
+        if last < 0:
+            return
+        new_index = (
+            max(0, self._prompt_search_index - PROMPT_SEARCH_PAGE_SIZE)
+            if not older
+            else min(last, self._prompt_search_index + PROMPT_SEARCH_PAGE_SIZE)
+        )
+        if new_index != self._prompt_search_index:
+            self._prompt_search_index = new_index
+            if self._prompt_search is not None:
+                self._prompt_search.update_selection(new_index)
+
+    def on_prompt_search_input_page_requested(
+        self, event: PromptSearchInput.PageRequested
+    ) -> None:
+        """Page the selection on Tab (older) or Shift+Tab (newer)."""
+        if not self._prompt_search_active:
+            return
+        event.stop()
+        self._page_prompt_search(older=event.older)
+
+    def on_prompt_search_input_abandon_search(
+        self, event: PromptSearchInput.AbandonSearch
+    ) -> None:
+        """Close the search, restoring the draft, on empty-query Backspace."""
+        if not self._prompt_search_active:
+            return
+        event.stop()
+        self._close_prompt_search(restore_draft=True)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Filter prompts as the query input's text changes."""
+        if not self._prompt_search_active:
+            return
+        if not isinstance(event.input, PromptSearchInput):
+            return
+        self._prompt_search_query = event.value
+        self._prompt_search_index = 0
+        self._refresh_prompt_search_panel()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Insert the selected prompt when the query input receives Enter."""
+        if not self._prompt_search_active:
+            return
+        if not isinstance(event.input, PromptSearchInput):
+            return
+        event.stop()
+        if self._prompt_search_filtered:
+            self._prompt_search_insert_selected()
+        elif self.app is not None:
+            self.app.bell()
 
     def on_prompt_search_panel_option_selected(
         self, event: PromptSearchPanel.OptionSelected

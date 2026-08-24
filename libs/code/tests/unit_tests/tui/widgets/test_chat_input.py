@@ -7600,3 +7600,39 @@ class TestPromptSearchPanel:
             # Simulate an active completion popup
             chat._current_suggestions = [("/help", "Show help")]
             assert chat.open_prompt_search() == "modal"
+
+    async def test_tab_pages_through_results(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, [f"prompt {i}" for i in range(12)])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert chat._prompt_search_index == 5
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+    async def test_focus_moves_to_query_input(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+
+            assert isinstance(app.focused, PromptSearchInput)

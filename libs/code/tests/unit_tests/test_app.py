@@ -40703,9 +40703,10 @@ class TestPromptClipboard:
             assert app.screen is screen
             assert screen._recommended_only is False
 
-    async def test_shift_tab_does_not_route_to_prompt_navigation(
+    async def test_shift_tab_pages_in_prompt_modal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The modal pages with shift+tab; it must not hit the app binding."""
         from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
 
         app = DeepAgentsApp(agent=MagicMock())
@@ -40714,7 +40715,9 @@ class TestPromptClipboard:
             chat_input = app._chat_input
             assert chat_input is not None
             monkeypatch.setattr(
-                chat_input, "recent_prompts", lambda: ("newest", "older")
+                chat_input,
+                "recent_prompts",
+                lambda: tuple(f"prompt {i}" for i in range(12)),
             )
 
             await pilot.press("ctrl+r")
@@ -40723,13 +40726,14 @@ class TestPromptClipboard:
             await pilot.pause()
             screen = cast("PromptClipboardScreen", app.screen)
             assert isinstance(screen, PromptClipboardScreen)
-            await pilot.press("down")
+
+            await pilot.press("tab")
             await pilot.pause()
-            assert screen._selected_index == 1
+            assert screen._selected_index == 5
 
             await pilot.press("shift+tab")
             await pilot.pause()
-            assert screen._selected_index == 1
+            assert screen._selected_index == 0
 
     @pytest.mark.parametrize(
         "pending_field",

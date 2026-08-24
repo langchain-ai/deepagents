@@ -9,14 +9,16 @@ routes to.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.message import Message
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 if TYPE_CHECKING:
+    from textual import events
     from textual.app import ComposeResult
 
 logger = logging.getLogger(__name__)
@@ -25,10 +27,13 @@ PROMPT_SEARCH_MAX_ROWS = 5
 """Result rows the inline panel shows before the list scrolls."""
 
 PROMPT_SEARCH_HINT = (
-    "type to filter  •  ↑/↓ navigate  •  Enter insert  •  "
-    "Ctrl+R full view  •  Esc cancel"
+    "type to filter  •  ↑/↓ navigate  •  Tab/Shift+Tab page  •  "
+    "Enter insert  •  Ctrl+R full view  •  Esc cancel"
 )
 """Footer line; the Ctrl+R mention is what makes the modal tier discoverable."""
+
+PROMPT_SEARCH_PAGE_SIZE = PROMPT_SEARCH_MAX_ROWS
+"""Rows Tab/Shift+Tab jump through the filtered list."""
 
 PROMPT_SEARCH_PANEL_ROWS = 1 + PROMPT_SEARCH_MAX_ROWS + 1
 """Rows the panel reports at its tallest: query, results, hint.
@@ -50,6 +55,52 @@ def filter_prompts(prompts: tuple[str, ...], query: str) -> list[str]:
     if not needle:
         return list(prompts)
     return [prompt for prompt in prompts if needle in prompt.casefold()]
+
+
+class PromptSearchInput(Input):
+    """Query field for the inline prompt search panel.
+
+    Plain `Input` apart from the class name, which scopes the CSS above and
+    lets `ChatInput` filter `Input.Changed` / `Input.Submitted` messages to
+    this field, plus bindings for the keys the panel owns while focused.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        # The app binds these chords with priority, so they never reach a
+        # focused widget unless `check_action` steps them aside; it does while
+        # the panel is open (see `DeepAgentsApp.check_action`).
+        Binding("escape", "abandon_search", "Cancel", show=False, priority=True),
+        Binding("tab", "page(True)", "Page Down", show=False, priority=True),
+        Binding("shift+tab", "page(False)", "Page Up", show=False, priority=True),
+    ]
+
+    class AbandonSearch(Message):
+        """Posted on Escape or empty-query Backspace, to close the search."""
+
+    class PageRequested(Message):
+        """Posted on Tab (older) or Shift+Tab (newer) to page the results."""
+
+        def __init__(self, *, older: bool) -> None:
+            """Initialize with the page direction."""
+            super().__init__()
+            self.older = older
+
+    def action_abandon_search(self) -> None:
+        """Forward Escape as an abandon request."""
+        self.post_message(self.AbandonSearch())
+
+    def action_page(self, older: bool) -> None:
+        """Forward Tab/Shift+Tab as a page request."""
+        self.post_message(self.PageRequested(older=older))
+
+    async def _on_key(self, event: events.Key) -> None:
+        """Forward the empty-query Backspace chord; defer the rest to Input."""
+        if event.key == "backspace" and not self.value:
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.AbandonSearch())
+            return
+        await super()._on_key(event)
 
 
 class PromptSearchOption(Static):
@@ -121,9 +172,15 @@ class PromptSearchPanel(Vertical):
         max-height: {PROMPT_SEARCH_PANEL_ROWS};
     }}
 
-    PromptSearchPanel .prompt-search-query {{
+    PromptSearchPanel #prompt-search-input {{
         height: 1;
         padding: 0 1;
+        border: none;
+        background: transparent;
+    }}
+
+    PromptSearchPanel #prompt-search-input:focus {{
+        border: none;
     }}
 
     PromptSearchPanel #prompt-search-results {{
@@ -150,7 +207,7 @@ class PromptSearchPanel(Vertical):
         """Initialize display state."""
         super().__init__(**kwargs)
         self.can_focus = False
-        self._query_static: Static | None = None
+        self._query_input: PromptSearchInput | None = None
         self._results: VerticalScroll | None = None
         self._hint_static: Static | None = None
         self._options: list[PromptSearchOption] = []
@@ -183,13 +240,15 @@ class PromptSearchPanel(Vertical):
         Yields:
             Widgets for the prompt search panel.
         """
-        yield Static("", classes="prompt-search-query")
+        yield PromptSearchInput(
+            placeholder="Search submitted prompts", id="prompt-search-input"
+        )
         yield VerticalScroll(id="prompt-search-results")
         yield Static(PROMPT_SEARCH_HINT, classes="prompt-search-hint")
 
     def on_mount(self) -> None:
         """Grab the composed children."""
-        self._query_static = self.query_one(".prompt-search-query", Static)
+        self._query_input = self.query_one("#prompt-search-input", PromptSearchInput)
         self._results = self.query_one("#prompt-search-results", VerticalScroll)
         self._hint_static = self.query_one(".prompt-search-hint", Static)
 
@@ -211,10 +270,8 @@ class PromptSearchPanel(Vertical):
         # Increment generation so stale callbacks from prior calls are skipped.
         self._rebuild_generation += 1
         gen = self._rebuild_generation
-        if self._query_static is not None:
-            self._query_static.update(
-                Content.assemble(("prompt search: ", "dim"), (query, "bold"))
-            )
+        if self._query_input is not None and self._query_input.value != query:
+            self._query_input.value = query
         self.call_next(lambda: self._rebuild_options(gen))
 
     async def _rebuild_options(self, generation: int) -> None:

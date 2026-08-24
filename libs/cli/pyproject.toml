@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.2.2"
+version = "0.3.0"
 description = "DEPRECATED: Deployment tooling for Deep Agents. Use Managed Deep Agents (`uv tool install managed-deepagents`, `mda`) instead: https://docs.langchain.com/langsmith/python/managed-deep-agents-overview"
 readme = "README.md"
 license = { text = "MIT" }

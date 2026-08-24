@@ -205,9 +205,17 @@ endpoint/proxy/transport key therefore chooses where those credentials are
 sent. The in-process paths trust `model_params` (the user supplied them
 through their own flags and config); the HTTP boundary does not -- the dev
 server accepts connections from any local process, so the request's model
-selection must not extend to its network plumbing. Denylist rather than
-allowlist: `create_model` serves arbitrary providers, so a fixed allowlist
-would silently drop legitimate provider-specific params.
+selection must not extend to its network plumbing.
+
+A backstop, not the primary control. `_checkpoint_model_context` discards the
+request's `model` and `model_params` outright and substitutes the checkpointed
+values, so a client-supplied endpoint cannot reach `create_model` even without
+this filter. It is kept for the case that control cannot cover: a future path
+that resolves a model before, or instead of, reading the checkpoint. Treat a
+warning from here as a client sending params it should not, not as a breach.
+
+Denylist rather than allowlist: `create_model` serves arbitrary providers, so a
+fixed allowlist would silently drop legitimate provider-specific params.
 """
 
 
@@ -231,6 +239,14 @@ def _strip_transport_model_params(context: dict[str, Any]) -> dict[str, Any]:
     }
     if len(stripped) == len(params):
         return context
+    # Logged, not silent: dropping these changes where the summarizer's
+    # credentialed calls go, so a user whose gateway config is being ignored has
+    # something to find. Key names only -- the values are endpoints and headers.
+    logger.warning(
+        "Dropped transport key(s) %s from offload model_params; a server-owned "
+        "operation does not accept a client-chosen endpoint",
+        sorted(set(params) - set(stripped)),
+    )
     return {**context, "model_params": stripped}
 
 

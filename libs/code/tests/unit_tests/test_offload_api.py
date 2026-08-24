@@ -156,6 +156,35 @@ class TestOperationPayload:
 
         assert context["model_params"] == {"temperature": 0.2}
 
+    def test_stripping_is_logged_with_key_names_only(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A dropped transport key must leave a trace naming the key.
+
+        Silently ignoring it leaves a user whose gateway config is being skipped
+        with nothing to find. The value is an endpoint or header, so only the
+        key name is logged.
+        """
+        import logging
+
+        from deepagents_code.offload_api import _operation_payload
+
+        with caplog.at_level(logging.WARNING):
+            _operation_payload(
+                {
+                    "operation_id": "op-1",
+                    "context": {
+                        "model_params": {
+                            "base_url": "http://gateway.internal/v1",
+                            "temperature": 0.2,
+                        }
+                    },
+                }
+            )
+
+        assert "base_url" in caplog.text
+        assert "gateway.internal" not in caplog.text
+
     def test_clean_model_params_dict_is_untouched(self) -> None:
         from deepagents_code.offload_api import _operation_payload
 

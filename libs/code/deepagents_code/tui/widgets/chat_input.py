@@ -3660,13 +3660,13 @@ class ChatInput(Vertical):
 
     def focus_input(self) -> None:
         """Focus the input field."""
-        if (
-            self._prompt_search_active
-            and self._prompt_search is not None
-            and self._prompt_search._query_input is not None
-        ):
-            self._prompt_search._query_input.focus()
-            return
+        if self._prompt_search_active and self._prompt_search is not None:
+            if self._prompt_search.focus_query():
+                return
+            # The session is open but the query input is not mounted yet, so
+            # keys would route into a panel the user cannot type in. Worth a
+            # trace: this combination is a lifecycle bug, not a normal state.
+            logger.warning("Prompt search is active but its query input is not mounted")
         if self._text_area:
             self._text_area.focus()
 
@@ -3774,8 +3774,7 @@ class ChatInput(Vertical):
         self._refresh_prompt_search_panel()
         # The query field is a real Input, so the blinking cursor lives in it
         # while the search is open rather than in the frozen draft above.
-        if self._prompt_search._query_input is not None:
-            self._prompt_search._query_input.focus()
+        self._prompt_search.focus_query()
         return "inline"
 
     def escalate_prompt_search(self) -> str:

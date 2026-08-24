@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, ClassVar, override
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -22,20 +23,36 @@ if TYPE_CHECKING:
     from textual.events import Click
 
 
-class _PromptRow(Static):
-    """One prompt summary row."""
+class PromptRow(Static):
+    """One prompt summary row.
+
+    Public so its `Clicked` message resolves to the idiomatic
+    `on_prompt_row_clicked` handler; nothing outside this module builds one.
+    """
+
+    class Clicked(Message):
+        """Message sent when a prompt row is clicked."""
+
+        def __init__(self, index: int) -> None:
+            """Initialize with the clicked row index."""
+            super().__init__()
+            self.index = index
 
     def __init__(self, prompt: str, index: int, *, selected: bool) -> None:
+        """Initialize the row with its title, list position, and selection."""
         classes = "prompt-row prompt-row-selected" if selected else "prompt-row"
         super().__init__(self._content(prompt), classes=classes)
         self._index = index
 
     def on_click(self, event: Click) -> None:
-        """Select the clicked row; Enter is still required to insert it."""
+        """Announce the click; Enter is still required to insert the prompt.
+
+        Posting a message rather than calling back into the screen keeps the
+        row independent of what contains it, and matches how
+        `PromptSearchOption` reports clicks in the inline panel.
+        """
         event.stop()
-        screen = self.screen
-        if isinstance(screen, PromptClipboardScreen):
-            screen.select_row(self._index)
+        self.post_message(self.Clicked(self._index))
 
     @staticmethod
     def _content(prompt: str) -> Content:
@@ -93,7 +110,7 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         self._initial_query = initial_query
         self._empty_message = empty_message
         self._selected_index = 0
-        self._rows: list[_PromptRow] = []
+        self._rows: list[PromptRow] = []
 
     @override
     def compose(self) -> ComposeResult:
@@ -190,7 +207,7 @@ class PromptClipboardScreen(ModalScreen[str | None]):
             return
 
         self._rows = [
-            _PromptRow(prompt, index, selected=index == self._selected_index)
+            PromptRow(prompt, index, selected=index == self._selected_index)
             for index, prompt in enumerate(self._filtered)
         ]
         await rows_list.mount(*self._rows)
@@ -203,12 +220,17 @@ class PromptClipboardScreen(ModalScreen[str | None]):
             return
         preview.update(Content(self._filtered[self._selected_index]))
 
-    def select_row(self, index: int) -> None:
+    def on_prompt_row_clicked(self, event: PromptRow.Clicked) -> None:
+        """Move the selection to the clicked row."""
+        event.stop()
+        self._select_row(event.index)
+
+    def _select_row(self, index: int) -> None:
         """Move the selection to `index`, as if navigated to by key.
 
-        Called by a row's mouse click; Enter is still required to insert.
-        Ignores clicks that arrive while a filter edit is still queued, since
-        the row indexes then describe a different list than `_filtered`.
+        Enter is still required to insert. Ignores clicks that arrive while a
+        filter edit is still queued, since the row indexes then describe a
+        different list than `_filtered`.
         """
         self._sync_filter_value()
         if (

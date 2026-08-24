@@ -7545,8 +7545,8 @@ class TestPromptSearchPanel:
             # selection stays put.
             assert panel._options[2].mouse_hover
             assert chat._prompt_search_index == 0
-            assert panel._options[0]._is_selected
-            assert not panel._options[2]._is_selected
+            assert panel._options[0].is_selected
+            assert not panel._options[2].is_selected
 
             # Keyboard navigation resumes from the selection, not the hover.
             await pilot.press("down")
@@ -7618,7 +7618,7 @@ class TestPromptSearchPanel:
             await pilot.pause()
 
             assert chat._prompt_search_index == 2
-            assert panel._options[2]._is_selected
+            assert panel._options[2].is_selected
             # Clicking alone must not close the panel or touch the draft.
             assert chat._prompt_search_active is True
             assert chat._text_area is not None
@@ -7861,7 +7861,7 @@ class TestPromptSearchPanel:
             selected = [
                 o for o in panel._options if o.index == chat._prompt_search_index
             ]
-            assert selected[0]._is_selected
+            assert selected[0].is_selected
 
             # Enter inserts the exact windowed prompt.
             await pilot.press("enter")
@@ -8034,7 +8034,7 @@ class TestPromptSearchPanel:
             expected = chat._prompt_search_filtered[target]
             mounted = {option.index: option for option in panel._options}
             assert target in mounted
-            assert mounted[target]._is_selected
+            assert mounted[target].is_selected
             # The row's rendered title must describe the prompt at that index.
             assert str(mounted[target].render()).strip() == expected
 
@@ -8242,6 +8242,32 @@ class TestPromptSearchPanel:
 
             assert chat._prompt_search_index == 1
             assert text_area.text == ""
+
+    async def test_focus_query_reports_whether_focus_moved(
+        self, tmp_path: Path
+    ) -> None:
+        """`focus_query` keeps the panel's composition private to it."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["a prompt"])
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            assert panel.focus_query() is True
+            await pilot.pause()
+            assert app.focused is panel._query_input
+
+            # Before `on_mount` there is nothing to focus, and the caller is
+            # told rather than left believing focus moved.
+            query_input = panel._query_input
+            panel._query_input = None
+            try:
+                assert panel.focus_query() is False
+            finally:
+                panel._query_input = query_input
 
     async def test_panel_reports_its_rendered_height(self, tmp_path: Path) -> None:
         """`RowsChanged` drives the composer's height reservation.

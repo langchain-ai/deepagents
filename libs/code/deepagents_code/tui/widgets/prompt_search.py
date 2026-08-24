@@ -208,25 +208,48 @@ class PromptSearchOption(Static):
     def __init__(self, title: str, index: int, *, is_selected: bool) -> None:
         """Initialize the row."""
         super().__init__(Content.styled(title, "bold"))
-        self.index = index
-        self._is_selected = is_selected
-        if is_selected:
-            self.add_class("prompt-search-selected")
+        self._index = index
+        self.set_selected(is_selected=is_selected)
+
+    @property
+    def index(self) -> int:
+        """Position of this row in the filtered list.
+
+        Read-only from outside: `PromptSearchPanel` treats `_options[0].index`
+        as the authority on which window is currently mounted, so an external
+        write would silently defeat its staleness check. `set_content` is the
+        only way to move a row.
+
+        Returns:
+            The row's index in the filtered list.
+        """
+        return self._index
+
+    @property
+    def is_selected(self) -> bool:
+        """Whether this row currently renders as selected.
+
+        Derived from the CSS class rather than mirrored in a field, so the two
+        cannot drift.
+
+        Returns:
+            `True` when the selected styling is applied.
+        """
+        return self.has_class("prompt-search-selected")
 
     def set_content(self, title: str, index: int, *, is_selected: bool) -> None:
         """Update the row in place during a panel rebuild."""
         self.update(Content.styled(title, "bold"))
-        self.index = index
+        self._index = index
         self.set_selected(is_selected=is_selected)
 
     def set_selected(self, *, is_selected: bool) -> None:
         """Toggle the selected styling."""
-        self._is_selected = is_selected
         self.set_class(is_selected, "prompt-search-selected")
 
     def on_click(self) -> None:
         """Post the click up to `ChatInput`."""
-        self.post_message(self.Clicked(self.index))
+        self.post_message(self.Clicked(self._index))
 
 
 class PromptSearchPanel(Vertical):
@@ -524,6 +547,21 @@ class PromptSearchPanel(Vertical):
         """Forward row clicks as this panel's own message for `ChatInput`."""
         event.stop()
         self.post_message(self.OptionSelected(event.index))
+
+    def focus_query(self) -> bool:
+        """Move focus to the query input.
+
+        Keeps the panel's composition private to it: the owner asks for focus
+        rather than reaching through to `_query_input`, which is `None` until
+        `on_mount` has run.
+
+        Returns:
+            `True` when focus moved, `False` when the input is not mounted yet.
+        """
+        if self._query_input is None:
+            return False
+        self._query_input.focus()
+        return True
 
     def _report_rows(self, rows: int) -> None:
         """Announce the rendered row count when it changes."""

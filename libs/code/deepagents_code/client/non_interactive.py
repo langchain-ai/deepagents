@@ -1933,6 +1933,8 @@ async def run_non_interactive(
     rubric_max_iterations: int | None = None,
     recursion_limit: int | None = None,
     trust_project_hooks: bool = False,
+    trust_project_extensions: bool = False,
+    extension_paths: tuple[str, ...] = (),
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -2014,6 +2016,11 @@ async def run_non_interactive(
 
             Defaults to `False` so untrusted repositories cannot execute hook
             commands without an explicit `--trust-project-hooks` opt-in.
+        trust_project_extensions: Allow project-authored Python extensions.
+
+            Defaults to `False`; persisted or configured trust may still grant
+            project loading inside the server.
+        extension_paths: Explicit one-run extension files or directories.
 
     Returns:
         Exit code: 0 for success or an intentional hook stop, 1 for error, 124
@@ -2261,6 +2268,8 @@ async def run_non_interactive(
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            trust_project_extensions=trust_project_extensions,
+            extension_paths=extension_paths,
             interactive=False,
         ) as (agent, _server_proc):
             # Collect MCP preload result (ran concurrently with server startup)

@@ -24,6 +24,7 @@ import threading
 import unicodedata
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 
@@ -1341,9 +1342,109 @@ MCP_CONFIG_DISCOVERY_PATHS: tuple[tuple[str, str], ...] = (
 
 Ordered from lowest to highest precedence. Each entry is `(path, label)`
 suitable for rendering in help screens and error messages. The runtime
-discovery in `discover_mcp_configs` builds the same paths from
-`Path.home()` and `_resolve_project_config_base()`.
+discovery in `discover_mcp_config_sources` builds the same paths from the
+immutable profile snapshot and `_resolve_project_config_base()`.
 """
+
+
+class MCPConfigScope(StrEnum):
+    """Trust provenance assigned when an MCP config candidate is discovered."""
+
+    USER = "user"
+    """The exact `.mcp.json` selected by the immutable user profile root."""
+
+    PROJECT = "project"
+    """A repository-controlled `.mcp.json` that requires project trust."""
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredMCPConfig:
+    """An MCP config path together with its discovery trust provenance."""
+
+    path: Path
+    scope: MCPConfigScope
+    project_root: Path | None = None
+
+
+def _same_config_location(first: Path, second: Path) -> bool | None:
+    """Return whether two discovered paths identify the same config.
+
+    Lexically identical paths match without filesystem access. Symlink aliases
+    are collapsed when both files resolve successfully. `None` preserves an
+    indeterminate resolution error so the caller can fail closed when scopes
+    differ rather than retaining a possibly aliased user-trusted path.
+
+    Returns:
+        `True` or `False` when identity is known, otherwise `None`.
+    """
+    if first == second:
+        return True
+    try:
+        return first.resolve(strict=False) == second.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+
+
+def _append_discovered_config(
+    found: list[DiscoveredMCPConfig], candidate: DiscoveredMCPConfig
+) -> None:
+    """Append a candidate, preferring higher-precedence/project provenance."""
+    for index, existing in enumerate(found):
+        same_location = _same_config_location(existing.path, candidate.path)
+        if same_location is False:
+            continue
+        scopes_differ = existing.scope is not candidate.scope
+        if same_location is None and not scopes_differ:
+            continue
+        if candidate.scope is MCPConfigScope.PROJECT:
+            # A configured home can equal a project root or its `.deepagents`
+            # directory. The standard project discovery provenance wins that
+            # collision so relocating the profile never self-trusts the repo's
+            # own MCP file.
+            found.pop(index)
+            found.append(candidate)
+        return
+    found.append(candidate)
+
+
+def discover_mcp_config_sources(
+    *,
+    project_context: ProjectContext | None = None,
+) -> list[DiscoveredMCPConfig]:
+    """Discover MCP configs while preserving their trust scope.
+
+    Args:
+        project_context: Explicit project path context, if available.
+
+    Returns:
+        Existing configs in precedence order with immutable provenance.
+    """
+    user_config = get_deepagents_home() / ".mcp.json"
+    project_root = _resolve_project_config_base(project_context)
+    candidates = (
+        DiscoveredMCPConfig(user_config, MCPConfigScope.USER),
+        DiscoveredMCPConfig(
+            project_root / ".deepagents" / ".mcp.json",
+            MCPConfigScope.PROJECT,
+            project_root,
+        ),
+        DiscoveredMCPConfig(
+            project_root / ".mcp.json",
+            MCPConfigScope.PROJECT,
+            project_root,
+        ),
+    )
+
+    found: list[DiscoveredMCPConfig] = []
+    for candidate in candidates:
+        try:
+            if candidate.path.is_file():
+                _append_discovered_config(found, candidate)
+        except OSError:
+            logger.warning(
+                "Could not check MCP config %s", candidate.path, exc_info=True
+            )
+    return found
 
 
 def discover_mcp_configs(
@@ -1361,23 +1462,10 @@ def discover_mcp_configs(
     Returns:
         Existing config file paths, ordered from lowest to highest precedence.
     """
-    user_dir = get_deepagents_home()
-    project_root = _resolve_project_config_base(project_context)
-
-    candidates = [
-        user_dir / ".mcp.json",
-        project_root / ".deepagents" / ".mcp.json",
-        project_root / ".mcp.json",
+    return [
+        source.path
+        for source in discover_mcp_config_sources(project_context=project_context)
     ]
-
-    found: list[Path] = []
-    for path in candidates:
-        try:
-            if path.is_file():
-                found.append(path)
-        except OSError:
-            logger.warning("Could not check MCP config %s", path, exc_info=True)
-    return found
 
 
 def classify_discovered_configs(
@@ -1391,17 +1479,26 @@ def classify_discovered_configs(
     Returns:
         Tuple of `(user_configs, project_configs)`.
     """
-    user_dir = get_deepagents_home()
+    user_config = get_deepagents_home() / ".mcp.json"
+    project_root = _resolve_project_config_base(None)
+    project_locations = (
+        project_root / ".deepagents" / ".mcp.json",
+        project_root / ".mcp.json",
+    )
     user: list[Path] = []
     project: list[Path] = []
     for path in config_paths:
-        try:
-            if path.resolve().is_relative_to(user_dir.resolve()):
-                user.append(path)
-            else:
-                project.append(path)
-        except (OSError, ValueError):
+        if path != user_config:
             project.append(path)
+            continue
+        project_collision = any(
+            _same_config_location(path, project_path) is not False
+            for project_path in project_locations
+        )
+        if project_collision:
+            project.append(path)
+        else:
+            user.append(path)
     return user, project
 
 
@@ -2921,13 +3018,20 @@ async def resolve_and_load_mcp_tools(
     config_load_errors: list[tuple[Path, str]] = []
 
     try:
-        config_paths = discover_mcp_configs(project_context=project_context)
+        config_sources = discover_mcp_config_sources(project_context=project_context)
     except (OSError, RuntimeError) as exc:
         logger.warning("MCP config auto-discovery failed", exc_info=True)
-        config_paths = []
+        config_sources = []
         config_load_errors.append((Path("<discovery>"), str(exc)))
 
-    user_configs, project_configs = classify_discovered_configs(config_paths)
+    user_configs = [
+        source.path for source in config_sources if source.scope is MCPConfigScope.USER
+    ]
+    project_sources = [
+        source for source in config_sources if source.scope is MCPConfigScope.PROJECT
+    ]
+    project_configs = [source.path for source in project_sources]
+    project_roots = {source.path: source.project_root for source in project_sources}
     configs: list[dict[str, Any]] = []
 
     for path in user_configs:
@@ -3042,9 +3146,7 @@ async def resolve_and_load_mcp_tools(
         kept: dict[str, Any] = {}
         for name, server in project_config["mcpServers"].items():
             source = server_sources[name]
-            project_root = project_root_for_mcp_config_path(
-                source, fallback=project_base
-            )
+            project_root = project_roots.get(source) or project_base
             kept.update(
                 filter_trusted_project_servers(
                     {name: server},

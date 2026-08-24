@@ -196,6 +196,42 @@ print(captured)
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.strip() == str(configured)
 
+    def test_project_dotenv_cannot_reclassify_project_mcp(self, tmp_path: Path) -> None:
+        """A committed dotenv plus MCP config cannot self-approve the server."""
+        project = tmp_path / "repo"
+        project.mkdir()
+        (project / ".mcp.json").write_text("{}")
+        (project / ".env").write_text(f"DEEPAGENTS_HOME={project}\n")
+        configured = tmp_path / "safe-profile"
+        code = """
+import os
+from pathlib import Path
+from deepagents_code._paths import PATHS
+from deepagents_code.config import _load_dotenv
+from deepagents_code.mcp_tools import MCPConfigScope, discover_mcp_config_sources
+from deepagents_code.project_utils import ProjectContext
+project = Path(os.environ["TEST_PROJECT"])
+os.environ.pop("DEEPAGENTS_HOME", None)
+_load_dotenv(start_path=project)
+context = ProjectContext(user_cwd=project, project_root=project)
+sources = discover_mcp_config_sources(project_context=context)
+assert PATHS.profile.root != project
+assert "DEEPAGENTS_HOME" not in os.environ
+assert sources and all(source.scope is MCPConfigScope.PROJECT for source in sources)
+print(PATHS.profile.root)
+"""
+        env = _subprocess_env(home=tmp_path, configured=str(configured))
+        env["TEST_PROJECT"] = str(project)
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == str(configured)
+
     @pytest.mark.parametrize("configured", ["relative/profile", "~other/profile"])
     def test_invalid_launch_value_is_actionable(
         self, configured: str, tmp_path: Path

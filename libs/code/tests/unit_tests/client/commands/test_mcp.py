@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
+from deepagents_code.mcp_tools import DiscoveredMCPConfig, MCPConfigScope
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -125,8 +127,11 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[lower, higher],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(lower, MCPConfigScope.USER),
+                    DiscoveredMCPConfig(higher, MCPConfigScope.USER),
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -160,8 +165,11 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[lower, higher],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(lower, MCPConfigScope.USER),
+                    DiscoveredMCPConfig(higher, MCPConfigScope.USER),
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -178,7 +186,7 @@ class TestRunMCPLogin:
         from deepagents_code.client.commands.mcp import run_mcp_login
 
         with patch(
-            "deepagents_code.mcp_tools.discover_mcp_configs",
+            "deepagents_code.mcp_tools.discover_mcp_config_sources",
             return_value=[],
         ):
             exit_code = await run_mcp_login(server="notion", config_path=None)
@@ -202,8 +210,10 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -228,8 +238,10 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -272,8 +284,10 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -320,8 +334,13 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[user_cfg, broken_project],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+                    DiscoveredMCPConfig(
+                        broken_project, MCPConfigScope.PROJECT, tmp_path
+                    ),
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -371,8 +390,11 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[user_cfg, project_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+                    DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path),
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -414,8 +436,11 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[user_cfg, project_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+                    DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path),
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -448,8 +473,8 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[user_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER)],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):

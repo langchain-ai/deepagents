@@ -205,17 +205,16 @@ def resolve_mcp_config(
             describing why no usable config could be assembled.
     """
     from deepagents_code.mcp_tools import (
+        MCPConfigScope,
         _drop_invalid_mcp_config_servers,
         _load_mcp_config_top_level_with_error,
         _merge_mcp_configs_with_sources,
         _resolve_project_config_base,
-        classify_discovered_configs,
-        discover_mcp_configs,
+        discover_mcp_config_sources,
         filter_trusted_project_servers,
         load_mcp_config,
         load_mcp_config_with_error,
         merge_mcp_configs,
-        project_root_for_mcp_config_path,
     )
 
     if config_path is not None:
@@ -231,7 +230,7 @@ def resolve_mcp_config(
             used_paths=(Path(config_path),),
         )
 
-    found = discover_mcp_configs()
+    found = discover_mcp_config_sources()
     if not found:
         return ConfigResolutionError(
             kind=ConfigErrorKind.NO_CONFIG_FOUND,
@@ -242,7 +241,14 @@ def resolve_mcp_config(
             ),
         )
 
-    user_paths, project_paths = classify_discovered_configs(found)
+    user_paths = [
+        source.path for source in found if source.scope is MCPConfigScope.USER
+    ]
+    project_sources = [
+        source for source in found if source.scope is MCPConfigScope.PROJECT
+    ]
+    project_paths = [source.path for source in project_sources]
+    project_roots = {source.path: source.project_root for source in project_sources}
     configs: list[dict[str, Any]] = []
     used_paths: list[Path] = []
     untrusted: tuple[Path, ...] = ()
@@ -294,9 +300,7 @@ def resolve_mcp_config(
             kept: dict[str, Any] = {}
             for name, server in servers.items():
                 source = server_sources[name]
-                project_root = project_root_for_mcp_config_path(
-                    source, fallback=project_base
-                )
+                project_root = project_roots.get(source) or project_base
                 kept.update(
                     filter_trusted_project_servers(
                         {name: server},
@@ -335,7 +339,7 @@ def resolve_mcp_config(
             detail = "; ".join(f"{path}: {error}" for path, error in load_errors)
             message = f"No usable MCP config found (load errors: {detail})"
         else:
-            found_paths = ", ".join(str(path) for path in found)
+            found_paths = ", ".join(str(source.path) for source in found)
             message = f"No usable MCP config found in: {found_paths}"
         return ConfigResolutionError(
             kind=ConfigErrorKind.NO_USABLE_CONFIG,

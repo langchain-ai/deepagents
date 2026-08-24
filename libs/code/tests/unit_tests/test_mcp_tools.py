@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from deepagents_code import model_config
+from deepagents_code._paths import _capture_paths
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator
@@ -30,6 +31,8 @@ from deepagents_code.mcp_tools import (
     _MCP_STDERR_DRAIN_JOIN_TIMEOUT,
     _MCP_STDERR_LINE_LIMIT,
     _MCP_STDERR_TRUNCATION_MARKER,
+    DiscoveredMCPConfig,
+    MCPConfigScope,
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
@@ -44,6 +47,7 @@ from deepagents_code.mcp_tools import (
     _normalize_mcp_arguments,
     _warm_mcp_adapter_imports,
     classify_discovered_configs,
+    discover_mcp_config_sources,
     discover_mcp_configs,
     extract_project_server_summaries,
     extract_stdio_server_commands,
@@ -55,6 +59,22 @@ from deepagents_code.mcp_tools import (
     resolve_and_load_mcp_tools,
 )
 from deepagents_code.project_utils import ProjectContext
+
+
+def _set_profile_root(
+    monkeypatch: pytest.MonkeyPatch, root: Path, *, launch_home: Path
+) -> None:
+    """Install a synthetic frozen profile snapshot for a unit test."""
+    monkeypatch.setattr(
+        "deepagents_code._paths.PATHS",
+        _capture_paths(str(root), launch_home=launch_home),
+    )
+
+
+def _raise_oserror() -> Path:
+    """Raise a synthetic path-resolution error."""
+    msg = "permission denied"
+    raise PermissionError(msg)
 
 
 def _make_mcp_tool(
@@ -676,7 +696,7 @@ class TestDiscoverMcpConfigs:
         (project / ".deepagents").mkdir(parents=True)
         (project / ".deepagents" / ".mcp.json").write_text("{}")
         (project / ".mcp.json").write_text("{}")
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        _set_profile_root(monkeypatch, home / ".deepagents", launch_home=home)
         monkeypatch.setattr(
             "deepagents_code.project_utils.find_project_root",
             lambda: project,
@@ -694,7 +714,7 @@ class TestDiscoverMcpConfigs:
         configured.mkdir()
         user_config = configured / ".mcp.json"
         user_config.write_text("{}")
-        monkeypatch.setenv("DEEPAGENTS_HOME", str(configured))
+        _set_profile_root(monkeypatch, configured, launch_home=tmp_path)
         monkeypatch.setattr(
             "deepagents_code.project_utils.find_project_root",
             lambda: None,
@@ -709,7 +729,7 @@ class TestDiscoverMcpConfigs:
         """No discovered files yields an empty list without error."""
         home = tmp_path / "h"
         home.mkdir()
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        _set_profile_root(monkeypatch, home / ".deepagents", launch_home=home)
         monkeypatch.setattr(
             "deepagents_code.project_utils.find_project_root",
             lambda: None,
@@ -726,7 +746,7 @@ class TestDiscoverMcpConfigs:
         project = tmp_path / "p"
         (project / ".deepagents").mkdir(parents=True)
         (project / ".deepagents" / ".mcp.json").write_text("{}")
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        _set_profile_root(monkeypatch, home / ".deepagents", launch_home=home)
 
         ctx = ProjectContext(user_cwd=project, project_root=project)
         paths = discover_mcp_configs(project_context=ctx)
@@ -2380,7 +2400,7 @@ class TestResolveAndLoadMcpTools:
         assert infos == []
 
     @patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_no_adapter_warmup_when_no_active_servers(
         self,
         mock_discover: MagicMock,
@@ -2402,7 +2422,7 @@ class TestResolveAndLoadMcpTools:
         mock_warm.assert_not_called()
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_explicit_path_merges_with_discovery(
         self,
         mock_discover: MagicMock,
@@ -2418,7 +2438,9 @@ class TestResolveAndLoadMcpTools:
         explicit.write_text(
             json.dumps({"mcpServers": {"search": {"command": "brave", "args": []}}})
         )
-        mock_discover.return_value = [discovered]
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(discovered, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], MCPSessionManager(), [])
 
         await resolve_and_load_mcp_tools(
@@ -2431,7 +2453,7 @@ class TestResolveAndLoadMcpTools:
         assert "search" in merged["mcpServers"]
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_stateless_and_manager_forwarded(
         self,
         mock_discover: MagicMock,
@@ -2444,7 +2466,9 @@ class TestResolveAndLoadMcpTools:
             json.dumps({"mcpServers": {"fs": {"command": "npx", "args": []}}})
         )
         manager = MCPSessionManager()
-        mock_discover.return_value = [cfg]
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
 
         await resolve_and_load_mcp_tools(
@@ -2472,12 +2496,10 @@ class TestResolveAndLoadMcpTools:
             await resolve_and_load_mcp_tools(explicit_config_path=str(bad))
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.classify_discovered_configs")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_malformed_project_config_without_summaries_is_nonfatal(
         self,
         mock_discover: MagicMock,
-        mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
     ) -> None:
@@ -2486,8 +2508,9 @@ class TestResolveAndLoadMcpTools:
         project_cfg.write_text(
             json.dumps({"mcpServers": {"bad": ["not", "a", "dict"]}})
         )
-        mock_discover.return_value = [project_cfg]
-        mock_classify.return_value = ([], [project_cfg])
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
 
         tools, manager, infos = await resolve_and_load_mcp_tools(
@@ -2503,12 +2526,10 @@ class TestResolveAndLoadMcpTools:
         assert "must be a dictionary" in (infos[0].error or "")
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.classify_discovered_configs")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_untrusted_project_remote_dropped_when_flag_false(
         self,
         mock_discover: MagicMock,
-        mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -2537,8 +2558,9 @@ class TestResolveAndLoadMcpTools:
                 }
             )
         )
-        mock_discover.return_value = [project_cfg]
-        mock_classify.return_value = ([], [project_cfg])
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
@@ -2565,12 +2587,10 @@ class TestResolveAndLoadMcpTools:
         assert "; docs-langchain" not in caplog.text
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.classify_discovered_configs")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_untrusted_project_remote_dropped_without_trust_flag(
         self,
         mock_discover: MagicMock,
-        mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
     ) -> None:
@@ -2588,8 +2608,9 @@ class TestResolveAndLoadMcpTools:
                 }
             )
         )
-        mock_discover.return_value = [project_cfg]
-        mock_classify.return_value = ([], [project_cfg])
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
 
         await resolve_and_load_mcp_tools(trust_project_mcp=None)
@@ -2597,12 +2618,10 @@ class TestResolveAndLoadMcpTools:
         assert mock_load.call_count == 0
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.classify_discovered_configs")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_trusted_project_remote_passes_through(
         self,
         mock_discover: MagicMock,
-        mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
     ) -> None:
@@ -2620,8 +2639,9 @@ class TestResolveAndLoadMcpTools:
                 }
             )
         )
-        mock_discover.return_value = [project_cfg]
-        mock_classify.return_value = ([], [project_cfg])
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
 
         await resolve_and_load_mcp_tools(trust_project_mcp=True)
@@ -2630,7 +2650,7 @@ class TestResolveAndLoadMcpTools:
         assert "remote" in merged["mcpServers"]
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_disabled_server_is_split_off(
         self,
         mock_discover: MagicMock,
@@ -2650,7 +2670,9 @@ class TestResolveAndLoadMcpTools:
                 },
             ),
         )
-        mock_discover.return_value = [cfg]
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
         monkeypatch.setattr(
             "deepagents_code.mcp_disabled.get_disabled_servers",
@@ -2670,7 +2692,7 @@ class TestResolveAndLoadMcpTools:
         assert disabled[0].transport == "stdio"
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_all_servers_disabled_short_circuits_loader(
         self,
         mock_discover: MagicMock,
@@ -2685,7 +2707,9 @@ class TestResolveAndLoadMcpTools:
                 {"mcpServers": {"fs": {"command": "npx", "args": []}}},
             ),
         )
-        mock_discover.return_value = [cfg]
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
         monkeypatch.setattr(
             "deepagents_code.mcp_disabled.get_disabled_servers",
@@ -2702,7 +2726,7 @@ class TestResolveAndLoadMcpTools:
         assert [i.name for i in infos if i.status == "disabled"] == ["fs"]
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_disabled_non_dict_config_gets_unknown_transport(
         self,
         mock_discover: MagicMock,
@@ -2718,7 +2742,9 @@ class TestResolveAndLoadMcpTools:
         cfg.write_text(
             json.dumps({"mcpServers": {"weird": {"command": "x"}}}),
         )
-        mock_discover.return_value = [cfg]
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
         monkeypatch.setattr(
             "deepagents_code.mcp_disabled.get_disabled_servers",
@@ -2750,7 +2776,7 @@ class TestDiscoveryHelpers:
         """Discovery checks user and project config locations in order."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        _set_profile_root(monkeypatch, fake_home / ".deepagents", launch_home=fake_home)
         monkeypatch.setattr(
             "deepagents_code.project_utils.find_project_root",
             lambda: tmp_path / "repo",
@@ -2771,10 +2797,10 @@ class TestDiscoveryHelpers:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Configs under `~/.deepagents` are user-level."""
+        """Only the exact configured user `.mcp.json` is user-level."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        _set_profile_root(monkeypatch, fake_home / ".deepagents", launch_home=fake_home)
 
         user_cfg = fake_home / ".deepagents" / ".mcp.json"
         project_cfg = tmp_path / "repo" / ".mcp.json"
@@ -2782,6 +2808,175 @@ class TestDiscoveryHelpers:
 
         assert user == [user_cfg]
         assert project == [project_cfg]
+
+    def test_discovery_preserves_scope_when_home_is_project_ancestor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project config below the profile root remains project-scoped."""
+        profile = tmp_path
+        project = tmp_path / "repo"
+        project.mkdir()
+        user_cfg = profile / ".mcp.json"
+        project_cfg = project / ".mcp.json"
+        user_cfg.write_text("{}")
+        project_cfg.write_text("{}")
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
+
+        sources = discover_mcp_config_sources(project_context=context)
+
+        assert sources == [
+            DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, project),
+        ]
+
+    def test_discovery_preserves_scope_when_home_is_inside_project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The standard project config is not promoted by an inner profile."""
+        project = tmp_path / "repo"
+        profile = project / "profile"
+        profile.mkdir(parents=True)
+        user_cfg = profile / ".mcp.json"
+        project_cfg = project / ".mcp.json"
+        user_cfg.write_text("{}")
+        project_cfg.write_text("{}")
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
+
+        sources = discover_mcp_config_sources(project_context=context)
+
+        assert [source.scope for source in sources] == [
+            MCPConfigScope.USER,
+            MCPConfigScope.PROJECT,
+        ]
+        assert sources[1].path == project_cfg
+
+    @pytest.mark.parametrize("profile_suffix", [".", ".deepagents"])
+    def test_project_scope_wins_profile_location_collision(
+        self,
+        profile_suffix: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A project-standard path cannot self-promote through profile overlap."""
+        project = tmp_path / "repo"
+        project.mkdir()
+        profile = project if profile_suffix == "." else project / profile_suffix
+        profile.mkdir(exist_ok=True)
+        config = profile / ".mcp.json"
+        config.write_text("{}")
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
+
+        assert discover_mcp_config_sources(project_context=context) == [
+            DiscoveredMCPConfig(config, MCPConfigScope.PROJECT, project)
+        ]
+
+    def test_symlink_collision_keeps_project_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A user-path symlink to a project config does not bypass trust."""
+        profile = tmp_path / "profile"
+        project = tmp_path / "repo"
+        profile.mkdir()
+        project.mkdir()
+        project_cfg = project / ".mcp.json"
+        project_cfg.write_text("{}")
+        (profile / ".mcp.json").symlink_to(project_cfg)
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
+
+        assert discover_mcp_config_sources(project_context=context) == [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, project)
+        ]
+
+    def test_resolution_error_fails_closed_to_project_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An indeterminate user/project identity never yields user trust."""
+        profile = tmp_path / "profile"
+        project = tmp_path / "repo"
+        profile.mkdir()
+        project.mkdir()
+        (profile / ".mcp.json").write_text("{}")
+        project_cfg = project / ".mcp.json"
+        project_cfg.write_text("{}")
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
+        monkeypatch.setattr(Path, "resolve", lambda *_args, **_kwargs: _raise_oserror())
+
+        assert discover_mcp_config_sources(project_context=context) == [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, project)
+        ]
+
+    def test_classifier_recognizes_only_exact_user_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Containment and symlink aliases do not create user trust."""
+        profile = tmp_path / "profile"
+        project = tmp_path / "repo"
+        profile.mkdir()
+        project.mkdir()
+        user_cfg = profile / ".mcp.json"
+        nested = profile / "nested" / ".mcp.json"
+        alias = project / "alias.json"
+        user_cfg.write_text("{}")
+        nested.parent.mkdir()
+        nested.write_text("{}")
+        alias.symlink_to(user_cfg)
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.project_utils.find_project_root", lambda: project
+        )
+
+        user, project_configs = classify_discovered_configs([user_cfg, nested, alias])
+
+        assert user == [user_cfg]
+        assert project_configs == [nested, alias]
+
+    def test_classifier_does_not_trust_user_symlink_to_project_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exact profile path cannot trust a project config through a symlink."""
+        profile = tmp_path / "profile"
+        project = tmp_path / "repo"
+        profile.mkdir()
+        project.mkdir()
+        project_cfg = project / ".mcp.json"
+        project_cfg.write_text("{}")
+        user_cfg = profile / ".mcp.json"
+        user_cfg.symlink_to(project_cfg)
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.project_utils.find_project_root", lambda: project
+        )
+
+        user, project_configs = classify_discovered_configs([user_cfg])
+
+        assert user == []
+        assert project_configs == [user_cfg]
+
+    def test_classifier_resolution_error_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Permission errors cannot turn an indeterminate path into user trust."""
+        profile = tmp_path / "profile"
+        project = tmp_path / "repo"
+        profile.mkdir()
+        project.mkdir()
+        user_cfg = profile / ".mcp.json"
+        user_cfg.write_text("{}")
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.project_utils.find_project_root", lambda: project
+        )
+        monkeypatch.setattr(Path, "resolve", lambda *_args, **_kwargs: _raise_oserror())
+
+        user, project_configs = classify_discovered_configs([user_cfg])
+
+        assert user == []
+        assert project_configs == [user_cfg]
 
     def test_extract_stdio_server_commands(self) -> None:
         """Only stdio entries are extracted."""

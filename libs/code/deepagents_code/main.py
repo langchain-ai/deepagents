@@ -4271,9 +4271,9 @@ def _check_mcp_project_trust(
             Ctrl+D to abort the launch.
     """
     from deepagents_code.mcp_tools import (
+        MCPConfigScope,
         ProjectServerSummary,
-        classify_discovered_configs,
-        discover_mcp_configs,
+        discover_mcp_config_sources,
         extract_project_server_summaries,
         load_merged_mcp_configs_lenient,
     )
@@ -4283,7 +4283,7 @@ def _check_mcp_project_trust(
 
     try:
         project_context = ProjectContext.from_user_cwd(Path.cwd())
-        config_paths = discover_mcp_configs(project_context=project_context)
+        config_sources = discover_mcp_config_sources(project_context=project_context)
     except (OSError, RuntimeError):
         logger.debug(
             "Could not discover MCP configs for project trust check",
@@ -4291,7 +4291,11 @@ def _check_mcp_project_trust(
         )
         return None
 
-    _, project_configs = classify_discovered_configs(config_paths)
+    project_configs = [
+        source.path
+        for source in config_sources
+        if source.scope is MCPConfigScope.PROJECT
+    ]
     if not project_configs and not debug_prompt:
         return None
 

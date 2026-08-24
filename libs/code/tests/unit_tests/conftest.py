@@ -5,9 +5,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import tempfile
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
+
+# Select a synthetic launch profile before pytest imports any test module (and
+# therefore before any `deepagents_code` module can freeze `PATHS`). Function-
+# scoped fixtures are too late for this launch-time setting. Keep the temporary
+# directory alive for the worker process; its contents are synthetic fixtures,
+# never the developer's real profile or dotenv files.
+_TEST_PROFILE_HOME = tempfile.TemporaryDirectory(prefix="deepagents-code-tests-")
+os.environ["DEEPAGENTS_HOME"] = _TEST_PROFILE_HOME.name
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Generator, Iterator, Mapping

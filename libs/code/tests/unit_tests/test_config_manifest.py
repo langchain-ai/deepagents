@@ -574,37 +574,53 @@ def test_is_openai_prompt_cache_key_enabled_unrecognized_env_falls_through(
 
 def test_resolve_auto_classifier_model_defaults_to_inheriting(monkeypatch) -> None:
     """No preference leaves the Auto classifier on the main agent model."""
-    from deepagents_code import config_manifest
     from deepagents_code.config import resolve_auto_classifier_model
 
     monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
-    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
     assert resolve_auto_classifier_model() is None
 
 
-def test_resolve_auto_classifier_model_reads_toml(monkeypatch) -> None:
+def test_resolve_auto_classifier_model_reads_toml(monkeypatch, tmp_path: Path) -> None:
     """`[models].auto_classifier` selects the classifier when env is unset."""
-    from deepagents_code import config_manifest
     from deepagents_code.config import resolve_auto_classifier_model
 
     monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
-    monkeypatch.setattr(
-        config_manifest,
-        "load_config_toml",
-        lambda: {"models": {"auto_classifier": "openai:gpt-5.5-mini"}},
+    (tmp_path / "config.toml").write_text(
+        '[models]\nauto_classifier = "openai:gpt-5.5-mini"\n',
+        encoding="utf-8",
     )
     assert resolve_auto_classifier_model() == "openai:gpt-5.5-mini"
 
 
-def test_resolve_auto_classifier_model_env_overrides_toml(monkeypatch) -> None:
-    """The env var wins over config.toml; a blank value means inherit."""
-    from deepagents_code import config_manifest
+def test_resolve_auto_classifier_model_keeps_shared_user_snapshot(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A file edit cannot switch the classifier before config reload."""
     from deepagents_code.config import resolve_auto_classifier_model
 
-    monkeypatch.setattr(
-        config_manifest,
-        "load_config_toml",
-        lambda: {"models": {"auto_classifier": "openai:gpt-5.5-mini"}},
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[models]\nauto_classifier = "openai:original"\n', encoding="utf-8"
+    )
+    assert resolve_auto_classifier_model() == "openai:original"
+
+    config_path.write_text(
+        '[models]\nauto_classifier = "openai:edited"\n', encoding="utf-8"
+    )
+
+    assert resolve_auto_classifier_model() == "openai:original"
+
+
+def test_resolve_auto_classifier_model_env_overrides_toml(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The env var wins over config.toml; a blank value means inherit."""
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    (tmp_path / "config.toml").write_text(
+        '[models]\nauto_classifier = "openai:gpt-5.5-mini"\n',
+        encoding="utf-8",
     )
     monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "anthropic:claude-haiku-4-5")
     assert resolve_auto_classifier_model() == "anthropic:claude-haiku-4-5"
@@ -614,21 +630,18 @@ def test_resolve_auto_classifier_model_env_overrides_toml(monkeypatch) -> None:
 
 
 def test_resolve_auto_classifier_model_warns_on_blank_value(
-    monkeypatch, caplog
+    monkeypatch, caplog, tmp_path: Path
 ) -> None:
     """A blank configured classifier is reported, not dropped in silence.
 
     Reverting to the main agent model is a security control quietly changing
     behavior, so it gets the same audible treatment a malformed value gets.
     """
-    from deepagents_code import config_manifest
     from deepagents_code.config import resolve_auto_classifier_model
 
     monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
-    monkeypatch.setattr(
-        config_manifest,
-        "load_config_toml",
-        lambda: {"models": {"auto_classifier": "   "}},
+    (tmp_path / "config.toml").write_text(
+        '[models]\nauto_classifier = "   "\n', encoding="utf-8"
     )
 
     with caplog.at_level("WARNING", logger="deepagents_code.config"):
@@ -640,20 +653,19 @@ def test_resolve_auto_classifier_model_warns_on_blank_value(
     )
 
 
-def test_resolve_auto_classifier_model_reports_blank_problem(monkeypatch) -> None:
+def test_resolve_auto_classifier_model_reports_blank_problem(
+    monkeypatch, tmp_path: Path
+) -> None:
     """A blank value is returned as a problem, not just logged.
 
     A `logger.warning` lands in the debug log, which is not a surface the user
     reads; the caller needs the description to show it at startup.
     """
-    from deepagents_code import config_manifest
     from deepagents_code.config import resolve_auto_classifier_model_with_problem
 
     monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
-    monkeypatch.setattr(
-        config_manifest,
-        "load_config_toml",
-        lambda: {"models": {"auto_classifier": "   "}},
+    (tmp_path / "config.toml").write_text(
+        '[models]\nauto_classifier = "   "\n', encoding="utf-8"
     )
 
     spec, problem = resolve_auto_classifier_model_with_problem()
@@ -664,21 +676,20 @@ def test_resolve_auto_classifier_model_reports_blank_problem(monkeypatch) -> Non
     assert "main agent model" in problem
 
 
-def test_resolve_auto_classifier_model_reports_malformed_problem(monkeypatch) -> None:
+def test_resolve_auto_classifier_model_reports_malformed_problem(
+    monkeypatch, tmp_path: Path
+) -> None:
     """A wrong-typed value must not silently revert to self-review.
 
     TOML coercion drops a non-string to the option default, making a
     malformed entry indistinguishable from an absent one — so the agent resumed
     grading its own actions with nothing logged at all.
     """
-    from deepagents_code import config_manifest
     from deepagents_code.config import resolve_auto_classifier_model_with_problem
 
     monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
-    monkeypatch.setattr(
-        config_manifest,
-        "load_config_toml",
-        lambda: {"models": {"auto_classifier": 3}},
+    (tmp_path / "config.toml").write_text(
+        "[models]\nauto_classifier = 3\n", encoding="utf-8"
     )
 
     spec, problem = resolve_auto_classifier_model_with_problem()
@@ -693,11 +704,9 @@ def test_resolve_auto_classifier_model_reports_no_problem_when_absent(
     monkeypatch,
 ) -> None:
     """An unconfigured classifier is the default, not a problem to report."""
-    from deepagents_code import config_manifest
     from deepagents_code.config import resolve_auto_classifier_model_with_problem
 
     monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
-    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
 
     assert resolve_auto_classifier_model_with_problem() == (None, None)
 
@@ -3997,20 +4006,19 @@ def test_verbose_provenance_distinguishes_quoted_dotted_keys() -> None:
     }
 
 
-def test_blank_env_auto_classifier_reports_a_problem(monkeypatch) -> None:
+def test_blank_env_auto_classifier_reports_a_problem(
+    monkeypatch, tmp_path: Path
+) -> None:
     """A blank env classifier must be described, not just logged.
 
     The blank value reverts authorization review to the main agent model — the
     agent grading its own actions. A `logger.warning` lands in the debug log,
     which is not a surface the user reads, so the caller needs the description.
     """
-    from deepagents_code import config_manifest
     from deepagents_code.config import resolve_auto_classifier_model_with_problem
 
-    monkeypatch.setattr(
-        config_manifest,
-        "load_config_toml",
-        lambda: {"models": {"auto_classifier": "openai:gpt-5"}},
+    (tmp_path / "config.toml").write_text(
+        '[models]\nauto_classifier = "openai:gpt-5"\n', encoding="utf-8"
     )
     monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "   ")
 
@@ -4026,7 +4034,7 @@ def test_blank_env_auto_classifier_reports_a_problem(monkeypatch) -> None:
 
 @pytest.mark.parametrize("blank", ["", "   "])
 def test_config_surface_agrees_with_runtime_on_blank_env_classifier(
-    blank: str, monkeypatch
+    blank: str, monkeypatch, tmp_path: Path
 ) -> None:
     """`config` must not credit a classifier the runtime refuses to use.
 
@@ -4034,11 +4042,12 @@ def test_config_surface_agrees_with_runtime_on_blank_env_classifier(
     with the generic scalar path would report the config.toml model while the
     runtime inherits the main agent model.
     """
-    from deepagents_code import config_manifest
     from deepagents_code.config import resolve_auto_classifier_model_with_problem
 
     toml_data = {"models": {"auto_classifier": "openai:gpt-5"}}
-    monkeypatch.setattr(config_manifest, "load_config_toml", lambda: toml_data)
+    (tmp_path / "config.toml").write_text(
+        '[models]\nauto_classifier = "openai:gpt-5"\n', encoding="utf-8"
+    )
     monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, blank)
 
     option = get_option("models.auto_classifier")

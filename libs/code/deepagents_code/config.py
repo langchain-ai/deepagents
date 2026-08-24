@@ -13,7 +13,6 @@ import shlex
 import shutil
 import sys
 import threading
-from collections.abc import Mapping
 from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
@@ -44,6 +43,9 @@ from deepagents_code.config_manifest import (
     INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
     RECURSION_LIMIT_DEFAULT,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -3847,22 +3849,13 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
         _ranked_source,
         blank_auto_classifier_env_name,
         get_option,
-        load_config_toml,
     )
-    from deepagents_code.configuration.resolver import (
-        get_config_resolver,
-        resolver_from_snapshots,
-    )
-    from deepagents_code.configuration.types import (
-        ProviderHealth,
-        ProviderStatus,
-        TomlSnapshot,
-    )
+    from deepagents_code.configuration.resolver import USER_RANK, get_config_resolver
+    from deepagents_code.configuration.types import Found, Invalid
 
     option = get_option("models.auto_classifier")
     if option is None:
         return None, None
-    toml_data = load_config_toml()
     from deepagents_code.configuration.service import managed_decided
 
     managed_resolved = get_config_resolver().get(option)
@@ -3882,35 +3875,28 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
         logger.warning("%s", problem)
         return None, problem
 
-    def resolve_without_managed() -> tuple[object, str]:
-        """Re-resolve against the user file with managed policy excluded.
+    def resolve_user_tier() -> tuple[object, str]:
+        """Return the user value from the shared resolution generation.
 
         The blank-env veto below names the user-level value it overrides, so
-        this deliberately resolves the already-read `toml_data` against an
-        empty managed tier rather than the shared process resolver (whose
-        managed tier is still in force).
+        it needs the user tier alone rather than the selected env value. Reading
+        that result out of the shared resolution keeps the classifier on the
+        same user snapshot as every other manifest consumer.
 
         Returns:
-            The resolved value and its compatibility source label.
+            The user value and its compatibility source label, or the default
+                when the user tier did not supply a usable value.
         """
-        resolved = resolver_from_snapshots(
-            TomlSnapshot(
-                {},
-                ProviderStatus("managed config", None, ProviderHealth.OK),
-            ),
-            TomlSnapshot(
-                toml_data,
-                ProviderStatus("config.toml", None, ProviderHealth.OK),
-            ),
-        ).get(option)
-        _emit_ranked_diagnostics(option, resolved)
-        return resolved.value, _ranked_source(resolved)
+        user_result = managed_resolved.tier_health[USER_RANK]
+        if isinstance(user_result, Found):
+            return user_result.value, managed_resolved.provider_status[USER_RANK].name
+        return option.default, "default"
 
     blank_env = blank_auto_classifier_env_name()
     if blank_env is not None:
         # Name the config.toml value being overridden: without it the warning
         # sends the user to a config file that still shows their setting.
-        shadowed, shadowed_source = resolve_without_managed()
+        shadowed, shadowed_source = resolve_user_tier()
         overridden = (
             f" (overriding {shadowed_source} {shadowed!r})"
             if isinstance(shadowed, str) and shadowed.strip()
@@ -3922,7 +3908,7 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
         )
         logger.warning("%s", problem)
         return None, problem
-    value, source = resolve_without_managed()
+    value, source = managed_resolved.value, managed_source
     if isinstance(value, str) and value.strip():
         return value.strip(), None
     if isinstance(value, str) and source != "default":
@@ -3932,27 +3918,19 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
         )
         logger.warning("%s", problem)
         return None, problem
-    # TOML coercion drops a wrong-typed value to the option default, so
-    # a malformed entry is indistinguishable here from an absent one. Re-read the
-    # raw table to tell them apart rather than reverting in silence.
-    raw = _raw_toml_auto_classifier(toml_data)
-    if raw is not None and not isinstance(raw, str):
+    # TOML coercion drops a wrong-typed user value to the option default. The
+    # shared resolution retains that rejection in its user-tier result, so it
+    # can remain visible without reopening a potentially newer file generation.
+    user_result = managed_resolved.tier_health[USER_RANK]
+    if isinstance(user_result, Invalid):
         problem = (
-            f"Ignoring malformed config.toml auto_classifier model {raw!r} "
+            "Ignoring malformed config.toml auto_classifier model "
             "(expected a provider:model string); the Auto approval classifier "
             "will review with the main agent model."
         )
         logger.warning("%s", problem)
         return None, problem
     return None, None
-
-
-def _raw_toml_auto_classifier(toml_data: Mapping[str, Any]) -> object | None:
-    """Return the raw `[models].auto_classifier` entry, or `None` if absent."""
-    models = toml_data.get("models")
-    if not isinstance(models, Mapping):
-        return None
-    return models.get("auto_classifier")
 
 
 def resolve_auto_classifier_model() -> str | None:

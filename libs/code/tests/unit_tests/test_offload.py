@@ -25,6 +25,7 @@ from deepagents_code._session_stats import format_token_count
 from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.app import DeepAgentsApp, QueuedMessage
 from deepagents_code.command_registry import get_slash_commands
+from deepagents_code.configuration.types import TomlSnapshot
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.offload import (
     _artifacts_root,
@@ -2159,8 +2160,10 @@ class TestSweepOffloadedHistory:
         )
         monkeypatch.setenv("DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS", "1")
         monkeypatch.setattr(
-            "deepagents_code.config_manifest.load_managed_config_toml",
-            lambda **_: {"history": {"retention_days": 30}},
+            "deepagents_code.configuration.service.get_managed_snapshot",
+            lambda **_: TomlSnapshot.from_table(
+                "managed config", {"history": {"retention_days": 30}}
+            ),
         )
         archive = archive_dir / "old.md"
         archive.write_text("old")

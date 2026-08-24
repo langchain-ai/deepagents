@@ -260,15 +260,17 @@ def _history_retention_days() -> int:
     """
     from deepagents_code.config_manifest import (
         HISTORY_RETENTION_DAYS_DEFAULT,
+        _emit_ranked_diagnostics,
+        _resolve_option,
         get_option,
-        load_config_toml,
-        resolve_scalar,
     )
 
     option = get_option("history.retention_days")
     if option is None:
         return HISTORY_RETENTION_DAYS_DEFAULT
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    resolved = _resolve_option(option)
+    _emit_ranked_diagnostics(option, resolved)
+    value = resolved.value
     if type(value) is int and value >= 0:
         return value
     return HISTORY_RETENTION_DAYS_DEFAULT

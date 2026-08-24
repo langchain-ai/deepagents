@@ -30,6 +30,7 @@ class HistoryManager:
         self.max_entries = max_entries
         self._entries: list[str] = []
         self._failed_persist: set[str] = set()
+        self._read_failed = False
         self._current_index: int = -1
         self._temp_input: str = ""
         self._query: str = ""
@@ -38,11 +39,16 @@ class HistoryManager:
     def _read_history(self) -> list[str] | None:
         """Read all persisted entries, tolerating legacy malformed lines.
 
+        Sets `history_unreadable` so callers can tell a file they cannot read
+        from one that is simply not there yet. The two are opposite facts to
+        report to the user, and both arrive here as `None`.
+
         Returns:
             Persisted entries in file order, or `None` when the file could
             not be read.
         """
         if not self.history_file.exists():
+            self._read_failed = False
             return None
 
         try:
@@ -57,14 +63,25 @@ class HistoryManager:
                     except json.JSONDecodeError:
                         entry = line
                     entries.append(entry if isinstance(entry, str) else str(entry))
+                self._read_failed = False
                 return entries
         except (OSError, UnicodeDecodeError):
             logger.warning(
-                "Failed to load history from %s; starting with empty history",
+                "Failed to read history from %s",
                 self.history_file,
                 exc_info=True,
             )
+            self._read_failed = True
             return None
+
+    @property
+    def history_unreadable(self) -> bool:
+        """Whether the last read failed, as opposed to finding no file.
+
+        Returns:
+            `True` when the history file exists but could not be read.
+        """
+        return self._read_failed
 
     def _load_history(self) -> None:
         """Load the bounded navigation history from file."""
@@ -74,7 +91,15 @@ class HistoryManager:
         """Refresh and return unique prompts in newest-first order.
 
         On a read failure the in-memory entries are kept, so prompts whose
-        file append failed earlier in the session are not destroyed.
+        file append failed earlier in the session are not destroyed. Check
+        `history_unreadable` afterwards to tell an unreadable file from an
+        empty one.
+
+        Side effects: re-reads the file into the in-memory entries and resets
+        up-arrow navigation.
+
+        The dedup runs over the whole file rather than the bounded navigation
+        window, so this can surface prompts older than up-arrow reaches.
 
         Returns:
             A bounded immutable prompt snapshot.
@@ -88,6 +113,10 @@ class HistoryManager:
             unpersisted = self._failed_persist - set(entries)
             entries.extend(entry for entry in self._entries if entry in unpersisted)
             self._entries = entries[-self.max_entries :]
+            # Unpersisted texts stay tracked until they reach disk, but ones
+            # that aged out of the window are unrecoverable anyway. Dropping
+            # them bounds the set to `max_entries` instead of the session.
+            self._failed_persist &= set(self._entries)
         self.reset_navigation()
 
         recent: list[str] = []

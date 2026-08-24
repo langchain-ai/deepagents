@@ -10,11 +10,15 @@ from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
+from deepagents_code.config import get_glyphs
+from deepagents_code.tui.widgets.prompt_search import (
+    PROMPT_SEARCH_PAGE_SIZE,
+    filter_prompts,
+    prompt_title,
+)
+
 if TYPE_CHECKING:
     from textual.app import ComposeResult
-
-_PAGE_SIZE = 5
-"""Rows Tab/Shift+Tab jump through the filtered list, matching the inline panel."""
 
 
 class _PromptRow(Static):
@@ -31,13 +35,13 @@ class _PromptRow(Static):
         Rows show only the title; the full prompt renders in the preview pane.
         The row is one cell high, so overlong titles clip visually; the
         `text-overflow: ellipsis` rule on `.prompt-row` marks the clipped end.
+        The title comes from the inline panel's helper so both tiers summarize a
+        prompt the same way.
 
         Returns:
             Safe Textual content for the row.
         """
-        nonempty = [line.strip() for line in prompt.splitlines() if line.strip()]
-        title = nonempty[0] if nonempty else prompt.strip()
-        return Content.styled(title or "(empty prompt)", "bold")
+        return Content.styled(prompt_title(prompt), "bold")
 
 
 class PromptClipboardScreen(ModalScreen[str | None]):
@@ -46,8 +50,8 @@ class PromptClipboardScreen(ModalScreen[str | None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
-        Binding("tab", "page_down", "Page Down", show=False, priority=True),
-        Binding("shift+tab", "page_up", "Page Up", show=False, priority=True),
+        Binding("tab", "page_older", "Page Down", show=False, priority=True),
+        Binding("shift+tab", "page_newer", "Page Up", show=False, priority=True),
         Binding("enter", "select", "Insert", show=False, priority=True),
         Binding("ctrl+c", "copy", "Copy", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
@@ -55,7 +59,13 @@ class PromptClipboardScreen(ModalScreen[str | None]):
 
     CSS_PATH = "prompt_clipboard.tcss"
 
-    def __init__(self, prompts: tuple[str, ...], initial_query: str = "") -> None:
+    def __init__(
+        self,
+        prompts: tuple[str, ...],
+        initial_query: str = "",
+        *,
+        empty_message: str | None = None,
+    ) -> None:
         """Initialize the modal with a newest-first prompt snapshot.
 
         Args:
@@ -63,12 +73,16 @@ class PromptClipboardScreen(ModalScreen[str | None]):
             initial_query: Filter text to seed the search input with, used when
                 escalating from the inline search panel so the typed query
                 carries over.
+            empty_message: Replaces the "no prompts yet" text when `prompts` is
+                empty for a reason worth naming, such as an unreadable history
+                file.
         """
         super().__init__()
         self._prompts = prompts
         self._filtered = list(prompts)
         self._filter_value = ""
         self._initial_query = initial_query
+        self._empty_message = empty_message
         self._selected_index = 0
         self._rows: list[_PromptRow] = []
 
@@ -89,8 +103,18 @@ class PromptClipboardScreen(ModalScreen[str | None]):
             yield Static("Preview", classes="prompt-preview-label")
             with VerticalScroll(id="prompt-preview-scroll"):
                 yield Static("", id="prompt-preview")
+            glyphs = get_glyphs()
+            sep = f"  {glyphs.bullet}  "
             yield Static(
-                "↑/↓ navigate  •  Enter insert  •  Ctrl+C copy  •  Esc cancel",
+                sep.join(
+                    (
+                        f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
+                        "Tab/Shift+Tab page",
+                        "Enter insert",
+                        "Ctrl+C copy",
+                        "Esc cancel",
+                    )
+                ),
                 classes="prompt-help",
             )
 
@@ -114,17 +138,26 @@ class PromptClipboardScreen(ModalScreen[str | None]):
     def _apply_filter(self, value: str) -> None:
         """Synchronize filtered prompts with literal search text."""
         self._filter_value = value
-        query = value.strip().casefold()
-        self._filtered = [
-            prompt for prompt in self._prompts if query in prompt.casefold()
-        ]
+        self._filtered = list(filter_prompts(self._prompts, value))
         self._selected_index = 0
 
     def _sync_filter_value(self) -> None:
         """Consume a filter edit whose Changed message is still queued."""
         value = self.query_one("#prompt-filter", Input).value
-        if value != self._filter_value:
-            self._apply_filter(value)
+        if value == self._filter_value:
+            return
+        # The highlighted row is what the user is acting on, so follow that
+        # prompt into the new list rather than snapping to index 0 and copying
+        # or inserting something they never selected.
+        selected = (
+            self._filtered[self._selected_index]
+            if 0 <= self._selected_index < len(self._filtered)
+            else None
+        )
+        self._apply_filter(value)
+        if selected is not None and selected in self._filtered:
+            self._selected_index = self._filtered.index(selected)
+        self.call_after_refresh(self._render_rows)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Insert the selected prompt when search receives Enter."""
@@ -136,11 +169,13 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         await rows_list.remove_children()
         self._rows = []
         if not self._filtered:
-            message = (
-                "No matching prompts."
-                if self._prompts
-                else "No prompts yet. Submitted prompts appear here."
-            )
+            if self._prompts:
+                message = "No matching prompts."
+            else:
+                message = (
+                    self._empty_message
+                    or "No prompts yet. Submitted prompts appear here."
+                )
             await rows_list.mount(Static(Content.styled(message, "dim")))
             self.query_one("#prompt-preview", Static).update("")
             return
@@ -159,10 +194,16 @@ class PromptClipboardScreen(ModalScreen[str | None]):
             return
         preview.update(Content(self._filtered[self._selected_index]))
 
-    def _move(self, delta: int) -> None:
+    async def _move(self, delta: int) -> None:
         if not self._filtered:
             self.app.bell()
             return
+        if len(self._rows) != len(self._filtered):
+            # A filter edit already updated `_filtered` but its deferred
+            # `_render_rows` has not landed, so the rows still describe the old
+            # list. Indexing them with a bound taken from the new one raises,
+            # so settle the render before moving.
+            await self._render_rows()
         previous = self._selected_index
         self._selected_index = max(
             0, min(self._selected_index + delta, len(self._filtered) - 1)
@@ -176,21 +217,25 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         selected.scroll_visible(animate=False)
         self._update_preview()
 
-    def action_move_up(self) -> None:
+    async def action_move_up(self) -> None:
         """Move selection toward newer prompts."""
-        self._move(-1)
+        await self._move(-1)
 
-    def action_move_down(self) -> None:
+    async def action_move_down(self) -> None:
         """Move selection toward older prompts."""
-        self._move(1)
+        await self._move(1)
 
-    def action_page_up(self) -> None:
-        """Jump selection one page toward newer prompts."""
-        self._move(-_PAGE_SIZE)
+    async def action_page_newer(self) -> None:
+        """Jump selection one page toward newer prompts.
 
-    def action_page_down(self) -> None:
+        Named for direction rather than `page_up`/`page_down`, which are
+        sync `Widget` methods this would otherwise override incompatibly.
+        """
+        await self._move(-PROMPT_SEARCH_PAGE_SIZE)
+
+    async def action_page_older(self) -> None:
         """Jump selection one page toward older prompts."""
-        self._move(_PAGE_SIZE)
+        await self._move(PROMPT_SEARCH_PAGE_SIZE)
 
     def action_select(self) -> None:
         """Dismiss with the selected prompt."""
@@ -218,6 +263,3 @@ class PromptClipboardScreen(ModalScreen[str | None]):
     def action_cancel(self) -> None:
         """Dismiss without selecting a prompt."""
         self.dismiss(None)
-
-    def action_ignore(self) -> None:
-        """Swallow a key that has no meaning in this modal."""

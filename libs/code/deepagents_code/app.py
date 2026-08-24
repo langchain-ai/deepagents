@@ -21720,9 +21720,8 @@ class DeepAgentsApp(App):
 
         The first Ctrl+R opens the composer's inline search panel; pressing
         Ctrl+R again while that panel is open escalates to the full
-        `PromptClipboardScreen`. The modal opens directly when the inline tier
-        is unavailable (autocomplete open or composer missing), so the chord
-        never dead-ends.
+        `PromptClipboardScreen`. The modal also opens directly when autocomplete
+        owns the inline rows.
         """
         if self._prompt_clipboard_blocked():
             return
@@ -21750,16 +21749,27 @@ class DeepAgentsApp(App):
             def apply_result() -> None:
                 current_input = self._chat_input
                 if current_input is None:
+                    if result is not None:
+                        self.notify(
+                            "Could not insert the prompt: the composer is gone",
+                            severity="warning",
+                        )
                     return
-                if result is not None:
-                    current_input.insert_at_cursor(result)
+                if result is not None and not current_input.insert_at_cursor(result):
+                    self.notify(
+                        "Could not insert the prompt: the composer is unavailable",
+                        severity="warning",
+                    )
                 current_input.focus_input()
 
             self.call_after_refresh(apply_result)
 
+        prompts = chat_input.recent_prompts()
         self.push_screen(
             PromptClipboardScreen(
-                chat_input.recent_prompts(), initial_query=initial_query
+                prompts,
+                initial_query=initial_query,
+                empty_message=chat_input.prompt_history_error(),
             ),
             handle_result,
         )
@@ -23253,7 +23263,7 @@ class DeepAgentsApp(App):
             under a `ModalScreen` that lacks dedicated `shift+tab` handling
             (as `DebugConsoleScreen` does), so the key would be silently
             swallowed. `PromptClipboardScreen` also steps aside so its own
-            priority `shift+tab -> ignore` binding wins and the key does not
+            priority `shift+tab -> page_newer` binding wins and the key does not
             fall through to `Screen.focus_previous`. Note this keys on the
             action, and `toggle_auto_approve` is also bound to `ctrl+t`, so
             that binding is stepped aside under either screen.

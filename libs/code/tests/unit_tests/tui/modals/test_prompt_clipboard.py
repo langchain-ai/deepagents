@@ -21,8 +21,16 @@ class _PromptClipboardApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Container()
 
-    def open(self, prompts: tuple[str, ...]) -> PromptClipboardScreen:
-        screen = PromptClipboardScreen(prompts)
+    def open(
+        self,
+        prompts: tuple[str, ...],
+        initial_query: str = "",
+        *,
+        empty_message: str | None = None,
+    ) -> PromptClipboardScreen:
+        screen = PromptClipboardScreen(
+            prompts, initial_query, empty_message=empty_message
+        )
         self.push_screen(screen, self.results.append)
         return screen
 
@@ -217,7 +225,7 @@ class TestPromptClipboardScreen:
             filter_ = screen.query_one("#prompt-filter", Input)
             preview = screen.query_one("#prompt-preview-scroll", VerticalScroll)
             help_ = screen.query_one(".prompt-help", Static)
-            assert outer.region.height == 12
+            assert outer.region.height == 13
             assert filter_.region.y >= 0
             assert filter_.region.bottom <= screen.size.height
             assert preview.region.y >= 0
@@ -266,3 +274,102 @@ class TestPromptClipboardScreen:
                 success_message="Prompt copied to clipboard",
             )
             assert app.screen is screen
+
+    async def test_initial_query_seeds_the_filter(self) -> None:
+        """Escalating from the inline panel carries the typed query over."""
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("fix the bug", "add feature", "fix tests"), "fix")
+            await pilot.pause()
+            await pilot.pause()
+
+            search = screen.query_one("#prompt-filter", Input)
+            assert search.value == "fix"
+            # The cursor sits at the end so typing extends the carried query.
+            assert search.cursor_position == len("fix")
+            assert screen._filtered == ["fix the bug", "fix tests"]
+            rows = screen.query_one("#prompt-list", VerticalScroll).children
+            assert len(rows) == 2
+
+    async def test_initial_query_matching_nothing_shows_the_empty_state(self) -> None:
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("alpha", "beta"), "zzz")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert screen._filtered == []
+            rows = screen.query_one("#prompt-list", VerticalScroll).children
+            assert len(rows) == 1
+            assert "No matching prompts." in str(rows[0].render())
+
+    async def test_moving_after_a_queued_filter_edit_does_not_raise(self) -> None:
+        """Ctrl+C leaves the modal open, so its re-filter must not desync rows.
+
+        `action_copy` consumes a filter edit whose `Changed` message is still
+        queued, which widens `_filtered` without re-rendering `_rows`. Paging
+        then indexed the stale row list and raised `IndexError`.
+        """
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(tuple(f"prompt {index}" for index in range(12)))
+            await pilot.pause()
+
+            search = screen.query_one("#prompt-filter", Input)
+            search.value = "prompt 1"
+            screen._apply_filter("prompt 1")
+            await pilot.pause()
+            assert len(screen._rows) == len(screen._filtered)
+
+            # Widen the filter behind the modal's back, exactly as a queued
+            # `Input.Changed` does, then act on it without letting the render
+            # land first.
+            search.value = "prompt"
+            with patch("deepagents_code.clipboard.copy_text_with_feedback"):
+                screen.action_copy()
+            assert len(screen._rows) != len(screen._filtered)
+
+            await screen.action_page_older()
+            await pilot.pause()
+
+            assert len(screen._rows) == len(screen._filtered)
+            assert 0 <= screen._selected_index < len(screen._rows)
+
+    async def test_queued_filter_edit_keeps_the_highlighted_prompt(self) -> None:
+        """A consumed filter edit must not silently re-point the selection.
+
+        Snapping to index 0 made Ctrl+C copy a prompt the user never
+        highlighted, under a success toast.
+        """
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("alpha one", "alpha two", "beta"))
+            await pilot.pause()
+
+            await pilot.press("down")
+            await pilot.pause()
+            selected = screen._filtered[screen._selected_index]
+            assert selected == "alpha two"
+
+            search = screen.query_one("#prompt-filter", Input)
+            search.value = "alpha"
+            with patch(
+                "deepagents_code.clipboard.copy_text_with_feedback"
+            ) as copy_text:
+                screen.action_copy()
+
+            copy_text.assert_called_once()
+            assert copy_text.call_args.args[1] == selected
+
+    async def test_empty_message_replaces_the_no_prompts_text(self) -> None:
+        """An unreadable history file must not read as "no prompts yet"."""
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open((), empty_message="Could not read prompt history from x")
+            await pilot.pause()
+
+            rows = screen.query_one("#prompt-list", VerticalScroll).children
+            assert len(rows) == 1
+            message = str(rows[0].render())
+            assert "Could not read prompt history" in message
+            assert "No prompts yet" not in message

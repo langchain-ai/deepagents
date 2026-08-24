@@ -26,11 +26,31 @@ logger = logging.getLogger(__name__)
 PROMPT_SEARCH_MAX_ROWS = 5
 """Result rows the inline panel shows before the list scrolls."""
 
-PROMPT_SEARCH_HINT = (
-    "type to filter  •  ↑/↓ navigate  •  Tab/Shift+Tab page  •  "
-    "Enter insert  •  Ctrl+R full view  •  Esc cancel"
-)
-"""Footer line; the Ctrl+R mention is what makes the modal tier discoverable."""
+
+def prompt_search_hint() -> str:
+    """Build the footer line for the current charset mode.
+
+    The Ctrl+R mention is what makes the modal tier discoverable. The line is
+    kept short enough to wrap within `PROMPT_SEARCH_MAX_HINT_ROWS` at the
+    narrow widths the composer supports.
+
+    Returns:
+        The hint text, using ASCII glyphs on terminals that need them.
+    """
+    from deepagents_code.config import get_glyphs
+
+    glyphs = get_glyphs()
+    sep = f"  {glyphs.bullet}  "
+    return sep.join(
+        (
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
+            "Tab/Shift+Tab page",
+            "Enter insert",
+            "Ctrl+R full view",
+            "Esc cancel",
+        )
+    )
+
 
 PROMPT_SEARCH_PAGE_SIZE = PROMPT_SEARCH_MAX_ROWS
 """Rows Tab/Shift+Tab jump through the filtered list."""
@@ -45,12 +65,16 @@ the panel renders a sliding window instead. Navigation re-windows via
 unmounted rows are simply never the selection target.
 """
 
-PROMPT_SEARCH_PANEL_ROWS = 1 + PROMPT_SEARCH_MAX_ROWS + 2
-"""Rows the panel reports at its tallest: query, results, and up to two for
-the hint (it wraps on narrow windows).
+PROMPT_SEARCH_MAX_HINT_ROWS = 3
+"""Hint rows the panel is willing to render; it wraps on narrow windows."""
 
-`ChatInputBox` reserves exactly this when fitting a manual composer height,
-so the constant must match what the panel actually renders.
+PROMPT_SEARCH_PANEL_ROWS = 1 + PROMPT_SEARCH_MAX_ROWS + PROMPT_SEARCH_MAX_HINT_ROWS
+"""Rows the panel reports at its tallest: query, results, and wrapped hint.
+
+This is the ceiling on what `show()` can report, so it is what `ChatInputBox`
+reserves when fitting a manual composer height and what the panel's own
+`max-height` clamps to. `show()` clamps its hint estimate to
+`PROMPT_SEARCH_MAX_HINT_ROWS` so the two can never disagree.
 """
 
 
@@ -65,7 +89,8 @@ def _window_bounds(total: int, selected_index: int) -> tuple[int, int]:
     if total <= PROMPT_SEARCH_WINDOW:
         return 0, total
     # Keep the selection comfortably inside the window so single-step moves
-    # stay mounted; the bias toward newer rows matches newest-first scanning.
+    # stay mounted. It sits near the window top, so most mounted rows are the
+    # older ones the user is scanning toward.
     start = max(
         0,
         min(selected_index - PROMPT_SEARCH_WINDOW // 5, total - PROMPT_SEARCH_WINDOW),
@@ -84,9 +109,9 @@ def filter_prompts(prompts: tuple[str, ...], query: str) -> list[str]:
 class PromptSearchInput(Input):
     """Query field for the inline prompt search panel.
 
-    Plain `Input` apart from the class name, which scopes the CSS above and
-    lets `ChatInput` filter `Input.Changed` / `Input.Submitted` messages to
-    this field, plus bindings for the keys the panel owns while focused.
+    Plain `Input` apart from the class name, which lets `ChatInput` filter
+    `Input.Changed` / `Input.Submitted` messages down to this field, plus
+    bindings for the keys the panel owns while focused.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -244,6 +269,7 @@ class PromptSearchPanel(Vertical):
         self._pending_empty: str | None = None
         self._rebuild_generation: int = 0
         self._reported_rows = 0
+        self._result_rows = 0
 
     class RowsChanged(Message):
         """Message sent when the panel's rendered row count changes."""
@@ -271,7 +297,7 @@ class PromptSearchPanel(Vertical):
             placeholder="Search submitted prompts", id="prompt-search-input"
         )
         yield VerticalScroll(id="prompt-search-results")
-        yield Static(PROMPT_SEARCH_HINT, classes="prompt-search-hint")
+        yield Static(prompt_search_hint(), classes="prompt-search-hint")
 
     def on_mount(self) -> None:
         """Grab the composed children."""
@@ -353,9 +379,22 @@ class PromptSearchPanel(Vertical):
                 self._options.extend(new_widgets)
                 await self._results.mount(*new_widgets)
         except Exception:
-            logger.exception("Failed to rebuild prompt search panel; hiding to recover")
+            logger.exception("Failed to rebuild prompt search panel; abandoning search")
+            # Hiding alone would leave `ChatInput` still holding a draft
+            # snapshot, so `_prompt_search_active` stays true and the composer
+            # swallows every key into an invisible panel. `AbandonSearch` ends
+            # the session and restores the draft, and the rows have to come out
+            # of the DOM here: `hide()` only sets `display: none`, so dropping
+            # the list without unmounting orphans them beside the next rebuild.
+            try:
+                await self._results.remove_children()
+            except Exception:  # Recovery must not raise in turn
+                logger.exception("Failed to clear prompt search rows")
             self._options = []
+            self._empty_widget = None
             self.hide()
+            self.post_message(PromptSearchInput.AbandonSearch())
+            self.notify("Prompt search could not be displayed", severity="warning")
             return
 
         # The DOM mutations above can await, during which a hide() (or a newer
@@ -433,6 +472,25 @@ class PromptSearchPanel(Vertical):
         self.styles.display = "none"  # ty: ignore[invalid-assignment]  # Textual accepts string display values
         self._report_rows(0)
 
+    def _hint_rows(self) -> int:
+        """Measure the hint's wrapped height.
+
+        Textual wraps the hint on word boundaries, so a cell-count estimate
+        undercounts. Before the first layout the width is 0 and there is
+        nothing to measure; reserving the maximum then is the safe direction to
+        be wrong, because under-reporting clips the hint's last row.
+
+        Returns:
+            Rows the hint needs, clamped to `PROMPT_SEARCH_MAX_HINT_ROWS`.
+        """
+        if self._hint_static is None:
+            return PROMPT_SEARCH_MAX_HINT_ROWS
+        width = self._hint_static.content_region.width
+        if width <= 0:
+            return PROMPT_SEARCH_MAX_HINT_ROWS
+        measured = self._hint_static.get_content_height(self.size, self.size, width)
+        return max(1, min(measured, PROMPT_SEARCH_MAX_HINT_ROWS))
+
     def show(self, result_rows: int) -> None:
         """Show the panel.
 
@@ -442,14 +500,16 @@ class PromptSearchPanel(Vertical):
                 count. Capped at `PROMPT_SEARCH_MAX_ROWS`.
         """
         self.styles.display = "block"
-        # The hint line wraps on narrow windows. Estimate its wrapped height
-        # from the panel width (minus its horizontal padding); before the first
-        # layout the width is 0, which the max() floors to one row.
-        hint_rows = 1
-        if self._hint_static is not None:
-            from rich.cells import cell_len
+        self._result_rows = min(result_rows, PROMPT_SEARCH_MAX_ROWS)
+        self._report_rows(1 + self._result_rows + self._hint_rows())
 
-            width = self._hint_static.content_region.width
-            if width > 0:
-                hint_rows = max(1, -(-cell_len(PROMPT_SEARCH_HINT) // width))
-        self._report_rows(1 + min(result_rows, PROMPT_SEARCH_MAX_ROWS) + hint_rows)
+    def on_resize(self) -> None:
+        """Re-report the height once a width is known, or when it changes.
+
+        The first `show()` of a session runs before layout, so it reserves the
+        maximum hint height. This corrects the reservation to the measured one
+        instead of leaving the composer over-shrunk until the next keystroke.
+        """
+        if self.styles.display == "none":
+            return
+        self._report_rows(1 + self._result_rows + self._hint_rows())

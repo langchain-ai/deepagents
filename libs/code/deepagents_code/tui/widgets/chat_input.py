@@ -1349,8 +1349,7 @@ class ChatTextArea(PasteBurstTextArea):
                 and self._chat_input_owner._handle_prompt_search_key(event)
             ):
                 return
-            # Keys the search ignores (arrows handled above pass through here
-            # only when unhandled) must not edit the draft either.
+            # Keys the search ignores must not edit the draft either.
             event.prevent_default()
             event.stop()
             return
@@ -3502,8 +3501,13 @@ class ChatInput(Vertical):
 
         # The inline prompt search owns the keyboard while open; this must run
         # before completion routing so arrows/enter reach the panel rather
-        # than the autocomplete controllers.
-        if self._prompt_search_active and self._handle_prompt_search_key(event):
+        # than the autocomplete controllers. Returning unconditionally matters:
+        # a key the search does not own (Backspace with a non-empty query) must
+        # still bubble to the query input's own bindings rather than fall
+        # through to the mode-exit branch and the completion manager, which
+        # would edit the composer behind the open panel.
+        if self._prompt_search_active:
+            self._handle_prompt_search_key(event)
             return
 
         # Backspace at the start of a mode prompt exits the current mode. Prefix
@@ -3690,6 +3694,17 @@ class ChatInput(Vertical):
         """
         return self._history.recent_prompts()
 
+    def prompt_history_error(self) -> str | None:
+        """Describe why the last prompt refresh came back empty, if it failed.
+
+        Returns:
+            A message naming the unreadable history file, or `None` when the
+            file was read (including when it does not exist yet).
+        """
+        if not self._history.history_unreadable:
+            return None
+        return f"Could not read prompt history from {self._history.history_file}"
+
     def insert_at_cursor(self, text: str) -> bool:
         """Insert text at the current cursor through the undoable edit path.
 
@@ -3720,7 +3735,7 @@ class ChatInput(Vertical):
         Returns:
             `"inline"` when the panel opened, `"modal"` when the caller should
             open the full `PromptClipboardScreen`, or `"noop"` when the
-            composer is unavailable or another input surface is active.
+            composer is unavailable.
         """
         if self._text_area is None or self._prompt_search is None:
             return "noop"
@@ -3734,7 +3749,9 @@ class ChatInput(Vertical):
 
         self._prompt_search_draft = self._text_area.text
         self._prompt_search_cursor = self._text_area.cursor_location
-        self._prompt_search_prompts = self._history.recent_prompts()
+        # Both tiers go through the public accessor so they always show the
+        # same snapshot.
+        self._prompt_search_prompts = self.recent_prompts()
         self._prompt_search_query = ""
         self._prompt_search_index = 0
         self._refresh_prompt_search_panel()
@@ -3760,8 +3777,9 @@ class ChatInput(Vertical):
         """Hide the inline panel and clear search state.
 
         Args:
-            restore_draft: Whether to put the snapshot from `open_prompt_search`
-                back. Only Escape does; other exits leave the draft alone.
+            restore_draft: Whether to restore the cursor from the
+                `open_prompt_search` snapshot. Escape and empty-query Backspace
+                do; insert and modal escalation leave the composer alone.
             refocus: Whether to return focus to the composer. Escalating to the
                 modal skips this so the modal's own filter input takes focus.
         """
@@ -3775,18 +3793,20 @@ class ChatInput(Vertical):
         self._prompt_search_index = 0
         if self._prompt_search is not None:
             self._prompt_search.hide()
+        # Only the cursor needs restoring. Edits made while the panel was open
+        # are kept, and in the unedited case the text already equals the
+        # snapshot -- assigning it back would be a no-op that clears the undo
+        # history, because `TextArea.text` aliases `load_text`. The cursor goes
+        # back to the snapshot position, matching readline/codex cancel
+        # semantics rather than jumping to the end.
         if (
             restore_draft
             and draft is not None
+            and cursor is not None
             and self._text_area is not None
             and self._text_area.text == draft
         ):
-            self._text_area._skip_history_change_events += 1
-            self._text_area.text = draft
-            # Restore the exact cursor position from the snapshot, matching
-            # readline/codex cancel semantics rather than jumping to the end.
-            if cursor is not None:
-                self._text_area.move_cursor(cursor)
+            self._text_area.move_cursor(cursor)
         if refocus:
             self.focus_input()
 
@@ -3800,10 +3820,10 @@ class ChatInput(Vertical):
         self._prompt_search_index = max(
             0, min(self._prompt_search_index, len(self._prompt_search_filtered) - 1)
         )
-        # Render every filtered prompt, not just the first visible page: the
-        # results container scrolls (CSS max-height), and rows that do not
-        # exist cannot be scrolled into view — which previously made arrow/Tab
-        # moves past row 5 invisible and left scrolling with nothing to do.
+        # Pass every filtered title, not just the first visible page: the panel
+        # renders a window around the selection, and a row that is not mounted
+        # cannot be scrolled into view — which previously made arrow/Tab moves
+        # past row 5 invisible and left scrolling with nothing to do.
         titles = [prompt_title(prompt) for prompt in self._prompt_search_filtered]
         empty: str | None
         if self._prompt_search_filtered:
@@ -3811,7 +3831,11 @@ class ChatInput(Vertical):
         elif self._prompt_search_prompts:
             empty = "No matching prompts."
         else:
-            empty = "No prompts yet. Submitted prompts appear here."
+            # Never claim the history is empty when it is only unreadable.
+            empty = (
+                self.prompt_history_error()
+                or "No prompts yet. Submitted prompts appear here."
+            )
         self._prompt_search.update_state(
             self._prompt_search_query, titles, self._prompt_search_index, empty
         )
@@ -3827,8 +3851,10 @@ class ChatInput(Vertical):
     def _handle_prompt_search_key(self, event: events.Key) -> bool:
         """Handle one key while the inline prompt search is open.
 
-        Runs in `ChatInput.on_key` ahead of completion routing and may not
-        `await`; the panel rebuild it triggers is already message-pumped
+        Runs from `ChatInput.on_key` (ahead of completion routing) and from
+        `ChatTextArea._on_key` (ahead of the TextArea's own editing defaults,
+        which is what the no-`await` rule below protects); it may not
+        `await`, because the panel rebuild it triggers is already message-pumped
         through `PromptSearchPanel.call_next`, so synchronous handling loses
         no frames.
 

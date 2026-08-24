@@ -40795,6 +40795,42 @@ class TestPromptClipboard:
             await pilot.pause()
             assert screen._selected_index == 0
 
+    async def test_shift_tab_pages_the_inline_panel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The inline panel pages with shift+tab under the real app dispatch.
+
+        The widget-level paging test runs on a bare host with no competing
+        binding, so it cannot catch the `toggle_auto_approve` step-aside
+        regressing. Without it shift+tab would toggle auto-approve — a
+        permissions change — instead of paging results.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(
+                chat_input,
+                "recent_prompts",
+                lambda: tuple(f"prompt {i}" for i in range(12)),
+            )
+            approval_mode_before = app._approval_mode
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.pause()
+            assert chat_input._prompt_search_active is True
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert chat_input._prompt_search_index == 5
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert chat_input._prompt_search_index == 0
+            assert app._approval_mode == approval_mode_before
+
     @pytest.mark.parametrize(
         "pending_field",
         [
@@ -40806,12 +40842,25 @@ class TestPromptClipboard:
     async def test_ctrl_r_is_disabled_for_inline_prompts(
         self, pending_field: str
     ) -> None:
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchPanel
+
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             setattr(app, pending_field, MagicMock())
 
             assert app.check_action("open_prompt_clipboard", ()) is False
+
+            # Press the chord too: asserting the predicate alone would still
+            # pass if the routing stopped consulting `check_action`.
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert not isinstance(app.screen, PromptClipboardScreen)
+            panel = app.screen.query_one(PromptSearchPanel)
+            assert panel.styles.display == "none"
 
     async def test_prompts_command_opens_without_awaiting_modal(self) -> None:
         app = DeepAgentsApp()

@@ -14,7 +14,7 @@ PromptClipboardScreen > Vertical {
        Textual centers the overflowing modal and clips it top and bottom, so
        the filter stays on screen and the preview is clipped last, while the
        `min-height: 0` panes still absorb leftover space above this floor. */
-    min-height: 12;
+    min-height: 13;
     background: $surface;
     border: solid $primary;
     padding: 1 2;

@@ -3687,8 +3687,9 @@ def _resolve_update_setting(
     Raises:
         RuntimeError: If `option_key` is missing from the manifest.
     """
-    from deepagents_code.config_manifest import get_option, resolve_ranked_scalar
+    from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
     from deepagents_code.configuration.service import (
         ConfigSources,
         get_managed_snapshot,
@@ -3707,12 +3708,11 @@ def _resolve_update_setting(
         managed=get_managed_snapshot(),
         user=TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load(),
     )
-    resolved = resolve_ranked_scalar(
-        resolver_option,
-        toml_data=sources.user.data,
-        managed_toml_data=sources.managed.data,
-        managed_status=sources.managed.status,
-        user_status=sources.user.status,
+    # Resolve against this exact snapshot generation: the caller reports the
+    # sources' health next to the value, so both must come from the same read
+    # rather than the shared process cache.
+    resolved = resolver_from_snapshots(managed=sources.managed, user=sources.user).get(
+        resolver_option
     )
     return sources, option, resolved
 

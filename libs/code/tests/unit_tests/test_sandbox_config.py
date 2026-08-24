@@ -115,6 +115,25 @@ def test_providers_not_a_table_is_ignored(
     )
 
 
+def test_default_not_a_string_is_reported(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A rejected `default` must not degrade to `None` in silence.
+
+    The sibling `providers` read reports its own rejection; this one did not,
+    on the option that decides which sandbox executes agent code. The file
+    parses, so `dcode doctor` sees nothing wrong with it.
+    """
+    path = _write(tmp_path, "[sandboxes]\ndefault = 3\n")
+    with caplog.at_level(logging.WARNING):
+        config = SandboxConfig.load(path)
+    assert config.default is None
+    assert any(
+        "[sandboxes].default is not a string" in record.message
+        for record in caplog.records
+    )
+
+
 def test_provider_entry_not_a_table_is_ignored(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -32,7 +32,7 @@ from deepagents_code._env_vars import (
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
-from deepagents_code._paths import get_deepagents_home
+from deepagents_code._paths import PATHS
 from deepagents_code._version import __version__
 from deepagents_code.config_manifest import (
     INTERPRETER_ENABLE_DEFAULT,
@@ -123,6 +123,7 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "COMSPEC",
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
+        "DEEPAGENTS_HOME",
         "ENV",
         "GIT_ASKPASS",
         "GIT_DIR",
@@ -151,13 +152,19 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         _INHERITED_PYTHONPATH_ENV,
     }
 )
-"""Environment keys that project `.env` files must not inject.
+"""Environment keys that no `.env` file may inject.
 
-A project `.env` is untrusted (it travels with a cloned repo), so it must not be
-able to set variables that turn loading the `.env` into code execution in the
-subprocesses Deep Agents Code spawns. The set spans four threat categories;
-every entry is here for one of these reasons, so do not remove one without
-checking which category it belongs to:
+Project dotenv files are untrusted (they travel with cloned repositories), and
+even the global dotenv is loaded after the launch profile has been selected.
+Neither may replace that profile/trust root. The remaining entries prevent a
+dotenv file from turning environment loading into code execution in child
+processes. Every entry belongs to one of these categories, so do not remove one
+without checking which category it belongs to:
+
+- Profile/trust relocation (`DEEPAGENTS_HOME`): this is captured from the
+    inherited environment before dotenv loading. Allowing either dotenv layer
+    to change it would make project-controlled configuration capable of moving
+    the files treated as user-trusted.
 
 - Dynamic-linker preload/audit (`DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`,
     `LD_AUDIT`, `LD_LIBRARY_PATH`, `LD_PRELOAD`): force a loader to map an
@@ -313,11 +320,8 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     return None
 
 
-# Global user-level .env; sentinel when the user directory cannot be resolved.
-try:
-    _GLOBAL_DOTENV_PATH = get_deepagents_home() / ".env"
-except RuntimeError:
-    _GLOBAL_DOTENV_PATH = Path("/nonexistent/.deepagents/.env")
+# Frozen before either dotenv layer is inspected.
+_GLOBAL_DOTENV_PATH = PATHS.profile.dotenv_file
 
 
 def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]:
@@ -3257,7 +3261,7 @@ class Settings:
         Returns:
             Path to `~/.deepagents`
         """
-        return get_deepagents_home()
+        return PATHS.profile.root
 
     @staticmethod
     def get_user_agent_md_path(agent_name: str) -> Path:
@@ -3271,7 +3275,7 @@ class Settings:
         Returns:
             Path to ~/.deepagents/{agent_name}/AGENTS.md
         """
-        return get_deepagents_home() / agent_name / "AGENTS.md"
+        return PATHS.profile.agent_dir(agent_name) / "AGENTS.md"
 
     def get_project_agent_md_path(self) -> list[Path]:
         """Get project-level AGENTS.md paths.
@@ -3324,7 +3328,7 @@ class Settings:
                 "contain letters, numbers, hyphens, underscores, and spaces."
             )
             raise ValueError(msg)
-        return get_deepagents_home() / agent_name
+        return PATHS.profile.agent_dir(agent_name)
 
     def ensure_agent_dir(self, agent_name: str) -> Path:
         """Ensure the global agent directory exists and return its path.

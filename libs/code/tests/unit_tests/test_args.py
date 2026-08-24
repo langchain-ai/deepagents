@@ -713,7 +713,9 @@ class TestMcpCommandDispatch:
         """
         import pathlib
 
+        from deepagents_code._paths import _capture_paths
         from deepagents_code.client.commands.mcp import run_mcp_config
+        from deepagents_code.ui import console
 
         fake_home = pathlib.Path(str(tmp_path)) / "home"
         configured = pathlib.Path(str(tmp_path)) / "custom-home"
@@ -722,8 +724,12 @@ class TestMcpCommandDispatch:
         (configured / ".mcp.json").write_text("{}")
         fake_project.mkdir()
 
-        monkeypatch.setattr(pathlib.Path, "home", lambda: fake_home)
+        monkeypatch.setattr(
+            "deepagents_code._paths.PATHS",
+            _capture_paths(str(configured), launch_home=fake_home),
+        )
         monkeypatch.setenv("DEEPAGENTS_HOME", str(configured))
+        monkeypatch.setattr(console, "width", 240)
         monkeypatch.chdir(fake_project)
         monkeypatch.setattr(
             "deepagents_code.project_utils.find_project_root",

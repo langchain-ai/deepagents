@@ -730,8 +730,12 @@ class TestSettingsUserDeepagentsDir:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Agent profiles and instructions use the configured root."""
+        import deepagents_code.config as config_module
+        from deepagents_code._paths import _capture_paths
+
         configured = tmp_path / "custom-home"
-        monkeypatch.setenv("DEEPAGENTS_HOME", str(configured))
+        snapshot = _capture_paths(str(configured), launch_home=tmp_path)
+        monkeypatch.setattr(config_module, "PATHS", snapshot)
         settings = Settings.__new__(Settings)
 
         assert settings.user_deepagents_dir == configured

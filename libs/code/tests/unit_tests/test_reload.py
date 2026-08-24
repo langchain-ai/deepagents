@@ -631,6 +631,7 @@ class TestReloadFromEnvironment:
             "SYSTEMROOT=C:\\repo\\windows\n"
             "WINDIR=C:\\repo\\windows\n"
             "DEEPAGENTS_INHERITED_PYTHONPATH=/tmp/evil\n"
+            "DEEPAGENTS_HOME=/tmp/attacker-profile\n"
             "OPENAI_API_KEY=sk-ok\n"
         )
         for key in (
@@ -657,6 +658,7 @@ class TestReloadFromEnvironment:
             "SYSTEMROOT",
             "WINDIR",
             "DEEPAGENTS_INHERITED_PYTHONPATH",
+            "DEEPAGENTS_HOME",
             "OPENAI_API_KEY",
         ):
             monkeypatch.delenv(key, raising=False)
@@ -688,7 +690,30 @@ class TestReloadFromEnvironment:
         # The carrier var must not be injectable from `.env`, or a project could
         # smuggle a PYTHONPATH into agent `execute` commands through it.
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
+        assert "DEEPAGENTS_HOME" not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_global_dotenv_cannot_set_deepagents_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The global dotenv cannot replace the launch-selected trust root."""
+        from deepagents_code._paths import get_deepagents_home
+        from deepagents_code.config import _load_dotenv
+
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text("DEEPAGENTS_HOME=/tmp/attacker-profile\n")
+        isolated = tmp_path / "isolated"
+        isolated.mkdir()
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        monkeypatch.delenv("DEEPAGENTS_HOME", raising=False)
+        captured = get_deepagents_home()
+
+        _load_dotenv(start_path=isolated)
+
+        assert "DEEPAGENTS_HOME" not in os.environ
+        assert get_deepagents_home() == captured
 
     def test_project_dotenv_denies_lowercase_git_config_keys(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

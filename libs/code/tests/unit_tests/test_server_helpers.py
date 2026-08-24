@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from deepagents_code._paths import PATHS
 from deepagents_code.agent import _apply_inherited_pythonpath
 from deepagents_code.client.launch.server import (
     _SERVER_ENV_DENYLIST,
@@ -61,6 +62,12 @@ class TestBuildServerEnv:
     def test_sets_pythondontwritebytecode(self) -> None:
         env = _build_server_env()
         assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+
+    def test_restores_frozen_deepagents_home(self) -> None:
+        """A mutable client env cannot move the server profile root."""
+        with patch.dict(os.environ, {"DEEPAGENTS_HOME": "/tmp/changed"}):
+            env = _build_server_env()
+        assert env["DEEPAGENTS_HOME"] == str(PATHS.profile.root)
 
     def test_strips_subprocess_hijack_variables(self) -> None:
         injected = {key: f"/tmp/evil-{key}" for key in _SERVER_ENV_DENYLIST}

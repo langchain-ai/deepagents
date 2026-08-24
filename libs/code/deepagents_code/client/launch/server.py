@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import quote
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
+from deepagents_code._paths import PATHS
 from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
 
 if TYPE_CHECKING:
@@ -374,6 +375,7 @@ def _build_server_env() -> dict[str, str]:
         Environment dict for `subprocess.Popen`.
     """
     env = os.environ.copy()
+    env["DEEPAGENTS_HOME"] = str(PATHS.profile.root)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"
 
@@ -841,6 +843,8 @@ class ServerProcess:
             env = _build_server_env()
             env.update(self._persistent_env_overrides)
             env.update(self._env_overrides)
+            # Profile selection is immutable and is not a restart override.
+            env["DEEPAGENTS_HOME"] = str(PATHS.profile.root)
 
             logger.info("Starting langgraph dev server: %s", " ".join(cmd))
             self._log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115

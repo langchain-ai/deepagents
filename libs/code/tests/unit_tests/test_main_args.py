@@ -2300,28 +2300,40 @@ class TestRecentAgentIsValid:
 
     def test_returns_true_for_existing_dir(self, tmp_path, monkeypatch) -> None:
         """Existing `~/.deepagents/<name>/` resolves to True."""
+        from deepagents_code._paths import _capture_paths
         from deepagents_code.main import _recent_agent_is_valid
 
-        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "deepagents_code._paths.PATHS",
+            _capture_paths(None, launch_home=tmp_path),
+        )
         (tmp_path / ".deepagents" / "coder").mkdir(parents=True)
 
         assert _recent_agent_is_valid("coder") is True
 
     def test_uses_deepagents_home_override(self, tmp_path, monkeypatch) -> None:
         """Agent validation follows `DEEPAGENTS_HOME`."""
+        from deepagents_code._paths import _capture_paths
         from deepagents_code.main import _recent_agent_is_valid
 
         configured = tmp_path / "custom-home"
         (configured / "coder").mkdir(parents=True)
-        monkeypatch.setenv("DEEPAGENTS_HOME", str(configured))
+        monkeypatch.setattr(
+            "deepagents_code._paths.PATHS",
+            _capture_paths(str(configured), launch_home=tmp_path),
+        )
 
         assert _recent_agent_is_valid("coder") is True
 
     def test_returns_false_for_missing_dir(self, tmp_path, monkeypatch) -> None:
         """Missing dir → False, no exception."""
+        from deepagents_code._paths import _capture_paths
         from deepagents_code.main import _recent_agent_is_valid
 
-        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "deepagents_code._paths.PATHS",
+            _capture_paths(None, launch_home=tmp_path),
+        )
 
         assert _recent_agent_is_valid("ghost") is False
 

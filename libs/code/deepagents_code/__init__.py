@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING
 
 from deepagents_code._debug import configure_debug_logging
@@ -33,9 +34,20 @@ def __getattr__(name: str) -> Callable[[], None]:
 
     Raises:
         AttributeError: If *name* is not a lazily-provided attribute.
+        ValueError: If importing the CLI fails for a reason other than an
+            invalid `DEEPAGENTS_HOME` launch value.
     """
     if name == "cli_main":
-        from deepagents_code.main import cli_main
+        try:
+            from deepagents_code.main import cli_main
+        except ValueError as exc:
+            if type(exc).__name__ != "DeepAgentsHomeError":
+                raise
+            message = str(exc)
+
+            def cli_main() -> None:
+                print(f"dcode: {message}", file=sys.stderr)  # noqa: T201
+                raise SystemExit(2)
 
         return cli_main
     msg = f"module {__name__!r} has no attribute {name!r}"

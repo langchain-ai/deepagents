@@ -27,7 +27,7 @@ import tomli_w
 
 from deepagents_code import _env_vars, auth_store
 from deepagents_code._git import find_git_common_dir
-from deepagents_code._paths import get_deepagents_home
+from deepagents_code._paths import PATHS
 from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
 
 if TYPE_CHECKING:
@@ -727,13 +727,13 @@ class ProviderConfig(TypedDict, total=False):
     """
 
 
-DEFAULT_CONFIG_DIR = get_deepagents_home()
+DEFAULT_CONFIG_DIR = PATHS.profile.root
 """User-level Deep Agents directory, optionally set by `DEEPAGENTS_HOME`."""
 
-DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
+DEFAULT_CONFIG_PATH = PATHS.profile.config_file
 """Path to the user's model configuration file (`~/.deepagents/config.toml`)."""
 
-DEFAULT_STATE_DIR = DEFAULT_CONFIG_DIR / ".state"
+DEFAULT_STATE_DIR = PATHS.profile.state_dir
 """Directory for app-managed internal state (`~/.deepagents/.state`).
 
 Holds files the app writes for its own bookkeeping — OAuth tokens, the

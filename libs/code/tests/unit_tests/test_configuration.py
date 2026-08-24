@@ -2303,6 +2303,48 @@ def test_managed_auto_classifier_does_not_set_the_acp_incompatible_flag(
         service.invalidate_config_sources()
 
 
+def test_managed_default_model_replaces_the_cli_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed launch model must displace an explicit `--model`."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[models]\ndefault = "managed:model"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    args.model = "user:model"
+    try:
+        main._apply_managed_runtime_exceptions(args)
+        assert args.model == "managed:model"
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_interpreter_ptc_clears_the_cli_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed PTC policy must prevent raw CLI forwarding to the server."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[interpreter]\nptc = ["read_file"]\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    assert args.interpreter_tools == "all"
+    try:
+        main._apply_managed_runtime_exceptions(args)
+        assert args.interpreter_tools is None
+    finally:
+        service.invalidate_config_sources()
+
+
 def test_merge_provenance_reports_only_real_leaves() -> None:
     """Provenance must carry no empty-root key and no stale parent entry.
 
@@ -3423,10 +3465,8 @@ def test_managed_recursion_limit_masks_the_cli_flag(
 ) -> None:
     """A managed limit wins even when `--recursion-limit` is explicit.
 
-    Regression: `_resolved_recursion_limit` forwarded the raw flag, and
-    `create_cli_agent` uses any non-`None` argument directly, so the managed
-    value was never consulted. Deferring with `None` lets agent-build
-    resolution apply the full managed → CLI → env → TOML → default chain.
+    The parent resolves the full managed → CLI → env → TOML → default chain
+    before serializing an explicit flag to the child server process.
     """
     from deepagents_code import main
     from deepagents_code.config_manifest import resolve_recursion_limit
@@ -3442,10 +3482,9 @@ def test_managed_recursion_limit_masks_the_cli_flag(
         # No CLI flag: the managed value wins at build time.
         assert main._resolved_recursion_limit(args) is None
         assert resolve_recursion_limit() == 500
-        # An explicit flag defers too: the resolver sees it through the
-        # installed CLI provider, and the managed tier masks it.
+        # An explicit flag is serialized as the effective managed value.
         args.recursion_limit = 75
-        assert main._resolved_recursion_limit(args) is None
+        assert main._resolved_recursion_limit(args) == 500
         assert resolve_recursion_limit() == 500
     finally:
         service.invalidate_config_sources()
@@ -3457,9 +3496,8 @@ def test_cli_recursion_limit_outranks_user_toml(
 ) -> None:
     """An unmanaged `--recursion-limit` still masks the user config.
 
-    The launcher always defers, so the flag reaches the runtime through the
-    installed CLI provider rather than a forwarded value; only the managed
-    tier masks it.
+    The launcher resolves and forwards an explicit flag so it survives the
+    server subprocess boundary; only the managed tier masks it.
     """
     from deepagents_code import main, model_config
     from deepagents_code.config_manifest import resolve_recursion_limit
@@ -3477,11 +3515,38 @@ def test_cli_recursion_limit_outranks_user_toml(
     args.recursion_limit = 75
     try:
         main._resolver_for_args(args)
-        assert main._resolved_recursion_limit(args) is None
+        assert main._resolved_recursion_limit(args) == 75
         assert resolve_recursion_limit() == 75
     finally:
         service.invalidate_config_sources()
         model_config.clear_caches()
+
+
+def test_out_of_range_cli_recursion_limit_falls_through_to_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An oversized CLI limit must not skip a valid lower-ranked value."""
+    from deepagents_code import _env_vars, main, model_config
+    from deepagents_code.config_manifest import resolve_recursion_limit
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("[runtime]\nrecursion_limit = 400\n", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "500")
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    args.recursion_limit = 100_001
+    try:
+        main._resolver_for_args(args)
+        assert resolve_recursion_limit() == 500
+        assert main._resolved_recursion_limit(args) == 500
+    finally:
+        service.invalidate_config_sources()
 
 
 @pytest.mark.parametrize(

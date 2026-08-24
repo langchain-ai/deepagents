@@ -2950,6 +2950,7 @@ class Settings:
             get_option,
         )
         from deepagents_code.configuration.resolver import (
+            CLI_RANK,
             USER_RANK,
             get_config_resolver,
             resolver_from_snapshots,
@@ -3021,13 +3022,27 @@ class Settings:
             # method exists to honor: the resolver's env provider reads
             # `os.environ` directly, so a preview of a `.env` edit reported the
             # value live in the process instead of the one being previewed.
-            # Managed policy and the user's file are file-backed and safe to
-            # take from here; the env tier stays with the `env`-derived value
-            # computed above.
-            shell_resolved = candidate_resolver.get(shell_option)
+            # Managed policy, the session CLI, and the user's file are safe to
+            # take from their resolvers; the env tier stays with the
+            # `env`-derived value computed above. Check the shared resolver
+            # first because a preview's fresh user-only resolver deliberately
+            # carries no process-local CLI provider.
+            shell_resolved = resolver.get(shell_option)
             _emit_ranked_diagnostics(shell_option, shell_resolved)
             shell_source = _ranked_source(shell_resolved)
-            if managed_decided(shell_source) or shell_source == "config.toml":
+            if (
+                not managed_decided(shell_source)
+                and CLI_RANK not in shell_resolved.ranks
+                and candidate_resolver is not resolver
+            ):
+                shell_resolved = candidate_resolver.get(shell_option)
+                _emit_ranked_diagnostics(shell_option, shell_resolved)
+                shell_source = _ranked_source(shell_resolved)
+            if (
+                managed_decided(shell_source)
+                or CLI_RANK in shell_resolved.ranks
+                or shell_source == "config.toml"
+            ):
                 shell_allow_list = cast("list[str] | None", shell_resolved.value)
 
         try:

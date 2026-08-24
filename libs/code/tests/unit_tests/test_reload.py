@@ -365,6 +365,25 @@ class TestReloadFromEnvironment:
         assert settings.shell_allow_list == ["ls", "grep"]
         assert any(change.startswith("shell_allow_list:") for change in changes)
 
+    def test_reload_preserves_cli_shell_allow_list(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Reloads retain the session-scoped CLI allow-list winner."""
+        from deepagents_code.configuration.provider import CliProvider
+        from deepagents_code.configuration.resolver import install_cli_provider
+
+        install_cli_provider(CliProvider({"shell_allow_list": "ls,cat"}))
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.shell_allow_list == ["ls", "cat"]
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "grep")
+        preview = settings.preview_reload_from_environment(start_path=tmp_path)
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert settings.shell_allow_list == ["ls", "cat"]
+        assert not any(change.startswith("shell_allow_list:") for change in preview)
+        assert not any(change.startswith("shell_allow_list:") for change in changes)
+
     def test_loads_project_dotenv_from_explicit_start_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

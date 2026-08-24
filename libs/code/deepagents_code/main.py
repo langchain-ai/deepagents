@@ -1093,25 +1093,22 @@ def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":
 
 
 def _resolved_recursion_limit(args: argparse.Namespace) -> int | None:
-    """Defer recursion-limit resolution to the agent-build resolver.
+    """Resolve an explicit CLI limit for the server-process boundary.
 
-    `None` lets the agent-build path call `resolve_recursion_limit()` itself,
-    which reads the shared resolver — CLI provider included since
-    `_install_cli_provider` ran at startup — and applies the same managed/env/
-    TOML/default chain. Forwarding the raw flag here would bypass that chain:
-    `create_cli_agent` uses any non-`None` argument directly, so an explicit
-    `--recursion-limit` would win over a managed `runtime.recursion_limit`
-    even though managed policy structurally masks CLI values.
-
-    Range-checking likewise belongs to the resolver: argparse constrains the
-    flag to positive ints, and `resolve_recursion_limit` discards an
-    out-of-range winner with a warning so lower tiers still apply.
+    A normal TUI or headless launch builds the agent in a fresh server process,
+    where the parent's in-memory CLI provider does not exist. Resolve the full
+    managed/CLI/env/TOML chain here when the flag was supplied so the effective
+    value survives serialization. With no flag, keep deferring to the build
+    process so its ordinary configuration sources remain authoritative.
 
     Returns:
-        Always `None`.
+        The effective explicit limit, or `None` when the flag was absent.
     """
-    _ = args
-    return None
+    if getattr(args, "recursion_limit", None) is None:
+        return None
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    return resolve_recursion_limit()
 
 
 def _resolve_auto_approve(args: argparse.Namespace) -> bool:
@@ -4485,6 +4482,13 @@ def _apply_managed_runtime_exceptions(args: argparse.Namespace) -> None:
     # `startup.mode` block below avoids.
     if declared("models.auto_classifier") and hasattr(args, "auto_classifier_model"):
         args.auto_classifier_model = None
+
+    model_found, model = managed_value("models.default")
+    if model_found and hasattr(args, "model"):
+        args.model = model
+
+    if declared("interpreter.ptc") and hasattr(args, "interpreter_tools"):
+        args.interpreter_tools = None
 
     _apply_managed_sandbox(args, managed_value("sandboxes.default"))
 

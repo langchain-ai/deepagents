@@ -195,8 +195,8 @@ def test_no_hand_rolled_ui_config_readers() -> None:
 
 
 # Readers that resolve an option but deliberately emit no ranked diagnostics.
-# Each reports what it rejected through its own channel: the two shared
-# primitives hand the `ResolvedValue` back for the caller to emit against,
+# Each reports what it rejected through its own channel: the shared primitive
+# hands the `ResolvedValue` back for the caller to emit against,
 # `dcode config` prints provenance per option, the managed validator inspects a
 # candidate generation not yet in force, and the sandbox, theme, and update
 # readers log their own rejections in terms of the setting they own.
@@ -209,7 +209,6 @@ _SILENT_RESOLVER_READERS = frozenset(
     {
         # The shared resolution primitives, not readers: each returns the
         # `ResolvedValue` and every caller emits against it.
-        "config_manifest.py:_resolve_option",
         "config_manifest.py:_resolve_option_without_managed",
         "client/commands/config.py:_option_provenance",
         "configuration/service.py:resolve_managed_option",

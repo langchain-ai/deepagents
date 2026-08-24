@@ -449,11 +449,10 @@ def test_acp_mode_forwards_none_allow_fs_tools_by_default() -> None:
 
 
 def test_acp_mode_forwards_recursion_limit() -> None:
-    """`--acp --recursion-limit` defers to the agent-build resolver.
+    """`--acp --recursion-limit` forwards the effective CLI value.
 
-    `create_cli_agent` receives `None` and calls `resolve_recursion_limit()`
-    itself, so the explicit flag reaches the runtime through the installed CLI
-    provider and managed policy can still mask it.
+    ACP builds in the parent, but uses the same boundary helper as TUI and
+    headless launches, so this pins the serialized value too.
     """
     args = _make_acp_args(recursion_limit=3000)
     model_result = SimpleNamespace(
@@ -495,7 +494,7 @@ def test_acp_mode_forwards_recursion_limit() -> None:
 
     assert exc_info.value.code == 0
     mock_create_agent.assert_called_once()
-    assert mock_create_agent.call_args.kwargs["recursion_limit"] is None
+    assert mock_create_agent.call_args.kwargs["recursion_limit"] == 3000
 
 
 def test_mcp_preload_includes_plugin_configs() -> None:

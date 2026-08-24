@@ -48,7 +48,7 @@ from deepagents_code import _env_vars
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
-    from deepagents_code.configuration.resolver import ResolvedValue
+    from deepagents_code.configuration.resolver import ConfigResolver, ResolvedValue
 
 logger = logging.getLogger(__name__)
 
@@ -639,44 +639,15 @@ def _resolve_theme(toml_data: dict[str, Any], *, source: str) -> tuple[str, str]
     return None
 
 
-def _resolve_option(
-    option: ConfigOption,
+def _resolver_for_option_sources(
     *,
     toml_data: dict[str, Any] | None = None,
     managed_toml_data: dict[str, Any] | None = None,
-) -> ResolvedValue[object]:
-    """Resolve one option through the ranked durable-mask engine.
-
-    Shared by the manifest's bespoke readers: the bounded resolvers and the
-    display-preference loader.
-
-    With no caller-supplied tables this resolves through the shared process
-    resolver, so every reader that reaches it observes one generation of the
-    config files. See `ARCHITECTURE.md` for when that generation advances.
-    Pass explicit tables only to inspect a specific generation -- a candidate
-    being validated, or the one snapshot a CLI invocation reads.
-
-    A supplied table pairs with a default `OK` status, matching the health
-    these readers historically reported. `TomlSnapshot` rejects a non-`OK`
-    status carrying a non-empty table, because an unhealthy source is one every
-    reader must treat as declaring nothing; callers with real health metadata
-    pass both halves to `resolver_from_snapshots` directly.
-
-    Emits no diagnostics. Pair the result with `_emit_ranked_diagnostics` so a
-    provider rejection before the effective value is still reported.
-
-    Omitting *both* tables reads the shared process generation. Supplying
-    either one puts this on the ad-hoc path, where the other half is read to
-    complete the pair -- so a partial call is a deliberate request for a
-    specific generation, not a cheaper way to reach the shared one.
-
-    Args:
-        option: Manifest option to resolve.
-        toml_data: Parsed user `config.toml` table.
-        managed_toml_data: Parsed managed table.
+) -> ConfigResolver:
+    """Return the shared resolver or one bound to caller-supplied tables.
 
     Returns:
-        A rank-keyed `ResolvedValue`.
+        Resolver for one consistent source generation.
     """
     from deepagents_code.configuration.resolver import (
         get_config_resolver,
@@ -687,7 +658,7 @@ def _resolve_option(
     )
 
     if toml_data is None and managed_toml_data is None:
-        return get_config_resolver().get(option)
+        return get_config_resolver()
 
     # Reached only when a caller supplied at least one table. The other half is
     # filled in here: the managed snapshot from the process cache, the user
@@ -698,9 +669,30 @@ def _resolve_option(
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
     user_data = load_config_toml() if toml_data is None else toml_data
-    resolver = resolver_from_snapshots(
+    return resolver_from_snapshots(
         managed=TomlSnapshot.from_table("managed config", managed_data),
         user=TomlSnapshot.from_table("config.toml", user_data),
+    )
+
+
+def _resolve_option(
+    option: ConfigOption,
+    *,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
+) -> ResolvedValue[object]:
+    """Resolve one option through the ranked durable-mask engine.
+
+    Omitting both tables uses the shared process generation. Supplying either
+    builds an ad-hoc resolver for the explicitly requested generation. Emits no
+    diagnostics; callers pair the result with `_emit_ranked_diagnostics`.
+
+    Returns:
+        A rank-keyed resolved value.
+    """
+    resolver = _resolver_for_option_sources(
+        toml_data=toml_data,
+        managed_toml_data=managed_toml_data,
     )
     return resolver.get(option)
 
@@ -714,22 +706,18 @@ def _resolve_option_without_managed(
 
     Companion to `_resolve_option` for the bounded readers' managed
     fall-through: an out-of-range managed value is rejected, and the option
-    must be re-read from env, `config.toml`, and the typed default only.
+    must be re-read from CLI, env, `config.toml`, and the typed default.
 
-    With `toml_data=None` the user half comes out of the shared process
-    resolver's snapshot rather than a fresh parse. `_resolve_option` fills a
-    missing half from disk, which is what let a hand edit made after startup
-    change a later-built agent's value without `/reload`; the shared
-    ad-hoc resolver built here has a fresh `EnvProvider`, which reads
-    `os.environ` live, and takes only the user *snapshot* from the shared
-    resolver -- so that half stays pinned to the generation every other reader
-    observes.
+    With `toml_data=None`, rank exclusion runs directly against the shared
+    resolver. That preserves both its process-local CLI provider and its pinned
+    user snapshot, so a hand edit cannot change a later-built agent without
+    `/reload`.
 
     Returns:
         A rank-keyed `ResolvedValue` with the managed tier masked out.
     """
     from deepagents_code.configuration.resolver import (
-        USER_RANK,
+        MANAGED_RANK,
         get_config_resolver,
         resolver_from_snapshots,
     )
@@ -737,24 +725,10 @@ def _resolve_option_without_managed(
         TomlSnapshot,
     )
 
-    if toml_data is not None:
-        user = TomlSnapshot.from_table("config.toml", toml_data)
-    else:
-        shared = get_config_resolver().toml_snapshot(USER_RANK)
-        if shared is None:
-            # The shared resolver always has a user provider, so this is a
-            # programming error rather than a config problem. Substituting an
-            # empty tier keeps the read working; saying so keeps it from
-            # looking like the user simply declared nothing.
-            logger.error(
-                "Shared resolver has no user provider at rank %d; resolving "
-                "%s against an empty user tier",
-                USER_RANK,
-                option.key,
-            )
-        user = (
-            shared if shared is not None else TomlSnapshot.unknown_origin("config.toml")
-        )
+    if toml_data is None:
+        return get_config_resolver().get_without_ranks(option, {MANAGED_RANK})
+
+    user = TomlSnapshot.from_table("config.toml", toml_data)
     resolver = resolver_from_snapshots(
         managed=TomlSnapshot.declaring_nothing("managed config"),
         user=user,
@@ -1417,41 +1391,20 @@ def resolve_recursion_limit(
     if option is None:
         return RECURSION_LIMIT_DEFAULT
 
-    resolved = _resolve_option(
-        option,
+    resolver = _resolver_for_option_sources(
         toml_data=data,
         managed_toml_data=managed_toml_data,
     )
-    _emit_ranked_diagnostics(option, resolved)
-    value, source = resolved.value, _ranked_source(resolved)
-    if is_valid_recursion_limit(value):
-        return value
-
-    from deepagents_code.configuration.service import managed_decided
-
-    managed_rejected = managed_decided(source)
-    if managed_rejected:
-        logger.warning(
-            "Ignoring managed recursion_limit %r (expected int in [%d, %d]); "
-            "falling through to the next config source",
-            value,
-            RECURSION_LIMIT_FLOOR,
-            RECURSION_LIMIT_CEILING,
-        )
-        resolved = _resolve_option_without_managed(option, toml_data=data)
+    excluded: set[int] = set()
+    while True:
+        resolved = resolver.get_without_ranks(option, excluded)
         _emit_ranked_diagnostics(option, resolved)
         value, source = resolved.value, _ranked_source(resolved)
         if is_valid_recursion_limit(value):
             return value
-
-    # Invalid higher-precedence values must fall through instead of jumping
-    # straight to the default. Hide the rejected env var (if any) and
-    # re-resolve so the remaining sources still apply. Both bounded options
-    # declare no `fallback_env_vars`, so "remaining env fallbacks" is empty
-    # today and the next source is TOML, then the typed default; a bounded
-    # option that grew aliases would need this to loop over them.
-    if source.startswith("env (") and source.endswith(")"):
-        env_name = source[len("env (") : -1]
+        rejected_ranks = set(resolved.ranks)
+        if source == "default" or not rejected_ranks:
+            break
         logger.warning(
             "Ignoring %s recursion_limit %r (expected int in [%d, %d]); "
             "falling through to the next config source",
@@ -1460,22 +1413,7 @@ def resolve_recursion_limit(
             RECURSION_LIMIT_FLOOR,
             RECURSION_LIMIT_CEILING,
         )
-        previous = os.environ.pop(env_name, None)
-        try:
-            if managed_rejected:
-                resolved = _resolve_option_without_managed(option, toml_data=data)
-                _emit_ranked_diagnostics(option, resolved)
-                value, source = resolved.value, _ranked_source(resolved)
-                if is_valid_recursion_limit(value):
-                    return value
-            else:
-                return resolve_recursion_limit(
-                    toml_data=data,
-                    managed_toml_data=managed_toml_data,
-                )
-        finally:
-            if previous is not None:
-                os.environ[env_name] = previous
+        excluded.update(rejected_ranks)
 
     if source != "default":
         logger.warning(

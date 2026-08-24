@@ -1179,6 +1179,34 @@ def _wait_for_timeout(mock_wait_for: MagicMock) -> object:
     return bound.arguments["timeout"]
 
 
+def test_cli_main_forwards_recursion_limit_to_headless_server() -> None:
+    """A headless launch serializes the CLI limit to its server process."""
+    from deepagents_code.main import cli_main
+
+    run_mock = AsyncMock(return_value=0)
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["deepagents", "-n", "task", "--recursion-limit", "3000"],
+        ),
+        patch.object(sys, "stdin", mock_stdin),
+        patch("deepagents_code.main.check_optional_tools", return_value=[]),
+        patch(
+            "deepagents_code.main._should_ensure_managed_ripgrep",
+            return_value=False,
+        ),
+        patch("deepagents_code.client.non_interactive.run_non_interactive", run_mock),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    assert run_mock.await_args.kwargs["recursion_limit"] == 3000  # ty: ignore
+
+
 class TestTimeoutArgument:
     """Tests for --timeout argument parsing, validation, and runtime behavior."""
 

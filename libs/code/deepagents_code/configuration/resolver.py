@@ -16,7 +16,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Collection, Mapping, Sequence
     from pathlib import Path
 
     from deepagents_code.config_manifest import ConfigOption
@@ -159,6 +159,24 @@ class ConfigResolver:
         """
         with self._lock:
             return self._resolve(option, self._providers)
+
+    def get_without_ranks(
+        self, option: ConfigOption, ranks: Collection[int]
+    ) -> ResolvedValue[object]:
+        """Resolve one option after excluding selected provider ranks.
+
+        Args:
+            option: Manifest option to resolve.
+            ranks: Provider ranks to omit from this read.
+
+        Returns:
+            Resolved value from the remaining providers.
+        """
+        with self._lock:
+            providers = tuple(
+                provider for provider in self._providers if provider.rank not in ranks
+            )
+            return self._resolve(option, providers)
 
     @staticmethod
     def _resolve(

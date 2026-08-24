@@ -11733,8 +11733,8 @@ class DeepAgentsApp(App):
             command: The shell command to execute.
             incognito: Whether the command/output should remain local-only.
         """
-        if not incognito:
-            await self._mount_message(UserMessage(f"!{command}"))
+        prefix = "!!" if incognito else "!"
+        await self._mount_message(UserMessage(f"{prefix}{command}"))
         self._shell_running = True
 
         if self._chat_input:

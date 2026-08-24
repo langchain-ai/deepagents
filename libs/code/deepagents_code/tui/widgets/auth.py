@@ -889,7 +889,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                         "or ~/.deepagents/.env; press ",
                         ("Ctrl+R", TStyle(bold=True)),
                         " in this dialog to reload. New shell exports require "
-                        "restarting dcode. ",
+                        "restarting the app. ",
                         (
                             "Configuration docs",
                             self._link_style(CONFIGURATION_DOCS_URL),

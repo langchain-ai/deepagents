@@ -2215,6 +2215,31 @@ def _apply_inherited_pythonpath(env: dict[str, str]) -> None:
         env["PYTHONPATH"] = inherited
 
 
+def _resolve_retry_owned_model(model_spec: str, model_retries: int) -> BaseChatModel:
+    """Resolve a string model with provider retries disabled and metadata tagged.
+
+    Returns:
+        The concrete model prepared by dcode's model factory.
+    """
+    from deepagents_code.config import CLI_MAX_RETRIES_KEY, create_model
+
+    return create_model(
+        model_spec,
+        extra_kwargs={CLI_MAX_RETRIES_KEY: model_retries},
+    ).model
+
+
+def _has_resolvable_model_provider(model_spec: str) -> bool:
+    """Return whether dcode can resolve the provider before graph construction."""
+    from deepagents_code.config import detect_provider
+    from deepagents_code.model_config import ModelSpec
+
+    return (
+        ModelSpec.try_parse(model_spec) is not None
+        or detect_provider(model_spec) is not None
+    )
+
+
 def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -2420,10 +2445,9 @@ def create_cli_agent(
             without `auto_approve` or `interpreter_ptc_acknowledge_unsafe`.
         ModelNotAllowedError: When `model`, `auto_classifier_model`,
             `rubric_model`, or a subagent's frontmatter `model` is a string
-            outside the effective `models.allowed` policy. Model *strings* are
-            checked here because the SDK resolves them through
-            `init_chat_model`, bypassing `config.create_model`; a prebuilt
-            `BaseChatModel` came from a path that already checked.
+            outside the effective `models.allowed` policy. Model strings are
+            checked before dcode resolves them with provider retries disabled;
+            a prebuilt `BaseChatModel` came from a path that already checked.
     """  # noqa: DOC502 - propagates from `ModelConfig.require_model_allowed`
     tools = tools or []
     mcp_tools = tuple(mcp_tools or ())
@@ -2559,10 +2583,12 @@ def create_cli_agent(
     from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
     from deepagents_code.model_config import ModelConfig
 
-    # Every model *string* this function forwards is checked here, because the
-    # SDK resolves strings through `init_chat_model` without passing through
-    # `create_model` -- the gate in `config.create_model` never sees them. A
-    # `BaseChatModel` was already built by a checked path, so it is exempt.
+    # Every model string is checked before it is resolved. Known providers go
+    # through `create_model` here so the SDK retry loop is disabled before Deep
+    # Agents builds the graph and every request carries dcode's retry metadata.
+    # Provider-less placeholders remain strings for graph-only test/tool
+    # enumeration paths; dcode cannot identify a retry constructor parameter for
+    # them. A `BaseChatModel` was already built by a checked path, so it is exempt.
     model_policy = ModelConfig.load()
     if not enforce_model_policy:
         # Read-only enumeration (`dcode tools list`, `/tools`) compiles a graph
@@ -2575,6 +2601,8 @@ def create_cli_agent(
         )
     if isinstance(model, str):
         model_policy.require_model_allowed(model)
+        if _has_resolvable_model_provider(model):
+            model = _resolve_retry_owned_model(model, model_retries)
     if (
         isinstance(auto_classifier_model, str)
         and auto_classifier_model.strip()
@@ -2611,7 +2639,11 @@ def create_cli_agent(
                     else f"subagent {name!r}"
                 ),
             )
-            subagent["model"] = model_spec
+            subagent["model"] = (
+                _resolve_retry_owned_model(model_spec, model_retries)
+                if _has_resolvable_model_provider(model_spec)
+                else model_spec
+            )
         subagent_middleware = _subagent_cli_middleware(
             has_explicit_model=has_explicit_model,
         )

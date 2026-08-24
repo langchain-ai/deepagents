@@ -41,8 +41,10 @@ from deepagents_code.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    _has_resolvable_model_provider,
     _interrupt_predicate,
     _reserved_agent_dir_names,
+    _resolve_retry_owned_model,
     _rubric_grader_system_prompt,
     _sanitize_agent_message_name,
     _should_interrupt_tool_call,
@@ -122,6 +124,38 @@ def _make_fake_chat_model() -> GenericFakeChatModel:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
     model.profile = {"max_input_tokens": 200000}
     return model
+
+
+def _keep_model_spec(model_spec: str, _model_retries: int) -> BaseChatModel:
+    """Keep a model string unresolved in tests unrelated to retry ownership."""
+    return cast("BaseChatModel", model_spec)
+
+
+def test_resolve_retry_owned_model_uses_dcode_factory() -> None:
+    """String models receive the middleware budget through `create_model`."""
+    from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+    fake_model = _make_fake_chat_model()
+    with patch(
+        "deepagents_code.config.create_model",
+        return_value=SimpleNamespace(model=fake_model),
+    ) as mock_create:
+        resolved = _resolve_retry_owned_model("anthropic:claude-test", 3)
+
+    assert resolved is fake_model
+    mock_create.assert_called_once_with(
+        "anthropic:claude-test",
+        extra_kwargs={CLI_MAX_RETRIES_KEY: 3},
+    )
+
+
+@pytest.mark.parametrize(
+    ("model_spec", "expected"),
+    [("anthropic:claude-test", True), ("claude-test", True), ("fake-model", False)],
+)
+def test_has_resolvable_model_provider(model_spec: str, expected: bool) -> None:
+    """Only strings with an identifiable provider are eagerly resolved."""
+    assert _has_resolvable_model_provider(model_spec) is expected
 
 
 @contextmanager
@@ -3655,6 +3689,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
+            ) as mock_resolve,
         ):
             create_cli_agent(
                 model="fake-model",
@@ -3697,6 +3735,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] == "anthropic:claude-haiku-4-5"
+        mock_resolve.assert_called_once_with("anthropic:claude-haiku-4-5", 5)
         pinned_middleware = pinned["middleware"]
         assert any(
             isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
@@ -3909,6 +3948,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
             patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
+            ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
             ),
         ):
             create_cli_agent(
@@ -4142,6 +4185,10 @@ class TestCreateCliAgentFsToolsWiring:
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
+            ) as mock_resolve,
         ):
             create_cli_agent(
                 model="nvidia:nvidia/nemotron-3-ultra-550b-a55b",
@@ -4153,6 +4200,9 @@ class TestCreateCliAgentFsToolsWiring:
             )
 
         _, kwargs = mock_create.call_args
+        mock_resolve.assert_called_once_with(
+            "nvidia:nvidia/nemotron-3-ultra-550b-a55b", 5
+        )
         main_filesystem = next(
             middleware
             for middleware in kwargs["middleware"]
@@ -4436,6 +4486,10 @@ class TestCreateCliAgentFsToolsWiring:
             patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
+            ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
             ),
         ):
             create_cli_agent(
@@ -5628,6 +5682,10 @@ class TestCreateCliAgentInterpreterWiring:
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
+            ),
         ):
             create_cli_agent(
                 model="fireworks:accounts/fireworks/models/glm-5p2",
@@ -5682,6 +5740,10 @@ class TestCreateCliAgentInterpreterWiring:
             patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
+            ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
             ),
         ):
             create_cli_agent(

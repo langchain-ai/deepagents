@@ -977,3 +977,32 @@ def test_resolved_value_does_not_alias_the_mappings_it_was_given() -> None:
     )
 
     assert set(resolved.provider_status) == {USER_RANK}
+
+
+def test_provenance_rank_without_provider_status_is_rejected() -> None:
+    """`ranks` falls back to `provenance`, so it needs the same guard.
+
+    `_ranked_source` indexes `provider_status` by whatever `ranks` returns.
+    Validating only `selected_ranks` left the documented `KeyError` reachable
+    through the fallback branch, which is the one an external constructor takes
+    when it leaves `selected_ranks` empty.
+    """
+    with pytest.raises(ValueError, match="contributing ranks"):
+        ResolvedValue(
+            value=None,
+            provenance={USER_RANK: frozenset({()})},
+            tier_health={},
+            provider_status={},
+        )
+
+
+def test_selected_rank_without_provider_status_is_still_rejected() -> None:
+    """The original guard is unchanged."""
+    with pytest.raises(ValueError, match="contributing ranks"):
+        ResolvedValue(
+            value=None,
+            provenance={},
+            tier_health={},
+            provider_status={},
+            selected_ranks=(USER_RANK,),
+        )

@@ -89,8 +89,8 @@ class ResolvedValue[T]:
         read-only snapshot.
 
         Raises:
-            ValueError: If a selected rank is missing provider status, or is
-                also reported as masked.
+            ValueError: If a contributing rank is missing provider status, or
+                is also reported as masked.
         """
         for name in (
             "provenance",
@@ -100,11 +100,16 @@ class ResolvedValue[T]:
         ):
             frozen = MappingProxyType(dict(getattr(self, name)))
             object.__setattr__(self, name, frozen)
-        missing = set(self.selected_ranks) - self.provider_status.keys()
+        # Both halves of `ranks`, not just `selected_ranks`: it falls back to
+        # `provenance` when no rank was selected, and `_ranked_source` indexes
+        # `provider_status` by whichever half it gets. Validating one branch
+        # left the documented failure mode reachable through the other.
+        contributing = set(self.selected_ranks) | set(self.provenance)
+        missing = contributing - self.provider_status.keys()
         if missing:
             msg = (
-                f"selected ranks {sorted(missing)} have no provider status; "
-                "rendering provenance would raise KeyError"
+                f"contributing ranks {sorted(missing)} have no provider "
+                "status; rendering provenance would raise KeyError"
             )
             raise ValueError(msg)
         both = self.masked_ranks & set(self.selected_ranks)

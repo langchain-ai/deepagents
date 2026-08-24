@@ -76,6 +76,14 @@ class TomlSnapshot:
     def __post_init__(self) -> None:
         """Reject a snapshot that carries data it could not have read.
 
+        Deliberately does not copy `data` behind a `MappingProxyType`, though
+        `ResolvedValue.__post_init__` does exactly that for its own mappings.
+        `data` is a raw TOML table, and the coercers test nested values with
+        `isinstance(value, dict)` to tell a table from a scalar; a
+        `mappingproxy` fails that test, so every option under a wrapped table
+        would fall back to its next source. The immutability this type promises
+        is a convention here, enforced by the providers that build it.
+
         Raises:
             ValueError: If an unhealthy snapshot carries a non-empty table.
         """

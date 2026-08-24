@@ -3640,6 +3640,13 @@ class ChatInput(Vertical):
 
     def focus_input(self) -> None:
         """Focus the input field."""
+        if (
+            self._prompt_search_active
+            and self._prompt_search is not None
+            and self._prompt_search._query_input is not None
+        ):
+            self._prompt_search._query_input.focus()
+            return
         if self._text_area:
             self._text_area.focus()
 

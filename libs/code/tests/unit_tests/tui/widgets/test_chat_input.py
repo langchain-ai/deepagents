@@ -7651,6 +7651,26 @@ class TestPromptSearchPanel:
 
             assert isinstance(app.focused, PromptSearchInput)
 
+    async def test_focus_input_restores_query_focus(self, tmp_path) -> None:
+        """App-level focus restoration should keep an active search usable."""
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.focus()
+            chat.focus_input()
+            await pilot.pause()
+
+            assert isinstance(app.focused, PromptSearchInput)
+
     async def test_selection_past_first_page_stays_mounted_and_visible(
         self, tmp_path
     ) -> None:

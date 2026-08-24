@@ -1231,7 +1231,7 @@ def test_resolve_credential_prefers_stored_over_env(monkeypatch):
     auth_store.set_stored_key("anthropic", "from-store")
     option = get_option("credentials.anthropic")
     assert option is not None
-    is_set, source, value = _resolve(option, {})
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is True
     assert source == "stored"
     assert value == "from-store"
@@ -1246,7 +1246,7 @@ def test_resolve_credential_prefers_prefixed_env_over_stored(monkeypatch):
     auth_store.set_stored_key("anthropic", "from-store")
     option = get_option("credentials.anthropic")
     assert option is not None
-    is_set, source, value = _resolve(option, {})
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is True
     assert source == "env (DEEPAGENTS_CODE_ANTHROPIC_API_KEY)"
     assert value == "from-prefix"
@@ -1261,7 +1261,7 @@ def test_resolve_empty_prefixed_credential_blocks_stored(monkeypatch):
     auth_store.set_stored_key("anthropic", "from-store")
     option = get_option("credentials.anthropic")
     assert option is not None
-    is_set, source, value = _resolve(option, {})
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is False
     assert source == "default"
     assert value is None
@@ -1277,7 +1277,7 @@ def test_resolve_credential_uses_stored_when_env_unset(monkeypatch):
     auth_store.set_stored_key("anthropic", "from-store")
     option = get_option("credentials.anthropic")
     assert option is not None
-    is_set, source, _ = _resolve(option, {})
+    is_set, source, _ = _resolve(option, {}, managed_toml_data={})
     assert is_set is True
     assert source == "stored"
 
@@ -1288,7 +1288,7 @@ def test_resolve_credential_falls_back_to_env_without_stored(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
     option = get_option("credentials.anthropic")
     assert option is not None
-    is_set, source, value = _resolve(option, {})
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is True
     assert source == "env (ANTHROPIC_API_KEY)"
     assert value == "from-env"
@@ -1306,7 +1306,7 @@ def test_resolve_credential_corrupt_store_falls_back_to_env(
     option = get_option("credentials.anthropic")
     assert option is not None
     with caplog.at_level(logging.WARNING):
-        is_set, source, value = _resolve(option, {})
+        is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is True
     assert source == "env (ANTHROPIC_API_KEY)"
     assert value == "from-env"
@@ -1411,7 +1411,7 @@ def test_resolve_empty_stored_key_falls_back_to_env(stored_auth_dir, monkeypatch
     monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
     option = get_option("credentials.anthropic")
     assert option is not None
-    is_set, source, value = _resolve(option, {})
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is True
     assert source == "env (ANTHROPIC_API_KEY)"
     assert value == "from-env"
@@ -1425,7 +1425,7 @@ def test_resolve_non_credential_ignores_store():
     auth_store.set_stored_key("anthropic", "from-store")
     option = get_option("display.show_header")
     assert option is not None
-    _, source, _ = _resolve(option, {})
+    _, source, _ = _resolve(option, {}, managed_toml_data={})
     assert source != "stored"
 
 
@@ -1443,7 +1443,7 @@ def test_resolve_tavily_service_prefers_stored(monkeypatch):
     auth_store.set_stored_key("tavily", "from-store")
     option = get_option("credentials.tavily")
     assert option is not None
-    is_set, source, value = _resolve(option, {})
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is True
     assert source == "stored"
     assert value == "from-store"
@@ -1458,7 +1458,7 @@ def test_resolve_tavily_prefixed_env_overrides_stored(monkeypatch):
     auth_store.set_stored_key("tavily", "from-store")
     option = get_option("credentials.tavily")
     assert option is not None
-    is_set, source, value = _resolve(option, {})
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is True
     assert source == "env (DEEPAGENTS_CODE_TAVILY_API_KEY)"
     assert value == "from-prefix"
@@ -1593,7 +1593,7 @@ def test_resolve_non_redacted_credential_shows_stored_value(monkeypatch):
     option = get_option("credentials.google_vertexai")
     assert option is not None
     assert option.redacted is False
-    is_set, source, value = _resolve(option, {})
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is True
     assert source == "stored"
     assert value == "my-project"
@@ -3766,7 +3766,7 @@ def test_config_resolve_reports_effective_auto_classifier_timeout(
     assert option is not None
     monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
     is_set, source, value = _resolve(
-        option, {"models": {"auto_classifier_timeout": 30}}
+        option, {"models": {"auto_classifier_timeout": 30}}, managed_toml_data={}
     )
     assert is_set is True
     assert source == "config.toml"
@@ -3783,7 +3783,7 @@ def test_config_resolve_discards_out_of_range_toml_auto_classifier_timeout(
     assert option is not None
     monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
     is_set, source, value = _resolve(
-        option, {"models": {"auto_classifier_timeout": 500}}
+        option, {"models": {"auto_classifier_timeout": 500}}, managed_toml_data={}
     )
     assert is_set is False
     assert source == "default"
@@ -3815,7 +3815,7 @@ def test_config_resolve_reports_effective_startup_mode(
     option = get_option("startup.mode")
     assert option is not None
 
-    assert _resolve(option, toml_data) == expected
+    assert _resolve(option, toml_data, managed_toml_data={}) == expected
 
 
 def test_config_resolve_reports_valid_env_auto_classifier_timeout(
@@ -3826,7 +3826,7 @@ def test_config_resolve_reports_valid_env_auto_classifier_timeout(
     assert option is not None
     monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "45")
     is_set, source, value = _resolve(
-        option, {"models": {"auto_classifier_timeout": 30}}
+        option, {"models": {"auto_classifier_timeout": 30}}, managed_toml_data={}
     )
     assert is_set is True
     assert source == f"env ({_env_vars.AUTO_CLASSIFIER_TIMEOUT})"
@@ -3842,7 +3842,7 @@ def test_config_resolve_reports_default_auto_classifier_timeout_as_unset(
     from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 
     monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
-    is_set, source, value = _resolve(option, {})
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is False
     assert source == "default"
     assert value == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
@@ -4141,7 +4141,9 @@ def test_config_surface_agrees_with_runtime_on_blank_env_classifier(
     option = get_option("models.auto_classifier")
     assert option is not None
     runtime_spec, _ = resolve_auto_classifier_model_with_problem()
-    is_set, source, displayed = _resolve(option, toml_data=toml_data)
+    is_set, source, displayed = _resolve(
+        option, toml_data=toml_data, managed_toml_data={}
+    )
 
     assert runtime_spec is None
     assert displayed == runtime_spec
@@ -4160,7 +4162,7 @@ def test_usable_env_classifier_is_still_reported(monkeypatch) -> None:
 
     option = get_option("models.auto_classifier")
     assert option is not None
-    is_set, source, value = _resolve(option, toml_data=toml_data)
+    is_set, source, value = _resolve(option, toml_data=toml_data, managed_toml_data={})
 
     assert (is_set, value) == (True, "anthropic:claude-haiku-4-5")
     assert source == f"env ({_env_vars.AUTO_CLASSIFIER_MODEL})"

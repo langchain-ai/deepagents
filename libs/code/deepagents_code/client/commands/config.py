@@ -225,7 +225,7 @@ def _resolve(
     toml_data: Mapping[str, Any],
     *,
     stored: _StoredCredentialView | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any],
 ) -> tuple[bool, str, object]:
     """Resolve an option for display, reporting what the runtime actually reads.
 
@@ -243,7 +243,12 @@ def _resolve(
             read on demand — fine for one-off calls, but callers resolving many
             options should load it once and pass it so `auth.json` is parsed a
             single time.
-        managed_toml_data: Managed-provider snapshot for this command generation.
+        managed_toml_data: Managed-provider snapshot for this command
+            generation. Required: the retired `resolve_ranked_scalar` loaded
+            the file when this was omitted, so a default here would report the
+            user tier as effective while policy actually decides. An
+            invocation with no policy installed passes an empty table, which
+            says something different from "not supplied".
 
     Returns:
         `(is_set, source, value)`, where `is_set` is `False` when the value
@@ -320,7 +325,7 @@ def _resolve(
     # supplied snapshots rather than reading the shared process cache.
     resolved = resolver_from_snapshots(
         TomlSnapshot(
-            managed_toml_data or {},
+            managed_toml_data,
             ProviderStatus("managed config", None, ProviderHealth.OK),
         ),
         TomlSnapshot(

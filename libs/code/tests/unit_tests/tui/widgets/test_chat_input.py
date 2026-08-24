@@ -7679,3 +7679,43 @@ class TestPromptSearchPanel:
             await pilot.pause()
             assert chat._text_area is not None
             assert chat._text_area.text == "prompt 17"  # newest-first: 29-12
+
+    async def test_no_match_empty_state_is_a_single_row(self, tmp_path) -> None:
+        """Repeated no-match keystrokes must not stack empty-state rows.
+
+        The empty-state message is one tracked widget replaced per rebuild;
+        previously each rebuild mounted a fresh `Static` without removing the
+        last, so every no-match keystroke added another "No matching prompts."
+        row to the list.
+        """
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello world"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            for char in "zzzz":
+                await pilot.press(char)
+                await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            results = panel.query_one("#prompt-search-results")
+            empty_rows = [
+                child
+                for child in results.children
+                if isinstance(child, Static)
+                and not isinstance(child, PromptSearchOption)
+            ]
+            assert len(empty_rows) == 1
+            assert "No matching prompts." in str(empty_rows[0].content)

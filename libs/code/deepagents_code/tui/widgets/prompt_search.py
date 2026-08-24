@@ -234,6 +234,7 @@ class PromptSearchPanel(Vertical):
         self._results: VerticalScroll | None = None
         self._hint_static: Static | None = None
         self._options: list[PromptSearchOption] = []
+        self._empty_widget: Static | None = None
         self._selected_index = 0
         self._pending_titles: list[str] = []
         self._pending_selected: int = 0
@@ -325,6 +326,13 @@ class PromptSearchPanel(Vertical):
             )
 
         try:
+            # The empty-state message is a single tracked widget, not a
+            # per-rebuild mount: the previous one must come down before
+            # anything new goes up, or every no-match keystroke adds a row.
+            if self._empty_widget is not None:
+                await self._empty_widget.remove()
+                self._empty_widget = None
+
             if existing > needed:
                 for option in self._options[needed:]:
                     await option.remove()
@@ -354,9 +362,10 @@ class PromptSearchPanel(Vertical):
             return
 
         if self._pending_empty is not None:
-            await self._results.mount(
-                Static(self._pending_empty, classes="prompt-search-empty")
+            self._empty_widget = Static(
+                self._pending_empty, classes="prompt-search-empty"
             )
+            await self._results.mount(self._empty_widget)
         self.show(len(self._options) if not self._pending_empty else 1)
 
         if start <= selected_index < start + len(self._options):
@@ -413,6 +422,9 @@ class PromptSearchPanel(Vertical):
         self._pending_titles = []
         self._pending_empty = None
         self._rebuild_generation += 1
+        # Drop the tracked reference so a rebuild after re-open starts clean;
+        # the widget itself is torn down with the hidden panel's children.
+        self._empty_widget = None
         self.styles.display = "none"  # ty: ignore[invalid-assignment]  # Textual accepts string display values
         self._report_rows(0)
 

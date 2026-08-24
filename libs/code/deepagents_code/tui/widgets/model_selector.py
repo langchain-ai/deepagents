@@ -30,7 +30,9 @@ from deepagents_code.auth_display import format_auth_indicator
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
     CODEX_PROVIDER,
+    MANAGED_CONFIG_SOURCE,
     ModelConfig,
+    ModelNotAllowedError,
     ModelProfileEntry,
     ModelSpec,
     ProviderAuthState,
@@ -155,7 +157,8 @@ class DefaultModelScope(NamedTuple):
             Must be non-empty and read correctly in both positions.
         hint: Footer hint text following `'Ctrl+S '`.
         load: Reads the currently stored spec, for the `(default)` marker.
-        save: Persists a spec, returning `False` on I/O failure.
+        save: Persists a spec, returning `False` on I/O failure and raising
+            `ModelNotAllowedError` when `models.allowed` excludes the spec.
         clear: Removes the stored spec, returning `False` on I/O failure.
         override_env_var: Environment variable that outranks the stored key at
             launch, if any. When it is set, a successful Ctrl+S warns that the
@@ -761,7 +764,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 else recommended_models
             )
             for spec in sorted(recommendations):
-                if spec in existing_specs:
+                if spec in existing_specs or not config.is_model_allowed(spec):
                     continue
                 provider = spec.split(":", 1)[0]
                 try:
@@ -809,6 +812,18 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             # degrades to "nothing stored", matching the launch warning that
             # ignores a blank value.
             stored_default = stored_default.strip() or None
+        if stored_default is not None and not config.is_model_allowed(stored_default):
+            # Drop the marker: the stored spec cannot be used, so rendering
+            # `(default)` on it would advertise a model that fails to build.
+            # Log the drop -- the key stays in config.toml, and because the
+            # blocked spec has no row, the Ctrl+S toggle-off branch that would
+            # clear it is unreachable from here.
+            logger.warning(
+                "Ignoring stored default %r in the model selector: outside "
+                "models.allowed. Remove it from [models] to stop it lingering.",
+                stored_default,
+            )
+            stored_default = None
         return _ModelData(
             all_models,
             stored_default,
@@ -1193,7 +1208,45 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 empty_content: Content = Content.styled("Loading models…", "dim")
             else:
                 typed = self._filter_text.strip()
-                if typed and ":" in typed:
+                policy = ModelConfig.load()
+                # Blame the policy only when the user typed something that
+                # resolves to a real model and the policy rejects it. `typed`
+                # is filter text, so an empty box or a substring ("clade",
+                # "anthropic") canonicalizes to nothing -- attributing those to
+                # the administrator would misdiagnose a typo, and an empty
+                # filter would make this branch fire for every allowlist.
+                # Canonicalizing also judges a supported bare name the way
+                # `create_model` will judge it.
+                canonical = policy.canonical_model_spec(typed) if typed else None
+                blocked_spec = canonical is not None and not policy.is_model_allowed(
+                    canonical
+                )
+                if blocked_spec:
+                    owner = (
+                        "administrator-managed"
+                        if policy.allowed_models_source == MANAGED_CONFIG_SOURCE
+                        else "configured"
+                    )
+                    allowed = ", ".join(policy.allowed_models or ())
+                    message = f"{typed} is not allowed by the {owner} models.allowed"
+                    empty_content = Content.styled(
+                        f"{message} policy. Allowed: {allowed}"
+                        if allowed
+                        else f"{message} policy, which allows no models",
+                        "dim",
+                    )
+                elif policy.allowed_models is not None and not typed:
+                    # No filter and nothing to show: the policy emptied the
+                    # list, and the allowed specs may not be discoverable, so
+                    # name them -- otherwise the only way in is blind typing.
+                    allowed = ", ".join(policy.allowed_models)
+                    empty_content = Content.styled(
+                        f"No discoverable models. models.allowed permits: {allowed}"
+                        if allowed
+                        else "models.allowed permits no models",
+                        "dim",
+                    )
+                elif typed and ":" in typed:
                     empty_content = Content.assemble(
                         ("No matching models — press ", "dim"),
                         ("Enter", "bold"),
@@ -1895,6 +1948,21 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         filter_input = self.query_one("#model-filter", Input)
         custom_input = filter_input.value.strip()
 
+        blocked = (
+            ModelConfig.load().policy_error(custom_input, canonicalize=True)
+            if custom_input
+            else None
+        )
+        if blocked is not None:
+            # Returning silently would read as a dead keybinding. `create_model`
+            # would reject this spec anyway; saying so here saves a round trip.
+            # `canonicalize` keeps this preflight in step with that gate: a bare
+            # name whose provider can be inferred is matched in the same
+            # canonical form, so an allowed model is not rejected here merely
+            # for lacking a `provider:` prefix.
+            self.notify(str(blocked), severity="error", timeout=8)
+            return
+
         if custom_input and ":" in custom_input:
             provider = custom_input.split(":", 1)[0]
             self._select_with_auth_check(custom_input, provider)
@@ -2146,6 +2214,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # and a `[models]` section of the wrong shape — the accurate diagnosis
         # only reaches the log — so the remedy names both possibilities rather
         # than sending the user to check permissions that are already correct.
+        # A policy refusal is *not* in that set: the writers raise
+        # `ModelNotAllowedError` for it, handled separately below, so this text
+        # never has to account for `models.allowed`.
         write_remedy = (
             "Could not update ~/.deepagents/config.toml. It may be unwritable "
             "(check permissions for ~/.deepagents/) or malformed; see the log "
@@ -2161,7 +2232,16 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._restart_help_restore_timer()
             else:
                 _fail(f"Failed to clear {noun}", write_remedy)
-        elif await asyncio.to_thread(scope.save, model_spec):
+        else:
+            try:
+                saved = await asyncio.to_thread(scope.save, model_spec)
+            except ModelNotAllowedError as exc:
+                # Not an I/O failure, so `write_remedy` would misdiagnose it.
+                _fail(f"Cannot store {noun}", str(exc), persistent=False)
+                return
+            if not saved:
+                _fail(f"Failed to save {noun}", write_remedy)
+                return
             self._default_spec = model_spec
             self.call_after_refresh(self._update_display)
             help_widget.update(
@@ -2188,8 +2268,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     timeout=10,
                     markup=False,
                 )
-        else:
-            _fail(f"Failed to save {noun}", write_remedy)
 
     def _stop_help_restore_timer(self) -> None:
         """Stop the pending footer-restore timer, if any, and drop the handle."""

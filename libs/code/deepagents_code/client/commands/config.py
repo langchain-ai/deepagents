@@ -33,7 +33,7 @@ from deepagents_code.output import write_json
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.service import ManagedHealth
@@ -144,7 +144,7 @@ def setup_config_parser(
 # --- Resolution -------------------------------------------------------------
 
 
-def _load_managed_generation() -> tuple[Mapping[str, Any], ManagedHealth]:
+def _load_managed_generation() -> tuple[dict[str, Any], ManagedHealth]:
     """Load managed data and diagnostics from one provider snapshot.
 
     Returns:
@@ -222,10 +222,10 @@ def _load_stored_credentials() -> _StoredCredentialView:
 
 def _resolve(
     option: ConfigOption,
-    toml_data: Mapping[str, Any],
+    toml_data: dict[str, Any],
     *,
     stored: _StoredCredentialView | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: dict[str, Any],
 ) -> tuple[bool, str, object]:
     """Resolve an option for display, reporting what the runtime actually reads.
 
@@ -233,7 +233,8 @@ def _resolve(
     env override wins (the model factory reads it via `resolve_env_var` even
     after `apply_stored_credentials` bridges a stored key onto the canonical
     var), then a key stored via `/auth`, then the canonical env/`config.toml`.
-    Everything else delegates straight to `config_manifest.resolve_scalar`.
+    Everything else delegates straight to the ranked resolver built from the
+    caller's snapshots.
 
     Args:
         option: The option to resolve.
@@ -242,22 +243,32 @@ def _resolve(
             read on demand — fine for one-off calls, but callers resolving many
             options should load it once and pass it so `auth.json` is parsed a
             single time.
-        managed_toml_data: Managed-provider snapshot for this command generation.
+        managed_toml_data: Managed-provider snapshot for this command
+            generation. Required: the retired `resolve_ranked_scalar` loaded
+            the file when this was omitted, so a default here would report the
+            user tier as effective while policy actually decides. An
+            invocation with no policy installed passes an empty table, which
+            says something different from "not supplied".
 
     Returns:
         `(is_set, source, value)`, where `is_set` is `False` when the value
         came from the typed default.
     """
     from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
         resolve_auto_classifier_model_with_source,
         resolve_auto_classifier_timeout_with_source,
-        resolve_scalar,
         resolve_startup_mode_with_source,
+    )
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.types import (
+        TomlSnapshot,
     )
     from deepagents_code.model_config import ProviderAuthSource
 
     # No managed branch for credentials: every `Credentials` option is built
-    # without `toml_keys` (see `_credential_options`), and `resolve_scalar`
+    # without `toml_keys` (see `_credential_options`), and resolution
     # consults managed policy only for an option that has them. A managed
     # check here could never fire, while implying to a reader that policy can
     # supply a credential. `test_no_credential_option_reads_managed_policy`
@@ -275,8 +286,8 @@ def _resolve(
             return True, ProviderAuthSource.STORED.value, key
 
     if option.key == "models.auto_classifier":
-        # A blank env var vetoes `config.toml` for this option, so `resolve_scalar`
-        # alone would report a classifier the runtime does not use. Share the
+        # A blank env var vetoes `config.toml` for this option, so plain
+        # resolution would report a classifier the runtime does not use. Share the
         # runtime's resolver instead — this option decides which model reviews
         # gated actions, so a wrong reading here is a security-relevant lie.
         spec, source = resolve_auto_classifier_model_with_source(
@@ -286,7 +297,7 @@ def _resolve(
         return source != "default", source, spec
 
     if option.key == "models.auto_classifier_timeout":
-        # `resolve_scalar` alone would credit an out-of-range env value that the
+        # Plain resolution would credit an out-of-range env value that the
         # runtime rejects; use the bounded resolver so the display matches what
         # the middleware actually enforces.
         timeout, source = resolve_auto_classifier_timeout_with_source(
@@ -296,7 +307,7 @@ def _resolve(
         return source != "default", source, timeout
 
     if option.key == "startup.mode":
-        # The manifest default that `resolve_scalar` returns ignores the
+        # The manifest default that plain resolution returns ignores the
         # app-managed `[startup].recent` fallback that `load_startup_mode`
         # restores on a bare launch. Report the effective mode instead, so
         # introspection matches what the next bare launch reads from the file.
@@ -306,12 +317,17 @@ def _resolve(
         )
         return source != "default", source, mode
 
-    value, source = resolve_scalar(
-        option,
-        toml_data=toml_data,
-        managed_toml_data=managed_toml_data,
-    )
-    return source != "default", source, value
+    # The `config` command reports one generation: the caller snapshots the
+    # managed and user files once per invocation and every option resolves
+    # against those exact tables, so this builds an ad-hoc resolver from the
+    # supplied snapshots rather than reading the shared process cache.
+    resolved = resolver_from_snapshots(
+        managed=TomlSnapshot.from_table("managed config", managed_toml_data),
+        user=TomlSnapshot.from_table("config.toml", toml_data),
+    ).get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    source = _ranked_source(resolved)
+    return source != "default", source, resolved.value
 
 
 def _has_prefixed_env_override(option: ConfigOption) -> bool:
@@ -462,15 +478,19 @@ def _option_provenance(
     option: ConfigOption,
     *,
     source: str,
-    toml_data: Mapping[str, Any] | None,
-    managed_toml_data: Mapping[str, Any] | None,
+    toml_data: dict[str, Any] | None,
+    managed_toml_data: dict[str, Any] | None,
 ) -> dict[str, str]:
     """Build redaction-safe effective or per-leaf provenance for JSON output.
 
     Returns:
         Effective or dotted leaf-to-source mapping.
     """
-    from deepagents_code.config_manifest import OptionKind, resolve_ranked_scalar
+    from deepagents_code.config_manifest import OptionKind
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.types import (
+        TomlSnapshot,
+    )
 
     if (
         option.redacted
@@ -478,11 +498,13 @@ def _option_provenance(
         or option.toml_keys is None
     ):
         return {"effective": source}
-    resolved = resolve_ranked_scalar(
-        option,
-        toml_data=toml_data or {},
-        managed_toml_data=managed_toml_data or {},
-    )
+    # Per-leaf provenance must describe the same generation `_resolve` just
+    # reported, so it resolves against the caller's snapshots rather than the
+    # shared process cache.
+    resolved = resolver_from_snapshots(
+        managed=TomlSnapshot.from_table("managed config", managed_toml_data or {}),
+        user=TomlSnapshot.from_table("config.toml", toml_data or {}),
+    ).get(option)
     ranks_by_path: dict[tuple[str, ...], list[int]] = {}
     for rank, paths in resolved.provenance.items():
         for path in paths:
@@ -525,8 +547,8 @@ def _config_json_row(
     value: object,
     store_error: str | None,
     include_catalog: bool,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one `config --json` row, redacting secrets and flagging errors.
 

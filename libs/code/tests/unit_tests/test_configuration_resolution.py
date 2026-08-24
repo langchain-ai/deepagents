@@ -24,14 +24,34 @@ import pytest
 from deepagents_code.config_manifest import (
     ConfigOption,
     OptionKind,
+    _emit_ranked_diagnostics,
+    _ranked_source,
     get_option,
-    resolve_scalar,
 )
+from deepagents_code.configuration.resolver import resolver_from_snapshots
 from deepagents_code.configuration.types import (
     ProviderHealth,
     ProviderStatus,
     TomlSnapshot,
 )
+from unit_tests.conftest import resolve_option_for_test
+
+
+def _resolve(
+    option: ConfigOption,
+    *,
+    toml_data: dict[str, Any],
+    managed_toml_data: dict[str, Any] | None = None,
+) -> tuple[Any, str]:
+    """Resolve `option` through production code as `(value, source)`.
+
+    Thin alias for the shared `resolve_option_for_test`; see it for why these
+    resolutions must not be rebuilt in the test suite.
+    """
+    return resolve_option_for_test(
+        option, toml_data=toml_data, managed_toml_data=managed_toml_data
+    )
+
 
 _MANAGED_PATH = Path("/managed/managed_config.toml")
 
@@ -66,6 +86,8 @@ def _invalid_toml_value(option: ConfigOption) -> object:
         return 7
     if kind is OptionKind.NON_EMPTY_STR:
         return "   "
+    if kind is OptionKind.MODEL_LIST_DELEGATE:
+        return "not-a-list-of-model-specs"
     if kind in {OptionKind.SHELL_LIST_DELEGATE, OptionKind.SKILLS_DIRS_DELEGATE}:
         return 7
     if kind is OptionKind.PTC_DELEGATE:
@@ -84,7 +106,7 @@ def _invalid_toml_value(option: ConfigOption) -> object:
     raise AssertionError(msg)
 
 
-def _snapshot(data: Mapping[str, Any], status: ProviderStatus) -> TomlSnapshot:
+def _snapshot(data: dict[str, Any], status: ProviderStatus) -> TomlSnapshot:
     """Build a typed snapshot from a literal mapping."""
     return TomlSnapshot(data, status)
 
@@ -130,7 +152,7 @@ def test_every_enforced_key_exits_78_and_a_rejected_benign_key_falls_through(
     assert benign is not None
     managed = _at_path(benign.toml_keys, "beam")
     user = _at_path(benign.toml_keys, "underline")
-    assert resolve_scalar(benign, toml_data=user, managed_toml_data=managed) == (
+    assert _resolve(benign, toml_data=user, managed_toml_data=managed) == (
         "underline",
         "config.toml",
     )
@@ -235,7 +257,7 @@ def test_comma_string_denies_agree_across_scalar_merge_and_runtime_readers(
         assert option is not None
         user_data = {"mcp": {toml_key: ["user", "shared"]}}
         managed_data = {"mcp": {toml_key: "managed, shared"}}
-        scalar, _ = resolve_scalar(
+        scalar, _ = _resolve(
             option, toml_data=user_data, managed_toml_data=managed_data
         )
         merged, _ = service.ConfigSources(
@@ -293,7 +315,7 @@ def test_user_write_to_managed_key_succeeds_but_stays_masked(
     assert result.changed
     option = get_option("display.show_scrollbar")
     assert option is not None
-    value, source = resolve_scalar(
+    value, source = _resolve(
         option,
         toml_data={"ui": {"show_scrollbar": False}},
         managed_toml_data={"ui": {"show_scrollbar": True}},
@@ -463,9 +485,7 @@ def _resolve_in_stack(
     elif env == "invalid":
         environ[env_name] = _MATRIX_INVALID_ENV_VALUES[option_key]
     with patch.dict(os.environ, environ, clear=True):
-        return resolve_scalar(
-            option, toml_data=user_data, managed_toml_data=managed_data
-        )
+        return _resolve(option, toml_data=user_data, managed_toml_data=managed_data)
 
 
 @pytest.mark.parametrize("option_key", sorted(_MATRIX_ENV_VARS))

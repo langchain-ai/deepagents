@@ -243,6 +243,10 @@ def collect_built_in_tools(
         enable_shell=True,
         enable_interpreter=enable_interpreter,
         fs_tools=fs_tools,
+        # Enumeration only -- this graph is never invoked. Enforcing
+        # `models.allowed` here would make a subagent that names a blocked
+        # model break `dcode tools list` instead of just being unusable.
+        enforce_model_policy=False,
     )
     tools = collect_tools_from_agent(agent)
     if tools is None:

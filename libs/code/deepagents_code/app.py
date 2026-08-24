@@ -385,7 +385,6 @@ def _load_float_option(
     default: float,
     *,
     label: str,
-    toml_data: dict[str, Any],
     minimum: float | None = None,
 ) -> float:
     """Resolve a float config option, falling back to *default* when unusable.
@@ -394,19 +393,25 @@ def _load_float_option(
         key: Manifest option key.
         default: Value used when the option is absent or fails validation.
         label: Human-readable option name for the invalid-value warning.
-        toml_data: Pre-loaded config data, so callers reading several options
-            parse `config.toml` once.
         minimum: Lowest accepted value, or `None` to accept any finite float.
 
     Returns:
         The configured value, or *default* when it is missing or invalid.
     """
-    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option(key)
     value: object = default
-    if option is not None:
-        value, _ = resolve_scalar(option, toml_data=toml_data)
+    if option is None:
+        # Pre-seeding `value` with a valid float means the check below cannot
+        # fire for a missing option, so an unregistered key would return the
+        # default with nothing logged. The siblings all report this.
+        logger.warning("Unknown config option %r; using the default", key)
+        return default
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    value = resolved.value
     if (
         not isinstance(value, float)
         or not math.isfinite(value)
@@ -1108,6 +1113,7 @@ if TYPE_CHECKING:
     from deepagents_code.cold_cache import ColdCacheReason, ColdCacheWarning
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
+    from deepagents_code.configuration.types import ProviderStatus
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
     from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
@@ -1275,6 +1281,74 @@ def _load_terminal_default() -> str | None:
             )
         return None
     return _resolve_terminal_mapping(ui)
+
+
+def _managed_source_health_note(
+    status: ProviderStatus,
+    diagnostics: Sequence[str],
+) -> str | None:
+    """Describe a managed source rejected during the latest reload.
+
+    Args:
+        status: Current health of the managed provider's file.
+        diagnostics: Rejections attached to the resolved managed tier.
+
+    Returns:
+        A user-facing warning clause, or `None` when the source is healthy.
+    """
+    if status.usable:
+        return None
+    detail = status.health.value
+    if status.detail:
+        detail = f"{detail}: {status.detail}"
+
+    from deepagents_code.configuration.providers import RETAINED_SOURCE_SUFFIX
+
+    if any(RETAINED_SOURCE_SUFFIX in reason for reason in diagnostics):
+        return (
+            "the current managed config file was rejected as unreadable "
+            f"({detail}); the last readable version remains effective."
+        )
+    return f"A managed config file is present but unreadable: {detail}."
+
+
+def _managed_theme_note() -> str | None:
+    """Describe managed theme policy for a preference-write toast.
+
+    The theme writes cannot use `_managed_verdict`: theme resolution is
+    bespoke (a `[ui.terminal_themes]` entry decides only when it matches the
+    running terminal), so a per-option probe would report policy as effective
+    when it is not.
+
+    Reads the shared resolver generation because a failed managed reload keeps
+    the last enforceable snapshot while recording the rejected file only on
+    that provider's health and diagnostics.
+
+    Returns:
+        A clause for the toast, or `None` when no policy affects the theme.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import (
+        MANAGED_RANK,
+        get_config_resolver,
+    )
+    from deepagents_code.configuration.types import Found
+
+    option = get_option("display.theme")
+    if option is None:
+        return None
+    resolver = get_config_resolver()
+    resolved = resolver.get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    note = _managed_source_health_note(
+        resolver.provider_statuses()[MANAGED_RANK],
+        resolved.tier_diagnostics.get(MANAGED_RANK, ()),
+    )
+    if note is not None:
+        return note
+    if isinstance(resolved.tier_health.get(MANAGED_RANK), Found):
+        return "managed config remains effective."
+    return None
 
 
 def _load_theme_preference() -> str:
@@ -1466,22 +1540,10 @@ def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
             "error",
         )
 
-    from deepagents_code.config_manifest import (
-        _resolve_theme,
-        load_managed_config_toml,
-    )
-
-    if (
-        _resolve_theme(
-            load_managed_config_toml(),
-            source="managed config",
-        )
-        is not None
-    ):
+    note = _managed_theme_note()
+    if note is not None:
         return _ConfigWriteResult(
-            True,
-            "Theme preference saved, but managed config remains effective.",
-            "warning",
+            True, f"Theme preference saved, but {note}", "warning"
         )
     return _ConfigWriteResult(True, repair_message)
 
@@ -1514,19 +1576,20 @@ def _load_cursor_blink_preference() -> bool:
 def _load_cursor_style_preference() -> CursorStyle:
     """Resolve the chat input cursor style.
 
-    Precedence follows `resolve_scalar`: the `DEEPAGENTS_CODE_CURSOR_STYLE` env
-    var wins, then `[ui].cursor_style` in `~/.deepagents/config.toml`, falling
-    back to `"block"` when unset or invalid.
+    Precedence follows the shared resolver: the `DEEPAGENTS_CODE_CURSOR_STYLE`
+    env var wins, then `[ui].cursor_style` in `~/.deepagents/config.toml`,
+    falling back to `"block"` when unset or invalid.
 
     Returns:
         The resolved cursor style.
     """
     from deepagents_code.config_manifest import (
         CURSOR_STYLE_DEFAULT,
+        _emit_ranked_diagnostics,
         get_option,
-        load_config_toml,
-        resolve_scalar,
+        is_cursor_style,
     )
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("display.cursor_style")
     if option is None:
@@ -1534,8 +1597,17 @@ def _load_cursor_style_preference() -> CursorStyle:
             "Unknown config option %r; using block cursor", "display.cursor_style"
         )
         return CURSOR_STYLE_DEFAULT
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return cast("CursorStyle", value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    if is_cursor_style(resolved.value):
+        return resolved.value
+    # The docstring promises this fallback; nothing upstream enforced it.
+    logger.warning(
+        "Ignoring invalid display.cursor_style %r; using %r",
+        resolved.value,
+        CURSOR_STYLE_DEFAULT,
+    )
+    return CURSOR_STYLE_DEFAULT
 
 
 def _load_terminal_progress_preference() -> bool:
@@ -1611,22 +1683,10 @@ def _save_terminal_theme_mapping_result(
             "error",
         )
 
-    from deepagents_code.config_manifest import (
-        _resolve_theme,
-        load_managed_config_toml,
-    )
-
-    if (
-        _resolve_theme(
-            load_managed_config_toml(),
-            source="managed config",
-        )
-        is not None
-    ):
+    note = _managed_theme_note()
+    if note is not None:
         return _ConfigWriteResult(
-            True,
-            "Terminal mapping saved, but managed config remains effective.",
-            "warning",
+            True, f"Terminal mapping saved, but {note}", "warning"
         )
     return _ConfigWriteResult(True, " ".join(repair_messages) or None)
 
@@ -1651,6 +1711,51 @@ def save_terminal_theme_mapping(term_program: str, name: str) -> bool:
             occurred.
     """
     return _save_terminal_theme_mapping_result(term_program, name).ok
+
+
+def _managed_verdict(option_key: str) -> tuple[bool, bool, str | None]:
+    """Probe whether managed policy still decides an option after a user write.
+
+    Reads the shared resolver generation refreshed by the preceding write. A
+    failed managed reload retains the last enforceable snapshot, so the
+    provider's current health and retained-source diagnostics must accompany
+    the resolved value to distinguish retained policy from a healthy file.
+
+    Emitting the ranked diagnostics is the point, not a side effect. A
+    malformed managed entry is reported nowhere else, and this write is the
+    moment the user is told whether their change took effect.
+
+    Args:
+        option_key: Manifest key just written by the user.
+
+    Returns:
+        `(decided, rejected, health_note)` -- whether managed policy supplies
+        the effective value, whether its entry was malformed, and any failure
+        from reloading the managed source. The booleans are `False` and the
+        note is `None` for an unknown option.
+    """
+    from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
+        get_option,
+    )
+    from deepagents_code.configuration.resolver import MANAGED_RANK, get_config_resolver
+    from deepagents_code.configuration.service import managed_decided
+    from deepagents_code.configuration.types import Invalid
+
+    option = get_option(option_key)
+    if option is None:
+        return False, False, None
+
+    resolver = get_config_resolver()
+    resolved = resolver.get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    rejected = isinstance(resolved.tier_health.get(MANAGED_RANK), Invalid)
+    note = _managed_source_health_note(
+        resolver.provider_statuses()[MANAGED_RANK],
+        resolved.tier_diagnostics.get(MANAGED_RANK, ()),
+    )
+    return managed_decided(_ranked_source(resolved)), rejected, note
 
 
 def _save_ui_bool_result(
@@ -1688,27 +1793,29 @@ def _save_ui_bool_result(
             "error",
         )
 
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_managed_config_toml,
-        resolve_scalar,
-    )
-
-    option = get_option(option_key)
-    if option is not None:
-        from deepagents_code.configuration.service import managed_decided
-
-        _, source = resolve_scalar(
-            option,
-            toml_data={},
-            managed_toml_data=load_managed_config_toml(),
+    decided, rejected, health_note = _managed_verdict(option_key)
+    if health_note is not None:
+        return _ConfigWriteResult(
+            True,
+            f"Preference saved, but {health_note}",
+            "warning",
         )
-        if managed_decided(source):
-            return _ConfigWriteResult(
-                True,
-                "Preference saved, but managed config remains effective.",
-                "warning",
-            )
+    if decided:
+        return _ConfigWriteResult(
+            True,
+            "Preference saved, but managed config remains effective.",
+            "warning",
+        )
+    if rejected:
+        # The administrator who wrote the malformed policy is not at this
+        # keyboard and will never see the log line. Putting it in the toast
+        # gives the user something they can forward.
+        return _ConfigWriteResult(
+            True,
+            "Preference saved. A managed policy for this option was rejected "
+            "as malformed and is not being applied.",
+            "warning",
+        )
     return _ConfigWriteResult(True, repair_message)
 
 
@@ -4158,15 +4265,12 @@ class DeepAgentsApp(App):
         from deepagents_code.config_manifest import (
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
             SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
-            load_config_toml,
         )
 
-        toml_data = load_config_toml()
         self._session_cost_warning_threshold_usd = _load_float_option(
             "warnings.session_cost_threshold_usd",
             SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
             label="session cost warning threshold",
-            toml_data=toml_data,
         )
         """Configured soft limit for the active thread's estimated cost."""
 
@@ -4177,7 +4281,6 @@ class DeepAgentsApp(App):
             "warnings.cold_cache_min_delta_usd",
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
             label="cold-cache warning threshold",
-            toml_data=toml_data,
             minimum=0.0,
         )
         """Minimum estimated cold-versus-warm cost delta that opens the modal."""
@@ -4941,6 +5044,14 @@ class DeepAgentsApp(App):
         )
 
         self.run_worker(self._init_session_state, exclusive=True, group="session-init")
+
+        from deepagents_code.offload import sweep_offloaded_history
+
+        self.run_worker(
+            asyncio.to_thread(sweep_offloaded_history),
+            exclusive=True,
+            group="startup-history-sweep",
+        )
 
         # Server startup (model creation + server process)
         if self._server_kwargs is not None and not self._server_startup_deferred:
@@ -5711,6 +5822,7 @@ class DeepAgentsApp(App):
 
             from deepagents_code.model_config import (
                 ModelConfigError,
+                ModelNotAllowedError,
                 save_recent_model,
                 touch_recent_model,
             )
@@ -5726,7 +5838,11 @@ class DeepAgentsApp(App):
             result.apply_to_settings()
             resolved_spec = f"{result.provider}:{result.model_name}"
             await self._restore_effort_override(resolved_spec)
-            save_recent_model(resolved_spec)
+            # Best-effort persistence. `resolved_spec` came out of `create_model`, so
+            # it already passed the policy gate; a refusal here means the config changed
+            # mid-session, which must not take down a session that is already running.
+            with suppress(ModelNotAllowedError):
+                save_recent_model(resolved_spec)
             touch_recent_model(resolved_spec)
             self._model_kwargs = None  # consumed
 
@@ -10476,6 +10592,34 @@ class DeepAgentsApp(App):
                 severity="warning",
                 markup=False,
             )
+            return
+        # `goals.auto_accept_criteria` declares `toml_keys`, so managed policy
+        # can decide it -- and this write reports "saved" either way. Without
+        # the probe the user is told their choice took effect while policy
+        # quietly keeps the opposite, on the setting that decides whether Auto
+        # applies generated goal criteria without review.
+        decided, rejected, health_note = await asyncio.to_thread(
+            _managed_verdict, "goals.auto_accept_criteria"
+        )
+        if health_note is not None:
+            self.notify(
+                f"Preference saved, but {health_note}",
+                severity="warning",
+                markup=False,
+            )
+        elif decided:
+            self.notify(
+                "Preference saved, but managed config remains effective.",
+                severity="warning",
+                markup=False,
+            )
+        elif rejected:
+            self.notify(
+                "Preference saved. A managed policy for this option was "
+                "rejected as malformed and is not being applied.",
+                severity="warning",
+                markup=False,
+            )
         elif not marked:
             self.notify(
                 "Saved the goal criteria preference, but could not record that "
@@ -11174,10 +11318,9 @@ class DeepAgentsApp(App):
                 base_url=base_url,
                 # Only consulted for a custom endpoint: with no `base_url`,
                 # `_official_endpoint` short-circuits to `True` and the trust
-                # set is provably unused. Loading it eagerly would re-read and
-                # re-parse `config.toml` from disk on every turn of the common
-                # official-API path, which is the very cost the comment below
-                # is about.
+                # set is provably unused. Loading it eagerly would still cost
+                # the trust-set resolution and its diagnostics on every turn of
+                # the common official-API path.
                 trusted_endpoints=load_trusted_cache_endpoints() if base_url else None,
             )
             # Resolved before the suppression lookup so the common
@@ -23095,11 +23238,18 @@ class DeepAgentsApp(App):
             from deepagents_code.config import _get_default_model_spec
             from deepagents_code.model_config import (
                 ModelConfigError,
+                NoAllowedModelCredentialsError,
                 NoCredentialsConfiguredError,
             )
 
             try:
                 model_spec = _get_default_model_spec()
+            except NoAllowedModelCredentialsError as exc:
+                # Credentials exist but no allowed model can use them. Unlike
+                # the bare case below this is not "nothing to retry" -- it is
+                # actionable, and silence after closing `/auth` reads as a hang.
+                await self._mount_message(ErrorMessage(str(exc)))
+                return False
             except NoCredentialsConfiguredError:
                 # No usable default to fall back to — nothing to retry.
                 return False
@@ -27864,17 +28014,18 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.config_manifest import (
             COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
+            _emit_ranked_diagnostics,
             get_option,
-            load_config_toml,
-            resolve_scalar,
         )
+        from deepagents_code.configuration.resolver import get_config_resolver
 
         threshold = COMPACT_ON_RESUME_THRESHOLD_DEFAULT
         option = get_option("threads.compact_on_resume_threshold")
         if option is not None:
-            resolved, _ = resolve_scalar(option, toml_data=load_config_toml())
-            if isinstance(resolved, int):
-                threshold = resolved
+            resolved = get_config_resolver().get(option)
+            _emit_ranked_diagnostics(option, resolved)
+            if isinstance(resolved.value, int):
+                threshold = resolved.value
         if threshold <= 0 or self._context_tokens <= threshold:
             return
 
@@ -28548,7 +28699,7 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(f"Switched to {display}{params_suffix}"),
                 )
-            elif not await asyncio.to_thread(save_recent_model, display):
+            elif not await asyncio.to_thread(save_recent_model, resolved_spec):
                 await self._mount_message(
                     ErrorMessage(
                         "Model switched for this session, but could not save "
@@ -28564,7 +28715,9 @@ class DeepAgentsApp(App):
                 # `display` may be a bare model name when provider
                 # auto-detection fails; use the post-resolution spec so
                 # touch_recent_model always gets a valid "provider:model"
-                # string. Silent on failure — the debug log captures it when
+                # string -- and so it is matched against `models.allowed` in
+                # the same canonical form `create_model` just approved.
+                # Silent on failure — the debug log captures it when
                 # debug logging is enabled.
                 await asyncio.to_thread(touch_recent_model, resolved_spec)
             logger.info(
@@ -28680,11 +28833,18 @@ class DeepAgentsApp(App):
         from deepagents_code.config import _get_default_model_spec
         from deepagents_code.model_config import (
             ModelConfigError,
+            NoAllowedModelCredentialsError,
             NoCredentialsConfiguredError,
         )
 
         try:
             model_spec = _get_default_model_spec()
+        except NoAllowedModelCredentialsError as exc:
+            # The credential the user just added is valid but unlocks nothing
+            # `models.allowed` permits. Returning silently here would make
+            # `/auth` look broken, so name the models that would work.
+            await self._mount_message(ErrorMessage(str(exc)))
+            return False
         except NoCredentialsConfiguredError:
             return False
         except ModelConfigError as exc:
@@ -28714,7 +28874,15 @@ class DeepAgentsApp(App):
             if provider:
                 model_spec = f"{provider}:{model_spec}"
 
-        if await asyncio.to_thread(save_default_model, model_spec):
+        from deepagents_code.model_config import ModelNotAllowedError
+
+        try:
+            saved = await asyncio.to_thread(save_default_model, model_spec)
+        except ModelNotAllowedError as exc:
+            # Policy, not permissions -- render the reason the user can act on.
+            await self._mount_message(ErrorMessage(str(exc)))
+            return
+        if saved:
             await self._mount_message(AppMessage(f"Default model set to {model_spec}"))
         else:
             await self._mount_message(

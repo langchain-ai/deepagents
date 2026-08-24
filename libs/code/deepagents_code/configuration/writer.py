@@ -63,7 +63,7 @@ def update_user_config(
     A committed write to the default path also refreshes the shared process
     resolver, so later reads see the new value. That refresh is best-effort and
     never turns a landed write into a reported failure; see
-    `_refresh_shared_resolver`.
+    `refresh_shared_resolver`.
 
     Args:
         mutate: Edit applied to the table parsed inside the write lock. It must
@@ -152,11 +152,11 @@ def update_user_config(
             # install without the writer dependency must report "could not
             # update <path>" like any other write failure.
             return WriteResult(False, False, f"could not update {config_path}: {exc}")
-    _refresh_shared_resolver(config_path)
+    refresh_shared_resolver(config_path)
     return WriteResult(True, True)
 
 
-def _refresh_shared_resolver(config_path: Path) -> None:
+def refresh_shared_resolver(config_path: Path) -> None:
     """Make a committed write visible to the shared process resolver.
 
     Only the default path is refreshed. `get_config_resolver` is keyed on
@@ -165,9 +165,24 @@ def _refresh_shared_resolver(config_path: Path) -> None:
     filesystem reads inside tests that passed a `tmp_path` - while leaving the
     written path's own view stale anyway.
 
+    Refreshes every tier, managed policy included. `reload()` re-reads the
+    managed file through `_reload_enforceable_managed_snapshot`, so an in-app
+    preference toggle also picks up policy installed since startup. That is
+    the price of one generation: leaving the managed provider alone would let
+    the user tier advance past the policy tier, which is the split-generation
+    state the whole design exists to prevent.
+
     Failures are logged rather than returned. The write already landed and was
     replaced into place; reporting a stale in-process view as a failed write
     sends the user to retry or hand-edit a file that is already correct.
+
+    Every failure, not just `OSError`: a reload can also raise `ValueError`
+    from the snapshot and resolved-value invariants, or `RuntimeError` from a
+    provider that produced no snapshot. Callers such as
+    `model_config._save_toml_field` invoke this from the success branch of
+    their own write and return `bool`, so anything escaping here surfaces as a
+    crash after the bytes are already on disk -- the exact outcome the
+    paragraph above says must not happen.
 
     Args:
         config_path: Path the caller just wrote.
@@ -180,7 +195,7 @@ def _refresh_shared_resolver(config_path: Path) -> None:
 
     try:
         get_config_resolver().reload()
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001  # Write committed; see docstring
         logger.warning(
             "Wrote %s but could not refresh the shared config resolver: %s. "
             "This process keeps serving the previous values until it restarts.",

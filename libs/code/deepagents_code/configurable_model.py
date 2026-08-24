@@ -535,6 +535,9 @@ def _apply_overrides(
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
             model params that should be recorded for resume.
+
+    Raises:
+        ModelNotAllowedError: If runtime context requests a blocked model.
     """
     ctx = _get_context(request)
     if ctx is None:
@@ -544,7 +547,7 @@ def _apply_overrides(
     model = ctx.model
     if model and not model_matches_spec(request.model, model):
         from deepagents_code.config import create_model
-        from deepagents_code.model_config import ModelConfigError
+        from deepagents_code.model_config import ModelConfigError, ModelNotAllowedError
 
         logger.debug("Overriding model to %s", model)
         model_kwargs = (
@@ -554,6 +557,12 @@ def _apply_overrides(
         )
         try:
             model_result = create_model(model, **model_kwargs)
+        except ModelNotAllowedError:
+            # `ModelNotAllowedError` is a `ModelConfigError`; without this
+            # clause the handler below would swallow a policy denial, log it,
+            # and silently continue on the *current* model while the UI
+            # reported a switch. Not redundant -- do not remove.
+            raise
         except ModelConfigError:
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "
@@ -598,6 +607,9 @@ async def _apply_overrides_async(
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
             model params that should be recorded for resume.
+
+    Raises:
+        ModelNotAllowedError: If runtime context requests a blocked model.
     """
     ctx = _get_context(request)
     if ctx is None:
@@ -607,7 +619,7 @@ async def _apply_overrides_async(
     model = ctx.model
     if model and not model_matches_spec(request.model, model):
         from deepagents_code.config import create_model
-        from deepagents_code.model_config import ModelConfigError
+        from deepagents_code.model_config import ModelConfigError, ModelNotAllowedError
 
         logger.debug("Overriding model to %s", model)
         model_kwargs = (
@@ -621,6 +633,12 @@ async def _apply_overrides_async(
                 model,
                 **model_kwargs,
             )
+        except ModelNotAllowedError:
+            # `ModelNotAllowedError` is a `ModelConfigError`; without this
+            # clause the handler below would swallow a policy denial, log it,
+            # and silently continue on the *current* model while the UI
+            # reported a switch. Not redundant -- do not remove.
+            raise
         except ModelConfigError:
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "

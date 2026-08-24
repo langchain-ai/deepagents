@@ -11353,7 +11353,7 @@ class TestGoalCommand:
                 str(w._content)
                 for w in (*app.query(ErrorMessage), *app.query(AppMessage))
             )
-            assert "Could not load history" in messages
+            assert "Could not restore this thread's transcript" in messages
             assert "goal work and grading are disabled" in messages
 
     async def test_oversized_paused_legacy_goal_cannot_resume(self) -> None:
@@ -15789,6 +15789,11 @@ class TestMessageTimestampFooters:
             assert footer.display is True
 
     async def test_resumed_history_populates_hook_transcript(self) -> None:
+        """Restored messages reach the hook transcript, recorded off the loop.
+
+        The thread assertion pins the offload: projecting a long transcript is
+        blocking, so doing it inline would stall the UI for the whole resume.
+        """
         from langchain_core.messages import HumanMessage
 
         from deepagents_code.app import _ThreadHistoryPayload
@@ -20935,8 +20940,58 @@ class TestToolsSlashCommand:
 class TestFetchThreadHistoryData:
     """Verify _fetch_thread_history_data handles server-mode resume scenarios."""
 
+    async def test_event_loop_progresses_during_message_preparation(self) -> None:
+        """The loop keeps running while a long history is prepared.
+
+        Thread identity alone only proves the call was dispatched elsewhere.
+        This blocks the worker and asserts a concurrent coroutine advanced
+        meanwhile, so it also fails if the work is dispatched somewhere that
+        still pins the loop.
+        """
+        state = MagicMock()
+        state.values = {"messages": [{"type": "human", "content": "hi"}]}
+        mock_agent = AsyncMock()
+        mock_agent.aget_state.return_value = state
+
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+        entered = threading.Event()
+        release = threading.Event()
+        ticks = 0
+
+        # Bind before patching, or the call below re-enters this stub.
+        real_prepare = DeepAgentsApp._prepare_thread_history_messages
+
+        def blocking_prepare(messages: list[Any]) -> object:
+            entered.set()
+            release.wait(timeout=5)
+            return real_prepare(messages)
+
+        async def tick() -> None:
+            nonlocal ticks
+            while not release.is_set():
+                ticks += 1
+                await asyncio.sleep(0)
+
+        with patch.object(
+            DeepAgentsApp,
+            "_prepare_thread_history_messages",
+            staticmethod(blocking_prepare),
+        ):
+            ticker = asyncio.create_task(tick())
+            fetch = asyncio.create_task(app._fetch_thread_history_data("t-1"))
+            await asyncio.to_thread(entered.wait, 5)
+            # The worker is parked inside prepare; the loop must still be free.
+            await asyncio.sleep(0)
+            progressed = ticks
+            assert progressed > 0
+            release.set()
+            payload = await fetch
+            await ticker
+
+        assert len(payload.messages) == 1
+
     async def test_dict_messages_converted_to_message_objects(self) -> None:
-        """Remote message preparation runs off the event-loop thread."""
+        """Dict messages are deserialized, in a worker thread not the loop."""
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         state = MagicMock()
@@ -20964,7 +21019,11 @@ class TestFetchThreadHistoryData:
             prepare_threads.append(threading.get_ident())
             return original_prepare(messages)
 
-        with patch.object(app, "_prepare_thread_history_messages", capture_prepare):
+        with patch.object(
+            DeepAgentsApp,
+            "_prepare_thread_history_messages",
+            staticmethod(capture_prepare),
+        ):
             payload = await app._fetch_thread_history_data("t-1")
 
         assert prepare_threads
@@ -36815,20 +36874,107 @@ class TestStatusBarConnectionMirroring:
         assert app._connecting is True
         assert app._resuming is False
 
-    async def test_sync_keeps_resuming_after_server_connects(self) -> None:
-        """Server readiness should not hide resume restoration progress."""
+    async def test_server_ready_latches_resume_into_restoring_flag(self) -> None:
+        """Server readiness should not hide resume restoration progress.
+
+        Dispatches the real handler rather than replaying its assignment: the
+        latch at the top of `on_deep_agents_app_server_ready` has to run before
+        the handler's own `_sync_status_connection` consumes `_resuming`, and
+        only driving the handler can catch a reorder.
+        """
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        async with app.run_test():
+        async with app.run_test() as pilot:
+            await pilot.pause()
             app._connecting = True
             app._resuming = True
             app._sync_status_connection()
-            app._restoring_resumed_history = app._resuming
-            app._connecting = False
-            app._resuming = False
-            app._sync_status_connection()
+
+            app.on_deep_agents_app_server_ready(
+                DeepAgentsApp.ServerReady(
+                    agent=MagicMock(), server_proc=None, mcp_server_info=[]
+                )
+            )
+            await pilot.pause()
+
             assert app._restoring_resumed_history is True
+            assert app._resuming is False
             assert app._status_bar is not None
             assert app._status_bar.connection_state == "resuming"
+
+    async def test_server_ready_without_resume_leaves_indicator_clear(self) -> None:
+        """A plain connect must not arm the restore indicator."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = False
+            app._sync_status_connection()
+
+            app.on_deep_agents_app_server_ready(
+                DeepAgentsApp.ServerReady(
+                    agent=MagicMock(), server_proc=None, mcp_server_info=[]
+                )
+            )
+            await pilot.pause()
+
+            assert app._restoring_resumed_history is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+
+    async def test_server_ready_does_not_rearm_indicator_on_reconnect(self) -> None:
+        """A mid-session respawn must not resurrect the "Resuming" label.
+
+        The latch reads `_resuming`, which is never re-armed after init, so a
+        second `ServerReady` has to leave the indicator clear. Without that the
+        session-start sequence early-returns and nothing would ever clear it.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._sync_status_connection()
+
+            ready = DeepAgentsApp.ServerReady(
+                agent=MagicMock(), server_proc=None, mcp_server_info=[]
+            )
+            app.on_deep_agents_app_server_ready(ready)
+            await pilot.pause()
+            app._clear_resume_indicator()
+
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+            app.on_deep_agents_app_server_ready(ready)
+            await pilot.pause()
+
+            assert app._restoring_resumed_history is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+
+    async def test_server_start_failed_clears_resume_indicator(self) -> None:
+        """A failed startup must not strand the "Resuming" label.
+
+        `_run_session_start_sequence` never runs on this path, so neither of
+        its `finally` blocks can clear the flag — the handler owns it.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._restoring_resumed_history = True
+            app._sync_status_connection()
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("boom"))
+            )
+            await pilot.pause()
+
+            assert app._resuming is False
+            assert app._restoring_resumed_history is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
 
     async def test_sync_clears_when_connected(self) -> None:
         """Clearing `_connecting` should empty the connection indicator."""

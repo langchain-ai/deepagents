@@ -29,7 +29,7 @@ class HistoryManager:
         self.history_file = history_file
         self.max_entries = max_entries
         self._entries: list[str] = []
-        self._failed_persist: set[str] = set()
+        self._failed_persist: list[str] = []
         self._read_failed = False
         self._current_index: int = -1
         self._temp_input: str = ""
@@ -108,15 +108,14 @@ class HistoryManager:
         if entries is None:
             entries = list(self._entries)
         else:
-            # Prompts whose append failed live only in memory; re-append them
-            # so the refresh does not silently drop them from navigation.
-            unpersisted = self._failed_persist - set(entries)
-            entries.extend(entry for entry in self._entries if entry in unpersisted)
+            # Each failed append is a distinct occurrence, even when the same
+            # text already exists on disk. Keep those occurrences in submission
+            # order so the newest one remains newest after a refresh.
+            entries.extend(self._failed_persist)
             self._entries = entries[-self.max_entries :]
-            # Unpersisted texts stay tracked until they reach disk, but ones
-            # that aged out of the window are unrecoverable anyway. Dropping
-            # them bounds the set to `max_entries` instead of the session.
-            self._failed_persist &= set(self._entries)
+            # Failed occurrences are appended after persisted history, so only
+            # their newest bounded suffix can remain in the navigation window.
+            self._failed_persist = self._failed_persist[-self.max_entries :]
         self.reset_navigation()
 
         recent: list[str] = []
@@ -194,7 +193,7 @@ class HistoryManager:
         # session; `_failed_persist` lets a later `recent_prompts` refresh
         # merge it back instead of dropping it.
         if not self._append_to_file(text):
-            self._failed_persist.add(text)
+            self._failed_persist.append(text)
 
         # Compact only when we have 2x max entries (rare operation)
         if len(self._entries) > self.max_entries * 2:

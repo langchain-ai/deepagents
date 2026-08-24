@@ -238,6 +238,24 @@ class TestRecentPrompts:
         )
         assert mgr.get_previous("") == "append failed"
 
+    def test_failed_duplicate_append_stays_newest(self, tmp_path: Path) -> None:
+        """A failed repeat remains newer than its persisted occurrence."""
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file)
+        mgr.add("A")
+        mgr.add("B")
+
+        blocker = tmp_path / "blocker"
+        blocker.touch()
+        mgr.history_file = blocker / "history.jsonl"
+        mgr.add("A")
+
+        mgr.history_file = history_file
+        assert mgr.recent_prompts() == ("A", "B")
+        assert mgr.get_previous("") == "A"
+        assert mgr.get_previous("") == "B"
+        assert mgr.get_previous("") == "A"
+
 
 class TestSubstringMatch:
     """Substring matching navigates to entries containing the query."""

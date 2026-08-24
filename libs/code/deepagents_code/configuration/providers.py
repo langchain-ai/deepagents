@@ -6,6 +6,7 @@ import os
 import time
 import tomllib
 from dataclasses import dataclass, field, replace
+from http.client import IncompleteRead
 from typing import TYPE_CHECKING, Any, assert_never, cast, override
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -608,9 +609,10 @@ def _read_limited_response(
         The bounded response body.
 
     Raises:
+        IncompleteRead: If HTTP framing reports a truncated response.
         ValueError: If the declared or actual body exceeds the fixed limit.
-        TimeoutError: If the total elapsed time crosses *deadline*.
     """
+    declared_length: int | None = None
     raw_length = response.headers.get("Content-Length")
     if raw_length is not None:
         try:
@@ -620,13 +622,14 @@ def _read_limited_response(
         if declared > REMOTE_MANAGED_CONFIG_MAX_BYTES:
             msg = "remote source response exceeds the size limit"
             raise ValueError(msg)
+        if declared >= 0:
+            declared_length = declared
     chunks: list[bytes] = []
     remaining = REMOTE_MANAGED_CONFIG_MAX_BYTES + 1
     while remaining > 0:
-        if time.monotonic() >= deadline:
-            msg = "remote source timed out"
-            raise TimeoutError(msg)
+        _fail_if_expired(deadline)
         chunk = response.read(min(_READ_CHUNK_SIZE, remaining))
+        _fail_if_expired(deadline)
         if not chunk:
             break
         chunks.append(chunk)
@@ -635,6 +638,8 @@ def _read_limited_response(
     if len(payload) > REMOTE_MANAGED_CONFIG_MAX_BYTES:
         msg = "remote source response exceeds the size limit"
         raise ValueError(msg)
+    if declared_length is not None and len(payload) < declared_length:
+        raise IncompleteRead(payload, declared_length - len(payload))
     return payload
 
 
@@ -730,7 +735,7 @@ class RemoteTomlProvider:
                 ProviderHealth.UNREADABLE,
                 "remote source timed out",
             )
-        except (URLError, OSError):
+        except (IncompleteRead, URLError, OSError):
             return _remote_status(
                 self.name,
                 self.path,

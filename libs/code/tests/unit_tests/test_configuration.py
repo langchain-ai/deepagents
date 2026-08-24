@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 from email.message import Message
+from http.client import IncompleteRead
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -193,6 +194,15 @@ class _RemoteResponse:
         return self._stream.read(size)
 
 
+class _IncompleteRemoteResponse(_RemoteResponse):
+    """Response whose HTTP framing reports an interrupted body."""
+
+    def read(self, size: int = -1) -> bytes:
+        del size
+        partial = b'[startup]\nmode = "manual"\n'
+        raise IncompleteRead(partial, 8)
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -330,6 +340,65 @@ def test_remote_toml_provider_times_out_when_deadline_passes_during_open(
 
     assert snapshot.status.health is ProviderHealth.UNREADABLE
     assert "timed out" in (snapshot.status.detail or "")
+
+
+def test_remote_toml_provider_rejects_late_empty_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An EOF received after the deadline is not accepted as empty policy."""
+    from deepagents_code.configuration import providers
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            return _RemoteResponse(b"")
+
+    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    monotonic_values = iter([0.0, 0.0, 0.0, 5.0])
+    monkeypatch.setattr(providers.time, "monotonic", lambda: next(monotonic_values))
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert "timed out" in (snapshot.status.detail or "")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _RemoteResponse(
+            b'[startup]\nmode = "manual"\n',
+            content_length="36",
+        ),
+        _IncompleteRemoteResponse(b""),
+    ],
+)
+def test_remote_toml_provider_rejects_incomplete_response(
+    response: _RemoteResponse,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A truncated body cannot replace the last complete policy generation."""
+    from deepagents_code.configuration import providers
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            return response
+
+    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert "could not be read" in (snapshot.status.detail or "")
 
 
 @pytest.mark.parametrize(

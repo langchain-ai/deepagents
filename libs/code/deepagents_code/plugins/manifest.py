@@ -7,6 +7,7 @@ import logging
 import re
 from pathlib import Path, PureWindowsPath
 
+from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 from deepagents_code.plugins._json import json_object
 from deepagents_code.plugins.models import (
     ComponentInventory,
@@ -192,6 +193,8 @@ def _python_extensions(
     plugin_root: Path,
     warnings: list[str],
 ) -> tuple[Path, ...]:
+    if not is_env_truthy(EXPERIMENTAL):
+        return ()
     if not isinstance(settings, dict):
         return ()
     declaration = settings.get(_PYTHON_EXTENSIONS_FIELD)

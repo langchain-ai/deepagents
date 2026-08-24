@@ -103,6 +103,7 @@ def test_plugin_extension_discovery_requires_experimental_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Installed plugin entries remain invisible until explicitly enabled."""
+    monkeypatch.setenv(EXPERIMENTAL, "1")
     path = tmp_path / "example.py"
     path.touch()
     _write_manifest(tmp_path, path="./example.py", version="1.2.3")
@@ -135,8 +136,33 @@ def test_plugin_extension_discovery_requires_experimental_mode(
     assert sources[0].plugin_id == "example@test"
 
 
-def test_plugin_python_extension_requires_version(tmp_path: Path) -> None:
+def test_plugin_manifest_does_not_resolve_extensions_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Normal plugin discovery does not inspect experimental entry paths."""
+    monkeypatch.delenv(EXPERIMENTAL, raising=False)
+    _write_manifest(tmp_path)
+
+    def fail(*_: object, **__: object) -> None:
+        msg = "plugin manifest crossed the experimental gate"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(
+        "deepagents_code.plugins.manifest._resolve_component_paths", fail
+    )
+
+    manifest, _, warnings = load_manifest(tmp_path)
+
+    assert manifest is not None
+    assert not manifest.python_extensions
+    assert not warnings
+
+
+def test_plugin_python_extension_requires_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """User-wide executable extensions must have a plugin version."""
+    monkeypatch.setenv(EXPERIMENTAL, "1")
     path = tmp_path / "extension.py"
     path.touch()
     _write_manifest(tmp_path)
@@ -152,6 +178,7 @@ def test_unreadable_plugin_extension_path_is_isolated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An unreadable Python extension declaration does not abort plugin loading."""
+    monkeypatch.setenv(EXPERIMENTAL, "1")
     path = tmp_path / "extension.py"
     path.touch()
     _write_manifest(tmp_path, version="1.2.3")

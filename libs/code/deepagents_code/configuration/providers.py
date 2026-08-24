@@ -23,9 +23,17 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from http.client import HTTPResponse
     from pathlib import Path
+    from typing import Protocol
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.resolver import RankedProviderValue
+
+    class _TimeoutSocket(Protocol):
+        """Socket operation needed to tighten an active HTTP response."""
+
+        def settimeout(self, value: float | None) -> None:
+            """Set the maximum wait for the next socket operation."""
+
 
 from deepagents_code.configuration.resolver import (
     DEFAULT_RANK,
@@ -598,6 +606,52 @@ def _fail_if_expired(deadline: float) -> None:
         raise TimeoutError(msg)
 
 
+def _remaining_timeout(deadline: float) -> float:
+    """Return positive seconds left before the end-to-end deadline.
+
+    Returns:
+        The remaining timeout in seconds.
+
+    Raises:
+        TimeoutError: If the deadline has already passed.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        msg = "remote source timed out"
+        raise TimeoutError(msg)
+    return remaining
+
+
+def _set_response_timeout(response: HTTPResponse, timeout: float) -> None:
+    """Tighten the active response socket to the remaining timeout.
+
+    Raises:
+        OSError: If a live response has no controllable socket.
+    """
+    if response.fp is not None:
+        raw = getattr(response.fp, "raw", None)
+        sock = cast("_TimeoutSocket | None", getattr(raw, "_sock", None))
+        if sock is None:
+            msg = "remote source response timeout could not be enforced"
+            raise OSError(msg)
+        sock.settimeout(timeout)
+
+
+def _read_response_chunk(
+    response: HTTPResponse,
+    size: int,
+    *,
+    deadline: float,
+) -> bytes:
+    """Read at most one socket chunk within the remaining deadline.
+
+    Returns:
+        The next available body chunk.
+    """
+    _set_response_timeout(response, _remaining_timeout(deadline))
+    return response.read1(size)
+
+
 def _read_limited_response(
     response: HTTPResponse,
     *,
@@ -627,8 +681,11 @@ def _read_limited_response(
     chunks: list[bytes] = []
     remaining = REMOTE_MANAGED_CONFIG_MAX_BYTES + 1
     while remaining > 0:
-        _fail_if_expired(deadline)
-        chunk = response.read(min(_READ_CHUNK_SIZE, remaining))
+        chunk = _read_response_chunk(
+            response,
+            min(_READ_CHUNK_SIZE, remaining),
+            deadline=deadline,
+        )
         _fail_if_expired(deadline)
         if not chunk:
             break

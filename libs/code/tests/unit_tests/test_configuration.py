@@ -9,6 +9,7 @@ from email.message import Message
 from http.client import IncompleteRead
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self
 from urllib.error import HTTPError, URLError
 
@@ -180,6 +181,8 @@ class _RemoteResponse:
 
     def __init__(self, payload: bytes, *, content_length: str | None = None) -> None:
         self._stream = BytesIO(payload)
+        self.read_timeouts: list[float | None] = []
+        self.fp = SimpleNamespace(raw=SimpleNamespace(_sock=self))
         self.headers = Message()
         if content_length is not None:
             self.headers["Content-Length"] = content_length
@@ -192,6 +195,12 @@ class _RemoteResponse:
 
     def read(self, size: int = -1) -> bytes:
         return self._stream.read(size)
+
+    def read1(self, size: int = -1) -> bytes:
+        return self.read(size)
+
+    def settimeout(self, value: float | None) -> None:
+        self.read_timeouts.append(value)
 
 
 class _IncompleteRemoteResponse(_RemoteResponse):
@@ -365,6 +374,33 @@ def test_remote_toml_provider_rejects_late_empty_response(
 
     assert snapshot.status.health is ProviderHealth.UNREADABLE
     assert "timed out" in (snapshot.status.detail or "")
+
+
+def test_remote_toml_provider_bounds_reads_by_remaining_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Header time reduces every subsequent socket-read timeout."""
+    from deepagents_code.configuration import providers
+
+    response = _RemoteResponse(b'[startup]\nmode = "manual"\n')
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout == providers.REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS
+            return response
+
+    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    monotonic_values = iter([10.0, 12.0, 13.0, 14.0, 14.5, 14.75])
+    monkeypatch.setattr(providers.time, "monotonic", lambda: next(monotonic_values))
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.OK
+    assert response.read_timeouts == [2.0, 0.5]
 
 
 @pytest.mark.parametrize(

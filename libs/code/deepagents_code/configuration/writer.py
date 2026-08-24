@@ -165,6 +165,13 @@ def refresh_shared_resolver(config_path: Path) -> None:
     filesystem reads inside tests that passed a `tmp_path` - while leaving the
     written path's own view stale anyway.
 
+    Refreshes every tier, managed policy included. `reload()` re-reads the
+    managed file through `_reload_enforceable_managed_snapshot`, so an in-app
+    preference toggle also picks up policy installed since startup. That is
+    the price of one generation: leaving the managed provider alone would let
+    the user tier advance past the policy tier, which is the split-generation
+    state the whole design exists to prevent.
+
     Failures are logged rather than returned. The write already landed and was
     replaced into place; reporting a stale in-process view as a failed write
     sends the user to retry or hand-edit a file that is already correct.

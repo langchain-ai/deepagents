@@ -1665,8 +1665,10 @@ def _managed_verdict(option_key: str) -> tuple[bool, bool]:
 
     Resolves the process managed snapshot against an empty user tier, so the
     answer describes policy alone. `get_managed_snapshot()` defaults to
-    `refresh=False`: the write just made cannot have changed managed policy,
-    and re-reading it here would swap the snapshot every other reader observes.
+    `refresh=False`, which reads what the process is enforcing. The write that
+    preceded this call has already refreshed that snapshot through
+    `refresh_shared_resolver`, so re-reading here would only risk a second,
+    different generation inside one user action.
 
     The snapshot is passed whole, health included. Asserting `OK` over
     `load_managed_config_toml()` -- which returns an empty table for an

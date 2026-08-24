@@ -152,8 +152,10 @@ class OptionKind(Enum):
     bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
     resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
     allowlists — do not compress into a generic coercion). `THEME_DELEGATE` is
-    resolved per layer by `_resolve_theme`, outside the ranked resolver, and
-    never reaches the inline coercers. `STRUCTURED` marks user-defined tables
+    coerced by the providers themselves (`ranked_theme_toml_value` and
+    `ranked_theme_environment_value`) rather than the inline coercers;
+    `_resolve_theme` is a separate single-layer helper for callers that need
+    one tier at a time. `STRUCTURED` marks user-defined tables
     that the scalar resolver only passes through for display.
     """
 
@@ -579,10 +581,10 @@ def _resolve_option(
     display-preference loader.
 
     With no caller-supplied tables this resolves through the shared process
-    resolver, so every reader in the process observes one generation of the
-    config files and `/reload` is the single point at which that generation
-    advances. Pass explicit tables only to inspect a specific generation --
-    a candidate being validated, or the one snapshot a CLI invocation reads.
+    resolver, so every reader that reaches it observes one generation of the
+    config files. See `ARCHITECTURE.md` for when that generation advances.
+    Pass explicit tables only to inspect a specific generation -- a candidate
+    being validated, or the one snapshot a CLI invocation reads.
 
     A supplied table pairs with a default `OK` status, matching the health
     these readers historically reported. `TomlSnapshot` rejects a non-`OK`
@@ -595,10 +597,13 @@ def _resolve_option(
 
     Args:
         option: Manifest option to resolve.
-        toml_data: Parsed user `config.toml` mapping. Omit to read the shared
-            process generation.
-        managed_toml_data: Parsed managed mapping, or the process snapshot when
-            omitted.
+        toml_data: Parsed user `config.toml` mapping.
+        managed_toml_data: Parsed managed mapping.
+
+    Omitting *both* reads the shared process generation. Supplying either one
+    puts this on the ad-hoc path, where the other half is read to complete the
+    pair -- so a partial call is a deliberate request for a specific
+    generation, not a cheaper way to reach the shared one.
 
     Returns:
         A rank-keyed `ResolvedValue`.
@@ -616,8 +621,11 @@ def _resolve_option(
     if toml_data is None and managed_toml_data is None:
         return get_config_resolver().get(option)
 
-    # Reached only when a caller supplied at least one table: the other half is
-    # parsed here so both tiers still describe a single generation.
+    # Reached only when a caller supplied at least one table. The other half is
+    # filled in here: the managed snapshot from the process cache, the user
+    # table by a fresh parse. A caller that supplies only one side therefore
+    # pairs its own generation with whatever the other source currently holds,
+    # which is why supplying both is the way to pin one generation exactly.
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
@@ -912,9 +920,10 @@ def resolve_auto_classifier_timeout_with_source(
     """Resolve the Auto classifier decision-batch budget and its source.
 
     Args:
-        toml_data: Parsed `config.toml`; loaded automatically when omitted.
-        managed_toml_data: Parsed managed TOML; the process snapshot is used when
-            omitted.
+        toml_data: Parsed `config.toml`.
+        managed_toml_data: Parsed managed TOML. Omit both to read the shared
+            process generation; supplying either puts this on the ad-hoc path
+            described in `_resolve_option`.
 
     Returns:
         `(timeout_seconds, source)`, where `source` is the layer that supplied
@@ -1018,9 +1027,10 @@ def resolve_auto_classifier_timeout(
     classifier from hanging every gated tool call.
 
     Args:
-        toml_data: Parsed `config.toml`; loaded automatically when omitted.
-        managed_toml_data: Parsed managed TOML; the process snapshot is used when
-            omitted.
+        toml_data: Parsed `config.toml`.
+        managed_toml_data: Parsed managed TOML. Omit both to read the shared
+            process generation; supplying either puts this on the ad-hoc path
+            described in `_resolve_option`.
 
     Returns:
         The resolved timeout in seconds, guaranteed within
@@ -1078,9 +1088,10 @@ def resolve_auto_classifier_model_with_source(
     managed value means inherit, credited to `managed config`.
 
     Args:
-        toml_data: Parsed `config.toml`; loaded automatically when omitted.
-        managed_toml_data: Parsed managed TOML; the process snapshot is used when
-            omitted.
+        toml_data: Parsed `config.toml`.
+        managed_toml_data: Parsed managed TOML. Omit both to read the shared
+            process generation; supplying either puts this on the ad-hoc path
+            described in `_resolve_option`.
 
     Returns:
         `(spec, source)`. `source` credits the layer that decided the outcome,
@@ -1154,10 +1165,11 @@ def resolve_startup_mode_with_source(
     """
     from deepagents_code.model_config import is_recent_startup_mode_restorable
 
-    # Keeps its own parse: the fall-through below inspects the raw user table
-    # directly, which the shared resolver does not expose. The only production
-    # caller (`dcode config`) passes an explicit generation anyway, so this
-    # never reads the file on a live path.
+    # Keeps its own parse: the `[startup].recent` fall-through below inspects
+    # the raw user table, which `ResolvedValue` does not expose. Omitting
+    # `toml_data` therefore reads the file here rather than the shared
+    # generation -- state the property rather than counting callers, because
+    # the signature does not stop a new one from omitting it.
     data = load_config_toml() if toml_data is None else toml_data
     option = get_option("startup.mode")
     if option is None:
@@ -1257,9 +1269,10 @@ def resolve_recursion_limit(
     outranks this bounded resolver.
 
     Args:
-        toml_data: Parsed `config.toml`; loaded automatically when omitted.
-        managed_toml_data: Parsed managed TOML; the process snapshot is used when
-            omitted.
+        toml_data: Parsed `config.toml`.
+        managed_toml_data: Parsed managed TOML. Omit both to read the shared
+            process generation; supplying either puts this on the ad-hoc path
+            described in `_resolve_option`.
 
     Returns:
         The resolved recursion limit, guaranteed within

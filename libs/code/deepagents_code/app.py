@@ -1698,8 +1698,11 @@ def _save_ui_bool_result(
         )
 
         # Only the managed tier is being probed ("does policy still decide
-        # this option after the save?"), so resolve the freshly loaded managed
-        # table against an empty user tier rather than the shared cache.
+        # this option after the save?"), so resolve the process managed
+        # snapshot against an empty user tier rather than the shared resolver.
+        # `load_managed_config_toml()` defaults to `refresh=False`: the write
+        # just made cannot have changed managed policy, and re-reading it here
+        # would swap the snapshot every other reader observes.
         resolved = resolver_from_snapshots(
             managed=TomlSnapshot(
                 load_managed_config_toml(),

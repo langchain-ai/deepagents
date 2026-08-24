@@ -293,8 +293,9 @@ class RemoteAgent:
 
         Raises:
             TypeError: If the server response is not a JSON object.
-            RuntimeError: If the server returns an invalid protocol response or
-                exceeds the hook round limit.
+            RuntimeError: If the server does not provide the offload route,
+                returns an invalid protocol response, or exceeds the hook round
+                limit.
             APIStatusError: From the server operation. A 409 (conflict) or 422
                 (malformed request) means no state was committed; a 500 raised
                 as indeterminate means a commit may have landed and carries
@@ -302,6 +303,8 @@ class RemoteAgent:
                 swallow.
         """  # noqa: DOC502 -- APIStatusError is raised by the SDK transport
         from uuid import uuid4
+
+        from langgraph_sdk.errors import NotFoundError
 
         from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
 
@@ -316,19 +319,33 @@ class RemoteAgent:
         hook_responses: dict[str, object] = {}
         graph = self._get_graph()
         for round_index in range(_OFFLOAD_MAX_RESUME_ROUNDS + 1):
-            response = await _await_offload_step(
-                graph.client.http.post(
-                    f"/dcode/threads/{thread_id}/offload",
-                    json={
-                        "operation_id": operation_id,
-                        "context": dict(context),
-                        "hook_responses": hook_responses,
-                    },
-                ),
-                graph=graph,
-                thread_id=thread_id,
-                operation_id=operation_id,
-            )
+            try:
+                response = await _await_offload_step(
+                    graph.client.http.post(
+                        f"/dcode/threads/{thread_id}/offload",
+                        json={
+                            "operation_id": operation_id,
+                            "context": dict(context),
+                            "hook_responses": hook_responses,
+                        },
+                    ),
+                    graph=graph,
+                    thread_id=thread_id,
+                    operation_id=operation_id,
+                )
+            except NotFoundError as exc:
+                # The route itself is missing. An unregistered thread cannot
+                # reach here as a 404: the server catches that and answers 409
+                # with its own message. A custom `graph_ref` server, or one
+                # older than this operation, never registers the dcode HTTP app,
+                # and the SDK's bare "404 Not Found" names neither the cause nor
+                # a fix.
+                msg = (
+                    "This server does not provide dcode's /offload operation. "
+                    "Use the built-in dcode server, or upgrade the server to a "
+                    "version that registers it."
+                )
+                raise RuntimeError(msg) from exc
             if not isinstance(response, dict):
                 msg = "Offload server returned a non-object response."
                 raise TypeError(msg)

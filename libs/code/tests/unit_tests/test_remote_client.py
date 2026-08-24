@@ -1250,6 +1250,40 @@ class TestServerOffload:
         assert second["hook_responses"] == {"hook-1": {"decision": "allow"}}
         fulfill.assert_awaited_once()
 
+    async def test_missing_route_names_the_cause(self) -> None:
+        """A server without the route must not surface a bare "404 Not Found".
+
+        A custom `graph_ref` server never registers dcode's HTTP app. An
+        unregistered thread cannot reach here as a 404 -- the server answers
+        409 for that -- so a 404 means the route is absent, and the message
+        should say so and name a fix.
+        """
+        import httpx
+        from langgraph_sdk.errors import NotFoundError
+
+        agent = RemoteAgent("http://localhost:1234")
+        request = httpx.Request("POST", "http://localhost/dcode/threads/t/offload")
+        http = SimpleNamespace(
+            post=AsyncMock(
+                side_effect=NotFoundError(
+                    "404 Not Found",
+                    response=httpx.Response(404, request=request),
+                    body=None,
+                )
+            )
+        )
+        graph = _offload_graph(http)
+
+        with (
+            patch.object(agent, "_get_graph", return_value=graph),
+            pytest.raises(RuntimeError, match="does not provide dcode's /offload"),
+        ):
+            await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={},
+                fulfill_hook=AsyncMock(),
+            )
+
     async def test_hook_interrupt_payload_round_trips_from_the_server(self) -> None:
         """A real server-built interrupt payload must survive the client's parse.
 

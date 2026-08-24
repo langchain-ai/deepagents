@@ -4363,13 +4363,14 @@ def test_empty_redacted_table_reads_as_unset() -> None:
     assert _display_value(option, is_set=True, value={"a": {}}) == "configured"
 
 
-def test_invalid_cursor_style_falls_back_to_the_default() -> None:
-    """An unrecognized `display.cursor_style` must not reach Textual.
+def test_cursor_style_predicate_accepts_exactly_the_valid_styles() -> None:
+    """`is_cursor_style` must admit every valid style and nothing else.
 
-    `OptionKind.CURSOR_STYLE_DELEGATE` constrains the option's default to
-    `str`, not to a `CursorStyle` member, so the reader's docstring promise --
-    "falling back to `block` when unset or invalid" -- was an unchecked `cast`
-    rather than a fallback.
+    Renamed from `test_invalid_cursor_style_falls_back_to_the_default`, which
+    asserted only the predicate and the default's membership -- it never called
+    the reader whose fallback the name claimed to cover, so reverting that
+    fallback to the original unchecked `cast` left it green. See
+    `test_invalid_cursor_style_reaches_the_readers_fallback` for that.
     """
     from deepagents_code.config_manifest import (
         CURSOR_STYLE_DEFAULT,
@@ -4383,3 +4384,36 @@ def test_invalid_cursor_style_falls_back_to_the_default() -> None:
     assert CURSOR_STYLE_DEFAULT in VALID_CURSOR_STYLES
     for style in VALID_CURSOR_STYLES:
         assert is_cursor_style(style)
+
+
+def test_invalid_cursor_style_never_reaches_textual(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The reader must return a real style, and say what it rejected.
+
+    Drives `_load_cursor_style_preference`, which the predicate test above
+    does not. Note where the rejection actually happens: coercion rejects the
+    string at the provider, so the reader receives the manifest default and its
+    own `is_cursor_style` guard is defense in depth rather than the branch that
+    fires here. Reverting that guard to an unchecked `cast` therefore still
+    passes this test -- it is unreachable through a TOML string, and only a
+    value that bypassed coercion would reach it.
+    """
+    import logging
+
+    from deepagents_code.app import _load_cursor_style_preference
+    from deepagents_code.config_manifest import (
+        CURSOR_STYLE_DEFAULT,
+        VALID_CURSOR_STYLES,
+    )
+
+    (tmp_path / "config.toml").write_text(
+        '[ui]\ncursor_style = "not-a-cursor"\n', encoding="utf-8"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        style = _load_cursor_style_preference()
+
+    assert style == CURSOR_STYLE_DEFAULT
+    assert style in VALID_CURSOR_STYLES
+    assert "cursor_style='not-a-cursor'" in caplog.text

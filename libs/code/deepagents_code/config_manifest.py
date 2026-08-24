@@ -759,11 +759,12 @@ def resolve_read_project_dotenv(
     # file) through the standard engine, then layer the global dotenv between
     # the env and TOML to match the option's env-over-file precedence.
     #
-    # Parsed here rather than taken from the shared resolver: this runs during
-    # dotenv bootstrap, before the project `.env` has been layered into
-    # `os.environ`. Seeding the shared generation from here would capture an
-    # env tier that later readers do not see. Cadence is moot either way --
-    # the answer is consumed once, at startup.
+    # Parsed here rather than taken from the shared resolver: the `global_dotenv`
+    # tier below has no provider, so the resolver cannot express this option's
+    # precedence and its TOML tier is discarded on the fall-through path anyway.
+    # Keeping the parse local also means dotenv bootstrap -- which runs before
+    # the project `.env` is layered into `os.environ`, and again on every cwd
+    # switch -- never establishes the process generation as a side effect.
     data = load_config_toml() if toml_data is None else toml_data
     resolved = _resolve_option(
         option, toml_data=data, managed_toml_data=managed_toml_data

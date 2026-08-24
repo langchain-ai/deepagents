@@ -544,11 +544,12 @@ def reset_config_resolver() -> None:
     the key; one that exercises the resolver at an unchanged path would inherit
     stale state.
     """
-    from deepagents_code.config_manifest import reset_source_diagnostics
-
+    # No `reset_source_diagnostics` here: dropping the entry makes the next
+    # `get_config_resolver` take the cache-miss branch, which re-arms them as
+    # part of building the new generation. Importing the manifest from this
+    # teardown path also breaks the test that stubs it out of `sys.modules`.
     with _resolver_cache_lock:
         _resolver_cache.entry = None
-    reset_source_diagnostics()
 
 
 def resolve_ranked[T](

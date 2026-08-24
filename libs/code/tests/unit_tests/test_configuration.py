@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -17,7 +20,11 @@ from deepagents_code.config_manifest import (
     _ranked_source,
 )
 from deepagents_code.configuration.paths import managed_config_path
-from deepagents_code.configuration.providers import TomlFileProvider
+from deepagents_code.configuration.providers import (
+    REMOTE_MANAGED_CONFIG_MAX_BYTES,
+    RemoteTomlProvider,
+    TomlFileProvider,
+)
 from deepagents_code.configuration.resolver import merge_toml_tables
 from deepagents_code.configuration.service import (
     ConfigSources,
@@ -167,6 +174,181 @@ def test_toml_provider_marks_unreadable(
     assert provider.load().status.health is ProviderHealth.UNREADABLE
 
 
+class _RemoteResponse:
+    """Minimal context-managed response for remote provider tests."""
+
+    def __init__(self, payload: bytes, *, content_length: str | None = None) -> None:
+        self._stream = BytesIO(payload)
+        self.headers = Message()
+        if content_length is not None:
+            self.headers["Content-Length"] = content_length
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "http://config.example.com/policy.toml",
+        "https://user@example.com/policy.toml",
+        "https://config.example.com/policy.toml?token=secret",
+        "https://config.example.com/policy.toml#fragment",
+    ],
+)
+def test_remote_toml_provider_rejects_unsafe_urls(
+    source: str,
+    tmp_path: Path,
+) -> None:
+    """Remote policy only accepts credential-free absolute HTTPS URLs."""
+    snapshot = RemoteTomlProvider(
+        "managed config", source, tmp_path / "managed.toml"
+    ).load()
+    assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert "secret" not in (snapshot.status.detail or "")
+
+
+def test_remote_toml_provider_loads_policy_without_environment_proxy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The source is fetched directly and parsed without proxy inheritance."""
+    from deepagents_code.configuration import providers
+
+    captured: dict[str, object] = {}
+
+    class Opener:
+        def open(self, request: object, *, timeout: int) -> _RemoteResponse:
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return _RemoteResponse(b'[startup]\nmode = "manual"\n')
+
+    def build(*handlers: object) -> Opener:
+        captured["handlers"] = handlers
+        return Opener()
+
+    monkeypatch.setattr(providers, "build_opener", build)
+    provider = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    )
+    snapshot = provider.load()
+
+    assert snapshot.status.health is ProviderHealth.OK
+    assert snapshot.data == {"startup": {"mode": "manual"}}
+    assert captured["timeout"] == providers.REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS
+    handlers = captured["handlers"]
+    assert isinstance(handlers, tuple)
+    assert isinstance(handlers[0], providers.ProxyHandler)
+    assert vars(handlers[0])["proxies"] == {}
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (TimeoutError(), "timed out"),
+        (URLError("dns failed"), "could not be read"),
+        (
+            HTTPError(
+                "https://config.example.com/policy.toml",
+                302,
+                "Found",
+                Message(),
+                None,
+            ),
+            "refused redirects",
+        ),
+        (
+            HTTPError(
+                "https://config.example.com/policy.toml",
+                503,
+                "Unavailable",
+                Message(),
+                None,
+            ),
+            "HTTP 503",
+        ),
+    ],
+)
+def test_remote_toml_provider_reports_safe_fetch_failure(
+    failure: Exception,
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Network failures become safe unreadable provider states."""
+    from deepagents_code.configuration import providers
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            raise failure
+
+    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert expected in (snapshot.status.detail or "")
+    assert "dns failed" not in (snapshot.status.detail or "")
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (
+            _RemoteResponse(
+                b"x", content_length=str(REMOTE_MANAGED_CONFIG_MAX_BYTES + 1)
+            ),
+            "size limit",
+        ),
+        (
+            _RemoteResponse(b"x" * (REMOTE_MANAGED_CONFIG_MAX_BYTES + 1)),
+            "size limit",
+        ),
+        (_RemoteResponse(b"\xff"), "not UTF-8"),
+        (_RemoteResponse(b"[broken"), "invalid TOML"),
+        (
+            _RemoteResponse(b'[managed_config]\nsource = "https://nested.example"\n'),
+            "must not declare",
+        ),
+    ],
+)
+def test_remote_toml_provider_rejects_invalid_response(
+    response: _RemoteResponse,
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remote bodies are bounded, UTF-8 TOML, and cannot chain sources."""
+    from deepagents_code.configuration import providers
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            return response
+
+    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert expected in (snapshot.status.detail or "")
+
+
 def test_managed_provider_failure_is_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -183,6 +365,121 @@ def test_managed_provider_failure_is_fail_closed(
             require_healthy_managed_config(refresh=True)
     finally:
         invalidate_config_sources()
+
+
+@pytest.mark.parametrize(
+    "managed_toml",
+    [
+        (
+            '[managed_config]\nsource = "https://config.example.com/policy.toml"\n'
+            "[ui]\nshow_scrollbar = true\n"
+        ),
+        "[managed_config]\nsource = 5\n",
+        (
+            '[managed_config]\nsource = "https://config.example.com/policy.toml"\n'
+            "extra = true\n"
+        ),
+    ],
+)
+def test_remote_managed_descriptor_must_be_exclusive(
+    managed_toml: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed or mixed remote descriptors fail before any network request."""
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.providers import RemoteTomlProvider
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(managed_toml, encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    monkeypatch.setattr(
+        RemoteTomlProvider,
+        "load",
+        lambda _self: pytest.fail("remote provider should not run"),
+    )
+
+    with pytest.raises(ManagedConfigError):
+        require_healthy_managed_config(refresh=True)
+    assert service.managed_health(refresh=True).status.health is ProviderHealth.CORRUPT
+
+
+def test_remote_managed_policy_outranks_lower_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid remote response participates as the ordinary managed tier."""
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.providers import RemoteTomlProvider
+    from deepagents_code.configuration.types import ProviderStatus, TomlSnapshot
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+    monkeypatch.setattr(
+        RemoteTomlProvider,
+        "load",
+        lambda self: TomlSnapshot(
+            {"startup": {"mode": "manual"}},
+            ProviderStatus(self.name, self.path, ProviderHealth.OK),
+        ),
+    )
+    service.invalidate_config_sources()
+
+    require_healthy_managed_config(refresh=True)
+    option = get_option("startup.mode")
+    assert option is not None
+    assert service.get_managed_snapshot().data == {"startup": {"mode": "manual"}}
+    assert _resolve(
+        option,
+        toml_data={"startup": {"mode": "yolo"}},
+        managed_toml_data=service.get_managed_snapshot().data,
+    ) == ("manual", "managed config")
+
+
+def test_failed_remote_reload_keeps_previous_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A remote outage never evicts the last enforceable in-process snapshot."""
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.providers import RemoteTomlProvider
+    from deepagents_code.configuration.types import ProviderStatus, TomlSnapshot
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+    snapshots = iter(
+        [
+            TomlSnapshot(
+                {"startup": {"mode": "manual"}},
+                ProviderStatus("managed config", managed, ProviderHealth.OK),
+            ),
+            TomlSnapshot(
+                {},
+                ProviderStatus(
+                    "managed config",
+                    managed,
+                    ProviderHealth.UNREADABLE,
+                    "remote source timed out",
+                ),
+            ),
+        ]
+    )
+    monkeypatch.setattr(RemoteTomlProvider, "load", lambda _self: next(snapshots))
+    service.invalidate_config_sources()
+
+    require_healthy_managed_config(refresh=True)
+    with pytest.raises(ManagedConfigError):
+        require_healthy_managed_config(refresh=True)
+    assert service.get_managed_snapshot().data == {"startup": {"mode": "manual"}}
 
 
 def test_managed_model_allowlist_replaces_user_list() -> None:

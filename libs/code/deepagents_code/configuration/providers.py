@@ -5,12 +5,21 @@ from __future__ import annotations
 import os
 import tomllib
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, assert_never, cast
+from typing import TYPE_CHECKING, Any, assert_never, cast, override
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import (
+    HTTPRedirectHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 
 from deepagents_code._env_vars import classify_env_bool
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from http.client import HTTPResponse
     from pathlib import Path
 
     from deepagents_code.config_manifest import ConfigOption
@@ -30,6 +39,11 @@ from deepagents_code.configuration.types import (
     TomlSnapshot,
     Unset,
 )
+
+REMOTE_MANAGED_CONFIG_MAX_BYTES = 1024 * 1024
+REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS = 5
+_HTTP_REDIRECT_MIN = 300
+_HTTP_REDIRECT_MAX = 400
 
 SHADOWED_TABLE_SUFFIX = "— every option under it falls back to its next source"
 """Tail of the rejection raised when a scalar shadows a whole TOML table.
@@ -502,6 +516,196 @@ def ranked_default_value(
         value = option.default
     status = ProviderStatus("default", None, ProviderHealth.OK)
     return RankedProviderValue(rank, True, status, Found(value))
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    """Reject redirects so the configured host remains the only destination."""
+
+    @override
+    def redirect_request(self, *_args: object, **_kwargs: object) -> Request | None:
+        """Decline every redirect response.
+
+        Returns:
+            Always `None`, which prevents `urllib` from following the redirect.
+        """
+        return None
+
+
+def _remote_status(
+    name: str,
+    path: Path | None,
+    health: ProviderHealth,
+    detail: str,
+) -> TomlSnapshot:
+    """Build an empty snapshot with safe remote-source diagnostics.
+
+    Returns:
+        An unhealthy snapshot carrying no policy data.
+    """
+    return TomlSnapshot({}, ProviderStatus(name, path, health, detail))
+
+
+def _validate_remote_url(source: str) -> str:
+    """Validate and normalize one configured remote source.
+
+    Returns:
+        The normalized absolute HTTPS URL.
+
+    Raises:
+        ValueError: If the URL could redirect trust or leak credentials.
+    """
+    parsed = urlsplit(source)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        msg = "remote source must be an absolute HTTPS URL"
+        raise ValueError(msg)
+    if parsed.username is not None or parsed.password is not None:
+        msg = "remote source must not contain credentials"
+        raise ValueError(msg)
+    if parsed.query or parsed.fragment:
+        msg = "remote source must not contain a query string or fragment"
+        raise ValueError(msg)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        msg = "remote source has an invalid port"
+        raise ValueError(msg) from exc
+    host = parsed.hostname.rstrip(".")
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return parsed._replace(scheme="https", netloc=netloc).geturl()
+
+
+def _read_limited_response(response: HTTPResponse) -> bytes:
+    """Read one response without crossing the policy-size boundary.
+
+    Returns:
+        The bounded response body.
+
+    Raises:
+        ValueError: If the declared or actual body exceeds the fixed limit.
+    """
+    raw_length = response.headers.get("Content-Length")
+    if raw_length is not None:
+        try:
+            declared = int(raw_length)
+        except ValueError:
+            declared = -1
+        if declared > REMOTE_MANAGED_CONFIG_MAX_BYTES:
+            msg = "remote source response exceeds the size limit"
+            raise ValueError(msg)
+    payload = response.read(REMOTE_MANAGED_CONFIG_MAX_BYTES + 1)
+    if len(payload) > REMOTE_MANAGED_CONFIG_MAX_BYTES:
+        msg = "remote source response exceeds the size limit"
+        raise ValueError(msg)
+    return payload
+
+
+def _parse_remote_toml(
+    payload: bytes,
+    *,
+    name: str,
+    path: Path | None,
+) -> TomlSnapshot:
+    """Parse one remote policy body into a managed snapshot.
+
+    Returns:
+        A readable policy snapshot or a safe corrupt-source status.
+    """
+    try:
+        data = tomllib.loads(payload.decode("utf-8"))
+    except UnicodeDecodeError:
+        return _remote_status(
+            name,
+            path,
+            ProviderHealth.CORRUPT,
+            "remote source is not UTF-8",
+        )
+    except tomllib.TOMLDecodeError:
+        return _remote_status(
+            name,
+            path,
+            ProviderHealth.CORRUPT,
+            "remote source contains invalid TOML",
+        )
+    if "managed_config" in data:
+        return _remote_status(
+            name,
+            path,
+            ProviderHealth.CORRUPT,
+            "remote policy must not declare [managed_config]",
+        )
+    return TomlSnapshot(data, ProviderStatus(name, path, ProviderHealth.OK))
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteTomlProvider:
+    """Managed TOML provider backed by one administrator-selected HTTPS URL."""
+
+    name: str
+    source: str
+    path: Path | None
+
+    def load(self) -> TomlSnapshot:
+        """Fetch, bound, and parse the remote managed policy.
+
+        Returns:
+            The parsed policy or a safe provider failure status.
+        """
+        try:
+            source = _validate_remote_url(self.source)
+        except ValueError as exc:
+            return _remote_status(
+                self.name,
+                self.path,
+                ProviderHealth.CORRUPT,
+                str(exc),
+            )
+        request = Request(  # noqa: S310  # `_validate_remote_url` permits HTTPS only
+            source,
+            headers={"Accept": "application/toml"},
+        )
+        opener = build_opener(ProxyHandler({}), _RejectRedirects())
+        try:
+            with opener.open(
+                request,
+                timeout=REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS,
+            ) as response:
+                payload = _read_limited_response(response)
+        except HTTPError as exc:
+            detail = (
+                "remote source refused redirects"
+                if _HTTP_REDIRECT_MIN <= exc.code < _HTTP_REDIRECT_MAX
+                else (f"remote source returned HTTP {exc.code}")
+            )
+            return _remote_status(
+                self.name,
+                self.path,
+                ProviderHealth.UNREADABLE,
+                detail,
+            )
+        except TimeoutError:
+            return _remote_status(
+                self.name,
+                self.path,
+                ProviderHealth.UNREADABLE,
+                "remote source timed out",
+            )
+        except (URLError, OSError):
+            return _remote_status(
+                self.name,
+                self.path,
+                ProviderHealth.UNREADABLE,
+                "remote source could not be read",
+            )
+        except ValueError as exc:
+            return _remote_status(
+                self.name,
+                self.path,
+                ProviderHealth.CORRUPT,
+                str(exc),
+            )
+        return _parse_remote_toml(payload, name=self.name, path=self.path)
 
 
 @dataclass(slots=True)

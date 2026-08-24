@@ -18,7 +18,7 @@ from deepagents_code.configuration.paths import (
     managed_config_path,
     resolve_managed_path,
 )
-from deepagents_code.configuration.providers import TomlFileProvider
+from deepagents_code.configuration.providers import RemoteTomlProvider, TomlFileProvider
 from deepagents_code.configuration.resolver import merge_toml_tables
 from deepagents_code.configuration.types import (
     ProviderHealth,
@@ -570,6 +570,50 @@ _snapshot_lock = threading.RLock()
 _snapshot_state = _SnapshotState()
 
 
+def _remote_managed_snapshot(snapshot: TomlSnapshot) -> TomlSnapshot:
+    """Resolve a local managed descriptor to its remote policy snapshot.
+
+    Returns:
+        The original local policy or its downloaded remote policy generation.
+    """
+    if not snapshot.status.usable or "managed_config" not in snapshot.data:
+        return snapshot
+    descriptor = snapshot.data["managed_config"]
+    path = snapshot.status.path
+    if not isinstance(descriptor, dict) or set(descriptor) != {"source"}:
+        return TomlSnapshot(
+            {},
+            ProviderStatus(
+                MANAGED_SOURCE,
+                path,
+                ProviderHealth.CORRUPT,
+                "[managed_config] must contain only a string source",
+            ),
+        )
+    if set(snapshot.data) != {"managed_config"}:
+        return TomlSnapshot(
+            {},
+            ProviderStatus(
+                MANAGED_SOURCE,
+                path,
+                ProviderHealth.CORRUPT,
+                "remote descriptor cannot contain local policy keys",
+            ),
+        )
+    source = descriptor["source"]
+    if not isinstance(source, str) or not source.strip():
+        return TomlSnapshot(
+            {},
+            ProviderStatus(
+                MANAGED_SOURCE,
+                path,
+                ProviderHealth.CORRUPT,
+                "[managed_config].source must be a non-empty string",
+            ),
+        )
+    return RemoteTomlProvider(MANAGED_SOURCE, source.strip(), path).load()
+
+
 def _load_managed(path: Path | None = None) -> TomlSnapshot:
     """Load the managed provider without applying startup policy.
 
@@ -581,12 +625,13 @@ def _load_managed(path: Path | None = None) -> TomlSnapshot:
         Parsed managed snapshot and health.
     """
     if path is not None:
-        return TomlFileProvider("managed config", path).load()
+        snapshot = TomlFileProvider(MANAGED_SOURCE, path).load()
+        return _remote_managed_snapshot(snapshot)
     resolved = resolve_managed_path()
-    snapshot = TomlFileProvider("managed config", resolved.path).load()
+    snapshot = TomlFileProvider(MANAGED_SOURCE, resolved.path).load()
     is_guess = resolved.fallback is not None
     if not is_guess or snapshot.status.health is not ProviderHealth.MISSING:
-        return snapshot
+        return _remote_managed_snapshot(snapshot)
     # "No file at a guessed path" is not "no policy deployed", so this is not a
     # clean `MISSING`. `INDETERMINATE` is not usable, which stops the launch
     # instead of letting every reader see an empty managed table and treat

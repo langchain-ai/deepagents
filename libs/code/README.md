@@ -62,6 +62,25 @@ Administrators can enforce any supported `config.toml` setting with a read-only
 Managed values override two lower layers: the `DEEPAGENTS_CODE_` and
 compatibility environment variables, and `~/.deepagents/config.toml`.
 
+The fixed file may instead point to one centrally hosted policy:
+
+```toml
+[managed_config]
+source = "https://config.example.com/dcode/managed_config.toml"
+```
+
+In remote mode, the fixed file is only a trust anchor: it must contain exactly
+that table and string key, and the downloaded document is the complete managed
+policy. Remote policy cannot declare another `[managed_config]` source. The URL
+must use HTTPS and cannot contain credentials, a query string, or a fragment.
+`dcode` connects directly with the system TLS trust store, ignores environment
+proxy settings, refuses redirects, times out after five seconds, and rejects
+responses larger than 1 MiB. Private enterprise hosts are supported because the
+administrator-owned URL is the destination allowlist. There is no persistent
+cache or remote authentication in this prototype. A fetch failure blocks startup
+just like an unreadable local policy; a failed `/reload` keeps the last policy
+that was enforceable in the running process.
+
 For an agent launch, managed values also override these CLI flags: the model,
 the auto-classifier model, the interpreter toggle, the programmatic tool-calling
 list, the recursion limit, the shell allow list, and the startup mode. A managed

@@ -2922,6 +2922,39 @@ def test_saving_a_shadowed_ui_preference_says_policy_still_wins(
         model_config.clear_caches()
 
 
+def test_saving_a_theme_reports_unreadable_managed_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable policy file must not read as "no policy" on theme writes.
+
+    The theme writes cannot use `_managed_verdict` -- theme resolution is
+    bespoke -- but they shared its bug: both read the empty table
+    `load_managed_config_toml` returns for a file it could not read, so a
+    broken policy file produced the plain success message.
+    """
+    from deepagents_code import app, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("[ui\n", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        result = app._save_theme_preference_result("langchain")
+        assert result.ok is True
+        assert result.message is not None
+        assert "unreadable" in result.message
+        assert result.severity == "warning"
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
 def test_saving_past_a_malformed_ui_policy_says_it_was_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

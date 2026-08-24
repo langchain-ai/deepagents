@@ -1274,6 +1274,34 @@ def _load_terminal_default() -> str | None:
     return _resolve_terminal_mapping(ui)
 
 
+def _managed_theme_note() -> str | None:
+    """Describe managed theme policy for a preference-write toast.
+
+    The theme writes cannot use `_managed_verdict`: theme resolution is
+    bespoke (a `[ui.terminal_themes]` entry decides only when it matches the
+    running terminal), so a per-option probe would report policy as effective
+    when it is not.
+
+    What they share with `_managed_verdict` is the health problem. Both read
+    `load_managed_config_toml()`, which returns an empty table for a file it
+    could not read -- so an unreadable policy file was indistinguishable from
+    no policy at all, and the administrator got no signal from either.
+
+    Returns:
+        A clause for the toast, or `None` when no policy affects the theme.
+    """
+    from deepagents_code.config_manifest import _resolve_theme
+    from deepagents_code.configuration.service import get_managed_snapshot
+
+    snapshot = get_managed_snapshot()
+    if not snapshot.status.usable:
+        detail = snapshot.status.detail or snapshot.status.health.value
+        return f"A managed config file is present but unreadable: {detail}."
+    if _resolve_theme(snapshot.data, source="managed config") is not None:
+        return "managed config remains effective."
+    return None
+
+
 def _load_theme_preference() -> str:
     """Load the forced or saved theme name, or return the default.
 
@@ -1463,22 +1491,10 @@ def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
             "error",
         )
 
-    from deepagents_code.config_manifest import (
-        _resolve_theme,
-        load_managed_config_toml,
-    )
-
-    if (
-        _resolve_theme(
-            load_managed_config_toml(),
-            source="managed config",
-        )
-        is not None
-    ):
+    note = _managed_theme_note()
+    if note is not None:
         return _ConfigWriteResult(
-            True,
-            "Theme preference saved, but managed config remains effective.",
-            "warning",
+            True, f"Theme preference saved, but {note}", "warning"
         )
     return _ConfigWriteResult(True, repair_message)
 
@@ -1618,22 +1634,10 @@ def _save_terminal_theme_mapping_result(
             "error",
         )
 
-    from deepagents_code.config_manifest import (
-        _resolve_theme,
-        load_managed_config_toml,
-    )
-
-    if (
-        _resolve_theme(
-            load_managed_config_toml(),
-            source="managed config",
-        )
-        is not None
-    ):
+    note = _managed_theme_note()
+    if note is not None:
         return _ConfigWriteResult(
-            True,
-            "Terminal mapping saved, but managed config remains effective.",
-            "warning",
+            True, f"Terminal mapping saved, but {note}", "warning"
         )
     return _ConfigWriteResult(True, " ".join(repair_messages) or None)
 

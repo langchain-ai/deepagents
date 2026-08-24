@@ -238,6 +238,45 @@ class TestRecentPrompts:
         )
         assert mgr.get_previous("") == "append failed"
 
+    def test_history_unwritable_latches_on_a_failed_append(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed write is sticky: later prompts are memory-only too."""
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file)
+        mgr.add("persisted")
+        assert mgr.history_unwritable is False
+
+        blocker = tmp_path / "blocker"
+        blocker.touch()
+        mgr.history_file = blocker / "history.jsonl"
+        mgr.add("append failed")
+
+        assert mgr.history_unwritable is True
+
+        # Stays true after a working path is restored: the earlier prompt is
+        # still only in memory, so the session's history is still incomplete.
+        mgr.history_file = history_file
+        mgr.add("persisted again")
+        assert mgr.history_unwritable is True
+
+    def test_history_unwritable_latches_on_a_failed_compaction(
+        self, tmp_path: Path
+    ) -> None:
+        """Compaction failures count too; they silently drop trimmed entries."""
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file, max_entries=2)
+        mgr.add("one")
+        assert mgr.history_unwritable is False
+
+        blocker = tmp_path / "blocker"
+        blocker.touch()
+        mgr.history_file = blocker / "history.jsonl"
+        mgr._entries = [f"entry {index}" for index in range(6)]
+        mgr._compact_history()
+
+        assert mgr.history_unwritable is True
+
     def test_failed_duplicate_append_stays_newest(self, tmp_path: Path) -> None:
         """A failed repeat remains newer than its persisted occurrence."""
         history_file = tmp_path / "history.jsonl"

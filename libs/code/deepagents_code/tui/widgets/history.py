@@ -31,6 +31,7 @@ class HistoryManager:
         self._entries: list[str] = []
         self._failed_persist: list[str] = []
         self._read_failed = False
+        self._write_failed = False
         self._current_index: int = -1
         self._temp_input: str = ""
         self._query: str = ""
@@ -82,6 +83,19 @@ class HistoryManager:
             `True` when the history file exists but could not be read.
         """
         return self._read_failed
+
+    @property
+    def history_unwritable(self) -> bool:
+        """Whether any write to the history file has failed this session.
+
+        Sticky by design: once a write fails, prompts recorded from then on
+        live only in memory and are lost at exit. Callers use this to say so
+        once rather than letting the loss go unmentioned.
+
+        Returns:
+            `True` when an append or a compaction has failed.
+        """
+        return self._write_failed
 
     def _load_history(self) -> None:
         """Load the bounded navigation history from file."""
@@ -145,6 +159,7 @@ class HistoryManager:
                 self.history_file,
                 exc_info=True,
             )
+            self._write_failed = True
             return False
         return True
 
@@ -164,6 +179,7 @@ class HistoryManager:
                 self.history_file,
                 exc_info=True,
             )
+            self._write_failed = True
 
     def add(self, text: str) -> None:
         """Add a command to history.

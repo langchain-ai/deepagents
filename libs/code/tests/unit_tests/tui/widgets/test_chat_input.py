@@ -8174,6 +8174,73 @@ class TestPromptSearchPanel:
             assert "Could not read prompt history" in messages[0]
             assert "No prompts yet" not in messages[0]
 
+    async def test_unwritable_history_warns_once_per_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Prompts that cannot be saved are lost at exit, so say so -- once.
+
+        A failed append keeps the entry in memory, so up-arrow and the prompt
+        clipboard keep working and nothing on screen suggests a problem.
+        """
+        # A regular file in place of the parent directory makes the append's
+        # mkdir/open raise OSError.
+        blocker = tmp_path / "blocker"
+        blocker.touch()
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = blocker / "history.jsonl"
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            # Drive a real submission so the wiring in `_submit` is covered,
+            # not just the helper.
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("first prompt")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == ["first prompt"]
+            assert len(notifications) == 1
+            message, kwargs = notifications[0]
+            assert "Could not save prompt history" in message
+            assert "lost when it ends" in message
+            assert kwargs["severity"] == "warning"
+            # The message interpolates the history path, so markup must be off.
+            assert kwargs["markup"] is False
+
+            # Still broken, but the user has already been told.
+            text_area.insert("second prompt")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 2
+            assert len(notifications) == 1
+
+    async def test_writable_history_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The healthy path stays quiet."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("a prompt")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == ["a prompt"]
+            assert notifications == []
+
     async def test_unreadable_history_warns_when_the_list_is_not_empty(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

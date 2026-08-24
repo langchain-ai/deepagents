@@ -2363,6 +2363,10 @@ class ChatInput(Vertical):
         self._prompt_search_prompts: tuple[str, ...] = ()
         self._prompt_search_filtered: list[str] = []
         self._prompt_search_index = 0
+        # Latches once the "history is not being saved" warning has been shown,
+        # so a read-only home directory costs one toast rather than one per
+        # submission.
+        self._warned_history_unwritable = False
 
         # Set up history manager
         if history_file is None:
@@ -3110,6 +3114,7 @@ class ChatInput(Vertical):
             )
 
         self._history.add(value)
+        self._warn_if_history_unwritable()
         self.post_message(self.Submitted(value, mode))
 
         if self._text_area:
@@ -3862,6 +3867,24 @@ class ChatInput(Vertical):
             return
         self.app.notify(
             f"{error}; showing this session's prompts only",
+            severity="warning",
+            markup=False,
+        )
+
+    def _warn_if_history_unwritable(self) -> None:
+        """Say once that prompts are no longer being saved.
+
+        A failed append keeps the entry in memory, so up-arrow and the prompt
+        clipboard keep working and nothing on screen suggests a problem. The
+        prompts are still lost at exit, and the clipboard advertises itself as
+        durable history, so the loss has to be stated rather than only logged.
+        """
+        if self._warned_history_unwritable or not self._history.history_unwritable:
+            return
+        self._warned_history_unwritable = True
+        self.app.notify(
+            f"Could not save prompt history to {self._history.history_file}; "
+            "this session's prompts will be lost when it ends",
             severity="warning",
             markup=False,
         )

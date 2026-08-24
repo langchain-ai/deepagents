@@ -1353,7 +1353,6 @@ if TYPE_CHECKING:
     from rich.console import Console
 
     from deepagents_code._git import RepositoryMetadata
-    from deepagents_code.model_config import ModelConfig
 
     # Static type stubs for lazy module attributes resolved by __getattr__.
     # At runtime these are created on first access by _get_settings() /
@@ -4798,29 +4797,28 @@ def detect_provider(model_name: str) -> str | None:
     return None
 
 
-def _expand_allowed_entry(config: ModelConfig, entry: str) -> list[str]:
+def _expand_allowed_entry(entry: str) -> list[str]:
     """Resolve one `models.allowed` entry to the model specs it admits.
 
     An exact `provider:model` entry yields itself. A `provider:*` wildcard
-    yields the provider's configured model list, the source available before
-    allowlist filtering: registry discovery (`get_available_models`) applies
-    this policy itself, so calling it here would recurse.
+    yields the provider's discovered model lineup (registry discovery merged
+    with the config's explicit list), read before allowlist filtering:
+    `get_available_models` applies this policy itself, so calling it here
+    would recurse.
 
     Args:
-        config: The loaded model configuration.
-        entry: One entry from `config.allowed_models`.
+        entry: One entry from `ModelConfig.allowed_models`.
 
     Returns:
         Exact specs the entry contributes as default candidates, empty when a
-        wildcarded provider declares no models.
+        wildcarded provider has no discovered or configured models.
     """
     if not entry.endswith(":*"):
         return [entry]
     provider = entry[:-2]
-    provider_config = config.providers.get(provider)
-    if not provider_config:
-        return []
-    return [f"{provider}:{model}" for model in provider_config.get("models", [])]
+    from deepagents_code.model_config import get_discovered_models
+
+    return [f"{provider}:{model}" for model in get_discovered_models(provider)]
 
 
 def _get_default_model_spec() -> str:
@@ -4832,7 +4830,7 @@ def _get_default_model_spec() -> str:
     2. `[models].recent` in config file (last `/model` switch).
     3. When `models.allowed` is active, the first entry in it whose provider
        does not have a definitively missing credential. A `provider:*` entry
-       expands to the provider's configured models rather than being a
+       expands to the provider's discovered models rather than being a
        selectable candidate itself. Steps 1 and 2 are skipped with a warning
        when the stored value is outside the policy, and step 4 is never
        reached -- a policy declares the whole candidate set.
@@ -4891,7 +4889,7 @@ def _get_default_model_spec() -> str:
         candidates = [
             spec
             for entry in config.allowed_models
-            for spec in _expand_allowed_entry(config, entry)
+            for spec in _expand_allowed_entry(entry)
         ]
         for candidate in candidates:
             parsed = ModelSpec.parse(candidate)

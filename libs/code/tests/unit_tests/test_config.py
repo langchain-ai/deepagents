@@ -1163,6 +1163,68 @@ class TestDefaultModelSpecAllowlist:
 
         assert _get_default_model_spec() == "anthropic:claude-opus-5"
 
+    def test_wildcard_expands_to_discovered_models(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `provider:*` wildcard yields the discovered lineup, not just config.
+
+        Built-in providers like `openai` have their models discovered from the
+        installed provider package, not from `[models.providers.openai].models`,
+        so a wildcard policy with valid credentials must not fall through to
+        the "No discoverable models" error.
+        """
+        from deepagents_code.config import _get_default_model_spec
+
+        self._pin(
+            monkeypatch,
+            ModelConfig(
+                allowed_models=("openai:*",),
+                allowed_models_source="config.toml",
+            ),
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_discovered_models",
+            lambda provider: (
+                ["gpt-5.6-terra", "gpt-5.5"] if provider == "openai" else []
+            ),
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_provider_auth_status",
+            lambda provider: model_config.ProviderAuthStatus(
+                state=model_config.ProviderAuthState.CONFIGURED,
+                source=model_config.ProviderAuthSource.ENV,
+                provider=provider,
+            ),
+        )
+
+        assert _get_default_model_spec() == "openai:gpt-5.6-terra"
+
+    def test_wildcard_with_no_discovered_models_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wildcard for a provider with no known models has no candidates."""
+        from deepagents_code.config import _get_default_model_spec
+
+        self._pin(
+            monkeypatch,
+            ModelConfig(
+                allowed_models=("openai:*",),
+                allowed_models_source="config.toml",
+            ),
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_discovered_models",
+            lambda _provider: [],
+        )
+
+        with pytest.raises(
+            model_config.NoAllowedModelCredentialsError, match="No discoverable"
+        ):
+            _get_default_model_spec()
+
 
 class TestCreateModelProfileExtraction:
     """Tests for profile extraction in create_model.

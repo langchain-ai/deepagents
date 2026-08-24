@@ -1391,6 +1391,25 @@ def get_available_models() -> dict[str, list[str]]:
     if _available_models_cache is not None:
         return _available_models_cache
 
+    available = _discover_available_models(apply_allowlist=True)
+    _available_models_cache = available
+    return available
+
+
+def _discover_available_models(*, apply_allowlist: bool) -> dict[str, list[str]]:
+    """Discover the model lineup before any allowlist filtering.
+
+    This is the `get_available_models` body with the policy filter factored
+    out so allowlist machinery can expand `provider:*` wildcards against the
+    discovered lineup without recursing back into its own filter.
+
+    Args:
+        apply_allowlist: Filter each provider's models through the active
+            `models.allowed` policy. Only allowlist internals pass `False`.
+
+    Returns:
+        Dictionary mapping provider names to lists of model identifiers.
+    """
     available: dict[str, list[str]] = {}
     config = ModelConfig.load()
 
@@ -1548,7 +1567,7 @@ def get_available_models() -> dict[str, list[str]]:
                     reordered[CODEX_PROVIDER] = codex_models
             available = reordered
 
-    if config.allowed_models is not None:
+    if apply_allowlist and config.allowed_models is not None:
         available = {
             provider: [
                 model
@@ -1561,8 +1580,24 @@ def get_available_models() -> dict[str, list[str]]:
             provider: models for provider, models in available.items() if models
         }
 
-    _available_models_cache = available
     return available
+
+
+def get_discovered_models(provider_name: str) -> list[str]:
+    """Get the discovered lineup for one provider, unfiltered by policy.
+
+    `get_available_models()` applies `models.allowed` itself, so allowlist
+    machinery expanding a `provider:*` wildcard cannot call it without
+    recursing. This reads the same discovery result with the filter off.
+
+    Args:
+        provider_name: The provider whose models to list.
+
+    Returns:
+        Model identifiers discovery knows about, empty when the provider
+            declares none and none were discovered.
+    """
+    return _discover_available_models(apply_allowlist=False).get(provider_name, [])
 
 
 def _build_entry(

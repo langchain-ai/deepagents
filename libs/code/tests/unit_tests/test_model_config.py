@@ -6635,10 +6635,16 @@ recent = "openai:gpt-5.2"
         assert available.get("my_gateway") == ["model-a", "model-b"]
         clear_caches()
 
-    def test_allowlist_wildcard_without_models_fails_closed(
+    def test_allowlist_wildcard_expands_discovered_builtin_lineup(
         self, tmp_path: Path
     ) -> None:
-        """A wildcard for a provider with no discoverable models selects nothing."""
+        """A built-in `provider:*` wildcard expands registry-discovered models.
+
+        `openai` declares no `[models.providers.openai].models`; its lineup is
+        discovered from the installed provider package's profile data. With a
+        credential present, default resolution must pick a discovered model
+        rather than reporting "No discoverable models".
+        """
         from deepagents_code.config import _get_default_model_spec
 
         config_path = tmp_path / "config.toml"
@@ -6646,7 +6652,38 @@ recent = "openai:gpt-5.2"
 
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {}, clear=True),
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=True),
+        ):
+            result = _get_default_model_spec()
+
+        assert result is not None
+        provider, _, model = result.partition(":")
+        assert provider == "openai"
+        assert model
+
+    def test_allowlist_wildcard_without_models_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """A wildcard for a provider with no discoverable models selects nothing.
+
+        `my_gateway` is declared with no `models` list and no registry or
+        `class_path` lineup to discover, so the wildcard contributes no
+        candidates. (A built-in like `openai` would expand to its discovered
+        profile lineup instead.)
+        """
+        from deepagents_code.config import _get_default_model_spec
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nallowed = ["my_gateway:*"]\n\n'
+            "[models.providers.my_gateway]\n"
+            'base_url = "https://gateway.example.com/v1"\n'
+            'api_key_env = "MY_GATEWAY_API_KEY"\n'
+        )
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"MY_GATEWAY_API_KEY": "test-key"}, clear=True),
             pytest.raises(NoAllowedModelCredentialsError, match="No discoverable"),
         ):
             _get_default_model_spec()

@@ -19,14 +19,28 @@ from deepagents_code.tui.widgets.prompt_search import (
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.events import MouseMove
 
 
 class _PromptRow(Static):
     """One prompt summary row."""
 
-    def __init__(self, prompt: str, *, selected: bool) -> None:
+    def __init__(self, prompt: str, index: int, *, selected: bool) -> None:
         classes = "prompt-row prompt-row-selected" if selected else "prompt-row"
         super().__init__(self._content(prompt), classes=classes)
+        self._index = index
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Highlight the row under the cursor without submitting it.
+
+        Hover moves the highlight so a following Enter inserts what the user
+        is pointing at; the parent screen maps this row's index into the
+        filtered list.
+        """
+        event.stop()
+        screen = self.screen
+        if isinstance(screen, PromptClipboardScreen):
+            screen.select_row(self._index)
 
     @staticmethod
     def _content(prompt: str) -> Content:
@@ -181,7 +195,7 @@ class PromptClipboardScreen(ModalScreen[str | None]):
             return
 
         self._rows = [
-            _PromptRow(prompt, selected=index == self._selected_index)
+            _PromptRow(prompt, index, selected=index == self._selected_index)
             for index, prompt in enumerate(self._filtered)
         ]
         await rows_list.mount(*self._rows)
@@ -193,6 +207,27 @@ class PromptClipboardScreen(ModalScreen[str | None]):
             preview.update("")
             return
         preview.update(Content(self._filtered[self._selected_index]))
+
+    def select_row(self, index: int) -> None:
+        """Highlight the row at `index`, as if navigated to by key.
+
+        Called by a row's mouse hover; Enter is still required to insert.
+        Ignores hovers that arrive while a filter edit is still queued, since
+        the row indexes then describe a different list than `_filtered`.
+        """
+        self._sync_filter_value()
+        if (
+            not self._filtered
+            or len(self._rows) != len(self._filtered)
+            or index == self._selected_index
+            or not 0 <= index < len(self._rows)
+        ):
+            return
+        previous = self._selected_index
+        self._selected_index = index
+        self._rows[previous].remove_class("prompt-row-selected")
+        self._rows[index].add_class("prompt-row-selected")
+        self._update_preview()
 
     async def _move(self, delta: int) -> None:
         if not self._filtered:

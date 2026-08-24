@@ -373,3 +373,40 @@ class TestPromptClipboardScreen:
             message = str(rows[0].render())
             assert "Could not read prompt history" in message
             assert "No prompts yet" not in message
+
+    async def test_hovering_a_row_selects_but_does_not_submit(self) -> None:
+        """Hover moves the highlight; only Enter dismisses the modal."""
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("newest", "middle", "oldest"))
+            await pilot.pause()
+            await pilot.pause()
+
+            await pilot.hover(screen._rows[2])
+            await pilot.pause()
+
+            assert screen._selected_index == 2
+            assert "prompt-row-selected" in screen._rows[2].classes
+            assert "prompt-row-selected" not in screen._rows[0].classes
+            preview = screen.query_one("#prompt-preview", Static)
+            assert str(preview.content) == "oldest"
+            assert app.results == []
+            assert app.screen is screen
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.results == ["oldest"]
+
+    async def test_hovering_the_selected_row_is_a_noop(self) -> None:
+        """Hovering the already-highlighted row must not error or re-render."""
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("only",))
+            await pilot.pause()
+            await pilot.pause()
+
+            await pilot.hover(screen._rows[0])
+            await pilot.pause()
+
+            assert screen._selected_index == 0
+            assert app.results == []

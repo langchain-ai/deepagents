@@ -7933,6 +7933,13 @@ class TestCopyCommand:
             MessageData(type=MessageType.ASSISTANT, content="   ")
         )
         app._message_store.append(MessageData(type=MessageType.APP, content="status"))
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="```text\nlocal shell output\n```",
+                assistant_local_only=True,
+            )
+        )
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -17259,6 +17266,34 @@ class TestShellCommandInterrupt:
             assert "sleep 999" in buffered[0].content
             assert "Command interrupted" in buffered[0].content
 
+    async def test_incognito_cancel_does_not_buffer_for_model(self) -> None:
+        """Esc during a `!!` command must keep the command out of model context."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+            mock_proc.returncode = None
+            mock_proc.pid = 12345
+            mock_proc.wait = AsyncMock()
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch("os.killpg") as mock_killpg,
+                patch("os.getpgid", return_value=12345),
+                pytest.raises(asyncio.CancelledError),
+            ):
+                await app._run_shell_task("cat secret-file", incognito=True)
+
+            # The process is still killed; only the buffering differs from the
+            # non-incognito path above.
+            mock_killpg.assert_called()
+            assert app._pending_shell_messages == []
+
     async def test_cleanup_clears_state(self) -> None:
         """_cleanup_shell_task should reset all shell state."""
         app = DeepAgentsApp()
@@ -17564,11 +17599,41 @@ class TestShellCommandInterrupt:
                 msg.type == MessageType.ERROR and "timed out" in msg.content
                 for msg in messages
             )
-            assert not any(
-                msg.type in {MessageType.USER, MessageType.ASSISTANT}
-                and "secret" in msg.content
-                for msg in messages
-            )
+            # `_pending_shell_messages` is the only model-facing channel, so
+            # assert there rather than on row types: the timeout branch mounts
+            # no output row at all, and the `!!` command itself now *does*
+            # appear in a USER row (see `_handle_shell_command`), so a
+            # row-type assertion would pass without testing anything.
+            assert app._pending_shell_messages == []
+
+    async def test_incognito_timeout_via_dispatcher_keeps_buffer_empty(self) -> None:
+        """A timed-out `!!` command must not buffer, even with its USER row."""
+        app = DeepAgentsApp()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_proc.returncode = None
+        mock_proc.pid = 12345
+        mock_proc.wait = AsyncMock()
+        mock_proc.terminate = MagicMock()
+        mock_proc.kill = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ):
+                await app._handle_shell_command("echo secret", incognito=True)
+                worker = app._shell_worker
+                assert worker is not None
+                await worker.wait()
+                await pilot.pause()
+
+            # The command text is expected on screen now; what must not happen
+            # is it reaching model context.
+            assert app.query(UserMessage).last().raw_text == "!!echo secret"
+            assert app._pending_shell_messages == []
 
     async def test_posix_killpg_called(self) -> None:
         """On POSIX, _kill_shell_process should use os.killpg with SIGTERM."""
@@ -17678,8 +17743,8 @@ class TestShellCommandInterrupt:
 
         handler.assert_awaited_once_with("echo secret", incognito=True)
 
-    async def test_incognito_shell_command_does_not_mount_header(self) -> None:
-        """Incognito shell commands should not echo the command before output."""
+    async def test_incognito_shell_uses_shell_widget_with_own_color(self) -> None:
+        """Incognito commands should use the shell widget with incognito styling."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -17688,18 +17753,17 @@ class TestShellCommandInterrupt:
                 mock_rw.return_value = MagicMock()
                 await app._handle_shell_command("echo secret", incognito=True)
 
-            messages = app._message_store.get_all_messages()
-            assert not any(
-                "incognito shell command" in msg.content or "echo secret" in msg.content
-                for msg in messages
-            )
+            message = app.query(UserMessage).last()
+            assert message.raw_text == "!!echo secret"
+            assert message.has_class("-mode-shell-incognito")
+            assert not message.has_class("-mode-shell")
 
             # Close the unawaited coroutine to suppress RuntimeWarning.
             coro = mock_rw.call_args[0][0]
             coro.close()
 
-    async def test_incognito_shell_output_is_app_message(self) -> None:
-        """Incognito shell output should avoid assistant transcript records."""
+    async def test_incognito_shell_output_uses_regular_shell_widget(self) -> None:
+        """Incognito output should use the regular shell output widget."""
         from deepagents_code.tui.widgets.message_store import MessageType
 
         app = DeepAgentsApp()
@@ -17730,15 +17794,15 @@ class TestShellCommandInterrupt:
 
         messages = app._message_store.get_all_messages()
         assert any(
-            msg.type == MessageType.APP and msg.content == "```text\nsecret\n```"
+            msg.type == MessageType.ASSISTANT
+            and msg.assistant_local_only
+            and msg.content == "```text\nsecret\n```"
             for msg in messages
         )
         assert not any(
-            msg.type in {MessageType.USER, MessageType.ASSISTANT}
-            and "secret" in msg.content
-            for msg in messages
+            msg.type == MessageType.APP and "secret" in msg.content for msg in messages
         )
-        write_mock.assert_not_awaited()
+        write_mock.assert_awaited_once()
 
     async def test_incognito_nonzero_exit_keeps_stderr_out_of_model(self) -> None:
         """A failing incognito command must not leak stderr to model records."""
@@ -17765,10 +17829,19 @@ class TestShellCommandInterrupt:
                 await pilot.pause()
 
         messages = app._message_store.get_all_messages()
-        assert not any(
-            msg.type in {MessageType.USER, MessageType.ASSISTANT}
-            and "secret leak" in msg.content
+        assistant_rows = [
+            msg
             for msg in messages
+            if msg.type == MessageType.ASSISTANT and "secret leak" in msg.content
+        ]
+        assert assistant_rows, "expected a local-only assistant row with stderr"
+        assert all(msg.assistant_local_only for msg in assistant_rows)
+        assert not any(
+            msg.type == MessageType.USER and "secret leak" in msg.content
+            for msg in messages
+        )
+        assert not any(
+            "secret leak" in str(msg.content) for msg in app._pending_shell_messages
         )
 
     async def test_non_incognito_shell_buffers_for_model_context(self) -> None:
@@ -17851,6 +17924,57 @@ class TestShellCommandInterrupt:
 
             rendered = app.query(AssistantMessage)
             assert any(w._content == "```text\nhi\n```" for w in rendered)
+
+    async def test_app_message_output_requires_incognito(self) -> None:
+        """App-rendered output must not be buffered for the model."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with pytest.raises(ValueError, match="requires incognito"):
+                await app._run_shell_task(
+                    "echo hi",
+                    incognito=False,
+                    output_as_app_message=True,
+                )
+
+            assert app._pending_shell_messages == []
+
+    async def test_shell_output_skips_write_when_mount_is_skipped(self) -> None:
+        """A torn-down screen must not trigger a write on an unmounted widget."""
+        app = DeepAgentsApp()
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"secret\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        write_mock = AsyncMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+            # `_mount_message` returns False when `#messages` is gone or
+            # already detached; simulate that teardown race directly.
+            app._mount_message = AsyncMock(return_value=False)  # ty: ignore
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch(
+                    "deepagents_code.app.AssistantMessage.write_initial_content",
+                    new=write_mock,
+                ),
+            ):
+                await app._run_shell_task("echo secret", incognito=True)
+                await pilot.pause()
+
+        write_mock.assert_not_awaited()
 
     async def test_pending_shell_flushed_on_next_user_send(self) -> None:
         """Buffered `!` output is written to graph state on the next send."""
@@ -17996,6 +18120,15 @@ class TestShellCommandInterrupt:
                 await app._run_startup_command("echo secret-startup")
                 await pilot.pause()
 
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        messages = app._message_store.get_all_messages()
+        assert any(
+            msg.type == MessageType.APP
+            and msg.content == "```text\nsecret-startup\n```"
+            for msg in messages
+        )
+        assert not any(msg.type == MessageType.ASSISTANT for msg in messages)
         assert app._pending_shell_messages == []
         app._agent.aupdate_state.assert_not_awaited()
 

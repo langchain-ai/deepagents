@@ -4527,6 +4527,13 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+        explicit_approval_flag = (
+            "--yolo"
+            if getattr(args, "yolo", False)
+            else "--auto-approve"
+            if getattr(args, "auto_approve", False)
+            else None
+        )
         allow_fs_tools = _parse_allow_fs_tools_flag(
             getattr(args, "allow_fs_tools", None)
         )
@@ -4774,16 +4781,13 @@ def cli_main() -> None:
         # predicate that selects the headless branch below), so this reliably
         # clears interactive approval flags on both the `-n` and piped-stdin
         # paths while leaving interactive launches untouched.
-        if (
-            args.auto_approve or getattr(args, "yolo", False)
-        ) and args.non_interactive_message:
+        if explicit_approval_flag is not None and args.non_interactive_message:
             from rich.console import Console as _Console
 
-            flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
             _Console(stderr=True).print(
-                f"[bold yellow]Warning:[/bold yellow] {flag} has no effect in "
-                "headless mode; ignoring it. Shell access is governed by "
-                "--shell-allow-list, and MCP routing is fail-closed."
+                f"[bold yellow]Warning:[/bold yellow] {explicit_approval_flag} has "
+                "no effect in headless mode; ignoring it. Shell access is "
+                "governed by --shell-allow-list, and MCP routing is fail-closed."
             )
             args.auto_approve = False
             args.yolo = False

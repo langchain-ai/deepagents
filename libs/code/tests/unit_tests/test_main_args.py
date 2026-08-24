@@ -257,27 +257,63 @@ class TestAutoApproveHeadlessValidation:
     """Tests that headless mode warns and clears interactive approval flags."""
 
     @pytest.mark.parametrize(
-        ("argv", "piped_stdin", "flag"),
+        ("argv", "piped_stdin", "flag", "managed_toml"),
         [
             (
                 ["deepagents", "-y", "-n", "do the thing"],
                 None,
                 "--auto-approve",
+                None,
             ),
-            (["deepagents", "--auto-approve"], "do the thing", "--auto-approve"),
-            (["deepagents", "--yolo", "-n", "task"], None, "--yolo"),
+            (
+                ["deepagents", "--auto-approve"],
+                "do the thing",
+                "--auto-approve",
+                None,
+            ),
+            (["deepagents", "--yolo", "-n", "task"], None, "--yolo", None),
+            (
+                ["deepagents", "--auto-approve", "-n", "task"],
+                None,
+                "--auto-approve",
+                '[startup]\nmode = "manual"\n',
+            ),
+            (
+                ["deepagents", "--yolo", "-n", "task"],
+                None,
+                "--yolo",
+                '[startup]\nmode = "manual"\n',
+            ),
         ],
-        ids=["explicit-headless", "piped-stdin", "yolo"],
+        ids=[
+            "explicit-headless",
+            "piped-stdin",
+            "yolo",
+            "managed-manual-auto-approve",
+            "managed-manual-yolo",
+        ],
     )
     def test_headless_mode_ignores_interactive_approval_flag_with_warning(
         self,
         capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
         argv: list[str],
         piped_stdin: str | None,
         flag: str,
+        managed_toml: str | None,
     ) -> None:
         """Headless mode ignores the interactive approval flag with a warning."""
         from deepagents_code.main import cli_main
+
+        if managed_toml is not None:
+            from deepagents_code.configuration import service
+            from unit_tests.conftest import redirect_managed_config
+
+            managed = tmp_path / "managed.toml"
+            managed.write_text(managed_toml, encoding="utf-8")
+            redirect_managed_config(monkeypatch, managed)
+            service.invalidate_config_sources()
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = piped_stdin is None

@@ -827,10 +827,12 @@ class TextualUIAdapter:
             await self._set_spinner("Reviewing approval request")
 
     def _move_reviewed_row(self, tool_call_id: str, *, running: bool) -> None:
-        """Pause or resume one reviewed row, never raising to its caller.
+        """Pause or resume one reviewed row.
 
-        Guard each row individually so a single bad widget cannot strand the
-        rest of the batch in the state this sweep is moving them out of.
+        Swallow a widget failure so the caller's sweep still reaches the rest of
+        the batch, and sync either way: a mutation that raised part-way through
+        has still changed the widget, and skipping the sync would leave the
+        store disagreeing with it until the next full redraw.
         """
         tool_msg = self._current_tool_messages.get(tool_call_id)
         if tool_msg is None:
@@ -842,8 +844,8 @@ class TextualUIAdapter:
                 tool_msg.pause_running()
         except Exception:
             logger.exception("Could not move Auto reviewed row %s", tool_call_id)
-            return
-        self._sync_tool_widget(tool_msg)
+        finally:
+            self._sync_tool_widget(tool_msg)
 
     def _remember_completed_auto_review(self, batch_id: str) -> None:
         """Bound the replay guard for a turn that runs many classifier batches."""

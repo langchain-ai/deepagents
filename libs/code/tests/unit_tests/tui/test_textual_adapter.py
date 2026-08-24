@@ -1822,11 +1822,41 @@ class TestAutoModeReviewLifecycle:
         running_mocks["call-approved"].assert_called_once_with()
         running_mocks["call-blocked"].assert_not_called()
         running_mocks["call-unreviewed"].assert_not_called()
-        assert synced.call_count == 3
+        assert [args.args[0] for args in synced.call_args_list] == [
+            approved,
+            blocked,
+            approved,
+        ]
         assert spinner.await_args_list == [
             call("Reviewing approval request"),
             call("Thinking"),
         ]
+
+    async def test_a_partly_mutated_row_still_syncs_to_the_store(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raising mutation has still changed the widget.
+
+        Skipping the sync would leave the store disagreeing with the widget
+        until the next full redraw.
+        """
+        synced = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            sync_tool_message=synced,
+        )
+        row = ToolCallMessage("delete", {"file_path": "a.py"})
+        monkeypatch.setattr(
+            row, "pause_running", MagicMock(side_effect=RuntimeError("boom"))
+        )
+        adapter._current_tool_messages["call-1"] = row
+
+        adapter._move_reviewed_row("call-1", running=False)
+
+        synced.assert_called_once_with(row)
 
     async def test_ignores_duplicate_and_unmatched_events(
         self, monkeypatch: pytest.MonkeyPatch

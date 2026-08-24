@@ -4820,17 +4820,14 @@ def cli_main() -> None:
             # wraps at width 80 off a TTY, and the break moves with the flag
             # name — leaving no substring a CI job can grep for both spellings.
             # With the pre-existing `sys.exit(2)` gone, this text is the only
-            # signal that the requested mode was dropped.
+            # signal that the requested mode was dropped. Deliberately not also
+            # logged: with no handler configured, `logging.lastResort` would
+            # emit a WARNING to the same stderr and double the message.
             _Console(stderr=True).print(
                 f"[bold yellow]Warning:[/bold yellow] {explicit_approval_flag} has "
                 "no effect in headless mode; ignoring it. Shell access is "
                 "governed by --shell-allow-list, and MCP routing is fail-closed.",
                 soft_wrap=True,
-            )
-            logger.warning(
-                "%s ignored in headless mode; approval is derived from "
-                "--shell-allow-list.",
-                explicit_approval_flag,
             )
             args.auto_approve = False
             args.yolo = False

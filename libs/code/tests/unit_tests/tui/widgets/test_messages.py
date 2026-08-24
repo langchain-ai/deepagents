@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from pathlib import Path
 from time import time
 from types import SimpleNamespace
 from typing import ClassVar
@@ -18,6 +19,7 @@ from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.widgets import Markdown, Static
 
+import deepagents_code
 from deepagents_code import theme
 from deepagents_code._ask_user_types import ASK_USER_ANSWERED_SUMMARY
 from deepagents_code.diff_utils import DiffStats
@@ -1558,6 +1560,12 @@ class _ToolMsgApp(App[None]):
         yield self.msg
 
 
+class _AsciiToolMsgApp(_ToolMsgApp):
+    """Tool-message app that loads the app-level ASCII overrides."""
+
+    CSS_PATH = Path(deepagents_code.__file__).resolve().parent / "app.tcss"
+
+
 def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
     """Build a single-`ToolCallMessage` Textual app for pilot-driven tests.
 
@@ -1618,6 +1626,33 @@ class TestToolCallMessageAppearance:
             app.msg.on_click(event)
             event.stop.assert_called_once()
             assert app.msg._expanded is True
+
+    async def test_ascii_hover_requires_actionable_row(self) -> None:
+        """ASCII borders brighten only when clicking the row has an effect."""
+        app = _AsciiToolMsgApp("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            app.msg.set_success("hi")
+            app.msg.add_class("-ascii")
+            await pilot.pause()
+            default_border = app.msg.styles.border_left
+
+            await pilot.hover(app.msg)
+
+            assert app.msg.mouse_hover
+            assert app.msg.styles.border_left == default_border
+
+        output = "\n".join(f"line {index}" for index in range(10))
+        app = _AsciiToolMsgApp("execute", {"command": "printf lots"})
+        async with app.run_test() as pilot:
+            app.msg.set_success(output)
+            app.msg.add_class("-ascii")
+            await pilot.pause()
+            default_border = app.msg.styles.border_left
+
+            await pilot.hover(app.msg)
+
+            assert app.msg.mouse_hover
+            assert app.msg.styles.border_left != default_border
 
 
 class TestToolCallMessageOutputGutter:

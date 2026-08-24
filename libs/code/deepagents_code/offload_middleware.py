@@ -7,7 +7,7 @@ import hashlib
 import logging
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
@@ -21,10 +21,10 @@ from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # inspected for runtime injection
 )
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import InjectedToolArg, StructuredTool
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
-from langgraph.types import Command
+from langgraph.types import Command  # noqa: TC002  # inspected for tool schema
 from typing_extensions import TypedDict
 
 from deepagents_code._cli_context import CLIContextSchema
@@ -63,7 +63,6 @@ if TYPE_CHECKING:
         ModelResponse,
     )
     from langchain.chat_models import BaseChatModel
-    from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
     from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
@@ -248,71 +247,12 @@ def _event_cutoff(event: object) -> int:
     return 0
 
 
-COMPACTION_FAILURE_PREFIX = "Compaction failed"
-"""Stable prefix for forced-compaction failure tool messages.
-
-The seeded driver drives the tool rather than calling it, so the only failure
-signal it gets back is the resulting `ToolMessage` text; it therefore keys
-failure detection on this prefix. Owning the literal here means the producers
-(`_forced_compact_error`, and `OffloadOperation.execute`, which reuses the
-prefix in the `error` field of its typed result) and both consumers
-(`app._drive_local_seeded_compaction` live-stream detection and
-`app._find_compaction_failure` committed-state scan) reference one constant
-instead of re-hardcoding the wording independently.
-
-Note: this value is deliberately identical to the leading text of the SDK's own
-model-initiated compaction-failure message, so a failure emitted by either path
-is recognized. Because the scan is bounded to messages produced by the current
-`/offload` attempt, a stale failure from an unrelated prior turn is not matched.
-Only the *prefix position* is load-bearing; wording after it is free to change.
-"""
-
-_OFFLOAD_SEED_ID_PREFIX = "offload-seed-"
-
-
 class _AutoCompactionBlockedError(Exception):
     """Carry a blocked provider overflow past the SDK fallback handler."""
 
     def __init__(self, overflow: ContextOverflowError) -> None:
         super().__init__(str(overflow))
         self.overflow = overflow
-
-
-def _offload_seed_message_id(tool_call_id: str) -> str:
-    """Return the stable message ID for a forced `/offload` tool call.
-
-    Args:
-        tool_call_id: The seeded `compact_conversation` tool call ID.
-
-    Returns:
-        The synthetic assistant message ID associated with the tool call.
-    """
-    return f"{_OFFLOAD_SEED_ID_PREFIX}{tool_call_id}"
-
-
-def _without_offload_seed(messages: list[Any], tool_call_id: str) -> list[Any]:
-    """Exclude the synthetic `/offload` seed from retention calculations.
-
-    Args:
-        messages: Effective conversation messages including the forced tool call.
-        tool_call_id: The seeded `compact_conversation` tool call ID.
-
-    Returns:
-        Conversation messages without the matching synthetic assistant message.
-    """
-    if not tool_call_id:
-        return messages
-    seed_id = _offload_seed_message_id(tool_call_id)
-    return [
-        message
-        for message in messages
-        if (
-            message.get("id")
-            if isinstance(message, dict)
-            else getattr(message, "id", None)
-        )
-        != seed_id
-    ]
 
 
 class RuntimeModelConfig(NamedTuple):
@@ -391,25 +331,6 @@ def _runtime_model_config(runtime: _HasRunContext) -> RuntimeModelConfig:
     return RuntimeModelConfig(
         model_spec=None, model_params={}, profile_overrides={}, context_limit=None
     )
-
-
-def _offload_tool_call_id(context: object) -> str | None:
-    """Read the sole tool-call ID authorized for an `/offload` run.
-
-    Args:
-        context: Runtime context supplied to the agent graph.
-
-    Returns:
-        The authorized tool-call ID, or `None` during an ordinary agent run.
-    """
-    value = (
-        context.offload_tool_call_id
-        if isinstance(context, CLIContextSchema)
-        else context.get("offload_tool_call_id")
-        if isinstance(context, dict)
-        else None
-    )
-    return value if isinstance(value, str) and value else None
 
 
 class _ArchiveReadGuard:
@@ -558,22 +479,11 @@ class _ArchiveReadGuard:
 
 
 class CLICompactionMiddleware(SummarizationToolMiddleware):
-    """Add hook-aware automatic and explicit forced compaction for dcode.
+    """Add hook-aware automatic and server-owned compaction for dcode.
 
-    The SDK tool's normal, model-initiated behavior remains unchanged. The
-    private `force` input is used only by the user-initiated `/offload` path,
-    which must compact whenever messages exceed the retention window even when
-    the conversation has not reached the SDK's proactive eligibility gate.
-
-    Three entry points, with different error semantics:
-
-    - automatic compaction, on the SDK's own gated path;
-    - `_run_forced_compact` / `_arun_forced_compact`, the tool-node paths used
-      by the seeded `/offload` driver, which report failure by *returning* a
-      `ToolMessage` because a tool node must always answer its call;
-    - `arun_forced_compaction_update`, the non-tool entry point the `/offload`
-      server operation calls, which *raises* instead — there is no tool node to
-      carry a message, so the service returns a typed client-visible error.
+    The SDK tool's normal, model-initiated behavior remains unchanged.
+    `arun_forced_compaction_update` is the state-only entry point used by the
+    server-owned `/offload` operation.
     """
 
     @property
@@ -719,115 +629,19 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         except _AutoCompactionBlockedError as blocked:
             raise blocked.overflow from None
 
-    @staticmethod
-    def _offload_rejection(request: ToolCallRequest) -> ToolMessage | None:
-        """Reject every tool except the exact call seeded by `/offload`.
-
-        Args:
-            request: Tool call about to be executed by the graph's tool node.
-
-        Returns:
-            An error result for an unauthorized `/offload` tool call, otherwise
-                `None` for an ordinary run or the exact seeded compaction call.
-        """
-        expected_id = _offload_tool_call_id(request.runtime.context)
-        if expected_id is None:
-            return None
-
-        tool_call = request.tool_call
-        args = tool_call.get("args")
-        messages = request.state.get("messages", [])
-        last_message = messages[-1] if messages else None
-        last_message_id = (
-            last_message.get("id")
-            if isinstance(last_message, dict)
-            else getattr(last_message, "id", None)
-        )
-        is_seeded_compaction = (
-            tool_call.get("id") == expected_id
-            and tool_call.get("name") == "compact_conversation"
-            and isinstance(args, dict)
-            and args.get("force") is True
-            and last_message_id == _offload_seed_message_id(expected_id)
-        )
-        if is_seeded_compaction:
-            return None
-
-        return ToolMessage(
-            content=(
-                "Not executed: /offload only authorizes its seeded "
-                "conversation compaction call."
-            ),
-            name=tool_call.get("name"),
-            tool_call_id=tool_call["id"],
-            status="error",
-        )
-
-    def wrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
-    ) -> ToolMessage | Command[Any]:
-        """Apply the `/offload` per-run tool guard before synchronous tools.
-
-        Args:
-            request: Tool call about to be executed.
-            handler: The remaining middleware/tool execution chain.
-
-        Returns:
-            The guarded rejection or the downstream tool result.
-        """
-        if (rejection := self._offload_rejection(request)) is not None:
-            return rejection
-        return handler(request)
-
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
-    ) -> ToolMessage | Command[Any]:
-        """Apply the `/offload` per-run tool guard before asynchronous tools.
-
-        Args:
-            request: Tool call about to be executed.
-            handler: The remaining middleware/tool execution chain.
-
-        Returns:
-            The guarded rejection or the downstream tool result.
-        """
-        if (rejection := self._offload_rejection(request)) is not None:
-            return rejection
-        return await handler(request)
-
     def _create_compact_tool(self) -> StructuredTool:
         """Create the CLI variant of `compact_conversation`.
 
         Returns:
-            A tool that accepts the `/offload`-only `force` flag.
+            The model-initiated compaction tool.
         """
         middleware = self
 
-        # `force` is annotated `InjectedToolArg` so it is stripped from the
-        # schema the model sees. ToolNode also strips the seeded value before
-        # invocation, so forced mode is selected from the trusted runtime
-        # context after `_offload_rejection` validates the raw tool call.
-        def sync_compact(
-            runtime: ToolRuntime[Any, Any],
-            force: Annotated[bool, InjectedToolArg] = False,
-        ) -> Command:
-            del force
-            if _offload_tool_call_id(runtime.context) != runtime.tool_call_id:
-                return middleware._run_compact(runtime)
-            return middleware._run_forced_compact(runtime)
+        def sync_compact(runtime: ToolRuntime[Any, Any]) -> Command:
+            return middleware._run_compact(runtime)
 
-        async def async_compact(
-            runtime: ToolRuntime[Any, Any],
-            force: Annotated[bool, InjectedToolArg] = False,
-        ) -> Command:
-            del force
-            if _offload_tool_call_id(runtime.context) != runtime.tool_call_id:
-                return await middleware._arun_compact(runtime)
-            return await middleware._arun_forced_compact(runtime)
+        async def async_compact(runtime: ToolRuntime[Any, Any]) -> Command:
+            return await middleware._arun_compact(runtime)
 
         return StructuredTool.from_function(
             name="compact_conversation",
@@ -908,88 +722,6 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         # afterwards, so the prefix was correct then too. The offload call sites
         # apply the guard separately when writing (see `_guarded_backend`).
         return create_summarization_middleware(model, self._summarization._backend)
-
-    def _run_forced_compact(self, runtime: ToolRuntime) -> Command:
-        """Synchronously compact without the SDK eligibility gate.
-
-        This deliberately mirrors the SDK's own `_run_compact` step sequence
-        (apply prior event, determine cutoff, partition, summarize, offload,
-        build result) minus the eligibility gate. Because it is a fork rather
-        than an override, it must be kept in parity when the SDK's compaction
-        flow changes. The closest-fitting fix is a `force=` seam on the SDK's own
-        `_run_compact`, which would remove the fork entirely; until the SDK
-        offers one, this stays a Deep Agents Code-local fork.
-        `test_forced_compact_matches_sdk_summarizer_calls`
-        guards the summarizer-method call set against drift, but only by
-        *existence*: it catches a renamed or removed dependency, not a changed
-        signature nor a new step added to `_run_compact` (e.g. if the SDK later
-        moved inline-media offload into the gated path). Two known consequences
-        of that today: this fork does not call `_offload_inline_media` (only the
-        auto `wrap_model_call` path does), so inline base64 media in compacted
-        messages is not offloaded to referenceable paths and is dropped from the
-        XML archive -- pre-existing SDK tool-path behavior, not introduced here.
-
-        Returns:
-            The compaction state update or an error tool message.
-        """
-        try:
-            summarization = self._summarization_for_runtime(runtime)
-            messages = runtime.state.get("messages", [])
-            event = runtime.state.get("_summarization_event")
-            effective = summarization._apply_event_to_messages(messages, event)
-            effective = _without_offload_seed(effective, runtime.tool_call_id or "")
-            cutoff = summarization._determine_cutoff_index(effective)
-            if cutoff == 0:
-                return self._nothing_to_compact(runtime.tool_call_id or "")
-            to_summarize, _ = summarization._partition_messages(effective, cutoff)
-            summary = summarization._create_summary(to_summarize)
-            session_id = summarization._get_session_id(runtime.state)
-            file_path = summarization._offload_to_backend(
-                self._guarded_backend(), to_summarize, session_id
-            )
-            # The inherited `_build_compact_result` produces the same event and
-            # tool message as the SDK's gated path via model-independent helpers
-            # (string formatting + a staticmethod), so the runtime-selected
-            # summarizer is not needed to build it. Kept inside the `try` so a
-            # failure here still returns a ToolMessage rather than raising.
-            return self._build_compact_result(
-                runtime, to_summarize, summary, file_path, event, cutoff, session_id
-            )
-        except Exception as exc:  # tool errors must surface as ToolMessages
-            logger.exception("forced compact_conversation failed")
-            return self._forced_compact_error(runtime.tool_call_id or "", exc)
-
-    async def _arun_forced_compact(self, runtime: ToolRuntime) -> Command:
-        """Asynchronously compact without the SDK eligibility gate.
-
-        Returns:
-            The compaction state update or an error tool message.
-        """
-        try:
-            summarization = await asyncio.to_thread(
-                self._summarization_for_runtime, runtime
-            )
-            messages = runtime.state.get("messages", [])
-            event = runtime.state.get("_summarization_event")
-            effective = summarization._apply_event_to_messages(messages, event)
-            effective = _without_offload_seed(effective, runtime.tool_call_id or "")
-            cutoff = summarization._determine_cutoff_index(effective)
-            if cutoff == 0:
-                return self._nothing_to_compact(runtime.tool_call_id or "")
-            to_summarize, _ = summarization._partition_messages(effective, cutoff)
-            summary = await summarization._acreate_summary(to_summarize)
-            session_id = summarization._get_session_id(runtime.state)
-            file_path = await summarization._aoffload_to_backend(
-                self._guarded_backend(), to_summarize, session_id
-            )
-            # See `_run_forced_compact` for why the inherited builder is reused
-            # and why it stays inside the `try`.
-            return self._build_compact_result(
-                runtime, to_summarize, summary, file_path, event, cutoff, session_id
-            )
-        except Exception as exc:  # tool errors must surface as ToolMessages
-            logger.exception("forced compact_conversation failed")
-            return self._forced_compact_error(runtime.tool_call_id or "", exc)
 
     async def arun_forced_compaction_update(
         self, state: _OffloadState, runtime: _HasRunContext
@@ -1130,46 +862,6 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             },
             "_summarization_session_id": session_id,
         }
-
-    @staticmethod
-    def _forced_compact_error(tool_call_id: str, exc: Exception) -> Command:
-        """Build a forced-compaction failure result with a stable prefix.
-
-        Owned by dcode so the `/offload` client can detect failures via
-        `COMPACTION_FAILURE_PREFIX`. The tool must return a `ToolMessage` rather
-        than raise, so the model (and the client) see the failure as ordinary
-        tool output.
-
-        The message is intentionally generic about *where* the failure occurred:
-        the guarded body spans cutoff determination, summary generation, the
-        archive write, and result building, so it does not assert a specific
-        stage (and does not claim nothing was written — an archive may have been
-        persisted before a later step failed). It states only what is always
-        true on this path: the summarization event was not committed, so the
-        effective conversation is unchanged.
-
-        Args:
-            tool_call_id: The originating tool call ID.
-            exc: The exception raised while compacting.
-
-        Returns:
-            A `Command` whose `ToolMessage` content starts with
-                `COMPACTION_FAILURE_PREFIX`.
-        """
-        return Command(
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=(
-                            f"{COMPACTION_FAILURE_PREFIX}: an error occurred "
-                            f"during compaction ({type(exc).__name__}: {exc}). "
-                            "Your conversation is unchanged."
-                        ),
-                        tool_call_id=tool_call_id,
-                    )
-                ],
-            }
-        )
 
 
 def _create_cli_compaction_middleware(
@@ -1390,7 +1082,7 @@ class OffloadOperation:
                 "failed",
                 messages=max(0, len(messages) - _event_cutoff(event)),
                 tokens=tokens_before,
-                error=f"{COMPACTION_FAILURE_PREFIX}: {type(exc).__name__}: {exc}",
+                error=f"Compaction failed: {type(exc).__name__}: {exc}",
             )
             return OffloadExecution({}, result)
 

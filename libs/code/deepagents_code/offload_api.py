@@ -83,8 +83,8 @@ class _OffloadUnavailableError(RuntimeError):
     graph factory, where exiting is right; reached from a request handler it
     would kill the server process mid-request, and `SystemExit` is a
     `BaseException`, so the route's own handler could not turn it into a
-    response. The seeded fallback needs the same runtime, so there is nothing
-    to degrade to -- report the condition instead.
+    response. Server-owned offload cannot run without that runtime, so report
+    the condition instead.
     """
 
 
@@ -98,8 +98,8 @@ class _OffloadIndeterminateError(RuntimeError):
 
 
 # Context fields the offload operation reads (everything else in
-# `CLIContextSchema` — approval mode, turn ids, the seeded-path tool-call id —
-# drives interactive-run machinery this operation never touches). Validated at
+# `CLIContextSchema` — approval mode and turn ids, for example — drives
+# interactive-run machinery this operation never touches). Validated at
 # the HTTP boundary so a malformed client request fails with a 422 naming the
 # field instead of a 500 deep in model resolution or hook dispatch.
 _CONTEXT_STR_OR_NONE_FIELDS = (
@@ -503,14 +503,12 @@ async def _execute_offload(
 def capability(_request: Request) -> JSONResponse:
     """Report the dcode server-operation protocol version.
 
-    Answers `{"offload": true, "version": <int>}`. The client parses this in
-    `RemoteAgent._offload_capability_supported`; a missing route (404) or a
-    version it does not speak selects the seeded compatibility fallback.
+    Answers `{"offload": true, "version": <int>}` for protocol diagnostics and
+    client/server version pinning.
 
     Deliberately cheap: it does not resolve the server runtime, so a probe never
     pays for building the agent. An unbuildable runtime surfaces as a 503 from
-    the operation itself rather than as "no capability", because the seeded
-    fallback needs that same runtime and so cannot help.
+    the operation itself.
 
     Returns:
         JSON capability response.

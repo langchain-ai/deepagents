@@ -6,7 +6,6 @@ Core compact tool logic tests live in the SDK at
 
 from __future__ import annotations
 
-import warnings
 from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,12 +14,11 @@ import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.offload_middleware import (
-    COMPACTION_FAILURE_PREFIX,
     CLICompactionMiddleware,
     _ArchiveReadGuard,
     _runtime_model_config,
@@ -227,45 +225,6 @@ class TestCLICompactionMiddleware:
             handler.assert_called_once()
             summarization._offload_to_backend.assert_not_called()
             summarization._create_summary.assert_not_called()
-
-    async def test_force_bypasses_sdk_eligibility_gate(self) -> None:
-        """Forced compaction partitions directly even below the proactive gate."""
-        summarization = self._summarization()
-        middleware = CLICompactionMiddleware(summarization)
-        runtime = MagicMock()
-        runtime.context = None
-        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
-        runtime.tool_call_id = "tool-call"
-
-        result = await middleware._arun_forced_compact(runtime)
-
-        summarization._is_eligible_for_compaction.assert_not_called()
-        summarization._acreate_summary.assert_awaited_once()
-        assert result.update is not None
-        assert result.update["_summarization_event"]["cutoff_index"] == 2
-
-    async def test_forced_compact_writes_through_the_archive_guard(self) -> None:
-        """The archive write is guarded even though the summarizer is not.
-
-        `_ArchiveReadGuard` deliberately exposes only the read/write methods it
-        has to intercept, so it cannot stand in for the composite backend the
-        summarizer needs (see `test_runtime_model_builds_matching_summarizer`).
-        The two therefore have to be handed out separately, and this pins that
-        the write half still gets the guard.
-        """
-        summarization = self._summarization()
-        middleware = CLICompactionMiddleware(summarization)
-        runtime = MagicMock()
-        runtime.context = None
-        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
-        runtime.tool_call_id = "tool-call"
-
-        await middleware._arun_forced_compact(runtime)
-
-        write_backend = summarization._aoffload_to_backend.await_args.args[0]
-        assert isinstance(write_backend, _ArchiveReadGuard)
-        assert write_backend._backend is summarization._backend
-        assert not hasattr(write_backend, "artifacts_root")
 
     async def test_operation_path_writes_through_the_archive_guard(self) -> None:
         """The server `/offload` operation's write path has the same invariant.
@@ -488,8 +447,8 @@ class TestCLICompactionMiddleware:
         assert create_summarization.call_args.args[0] is active_model
         # The summarizer gets the composite backend itself, not the
         # `_ArchiveReadGuard` wrapper: it reads `artifacts_root` to prefix the
-        # archive path, and the guard exposes no such attribute. The write path
-        # applies the guard separately (see `test_forced_compact_writes_guarded`).
+        # archive path, and the guard exposes no such attribute. The server
+        # operation applies the guard separately at the write site.
         assert create_summarization.call_args.args[1] is startup._backend
 
     def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:
@@ -529,244 +488,34 @@ class TestCLICompactionMiddleware:
         assert create_summarization.call_args.args[0] is active_model
         assert create_summarization.call_args.args[1] is startup._backend
 
-    async def test_force_noops_when_nothing_old_enough(self) -> None:
-        """Forced compaction still no-ops at cutoff 0 (bypasses only the gate)."""
-        summarization = self._summarization()
-        summarization._determine_cutoff_index.return_value = 0
-        middleware = CLICompactionMiddleware(summarization)
-        runtime = MagicMock()
-        runtime.context = None
-        runtime.state = {"messages": [HumanMessage("one")]}
-        runtime.tool_call_id = "tool-call"
-
-        result = await middleware._arun_forced_compact(runtime)
-
-        assert result.update is not None
-        assert "_summarization_event" not in result.update
-        summarization._acreate_summary.assert_not_awaited()
-        assert "Nothing to compact" in result.update["messages"][0].content
-
-    async def test_async_force_excludes_seed_from_retention_cutoff(self) -> None:
-        """The async cutoff is calculated from the pre-seed conversation."""
-        summarization = self._summarization()
-        summarization._determine_cutoff_index.side_effect = lambda messages: (
-            0 if len(messages) == 6 else 1
-        )
-        middleware = CLICompactionMiddleware(summarization)
-        conversation = [HumanMessage(str(index)) for index in range(6)]
-        seed = AIMessage(
-            content="",
-            id="offload-seed-tool-call",
-            tool_calls=[
-                {
-                    "name": "compact_conversation",
-                    "args": {"force": True},
-                    "id": "tool-call",
-                }
-            ],
-        )
-        runtime = MagicMock()
-        runtime.context = None
-        runtime.state = {"messages": [*conversation, seed]}
-        runtime.tool_call_id = "tool-call"
-
-        result = await middleware._arun_forced_compact(runtime)
-
-        assert result.update is not None
-        assert "_summarization_event" not in result.update
-        summarization._determine_cutoff_index.assert_called_once_with(conversation)
-        summarization._partition_messages.assert_not_called()
-
-    def test_sync_force_excludes_serialized_seed_from_retention_cutoff(self) -> None:
-        """The sync cutoff also ignores a serialized synthetic seed."""
-        summarization = self._summarization()
-        summarization._determine_cutoff_index.side_effect = lambda messages: (
-            0 if len(messages) == 6 else 1
-        )
-        middleware = CLICompactionMiddleware(summarization)
-        conversation = [HumanMessage(str(index)) for index in range(6)]
-        seed = {"id": "offload-seed-tool-call", "type": "ai", "content": ""}
-        runtime = MagicMock()
-        runtime.context = None
-        runtime.state = {"messages": [*conversation, seed]}
-        runtime.tool_call_id = "tool-call"
-
-        result = middleware._run_forced_compact(runtime)
-
-        assert result.update is not None
-        assert "_summarization_event" not in result.update
-        summarization._determine_cutoff_index.assert_called_once_with(conversation)
-        summarization._partition_messages.assert_not_called()
-
-    async def test_forced_compact_error_when_summary_fails(self) -> None:
-        """A summary failure returns the failure prefix and does not compact."""
-        summarization = self._summarization()
-        summarization._acreate_summary = AsyncMock(side_effect=RuntimeError("boom"))
-        middleware = CLICompactionMiddleware(summarization)
-        runtime = MagicMock()
-        runtime.context = None
-        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
-        runtime.tool_call_id = "tool-call"
-
-        result = await middleware._arun_forced_compact(runtime)
-
-        # The failure must NOT persist an event, and must carry the stable
-        # prefix the `/offload` client keys on.
-        assert result.update is not None
-        assert "_summarization_event" not in result.update
-        content = result.update["messages"][0].content
-        assert content.startswith(COMPACTION_FAILURE_PREFIX)
-        assert "RuntimeError" in content
-
-    def test_sync_forced_compact_compacts(self) -> None:
-        """The synchronous forced path mirrors the async one."""
-        summarization = self._summarization()
-        summarization._create_summary.return_value = "Summary"
-        summarization._offload_to_backend.return_value = (
-            "/conversation_history/thread.md"
-        )
-        middleware = CLICompactionMiddleware(summarization)
-        runtime = MagicMock()
-        runtime.context = None
-        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
-        runtime.tool_call_id = "tool-call"
-
-        result = middleware._run_forced_compact(runtime)
-
-        summarization._create_summary.assert_called_once()
-        assert result.update is not None
-        assert result.update["_summarization_event"]["cutoff_index"] == 2
-
-    def test_force_is_hidden_from_model_schema(self) -> None:
-        """`force` must not appear in the schema the model sees."""
-        middleware = CLICompactionMiddleware(self._summarization())
-        tool = middleware.tools[0]
-        # `tool_call_schema` is a pydantic model (or, rarely, a dict); either
-        # way the model-facing property set must not expose `force`.
-        schema: Any = tool.tool_call_schema
-        props = (
-            schema.get("properties", {})
-            if isinstance(schema, dict)
-            else schema.model_json_schema().get("properties", {})
-        )
-        assert "force" not in props
-
-    def test_ordinary_context_delegates_to_gated_path(self) -> None:
-        """Caller-supplied `force` cannot bypass the trusted runtime context."""
+    def test_model_initiated_tool_delegates_to_gated_path(self) -> None:
+        """The public tool keeps using the SDK's eligibility-gated sync path."""
         middleware = CLICompactionMiddleware(self._summarization())
         tool: Any = middleware.tools[0]
         runtime = MagicMock()
-        runtime.context = {}
-        runtime.tool_call_id = "model-call"
-        with (
-            patch.object(middleware, "_run_compact", return_value="gated") as gated,
-            patch.object(
-                middleware, "_run_forced_compact", return_value="forced"
-            ) as forced,
-        ):
-            assert tool.func(runtime, force=False) == "gated"
-            assert tool.func(runtime, force=True) == "gated"
-            assert gated.call_count == 2
-            forced.assert_not_called()
 
-    async def test_offload_context_delegates_to_forced_path_async(self) -> None:
-        """The authorized call ID in runtime context selects forced mode."""
+        with patch.object(middleware, "_run_compact", return_value="gated") as gated:
+            assert tool.func(runtime) == "gated"
+
+        gated.assert_called_once_with(runtime)
+
+    async def test_model_initiated_tool_delegates_to_gated_path_async(self) -> None:
+        """The public tool keeps using the SDK's eligibility-gated async path."""
         middleware = CLICompactionMiddleware(self._summarization())
         tool: Any = middleware.tools[0]
         runtime = MagicMock()
-        runtime.context = {"offload_tool_call_id": "offload-call"}
-        runtime.tool_call_id = "offload-call"
-        with (
-            patch.object(
-                middleware,
-                "_arun_compact",
-                new_callable=AsyncMock,
-                return_value="gated",
-            ) as gated,
-            patch.object(
-                middleware,
-                "_arun_forced_compact",
-                new_callable=AsyncMock,
-                return_value="forced",
-            ) as forced,
-        ):
-            # ToolNode replaces the seeded `force=True` with this default.
-            assert await tool.coroutine(runtime, force=False) == "forced"
-            gated.assert_not_awaited()
-            forced.assert_awaited_once_with(runtime)
 
-    async def test_tool_node_preserves_forced_mode_via_runtime_context(self) -> None:
-        """A real ToolNode strips `force` but still reaches forced compaction."""
-        from langchain_core.messages import ToolMessage
-        from langgraph.graph import END, START, StateGraph
-        from langgraph.prebuilt import ToolNode
-        from langgraph.types import Command
-        from typing_extensions import TypedDict
+        with patch.object(
+            middleware,
+            "_arun_compact",
+            new=AsyncMock(return_value="gated"),
+        ) as gated:
+            assert await tool.coroutine(runtime) == "gated"
 
-        class ToolState(TypedDict):
-            messages: list[object]
+        gated.assert_awaited_once_with(runtime)
 
-        middleware = CLICompactionMiddleware(self._summarization())
-        # LangGraph accepts these runtime schemas, but its generic bound is not
-        # recognized by ty on Python 3.14.
-        builder = StateGraph(
-            ToolState,  # ty: ignore[invalid-argument-type]
-            context_schema=CLIContextSchema,
-        )
-        builder.add_node("tools", ToolNode(middleware.tools))
-        builder.add_edge(START, "tools")
-        builder.add_edge("tools", END)
-        graph = builder.compile()
-        tool_call_id = "offload-call"
-        seed = AIMessage(
-            content="",
-            id=f"offload-seed-{tool_call_id}",
-            tool_calls=[
-                {
-                    "name": "compact_conversation",
-                    "args": {"force": True},
-                    "id": tool_call_id,
-                }
-            ],
-        )
-        command = Command(
-            update={
-                "messages": [
-                    ToolMessage(content="compacted", tool_call_id=tool_call_id)
-                ]
-            }
-        )
-
-        with (
-            patch.object(
-                middleware,
-                "_arun_compact",
-                new_callable=AsyncMock,
-                return_value=command,
-            ) as gated,
-            patch.object(
-                middleware,
-                "_arun_forced_compact",
-                new_callable=AsyncMock,
-                return_value=command,
-            ) as forced,
-            warnings.catch_warnings(),
-        ):
-            warnings.filterwarnings(
-                "error", message="Pydantic serializer warnings", category=UserWarning
-            )
-            await graph.ainvoke(
-                ToolState(messages=[seed]),  # ty: ignore[invalid-argument-type]
-                context=CLIContextSchema(  # ty: ignore[invalid-argument-type]
-                    offload_tool_call_id=tool_call_id
-                ),
-            )
-
-        gated.assert_not_awaited()
-        forced.assert_awaited_once()
-
-    async def test_read_failure_never_reaches_truncating_archive_write(self) -> None:
-        """A transient archive read failure aborts the SDK write fallback."""
+    async def test_operation_read_failure_never_truncates_archive(self) -> None:
+        """A transient archive read failure blocks the server operation's write."""
         from deepagents.middleware.summarization import SummarizationMiddleware
 
         summarization = self._summarization()
@@ -788,62 +537,16 @@ class TestCLICompactionMiddleware:
         summarization._aoffload_to_backend = AsyncMock(side_effect=sdk_offload)
         middleware = CLICompactionMiddleware(summarization)
         runtime = MagicMock()
-        runtime.context = {"offload_tool_call_id": "tool-call"}
-        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
-        runtime.tool_call_id = "tool-call"
+        runtime.context = None
 
-        result = await middleware._arun_forced_compact(runtime)
+        result = await middleware.arun_forced_compaction_update(
+            {"messages": [HumanMessage("one"), HumanMessage("two")]}, runtime
+        )
 
         backend.awrite.assert_not_awaited()
         backend.aedit.assert_not_awaited()
-        assert result.update is not None
-        assert result.update["_summarization_event"]["file_path"] is None
-
-    def test_sync_forced_compact_noops_when_nothing_old_enough(self) -> None:
-        """The sync forced path also no-ops at cutoff 0 (mirrors the async one)."""
-        summarization = self._summarization()
-        summarization._determine_cutoff_index.return_value = 0
-        middleware = CLICompactionMiddleware(summarization)
-        runtime = MagicMock()
-        runtime.context = None
-        runtime.state = {"messages": [HumanMessage("one")]}
-        runtime.tool_call_id = "tool-call"
-
-        result = middleware._run_forced_compact(runtime)
-
-        assert result.update is not None
-        assert "_summarization_event" not in result.update
-        summarization._create_summary.assert_not_called()
-        assert "Nothing to compact" in result.update["messages"][0].content
-
-    def test_sync_forced_compact_error_when_summary_fails(self) -> None:
-        """A sync summary failure returns the failure prefix and does not compact."""
-        summarization = self._summarization()
-        summarization._create_summary = MagicMock(side_effect=RuntimeError("boom"))
-        middleware = CLICompactionMiddleware(summarization)
-        runtime = MagicMock()
-        runtime.context = None
-        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
-        runtime.tool_call_id = "tool-call"
-
-        result = middleware._run_forced_compact(runtime)
-
-        assert result.update is not None
-        assert "_summarization_event" not in result.update
-        content = result.update["messages"][0].content
-        assert content.startswith(COMPACTION_FAILURE_PREFIX)
-        assert "RuntimeError" in content
-
-    def test_forced_compact_error_starts_with_prefix(self) -> None:
-        """The prefix position is the load-bearing failure-detection contract."""
-        command = CLICompactionMiddleware._forced_compact_error(
-            "call-1", RuntimeError("boom")
-        )
-        assert command.update is not None
-        (message,) = command.update["messages"]
-        assert message.content.startswith(COMPACTION_FAILURE_PREFIX)
-        assert message.tool_call_id == "call-1"
-        assert "RuntimeError" in message.content
+        assert result is not None
+        assert result["_summarization_event"]["file_path"] is None
 
     def test_factory_builds_cli_middleware_threading_system_prompt(self) -> None:
         """The factory returns a CLI middleware carrying the SDK's config."""
@@ -920,41 +623,7 @@ class TestRuntimeModelConfig:
 
 
 class TestSdkContractGuards:
-    """Guard the SDK seams the forced-compaction fork depends on.
-
-    `CLICompactionMiddleware` forks the SDK's gated compaction flow and keys
-    failure detection on a shared message prefix. These tests fail loudly in CI
-    if a coordinated SDK bump renames a depended-on private method or changes
-    the failure wording, instead of the fork silently drifting out of parity.
-    """
-
-    def test_forced_compact_matches_sdk_summarizer_calls(self) -> None:
-        """Every SDK method the fork invokes must still exist."""
-        from deepagents.middleware.summarization import (
-            SummarizationMiddleware,
-            SummarizationToolMiddleware,
-        )
-
-        # Called on `self._summarization` (a SummarizationMiddleware).
-        for name in (
-            "_apply_event_to_messages",
-            "_determine_cutoff_index",
-            "_partition_messages",
-            "_create_summary",
-            "_acreate_summary",
-            "_get_session_id",
-            "_offload_to_backend",
-            "_aoffload_to_backend",
-            "_get_session_id",
-        ):
-            assert callable(getattr(SummarizationMiddleware, name, None)), name
-
-        # Inherited SDK helpers called on the tool-middleware subclass.
-        for name in (
-            "_build_compact_result",
-            "_nothing_to_compact",
-        ):
-            assert callable(getattr(SummarizationToolMiddleware, name, None)), name
+    """Guard summarization-event assumptions shared with the SDK."""
 
     def test_summarization_cutoff_is_an_absolute_index(self) -> None:
         """`cutoff_index` must index unfiltered persisted messages.
@@ -978,18 +647,3 @@ class TestSdkContractGuards:
         )
 
         assert applied == ["S", "m2", "m3"]
-
-    def test_failure_prefix_matches_sdk_failure_message(self) -> None:
-        """Dcode's prefix must match the SDK's own compaction-failure wording.
-
-        `/offload` detects failures from either path by this prefix, so the
-        SDK's `_compact_error` message must keep starting with it.
-        """
-        from deepagents.middleware.summarization import SummarizationToolMiddleware
-
-        command = SummarizationToolMiddleware._compact_error(
-            "call-1", RuntimeError("boom")
-        )
-        assert command.update is not None
-        (message,) = command.update["messages"]
-        assert message.content.startswith(COMPACTION_FAILURE_PREFIX)

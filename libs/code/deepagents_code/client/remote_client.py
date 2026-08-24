@@ -147,7 +147,7 @@ def format_agent_exception(exc: BaseException) -> str:
 
     Args:
         exc: The exception caught from an agent call -- the SSE stream, or an
-            HTTP operation such as the offload route and its capability probe.
+            HTTP operation such as the offload route.
 
     Returns:
         `"<ErrorType>: <message>"` for `RemoteException` dict payloads,
@@ -201,7 +201,6 @@ class RemoteAgent:
         self._api_key = api_key
         self._headers = headers
         self._graph: Any = None
-        self._supports_offload: bool | None = None
 
     def _get_graph(self) -> Any:  # noqa: ANN401
         """Lazily create the `RemoteGraph` instance.
@@ -219,73 +218,6 @@ class RemoteAgent:
                 headers=self._headers,
             )
         return self._graph
-
-    async def asupports_offload(self) -> bool:
-        """Return whether this server exposes dcode's offload HTTP operation.
-
-        Capability discovery is read-only and cached. A missing route identifies
-        a custom or older server and selects the compatibility fallback without
-        inspecting graph nodes or checkpoint schemas.
-
-        The SDK maps a 404 to `NotFoundError` (handled here); any other error
-        status surfaces as its own typed `APIStatusError` subclass and
-        propagates to the caller.
-
-        Every negative outcome is logged. Selecting the fallback is not a
-        neutral choice -- it seeds synthetic messages, spends a model call, and
-        can wedge a thread on failure -- so a misrouted 404 or a proxy-injected
-        `200` body must leave a trace rather than silently downgrading.
-
-        Returns:
-            `True` when the server exposes a protocol version this client
-                speaks.
-        """
-        if self._supports_offload is None:
-            from langgraph_sdk.errors import NotFoundError
-
-            graph = self._get_graph()
-            try:
-                response = await graph.client.http.get("/dcode/offload")
-            except NotFoundError:
-                logger.info(
-                    "Server has no /dcode/offload route; using the seeded "
-                    "compaction fallback for /offload"
-                )
-                self._supports_offload = False
-            else:
-                self._supports_offload = self._offload_capability_supported(response)
-        return self._supports_offload
-
-    @staticmethod
-    def _offload_capability_supported(response: object) -> bool:
-        """Decide whether a capability response advertises a usable protocol.
-
-        Args:
-            response: Decoded body of the capability probe.
-
-        Returns:
-            `True` only for an advertised offload route at a known version.
-        """
-        if not isinstance(response, dict) or response.get("offload") is not True:
-            logger.warning(
-                "Unexpected /dcode/offload capability response (%r); using the "
-                "seeded compaction fallback for /offload",
-                response,
-            )
-            return False
-        version = response.get("version")
-        if version != _OFFLOAD_PROTOCOL_VERSION:
-            # A server speaking a protocol this client does not know may return
-            # a differently shaped result. The fallback works against any
-            # server, so prefer it over guessing at the payload.
-            logger.warning(
-                "Server advertises offload protocol version %r but this client "
-                "speaks %d; using the seeded compaction fallback for /offload",
-                version,
-                _OFFLOAD_PROTOCOL_VERSION,
-            )
-            return False
-        return True
 
     async def aoffload(
         self,

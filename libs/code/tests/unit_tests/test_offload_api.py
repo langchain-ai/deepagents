@@ -803,8 +803,7 @@ class TestExecuteOffload:
         `_checkpoint_id` rejects a thread with no checkpoint, so answering the
         empty case at the boundary is what keeps `OffloadOperation.execute`'s
         graceful `empty` branch reachable over HTTP. Without it the user is told
-        the operation failed for a thread that simply has nothing to compact --
-        the seeded path says "Nothing to offload".
+        the operation failed for a thread that simply has nothing to compact.
         """
         from deepagents_code import offload_api
 

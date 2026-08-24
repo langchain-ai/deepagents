@@ -1102,93 +1102,12 @@ class TestAgentErrorType:
         assert agent_error_type(ValueError("boom")) == "ValueError"
 
 
-class TestSupportsOffload:
-    """Capability discovery uses only the dcode HTTP boundary."""
+def test_client_and_server_protocol_versions_agree() -> None:
+    """The duplicated version constant must not drift from the server's."""
+    from deepagents_code.client.remote_client import _OFFLOAD_PROTOCOL_VERSION
+    from deepagents_code.offload_api import _OFFLOAD_API_VERSION
 
-    async def test_detects_route_and_caches_result(self) -> None:
-        agent = RemoteAgent("http://localhost:1234", graph_name="agent")
-        http = SimpleNamespace(
-            get=AsyncMock(return_value={"offload": True, "version": 1})
-        )
-        graph = _offload_graph(http)
-
-        with patch.object(agent, "_get_graph", return_value=graph):
-            assert await agent.asupports_offload() is True
-            assert await agent.asupports_offload() is True
-
-        http.get.assert_awaited_once_with("/dcode/offload")
-
-    async def test_missing_route_selects_fallback(self) -> None:
-        """The SDK surfaces a 404 as `NotFoundError`, not `httpx.HTTPStatusError`."""
-        import httpx
-        from langgraph_sdk.errors import NotFoundError
-
-        agent = RemoteAgent("http://localhost:1234", graph_name="custom")
-        request = httpx.Request("GET", "http://localhost/dcode/offload")
-        response = httpx.Response(404, request=request)
-        http = SimpleNamespace(
-            get=AsyncMock(
-                side_effect=NotFoundError("missing", response=response, body=None)
-            )
-        )
-        graph = _offload_graph(http)
-
-        with patch.object(agent, "_get_graph", return_value=graph):
-            assert await agent.asupports_offload() is False
-
-    async def test_other_http_errors_propagate(self) -> None:
-        """Non-404 statuses surface as their typed SDK errors, not the fallback."""
-        import httpx
-        from langgraph_sdk.errors import InternalServerError
-
-        agent = RemoteAgent("http://localhost:1234", graph_name="agent")
-        request = httpx.Request("GET", "http://localhost/dcode/offload")
-        response = httpx.Response(500, request=request)
-        http = SimpleNamespace(
-            get=AsyncMock(
-                side_effect=InternalServerError("boom", response=response, body=None)
-            )
-        )
-        graph = _offload_graph(http)
-
-        with (
-            patch.object(agent, "_get_graph", return_value=graph),
-            pytest.raises(InternalServerError),
-        ):
-            await agent.asupports_offload()
-
-    async def test_client_and_server_protocol_versions_agree(self) -> None:
-        """The duplicated version constant must not drift from the server's."""
-        from deepagents_code.client.remote_client import _OFFLOAD_PROTOCOL_VERSION
-        from deepagents_code.offload_api import _OFFLOAD_API_VERSION
-
-        assert _OFFLOAD_PROTOCOL_VERSION == _OFFLOAD_API_VERSION
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            {"offload": True, "version": 2},
-            {"offload": True},
-            {"offload": False, "version": 1},
-            {"unexpected": "proxy error page"},
-            "not json at all",
-        ],
-    )
-    async def test_unusable_capability_response_selects_fallback(
-        self, body: object, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Every negative outcome degrades to the fallback *and* leaves a log."""
-        agent = RemoteAgent("http://localhost:1234", graph_name="agent")
-        http = SimpleNamespace(get=AsyncMock(return_value=body))
-        graph = _offload_graph(http)
-
-        with (
-            patch.object(agent, "_get_graph", return_value=graph),
-            caplog.at_level(logging.WARNING),
-        ):
-            assert await agent.asupports_offload() is False
-
-        assert "fallback" in caplog.text
+    assert _OFFLOAD_PROTOCOL_VERSION == _OFFLOAD_API_VERSION
 
 
 def _offload_graph(http: SimpleNamespace) -> SimpleNamespace:

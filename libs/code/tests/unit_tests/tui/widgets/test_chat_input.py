@@ -7719,3 +7719,89 @@ class TestPromptSearchPanel:
             ]
             assert len(empty_rows) == 1
             assert "No matching prompts." in str(empty_rows[0].content)
+
+    async def test_empty_state_does_not_survive_hide_and_reopen(self, tmp_path) -> None:
+        """A hidden empty state must not linger beside reopened matches.
+
+        `hide()` only sets `display: none`; it does not tear down children.
+        Dropping the `_empty_widget` reference on hide orphaned the mounted
+        empty-state row, so cancelling a no-match search and reopening with
+        matches left a stale "No matching prompts." row beside the options,
+        and repeated cycles accumulated one orphan per hide.
+        """
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello world"])
+            await pilot.pause()
+
+            def empty_rows() -> list[Static]:
+                panel = chat._prompt_search
+                assert panel is not None
+                results = panel.query_one("#prompt-search-results")
+                return [
+                    child
+                    for child in results.children
+                    if isinstance(child, Static)
+                    and not isinstance(child, PromptSearchOption)
+                ]
+
+            # Open with a no-match query, then cancel the search.
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("z")
+            await pilot.pause()
+            await pilot.pause()
+            assert len(empty_rows()) == 1
+            await pilot.press("escape")
+            await pilot.pause()
+
+            # Reopen: the full unfiltered history matches, so no empty state.
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert empty_rows() == []
+            panel = chat._prompt_search
+            assert panel is not None
+            assert len(panel._options) == 1
+
+    async def test_empty_state_reopens_cleanly_after_each_hide(self, tmp_path) -> None:
+        """Empty -> hide cycles must not accumulate orphaned empty rows."""
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello world"])
+            await pilot.pause()
+
+            for _ in range(3):
+                chat.open_prompt_search()
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.press("z")
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            results = panel.query_one("#prompt-search-results")
+            empty_rows = [
+                child
+                for child in results.children
+                if isinstance(child, Static)
+                and not isinstance(child, PromptSearchOption)
+            ]
+            assert len(empty_rows) <= 1

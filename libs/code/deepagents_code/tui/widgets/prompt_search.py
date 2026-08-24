@@ -425,9 +425,11 @@ class PromptSearchPanel(Vertical):
         self._pending_titles = []
         self._pending_empty = None
         self._rebuild_generation += 1
-        # Drop the tracked reference so a rebuild after re-open starts clean;
-        # the widget itself is torn down with the hidden panel's children.
-        self._empty_widget = None
+        # Keep the `_empty_widget` reference: hide() only sets display: none,
+        # so a mounted empty-state row survives the hide, and the next rebuild
+        # is the only code path that removes it. Dropping the reference here
+        # would orphan the row, leaving a stale "No matching prompts." beside
+        # the options when the panel reopens with matches.
         self.styles.display = "none"  # ty: ignore[invalid-assignment]  # Textual accepts string display values
         self._report_rows(0)
 

@@ -457,6 +457,48 @@ async def _plan(
     )
 
 
+async def _route_plan(
+    middleware: AutoModeHITLMiddleware,
+    request: ModelRequest[Any],
+    plan: dict[str, Any],
+    *,
+    tool_name: str,
+    args: dict[str, object],
+    call_id: str = "call-1",
+    hook_behavior: Literal["allow", "deny"] | None = None,
+) -> dict[str, Any] | None:
+    """Apply a plan after optional server-hook permission routing."""
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": tool_name,
+                "args": args,
+                "id": call_id,
+                "type": "tool_call",
+            }
+        ],
+    )
+    state: dict[str, Any] = {
+        "messages": [ai_message],
+        "_auto_decision_plan": plan,
+    }
+    if hook_behavior is not None:
+        state["_hooks_pre_tool_outcomes"] = {
+            call_id: {"behavior": hook_behavior, "context": []}
+        }
+    return await middleware.aafter_model(
+        cast("AgentState[Any]", state), request.runtime
+    )
+
+
+def _capture_review_events(request: ModelRequest[Any]) -> list[dict[str, Any]]:
+    """Capture custom-stream events emitted by one model request."""
+    events: list[dict[str, Any]] = []
+    cast("Any", request.runtime).stream_writer = events.append
+    return events
+
+
 def _allow_result(call_id: str = "call-1") -> AutoDecisionBatch:
     return AutoDecisionBatch(
         decisions=[
@@ -489,6 +531,550 @@ def _deny_result(
             )
         ]
     )
+
+
+async def test_classifier_review_lifecycle_reports_only_opaque_ids(
+    tmp_path: Path,
+) -> None:
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "private/customer-secret.py"},
+    )
+    events = _capture_review_events(request)
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "private/customer-secret.py"},
+    )
+    assert [event["event"] for event in events] == ["review_started"]
+
+    await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "private/customer-secret.py"},
+    )
+
+    assert [event["event"] for event in events] == [
+        "review_started",
+        "review_completed",
+    ]
+    assert events[0] == {
+        "type": "auto_mode",
+        "event": "review_started",
+        "batch_id": plan["batch_id"],
+        "tool_call_ids": ["call-1"],
+    }
+    assert events[1] == {
+        "type": "auto_mode",
+        "event": "review_completed",
+        "batch_id": plan["batch_id"],
+        "tool_call_ids": ["call-1"],
+        "approved_tool_call_ids": ["call-1"],
+    }
+    assert "customer-secret" not in json.dumps(events)
+
+
+@pytest.mark.parametrize(
+    ("result", "disposition"),
+    [
+        (_deny_result(), "policy_deny"),
+        (AutoDecisionBatch(decisions=[]), "classifier_unavailable"),
+    ],
+)
+async def test_classifier_review_lifecycle_balances_blocked_results(
+    tmp_path: Path,
+    result: AutoDecisionBatch,
+    disposition: str,
+) -> None:
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(result),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    events = _capture_review_events(request)
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == disposition
+    lifecycle = [event for event in events if event["event"].startswith("review_")]
+    assert [event["event"] for event in lifecycle] == [
+        "review_started",
+        "review_completed",
+    ]
+    assert lifecycle[1]["approved_tool_call_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "corrupt_review_ids",
+    ["not-a-list", ["call-1", "call-1"], ["call-unknown"], [None]],
+)
+async def test_a_corrupt_review_id_list_keeps_the_decision_plan(
+    tmp_path: Path,
+    corrupt_review_ids: object,
+) -> None:
+    """The reviewed IDs only pause rows, so they must not void a denial.
+
+    A rejected plan routes to Manual, and for a batch with no `interrupt_on`
+    tools it drops the classifier's denials and runs the calls instead.
+    """
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_deny_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    plan["review_tool_call_ids"] = corrupt_review_ids
+    update = await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert update is not None
+    assert any(isinstance(message, ToolMessage) for message in update["messages"])
+
+
+async def test_repeated_review_ids_emit_one_completion_entry(
+    tmp_path: Path,
+) -> None:
+    """The client rejects a duplicated ID, so the producer must dedupe."""
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    plan["review_tool_call_ids"] = ["call-1", "call-1"]
+    events = _capture_review_events(request)
+    await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert events[-1]["event"] == "review_completed"
+    assert events[-1]["tool_call_ids"] == ["call-1"]
+
+
+async def test_classifier_review_completion_uses_hook_permission(
+    tmp_path: Path,
+) -> None:
+    """A final hook allow resumes a row even when the classifier denied it."""
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_deny_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    events = _capture_review_events(request)
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    update = await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        hook_behavior="allow",
+    )
+
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+    assert events[-1]["event"] == "review_completed"
+    assert events[-1]["approved_tool_call_ids"] == ["call-1"]
+    assert update is not None
+    assert not any(isinstance(message, ToolMessage) for message in update["messages"])
+
+
+async def test_classifier_review_lifecycle_completes_on_cancellation(
+    tmp_path: Path,
+) -> None:
+    started = asyncio.Event()
+
+    class _BlockingModel(_StructuredModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            _ = messages, kwargs
+            started.set()
+            await asyncio.Future()
+            return self.result
+
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_BlockingModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    events = _capture_review_events(request)
+    task = asyncio.create_task(
+        _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+    )
+
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert [event["event"] for event in events] == [
+        "review_started",
+        "review_completed",
+    ]
+    assert events[1]["approved_tool_call_ids"] == []
+
+
+async def test_classifier_review_lifecycle_completes_on_base_exception(
+    tmp_path: Path,
+) -> None:
+    """`aafter_model` never runs for a batch that dies here, so this must emit."""
+
+    class _InterruptedModel(_StructuredModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            _ = messages, kwargs
+            raise KeyboardInterrupt
+
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_InterruptedModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    events = _capture_review_events(request)
+
+    with pytest.raises(KeyboardInterrupt):
+        await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert [event["event"] for event in events] == [
+        "review_started",
+        "review_completed",
+    ]
+    assert events[1]["approved_tool_call_ids"] == []
+
+
+async def _plan_then_switch_mode(
+    tmp_path: Path,
+    mode: str,
+    *,
+    hook_behavior: Literal["allow", "deny"] | None = None,
+) -> list[dict[str, Any]]:
+    """Plan a batch under Auto, switch modes, then route it.
+
+    Each routing branch completes the review its `review_started` opened, so a
+    mode switch between the two phases must still resume the right rows.
+    """
+    middleware = _middleware(tmp_path)
+    request, store, key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": mode})
+    cast("dict[str, Any]", request.runtime.context)["approval_mode"] = mode
+    events = _capture_review_events(request)
+    # The completion is emitted before any approval prompt, so a patched
+    # `interrupt` that returns keeps the Manual branch out of a real graph.
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ):
+        await _route_plan(
+            middleware,
+            request,
+            plan,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+            hook_behavior=hook_behavior,
+        )
+    return [event for event in events if event["event"].startswith("review_")]
+
+
+async def test_yolo_routing_resumes_every_row_a_hook_did_not_deny(
+    tmp_path: Path,
+) -> None:
+    """YOLO runs every call a hook did not deny, so all those rows resume."""
+    lifecycle = await _plan_then_switch_mode(tmp_path, "yolo")
+
+    assert [event["event"] for event in lifecycle] == ["review_completed"]
+    assert lifecycle[0]["tool_call_ids"] == ["call-1"]
+    assert lifecycle[0]["approved_tool_call_ids"] == ["call-1"]
+
+
+async def test_yolo_routing_leaves_a_hook_denied_row_paused(tmp_path: Path) -> None:
+    """A hook `deny` is the only thing that narrows YOLO's resumed set."""
+    lifecycle = await _plan_then_switch_mode(tmp_path, "yolo", hook_behavior="deny")
+
+    assert [event["event"] for event in lifecycle] == ["review_completed"]
+    assert lifecycle[0]["approved_tool_call_ids"] == []
+
+
+async def test_manual_routing_resumes_only_hook_allowed_rows(tmp_path: Path) -> None:
+    """A classifier allow does not survive a switch to Manual.
+
+    The row stays paused until the human answers, so the completion must report
+    it as unapproved even though the classifier allowed it.
+    """
+    lifecycle = await _plan_then_switch_mode(tmp_path, "manual")
+
+    assert [event["event"] for event in lifecycle] == ["review_completed"]
+    assert lifecycle[0]["tool_call_ids"] == ["call-1"]
+    assert lifecycle[0]["approved_tool_call_ids"] == []
+
+
+async def test_manual_routing_resumes_a_hook_allowed_row(tmp_path: Path) -> None:
+    lifecycle = await _plan_then_switch_mode(tmp_path, "manual", hook_behavior="allow")
+
+    assert lifecycle[0]["approved_tool_call_ids"] == ["call-1"]
+
+
+async def test_a_rejected_plan_still_completes_its_review(tmp_path: Path) -> None:
+    """A plan that fails validation must not strand the rows it paused.
+
+    Nothing else emits for this batch, so without this completion the client
+    holds every reviewed row paused for the rest of the turn.
+    """
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    plan["phase"] = "not-a-phase"
+    events = _capture_review_events(request)
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ):
+        update = await _route_plan(
+            middleware,
+            request,
+            plan,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert update is not None
+    assert update["_auto_decision_plan"] is None
+    lifecycle = [event for event in events if event["event"].startswith("review_")]
+    assert [event["event"] for event in lifecycle] == ["review_completed"]
+    assert lifecycle[0]["tool_call_ids"] == ["call-1"]
+    assert lifecycle[0]["approved_tool_call_ids"] == []
+
+
+@pytest.mark.parametrize("mode", ["manual", "yolo"])
+async def test_non_auto_modes_emit_no_classifier_review_lifecycle(
+    tmp_path: Path, mode: str
+) -> None:
+    middleware = _middleware(tmp_path)
+    request, store, key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": mode})
+    cast("dict[str, Any]", request.runtime.context)["approval_mode"] = mode
+    events = _capture_review_events(request)
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert events == []
+
+
+async def test_classifier_review_event_writer_failure_does_not_block_the_batch(
+    tmp_path: Path,
+) -> None:
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    def fail_writer(_event: object) -> None:
+        msg = "custom stream unavailable"
+        raise RuntimeError(msg)
+
+    cast("Any", request.runtime).stream_writer = fail_writer
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert len(model.calls) == 1
+
+
+async def test_a_lost_classifier_review_completion_is_logged(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A lost start is cosmetic, but a lost completion strands paused rows."""
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    def drop_completions(event: dict[str, Any]) -> None:
+        if event.get("event") == "review_completed":
+            msg = "custom stream unavailable"
+            raise RuntimeError(msg)
+
+    cast("Any", request.runtime).stream_writer = drop_completions
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    with caplog.at_level("WARNING", logger="deepagents_code.auto_mode"):
+        await _route_plan(
+            middleware,
+            request,
+            plan,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if "Auto review completion" in record.getMessage()
+    ] == [
+        (
+            "Could not emit the Auto review completion for batch "
+            f"{plan['batch_id']}; the client may hold its reviewed tool rows "
+            "paused until the turn ends"
+        )
+    ]
+
+
+async def test_deterministic_siblings_stay_out_of_the_review_lifecycle(
+    tmp_path: Path,
+) -> None:
+    """Pausing an unreviewed row would freeze it: nothing ever resumes it."""
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result("call-reviewed")),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    events = _capture_review_events(request)
+
+    plan = await _plan_calls(
+        middleware,
+        request,
+        [
+            {
+                "name": "write_file",
+                "args": {
+                    "file_path": str(tmp_path / "src" / "module.py"),
+                    "content": "x = 1",
+                },
+                "id": "call-deterministic",
+                "type": "tool_call",
+            },
+            {
+                "name": "delete",
+                "args": {"file_path": "old.py"},
+                "id": "call-reviewed",
+                "type": "tool_call",
+            },
+        ],
+    )
+
+    assert plan["review_tool_call_ids"] == ["call-reviewed"]
+    assert [event["tool_call_ids"] for event in events] == [["call-reviewed"]]
 
 
 def _append_ask_user_exchange(
@@ -776,6 +1362,7 @@ async def test_routine_in_worktree_write_is_deterministically_allowed(
         tool_name="write_file",
         args={"file_path": str(tmp_path / "src" / "module.py"), "content": "x = 1"},
     )
+    events = _capture_review_events(request)
 
     plan = await _plan(
         middleware,
@@ -785,6 +1372,7 @@ async def test_routine_in_worktree_write_is_deterministically_allowed(
     )
 
     assert plan["decisions"][0]["disposition"] == "deterministic_allow"
+    assert events == []
 
 
 async def test_trusted_compaction_is_deterministically_allowed_without_human_review(
@@ -1862,6 +2450,48 @@ async def test_auto_async_counter_write_failure_routes_human(tmp_path: Path) -> 
 
     assert plan["fallback_reason"] == "control_state_unavailable"
     assert plan["decisions"][0]["disposition"] == "require_human"
+
+
+async def test_counter_write_failure_is_not_reported_as_classifier_approval(
+    tmp_path: Path,
+) -> None:
+    store = _FailingCounterStore()
+    middleware = _middleware(tmp_path)
+    request, _active_store, key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        store=store,
+    )
+    counters = _default_counters(ApprovalMode.AUTO)
+    counters["last_turn_id"] = "turn-1"
+    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, counters)
+    store.fail_counter_writes = True
+    events = _capture_review_events(request)
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ):
+        await _route_plan(
+            middleware,
+            request,
+            plan,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert plan["decisions"][0]["disposition"] == "require_human"
+    completed = next(event for event in events if event["event"] == "review_completed")
+    assert completed["approved_tool_call_ids"] == []
 
 
 async def test_unavailable_auto_control_state_surfaces_manual_fallback(
@@ -3663,7 +4293,6 @@ async def test_malformed_classifier_batch_blocks_call_and_increments_unavailable
         tool_name="delete",
         args={"file_path": "old.py"},
     )
-
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
     assert counters["consecutive_unavailable"] == 1
@@ -3818,6 +4447,7 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
         tool_name="delete",
         args={"file_path": "old.py"},
     )
+    events = _capture_review_events(request)
 
     plan = await _plan(
         middleware,
@@ -3825,9 +4455,21 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
         tool_name="delete",
         args={"file_path": "old.py"},
     )
+    await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     assert plan["decisions"][0]["reason"] == "classifier did not respond within 0.05s"
+    lifecycle = [event for event in events if event["event"].startswith("review_")]
+    assert [event["event"] for event in lifecycle] == [
+        "review_started",
+        "review_completed",
+    ]
 
 
 @pytest.mark.parametrize("budget", [0, -1.0, float("nan"), float("inf")])

@@ -3932,10 +3932,13 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
     # can remain visible without reopening a potentially newer file generation.
     user_result = managed_resolved.tier_health[USER_RANK]
     if isinstance(user_result, Invalid):
+        # `reason` names the rejected value ("Ignoring
+        # [models].auto_classifier=42 in config.toml (expected str)"). Dropping
+        # it left the user told their setting is malformed with no indication
+        # of what they wrote, on a surface they actually read.
         problem = (
-            "Ignoring malformed config.toml auto_classifier model "
-            "(expected a provider:model string); the Auto approval classifier "
-            "will review with the main agent model."
+            f"{user_result.reason}; expected a provider:model string. The Auto "
+            "approval classifier will review with the main agent model."
         )
         logger.warning("%s", problem)
         return None, problem

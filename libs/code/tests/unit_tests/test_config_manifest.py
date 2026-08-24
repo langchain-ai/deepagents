@@ -769,7 +769,12 @@ def test_resolve_auto_classifier_model_reports_malformed_problem(
 
     assert spec is None
     assert problem is not None
-    assert "malformed" in problem
+    # The value, not just the fact of rejection: this string is shown to the
+    # user, and "your setting is malformed" without saying which value was
+    # rejected gives them nothing to act on.
+    assert "auto_classifier=3" in problem
+    assert "config.toml" in problem
+    assert "provider:model" in problem
     assert "main agent model" in problem
 
 

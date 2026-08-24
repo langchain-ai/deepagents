@@ -133,10 +133,14 @@ def _entry_point_source(entry: importlib.metadata.EntryPoint) -> SourceInfo:
 def _entry_point_sources() -> DiscoveryResult:
     sources: list[SourceInfo] = []
     errors: list[str] = []
-    entries = sorted(
-        importlib.metadata.entry_points(group=ENTRY_POINT_GROUP),
-        key=lambda entry: (entry.name, entry.value),
-    )
+    try:
+        entries = sorted(
+            importlib.metadata.entry_points(group=ENTRY_POINT_GROUP),
+            key=lambda entry: (entry.name, entry.value),
+        )
+    except (ImportError, OSError, ValueError) as exc:
+        msg = f"Could not enumerate extension entry points: {exc}"
+        return DiscoveryResult(errors=(msg,))
     for entry in entries:
         try:
             sources.append(_entry_point_source(entry))

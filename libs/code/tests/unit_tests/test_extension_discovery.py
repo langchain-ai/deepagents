@@ -99,3 +99,28 @@ def test_unreadable_directory_entry_is_isolated(
     assert [source.path for source in result.sources] == [valid.resolve()]
     assert len(result.errors) == 1
     assert "broken.py" in result.errors[0]
+
+
+def test_broken_entry_point_metadata_is_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unreadable distribution metadata reports an error without aborting."""
+    valid = _extension(tmp_path / "user", "valid.py")
+    monkeypatch.setattr(
+        "deepagents_code.extensions.discovery.user_extensions_dir",
+        lambda: valid.parent,
+    )
+
+    def broken(**_: object) -> tuple[()]:
+        msg = "malformed entry_points.txt"
+        raise ValueError(msg)
+
+    monkeypatch.setattr(
+        "deepagents_code.extensions.discovery.importlib.metadata.entry_points", broken
+    )
+
+    result = discover_extensions()
+
+    assert [source.path for source in result.sources] == [valid.resolve()]
+    assert len(result.errors) == 1
+    assert "malformed entry_points.txt" in result.errors[0]

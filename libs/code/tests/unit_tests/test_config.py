@@ -2140,7 +2140,7 @@ class TestGetLangsmithProjectName:
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_agrees_with_config_manifest_resolution(self) -> None:
-        """`get_langsmith_project_name` and `resolve_scalar` agree on the project.
+        """`get_langsmith_project_name` and the resolver agree on the project.
 
         The `fallback_env_vars` mechanism exists so `config`/`config get` report
         the project agent traces actually route to. This pins that parity for
@@ -2150,11 +2150,32 @@ class TestGetLangsmithProjectName:
         from deepagents_code.config_manifest import (
             LANGSMITH_PROJECT_DEFAULT,
             get_option,
-            resolve_scalar,
+        )
+        from deepagents_code.configuration.resolver import resolver_from_snapshots
+        from deepagents_code.configuration.types import (
+            ProviderHealth,
+            ProviderStatus,
+            TomlSnapshot,
         )
 
         opt = get_option("tracing.langsmith_project")
         assert opt is not None
+
+        def resolve() -> object:
+            return (
+                resolver_from_snapshots(
+                    managed=TomlSnapshot(
+                        {},
+                        ProviderStatus("managed config", None, ProviderHealth.OK),
+                    ),
+                    user=TomlSnapshot(
+                        {},
+                        ProviderStatus("config.toml", None, ProviderHealth.OK),
+                    ),
+                )
+                .get(opt)
+                .value
+            )
 
         # Bare `LANGSMITH_PROJECT` set, no prefixed override, no settings value.
         bare_env = {
@@ -2168,7 +2189,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            manifest_value = resolve()
             assert get_langsmith_project_name() == manifest_value == "parity-bare"
 
         # Nothing configured: both fall back to the shared default.
@@ -2183,7 +2204,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            manifest_value = resolve()
             assert (
                 get_langsmith_project_name()
                 == manifest_value
@@ -2751,26 +2772,26 @@ class TestLangsmithSecretRedaction:
     def test_redaction_can_be_enabled_by_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """A `[tracing] langsmith_redact = true` in config.toml opts in."""
         monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
-        with patch(
-            "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": True}},
-        ):
-            assert is_langsmith_redaction_enabled() is True
+        (tmp_path / "config.toml").write_text(
+            "[tracing]\nlangsmith_redact = true\n", encoding="utf-8"
+        )
+        assert is_langsmith_redaction_enabled() is True
 
     def test_env_redaction_toggle_overrides_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """The redaction env var takes precedence over a conflicting config.toml."""
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
-        with patch(
-            "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": True}},
-        ):
-            assert is_langsmith_redaction_enabled() is False
+        (tmp_path / "config.toml").write_text(
+            "[tracing]\nlangsmith_redact = true\n", encoding="utf-8"
+        )
+        assert is_langsmith_redaction_enabled() is False
 
     def test_fail_closed_clears_env_when_sdk_disable_also_fails(
         self,
@@ -3790,7 +3811,7 @@ class TestGetTracingStatus:
     def test_empty_prefixed_project_falls_through_to_canonical(self) -> None:
         """An empty prefixed project must not shadow a real `LANGSMITH_PROJECT`.
 
-        Mirrors the manifest/runtime contract: `resolve_scalar` skips an empty
+        Mirrors the manifest/runtime contract: the resolver skips an empty
         `DEEPAGENTS_CODE_LANGSMITH_PROJECT` and uses bare `LANGSMITH_PROJECT`,
         unlike `resolve_env_var`, which would shadow it and report the default.
         """

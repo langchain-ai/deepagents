@@ -10,10 +10,10 @@ import pytest
 
 from deepagents_code.config_manifest import (
     ConfigOption,
+    MergeStrategy,
     OptionKind,
     get_config_options,
     get_option,
-    resolve_scalar,
 )
 from deepagents_code.configuration.provider import ConfigProvider
 from deepagents_code.configuration.providers import (
@@ -497,82 +497,15 @@ def test_rejected_managed_reload_keeps_last_enforceable_snapshot(
         service.invalidate_config_sources()
 
 
-@pytest.mark.parametrize(
-    ("managed_data", "user_data"),
-    [
-        pytest.param({}, {}, id="both-empty"),
-        pytest.param(
-            {},
-            {
-                "interpreter": {"memory_limit_mb": 256, "enable_interpreter": True},
-                "shell": {"allow_list": ["ls", "cat"]},
-                "startup": {"mode": "auto"},
-                "ui": {"theme": "monokai"},
-                "mcp": {"disabled_servers": ["alpha"]},
-                "threads": {"columns": {"title": {"width": 20}}},
-            },
-            id="user-populated",
-        ),
-        pytest.param(
-            {
-                "interpreter": {"memory_limit_mb": 64},
-                "shell": {"allow_list": ["git"]},
-                "startup": {"mode": "manual"},
-                "mcp": {"disabled_servers": ["alpha"]},
-                "threads": {"columns": {"title": {"width": 10}}},
-            },
-            {
-                "interpreter": {"memory_limit_mb": 256},
-                "shell": {"allow_list": ["ls"]},
-                "startup": {"mode": "auto"},
-                "mcp": {"disabled_servers": ["beta"]},
-                "threads": {"columns": {"summary": {"width": 30}}},
-            },
-            id="both-populated-managed-wins",
-        ),
-    ],
-)
-def test_resolver_get_matches_resolve_scalar_for_every_manifest_option(
-    managed_data: dict[str, Any],
-    user_data: dict[str, Any],
-) -> None:
-    """The compatibility wrapper and provider resolver remain equivalent.
+def test_real_manifest_options_merge_across_tiers() -> None:
+    """Managed policy must compose with the user tier, not replace it.
 
-    Parametrized with populated tiers on purpose. With both tables empty every
-    option takes the default path, so the union, deep-merge, and durable-mask
-    surfaces - the ones this extraction could actually regress - never run.
-    """
-    managed = TomlSnapshot(
-        managed_data,
-        ProviderStatus("managed config", None, ProviderHealth.OK),
-    )
-    user = TomlSnapshot(
-        user_data,
-        ProviderStatus("config.toml", None, ProviderHealth.OK),
-    )
-    resolver = resolver_from_snapshots(managed, user)
-    resolved = resolver.resolve_all()
-
-    for option in get_config_options():
-        value, source = resolve_scalar(
-            option,
-            toml_data=user.data,
-            managed_toml_data=managed.data,
-        )
-        actual = resolved[option.key]
-        actual_source = " + ".join(
-            actual.provider_status[rank].name for rank in actual.ranks
-        )
-        assert (actual.value, actual_source) == (value, source), option.key
-
-
-def test_populated_tiers_actually_reach_the_resolver() -> None:
-    """Guard the oracle above: its fixtures must not all resolve to defaults.
-
-    The equivalence test compares two paths that now share `_resolve`, so it
-    can only catch a regression in the layers above it - and only for options
-    the fixtures actually populate. If these keys ever stop being read, the
-    parametrization silently degrades back to a default-only sweep.
+    `MergeStrategy` is declared per option in the manifest, and the other merge
+    tests use synthetic providers -- so nothing else pins the wiring for a real
+    option. A `UNION` deny-list flipped to `REPLACE` would silently drop every
+    user entry the moment an administrator denies one server, and a
+    `DEEP_MERGE` table flipped the same way would drop the user's sibling
+    columns. Both read as "policy applied" rather than as data loss.
     """
     managed = TomlSnapshot(
         {
@@ -590,8 +523,9 @@ def test_populated_tiers_actually_reach_the_resolver() -> None:
         },
         ProviderStatus("config.toml", None, ProviderHealth.OK),
     )
-    resolved = resolver_from_snapshots(managed, user).resolve_all()
+    resolved = resolver_from_snapshots(managed=managed, user=user).resolve_all()
 
+    # A REPLACE scalar is the control: the stronger rank wins outright.
     startup = resolved["startup.mode"]
     assert startup.value == "manual"
     assert startup.ranks == (MANAGED_RANK,)
@@ -608,6 +542,249 @@ def test_populated_tiers_actually_reach_the_resolver() -> None:
     assert set(columns.ranks) == {MANAGED_RANK, USER_RANK}
     assert isinstance(columns.value, dict)
     assert set(columns.value) == {"title", "summary"}
+
+
+def test_toml_snapshot_returns_the_generation_in_force() -> None:
+    """The accessor exists so a caller can share this resolver's generation.
+
+    Previously reached only indirectly, through
+    `_resolve_option_without_managed`.
+    """
+    managed = TomlSnapshot.from_table("managed config", {"startup": {"mode": "manual"}})
+    user = TomlSnapshot.from_table("config.toml", {"startup": {"mode": "auto"}})
+    resolver = resolver_from_snapshots(managed=managed, user=user)
+
+    assert resolver.toml_snapshot(MANAGED_RANK) == managed
+    assert resolver.toml_snapshot(USER_RANK) == user
+    # Environment and default providers carry no file snapshot.
+    assert resolver.toml_snapshot(ENVIRONMENT_RANK) is None
+    assert resolver.toml_snapshot(DEFAULT_RANK) is None
+
+
+def test_healthy_managed_snapshot_refuses_unenforceable_policy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Policy that parses but cannot be enforced must stop the launch.
+
+    Covered only through `_reload_values` before this; the function is the
+    startup gate, so its own contract deserves a direct test.
+    """
+    from deepagents_code.configuration import service
+    from unit_tests.conftest import redirect_managed_config
+
+    managed_path = tmp_path / "managed.toml"
+    redirect_managed_config(monkeypatch, managed_path)
+
+    managed_path.write_text("[shell]\nallow_list = []\n", encoding="utf-8")
+    service.invalidate_config_sources()
+    try:
+        assert service.get_healthy_managed_snapshot().data == {
+            "shell": {"allow_list": []}
+        }
+
+        # A known section as a scalar can erase a user subtree, so it is
+        # rejected rather than resolved in the user's favor.
+        managed_path.write_text("shell = 5\n", encoding="utf-8")
+        service.invalidate_config_sources()
+        with pytest.raises(service.ManagedPolicyError):
+            service.get_healthy_managed_snapshot()
+
+        # A file that does not parse at all is a different failure.
+        managed_path.write_text("[shell\n", encoding="utf-8")
+        service.invalidate_config_sources()
+        with pytest.raises(service.ManagedConfigError):
+            service.get_healthy_managed_snapshot()
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_reload_with_replacements_rejects_an_unknown_rank(tmp_path: Path) -> None:
+    """A replacement for a rank this resolver does not have is a mistake."""
+    managed_path = tmp_path / "managed.toml"
+    managed_path.write_text('startup.mode = "manual"\n', encoding="utf-8")
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot(
+            {"startup": {"mode": "manual"}},
+            ProviderStatus("managed config", managed_path, ProviderHealth.OK),
+        ),
+        user=TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+    )
+
+    with pytest.raises(ValueError, match="unknown provider ranks"):
+        resolver.reload_with_replacements(
+            {
+                999: TomlFileProvider(
+                    "managed config",
+                    managed_path,
+                    999,
+                    True,
+                )
+            }
+        )
+
+
+def test_reload_with_replacements_rejects_an_unusable_source(tmp_path: Path) -> None:
+    """An unusable replacement would silently drop the tier's restrictions.
+
+    Replacements bypass `TomlFileProvider.reload`, and with it the guarantee
+    that a snapshot the source cannot use never displaces the last usable one.
+    An unusable snapshot carries an empty table, which resolves as "declares
+    nothing" -- so installing one at `MANAGED_RANK` reads as "no policy".
+    """
+    managed_path = tmp_path / "managed.toml"
+    managed_path.write_text("[startup\n", encoding="utf-8")
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot(
+            {"startup": {"mode": "manual"}},
+            ProviderStatus("managed config", managed_path, ProviderHealth.OK),
+        ),
+        user=TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+    )
+    broken = TomlFileProvider("managed config", managed_path, MANAGED_RANK, True)
+    broken.reload()
+
+    with pytest.raises(ValueError, match="unusable"):
+        resolver.reload_with_replacements({MANAGED_RANK: broken})
+
+
+def test_an_ignored_managed_snapshot_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A snapshot that would be discarded must fail loudly instead.
+
+    `managed_snapshot` is honored on a cache miss and installed on a refresh,
+    but a cache hit without `refresh_managed` keeps the generation already in
+    force. That is correct for the preview path, which passes the snapshot it
+    is already enforcing -- and silently wrong for anyone who passes a newer
+    one and expects it to take effect.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import resolver as resolver_module, service
+    from unit_tests.conftest import redirect_managed_config
+
+    managed_path = tmp_path / "managed.toml"
+    managed_path.write_text('startup.mode = "manual"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed_path)
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(
+        resolver_module, "_resolver_cache", resolver_module._ResolverCache()
+    )
+    service.invalidate_config_sources()
+    try:
+        # Populate the cache, then offer a different generation without asking
+        # for it to be installed.
+        resolver_module.get_config_resolver()
+        newer = TomlSnapshot(
+            {"startup": {"mode": "auto"}},
+            ProviderStatus("managed config", managed_path, ProviderHealth.OK),
+        )
+
+        with pytest.raises(ValueError, match="different generation"):
+            resolver_module.get_config_resolver(managed_snapshot=newer)
+
+        # The same generation is what the preview path passes, and it is fine.
+        installed = resolver_module.get_config_resolver().toml_snapshot(MANAGED_RANK)
+        assert installed is not None
+        assert (
+            resolver_module.get_config_resolver(managed_snapshot=installed) is not None
+        )
+    finally:
+        service.invalidate_config_sources()
+
+
+def _nest(keys: tuple[str, ...], value: object) -> dict[str, Any]:
+    """Wrap `value` in the nested tables named by a manifest option's keys."""
+    nested: dict[str, Any] = {keys[-1]: value}
+    for key in reversed(keys[:-1]):
+        nested = {key: nested}
+    return nested
+
+
+# Every option that must compose its tiers rather than replace them.
+#
+# Frozen deliberately: deriving this from `option.merge_strategy` would be a
+# tautology, because a downgraded option simply drops out of the list and
+# stops being tested. The expected strategy has to be written down here for a
+# downgrade to fail anything.
+_COMPOSING_OPTIONS = {
+    "display.themes": MergeStrategy.DEEP_MERGE,
+    "display.terminal_themes": MergeStrategy.DEEP_MERGE,
+    "models.providers": MergeStrategy.DEEP_MERGE,
+    "agents.async_subagents": MergeStrategy.DEEP_MERGE,
+    "sandboxes.providers": MergeStrategy.DEEP_MERGE,
+    "threads.columns": MergeStrategy.DEEP_MERGE,
+    "mcp.enabled_project_server_approvals": MergeStrategy.DEEP_MERGE,
+    "mcp.disabled_project_servers": MergeStrategy.UNION,
+    "mcp.disabled_servers": MergeStrategy.UNION,
+}
+
+
+def test_composing_options_are_the_expected_set() -> None:
+    """A new or removed composing option must update the frozen table.
+
+    Without this, `_COMPOSING_OPTIONS` silently stops covering the manifest:
+    a new `DEEP_MERGE` table would ship with no merge coverage at all.
+    """
+    actual = {
+        option.key: option.merge_strategy
+        for option in get_config_options()
+        if option.merge_strategy is not MergeStrategy.REPLACE
+    }
+
+    assert actual == _COMPOSING_OPTIONS
+
+
+@pytest.mark.parametrize("key", sorted(_COMPOSING_OPTIONS))
+def test_every_composing_option_composes(key: str) -> None:
+    """Every non-`REPLACE` option must keep both tiers' contributions.
+
+    The test above names three options, which is enough to pin those three and
+    nothing else: flipping `display.terminal_themes`, `agents.async_subagents`,
+    or `sandboxes.providers` to `REPLACE` passed the whole suite.
+
+    Losing this is silent and looks like success: a `UNION` deny-list flipped
+    to `REPLACE` drops every user entry the moment an administrator denies one
+    server, and a `DEEP_MERGE` table drops the user's sibling leaves. Both
+    read as "policy applied" rather than as data loss.
+    """
+    option = get_option(key)
+    assert option is not None
+    assert option.toml_keys, f"{key} must declare the table it composes"
+    strategy = _COMPOSING_OPTIONS[key]
+    assert option.merge_strategy is strategy, (
+        f"{key} must stay {strategy}: a weaker strategy discards a tier"
+    )
+
+    if strategy is MergeStrategy.UNION:
+        managed_value: object = ["from-managed"]
+        user_value: object = ["from-user"]
+    else:
+        managed_value = {"from_managed": {"width": 10}}
+        user_value = {"from_user": {"width": 20}}
+    resolved = resolver_from_snapshots(
+        managed=TomlSnapshot(
+            _nest(option.toml_keys, managed_value),
+            ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        user=TomlSnapshot(
+            _nest(option.toml_keys, user_value),
+            ProviderStatus("config.toml", None, ProviderHealth.OK),
+        ),
+    ).get(option)
+
+    assert set(resolved.ranks) == {MANAGED_RANK, USER_RANK}, (
+        f"{key} ({strategy}) dropped a tier"
+    )
+    if strategy is MergeStrategy.UNION:
+        assert isinstance(resolved.value, list)
+        assert set(resolved.value) == {"from-managed", "from-user"}, (
+            f"{key} did not union both tiers"
+        )
+    else:
+        assert isinstance(resolved.value, dict)
+        assert set(resolved.value) == {"from_managed", "from_user"}, (
+            f"{key} did not merge sibling leaves"
+        )
 
 
 def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> None:
@@ -848,7 +1025,7 @@ def test_a_pathless_provider_does_not_read_the_working_directory(
         ProviderStatus("managed config", None, ProviderHealth.MISSING),
     )
     user = TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.MISSING))
-    resolver = resolver_from_snapshots(managed, user)
+    resolver = resolver_from_snapshots(managed=managed, user=user)
     option = get_option("startup.mode")
     assert option is not None
 
@@ -1044,3 +1221,32 @@ def test_resolved_value_does_not_alias_the_mappings_it_was_given() -> None:
     )
 
     assert set(resolved.provider_status) == {USER_RANK}
+
+
+def test_provenance_rank_without_provider_status_is_rejected() -> None:
+    """`ranks` falls back to `provenance`, so it needs the same guard.
+
+    `_ranked_source` indexes `provider_status` by whatever `ranks` returns.
+    Validating only `selected_ranks` left the documented `KeyError` reachable
+    through the fallback branch, which is the one an external constructor takes
+    when it leaves `selected_ranks` empty.
+    """
+    with pytest.raises(ValueError, match="contributing ranks"):
+        ResolvedValue(
+            value=None,
+            provenance={USER_RANK: frozenset({()})},
+            tier_health={},
+            provider_status={},
+        )
+
+
+def test_selected_rank_without_provider_status_is_still_rejected() -> None:
+    """The original guard is unchanged."""
+    with pytest.raises(ValueError, match="contributing ranks"):
+        ResolvedValue(
+            value=None,
+            provenance={},
+            tier_health={},
+            provider_status={},
+            selected_ranks=(USER_RANK,),
+        )

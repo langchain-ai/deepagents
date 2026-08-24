@@ -270,10 +270,11 @@ def _resume_term_program() -> str | None:
     """Return the `TERM_PROGRAM` value to echo in the resume hint, if any.
 
     Gated on `features.resume_term_program` (off unless the user opts in, on by
-    default in debug or experimental mode), so this reads `config.toml` from
-    disk. The value comes from `LAUNCH_TERM_PROGRAM` -- the snapshot `cli_main`
-    takes at process entry -- so a `TERM_PROGRAM` that only appears later, from
-    a project or global `.env` file, never reaches the hint.
+    default in debug or experimental mode), so this resolves the option through
+    the shared config resolver. The value comes from `LAUNCH_TERM_PROGRAM` --
+    the snapshot `cli_main` takes at process entry -- so a `TERM_PROGRAM` that
+    only appears later, from a project or global `.env` file, never reaches the
+    hint.
 
     Returns:
         The printable launch-time value when the feature is enabled, else `None`.
@@ -284,11 +285,8 @@ def _resume_term_program() -> str | None:
         `VAR=value` prefix. POSIX markers (`SHELL` from git-bash/MSYS,
         `MSYSTEM`, `WSL_DISTRO_NAME`) restore the prefix there.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("features.resume_term_program")
     if option is None:
@@ -299,8 +297,9 @@ def _resume_term_program() -> str | None:
             "features.resume_term_program",
         )
         return None
-    enabled, _ = resolve_scalar(option, toml_data=load_config_toml())
-    if not enabled:
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    if not resolved.value:
         return None
 
     raw = os.environ.get(LAUNCH_TERM_PROGRAM, "").strip()

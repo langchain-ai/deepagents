@@ -16297,6 +16297,11 @@ class DeepAgentsApp(App):
                 ErrorMessage("Offload failed: no dcode server is connected.")
             )
             return
+        # Set once the server reports a committed compaction. Everything after
+        # that point is local reporting, and a failure there must not tell the
+        # user the offload failed -- they would run it again on an already
+        # compacted conversation.
+        committed = False
         try:
             await self._set_spinner("Offloading")
             from deepagents_code._cli_context import CLIContext
@@ -16341,6 +16346,7 @@ class DeepAgentsApp(App):
                     )
                 )
                 return
+            committed = True
 
             # The server reports `count_tokens_approximately` over the effective
             # conversation, so these are conversation-scale estimates.
@@ -16466,6 +16472,18 @@ class DeepAgentsApp(App):
         except Exception as exc:
             from deepagents_code.client.remote_client import format_agent_exception
 
+            if committed:
+                # The server already compacted and persisted. Reporting the
+                # rendering failure as "Offload failed" would send the user to
+                # offload a second time, so name what actually broke.
+                logger.exception("Server offload committed but reporting failed")
+                await self._mount_message(
+                    ErrorMessage(
+                        "The conversation was offloaded, but the result could "
+                        "not be displayed. Check logs for details."
+                    )
+                )
+                return
             logger.exception("Server offload failed")
             await self._mount_message(
                 ErrorMessage(f"Offload failed: {format_agent_exception(exc)}")

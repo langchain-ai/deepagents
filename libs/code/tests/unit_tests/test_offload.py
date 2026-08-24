@@ -278,6 +278,47 @@ class TestOffloadCommand:
             assert "Offload failed" not in errors
             tokens.assert_called_once_with(250, approximate=True)
 
+    async def test_failing_report_does_not_report_a_committed_offload_as_failed(
+        self,
+    ) -> None:
+        """A rendering failure after the commit must not say "Offload failed".
+
+        Everything between `aoffload` returning and the SessionStart hook is
+        local reporting over a conversation the server has already compacted.
+        Routing a failure there into the generic handler would tell the user to
+        offload again, compacting an already-compacted conversation.
+        """
+        app = DeepAgentsApp()
+        result = {
+            "status": "compacted",
+            "messages_offloaded": 6,
+            "messages_kept": 4,
+            "tokens_before": 1000,
+            "tokens_after": 250,
+            "archive_path": "/conversation_history/test-thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
+            with (
+                patch.object(
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+                ),
+                patch.object(
+                    app,
+                    "_on_tokens_update",
+                    new=MagicMock(side_effect=RuntimeError("status bar exploded")),
+                ),
+            ):
+                await app._handle_offload()
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "could not be displayed" in errors
+            assert "Offload failed" not in errors
+
     async def test_session_start_hook_fires_after_a_committed_offload(self) -> None:
         """The `COMPACT` lifecycle event still reaches configured hooks."""
         from deepagents_code.hooks.models.domain import SessionStartCause

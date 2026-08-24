@@ -19,7 +19,7 @@ import shutil
 import signal
 import sys
 import traceback
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
@@ -4383,7 +4383,7 @@ def _verify_interpreter_or_exit() -> None:
         sys.exit(1)
 
 
-def _config_provider_statuses() -> dict[int, "ProviderStatus"]:
+def _config_provider_statuses() -> Mapping[int, "ProviderStatus"]:
     """Return shared provider health without resolving an option."""
     from deepagents_code.configuration.resolver import get_config_resolver
 

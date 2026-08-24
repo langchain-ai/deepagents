@@ -1672,10 +1672,10 @@ def test_rejected_managed_privilege_value_stops_the_launch(
     try:
         if expected_exit:
             with pytest.raises(SystemExit) as excinfo:
-                main._apply_managed_runtime_policy(args)
+                main._apply_managed_runtime_exceptions(args)
             assert excinfo.value.code == 78
         else:
-            main._apply_managed_runtime_policy(args)
+            main._apply_managed_runtime_exceptions(args)
     finally:
         service.invalidate_config_sources()
 
@@ -1708,11 +1708,9 @@ def test_managed_auto_mode_does_not_set_the_interactive_only_flag(
     model_config.clear_caches()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        assert main._resolve_approval_mode(args).value == "auto"
         assert args.auto_approve is False
-        assert args.yolo is False
-        # The mode still reaches the runtime through the merged config.
-        assert model_config.load_startup_mode() == "auto"
+        assert args.yolo is True
     finally:
         service.invalidate_config_sources()
         model_config.clear_caches()
@@ -1740,7 +1738,7 @@ def test_managed_sandbox_default_does_not_force_a_sandbox(
         for unsandboxed in ("none", None):
             args = _managed_policy_args()
             args.sandbox = unsandboxed
-            main._apply_managed_runtime_policy(args)
+            main._apply_managed_runtime_exceptions(args)
             assert args.sandbox == unsandboxed
     finally:
         service.invalidate_config_sources()
@@ -1767,7 +1765,7 @@ def test_unavailable_managed_sandbox_leaves_an_unsandboxed_launch_alone(
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        main._apply_managed_runtime_exceptions(args)
         assert args.sandbox == "none"
     finally:
         service.invalidate_config_sources()
@@ -1796,7 +1794,7 @@ def test_unavailable_managed_sandbox_stops_a_sandboxed_launch(
     args.sandbox = "not-a-real-provider"
     try:
         with pytest.raises(SystemExit) as excinfo:
-            main._apply_managed_runtime_policy(args)
+            main._apply_managed_runtime_exceptions(args)
         assert excinfo.value.code == 78
     finally:
         service.invalidate_config_sources()
@@ -2228,7 +2226,7 @@ def test_managed_auto_classifier_does_not_set_the_acp_incompatible_flag(
     model_config.clear_caches()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        main._apply_managed_runtime_exceptions(args)
         assert args.auto_classifier_model is None
         # The value still reaches the runtime through the manifest resolver.
         sources = service.get_config_sources()
@@ -3279,11 +3277,11 @@ def test_managed_startup_mode_revokes_a_user_yolo_flag(
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        assert main._resolve_approval_mode(args).value == "manual"
     finally:
         service.invalidate_config_sources()
 
-    assert args.yolo is False
+    assert args.yolo is True
     assert args.auto_approve is False
 
 
@@ -3319,7 +3317,7 @@ def test_managed_auto_classifier_clears_the_cli_flag(
     args = _managed_policy_args()
     args.auto_classifier_model = "openai:user-weaker-model"
     try:
-        main._apply_managed_runtime_policy(args)
+        main._apply_managed_runtime_exceptions(args)
         assert args.auto_classifier_model is None
         # The managed value still reaches the runtime through the resolver the
         # flag normally defers to.
@@ -3332,12 +3330,13 @@ def test_managed_auto_classifier_clears_the_cli_flag(
         model_config.clear_caches()
 
 
-def test_managed_shell_allow_list_clears_the_cli_grant(
+def test_managed_shell_allow_list_masks_the_cli_grant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A managed allow list must displace `--shell-allow-list all`."""
     from deepagents_code import main
+    from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration import service
 
     managed = tmp_path / "managed.toml"
@@ -3346,11 +3345,13 @@ def test_managed_shell_allow_list_clears_the_cli_grant(
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        option = get_option("shell.allow_list")
+        assert option is not None
+        assert main._resolver_for_args(args).get(option).value == ["ls"]
     finally:
         service.invalidate_config_sources()
 
-    assert args.shell_allow_list is None
+    assert args.shell_allow_list == "all"
 
 
 def test_managed_recursion_limit_is_range_checked_before_it_wins(
@@ -3367,11 +3368,12 @@ def test_managed_recursion_limit_is_range_checked_before_it_wins(
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        main._resolver_for_args(args)
+        assert main._resolved_recursion_limit() == 500
     finally:
         service.invalidate_config_sources()
 
-    assert args.recursion_limit == 500
+    assert args.recursion_limit is None
 
 
 @pytest.mark.parametrize(

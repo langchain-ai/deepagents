@@ -1505,7 +1505,7 @@ api_key_url = "javascript:alert(1)"
             content = str(help_line.content)
         assert "Ctrl+R reload" in content
 
-    async def test_advanced_copy_flags_reload_and_relaunch_caveat(self) -> None:
+    async def test_advanced_copy_flags_reload_and_restart_caveat(self) -> None:
         """Advanced env-var copy points at Ctrl+R and the separate-shell caveat."""
         app = _AuthHostApp()
         async with app.run_test() as pilot:
@@ -1515,7 +1515,7 @@ api_key_url = "javascript:alert(1)"
                 app.screen.query_one("#auth-prompt-key-meta", Static).content
             )
         assert "Ctrl+R" in key_meta
-        assert "relaunch" in key_meta
+        assert "New shell exports require restarting dcode" in key_meta
 
     async def test_ctrl_d_opens_confirm_then_deletes(self) -> None:
         """Ctrl+D opens the confirmation modal; Enter completes the delete."""

@@ -7437,13 +7437,19 @@ class TestPromptSearchPanel:
             chat._history.add(prompt)
 
     async def test_ctrl_r_opens_inline_panel_above_input(self, tmp_path) -> None:
-        from deepagents_code.tui.widgets.prompt_search import PromptSearchPanel
+        from deepagents_code.tui.widgets.prompt_search import (
+            PromptSearchInput,
+            PromptSearchPanel,
+        )
 
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             chat._history.history_file = tmp_path / "history.jsonl"
             self._seed_history(chat, ["first prompt", "second prompt"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("second")
             await pilot.pause()
 
             tier = chat.open_prompt_search()
@@ -7454,9 +7460,10 @@ class TestPromptSearchPanel:
             panel = app.query_one(PromptSearchPanel)
             assert panel.styles.display == "block"
             assert chat._prompt_search_active is True
-            # Draft is untouched while searching
-            assert chat._text_area is not None
-            assert chat._text_area.text == ""
+            assert app.query_one(PromptSearchInput).value == "second"
+            assert chat._prompt_search_filtered == ["second prompt"]
+            # Seeding the filter does not consume or change the draft.
+            assert chat._text_area.text == "second"
 
     async def test_second_ctrl_r_escalates_to_modal(self, tmp_path) -> None:
         app = _RecordingApp()
@@ -7720,8 +7727,6 @@ class TestPromptSearchPanel:
             self._seed_history(chat, ["hello"])
             await pilot.pause()
             assert chat._text_area is not None
-            chat._text_area.insert("draft")
-            await pilot.pause()
 
             chat.open_prompt_search()
             await pilot.pause()
@@ -7730,7 +7735,7 @@ class TestPromptSearchPanel:
             await pilot.pause()
 
             assert chat._prompt_search_active is False
-            assert chat._text_area.text == "draft"
+            assert chat._text_area.text == ""
 
     async def test_completion_active_routes_to_modal(self, tmp_path) -> None:
         app = _RecordingApp()
@@ -7739,10 +7744,14 @@ class TestPromptSearchPanel:
             chat._history.history_file = tmp_path / "history.jsonl"
             self._seed_history(chat, ["hello"])
             await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("hello")
+            await pilot.pause()
 
             # Simulate an active completion popup
             chat._current_suggestions = [("/help", "Show help")]
             assert chat.open_prompt_search() == "modal"
+            assert chat.escalate_prompt_search() == "hello"
 
     async def test_tab_pages_through_results(self, tmp_path) -> None:
         app = _RecordingApp()

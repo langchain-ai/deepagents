@@ -96,9 +96,8 @@ class PromptClipboardScreen(ModalScreen[str | None]):
 
         Args:
             prompts: Unique prompts, newest first.
-            initial_query: Filter text to seed the search input with, used when
-                escalating from the inline search panel so the typed query
-                carries over.
+            initial_query: Filter text to seed the search input with, either
+                from the chat input or an inline search query.
             empty_message: Replaces the "no prompts yet" text when `prompts` is
                 empty for a reason worth naming, such as an unreadable history
                 file.

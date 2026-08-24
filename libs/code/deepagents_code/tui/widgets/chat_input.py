@@ -3744,9 +3744,10 @@ class ChatInput(Vertical):
     def open_prompt_search(self) -> Literal["inline", "modal", "noop"]:
         """Open the inline prompt search, or escalate an open one to the modal.
 
-        First call shows the inline panel with a fresh prompt snapshot and
-        saves the current draft for cancel-restore; a call while the panel is
-        already open means the second Ctrl+R tier.
+        First call shows the inline panel with a fresh prompt snapshot, seeds
+        its filter from the current draft, and saves that draft for
+        cancel-restore; a call while the panel is already open means the second
+        Ctrl+R tier.
 
         Returns:
             `"inline"` when the panel opened, `"modal"` when the caller should
@@ -3768,7 +3769,7 @@ class ChatInput(Vertical):
         # Both tiers go through the public accessor so they always show the
         # same snapshot.
         self._prompt_search_prompts = self.recent_prompts()
-        self._prompt_search_query = ""
+        self._prompt_search_query = self._text_area.text
         self._prompt_search_index = 0
         self._warn_if_history_unreadable()
         self._refresh_prompt_search_panel()
@@ -3778,12 +3779,20 @@ class ChatInput(Vertical):
         return "inline"
 
     def escalate_prompt_search(self) -> str:
-        """Close the inline panel for the modal tier, keeping the draft.
+        """Return the modal filter and close any open inline panel.
+
+        An active inline search supplies its current query. When autocomplete
+        sends Ctrl+R directly to the modal tier, the current chat input is the
+        query instead.
 
         Returns:
-            The typed query, so the modal's filter can be seeded with it.
+            The text to seed the modal's filter with.
         """
-        query = self._prompt_search_query
+        query = (
+            self._prompt_search_query
+            if self._prompt_search_active
+            else (self._text_area.text if self._text_area is not None else "")
+        )
         self._close_prompt_search(restore_draft=False, refocus=False)
         return query
 

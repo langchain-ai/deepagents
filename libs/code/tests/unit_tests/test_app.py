@@ -40708,9 +40708,11 @@ class TestPromptClipboard:
             assert chat_input is not None
             text_area = chat_input._text_area
             assert text_area is not None
-            monkeypatch.setattr(chat_input, "recent_prompts", lambda: ("saved prompt",))
-            text_area.insert("hello world")
-            text_area.move_cursor((0, len("hello ")))
+            monkeypatch.setattr(
+                chat_input, "recent_prompts", lambda: ("hello saved prompt",)
+            )
+            text_area.insert("hello")
+            text_area.move_cursor((0, len("hel")))
 
             # First Ctrl+R opens the inline panel; a second escalates to the
             # full modal.
@@ -40724,7 +40726,7 @@ class TestPromptClipboard:
             await pilot.pause()
             await pilot.pause()
 
-            assert chat_input.value == "hello saved promptworld"
+            assert chat_input.value == "helhello saved promptlo"
             assert app.focused is text_area
 
     async def test_escape_preserves_draft_and_cursor(
@@ -40815,6 +40817,41 @@ class TestPromptClipboard:
             await pilot.press("f", "i", "x")
             await pilot.pause()
             assert chat_input._prompt_search_query == "fix"
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.pause()
+
+            screen = cast("PromptClipboardScreen", app.screen)
+            assert isinstance(screen, PromptClipboardScreen)
+            assert screen.query_one("#prompt-filter", Input).value == "fix"
+            assert list(screen._filtered) == ["fix the bug"]
+
+    async def test_existing_chat_input_seeds_the_modal_filter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A draft becomes the initial query across both search tiers."""
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            text_area = chat_input._text_area
+            assert text_area is not None
+            monkeypatch.setattr(
+                chat_input,
+                "recent_prompts",
+                lambda: ("fix the bug", "add a feature"),
+            )
+            text_area.insert("fix")
+            await pilot.pause()
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert chat_input._prompt_search_query == "fix"
+            assert chat_input.value == "fix"
 
             await pilot.press("ctrl+r")
             await pilot.pause()

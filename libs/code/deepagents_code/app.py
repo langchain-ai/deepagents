@@ -1645,6 +1645,60 @@ def save_terminal_theme_mapping(term_program: str, name: str) -> bool:
     return _save_terminal_theme_mapping_result(term_program, name).ok
 
 
+def _managed_verdict(option_key: str) -> tuple[bool, bool]:
+    """Probe whether managed policy still decides an option after a user write.
+
+    Resolves the process managed snapshot against an empty user tier, so the
+    answer describes policy alone. `load_managed_config_toml()` defaults to
+    `refresh=False`: the write just made cannot have changed managed policy,
+    and re-reading it here would swap the snapshot every other reader observes.
+
+    Emitting the ranked diagnostics is the point, not a side effect. A
+    malformed managed entry is reported nowhere else, and this write is the
+    moment the user is told whether their change took effect.
+
+    Args:
+        option_key: Manifest key just written by the user.
+
+    Returns:
+        `(decided, rejected)` -- whether managed policy supplies the effective
+        value, and whether a managed entry for this option was present but
+        unusable. Both are `False` for an unknown option.
+    """
+    from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
+        get_option,
+        load_managed_config_toml,
+    )
+    from deepagents_code.configuration.resolver import (
+        MANAGED_RANK,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.service import managed_decided
+    from deepagents_code.configuration.types import (
+        Invalid,
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
+
+    option = get_option(option_key)
+    if option is None:
+        return False, False
+
+    resolved = resolver_from_snapshots(
+        managed=TomlSnapshot(
+            load_managed_config_toml(),
+            ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        user=TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+    ).get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    rejected = isinstance(resolved.tier_health.get(MANAGED_RANK), Invalid)
+    return managed_decided(_ranked_source(resolved)), rejected
+
+
 def _save_ui_bool_result(
     *,
     toml_key: str,
@@ -1680,49 +1734,23 @@ def _save_ui_bool_result(
             "error",
         )
 
-    from deepagents_code.config_manifest import (
-        _emit_ranked_diagnostics,
-        _ranked_source,
-        get_option,
-        load_managed_config_toml,
-    )
-
-    option = get_option(option_key)
-    if option is not None:
-        from deepagents_code.configuration.resolver import resolver_from_snapshots
-        from deepagents_code.configuration.service import managed_decided
-        from deepagents_code.configuration.types import (
-            ProviderHealth,
-            ProviderStatus,
-            TomlSnapshot,
+    decided, rejected = _managed_verdict(option_key)
+    if decided:
+        return _ConfigWriteResult(
+            True,
+            "Preference saved, but managed config remains effective.",
+            "warning",
         )
-
-        # Only the managed tier is being probed ("does policy still decide
-        # this option after the save?"), so resolve the process managed
-        # snapshot against an empty user tier rather than the shared resolver.
-        # `load_managed_config_toml()` defaults to `refresh=False`: the write
-        # just made cannot have changed managed policy, and re-reading it here
-        # would swap the snapshot every other reader observes.
-        resolved = resolver_from_snapshots(
-            managed=TomlSnapshot(
-                load_managed_config_toml(),
-                ProviderStatus("managed config", None, ProviderHealth.OK),
-            ),
-            user=TomlSnapshot(
-                {}, ProviderStatus("config.toml", None, ProviderHealth.OK)
-            ),
-        ).get(option)
-        # A malformed managed entry is the one signal an administrator has that
-        # their policy is not being applied, and this write is the moment the
-        # user is told policy still wins. Reporting the rejection is what makes
-        # that message actionable.
-        _emit_ranked_diagnostics(option, resolved)
-        if managed_decided(_ranked_source(resolved)):
-            return _ConfigWriteResult(
-                True,
-                "Preference saved, but managed config remains effective.",
-                "warning",
-            )
+    if rejected:
+        # The administrator who wrote the malformed policy is not at this
+        # keyboard and will never see the log line. Putting it in the toast
+        # gives the user something they can forward.
+        return _ConfigWriteResult(
+            True,
+            "Preference saved. A managed policy for this option was rejected "
+            "as malformed and is not being applied.",
+            "warning",
+        )
     return _ConfigWriteResult(True, repair_message)
 
 
@@ -10354,6 +10382,28 @@ class DeepAgentsApp(App):
             self.notify(
                 "Could not save the goal criteria preference. Auto will keep "
                 "asking for review; edit ~/.deepagents/config.toml to change it.",
+                severity="warning",
+                markup=False,
+            )
+            return
+        # `goals.auto_accept_criteria` declares `toml_keys`, so managed policy
+        # can decide it -- and this write reports "saved" either way. Without
+        # the probe the user is told their choice took effect while policy
+        # quietly keeps the opposite, on the setting that decides whether Auto
+        # applies generated goal criteria without review.
+        decided, rejected = await asyncio.to_thread(
+            _managed_verdict, "goals.auto_accept_criteria"
+        )
+        if decided:
+            self.notify(
+                "Preference saved, but managed config remains effective.",
+                severity="warning",
+                markup=False,
+            )
+        elif rejected:
+            self.notify(
+                "Preference saved. A managed policy for this option was "
+                "rejected as malformed and is not being applied.",
                 severity="warning",
                 markup=False,
             )

@@ -41135,3 +41135,67 @@ class TestColdCacheConfirmationBoundary:
         message = app.notify.call_args[0][0]
         assert "is not a table" in message
         assert "permissions" not in message
+
+
+class TestManagedVerdict:
+    """A user write must report whether managed policy overrode it.
+
+    `_save_ui_bool_result` reports "saved" whatever policy says, so the probe
+    is the only thing that turns a silently-overridden preference into a
+    message. `goals.auto_accept_criteria` had no probe at all.
+    """
+
+    def test_reports_managed_policy_as_effective(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A valid managed entry still decides after the user writes."""
+        from deepagents_code.app import _managed_verdict
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text("[goals]\nauto_accept_criteria = false\n", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+
+        decided, rejected = _managed_verdict("goals.auto_accept_criteria")
+
+        assert decided is True
+        assert rejected is False
+
+    def test_reports_a_malformed_managed_entry(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A malformed entry decides nothing but must not vanish.
+
+        It is the only signal an administrator has that their policy is inert,
+        and they are not at this keyboard -- so the caller turns this into a
+        toast rather than a log line.
+        """
+        from deepagents_code.app import _managed_verdict
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            '[goals]\nauto_accept_criteria = "not-a-bool"\n', encoding="utf-8"
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+
+        decided, rejected = _managed_verdict("goals.auto_accept_criteria")
+
+        assert decided is False
+        assert rejected is True
+
+    def test_reports_nothing_when_no_policy_is_installed(self) -> None:
+        """The common case stays quiet."""
+        from deepagents_code.app import _managed_verdict
+
+        assert _managed_verdict("goals.auto_accept_criteria") == (False, False)
+
+    def test_unknown_option_is_not_a_verdict(self) -> None:
+        """An unregistered key cannot be decided or rejected."""
+        from deepagents_code.app import _managed_verdict
+
+        assert _managed_verdict("not.a.real.option") == (False, False)

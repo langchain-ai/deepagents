@@ -17867,6 +17867,42 @@ class TestShellCommandInterrupt:
             rendered = app.query(AssistantMessage)
             assert any(w._content == "```text\nhi\n```" for w in rendered)
 
+    async def test_shell_output_skips_write_when_mount_is_skipped(self) -> None:
+        """A torn-down screen must not trigger a write on an unmounted widget."""
+        app = DeepAgentsApp()
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"secret\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        write_mock = AsyncMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+            # `_mount_message` returns False when `#messages` is gone or
+            # already detached; simulate that teardown race directly.
+            app._mount_message = AsyncMock(return_value=False)  # ty: ignore
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch(
+                    "deepagents_code.app.AssistantMessage.write_initial_content",
+                    new=write_mock,
+                ),
+            ):
+                await app._run_shell_task("echo secret", incognito=True)
+                await pilot.pause()
+
+        write_mock.assert_not_awaited()
+
     async def test_pending_shell_flushed_on_next_user_send(self) -> None:
         """Buffered `!` output is written to graph state on the next send."""
         app = DeepAgentsApp()

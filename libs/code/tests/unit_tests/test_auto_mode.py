@@ -807,6 +807,130 @@ async def test_classifier_review_lifecycle_completes_on_base_exception(
     assert events[1]["approved_tool_call_ids"] == []
 
 
+async def _plan_then_switch_mode(
+    tmp_path: Path,
+    mode: str,
+    *,
+    hook_behavior: Literal["allow", "deny"] | None = None,
+) -> list[dict[str, Any]]:
+    """Plan a batch under Auto, switch modes, then route it.
+
+    Each routing branch completes the review its `review_started` opened, so a
+    mode switch between the two phases must still resume the right rows.
+    """
+    middleware = _middleware(tmp_path)
+    request, store, key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": mode})
+    cast("dict[str, Any]", request.runtime.context)["approval_mode"] = mode
+    events = _capture_review_events(request)
+    # The completion is emitted before any approval prompt, so a patched
+    # `interrupt` that returns keeps the Manual branch out of a real graph.
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ):
+        await _route_plan(
+            middleware,
+            request,
+            plan,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+            hook_behavior=hook_behavior,
+        )
+    return [event for event in events if event["event"].startswith("review_")]
+
+
+async def test_yolo_routing_resumes_every_row_a_hook_did_not_deny(
+    tmp_path: Path,
+) -> None:
+    """YOLO runs every call a hook did not deny, so all those rows resume."""
+    lifecycle = await _plan_then_switch_mode(tmp_path, "yolo")
+
+    assert [event["event"] for event in lifecycle] == ["review_completed"]
+    assert lifecycle[0]["tool_call_ids"] == ["call-1"]
+    assert lifecycle[0]["approved_tool_call_ids"] == ["call-1"]
+
+
+async def test_yolo_routing_leaves_a_hook_denied_row_paused(tmp_path: Path) -> None:
+    """A hook `deny` is the only thing that narrows YOLO's resumed set."""
+    lifecycle = await _plan_then_switch_mode(tmp_path, "yolo", hook_behavior="deny")
+
+    assert [event["event"] for event in lifecycle] == ["review_completed"]
+    assert lifecycle[0]["approved_tool_call_ids"] == []
+
+
+async def test_manual_routing_resumes_only_hook_allowed_rows(tmp_path: Path) -> None:
+    """A classifier allow does not survive a switch to Manual.
+
+    The row stays paused until the human answers, so the completion must report
+    it as unapproved even though the classifier allowed it.
+    """
+    lifecycle = await _plan_then_switch_mode(tmp_path, "manual")
+
+    assert [event["event"] for event in lifecycle] == ["review_completed"]
+    assert lifecycle[0]["tool_call_ids"] == ["call-1"]
+    assert lifecycle[0]["approved_tool_call_ids"] == []
+
+
+async def test_manual_routing_resumes_a_hook_allowed_row(tmp_path: Path) -> None:
+    lifecycle = await _plan_then_switch_mode(tmp_path, "manual", hook_behavior="allow")
+
+    assert lifecycle[0]["approved_tool_call_ids"] == ["call-1"]
+
+
+async def test_a_rejected_plan_still_completes_its_review(tmp_path: Path) -> None:
+    """A plan that fails validation must not strand the rows it paused.
+
+    Nothing else emits for this batch, so without this completion the client
+    holds every reviewed row paused for the rest of the turn.
+    """
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    plan["phase"] = "not-a-phase"
+    events = _capture_review_events(request)
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ):
+        update = await _route_plan(
+            middleware,
+            request,
+            plan,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert update is not None
+    assert update["_auto_decision_plan"] is None
+    lifecycle = [event for event in events if event["event"].startswith("review_")]
+    assert [event["event"] for event in lifecycle] == ["review_completed"]
+    assert lifecycle[0]["tool_call_ids"] == ["call-1"]
+    assert lifecycle[0]["approved_tool_call_ids"] == []
+
+
 @pytest.mark.parametrize("mode", ["manual", "yolo"])
 async def test_non_auto_modes_emit_no_classifier_review_lifecycle(
     tmp_path: Path, mode: str

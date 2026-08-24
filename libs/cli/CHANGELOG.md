@@ -6,14 +6,9 @@ From 0.2.0 onward, `deepagents-cli` exposes `init`, `deploy`, `agents`, and `mcp
 
 ## [0.3.0](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.2.2...deepagents-cli==0.3.0) (2026-08-24)
 
+### ⚠️ Breaking Changes
 
-### ⚠ BREAKING CHANGES
-
-* **cli:** deprecate `deepagents-cli` in favor of `managed-deepagents` ([#5780](https://github.com/langchain-ai/deepagents/issues/5780))
-
-### Features
-
-* **cli:** deprecate `deepagents-cli` in favor of `managed-deepagents` ([#5780](https://github.com/langchain-ai/deepagents/issues/5780)) ([08e3768](https://github.com/langchain-ai/deepagents/commit/08e3768f7fdfa7bb8d8bf9cca8685e9daafa46eb))
+- Deprecated `deepagents-cli` in favor of `managed-deepagents` ([#5780](https://github.com/langchain-ai/deepagents/issues/5780), [08e3768](https://github.com/langchain-ai/deepagents/commit/08e3768f7fdfa7bb8d8bf9cca8685e9daafa46eb))
 
 ## [0.2.2](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.2.1...deepagents-cli==0.2.2) (2026-06-07)
 

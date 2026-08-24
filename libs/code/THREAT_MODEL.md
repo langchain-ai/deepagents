@@ -1,6 +1,6 @@
 # Threat Model: deepagents-code
 
-> **Note:** References to "the CLI" throughout this document describe the `deepagents-code` runtime.
+> **Note:** `deepagents-code` was forked from `deepagents-cli` at v0.1.0. References to "the CLI" throughout this document describe the `deepagents-code` runtime.
 
 > Generated: 2026-08-19 | Scope: libs/code only
 

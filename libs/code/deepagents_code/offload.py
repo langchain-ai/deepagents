@@ -7,16 +7,13 @@ import os
 import stat
 import tempfile
 import time
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePath
-from typing import cast
 
 logger = logging.getLogger(__name__)
 
 _FALLBACK_ARTIFACTS_ROOT = "/dcode-artifacts-fallback"
 
-DEFAULT_HISTORY_RETENTION_DAYS = 30
 _SECONDS_PER_DAY = 86_400
 
 CONVERSATION_HISTORY_DIRNAME = "conversation_history"
@@ -249,35 +246,32 @@ def _offload_fallback_root() -> Path:
 
 
 def _history_retention_days() -> int:
-    """Read the conversation-history retention window from user config.
+    """Resolve the conversation-history retention window through the manifest.
+
+    Uses the canonical `history.retention_days` option, so managed config, the
+    `DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS` env var, and `config.toml` all
+    apply with their normal precedence, and `dcode config` reports the same
+    value the sweep acts on. A malformed or negative value is rejected by the
+    resolver and falls through to the next source, ending at the default.
 
     Returns:
-        The configured non-negative retention window, or the default.
+        The resolved non-negative retention window in days; `0` disables the
+        sweep.
     """
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+    from deepagents_code.config_manifest import (
+        HISTORY_RETENTION_DAYS_DEFAULT,
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
 
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as config_file:
-            config = cast("dict[str, object]", tomllib.load(config_file))
-    except FileNotFoundError:
-        return DEFAULT_HISTORY_RETENTION_DAYS
-    except (OSError, tomllib.TOMLDecodeError):
-        logger.warning("Could not read [history] config; using default retention")
-        return DEFAULT_HISTORY_RETENTION_DAYS
-    history_value = config.get("history")
-    if history_value is None:
-        return DEFAULT_HISTORY_RETENTION_DAYS
-    if not isinstance(history_value, dict):
-        logger.warning("Invalid [history] config; using default retention")
-        return DEFAULT_HISTORY_RETENTION_DAYS
-    history = cast("dict[str, object]", history_value)
-    value = history.get("retention_days")
-    if value is None:
-        return DEFAULT_HISTORY_RETENTION_DAYS
+    option = get_option("history.retention_days")
+    if option is None:
+        return HISTORY_RETENTION_DAYS_DEFAULT
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
     if type(value) is int and value >= 0:
         return value
-    logger.warning("Invalid [history].retention_days; using default retention")
-    return DEFAULT_HISTORY_RETENTION_DAYS
+    return HISTORY_RETENTION_DAYS_DEFAULT
 
 
 def _delete_expired_archive(candidate: Path, archive_dir: Path, cutoff: float) -> bool:

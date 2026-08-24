@@ -2029,6 +2029,13 @@ class TestSweepOffloadedHistory:
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
         )
+        # Isolate from the developer's shell: resolution must see only the
+        # test's config.toml, never a real managed snapshot or exported env var.
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_managed_config_toml",
+            lambda **_: {},
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS", raising=False)
         return archive_dir
 
     def test_deletes_old_file_and_keeps_fresh_file(
@@ -2089,6 +2096,11 @@ class TestSweepOffloadedHistory:
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
             tmp_path / "missing.toml",
         )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_managed_config_toml",
+            lambda **_: {},
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS", raising=False)
 
         assert sweep_offloaded_history() == 0
 
@@ -2119,7 +2131,43 @@ class TestSweepOffloadedHistory:
         os.utime(archive, (old_time, old_time))
 
         assert sweep_offloaded_history() == 1
-        assert "Invalid [history].retention_days" in caplog.text
+        assert "retention_days" in caplog.text
+
+    def test_env_var_overrides_config_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The env var wins over `[history].retention_days` in config.toml."""
+        archive_dir = self._setup(
+            tmp_path, monkeypatch, "[history]\nretention_days = 30\n"
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS", "1")
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 2 * 86_400
+        os.utime(archive, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 1
+        assert not archive.exists()
+
+    def test_managed_config_takes_precedence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A managed `retention_days` outranks env var and config.toml."""
+        archive_dir = self._setup(
+            tmp_path, monkeypatch, "[history]\nretention_days = 1\n"
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS", "1")
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_managed_config_toml",
+            lambda **_: {"history": {"retention_days": 30}},
+        )
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 2 * 86_400
+        os.utime(archive, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 0
+        assert archive.exists()
 
     def test_unlink_failure_is_swallowed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

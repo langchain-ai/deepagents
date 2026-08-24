@@ -117,6 +117,13 @@ COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
 Zero or negative disables the suggestion.
 """
 
+HISTORY_RETENTION_DAYS_DEFAULT = 30
+"""Default number of days an offloaded conversation-history archive is retained.
+
+Single source of truth shared by the `history.retention_days` option and the
+startup sweep in `offload`, so introspection and the sweep cannot drift.
+"""
+
 SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT = 50.0
 """Default warning threshold in USD; zero or negative disables the warning."""
 
@@ -2097,6 +2104,19 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STRUCTURED,
         toml_keys=("threads", "columns"),
         merge_strategy=MergeStrategy.DEEP_MERGE,
+    ),
+    # --- History --------------------------------------------------------
+    ConfigOption(
+        key="history.retention_days",
+        group="History",
+        summary=(
+            "Days an offloaded conversation-history archive is kept before the "
+            "startup sweep deletes it (0 disables)."
+        ),
+        kind=OptionKind.NON_NEGATIVE_INT,
+        default=HISTORY_RETENTION_DAYS_DEFAULT,
+        env_var=_env_vars.HISTORY_RETENTION_DAYS,
+        toml_keys=("history", "retention_days"),
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(

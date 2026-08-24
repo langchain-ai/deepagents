@@ -42,7 +42,7 @@ from deepagents_code.config_manifest import (
     provider_package_name,
 )
 from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
-from unit_tests.conftest import resolve_option_for_test
+from unit_tests.conftest import redirect_managed_config, resolve_option_for_test
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -201,9 +201,10 @@ def test_no_hand_rolled_ui_config_readers() -> None:
 # went through the non-emitting `resolve_ranked_scalar` before it was retired.
 _SILENT_RESOLVER_READERS = frozenset(
     {
-        # The shared resolution primitive, not a reader: it returns the
-        # `ResolvedValue` and each caller emits against it.
+        # The shared resolution primitives, not readers: each returns the
+        # `ResolvedValue` and every caller emits against it.
         "config_manifest.py:_resolve_option",
+        "config_manifest.py:_resolve_option_without_managed",
         "client/commands/config.py:_option_provenance",
         "configuration/service.py:resolve_managed_option",
         "integrations/sandbox_config.py:load",
@@ -3939,6 +3940,98 @@ def test_resolve_recursion_limit_accepts_floor_and_ceiling(monkeypatch) -> None:
     assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_FLOOR
     monkeypatch.setenv(_env_vars.RECURSION_LIMIT, str(RECURSION_LIMIT_CEILING))
     assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_CEILING
+
+
+def test_recursion_limit_managed_fallthrough_keeps_shared_user_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A rejected managed limit falls through to the startup-generation file.
+
+    The managed fall-through used to re-parse `config.toml` off disk, so a
+    hand edit after startup changed a later-built agent's limit without
+    `/reload` while every other reader stayed on the old generation.
+    """
+    from deepagents_code.config_manifest import resolve_recursion_limit
+    from deepagents_code.configuration import service
+
+    config = tmp_path / "config.toml"
+    config.write_text("[runtime]\nrecursion_limit = 2000\n", encoding="utf-8")
+    managed = tmp_path / "managed_config.toml"
+    managed.write_text("[runtime]\nrecursion_limit = 99999999\n", encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+
+    # Prime the shared resolver on the startup generation.
+    assert resolve_recursion_limit() == 2000
+
+    # A hand edit after startup is not a reload: the managed fall-through must
+    # still read the generation the rest of the process observes.
+    config.write_text("[runtime]\nrecursion_limit = 3000\n", encoding="utf-8")
+    assert resolve_recursion_limit() == 2000
+
+
+def test_auto_classifier_timeout_managed_fallthrough_keeps_shared_user_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The timeout's managed fall-through pins the same user generation."""
+    from deepagents_code.config_manifest import (
+        resolve_auto_classifier_timeout_with_source,
+    )
+    from deepagents_code.configuration import service
+
+    config = tmp_path / "config.toml"
+    config.write_text("[models]\nauto_classifier_timeout = 30\n", encoding="utf-8")
+    managed = tmp_path / "managed_config.toml"
+    managed.write_text(
+        "[models]\nauto_classifier_timeout = 99999999\n", encoding="utf-8"
+    )
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+
+    value, source = resolve_auto_classifier_timeout_with_source()
+    assert value == pytest.approx(30.0)
+    assert source == "config.toml"
+
+    config.write_text("[models]\nauto_classifier_timeout = 45\n", encoding="utf-8")
+    value, source = resolve_auto_classifier_timeout_with_source()
+    assert value == pytest.approx(30.0)
+    assert source == "config.toml"
+
+
+def test_auto_classifier_model_managed_fallthrough_keeps_shared_user_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The model resolver's managed-blank re-read pins the user generation too."""
+    from deepagents_code.config_manifest import (
+        resolve_auto_classifier_model_with_source,
+    )
+    from deepagents_code.configuration import service
+
+    config = tmp_path / "config.toml"
+    config.write_text('[models]\nauto_classifier = "openai:gpt-5"\n', encoding="utf-8")
+    # Managed participates (deciding `runtime.recursion_limit`) but leaves the
+    # classifier key unset, so the resolver re-reads without the managed tier.
+    managed = tmp_path / "managed_config.toml"
+    managed.write_text("[runtime]\nrecursion_limit = 1500\n", encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+
+    value, source = resolve_auto_classifier_model_with_source()
+    assert value == "openai:gpt-5"
+    assert source == "config.toml"
+
+    config.write_text(
+        '[models]\nauto_classifier = "anthropic:claude"\n', encoding="utf-8"
+    )
+    value, source = resolve_auto_classifier_model_with_source()
+    assert value == "openai:gpt-5"
+    assert source == "config.toml"
 
 
 def test_delegate_static_defaults_are_parseable() -> None:

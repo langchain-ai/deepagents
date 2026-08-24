@@ -287,6 +287,29 @@ class ConfigResolver:
             }
         return MappingProxyType(statuses)
 
+    def toml_snapshot(self, rank: int) -> TomlSnapshot | None:
+        """Return the cached TOML snapshot at `rank`, if that provider is one.
+
+        Lets a caller build a one-off resolver against the same file
+        generation this resolver is serving -- for example, re-resolving an
+        option with the managed tier masked while keeping the shared user
+        snapshot instead of re-parsing `config.toml` off disk.
+
+        Args:
+            rank: Precedence rank whose snapshot to return.
+
+        Returns:
+            The provider's current snapshot, or `None` when no TOML provider
+            sits at `rank` (environment and default providers carry none).
+        """
+        from deepagents_code.configuration.providers import TomlFileProvider
+
+        with self._lock:
+            for provider in self._providers:
+                if provider.rank == rank and isinstance(provider, TomlFileProvider):
+                    return provider.current_snapshot()
+        return None
+
 
 def resolver_from_snapshots(
     *,

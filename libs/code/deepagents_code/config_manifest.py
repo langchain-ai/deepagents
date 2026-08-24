@@ -650,6 +650,63 @@ def _resolve_option(
     return resolver.get(option)
 
 
+def _resolve_option_without_managed(
+    option: ConfigOption,
+    *,
+    toml_data: Mapping[str, Any] | None,
+) -> ResolvedValue[object]:
+    """Re-resolve `option` with the managed tier declaring nothing.
+
+    Companion to `_resolve_option` for the bounded readers' managed
+    fall-through: an out-of-range managed value is rejected, and the option
+    must be re-read from env, `config.toml`, and the typed default only.
+
+    With `toml_data=None` the user half comes out of the shared process
+    resolver's snapshot rather than a fresh parse. `_resolve_option` fills a
+    missing half from disk, which is what let a hand edit made after startup
+    change a later-built agent's value without `/reload`; the shared
+    resolver's `EnvProvider` still reads `os.environ` live here, but its user
+    snapshot stays pinned to the generation every other reader observes.
+
+    Returns:
+        A rank-keyed `ResolvedValue` with the managed tier masked out.
+    """
+    from deepagents_code.configuration.resolver import (
+        USER_RANK,
+        get_config_resolver,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
+
+    if toml_data is not None:
+        user = TomlSnapshot(
+            toml_data,
+            ProviderStatus("config.toml", None, ProviderHealth.OK),
+        )
+    else:
+        shared = get_config_resolver().toml_snapshot(USER_RANK)
+        user = (
+            shared
+            if shared is not None
+            else TomlSnapshot(
+                {},
+                ProviderStatus("config.toml", None, ProviderHealth.INDETERMINATE),
+            )
+        )
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot(
+            {},
+            ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        user=user,
+    )
+    return resolver.get(option)
+
+
 def _ranked_source(resolved: ResolvedValue[object]) -> str:
     """Render rank-keyed provenance through provider display metadata.
 
@@ -965,10 +1022,22 @@ def resolve_auto_classifier_timeout_with_source(
             AUTO_CLASSIFIER_TIMEOUT_FLOOR,
             AUTO_CLASSIFIER_TIMEOUT_CEILING,
         )
-        return resolve_auto_classifier_timeout_with_source(
-            toml_data=data,
-            managed_toml_data={},
-        )
+        resolved = _resolve_option_without_managed(option, toml_data=data)
+        _emit_ranked_diagnostics(option, resolved)
+        value, source = resolved.value, _ranked_source(resolved)
+        if _is_valid_auto_classifier_timeout(value):
+            return value, source
+        if source != "default":
+            logger.warning(
+                "Ignoring %s auto_classifier_timeout %r (expected seconds in "
+                "[%g, %g]); using %g",
+                source,
+                value,
+                AUTO_CLASSIFIER_TIMEOUT_FLOOR,
+                AUTO_CLASSIFIER_TIMEOUT_CEILING,
+                AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+            )
+        return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
 
     # Invalid higher-precedence values must fall through instead of jumping
     # straight to the default. Hide the rejected env var and re-resolve so
@@ -1128,11 +1197,7 @@ def resolve_auto_classifier_model_with_source(
     if blank_env is not None:
         return None, f"env ({blank_env})"
 
-    resolved = _resolve_option(
-        option,
-        toml_data=data,
-        managed_toml_data={},
-    )
+    resolved = _resolve_option_without_managed(option, toml_data=data)
     _emit_ranked_diagnostics(option, resolved)
     value, source = resolved.value, _ranked_source(resolved)
     if isinstance(value, str) and value.strip():
@@ -1310,10 +1375,21 @@ def resolve_recursion_limit(
             RECURSION_LIMIT_FLOOR,
             RECURSION_LIMIT_CEILING,
         )
-        return resolve_recursion_limit(
-            toml_data=data,
-            managed_toml_data={},
-        )
+        resolved = _resolve_option_without_managed(option, toml_data=data)
+        _emit_ranked_diagnostics(option, resolved)
+        value, source = resolved.value, _ranked_source(resolved)
+        if is_valid_recursion_limit(value):
+            return value
+        if source != "default":
+            logger.warning(
+                "Ignoring %s recursion_limit %r (expected int in [%d, %d]); using %d",
+                source,
+                value,
+                RECURSION_LIMIT_FLOOR,
+                RECURSION_LIMIT_CEILING,
+                RECURSION_LIMIT_DEFAULT,
+            )
+        return RECURSION_LIMIT_DEFAULT
 
     # Invalid higher-precedence values must fall through instead of jumping
     # straight to the default. Hide the rejected env var (if any) and re-resolve

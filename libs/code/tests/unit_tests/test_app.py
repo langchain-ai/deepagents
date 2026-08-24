@@ -17266,6 +17266,34 @@ class TestShellCommandInterrupt:
             assert "sleep 999" in buffered[0].content
             assert "Command interrupted" in buffered[0].content
 
+    async def test_incognito_cancel_does_not_buffer_for_model(self) -> None:
+        """Esc during a `!!` command must keep the command out of model context."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+            mock_proc.returncode = None
+            mock_proc.pid = 12345
+            mock_proc.wait = AsyncMock()
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch("os.killpg") as mock_killpg,
+                patch("os.getpgid", return_value=12345),
+                pytest.raises(asyncio.CancelledError),
+            ):
+                await app._run_shell_task("cat secret-file", incognito=True)
+
+            # The process is still killed; only the buffering differs from the
+            # non-incognito path above.
+            mock_killpg.assert_called()
+            assert app._pending_shell_messages == []
+
     async def test_cleanup_clears_state(self) -> None:
         """_cleanup_shell_task should reset all shell state."""
         app = DeepAgentsApp()

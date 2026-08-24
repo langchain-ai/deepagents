@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.4](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.3...deepagents-talon==0.0.4) (2026-08-24)
+
+
+### Features
+
+* **code,talon:** require Python 3.12 or greater ([#5603](https://github.com/langchain-ai/deepagents/issues/5603)) ([04de43e](https://github.com/langchain-ai/deepagents/commit/04de43e05adcbd38f1022f1fafe93f6748c2a032))
+
 ## [0.0.3](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.2...deepagents-talon==0.0.3) (2026-07-06)
 
 

@@ -176,7 +176,19 @@ class SandboxConfig:
         # deliberately excludes managed policy, and the shared process cache
         # always reads the default path.
         resolver = resolver_from_snapshots(managed=sources.managed, user=sources.user)
-        default = resolver.get(default_option).value
+        default_resolved = resolver.get(default_option)
+        default = default_resolved.value
+        if any(
+            isinstance(result, Invalid)
+            for result in default_resolved.tier_health.values()
+        ):
+            # Without this the value degrades to `None` and nothing is logged,
+            # on the option that decides which sandbox executes agent code.
+            # `dcode doctor` covers file health, not value health -- the file
+            # parses fine, and the rejected entry is reported nowhere.
+            logger.warning(
+                "[sandboxes].default is not a string; ignoring the default sandbox"
+            )
         providers_resolved = resolver.get(providers_option)
         providers = providers_resolved.value
         if providers is None:

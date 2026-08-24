@@ -387,6 +387,24 @@ def _copy_file_data_with_content(file_data: FileData, content: str) -> FileData:
     return sliced_fd
 
 
+def normalize_newlines(content: str) -> str:
+    r"""Convert CRLF and bare CR line endings to LF.
+
+    `read` returns an LF-normalized window (see `slice_read_response`), so the
+    `old_string` a model builds from a read is LF-shaped regardless of how the
+    file is stored. Backends that match `old_string` against their raw stored
+    content must normalize both sides first, or no multi-line edit of a CRLF
+    file can ever succeed.
+
+    Args:
+        content: Text that may use CRLF or bare CR line endings.
+
+    Returns:
+        The same text with every `\r\n` and bare `\r` replaced by `\n`.
+    """
+    return content.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def normalize_read_bounds(offset: int, limit: int) -> tuple[int, int]:
     """Floor a requested read window at a zero offset and zero lines.
 

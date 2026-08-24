@@ -109,3 +109,75 @@ def test_state_backend_edit_migrates_legacy_list_content(monkeypatch: pytest.Mon
     assert result.error is None
     assert updates[0]["/legacy.txt"]["content"] == "hello\nthere"
     assert updates[0]["/legacy.txt"]["encoding"] == "utf-8"
+
+
+# CRLF content is stored verbatim, but `read` hands the model LF (the shared
+# slicer normalizes the window it returns). `edit` therefore has to match the
+# model's LF `old_string` against LF content, or the agent can never edit a
+# file it was just shown. `FilesystemBackend.edit` already does this.
+_CRLF_SOURCE = "def main():\r\n    print('hi')\r\n    return 0\r\n"
+
+
+def test_state_backend_edit_matches_lf_old_string_against_crlf_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`edit` accepts the LF text `read` just handed back for a CRLF file."""
+    backend = StateBackend()
+    files: dict[str, Any] = {"/main.py": {"content": _CRLF_SOURCE, "encoding": "utf-8"}}
+    sent: dict[str, Any] = {}
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", sent.update)
+
+    read_result = backend.read("/main.py")
+    assert read_result.file_data is not None
+    shown = read_result.file_data["content"]
+    assert "\r" not in shown, "read must hand the model LF-normalized content"
+
+    # The model copies two lines verbatim out of what it was shown.
+    old_string = "    print('hi')\n    return 0\n"
+    result = backend.edit("/main.py", old_string, "    print('bye')\n    return 0\n")
+
+    assert result.error is None
+    assert result.occurrences == 1
+    assert "print('bye')" in sent["/main.py"]["content"]
+
+
+def test_state_backend_edit_accepts_crlf_old_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller that supplies CRLF in `old_string` still matches."""
+    backend = StateBackend()
+    files: dict[str, Any] = {"/main.py": {"content": _CRLF_SOURCE, "encoding": "utf-8"}}
+    sent: dict[str, Any] = {}
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", sent.update)
+
+    result = backend.edit("/main.py", "    print('hi')\r\n", "    print('bye')\r\n")
+
+    assert result.error is None
+    assert result.occurrences == 1
+    assert "print('bye')" in sent["/main.py"]["content"]
+
+
+def test_state_backend_edit_normalizes_stored_content_to_lf(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rewritten file is LF, matching what `FilesystemBackend.edit` writes."""
+    backend = StateBackend()
+    files: dict[str, Any] = {"/main.py": {"content": _CRLF_SOURCE, "encoding": "utf-8"}}
+    sent: dict[str, Any] = {}
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", sent.update)
+
+    backend.edit("/main.py", "def main():", "def run():")
+
+    assert "\r" not in sent["/main.py"]["content"]
+
+
+def test_state_backend_edit_handles_bare_cr_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legacy bare-CR line endings are normalized the same way."""
+    backend = StateBackend()
+    files: dict[str, Any] = {"/old.txt": {"content": "one\rtwo\rthree\r", "encoding": "utf-8"}}
+    sent: dict[str, Any] = {}
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", sent.update)
+
+    result = backend.edit("/old.txt", "two\n", "TWO\n")
+
+    assert result.error is None
+    assert result.occurrences == 1
+    assert "TWO" in sent["/old.txt"]["content"]

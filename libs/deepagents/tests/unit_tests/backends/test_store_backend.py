@@ -729,3 +729,53 @@ async def test_store_backend_adelete_treats_wildcard_as_literal_key() -> None:
 
     missing = await be.adelete("*")
     assert missing.error is not None and "not found" in missing.error
+
+
+_CRLF_SOURCE = "def main():\r\n    print('hi')\r\n    return 0\r\n"
+
+
+def test_store_backend_edit_matches_lf_old_string_against_crlf_content():
+    """`read` hands back LF; `edit` must accept that same LF text.
+
+    The shared slicer normalizes the window `read` returns, so the model never
+    sees the stored CRLF. Matching `old_string` against raw CRLF content made
+    every multi-line edit of a CRLF file fail with "String not found in file".
+    """
+    be = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    be.write("/main.py", _CRLF_SOURCE)
+
+    read_result = be.read("/main.py")
+    assert read_result.file_data is not None
+    assert "\r" not in read_result.file_data["content"]
+
+    result = be.edit("/main.py", "    print('hi')\n    return 0\n", "    print('bye')\n    return 0\n")
+
+    assert isinstance(result, EditResult)
+    assert result.error is None
+    assert result.occurrences == 1
+    after = be.read("/main.py")
+    assert after.file_data is not None
+    assert "print('bye')" in after.file_data["content"]
+
+
+def test_store_backend_edit_normalizes_stored_content_to_lf():
+    """The rewritten file is LF, matching `FilesystemBackend.edit`."""
+    be = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    be.write("/main.py", _CRLF_SOURCE)
+
+    be.edit("/main.py", "def main():", "def run():")
+
+    item = be._get_store().get(("filesystem",), "/main.py")
+    assert item is not None
+    assert "\r" not in item.value["content"]
+
+
+def test_store_backend_edit_handles_bare_cr_content():
+    """Legacy bare-CR line endings are normalized the same way."""
+    be = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    be.write("/old.txt", "one\rtwo\rthree\r")
+
+    result = be.edit("/old.txt", "two\n", "TWO\n")
+
+    assert result.error is None
+    assert result.occurrences == 1

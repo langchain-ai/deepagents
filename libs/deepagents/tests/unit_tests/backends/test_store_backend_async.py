@@ -423,3 +423,22 @@ async def test_store_backend_aintercept_large_tool_result_async():
     stored_content = await mem_store.aget(("filesystem",), "/large_tool_results/test_async_789")
     assert stored_content is not None
     assert stored_content.value["content"] == large_content
+
+
+_CRLF_SOURCE_ASYNC = "def main():\r\n    print('hi')\r\n    return 0\r\n"
+
+
+async def test_store_backend_aedit_matches_lf_old_string_against_crlf_content():
+    """`aedit` is a separate method body from `edit`, so it needs its own case."""
+    be = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/main.py", _CRLF_SOURCE_ASYNC)
+
+    read_result = await be.aread("/main.py")
+    assert read_result.file_data is not None
+    assert "\r" not in read_result.file_data["content"]
+
+    result = await be.aedit("/main.py", "    print('hi')\n    return 0\n", "    print('bye')\n    return 0\n")
+
+    assert isinstance(result, EditResult)
+    assert result.error is None
+    assert result.occurrences == 1

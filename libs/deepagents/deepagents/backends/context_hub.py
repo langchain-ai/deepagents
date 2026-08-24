@@ -40,6 +40,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.utils import (
     compile_grep_include_glob,
     create_file_data,
+    normalize_newlines,
     perform_string_replacement,
     slice_read_response,
 )
@@ -498,13 +499,18 @@ class ContextHubBackend(BackendProtocol):
     ) -> EditResult:
         """Replace `old_string` with `new_string` in a file."""
         hub_path = self._strip_prefix(file_path)
+        # See `StateBackend.edit`: `read` returns LF, so `old_string` is
+        # LF-shaped even for CRLF-stored content. Normalize before matching and
+        # before recording the replay intent.
+        old_string = old_string.replace("\r\n", "\n").replace("\r", "\n")
+        new_string = new_string.replace("\r\n", "\n").replace("\r", "\n")
         try:
             with self._mutations.condition:
                 current = self._visible_cache_locked().get(hub_path)
                 if current is None:
                     return EditResult(error=f"Error: File '{file_path}' not found")
 
-                result = perform_string_replacement(current, old_string, new_string, replace_all)
+                result = perform_string_replacement(normalize_newlines(current), old_string, new_string, replace_all)
                 if isinstance(result, str):
                     return EditResult(error=result)
 

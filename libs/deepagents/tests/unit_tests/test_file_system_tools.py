@@ -587,3 +587,53 @@ def test_ls_with_invalid_path_returns_error_message() -> None:
 
     error_message = tool_messages[0].content
     assert error_message == "Error: Path traversal not allowed: ../../../etc"
+
+
+def test_edit_file_accepts_lf_text_read_back_from_crlf_file() -> None:
+    """End-to-end: write CRLF, read it, edit exactly what the read returned.
+
+    `read_file` shows the model LF-normalized content. Before the fix the
+    subsequent `edit_file` matched that LF `old_string` against the raw CRLF
+    content in state and failed with "String not found in file" -- for text the
+    agent had been shown one tool call earlier.
+    """
+    crlf = "def main():\r\n    print('hi')\r\n    return 0\r\n"
+    old_string = "    print('hi')\n    return 0\n"
+
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "write_file", "args": {"file_path": "/main.py", "content": crlf}, "id": "w", "type": "tool_call"}],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "read_file", "args": {"file_path": "/main.py"}, "id": "r", "type": "tool_call"}],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {
+                                "file_path": "/main.py",
+                                "old_string": old_string,
+                                "new_string": "    print('bye')\n    return 0\n",
+                            },
+                            "id": "e",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Edited."),
+            ]
+        )
+    )
+
+    result = create_deep_agent(model=fake_model, backend=StateBackend()).invoke({"messages": [HumanMessage(content="edit the file")]})
+
+    edit_messages = [m for m in result["messages"] if isinstance(m, ToolMessage) and m.name == "edit_file"]
+    assert len(edit_messages) == 1
+    assert edit_messages[0].status == "success", edit_messages[0].content
+    assert "print('bye')" in result["files"]["/main.py"]["content"]

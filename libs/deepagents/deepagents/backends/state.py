@@ -28,6 +28,7 @@ from deepagents.backends.utils import (
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
+    normalize_newlines,
     perform_string_replacement,
     slice_read_response,
     update_file_data,
@@ -235,7 +236,15 @@ class StateBackend(BackendProtocol):
         if file_data is None:
             return EditResult(error=f"Error: File '{file_path}' not found")
 
-        content = file_data_to_string(file_data)
+        # `read` hands the model LF-normalized content (the shared slicer
+        # rewrites the window it returns), so `old_string` arrives LF-shaped
+        # even when the stored file is CRLF. Normalize both sides before
+        # matching, and store the LF form -- this mirrors
+        # `FilesystemBackend.edit`, which gets the same behaviour for free by
+        # reading in universal-newline mode and writing back with newline="".
+        old_string = old_string.replace("\r\n", "\n").replace("\r", "\n")
+        new_string = new_string.replace("\r\n", "\n").replace("\r", "\n")
+        content = normalize_newlines(file_data_to_string(file_data))
         result = perform_string_replacement(content, old_string, new_string, replace_all)
 
         if isinstance(result, str):

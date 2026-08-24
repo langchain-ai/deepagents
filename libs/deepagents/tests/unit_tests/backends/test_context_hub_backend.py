@@ -1257,3 +1257,16 @@ def test_later_same_path_enqueue_wins_coalesced_batch() -> None:
     mock_client.push_agent.assert_called_once()
     payload = mock_client.push_agent.call_args.kwargs["files"]
     assert payload["same.md"].content == "second"
+
+
+def test_edit_matches_lf_old_string_against_crlf_content() -> None:
+    """`read` hands back LF, so `edit` must accept LF for a CRLF-stored file."""
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="alpha\r\nbeta\r\n")})
+
+    result = backend.edit("/a.md", "alpha\nbeta\n", "alpha\nBETA\n")
+
+    assert result.error is None
+    assert result.occurrences == 1
+    call = mock_client.push_agent.call_args
+    assert "BETA" in call.kwargs["files"]["a.md"].content
+    assert "\r" not in call.kwargs["files"]["a.md"].content

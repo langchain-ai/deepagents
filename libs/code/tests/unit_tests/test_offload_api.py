@@ -1346,6 +1346,81 @@ def test_validated_context_fields_exist_on_the_schema() -> None:
     assert validated <= declared, validated - declared
 
 
+class TestRouteRegistration:
+    """The Starlette app exposes the paths and methods the client calls.
+
+    Every other route test fabricates a request with hand-written
+    `path_params`, so a path or converter rename -- `{thread_id:str}` to
+    `{tid:str}`, say -- would leave the whole unit suite green while the real
+    handler raised `KeyError` (neither `TypeError` nor `ValueError`, so it
+    escapes the 422 block as a bare 500).
+    """
+
+    def test_offload_and_cancel_paths_are_registered(self) -> None:
+        from starlette.testclient import TestClient
+
+        from deepagents_code import offload_api
+        from deepagents_code.offload_middleware import unchanged_offload_result
+
+        calls: list[tuple[str, str]] = []
+
+        async def fake_execute(  # noqa: RUF029  # replaces an async callee
+            thread_id: str,
+            *,
+            operation_id: str,
+            context: dict[str, object],  # noqa: ARG001
+            hook_responses: dict[str, object],  # noqa: ARG001
+        ) -> dict[str, object]:
+            calls.append((thread_id, operation_id))
+            return {
+                "status": "complete",
+                "result": unchanged_offload_result("noop", messages=1, tokens=5),
+            }
+
+        with (
+            patch.object(offload_api, "_execute_offload", new=fake_execute),
+            TestClient(offload_api.app) as client,
+        ):
+            response = client.post(
+                "/dcode/threads/thread-42/offload",
+                json={
+                    "operation_id": "op-1",
+                    "context": {},
+                    "hook_responses": {},
+                },
+            )
+
+        assert response.status_code == 200, response.text
+        # The handler read the id out of the real path params, so the route's
+        # converter name and the key it indexes agree.
+        assert calls == [("thread-42", "op-1")]
+
+    def test_get_on_the_offload_path_is_not_allowed(self) -> None:
+        """Only POST is registered; the capability probe was removed."""
+        from starlette.testclient import TestClient
+
+        from deepagents_code import offload_api
+
+        with TestClient(offload_api.app) as client:
+            response = client.get("/dcode/threads/thread-42/offload")
+
+        assert response.status_code == 405
+
+    def test_cancel_path_is_registered(self) -> None:
+        from starlette.testclient import TestClient
+
+        from deepagents_code import offload_api
+
+        with TestClient(offload_api.app) as client:
+            response = client.post(
+                "/dcode/threads/thread-42/offload/op-1/cancel",
+            )
+
+        # No such operation is active, but the route resolved and its handler
+        # answered rather than 404-ing on an unmatched path.
+        assert response.status_code == 200, response.text
+
+
 class TestThreadLock:
     """Concurrent offloads of one thread are serialized in-process.
 

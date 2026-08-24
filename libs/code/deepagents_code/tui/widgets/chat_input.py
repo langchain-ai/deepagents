@@ -24,7 +24,7 @@ from textual.highlight import highlight
 from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
-from textual.widgets import Static, TextArea
+from textual.widgets import Input, Static, TextArea
 
 from deepagents_code import theme
 from deepagents_code.command_registry import CommandEntry, get_slash_commands
@@ -58,6 +58,14 @@ from deepagents_code.tui.widgets.autocomplete import (
     SlashCommandController,
 )
 from deepagents_code.tui.widgets.history import HistoryManager
+from deepagents_code.tui.widgets.prompt_search import (
+    PROMPT_SEARCH_PAGE_SIZE,
+    PROMPT_SEARCH_PANEL_ROWS,
+    PromptSearchInput,
+    PromptSearchPanel,
+    filter_prompts,
+    prompt_title,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,12 +118,16 @@ leave the box's corner glyphs visible.
 """
 
 _CHAT_INPUT_BOX_MAX_HEIGHT = 25
-"""Rows the bordered input box may occupy, including its border and any popup.
+"""Rows the bordered input box may occupy for its own content and border.
 
-`ChatInputBox._apply_manual_height` subtracts the gutter and the completion
-popup from this to derive the composer budget, so it is load-bearing arithmetic
-rather than a cosmetic cap. Interpolated into `ChatInput.DEFAULT_CSS` as the
-`#input-box` `max-height`.
+`ChatInputBox._apply_manual_height` subtracts the gutter and every inline panel
+row (completion popup and prompt search) from this to derive the composer
+budget, so it is load-bearing arithmetic rather than a cosmetic cap.
+
+This is the composer's budget, not the box's rendered ceiling: the `#input-box`
+`max-height` in `ChatInput.DEFAULT_CSS` interpolates
+`_CHAT_INPUT_BOX_MAX_HEIGHT + PROMPT_SEARCH_PANEL_ROWS`, so a fully expanded
+prompt search panel fits inside the border instead of pushing the draft out.
 """
 
 _CHAT_INPUT_MANUAL_MAX_HEIGHT = 20
@@ -627,6 +639,12 @@ class ChatTextArea(PasteBurstTextArea):
         self._highlighted_lines = None
         self._line_cache.clear()
         self.refresh()
+
+    def on_focus(self) -> None:
+        """Keep an open prompt search focused when the composer is clicked."""
+        owner = self._chat_input_owner
+        if owner is not None and owner._prompt_search_active:
+            owner.focus_input()
 
     def _render_line(self, y: int) -> Strip:
         """Render a line, keeping shell token colors visible on the cursor line.
@@ -1273,14 +1291,24 @@ class ChatTextArea(PasteBurstTextArea):
         if event.is_printable or event.key == "backspace":
             self.post_message(self.Typing())
 
-        if await self._absorb_key_into_burst(event, now):
+        # While the inline prompt search is open, printable keys feed the
+        # panel's query -- the focused `PromptSearchInput` consumes them and
+        # `ChatInput.on_input_changed` re-filters -- so they must never be
+        # mistaken for paste-burst replay.
+        prompt_search_active = (
+            self._chat_input_owner is not None
+            and self._chat_input_owner._prompt_search_active
+        )
+
+        if not prompt_search_active and await self._absorb_key_into_burst(event, now):
             event.prevent_default()
             event.stop()
             return
 
         # Track rapid keystroke runs so terminals without bracketed paste keep
         # embedded newlines grouped without delaying ordinary text insertion.
-        self._track_burst_run(event, now)
+        if not prompt_search_active:
+            self._track_burst_run(event, now)
 
         # A mode trigger (`!`, `!!`, `/`) typed at the very start of an
         # unselected input switches modes. Handle it before TextArea inserts the
@@ -1322,6 +1350,21 @@ class ChatTextArea(PasteBurstTextArea):
             event.stop()
             return
 
+        # While the inline prompt search is open, the panel owns the keyboard.
+        # Route the key to the search handler before TextArea defaults (Enter
+        # newline, printable insertion) consume it; the draft stays frozen for
+        # the whole session.
+        if prompt_search_active:
+            if (
+                self._chat_input_owner is not None
+                and self._chat_input_owner._handle_prompt_search_key(event)
+            ):
+                return
+            # Keys the search ignores must not edit the draft either.
+            event.prevent_default()
+            event.stop()
+            return
+
         # If completion is active, let parent handle navigation keys.
         # Space is included so that slash-command completion can accept the
         # selected suggestion via the same code path as Tab (avoiding a
@@ -1355,7 +1398,7 @@ class ChatTextArea(PasteBurstTextArea):
         if event.key == "enter":
             event.prevent_default()
             event.stop()
-            if self._consume_enter_as_burst_newline(now):
+            if not prompt_search_active and self._consume_enter_as_burst_newline(now):
                 return
             if (
                 self._chat_input_owner is not None
@@ -1371,7 +1414,8 @@ class ChatTextArea(PasteBurstTextArea):
 
         # Must follow `super()._on_key`: promotion verifies the run against the
         # document, so the current character has to be in it already.
-        self._check_burst_run_for_promotion()
+        if not prompt_search_active:
+            self._check_burst_run_for_promotion()
 
     def action_delete_right(self) -> None:
         """Delete a bound placeholder atomically or the next character."""
@@ -1725,6 +1769,7 @@ class ChatInputBox(Vertical):
         """Initialize sizing state."""
         super().__init__(**kwargs)
         self._completion_rows = 0
+        self._prompt_search_rows = 0
         self._requested_height: int | None = None
         self._applied_height: int | None = None
 
@@ -1798,10 +1843,10 @@ class ChatInputBox(Vertical):
 
         - the screen ceiling, which reserves rows for the rest of the app;
         - the box ceiling, `_CHAT_INPUT_BOX_MAX_HEIGHT` minus the border gutter
-          and any completion popup, so the popup renders inside the border
-          rather than overflowing it;
-        - the same screen budget again but with the popup subtracted, since a
-          popup adds rows to the box that the plain screen ceiling ignores.
+          and any inline panels (completion popup, prompt search), so a panel
+          renders inside the border rather than overflowing it;
+        - the same screen budget again but with the panels subtracted, since a
+          panel adds rows to the box that the plain screen ceiling ignores.
 
         The result is then floored by the visible draft, so a manual height
         never hides text. Both `height` and `max_height` are set because
@@ -1813,20 +1858,18 @@ class ChatInputBox(Vertical):
         screen_height = self._screen_height()
         if text_area is None or screen_height is None:
             return
+        panel_rows = self._completion_rows + self._prompt_search_rows
         # The plain screen cap already allows for the composer's own gutter; a
-        # popup needs it reserved explicitly because it adds rows to the box.
-        popup_gutter = self.gutter.height if self._completion_rows else 0
+        # panel needs it reserved explicitly because it adds rows to the box.
+        panel_gutter = self.gutter.height if panel_rows else 0
         screen_available = (
-            screen_height
-            - _CHAT_INPUT_RESERVED_SCREEN_ROWS
-            - self._completion_rows
-            - popup_gutter
+            screen_height - _CHAT_INPUT_RESERVED_SCREEN_ROWS - panel_rows - panel_gutter
         )
         available = min(
             _manual_height_ceiling(screen_height),
             max(
                 1,
-                _CHAT_INPUT_BOX_MAX_HEIGHT - self.gutter.height - self._completion_rows,
+                _CHAT_INPUT_BOX_MAX_HEIGHT - self.gutter.height - panel_rows,
             ),
             max(1, screen_available),
         )
@@ -1893,6 +1936,14 @@ class ChatInputBox(Vertical):
     ) -> None:
         """Fit a manual composer around the completion popup."""
         self._completion_rows = event.rows
+        self._apply_manual_height()
+        event.stop()
+
+    def on_prompt_search_panel_rows_changed(
+        self, event: PromptSearchPanel.RowsChanged
+    ) -> None:
+        """Fit a manual composer around the prompt search panel."""
+        self._prompt_search_rows = event.rows
         self._apply_manual_height()
         event.stop()
 
@@ -2185,7 +2236,7 @@ class ChatInput(Vertical):
        `ChatInputBox`. Appended rather than inlined above to keep the rest of
        this block free of doubled braces. */
     ChatInput #input-box {{
-        max-height: {_CHAT_INPUT_BOX_MAX_HEIGHT};
+        max-height: {_CHAT_INPUT_BOX_MAX_HEIGHT + PROMPT_SEARCH_PANEL_ROWS};
     }}
 
     ChatInput ChatTextArea {{
@@ -2307,6 +2358,21 @@ class ChatInput(Vertical):
         # slash commands after skill discovery cannot replace them.
         self._argument_hint_overrides: dict[str, str] = {}
 
+        # Inline prompt search (first Ctrl+R tier). `None` draft means inactive;
+        # the snapshot is what Escape restores. The panel widget itself is
+        # grabbed in `on_mount` (it is composed with the input box).
+        self._prompt_search: PromptSearchPanel | None = None
+        self._prompt_search_draft: str | None = None
+        self._prompt_search_cursor: tuple[int, int] | None = None
+        self._prompt_search_query = ""
+        self._prompt_search_prompts: tuple[str, ...] = ()
+        self._prompt_search_filtered: list[str] = []
+        self._prompt_search_index = 0
+        # Latches once the "history is not being saved" warning has been shown,
+        # so a read-only home directory costs one toast rather than one per
+        # submission.
+        self._warned_history_unwritable = False
+
         # Set up history manager
         if history_file is None:
             history_file = _default_history_path()
@@ -2327,6 +2393,7 @@ class ChatInput(Vertical):
                 yield Static(">", classes="input-prompt", id="prompt")
                 yield ChatTextArea(id="chat-input")
             yield CompletionPopup(id="completion-popup")
+            yield PromptSearchPanel(id="prompt-search-panel")
 
         yield ChatInputResizeHandle(id="input-resize-handle")
 
@@ -2359,6 +2426,7 @@ class ChatInput(Vertical):
 
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
+        self._prompt_search = self.query_one("#prompt-search-panel", PromptSearchPanel)
         self._text_area._chat_input_owner = self
         self._text_area.set_shell_highlighting(
             enabled=self.mode in {"shell", "shell_incognito"}
@@ -3051,6 +3119,7 @@ class ChatInput(Vertical):
             )
 
         self._history.add(value)
+        self._warn_if_history_unwritable()
         self.post_message(self.Submitted(value, mode))
 
         if self._text_area:
@@ -3446,6 +3515,17 @@ class ChatInput(Vertical):
         if not self._completion_manager or not self._text_area:
             return
 
+        # The inline prompt search owns the keyboard while open; this must run
+        # before completion routing so arrows/enter reach the panel rather
+        # than the autocomplete controllers. Returning unconditionally matters:
+        # a key the search does not own (Backspace with a non-empty query) must
+        # still bubble to the query input's own bindings rather than fall
+        # through to the mode-exit branch and the completion manager, which
+        # would edit the composer behind the open panel.
+        if self._prompt_search_active:
+            self._handle_prompt_search_key(event)
+            return
+
         # Backspace at the start of a mode prompt exits the current mode. Prefix
         # characters are mode selectors, not hidden draft text, so exiting the
         # mode does not restore `/`, `!`, or `!!` into the input.
@@ -3580,6 +3660,13 @@ class ChatInput(Vertical):
 
     def focus_input(self) -> None:
         """Focus the input field."""
+        if self._prompt_search_active and self._prompt_search is not None:
+            if self._prompt_search.focus_query():
+                return
+            # The session is open but the query input is not mounted yet, so
+            # keys would route into a panel the user cannot type in. Worth a
+            # trace: this combination is a lifecycle bug, not a normal state.
+            logger.warning("Prompt search is active but its query input is not mounted")
         if self._text_area:
             self._text_area.focus()
 
@@ -3614,6 +3701,342 @@ class ChatInput(Vertical):
         self._text_area.text = val
         self._text_area.move_cursor_to_end()
         return True
+
+    def recent_prompts(self) -> tuple[str, ...]:
+        """Refresh and return submitted prompts in newest-first order.
+
+        Returns:
+            An immutable snapshot of recent unique prompts.
+        """
+        return self._history.recent_prompts()
+
+    def prompt_history_error(self) -> str | None:
+        """Describe why the last prompt refresh came back empty, if it failed.
+
+        Returns:
+            A message naming the unreadable history file, or `None` when the
+            file was read (including when it does not exist yet).
+        """
+        if not self._history.history_unreadable:
+            return None
+        return f"Could not read prompt history from {self._history.history_file}"
+
+    def insert_at_cursor(self, text: str) -> bool:
+        """Insert text at the current cursor through the undoable edit path.
+
+        Returns:
+            Whether the text area was available for insertion.
+        """
+        if not self._text_area:
+            return False
+        self._text_area.insert(text)
+        return True
+
+    @property
+    def _prompt_search_active(self) -> bool:
+        """Whether the inline prompt search panel is open.
+
+        A `None` draft is the discriminator: the snapshot only exists for the
+        lifetime of a search session.
+        """
+        return self._prompt_search_draft is not None
+
+    def open_prompt_search(self) -> Literal["inline", "modal", "noop"]:
+        """Open the inline prompt search, or escalate an open one to the modal.
+
+        First call shows the inline panel with a fresh prompt snapshot, seeds
+        its filter from the current draft, and saves that draft for
+        cancel-restore; a call while the panel is already open means the second
+        Ctrl+R tier.
+
+        Returns:
+            `"inline"` when the panel opened, `"modal"` when the caller should
+            open the full `PromptClipboardScreen`, or `"noop"` when the
+            composer is unavailable.
+        """
+        if self._text_area is None or self._prompt_search is None:
+            return "noop"
+        if self._prompt_search_active:
+            return "modal"
+        if self._current_suggestions:
+            # Completion owns the shared panel rows; inserting the search panel
+            # between the popup and the input row would break the completion
+            # flow's keyboard assumptions, so the modal serves this case.
+            return "modal"
+
+        self._prompt_search_draft = self._text_area.text
+        self._prompt_search_cursor = self._text_area.cursor_location
+        # Both tiers go through the public accessor so they always show the
+        # same snapshot.
+        self._prompt_search_prompts = self.recent_prompts()
+        self._prompt_search_query = self._text_area.text
+        self._prompt_search_index = 0
+        self._warn_if_history_unreadable()
+        self._refresh_prompt_search_panel()
+        # The query field is a real Input, so the blinking cursor lives in it
+        # while the search is open rather than in the frozen draft above.
+        self._prompt_search.focus_query()
+        return "inline"
+
+    def escalate_prompt_search(self) -> str:
+        """Return the modal filter and close any open inline panel.
+
+        An active inline search supplies its current query. When autocomplete
+        sends Ctrl+R directly to the modal tier, the current chat input is the
+        query instead.
+
+        Returns:
+            The text to seed the modal's filter with.
+        """
+        query = (
+            self._prompt_search_query
+            if self._prompt_search_active
+            else (self._text_area.text if self._text_area is not None else "")
+        )
+        self._close_prompt_search(restore_draft=False, refocus=False)
+        return query
+
+    def _close_prompt_search(
+        self, *, restore_draft: bool, refocus: bool = True
+    ) -> None:
+        """Hide the inline panel and clear search state.
+
+        Args:
+            restore_draft: Whether to restore the cursor from the
+                `open_prompt_search` snapshot. Escape and empty-query Backspace
+                do; insert and modal escalation leave the composer alone.
+            refocus: Whether to return focus to the composer. Escalating to the
+                modal skips this so the modal's own filter input takes focus.
+        """
+        draft = self._prompt_search_draft
+        cursor = self._prompt_search_cursor
+        self._prompt_search_draft = None
+        self._prompt_search_cursor = None
+        self._prompt_search_query = ""
+        self._prompt_search_prompts = ()
+        self._prompt_search_filtered = []
+        self._prompt_search_index = 0
+        if self._prompt_search is not None:
+            self._prompt_search.hide()
+        # Only the cursor needs restoring. Edits made while the panel was open
+        # are kept, and in the unedited case the text already equals the
+        # snapshot -- assigning it back would be a no-op that clears the undo
+        # history, because `TextArea.text` aliases `load_text`. The cursor goes
+        # back to the snapshot position, matching readline/codex cancel
+        # semantics rather than jumping to the end.
+        if (
+            restore_draft
+            and draft is not None
+            and cursor is not None
+            and self._text_area is not None
+            and self._text_area.text == draft
+        ):
+            self._text_area.move_cursor(cursor)
+        if refocus:
+            self.focus_input()
+
+    def _refresh_prompt_search_panel(self) -> None:
+        """Filter the snapshot by the query and re-render the panel."""
+        if self._prompt_search is None:
+            return
+        self._prompt_search_filtered = filter_prompts(
+            self._prompt_search_prompts, self._prompt_search_query
+        )
+        self._prompt_search_index = max(
+            0, min(self._prompt_search_index, len(self._prompt_search_filtered) - 1)
+        )
+        # Pass every filtered title, not just the first visible page: the panel
+        # renders a window around the selection, and a row that is not mounted
+        # cannot be scrolled into view — which previously made arrow/Tab moves
+        # past row 5 invisible and left scrolling with nothing to do.
+        titles = [prompt_title(prompt) for prompt in self._prompt_search_filtered]
+        empty: str | None
+        if self._prompt_search_filtered:
+            empty = None
+        elif self._prompt_search_prompts:
+            empty = "No matching prompts."
+        else:
+            # Never claim the history is empty when it is only unreadable.
+            empty = (
+                self.prompt_history_error()
+                or "No prompts yet. Submitted prompts appear here."
+            )
+        self._prompt_search.update_state(
+            self._prompt_search_query, titles, self._prompt_search_index, empty
+        )
+
+    def _warn_if_history_unreadable(self) -> None:
+        """Warn when the shown prompts are a degraded fallback.
+
+        The empty-state message already names an unreadable history file, but
+        only when there is nothing to list. `recent_prompts` falls back to this
+        session's entries on a read failure, so the usual outcome is a
+        *non-empty* list that looks like a complete history and is silently
+        truncated. Warn whenever the read failed and there is something to
+        show, since that is the case the empty state cannot cover.
+        """
+        error = self.prompt_history_error()
+        if error is None or not self._prompt_search_prompts:
+            return
+        self.app.notify(
+            f"{error}; showing this session's prompts only",
+            severity="warning",
+            markup=False,
+        )
+
+    def _warn_if_history_unwritable(self) -> None:
+        """Say once that prompts are no longer being saved.
+
+        A failed append keeps the entry in memory, so up-arrow and the prompt
+        clipboard keep working and nothing on screen suggests a problem. The
+        prompts are still lost at exit, and the clipboard advertises itself as
+        durable history, so the loss has to be stated rather than only logged.
+        """
+        if self._warned_history_unwritable or not self._history.history_unwritable:
+            return
+        self._warned_history_unwritable = True
+        self.app.notify(
+            f"Could not save prompt history to {self._history.history_file}; "
+            "this session's prompts will be lost when it ends",
+            severity="warning",
+            markup=False,
+        )
+
+    def _prompt_search_insert_selected(self) -> None:
+        """Insert the selected prompt into the draft and close the panel."""
+        prompt = self._prompt_search_filtered[self._prompt_search_index]
+        self._close_prompt_search(restore_draft=False)
+        if self._text_area is not None:
+            self._text_area.insert(prompt)
+            self._text_area.scroll_cursor_visible()
+
+    def _handle_prompt_search_key(self, event: events.Key) -> bool:
+        """Handle one key while the inline prompt search is open.
+
+        Runs from `ChatInput.on_key` (ahead of completion routing) and from
+        `ChatTextArea._on_key` (ahead of the TextArea's own editing defaults,
+        which is what the no-`await` rule below protects); it may not
+        `await`, because the panel rebuild it triggers is already message-pumped
+        through `PromptSearchPanel.call_next`, so synchronous handling loses
+        no frames.
+
+        Args:
+            event: The key event, bubbling from either the search query input
+                (the usual case, since `open_prompt_search` focuses it) or the
+                text area when focus never moved.
+
+        Returns:
+            `True` when the panel consumed the key and stopped it here.
+                `False` means the panel does not own the key and the caller
+                decides: `ChatInput.on_key` lets it bubble to the query
+                input's own bindings, while `ChatTextArea._on_key` suppresses
+                it so an unrecognized key cannot edit the frozen draft behind
+                the panel.
+        """
+        if event.key == "escape":
+            self._close_prompt_search(restore_draft=True)
+            event.prevent_default()
+            event.stop()
+            return True
+
+        if event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            if self._prompt_search_filtered:
+                self._prompt_search_insert_selected()
+            elif self.app is not None:
+                self.app.bell()
+            return True
+
+        if event.key in {"up", "down"}:
+            event.prevent_default()
+            event.stop()
+            last = len(self._prompt_search_filtered) - 1
+            if last < 0:
+                return True
+            new_index = (
+                max(0, self._prompt_search_index - 1)
+                if event.key == "up"
+                else min(last, self._prompt_search_index + 1)
+            )
+            if new_index != self._prompt_search_index:
+                self._prompt_search_index = new_index
+                if self._prompt_search is not None:
+                    self._prompt_search.update_selection(new_index)
+            return True
+
+        return False
+
+    def _page_prompt_search(self, *, older: bool) -> None:
+        """Move the selection one page through the filtered prompts."""
+        last = len(self._prompt_search_filtered) - 1
+        if last < 0:
+            return
+        new_index = (
+            max(0, self._prompt_search_index - PROMPT_SEARCH_PAGE_SIZE)
+            if not older
+            else min(last, self._prompt_search_index + PROMPT_SEARCH_PAGE_SIZE)
+        )
+        if new_index != self._prompt_search_index:
+            self._prompt_search_index = new_index
+            if self._prompt_search is not None:
+                self._prompt_search.update_selection(new_index)
+
+    def on_prompt_search_input_page_requested(
+        self, event: PromptSearchInput.PageRequested
+    ) -> None:
+        """Page the selection on Tab (older) or Shift+Tab (newer)."""
+        if not self._prompt_search_active:
+            return
+        event.stop()
+        self._page_prompt_search(older=event.older)
+
+    def on_prompt_search_input_abandon_search(
+        self, event: PromptSearchInput.AbandonSearch
+    ) -> None:
+        """Close the search, restoring the draft, on empty-query Backspace."""
+        if not self._prompt_search_active:
+            return
+        event.stop()
+        self._close_prompt_search(restore_draft=True)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Filter prompts as the query input's text changes."""
+        if not self._prompt_search_active:
+            return
+        if not isinstance(event.input, PromptSearchInput):
+            return
+        self.post_message(self.Typing())
+        self._prompt_search_query = event.value
+        self._prompt_search_index = 0
+        self._refresh_prompt_search_panel()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Insert the selected prompt when the query input receives Enter."""
+        if not self._prompt_search_active:
+            return
+        if not isinstance(event.input, PromptSearchInput):
+            return
+        event.stop()
+        if self._prompt_search_filtered:
+            self._prompt_search_insert_selected()
+        elif self.app is not None:
+            self.app.bell()
+
+    def on_prompt_search_panel_option_selected(
+        self, event: PromptSearchPanel.OptionSelected
+    ) -> None:
+        """Select a clicked prompt row; Enter is still required to insert."""
+        event.stop()
+        if not self._prompt_search_active:
+            return
+        if (
+            0 <= event.index < len(self._prompt_search_filtered)
+            and event.index != self._prompt_search_index
+        ):
+            self._prompt_search_index = event.index
+            if self._prompt_search is not None:
+                self._prompt_search.update_selection(event.index)
 
     def discard_text(self) -> bool:
         """Clear the draft, keeping it restorable via undo (ctrl+z).

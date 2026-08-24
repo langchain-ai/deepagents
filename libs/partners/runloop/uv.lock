@@ -396,9 +396,9 @@ requires-dist = [
     { name = "av", marker = "extra == 'video'", specifier = ">=18.0.0,<19.0.0" },
     { name = "langchain", specifier = ">=1.3.16,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.6.1,<2.0.0" },
-    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.7.2,<2.0.0" },
+    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.7.3,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.6.0,<2.0.0" },
-    { name = "langchain-google-genai", specifier = ">=4.3.4,<5.0.0" },
+    { name = "langchain-google-genai", specifier = ">=4.3.5,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.5" },
     { name = "langsmith", specifier = ">=0.11.1" },
     { name = "packaging", specifier = ">=23.2" },
@@ -715,7 +715,7 @@ wheels = [
 
 [[package]]
 name = "langchain-google-genai"
-version = "4.3.4"
+version = "4.3.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filetype" },
@@ -723,9 +723,9 @@ dependencies = [
     { name = "langchain-core" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d4/ae/8ba8ee41bd20a23dee95cda109632c8b19a53141fbc81d9f87a72f0e975c/langchain_google_genai-4.3.4.tar.gz", hash = "sha256:265655baad05f799fa7b83a030eaca7cee0e32c9ab7de846b80ea7f59c26134e", size = 287396, upload-time = "2026-08-14T18:10:00.119Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/e2/51eae10068e20917139f1d0b70bf2d5c15a8122d727457c1c50bed5a2d01/langchain_google_genai-4.3.5.tar.gz", hash = "sha256:bd33e6aa778f978c9bc632d59d5d6bcd1ed25fc07c2ed4aebc011a981c54f546", size = 289744, upload-time = "2026-08-20T16:31:44.51Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c9/f8/9fe4a28e319e9d6b20454e85fea9c243bf011dc866f2c3b9a89d64f9c1a1/langchain_google_genai-4.3.4-py3-none-any.whl", hash = "sha256:618fb0da1b9ba9def5569a8b05cb87e1389de41b8731c802958d09499490d2a5", size = 73338, upload-time = "2026-08-14T18:09:58.772Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/98/93a37f508c8a5641389642883e70fba3e088a0b6a25f213445165a57c0cf/langchain_google_genai-4.3.5-py3-none-any.whl", hash = "sha256:24ed714b191c7bb85d2dba746aaab6eb8fd352fe782fdaefe50fde0d7b7601e9", size = 74207, upload-time = "2026-08-20T16:31:43.111Z" },
 ]
 
 [[package]]

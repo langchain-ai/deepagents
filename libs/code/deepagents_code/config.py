@@ -2561,39 +2561,6 @@ def _resolve_retry_param_name(provider: str) -> str:
     return RETRY_PARAM_BY_PROVIDER.get(provider, "max_retries")
 
 
-def _read_config_toml_skills_dirs() -> list[str] | None:
-    """Read `[skills].extra_allowed_dirs` from managed config over user config.
-
-    Returns:
-        List of path strings, or `None` when neither layer supplies the key. An
-            unusable `~/.deepagents/config.toml` drops only the user layer;
-            managed policy still applies.
-    """
-    from deepagents_code.configuration.service import get_config_sources
-
-    sources = get_config_sources()
-    if not sources.user.status.usable:
-        logger.warning(
-            "Could not read skills config from %s",
-            sources.user.status.path,
-        )
-    dropped = sources.dropped_managed_detail()
-    if dropped is not None:
-        logger.error(
-            "Managed policy from %s is not being applied: %s",
-            sources.managed.status.path,
-            dropped,
-        )
-    # Managed policy parsed cleanly and must still apply, so keep going
-    # with the merged data (managed-only when the user file failed).
-    data, _ = sources.merged()
-    skills_section = data.get("skills", {})
-    dirs = skills_section.get("extra_allowed_dirs")
-    if isinstance(dirs, list):
-        return dirs
-    return None
-
-
 def _parse_extra_skills_dirs(
     env_raw: str | None,
     config_toml_dirs: list[str] | None = None,
@@ -2972,9 +2939,11 @@ class Settings:
             get_option,
         )
         from deepagents_code.configuration.resolver import (
+            USER_RANK,
             get_config_resolver,
             resolver_from_snapshots,
         )
+        from deepagents_code.configuration.types import Found
 
         # A real `/reload` exists to pick up file edits made since the shared
         # resolver's snapshot was taken, so this method and later
@@ -3035,14 +3004,6 @@ class Settings:
             if managed_decided(shell_source) or shell_source == "config.toml":
                 shell_allow_list = cast("list[str] | None", shell_resolved.value)
 
-        skills_option = get_option("skills.extra_allowed_dirs")
-        managed_skills: list[Path] | None = None
-        if skills_option is not None:
-            skills_resolved = resolver.get(skills_option)
-            _emit_ranked_diagnostics(skills_option, skills_resolved)
-            if managed_decided(_ranked_source(skills_resolved)):
-                managed_skills = cast("list[Path] | None", skills_resolved.value)
-
         try:
             from deepagents_code.project_utils import find_project_root
 
@@ -3054,13 +3015,24 @@ class Settings:
             project_root = previous["project_root"]
 
         try:
+            skills_option = get_option("skills.extra_allowed_dirs")
+            resolved_skills: list[Path] | None = None
+            skills_managed = False
+            if skills_option is not None:
+                skills_resolved = resolver.get(skills_option)
+                _emit_ranked_diagnostics(skills_option, skills_resolved)
+                if managed_decided(_ranked_source(skills_resolved)):
+                    skills_managed = True
+                    resolved_skills = cast("list[Path] | None", skills_resolved.value)
+                else:
+                    user_result = skills_resolved.tier_health[USER_RANK]
+                    if isinstance(user_result, Found):
+                        resolved_skills = cast("list[Path] | None", user_result.value)
+            env_skills = env.get(EXTRA_SKILLS_DIRS)
             extra_skills_dirs = (
-                managed_skills
-                if managed_skills is not None
-                else _parse_extra_skills_dirs(
-                    env.get(EXTRA_SKILLS_DIRS),
-                    _read_config_toml_skills_dirs(),
-                )
+                resolved_skills
+                if skills_managed or not env_skills
+                else _parse_extra_skills_dirs(env_skills)
             )
         except (OSError, ValueError):
             # Path resolution can fail (e.g. broken symlink loop). Keep the

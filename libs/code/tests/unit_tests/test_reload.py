@@ -57,6 +57,7 @@ _RELOAD_ENV_KEYS = (
     "DEEPAGENTS_CODE_GOOGLE_CLOUD_PROJECT",
     "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
     "DEEPAGENTS_CODE_SHELL_ALLOW_LIST",
+    "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS",
 )
 
 
@@ -157,6 +158,27 @@ class TestReloadFromEnvironment:
         assert not any(change.startswith("shell_allow_list:") for change in preview)
         assert not any(change.startswith("shell_allow_list:") for change in applied)
         assert settings.shell_allow_list == ["ls"]
+
+    def test_reload_retains_extra_skill_roots_on_corrupt_toml(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed user-config reload cannot drop active skill containment roots."""
+        skills_dir = tmp_path / "external-skills"
+        skills_dir.mkdir()
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            f'[skills]\nextra_allowed_dirs = ["{skills_dir}"]\n',
+            encoding="utf-8",
+        )
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.extra_skills_dirs == [skills_dir]
+
+        config_path.write_text("[skills\n", encoding="utf-8")
+
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert not any(change.startswith("extra_skills_dirs:") for change in changes)
+        assert settings.extra_skills_dirs == [skills_dir]
 
     def test_preserves_model_state(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1165,6 +1187,7 @@ class TestReloadErrorPaths:
         settings = Settings.from_environment(start_path=tmp_path)
         sentinel = [tmp_path / "skills"]
         settings.extra_skills_dirs = sentinel
+        monkeypatch.setenv("DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS", str(sentinel[0]))
 
         def boom(*_args: object, **_kwargs: object) -> list[Path] | None:
             msg = "broken symlink loop"

@@ -2151,6 +2151,89 @@ class TestAutoModeReviewLifecycle:
         assert adapter._active_auto_reviews == {}
         assert adapter._completed_auto_reviews == {"batch-1": None}
 
+    async def test_a_row_from_the_message_stream_pauses_and_resumes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The two streams must interleave the way the feature assumes.
+
+        Rows are created when a tool-call buffer flushes on the `messages`
+        stream, while lifecycle events arrive on `custom`. Every other test
+        pre-populates `_current_tool_messages`, so nothing else catches a row
+        that does not exist yet when `review_started` lands — the pause would
+        silently no-op with the suite still green.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> bool:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+            return True
+
+        transitions: list[str] = []
+        for name in ("pause_running", "set_running"):
+            original = getattr(ToolCallMessage, name)
+
+            def record(
+                self: ToolCallMessage,
+                _original: Callable[[ToolCallMessage], None] = original,
+                _name: str = name,
+            ) -> None:
+                transitions.append(f"{_name}:{self._status}")
+                _original(self)
+
+            monkeypatch.setattr(ToolCallMessage, name, record)
+
+        chunks = [
+            _tool_chunk(name="delete", args='{"file_path": "a.py"}', chunk_id="t1"),
+            (
+                (),
+                "custom",
+                {
+                    "type": "auto_mode",
+                    "event": "review_started",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["t1"],
+                },
+            ),
+            (
+                (),
+                "custom",
+                {
+                    "type": "auto_mode",
+                    "event": "review_completed",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["t1"],
+                    "approved_tool_call_ids": ["t1"],
+                },
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+            turn_stats=SessionStats(),
+        )
+
+        rows = [msg for msg in mounted if isinstance(msg, ToolCallMessage)]
+        assert len(rows) == 1
+        # The row is set running as it mounts, so the pause has something to
+        # act on. A row that did not exist yet would drop both calls, and a
+        # pause that arrived before the mount would return early.
+        assert transitions == [
+            "set_running:pending",
+            "pause_running:running",
+            "set_running:pending",
+        ]
+
     @staticmethod
     def _adapter_with_rows(
         monkeypatch: pytest.MonkeyPatch,

@@ -521,11 +521,11 @@ the cross-format suppression notice all key into this one set. A burst of one
 kind can therefore evict the memory of another, which only ever costs a
 duplicate log line.
 
-`load_trusted_cache_endpoints` re-reads `config.toml` on every turn so a live
-edit takes effect without a restart. Without this, one malformed entry would
-warn once per turn, crowding out the other warnings in the bounded debug-log
-buffer (which partitions retention per level, so the damage is confined to
-that level -- see `_debug_buffer.InMemoryLogBuffer`).
+`load_trusted_cache_endpoints` resolves the option on every turn, from the
+shared process generation -- so a hand edit needs `/reload`. Without this set,
+one malformed entry would warn once per turn, crowding out the other warnings
+in the bounded debug-log buffer (which partitions retention per level, so the
+damage is confined to that level -- see `_debug_buffer.InMemoryLogBuffer`).
 
 Bounded, because the key embeds the rejected entry: a config edited repeatedly
 into new bad states would otherwise accumulate one string per distinct typo
@@ -599,19 +599,12 @@ def load_trusted_cache_endpoints(
             _emit_ranked_diagnostics,
             get_option,
         )
-        from deepagents_code.configuration.providers import TomlFileProvider
-        from deepagents_code.configuration.resolver import resolver_from_snapshots
-        from deepagents_code.configuration.service import get_managed_snapshot
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.configuration.resolver import get_config_resolver
 
         option = get_option("warnings.trusted_cache_endpoints")
         if option is None:
             return frozenset()
-        # Endpoint trust is consulted on every custom-endpoint turn so edits
-        # take effect without `/reload`. Keep managed policy at the generation
-        # already in force while reading the user's file fresh.
-        user = TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load()
-        resolved = resolver_from_snapshots(get_managed_snapshot(), user).get(option)
+        resolved = get_config_resolver().get(option)
         _emit_ranked_diagnostics(option, resolved)
         entries = resolved.value
         # The manifest has no default for this optional structured setting.

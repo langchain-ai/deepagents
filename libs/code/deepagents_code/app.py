@@ -11041,10 +11041,9 @@ class DeepAgentsApp(App):
                 base_url=base_url,
                 # Only consulted for a custom endpoint: with no `base_url`,
                 # `_official_endpoint` short-circuits to `True` and the trust
-                # set is provably unused. Loading it eagerly would re-read and
-                # re-parse `config.toml` from disk on every turn of the common
-                # official-API path, which is the very cost the comment below
-                # is about.
+                # set is provably unused. Loading it eagerly would still cost
+                # the trust-set resolution and its diagnostics on every turn of
+                # the common official-API path.
                 trusted_endpoints=load_trusted_cache_endpoints() if base_url else None,
             )
             # Resolved before the suppression lookup so the common

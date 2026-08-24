@@ -34429,6 +34429,31 @@ class TestParseReconnectArgs:
 class TestRestartCommand:
     """`/restart` slash command — config reload + server respawn."""
 
+    async def test_configuration_reload_runs_off_event_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A remote policy fetch cannot block Textual event dispatch."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp()
+        loop_thread_id = threading.get_ident()
+        reload_thread_ids: list[int] = []
+
+        def reload_from_environment() -> list[str]:
+            reload_thread_ids.append(threading.get_ident())
+            return []
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+        monkeypatch.setattr("deepagents_code.model_config.clear_caches", lambda: None)
+
+        assert await app._reload_configuration_for_restart() is True
+        assert reload_thread_ids
+        assert all(thread_id != loop_thread_id for thread_id in reload_thread_ids)
+
     async def test_remote_server_mode_short_circuits(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -35493,8 +35518,14 @@ class TestRespawnServer:
         app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[removed])
         async with app.run_test() as pilot:
             await pilot.pause()
+            loop_thread_id = threading.get_ident()
+            reload_thread_ids: list[int] = []
             proc = await self._prepare(app)
             app._plugin_fingerprints = {}
+
+            def reload_from_environment() -> list[str]:
+                reload_thread_ids.append(threading.get_ident())
+                return []
 
             async def restart_manual() -> _ServerRespawnResult:
                 await app._restart_server_process(proc)
@@ -35504,7 +35535,11 @@ class TestRespawnServer:
                     mcp_status="fresh",
                 )
 
-            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                settings,
+                "reload_from_environment",
+                reload_from_environment,
+            )
             monkeypatch.setattr(
                 "deepagents_code.model_config.clear_caches", lambda: None
             )
@@ -35532,6 +35567,8 @@ class TestRespawnServer:
             await app._reload_task
 
             proc.restart.assert_awaited_once()
+            assert reload_thread_ids
+            assert all(thread_id != loop_thread_id for thread_id in reload_thread_ids)
             assert caller not in app._server_restart_tasks
             assert not app._server_restart_tasks
             reports = [str(message._content) for message in app.query(AppMessage)]

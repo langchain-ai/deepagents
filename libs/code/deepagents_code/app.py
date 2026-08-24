@@ -16225,7 +16225,7 @@ class DeepAgentsApp(App):
             old_mcp_server_info = self._mcp_server_info
 
             try:
-                changes = settings.reload_from_environment()
+                changes = await asyncio.to_thread(settings.reload_from_environment)
 
                 from deepagents_code.model_config import clear_caches
 
@@ -26190,7 +26190,7 @@ class DeepAgentsApp(App):
         from deepagents_code.model_config import clear_caches
 
         try:
-            settings.reload_from_environment()
+            await asyncio.to_thread(settings.reload_from_environment)
             clear_caches()
         except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
             logger.exception("Failed to reload configuration during restart")

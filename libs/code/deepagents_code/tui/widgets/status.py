@@ -985,21 +985,6 @@ class StatusBar(Vertical):
         display.display = bool(new_value)
         display.update(new_value)
 
-    _CONTEXT_WARNING_PERCENT = 60.0
-    """Context usage at which the percentage turns from calm to caution."""
-
-    _CONTEXT_CRITICAL_PERCENT = 80.0
-    """Context usage at which the percentage turns to alert."""
-
-    def _percent_color(self, percent: float) -> str:
-        """Return the color that encodes how full the context window is."""
-        colors = theme.get_theme_colors(self)
-        if percent > self._CONTEXT_CRITICAL_PERCENT:
-            return colors.error
-        if percent > self._CONTEXT_WARNING_PERCENT:
-            return colors.warning
-        return colors.muted
-
     def _context_segment(self, count: int, *, approximate: bool = False) -> Content:
         """Build the context percentage and absolute-usage segment.
 
@@ -1016,9 +1001,7 @@ class StatusBar(Vertical):
             count_text = f"{_compact_tokens(count)}{suffix}"
         else:
             percent = min(100.0, max(0.0, count / self.context_limit * 100))
-            percent_content = Content.styled(
-                f"{percent:.0f}%", self._percent_color(percent)
-            )
+            percent_content = Content(f"{percent:.0f}%")
             count_text = f"{_compact_tokens(count)}{suffix}"
         muted = theme.get_theme_colors(self).muted
         return Content.assemble(

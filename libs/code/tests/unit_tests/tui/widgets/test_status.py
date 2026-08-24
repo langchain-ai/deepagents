@@ -89,15 +89,18 @@ class TestTwoLineMetrics:
             assert str(cache.render()) == ("Cache 80% hit • 12.5K read / 750 write")
             assert str(context.render()) == "Context: 6% / Tokens: 12.5K • $0.42"
 
-    async def test_context_percentage_color_thresholds(self) -> None:
+    async def test_context_percentage_matches_token_count_color(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
-            colors = theme.get_theme_colors(bar)
+            bar.set_context_limit(100_000)
 
-            assert bar._percent_color(60.0) == colors.muted
-            assert bar._percent_color(60.1) == colors.warning
-            assert bar._percent_color(80.0) == colors.warning
-            assert bar._percent_color(80.1) == colors.error
+            context = bar._context_segment(71_400)
+            percent_offset = context.plain.index("71%")
+            tokens_offset = context.plain.index("71.4K")
+
+            assert context.get_style_at_offset(percent_offset) == (
+                context.get_style_at_offset(tokens_offset)
+            )
 
     @pytest.mark.parametrize(
         ("read", "color"),

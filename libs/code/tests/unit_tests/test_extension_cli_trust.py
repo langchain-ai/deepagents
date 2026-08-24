@@ -20,28 +20,17 @@ def _enable_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(EXPERIMENTAL, "1")
 
 
-def _project(tmp_path: Path) -> SimpleNamespace:
-    (tmp_path / ".deepagents" / "extensions").mkdir(parents=True)
-    return SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
-
-
 def test_experimental_mode_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
     """Disabled extensions do not inspect projects or prompt for trust."""
     monkeypatch.delenv(EXPERIMENTAL)
     assert not _check_project_extensions_trust(trust_flag=True)
 
 
-def test_never_policy_overrides_explicit_flag(tmp_path: Path) -> None:
+def test_never_policy_overrides_explicit_flag() -> None:
     """A configured hard stop wins over the CLI flag."""
-    with (
-        patch(
-            "deepagents_code.extensions.settings.load_extension_settings",
-            return_value=ExtensionSettings(trust=TrustPolicy.NEVER),
-        ),
-        patch(
-            "deepagents_code.project_utils.ProjectContext.from_user_cwd",
-            return_value=_project(tmp_path),
-        ),
+    with patch(
+        "deepagents_code.extensions.settings.load_extension_settings",
+        return_value=ExtensionSettings(trust=TrustPolicy.NEVER),
     ):
         assert not _check_project_extensions_trust(trust_flag=True)
 
@@ -61,10 +50,11 @@ def test_prompt_decisions(
     persist: bool,
 ) -> None:
     """Prompt outcomes grant, persist, or cancel as selected."""
+    (tmp_path / ".deepagents" / "extensions").mkdir(parents=True)
     with (
         patch(
             "deepagents_code.project_utils.ProjectContext.from_user_cwd",
-            return_value=_project(tmp_path),
+            return_value=SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path),
         ),
         patch(
             "deepagents_code.extensions.trust.is_project_extensions_trusted",

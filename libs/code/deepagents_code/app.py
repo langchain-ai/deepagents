@@ -12850,7 +12850,6 @@ class DeepAgentsApp(App):
         )
 
     async def _handle_extensions_command(self, command: str) -> None:
-        """List live extension registrations from the owned local server."""
         await self._mount_message(UserMessage(command))
         if self._server_proc is None:
             await self._mount_message(

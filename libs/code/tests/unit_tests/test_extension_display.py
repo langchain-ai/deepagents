@@ -11,10 +11,7 @@ def test_extension_display_escapes_endpoint_metadata() -> None:
                 {
                     "kind": "tool",
                     "name": "name|forged",
-                    "source": {
-                        "scope": "project",
-                        "path": "<b>/tmp/[extension]</b>",
-                    },
+                    "source": {"scope": "project", "path": "<b>/tmp/[extension]</b>"},
                 }
             ],
             "errors": ["bad\n# injected"],

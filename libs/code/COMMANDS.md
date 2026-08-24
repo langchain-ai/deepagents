@@ -40,7 +40,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/plugins` |  | Manage plugins |
 | `/prompts` |  | Search and reuse a previous prompt |
 | `/quit` | `/q` | Exit app |
-| `/reload` |  | Reload config, plugins, and the agent server |
+| `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |
 | `/restart` |  | Restart the agent server |
 | `/rubric` | `/criteria` | Set explicit acceptance criteria for rubric grading |

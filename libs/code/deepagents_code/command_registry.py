@@ -220,7 +220,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     # `re` → `/remember`, `rel` → `/reload`.
     SlashCommand(
         name="/reload",
-        description="Reload config, plugins, and the agent server",
+        description="Reload environment and config",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="refresh plugin plugins marketplace",
     ),
@@ -252,7 +252,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/extensions",
         description="List loaded Python extensions and their provenance",
         bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="plugins middleware backend provenance",
     ),
     SlashCommand(
         name="/tools",

@@ -18,31 +18,16 @@ An installed plugin declares one or more Python entry files in its manifest:
 }
 ```
 
-The entry file exposes an `extension` setup function:
-
-```python
-from deepagents.backends import StoreBackend
-from deepagents_code.extensions import ExtensionAPI
-
-
-async def extension(d: ExtensionAPI) -> None:
-    """Add shared storage under `/memories/`.
-
-    Args:
-        d: The extension setup API.
-    """
-    d.register_backend_route(
-        "/memories/",
-        StoreBackend(namespace=lambda _runtime: ("filesystem",)),
-    )
-```
+The entry file exposes an async `extension` setup function. See
+[`memory_store.py`](./examples/extensions/memory_store.py) for an example that
+registers a shared `/memories/` storage route.
 
 Install and enable the plugin through the normal plugin commands, then run
 `/restart`. Backend composition happens while the agent graph is built, so
 backend route changes cannot be applied by `/reload`. A separately managed
 remote agent server must be restarted or redeployed by its operator.
 
-The `/memories/` route above makes shared storage available to model file
+The `/memories/` route makes shared storage available to model file
 operations. It does not automatically move dcode's built-in `AGENTS.md` memory.
 An extension that wants that content in the model's prompt must also register
 middleware that reads the shared location.
@@ -91,10 +76,10 @@ dcode does not recursively inspect custom or composite backend wrappers, whose
 authors own their isolation contract.
 
 The first extension registration of a route prefix or unit name wins. Extension
-tools and middleware replace same-named built-ins with a warning. A route that
-is a parent or child of dcode's artifact or conversation-history storage fails
-agent construction or runtime registration immediately; internal routes cannot
-be replaced.
+tools and middleware replace same-named built-ins. A route that is a parent or
+child of dcode's artifact or conversation-history storage fails agent
+construction or runtime registration immediately; internal routes cannot be
+replaced.
 
 ## Packaging, discovery, and trust
 
@@ -161,5 +146,3 @@ scope. This attribution tells dcode which extension added a storage route; it
 does not prove that an arbitrary storage implementation is safe. A provider can
 access the network or host files, so install plugins only from trusted sources
 and choose shared namespaces that preserve tenant and user isolation.
-
-See `examples/extensions/memory_store.py` for a shared storage route.

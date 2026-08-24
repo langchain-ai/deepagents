@@ -120,6 +120,13 @@ COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
 Zero or negative disables the suggestion.
 """
 
+HISTORY_RETENTION_DAYS_DEFAULT = 30
+"""Default number of days an offloaded conversation-history archive is retained.
+
+Single source of truth shared by the `history.retention_days` option and the
+startup sweep in `offload`, so introspection and the sweep cannot drift.
+"""
+
 SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT = 50.0
 """Default warning threshold in USD; zero or negative disables the warning."""
 
@@ -183,6 +190,9 @@ class OptionKind(Enum):
     NON_EMPTY_STR = "non_empty_str"
     """A string stripped of surrounding whitespace; blank values are unset."""
 
+    MODEL_LIST_DELEGATE = "model_list"
+    """Validates a list of `provider:model` specs and `provider:*` wildcards."""
+
     LOG_LEVEL_DELEGATE = "log_level"
     """Validates log levels and resolves the default from debug mode."""
 
@@ -225,6 +235,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.FLOAT: "float",
     OptionKind.STR: "str",
     OptionKind.NON_EMPTY_STR: "non-empty str",
+    OptionKind.MODEL_LIST_DELEGATE: "list[provider:model]",
     OptionKind.LOG_LEVEL_DELEGATE: "str",
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
@@ -1889,6 +1900,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ),
     # --- Models --------------------------------------------------------
     ConfigOption(
+        key="models.allowed",
+        group="Models",
+        summary=(
+            "Model specs ('provider:model', or 'provider:*' for a whole "
+            "provider) dcode may use; unset allows all, empty list allows none."
+        ),
+        kind=OptionKind.MODEL_LIST_DELEGATE,
+        toml_keys=("models", "allowed"),
+    ),
+    ConfigOption(
         key="models.default",
         group="Models",
         summary="Default model spec ('provider:model') used at launch.",
@@ -2263,6 +2284,19 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STRUCTURED,
         toml_keys=("threads", "columns"),
         merge_strategy=MergeStrategy.DEEP_MERGE,
+    ),
+    # --- History --------------------------------------------------------
+    ConfigOption(
+        key="history.retention_days",
+        group="History",
+        summary=(
+            "Days an offloaded conversation-history archive is kept before the "
+            "startup sweep deletes it (0 disables)."
+        ),
+        kind=OptionKind.NON_NEGATIVE_INT,
+        default=HISTORY_RETENTION_DAYS_DEFAULT,
+        env_var=_env_vars.HISTORY_RETENTION_DAYS,
+        toml_keys=("history", "retention_days"),
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(

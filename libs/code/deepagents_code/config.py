@@ -4829,6 +4829,30 @@ def detect_provider(model_name: str) -> str | None:
     return None
 
 
+def _expand_allowed_entry(entry: str) -> list[str]:
+    """Resolve one `models.allowed` entry to the model specs it admits.
+
+    An exact `provider:model` entry yields itself. A `provider:*` wildcard
+    yields the provider's discovered model lineup (registry discovery merged
+    with the config's explicit list), read before allowlist filtering:
+    `get_available_models` applies this policy itself, so calling it here
+    would recurse.
+
+    Args:
+        entry: One entry from `ModelConfig.allowed_models`.
+
+    Returns:
+        Exact specs the entry contributes as default candidates, empty when a
+        wildcarded provider has no discovered or configured models.
+    """
+    if not entry.endswith(":*"):
+        return [entry]
+    provider = entry[:-2]
+    from deepagents_code.model_config import get_discovered_models
+
+    return [f"{provider}:{model}" for model in get_discovered_models(provider)]
+
+
 def _get_default_model_spec() -> str:
     """Get default model specification based on available credentials.
 
@@ -4836,7 +4860,13 @@ def _get_default_model_spec() -> str:
 
     1. `[models].default` in config file (user's intentional preference).
     2. `[models].recent` in config file (last `/model` switch).
-    3. Auto-detection based on available API credentials.
+    3. When `models.allowed` is active, the first entry in it whose provider
+       does not have a definitively missing credential. A `provider:*` entry
+       expands to the provider's discovered models rather than being a
+       selectable candidate itself. Steps 1 and 2 are skipped with a warning
+       when the stored value is outside the policy, and step 4 is never
+       reached -- a policy declares the whole candidate set.
+    4. Auto-detection based on available API credentials.
 
     Returns:
         Model specification in `provider:model` format.
@@ -4845,19 +4875,80 @@ def _get_default_model_spec() -> str:
         NoCredentialsConfiguredError: If no credentials are configured for any
             of the auto-detectable providers. Callers may catch this to defer
             startup and prompt for credentials interactively.
-    """
+        NoAllowedModelCredentialsError: If `models.allowed` is active and no
+            model in it has usable credentials. A `NoCredentialsConfiguredError`
+            subclass, but callers should report it rather than silently retry:
+            only a credential for an allowlisted provider can resolve it.
+        ModelNotAllowedError: If `models.allowed` is active but empty, so no
+            model can be resolved. Unlike the error above this is **not**
+            recoverable by adding credentials, so the deferred-start path must
+            not treat it as a prompt-for-credentials signal.
+    """  # noqa: DOC502 - `ModelNotAllowedError` propagates from `ModelConfig.policy_error`
     from deepagents_code.model_config import (
         ModelConfig,
+        ModelSpec,
+        NoAllowedModelCredentialsError,
         NoCredentialsConfiguredError,
+        ProviderAuthState,
         get_provider_auth_status,
     )
 
     config = ModelConfig.load()
-    if config.default_model:
-        return config.default_model
+    for label, candidate in (
+        ("default", config.default_model),
+        ("recent", config.recent_model),
+    ):
+        if candidate and config.is_model_allowed(candidate):
+            return candidate
+        if candidate:
+            logger.warning(
+                "Ignoring [models].%s=%r because it is outside models.allowed",
+                label,
+                candidate,
+            )
 
-    if config.recent_model:
-        return config.recent_model
+    if config.allowed_models is not None:
+        if not config.allowed_models:
+            # No spec to name -- the user asked for nothing in particular, so
+            # `policy_error(None)` reports the empty policy rather than
+            # inventing a placeholder spec the user never typed.
+            deny_all = config.policy_error(None)
+            if deny_all is not None:
+                raise deny_all
+        # A `provider:*` wildcard cannot be selected itself -- no model is
+        # named -- but every configured model it admits is a candidate in the
+        # provider's declaration order.
+        candidates = [
+            spec
+            for entry in config.allowed_models
+            for spec in _expand_allowed_entry(entry)
+        ]
+        for candidate in candidates:
+            parsed = ModelSpec.parse(candidate)
+            auth = get_provider_auth_status(parsed.provider)
+            # Only a definitively missing credential disqualifies a candidate.
+            # UNKNOWN covers remote no-auth providers (e.g., a LAN/hosted
+            # Ollama endpoint) that may not require auth at all; rejecting
+            # them here would block startup even though create_model()
+            # deliberately permits that state.
+            if auth.state is not ProviderAuthState.MISSING:
+                return candidate
+        if not candidates:
+            # Every entry is a wildcard for a provider with no discoverable
+            # models, so there is nothing to credential.
+            allowed = ", ".join(config.allowed_models)
+            msg = (
+                "No discoverable models match models.allowed "
+                f"({allowed}). Name an exact provider:model spec or configure "
+                "models for a wildcarded provider."
+            )
+            raise NoAllowedModelCredentialsError(msg)
+        allowed = ", ".join(candidates)
+        msg = (
+            "No credentials are configured for any model in models.allowed. "
+            f"Add credentials for one of: {allowed}."
+        )
+        raise NoAllowedModelCredentialsError(msg)
 
     # `is True` deliberately excludes `ProviderAuthState.UNKNOWN` (which maps
     # to `as_legacy_bool() -> None`). For the three explicit-credential
@@ -5371,6 +5462,10 @@ def create_model(
     Raises:
         ModelConfigError: If provider cannot be determined from the model name
             or required provider package is not installed.
+        ModelNotAllowedError: If the resolved spec is outside `models.allowed`.
+            A `ModelConfigError` subclass, so a bare `except ModelConfigError`
+            swallows a policy denial -- handlers that fall back to another
+            model must re-raise it (see `configurable_model._apply_overrides`).
         MissingCredentialsError: If no credentials are configured for the
             resolved provider.
 
@@ -5379,7 +5474,7 @@ def create_model(
         >>> model = create_model("openai:gpt-5.5")
         >>> model = create_model("gpt-5.5")  # Auto-detects openai
         >>> model = create_model()  # Uses environment defaults
-    """
+    """  # noqa: DOC502 - `ModelNotAllowedError` propagates from `require_model_allowed`
     from deepagents_code.model_config import (
         IMPLICIT_AUTH_PROVIDERS,
         ModelConfig,
@@ -5435,6 +5530,14 @@ def create_model(
             f"'google_vertexai:{model_name}'."
         )
         raise ModelConfigError(msg)
+
+    resolved_spec = f"{provider}:{model_name}" if provider else model_spec
+    # The authoritative policy gate, and its position is load-bearing: it runs
+    # after provider inference (so a bare name is matched in canonical form)
+    # but before credential bridging, provider profiles, and provider imports.
+    # A blocked spec must not copy stored keys onto env vars or run a provider
+    # `pre_init` hook. `test_rejects_before_credential_side_effects` pins this.
+    config.require_model_allowed(resolved_spec)
 
     # Stored API keys (added via `/auth`) take effect by being copied onto
     # the env var name LangChain reads. Apply before the credential check so

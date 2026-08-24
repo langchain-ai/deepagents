@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
+from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphInterrupt
@@ -150,6 +151,25 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
     assert interrupt_on
     for config in interrupt_on.values():
         assert config.get("when") is _should_interrupt_tool_call
+
+
+def test_agent_publishes_server_offload_operation(tmp_path: Path) -> None:
+    """The backend exposes offload without adding graph input fields."""
+    agent, backend = create_cli_agent(
+        model=_make_fake_chat_model(),
+        assistant_id="test-agent",
+        enable_memory=False,
+        enable_skills=False,
+        enable_shell=False,
+        system_prompt="test prompt",
+        cwd=tmp_path,
+    )
+
+    from deepagents_code.offload_middleware import offload_operation_from
+
+    schema = agent.get_input_jsonschema()
+    assert "dcode_operation" not in schema["properties"]
+    assert offload_operation_from(backend) is not None
 
 
 def test_local_conversation_history_route_is_persistent(tmp_path: Path) -> None:
@@ -4861,13 +4881,24 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.interpreter_ptc_acknowledge_unsafe = False
         return mock_settings
 
-    def _capture_middleware(self, tmp_path: Path, **kwargs: Any) -> list[Any]:
+    def _capture_middleware(
+        self,
+        tmp_path: Path,
+        *,
+        model: str | BaseChatModel = "fake-model",
+        **kwargs: Any,
+    ) -> list[Any]:
         """Run `create_cli_agent` with mocked deps and return its middleware list.
 
         Keeps the Auto-mode wiring tests below to a single assertion apiece by
         centralizing the identical patching/boilerplate. Extra keyword
         arguments (e.g. `auto_mode_enabled`, `interactive`, `sandbox`) are
         forwarded to `create_cli_agent`.
+
+        `model` defaults to a bare string. Policy tests must override it with a
+        `BaseChatModel`: `create_cli_agent` checks every model *string* it
+        forwards, so a string here would be rejected first and make a test
+        aimed at the subagent, classifier, or rubric spec pass vacuously.
         """
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -4887,7 +4918,7 @@ class TestCreateCliAgentInterpreterWiring:
             ),
         ):
             create_cli_agent(
-                model="fake-model",
+                model=model,
                 assistant_id="test",
                 enable_memory=False,
                 enable_skills=False,
@@ -5170,6 +5201,185 @@ class TestCreateCliAgentInterpreterWiring:
         compiled_tool = tool_node.tools_by_name["compact_conversation"]
         assert compiled_tool is canonical_tool
         assert auto._trusted_compaction_tool is compiled_tool
+
+    def test_rejects_disallowed_explicit_subagent_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Local subagent frontmatter cannot bypass model construction policy."""
+        from deepagents_code.model_config import ModelConfig, ModelNotAllowedError
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.agent.list_subagents",
+            lambda **_kwargs: [
+                {
+                    "name": "blocked",
+                    "description": "Blocked model",
+                    "system_prompt": "Help.",
+                    "model": "openai:blocked",
+                }
+            ],
+        )
+
+        with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
+            self._capture_middleware(tmp_path, model=_make_fake_chat_model())
+
+    def test_rejects_disallowed_auto_classifier_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit Auto classifier is checked before middleware creation."""
+        from deepagents_code.model_config import ModelConfig, ModelNotAllowedError
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
+            self._capture_middleware(
+                tmp_path,
+                model=_make_fake_chat_model(),
+                auto_mode_enabled=True,
+                auto_classifier_model="openai:blocked",
+            )
+
+    def test_rejects_disallowed_rubric_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A direct rubric model string is checked before middleware creation."""
+        from deepagents_code.model_config import ModelConfig, ModelNotAllowedError
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="config.toml",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        with pytest.raises(ModelNotAllowedError, match=r"config\.toml"):
+            self._capture_middleware(
+                tmp_path,
+                model=_make_fake_chat_model(),
+                rubric_model="openai:blocked",
+            )
+
+    def test_rejects_disallowed_primary_model_string(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The primary `model` string is checked like every other model string.
+
+        The SDK resolves a string through `init_chat_model`, which never reaches
+        `config.create_model` -- so without this gate the one parameter most
+        likely to carry a model would be the only unchecked one.
+        """
+        from deepagents_code.model_config import ModelConfig, ModelNotAllowedError
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
+            self._capture_middleware(tmp_path, model="openai:blocked")
+
+    def test_prebuilt_model_object_is_exempt_from_policy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `BaseChatModel` came from a checked path, so it is not re-checked."""
+        from deepagents_code.model_config import ModelConfig
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        assert self._capture_middleware(tmp_path, model=_make_fake_chat_model())
+
+    def test_blank_rubric_model_keeps_its_own_diagnosis(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blank rubric model is not a spec, so policy leaves it alone.
+
+        `RubricMiddleware` already rejects it with "`model` is required", which
+        is the accurate message. Policy-checking `""` would instead advise a
+        fully qualified provider:model spec and hide the real problem.
+        """
+        from deepagents_code.model_config import ModelConfig
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="config.toml",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        with pytest.raises(ValueError, match="`model` is required"):
+            self._capture_middleware(
+                tmp_path, model=_make_fake_chat_model(), rubric_model=""
+            )
+
+    def test_subagent_rejection_names_the_declaring_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The abort message identifies which agents file to edit."""
+        from deepagents_code.model_config import ModelConfig, ModelNotAllowedError
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.agent.list_subagents",
+            lambda **_kwargs: [
+                {
+                    "name": "reviewer",
+                    "description": "Blocked model",
+                    "system_prompt": "Help.",
+                    "model": "openai:blocked",
+                    "path": "/agents/reviewer/AGENTS.md",
+                }
+            ],
+        )
+
+        with pytest.raises(
+            ModelNotAllowedError,
+            match=r"subagent 'reviewer' \(/agents/reviewer/AGENTS\.md\)",
+        ):
+            self._capture_middleware(tmp_path, model=_make_fake_chat_model())
 
     def test_appends_rubric_middleware(self, tmp_path: Path) -> None:
         from deepagents.middleware.rubric import RubricMiddleware

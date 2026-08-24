@@ -550,6 +550,38 @@ class TestStartServerAndGetAgent:
         assert config["graphs"]["agent"] == "./server_graph.py:make_graph"
         assert config["checkpointer"]["path"] == "./checkpointer.py:create_checkpointer"
 
+    def test_builtin_server_registers_only_the_agent_graph(
+        self, tmp_path: Path
+    ) -> None:
+        """Operations use an authenticated route, not addressable siblings."""
+        import json
+
+        from deepagents_code.client.launch.server import generate_langgraph_json
+
+        # The production default (see `server_manager`) resolves to the real
+        # installed module.
+        generate_langgraph_json(tmp_path)
+        config = json.loads((tmp_path / "langgraph.json").read_text())
+        assert config["graphs"] == {"agent": "deepagents_code.server_graph:make_graph"}
+        assert config["http"] == {
+            "app": "deepagents_code.offload_api:app",
+            "enable_custom_route_auth": True,
+        }
+
+    def test_custom_graph_does_not_require_an_offload_factory(
+        self, tmp_path: Path
+    ) -> None:
+        """Custom graph references remain valid without an undocumented pair."""
+        import json
+
+        from deepagents_code.client.launch.server import generate_langgraph_json
+
+        generate_langgraph_json(tmp_path, graph_ref="custom_graph:make_graph")
+
+        config = json.loads((tmp_path / "langgraph.json").read_text())
+        assert config["graphs"] == {"agent": "custom_graph:make_graph"}
+        assert "http" not in config
+
 
 class TestWritePyproject:
     """Tests for the generated runtime pyproject."""

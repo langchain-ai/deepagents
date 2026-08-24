@@ -297,6 +297,15 @@ _STATUS_CLASSES: frozenset[str] = frozenset(
     {"-status-success", "-status-error", "-status-rejected", "-status-skipped"}
 )
 
+_TOOL_ROW_ACTION_CLASS: str = "-row-actionable"
+"""Marks a `ToolCallMessage` whose row click toggles something.
+
+Gates the hover border in `ToolCallMessage.DEFAULT_CSS` and the ASCII
+variant in `app.tcss`; both selectors name the literal, so a rename here
+must reach them too (`test_hover_rule_targets_the_row_action_class` covers
+the former).
+"""
+
 
 _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
@@ -1721,11 +1730,11 @@ class ToolCallMessage(Vertical):
         background: $warning 8%;
     }
 
-    ToolCallMessage:hover {
+    ToolCallMessage.-row-actionable:hover {
         border-left: wide $tool-hover;
     }
     """
-    """Left border tracks tool lifecycle; hover brightens for interactivity."""
+    """Left border tracks tool lifecycle; actionable rows brighten on hover."""
 
     _PREVIEW_LINES = 6
     """Maximum number of lines to show in preview mode."""
@@ -1915,6 +1924,7 @@ class ToolCallMessage(Vertical):
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
+        self._sync_row_actionability()
         # `to_widget` sets `_diff_superseded` before mount, but not every
         # `_restore_deferred_state` branch applies visibility. Applied here so
         # hiding does not depend on which branch a tool takes.
@@ -2483,6 +2493,44 @@ class ToolCallMessage(Vertical):
                 _TOOL_SUPERSEDED_ACCESSORY_CLASS,
             )
 
+    @property
+    def has_row_action(self) -> bool:
+        """Whether clicking this row can reveal or hide additional detail.
+
+        Kept in exact lockstep with `on_click`'s routing: every term here must
+        reach a toggle there, or the row brightens on hover over a click that
+        does nothing — the bug this predicate exists to prevent. The reverse
+        also holds, so `on_click` can return early on a False.
+
+        `on_click` guards its output branch with an extra `self._output` check,
+        but that cannot strand a True: `_has_expandable_output` strips `_output`
+        first and returns False when it is empty, so `has_expandable_output`
+        already implies a truthy `_output`.
+        """
+        return (
+            self.has_expandable_output
+            or self.has_expandable_args
+            or self.has_expandable_task_desc
+        )
+
+    def _sync_row_actionability(self) -> None:
+        """Keep the hover affordance aligned with the row's click behavior.
+
+        Called from `on_mount` and from every exit of `_update_output_display`.
+        That set is sufficient rather than arbitrary: `_args` is assigned once
+        in `__init__` and never mutated, so `has_expandable_args` and
+        `has_expandable_task_desc` are fixed after construction, and every write
+        to `_output`/`_status` that can move `has_expandable_output` routes
+        through `_update_output_display`. `set_rejected`/`set_skipped` are the
+        exception and need no sync, because a row reaching them carries no
+        output for the status flip to reinterpret.
+
+        Anything that starts mutating `_args`, or that sets output outside
+        `_update_output_display`, must call this too or the row keeps a hover
+        border over a dead click.
+        """
+        self.set_class(self.has_row_action, _TOOL_ROW_ACTION_CLASS)
+
     def toggle_output(self) -> None:
         """Toggle expansion of the tool's preview/full output."""
         if not self._output:
@@ -2522,8 +2570,23 @@ class ToolCallMessage(Vertical):
         unexpandable result sitting below a multi-line, collapsible code block,
         and the old "output wins whenever it exists" rule left that code block
         stuck.
+
+        A row with nothing to toggle handles nothing and lets the click bubble
+        (see `has_row_action`); the routing below applies only to actionable
+        rows.
         """
-        event.stop()  # Prevent click from bubbling up and scrolling
+        if not self.has_row_action:
+            # Deliberate: an inert row should behave like transcript
+            # background, so the click reaches `DeepAgentsApp.on_click` and
+            # refocuses the chat input — matching `AssistantMessage`, which has
+            # no handler at all. `_ChatScroll` sets `FOCUS_ON_CLICK = False`,
+            # so bubbling cannot scroll the transcript, and tool group members
+            # are DOM siblings rather than children, so it cannot reach
+            # `ToolGroupSummary.on_click` and collapse the group either.
+            return
+        # Actionable rows own their click: stopping it keeps the transcript from
+        # scrolling and the chat input from stealing focus mid-toggle.
+        event.stop()
         if self.has_expandable_task_desc and self._click_targets_task_desc_region(
             event.widget
         ):
@@ -3697,6 +3760,11 @@ class ToolCallMessage(Vertical):
             or not self._full_row
             or not self._hint_widget
         ):
+            # Syncs like every other exit: emptying `_output` drops the row's
+            # output action, and without this the row keeps a hover border over
+            # a click that no longer does anything. Reached pre-mount too, where
+            # `on_mount` syncs again afterwards, so the duplicate is harmless.
+            self._sync_row_actionability()
             return
 
         output_stripped = self._output.strip()
@@ -3729,6 +3797,7 @@ class ToolCallMessage(Vertical):
             self._preview_row.display = False
             self._full_row.display = False
             self._hint_widget.display = False
+            self._sync_row_actionability()
             return
 
         if self._expanded:
@@ -3772,6 +3841,7 @@ class ToolCallMessage(Vertical):
                     )
                 )
                 self._hint_widget.display = True
+                self._sync_row_actionability()
                 return
             # Truncate the preview only when the output is large enough to
             # warrant it; `_ALWAYS_PREVIEW_TOOLS` use their compact preview
@@ -3801,6 +3871,8 @@ class ToolCallMessage(Vertical):
                 self._hint_widget.display = True
             else:
                 self._hint_widget.display = False
+
+        self._sync_row_actionability()
 
     def _output_hint_keys(self) -> str:
         """Affordances to advertise in the output expand/collapse hint.

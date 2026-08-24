@@ -284,6 +284,18 @@ HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
+HISTORY_RETENTION_DAYS = "DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS"
+"""Days an offloaded conversation-history archive is kept before the startup
+sweep deletes it.
+
+Archives live under `~/.deepagents/conversation_history/` and are removed by a
+best-effort background sweep at startup once their age exceeds the window.
+Non-negative integers only: `0` disables the sweep entirely, and an
+unparseable or negative value falls through to the next config source. Also
+settable via `[history].retention_days` in config.toml (managed config takes
+precedence).
+"""
+
 INVOKED_AS = "DEEPAGENTS_CODE_INVOKED_AS"
 """Internal sentinel carrying the command name the user launched with.
 

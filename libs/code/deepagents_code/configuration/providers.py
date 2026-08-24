@@ -138,7 +138,21 @@ def coerce_environment_value(
         if raw in VALID_CURSOR_STYLES:
             return Found(raw)
         return Invalid(f"Ignoring {name}={raw!r} (expected 'block' or 'underline')")
-    if kind is OptionKind.PTC_DELEGATE or kind is OptionKind.STRUCTURED:
+    if kind in {
+        OptionKind.MODEL_LIST_DELEGATE,
+        OptionKind.PTC_DELEGATE,
+        OptionKind.STRUCTURED,
+    }:
+        # No option of these kinds declares `env_var` *or* `fallback_env_vars`,
+        # so the env provider never reaches this branch; only the `_coerce_env`
+        # compatibility wrapper, which has no env-var guard, can. If a future
+        # option gains either name, reject rather than pass the raw string
+        # through: an uncoerced value would bypass the delegate parser's
+        # validation. Rejection drops to the next-weaker tier (TOML, then the
+        # manifest default) -- note that for a policy option such as
+        # `models.allowed` the default is "unrestricted", so what keeps that
+        # fallback safe is managed config outranking the environment, not the
+        # default itself being conservative.
         return Invalid(f"{option.key} is not env-backed; ignoring {name}={raw!r}")
     if kind is OptionKind.STARTUP_MODE_DELEGATE:
         from deepagents_code.model_config import VALID_STARTUP_MODES
@@ -192,6 +206,13 @@ def coerce_toml_value(
     elif kind is OptionKind.NON_EMPTY_STR:
         if isinstance(raw, str) and (value := raw.strip()):
             return Found(value)
+    elif kind is OptionKind.MODEL_LIST_DELEGATE:
+        from deepagents_code.model_config import parse_model_allowlist
+
+        try:
+            return Found(parse_model_allowlist(raw))
+        except (TypeError, ValueError) as exc:
+            return Invalid(f"Ignoring {label} in {source}: {exc}")
     elif kind is OptionKind.SKILLS_DIRS_DELEGATE:
         if isinstance(raw, list):
             from deepagents_code.config import _parse_extra_skills_dirs

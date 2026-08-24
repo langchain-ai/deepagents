@@ -60,7 +60,12 @@ from deepagents_code.config import (
     settings,
     validate_model_capabilities,
 )
-from deepagents_code.model_config import ModelConfigError, clear_caches
+from deepagents_code.model_config import (
+    ModelConfig,
+    ModelConfigError,
+    ModelNotAllowedError,
+    clear_caches,
+)
 from deepagents_code.project_utils import (
     ProjectContext,
     find_project_agent_md as _find_project_agent_md,
@@ -980,6 +985,245 @@ class TestClaudeSkillsDirs:
 
         settings = Settings.from_environment(start_path=no_project)
         assert settings.get_project_claude_skills_dir() is None
+
+
+class TestCreateModelAllowlist:
+    """Tests for construction-time model policy enforcement."""
+
+    def test_rejects_before_credential_side_effects(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blocked model never bridges credentials or reaches construction."""
+        policy = ModelConfig(
+            providers={"custom": {"class_path": "example.models:ChatModel"}},
+            allowed_models=("anthropic:claude-sonnet-5",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            model_config.ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+        apply_credentials = Mock()
+        split_warning = Mock()
+        provider_kwargs = Mock()
+        custom_constructor = Mock()
+        monkeypatch.setattr(model_config, "apply_stored_credentials", apply_credentials)
+        monkeypatch.setattr(
+            model_config, "warn_on_split_credential_source", split_warning
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._get_provider_kwargs", provider_kwargs
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._create_model_from_class", custom_constructor
+        )
+
+        with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
+            create_model("custom:blocked")
+
+        apply_credentials.assert_not_called()
+        split_warning.assert_not_called()
+        provider_kwargs.assert_not_called()
+        custom_constructor.assert_not_called()
+
+    def test_allows_exact_spec_and_reaches_credential_check(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An exact member proceeds past policy enforcement."""
+        policy = ModelConfig(
+            allowed_models=("openai:gpt-5.6-terra",),
+            allowed_models_source="config.toml",
+        )
+        monkeypatch.setattr(
+            model_config.ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+        apply_credentials = Mock()
+        monkeypatch.setattr(model_config, "apply_stored_credentials", apply_credentials)
+        monkeypatch.setattr(
+            model_config, "has_provider_credentials", lambda _provider: False
+        )
+
+        with pytest.raises(model_config.MissingCredentialsError):
+            create_model("openai:gpt-5.6-terra")
+
+        apply_credentials.assert_called_once_with("openai")
+
+    def test_unresolved_bare_name_requests_fully_qualified_spec(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Active policy rejects bare names whose provider cannot be proven."""
+        policy = ModelConfig(
+            allowed_models=("custom:allowed",),
+            allowed_models_source="config.toml",
+        )
+        monkeypatch.setattr(
+            model_config.ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        with pytest.raises(
+            ModelNotAllowedError, match="fully qualified provider:model"
+        ):
+            create_model("unknown-model")
+
+
+class TestDefaultModelSpecAllowlist:
+    """Default resolution under an active `models.allowed` policy."""
+
+    def _pin(self, monkeypatch: pytest.MonkeyPatch, policy: ModelConfig) -> None:
+        monkeypatch.setattr(
+            model_config.ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+    def test_empty_policy_error_does_not_invent_a_spec(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A deny-all policy reports itself, not a placeholder model name.
+
+        The message reaches the terminal verbatim, and `<default>` reads like a
+        bug in dcode rather than a policy the user configured.
+        """
+        from deepagents_code.config import _get_default_model_spec
+
+        self._pin(
+            monkeypatch,
+            ModelConfig(allowed_models=(), allowed_models_source="config.toml"),
+        )
+
+        with pytest.raises(ModelNotAllowedError) as excinfo:
+            _get_default_model_spec()
+
+        assert "<default>" not in str(excinfo.value)
+        assert "No model can be used" in str(excinfo.value)
+
+    def test_all_allowed_providers_missing_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every candidate definitively lacking auth is a distinct failure.
+
+        Distinguishable from the bare no-credentials case because the remedy
+        differs: only a credential for an allowlisted provider helps.
+        """
+        from deepagents_code.config import _get_default_model_spec
+
+        self._pin(
+            monkeypatch,
+            ModelConfig(
+                allowed_models=("openai:gpt-5.6-terra", "anthropic:claude-opus-5"),
+                allowed_models_source="config.toml",
+            ),
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_provider_auth_status",
+            lambda provider: model_config.ProviderAuthStatus(
+                state=model_config.ProviderAuthState.MISSING,
+                source=None,
+                provider=provider,
+            ),
+        )
+
+        with pytest.raises(model_config.NoAllowedModelCredentialsError) as excinfo:
+            _get_default_model_spec()
+
+        # Names what would fix it, and stays catchable as the base class so the
+        # existing deferred-start recovery keeps working.
+        assert "openai:gpt-5.6-terra" in str(excinfo.value)
+        assert isinstance(excinfo.value, model_config.NoCredentialsConfiguredError)
+
+    def test_disallowed_stored_default_is_skipped_for_an_allowed_candidate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale `[models].default` outside policy does not win."""
+        from deepagents_code.config import _get_default_model_spec
+
+        self._pin(
+            monkeypatch,
+            ModelConfig(
+                default_model="openai:blocked",
+                allowed_models=("anthropic:claude-opus-5",),
+                allowed_models_source="config.toml",
+            ),
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_provider_auth_status",
+            lambda provider: model_config.ProviderAuthStatus(
+                state=model_config.ProviderAuthState.CONFIGURED,
+                source=model_config.ProviderAuthSource.ENV,
+                provider=provider,
+            ),
+        )
+
+        assert _get_default_model_spec() == "anthropic:claude-opus-5"
+
+    def test_wildcard_expands_to_discovered_models(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `provider:*` wildcard yields the discovered lineup, not just config.
+
+        Built-in providers like `openai` have their models discovered from the
+        installed provider package, not from `[models.providers.openai].models`,
+        so a wildcard policy with valid credentials must not fall through to
+        the "No discoverable models" error.
+        """
+        from deepagents_code.config import _get_default_model_spec
+
+        self._pin(
+            monkeypatch,
+            ModelConfig(
+                allowed_models=("openai:*",),
+                allowed_models_source="config.toml",
+            ),
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_discovered_models",
+            lambda provider: (
+                ["gpt-5.6-terra", "gpt-5.5"] if provider == "openai" else []
+            ),
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_provider_auth_status",
+            lambda provider: model_config.ProviderAuthStatus(
+                state=model_config.ProviderAuthState.CONFIGURED,
+                source=model_config.ProviderAuthSource.ENV,
+                provider=provider,
+            ),
+        )
+
+        assert _get_default_model_spec() == "openai:gpt-5.6-terra"
+
+    def test_wildcard_with_no_discovered_models_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wildcard for a provider with no known models has no candidates."""
+        from deepagents_code.config import _get_default_model_spec
+
+        self._pin(
+            monkeypatch,
+            ModelConfig(
+                allowed_models=("openai:*",),
+                allowed_models_source="config.toml",
+            ),
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_discovered_models",
+            lambda _provider: [],
+        )
+
+        with pytest.raises(
+            model_config.NoAllowedModelCredentialsError, match="No discoverable"
+        ):
+            _get_default_model_spec()
 
 
 class TestCreateModelProfileExtraction:

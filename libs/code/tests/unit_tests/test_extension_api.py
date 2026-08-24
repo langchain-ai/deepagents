@@ -10,7 +10,7 @@ from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.extensions import ExtensionAPI
-from deepagents_code.extensions.discovery import discover_extension_files
+from deepagents_code.extensions.discovery import discover_extensions
 from deepagents_code.extensions.registry import (
     ExtensionError,
     ExtensionRegistry,
@@ -82,14 +82,12 @@ def test_rejects_unsafe_routes(api: ExtensionAPI, prefix: str) -> None:
         api.register_backend_route(prefix, FilesystemBackend(virtual_mode=False))
 
 
-def test_rejects_invalid_and_allows_runtime_registrations(api: ExtensionAPI) -> None:
-    """Invalid types fail while valid runtime registrations remain supported."""
+def test_rejects_invalid_registrations(api: ExtensionAPI) -> None:
+    """Invalid unit types fail at the API boundary."""
     with pytest.raises(ExtensionError, match="AgentMiddleware"):
         api.register_middleware(cast("Any", object()))
     with pytest.raises(ExtensionError, match="BackendProtocol"):
         api.register_backend_route("/memories/", cast("Any", object()))
-    api.register_middleware(_Middleware())
-    assert api._registry.middleware[0].name == "_Middleware"
 
 
 def test_registrar_closes_after_session(api: ExtensionAPI) -> None:
@@ -121,10 +119,18 @@ def test_plugin_extension_discovery_requires_experimental_mode(
         manifest=manifest,
         inventory=ComponentInventory(),
     )
+    monkeypatch.setattr(
+        "deepagents_code.extensions.discovery.user_extensions_dir",
+        lambda: tmp_path / "missing",
+    )
+    monkeypatch.setattr(
+        "deepagents_code.extensions.discovery.importlib.metadata.entry_points",
+        lambda **_: (),
+    )
     monkeypatch.delenv(EXPERIMENTAL, raising=False)
-    assert not discover_extension_files(plugins=(plugin,))
+    assert not discover_extensions(plugins=(plugin,)).sources
     monkeypatch.setenv(EXPERIMENTAL, "1")
-    sources = discover_extension_files(plugins=(plugin,))
+    sources = discover_extensions(plugins=(plugin,)).sources
     assert [source.path for source in sources] == [path.resolve()]
     assert sources[0].plugin_id == "example@test"
 

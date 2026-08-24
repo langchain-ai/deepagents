@@ -192,16 +192,6 @@ def _python_extensions(
     plugin_root: Path,
     warnings: list[str],
 ) -> tuple[Path, ...]:
-    """Resolve dcode Python entry files contained by a plugin install.
-
-    Args:
-        settings: Dcode-specific plugin manifest settings.
-        plugin_root: Root of the installed plugin snapshot.
-        warnings: Destination for invalid declaration diagnostics.
-
-    Returns:
-        Existing Python files contained by `plugin_root`.
-    """
     if not isinstance(settings, dict):
         return ()
     declaration = settings.get(_PYTHON_EXTENSIONS_FIELD)

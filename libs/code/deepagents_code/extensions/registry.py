@@ -29,21 +29,6 @@ class SourceScope(StrEnum):
     TEMPORARY = "temporary"
 
 
-class SourceOrigin(StrEnum):
-    """Packaging shape of an extension entry file."""
-
-    TOP_LEVEL = "top-level"
-    PACKAGE = "package"
-
-
-class SourceType(StrEnum):
-    """Producer category used by provenance displays and filtering."""
-
-    BUILTIN = "builtin"
-    EXTENSION = "extension"
-    SDK = "sdk"
-
-
 @dataclass(frozen=True, slots=True)
 class RegistrySnapshot:
     """Registration counts used to restore registry state."""
@@ -52,7 +37,6 @@ class RegistrySnapshot:
     tools: int
     backend_routes: int
     shutdown_hooks: int
-    apis: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,17 +46,9 @@ class SourceInfo:
     path: Path
     is_package: bool = False
     plugin_id: str | None = None
-    source: SourceType = SourceType.EXTENSION
     scope: SourceScope = SourceScope.USER
-    origin: SourceOrigin | None = None
     version: str | None = None
     installed_root: Path | None = None
-
-    def __post_init__(self) -> None:
-        """Derive package provenance when callers use the compatibility flag."""
-        if self.origin is None:
-            origin = SourceOrigin.PACKAGE if self.is_package else SourceOrigin.TOP_LEVEL
-            object.__setattr__(self, "origin", origin)
 
     @property
     def label(self) -> str:
@@ -85,9 +61,9 @@ class SourceInfo:
         """Return JSON-safe provenance without reading extension contents."""
         return {
             "path": str(self.path),
-            "source": self.source.value,
+            "source": "extension",
             "scope": self.scope.value,
-            "origin": self.origin.value if self.origin is not None else None,
+            "origin": "package" if self.is_package else "top-level",
             "is_package": self.is_package,
             "plugin_id": self.plugin_id,
             "version": self.version,
@@ -142,7 +118,6 @@ class ExtensionRegistry:
                 tools=len(self.tools),
                 backend_routes=len(self.backend_routes),
                 shutdown_hooks=len(self.shutdown_hooks),
-                apis=len(self._apis),
             )
 
     def _rollback(self, snapshot: RegistrySnapshot) -> None:
@@ -151,7 +126,6 @@ class ExtensionRegistry:
             del self.tools[snapshot.tools :]
             del self.backend_routes[snapshot.backend_routes :]
             del self.shutdown_hooks[snapshot.shutdown_hooks :]
-            del self._apis[snapshot.apis :]
 
     def retain_api(self, api: ExtensionAPI) -> None:
         """Keep a successful factory registrar active for this session."""

@@ -186,23 +186,3 @@ def discover_extensions(
         *project.errors,
     )
     return DiscoveryResult(sources, errors)
-
-
-def discover_extension_files(
-    *,
-    plugins: Sequence[PluginInstance] = (),
-    project_dir: Path | None = None,
-) -> list[SourceInfo]:
-    """Compatibility wrapper returning discovered sources without errors.
-
-    Returns:
-        The discovered source list.
-    """
-    if not is_env_truthy(EXPERIMENTAL):
-        return []
-    project = (
-        _resolve_explicit(project_dir, SourceScope.PROJECT)
-        if project_dir is not None
-        else DiscoveryResult()
-    )
-    return list(_deduplicate((*_plugin_sources(plugins), *project.sources)))

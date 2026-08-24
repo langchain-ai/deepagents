@@ -2661,8 +2661,9 @@ def create_cli_agent(
     # `ReliableRubricMiddleware`: otherwise the grading agent's spend lands in
     # the next turn's checkpoint, or is lost on a session's final turn.
     # The CLI reads these channels back from `state_values` on thread resume.
-    # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
-    # constrained `update_goal` tool, and maintains goal-state notices.
+    # Goal tools: exposes the constrained write-side `update_goal` tool and
+    # maintains goal-state notices that carry the objective and acceptance
+    # criteria while they are live, so the model needs no goal/rubric read tool.
     from deepagents_code.cost_tracking import CostTrackingMiddleware
     from deepagents_code.goal_tools import GoalToolsMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware

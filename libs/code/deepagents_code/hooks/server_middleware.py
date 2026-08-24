@@ -764,10 +764,31 @@ def hook_decided_permission(state: object, tool_call_id: str) -> bool:
         expressed no opinion, or no outcome was recorded -- in every one of those
         cases normal approval still applies.
     """
+    return hook_permission_behavior(state, tool_call_id) is not None
+
+
+def hook_permission_behavior(
+    state: object, tool_call_id: str
+) -> Literal["allow", "deny"] | None:
+    """Return the explicit pre-execution hook permission for a call.
+
+    Args:
+        state: Agent state carrying the current turn's hook outcomes.
+        tool_call_id: Tool call to look up.
+
+    Returns:
+        The hook's explicit `allow` or `deny`, or `None` when normal approval
+            routing still decides permission.
+    """
     outcome = _pre_tool_state(state, tool_call_id)
     if outcome is None:
-        return False
-    return outcome.get("behavior") in {"allow", "deny"}
+        return None
+    behavior = outcome.get("behavior")
+    if behavior == "allow":
+        return "allow"
+    if behavior == "deny":
+        return "deny"
+    return None
 
 
 def _pre_tool_state(state: object, tool_call_id: str) -> Mapping[str, object] | None:

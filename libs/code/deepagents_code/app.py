@@ -11835,9 +11835,10 @@ class DeepAgentsApp(App):
                     await remote.aensure_thread(remote_config)
                 await self._agent.aupdate_state(config, {"messages": messages})
         except Exception:  # best-effort; UI already showed the output
-            # Parity with the offload path's `aupdate_state` failure handling:
-            # log the traceback and surface a non-blocking toast, since the
-            # model silently lacking output the user expects is confusing.
+            # Log the traceback and surface a non-blocking toast: the shell
+            # output is already on screen, so the only loss is the model not
+            # seeing it, and silently lacking output the user expects is
+            # confusing.
             logger.exception("Failed to flush shell command into model context")
             with suppress(Exception):
                 self.notify(

@@ -20,10 +20,6 @@ if TYPE_CHECKING:
     from langchain_core.callbacks import CallbackManagerForLLMRun
 
 
-# Prompt markers that drive `ToolCallingIntegrationChatModel`. Each marker is the
-# full token (including the trailing `=`); the file path follows on the same line,
-# e.g. `DCA_TEST_WRITE_FILE=/tmp/out.txt`. These are the single source of truth
-# shared with the integration tests, so the model and tests cannot drift apart.
 DCA_TEST_OFFLOAD_GATE_ENV = "DCA_TEST_OFFLOAD_GATE_DIR"
 """Env var pointing at a directory used to gate summary generation.
 
@@ -35,6 +31,10 @@ through, which is what lets a test launch a concurrent run *while* `/offload`
 is blocked here.
 """
 
+# Prompt markers that drive `ToolCallingIntegrationChatModel`. Each marker is the
+# full token (including the trailing `=`); the file path follows on the same line,
+# e.g. `DCA_TEST_WRITE_FILE=/tmp/out.txt`. These are the single source of truth
+# shared with the integration tests, so the model and tests cannot drift apart.
 DCA_TEST_WRITE_FILE_MARKER = "DCA_TEST_WRITE_FILE="
 DCA_TEST_DELEGATE_WRITE_MARKER = "DCA_TEST_DELEGATE_WRITE="
 DCA_SUBAGENT_WRITE_FILE_MARKER = "DCA_SUBAGENT_WRITE_FILE="
@@ -139,9 +139,11 @@ class DeterministicIntegrationChatModel(_ToolBindingFakeModel):
         """Hold the summary call open until the test releases it.
 
         No-op unless `DCA_TEST_OFFLOAD_GATE_DIR` names a directory. When set,
-        write `<dir>/entered` once (the test's signal that the offload
-        operation is mid-summary) and then poll for `<dir>/release`. Bounded so
-        a crashed test cannot wedge the server subprocess indefinitely.
+        write `<dir>/entered` (the test's signal that the offload operation is
+        mid-summary) and then poll for `<dir>/release`. Every summary request
+        rewrites the marker, so the test reads it as "a summary is in flight"
+        rather than "the first summary started". Bounded so a crashed test
+        cannot wedge the server subprocess indefinitely.
 
         Raises:
             TimeoutError: If the gate is not released within 120 seconds.

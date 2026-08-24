@@ -112,10 +112,10 @@ async def _await_offload_step[T](
 def _validated_offload_result(result: object) -> OffloadResult:
     """Check a server offload result before any caller indexes it.
 
-    The renderer reads these fields positionally and unguarded. Validating here
+    The renderer subscripts these fields by key and unguarded. Validating here
     means a protocol skew fails with a message naming the problem, instead of a
-    `KeyError` that a caller reports as "Offload failed" for an offload the
-    server already committed -- prompting the user to compact a second time.
+    `KeyError` reported as a generic reporting failure for an offload the server
+    already committed.
 
     Args:
         result: The `result` object from a `complete` operation response.

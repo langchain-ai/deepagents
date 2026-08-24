@@ -1,4 +1,4 @@
-"""Dcode-owned HTTP boundary for server-side thread offload."""
+"""dcode-owned HTTP boundary for server-side thread offload."""
 
 from __future__ import annotations
 
@@ -157,11 +157,13 @@ class _OffloadIndeterminateError(RuntimeError):
     """
 
 
-# Context fields the offload operation reads (everything else in
-# `CLIContextSchema` — approval mode and turn ids, for example — drives
-# interactive-run machinery this operation never touches). Validated at
-# the HTTP boundary so a malformed client request fails with a 422 naming the
-# field instead of a 500 deep in model resolution or hook dispatch.
+# Context fields validated at this boundary (everything else in
+# `CLIContextSchema` — turn ids and the approval-mode key, for example — drives
+# interactive-run machinery this operation never touches). Validated here so a
+# malformed client request fails with a 422 naming the field instead of a 500
+# deep in model resolution or hook dispatch. Validated is not the same as read:
+# `classifier_model` is checked for shape but feeds only auto mode, which this
+# operation never enters.
 _CONTEXT_STR_OR_NONE_FIELDS = (
     "model",
     "classifier_model",
@@ -824,7 +826,8 @@ async def offload(request: Request) -> JSONResponse:
       latter case.
     - 422 -- malformed request, named by field. Nothing ran.
     - 409 -- thread conflict: active, interrupted, holding pending graph work,
-      unregistered, or advanced past the checkpoint read. Nothing committed.
+      unregistered, carrying no checkpoint to offload, or advanced past the
+      checkpoint read. Nothing committed.
     - 503 -- the server runtime could not be built. Nothing ran.
     - 500 -- either an indeterminate write (compaction happened and the commit
       cannot be confirmed; the detail says so and is user-actionable) or an

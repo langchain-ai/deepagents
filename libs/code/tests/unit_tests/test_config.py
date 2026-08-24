@@ -1594,6 +1594,7 @@ class TestRetriesConfig:
             ("bedrock", "max_retries"),
             ("deepseek", "max_retries"),
             ("fireworks", "max_retries"),
+            ("google_anthropic_vertex", "max_retries"),
             ("google_genai", "max_retries"),
             ("google_vertexai", "max_retries"),
             ("groq", "max_retries"),
@@ -2383,7 +2384,7 @@ class TestGetLangsmithProjectName:
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_agrees_with_config_manifest_resolution(self) -> None:
-        """`get_langsmith_project_name` and `resolve_scalar` agree on the project.
+        """`get_langsmith_project_name` and the resolver agree on the project.
 
         The `fallback_env_vars` mechanism exists so `config`/`config get` report
         the project agent traces actually route to. This pins that parity for
@@ -2393,11 +2394,32 @@ class TestGetLangsmithProjectName:
         from deepagents_code.config_manifest import (
             LANGSMITH_PROJECT_DEFAULT,
             get_option,
-            resolve_scalar,
+        )
+        from deepagents_code.configuration.resolver import resolver_from_snapshots
+        from deepagents_code.configuration.types import (
+            ProviderHealth,
+            ProviderStatus,
+            TomlSnapshot,
         )
 
         opt = get_option("tracing.langsmith_project")
         assert opt is not None
+
+        def resolve() -> object:
+            return (
+                resolver_from_snapshots(
+                    managed=TomlSnapshot(
+                        {},
+                        ProviderStatus("managed config", None, ProviderHealth.OK),
+                    ),
+                    user=TomlSnapshot(
+                        {},
+                        ProviderStatus("config.toml", None, ProviderHealth.OK),
+                    ),
+                )
+                .get(opt)
+                .value
+            )
 
         # Bare `LANGSMITH_PROJECT` set, no prefixed override, no settings value.
         bare_env = {
@@ -2411,7 +2433,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            manifest_value = resolve()
             assert get_langsmith_project_name() == manifest_value == "parity-bare"
 
         # Nothing configured: both fall back to the shared default.
@@ -2426,7 +2448,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            manifest_value = resolve()
             assert (
                 get_langsmith_project_name()
                 == manifest_value
@@ -2994,26 +3016,26 @@ class TestLangsmithSecretRedaction:
     def test_redaction_can_be_enabled_by_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """A `[tracing] langsmith_redact = true` in config.toml opts in."""
         monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
-        with patch(
-            "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": True}},
-        ):
-            assert is_langsmith_redaction_enabled() is True
+        (tmp_path / "config.toml").write_text(
+            "[tracing]\nlangsmith_redact = true\n", encoding="utf-8"
+        )
+        assert is_langsmith_redaction_enabled() is True
 
     def test_env_redaction_toggle_overrides_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """The redaction env var takes precedence over a conflicting config.toml."""
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
-        with patch(
-            "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": True}},
-        ):
-            assert is_langsmith_redaction_enabled() is False
+        (tmp_path / "config.toml").write_text(
+            "[tracing]\nlangsmith_redact = true\n", encoding="utf-8"
+        )
+        assert is_langsmith_redaction_enabled() is False
 
     def test_fail_closed_clears_env_when_sdk_disable_also_fails(
         self,
@@ -4033,7 +4055,7 @@ class TestGetTracingStatus:
     def test_empty_prefixed_project_falls_through_to_canonical(self) -> None:
         """An empty prefixed project must not shadow a real `LANGSMITH_PROJECT`.
 
-        Mirrors the manifest/runtime contract: `resolve_scalar` skips an empty
+        Mirrors the manifest/runtime contract: the resolver skips an empty
         `DEEPAGENTS_CODE_LANGSMITH_PROJECT` and uses bare `LANGSMITH_PROJECT`,
         unlike `resolve_env_var`, which would shadow it and report the default.
         """
@@ -5790,6 +5812,79 @@ max_tokens = 1024
 
         assert result.model.model_dump()["max_tokens"] == expected
 
+    @pytest.mark.filterwarnings(
+        "ignore:Core Pydantic V1 functionality isn't compatible with Python 3.14"
+    )
+    def test_google_anthropic_vertex_passes_env_project_and_location(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Claude on Vertex resolves to `ChatAnthropicVertex` with env config."""
+        pytest.importorskip("langchain_google_vertexai")
+        import anthropic
+
+        import deepagents_code.config as config_module
+
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+        monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-east5")
+        runtime_settings = Settings.from_environment()
+        monkeypatch.setattr(config_module, "_get_settings", lambda: runtime_settings)
+        sync_client = Mock()
+        async_client = Mock()
+        monkeypatch.setattr(anthropic, "AnthropicVertex", sync_client)
+        monkeypatch.setattr(anthropic, "AsyncAnthropicVertex", async_client)
+
+        result = create_model("google_anthropic_vertex:claude-sonnet-4-6")
+
+        assert result.provider == "google_anthropic_vertex"
+        assert result.model.__class__.__name__ == "ChatAnthropicVertex"
+        model_dump = result.model.model_dump()
+        assert model_dump["project"] == "test-project"
+        assert model_dump["location"] == "us-east5"
+        assert sync_client.call_args.kwargs["project_id"] == "test-project"
+        assert sync_client.call_args.kwargs["region"] == "us-east5"
+        assert async_client.call_args.kwargs["region"] == "us-east5"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_google_anthropic_vertex_model_params_override_env(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """Explicit model params outrank Google Cloud environment defaults."""
+        mock_init_chat_model.return_value = _make_init_chat_model_mock()
+        with (
+            patch.object(settings, "google_cloud_project", "env-project"),
+            patch.object(settings, "google_cloud_location", "us-east5"),
+        ):
+            create_model(
+                "google_anthropic_vertex:claude-sonnet-4-6",
+                extra_kwargs={"project": "param-project", "location": "europe-west1"},
+            )
+
+        assert mock_init_chat_model.call_args.kwargs["project"] == "param-project"
+        assert mock_init_chat_model.call_args.kwargs["location"] == "europe-west1"
+
+    def test_google_anthropic_vertex_requires_location(self) -> None:
+        """Missing Claude-on-Vertex location produces an actionable error."""
+        with (
+            patch.object(settings, "google_cloud_project", "test-project"),
+            patch.object(settings, "google_cloud_location", None),
+            pytest.raises(
+                ModelConfigError,
+                match=r"GOOGLE_CLOUD_LOCATION.*DEEPAGENTS_CODE_GOOGLE_CLOUD_LOCATION",
+            ),
+        ):
+            create_model("google_anthropic_vertex:claude-sonnet-4-6")
+
+    def test_google_vertexai_rejects_claude_models(self) -> None:
+        """Claude model IDs fail fast on the incompatible Google transport."""
+        with pytest.raises(
+            ModelConfigError,
+            match=(
+                r"google_anthropic_vertex:claude-sonnet-4-6.*instead of "
+                r"'google_vertexai:claude-sonnet-4-6'"
+            ),
+        ):
+            create_model("google_vertexai:claude-sonnet-4-6")
+
     @patch("langchain.chat_models.init_chat_model")
     def test_none_extra_kwargs_is_noop(self, mock_init_chat_model: Mock) -> None:
         """extra_kwargs=None does not affect behavior."""
@@ -5998,6 +6093,28 @@ class TestCreateModelViaInitImportError:
             "langchain-google-vertexai", "deepagents-code"
         )
         assert exc_info.value.provider == "google_vertexai"
+        assert exc_info.value.package == "langchain-google-vertexai"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_missing_anthropic_vertex_package_uses_declared_extra(
+        self, mock_init: Mock
+    ) -> None:
+        """Anthropic Vertex shares the `vertex` integration extra."""
+        from deepagents_code.model_config import MissingProviderPackageError
+
+        mock_init.side_effect = ImportError(
+            "No module named 'langchain_google_vertexai'"
+        )
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "deepagents_code.extras_info.extra_for_package",
+                return_value="vertex",
+            ),
+            pytest.raises(MissingProviderPackageError) as exc_info,
+        ):
+            _create_model_via_init("claude-sonnet-4-6", "google_anthropic_vertex", {})
+
         assert exc_info.value.package == "langchain-google-vertexai"
 
     @patch("langchain.chat_models.init_chat_model")
@@ -6238,12 +6355,12 @@ class TestDetectProvider:
             settings.google_api_key = None
 
     def test_claude_falls_back_to_vertex_when_no_anthropic(self) -> None:
-        """Claude models route to google_vertexai when only Vertex AI is configured."""
+        """Claude models route to Anthropic Vertex when only Vertex is configured."""
         settings.anthropic_api_key = None
         settings.google_cloud_project = "my-project"
         settings.google_api_key = None
         try:
-            assert detect_provider("claude-sonnet-4-5") == "google_vertexai"
+            assert detect_provider("claude-sonnet-4-5") == "google_anthropic_vertex"
         finally:
             settings.google_cloud_project = None
 

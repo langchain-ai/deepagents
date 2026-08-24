@@ -840,6 +840,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "cohere": "COHERE_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
+    "google_anthropic_vertex": "GOOGLE_CLOUD_PROJECT",
     "google_genai": "GOOGLE_API_KEY",
     "google_vertexai": "GOOGLE_CLOUD_PROJECT",
     "groq": "GROQ_API_KEY",
@@ -932,6 +933,7 @@ RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "bedrock": "max_retries",
     "deepseek": "max_retries",
     "fireworks": "max_retries",
+    "google_anthropic_vertex": "max_retries",
     "google_genai": "max_retries",
     "google_vertexai": "max_retries",
     "groq": "max_retries",
@@ -1058,7 +1060,9 @@ def _canonical_base_url_env(provider: str) -> str | None:
     return names[0] if names else None
 
 
-IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
+IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset(
+    {"google_anthropic_vertex", "google_vertexai"}
+)
 """Providers that support ambient auth outside app env-var checks.
 
 These providers can authenticate without the env var listed in
@@ -1235,6 +1239,29 @@ def clear_caches() -> None:
     _ollama_model_profiles_cache.clear()
     _profiles_cache = None
     _profiles_override_cache = None
+    # The thread config cache holds `[threads]` from the same file. Its read
+    # path deliberately has no invalidator (see `load_thread_config`), so
+    # `/reload` is the only thing that picks up a hand edit -- dropping this
+    # call left one cache serving the pre-reload file for the process lifetime.
+    invalidate_thread_config_cache()
+
+
+def _invalidate_config_caches(config_path: Path) -> None:
+    """Drop cached views of `config.toml` after a committed write.
+
+    Two caches hold the file: this module's `[models]` snapshot, and the shared
+    process resolver every manifest reader resolves against. A writer that
+    clears only the first leaves the resolver serving the pre-write generation
+    for the life of the process, so the saved preference never takes effect.
+
+    Args:
+        config_path: Path the caller just wrote.
+    """
+    global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    _default_config_cache = None
+    from deepagents_code.configuration.writer import refresh_shared_resolver
+
+    refresh_shared_resolver(config_path)
     invalidate_thread_config_cache()
 
 
@@ -3009,7 +3036,7 @@ def _resolve_model_file_option(
     sources: ConfigSources,
     *,
     user_data: Mapping[str, Any],
-) -> object | None:
+) -> tuple[object | None, str | None]:
     """Resolve one stored model option without admitting the env tier.
 
     `ModelConfig` describes persisted choices. In particular its
@@ -3017,7 +3044,8 @@ def _resolve_model_file_option(
     environment override, so this reader constructs only the two file tiers.
 
     Returns:
-        The ranked file value, or `None` when both tiers abstain.
+        The ranked file value and its source, or `(None, None)` when both tiers
+        abstain.
     """
     from deepagents_code.configuration.providers import ranked_toml_value
     from deepagents_code.configuration.resolver import (
@@ -3051,7 +3079,10 @@ def _resolve_model_file_option(
         ),
         strategy=option.merge_strategy.value,
     )
-    return None if resolved is None else resolved.value
+    if resolved is None:
+        return None, None
+    source = " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
+    return resolved.value, source
 
 
 @dataclass(frozen=True)
@@ -3226,37 +3257,37 @@ class ModelConfig:
             else str(config_path)
         )
 
-        from deepagents_code.config_manifest import resolve_scalar
-
         allowed_models: tuple[str, ...] | None = None
         allowed_models_source: str | None = None
         allowed_option = get_option("models.allowed")
-        if allowed_option is not None:
-            allowed_value, allowed_source = resolve_scalar(
-                allowed_option,
-                toml_data=user_data,
-                managed_toml_data=sources.managed.data,
+        if allowed_option is None:
+            msg = "models.allowed is missing from the config manifest"
+            raise RuntimeError(msg)
+        allowed_value, allowed_source = _resolve_model_file_option(
+            allowed_option,
+            sources,
+            user_data=user_data,
+        )
+        if isinstance(allowed_value, tuple):
+            allowed_models = cast("tuple[str, ...]", allowed_value)
+            allowed_models_source = allowed_source
+        elif (
+            declared := _malformed_allowlist_source(sources, user_data, config_path)
+        ) is not None:
+            # `models.allowed` has no manifest default, so an unparseable list
+            # resolves to `None` -- which means *unrestricted*. Failing open on
+            # a security control because of a typo is the wrong default, so a
+            # declaration that produced no usable value becomes deny-all. The
+            # managed layer additionally refuses to start
+            # (`ENFORCED_MANAGED_KEYS`); this covers the user layer, where the
+            # only other signal is a log line nobody reads.
+            logger.error(
+                "Ignoring malformed [models].allowed from %s; blocking all "
+                "models until it is fixed or removed",
+                declared,
             )
-            if isinstance(allowed_value, tuple):
-                allowed_models = cast("tuple[str, ...]", allowed_value)
-                allowed_models_source = allowed_source
-            elif (
-                declared := _malformed_allowlist_source(sources, user_data, config_path)
-            ) is not None:
-                # `models.allowed` has no manifest default, so an unparseable
-                # list resolves to `None` -- which means *unrestricted*. Failing
-                # open on a security control because of a typo is the wrong
-                # default, so a declaration that produced no usable value
-                # becomes deny-all. The managed layer additionally refuses to
-                # start (`ENFORCED_MANAGED_KEYS`); this covers the user layer,
-                # where the only other signal is a log line nobody reads.
-                logger.error(
-                    "Ignoring malformed [models].allowed from %s; blocking all "
-                    "models until it is fixed or removed",
-                    declared,
-                )
-                allowed_models = ()
-                allowed_models_source = declared
+            allowed_models = ()
+            allowed_models_source = declared
 
         try:
             models_section = cast(
@@ -3282,7 +3313,7 @@ class ModelConfig:
                     cast("ConfigOption", option),
                     sources,
                     user_data=user_data,
-                )
+                )[0]
                 for key, option in options.items()
             }
 
@@ -3913,9 +3944,7 @@ def _save_toml_field(
         logger.exception("Could not save %s.%s preference", section, field)
         return False
     else:
-        # Invalidate config cache so the next load() picks up the change.
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 
@@ -4135,8 +4164,7 @@ def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
         logger.exception("Could not clear models.%s preference", field)
         return False
     else:
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 
@@ -4310,12 +4338,7 @@ def _update_effort_for_model(
         )
         return False
     else:
-        # `_default_config_cache` holds only the `[models]` table (default /
-        # recent / providers), never `[effort]`, so this write cannot stale it.
-        # Invalidating anyway is defensive parity with the other config writers
-        # (`_save_toml_field`, `clear_default_model`, ...) that share the file.
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 
@@ -4468,6 +4491,7 @@ def suppress_warning_reason(key: str, config_path: Path | None = None) -> str | 
     except OSError:
         logger.exception("Could not save warning suppression for '%s'", key)
         return f"{config_path} could not be written"
+    _invalidate_config_caches(config_path)
     return None
 
 
@@ -4533,6 +4557,7 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not remove warning suppression for '%s'", key)
         return False
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5798,6 +5823,7 @@ def add_enabled_project_mcp_servers(
             "Could not save enabled project MCP servers to %s", config_path
         )
         return False
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5977,6 +6003,7 @@ def save_thread_columns(
         logger.exception("Could not save thread column preferences")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -6040,6 +6067,7 @@ def save_thread_relative_time(enabled: bool, config_path: Path | None = None) ->
         logger.exception("Could not save thread relative_time preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -6268,6 +6296,7 @@ def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> 
         logger.exception("Could not save thread sort_order preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -6317,6 +6346,7 @@ def save_thread_scope(scope: str, config_path: Path | None = None) -> bool:
         logger.exception("Could not save thread scope preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -6551,8 +6581,7 @@ def clear_default_agent(config_path: Path | None = None) -> bool:
         logger.exception("Could not clear default agent preference")
         return False
     else:
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 

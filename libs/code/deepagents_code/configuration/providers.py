@@ -626,7 +626,7 @@ class TomlFileProvider:
         """
         from deepagents_code.config_manifest import OptionKind
 
-        snapshot = self._current_snapshot()
+        snapshot = self.current_snapshot()
         if option.kind is OptionKind.THEME_DELEGATE:
             ranked = ranked_theme_toml_value(
                 snapshot.data,
@@ -732,8 +732,11 @@ class TomlFileProvider:
                 self._state.value = snapshot
             self._state.failure = snapshot.status
 
-    def _current_snapshot(self) -> TomlSnapshot:
+    def current_snapshot(self) -> TomlSnapshot:
         """Return the cached snapshot, loading it on first access.
+
+        Public so `ConfigResolver.toml_snapshot` can hand the generation this
+        provider is serving to a caller building a masked variant resolver.
 
         Returns:
             Current parsed file snapshot.

@@ -39,8 +39,8 @@ UNION_PATHS = frozenset(
 Deny lists must union across layers: replacing a managed deny list with a user
 one would be a fail-open.
 
-Governs the two *table merges* — `merge_managed_over_user` and
-`config_manifest.resolve_scalar`. It does not govern the two readers that union
+Governs the two *table merges* — `merge_managed_over_user` and the resolver's
+deep-merge strategy. It does not govern the two readers that union
 name sets rather than TOML tables: `model_config.load_mcp_server_trust_lists`
 and `mcp_disabled.get_disabled_servers` accumulate their own layers directly,
 including the env tier this set knows nothing about. A third deny list therefore
@@ -261,7 +261,7 @@ resolve, so a rename would turn enforcement into a silent no-op.
 
 
 def managed_declaration(
-    managed_data: Mapping[str, Any], toml_keys: tuple[str, ...]
+    managed_data: dict[str, Any], toml_keys: tuple[str, ...]
 ) -> Literal["declared", "shadowed"] | None:
     """Classify what managed policy says at one manifest path.
 
@@ -285,7 +285,7 @@ def managed_declaration(
 
 
 def managed_policy_violations(
-    managed_data: Mapping[str, Any],
+    managed_data: dict[str, Any],
     *,
     status: ProviderStatus | None = None,
 ) -> tuple[str, ...]:
@@ -318,11 +318,7 @@ def managed_policy_violations(
     Returns:
         The violating keys, sorted, empty when policy is enforceable.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        is_valid_recursion_limit,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import get_option, is_valid_recursion_limit
     from deepagents_code.configuration.resolver import MANAGED_RANK
     from deepagents_code.configuration.types import Found, Invalid
 
@@ -363,21 +359,30 @@ def managed_policy_violations(
         and managed_declaration(managed_data, allowed_option.toml_keys or ())
         == "declared"
     ):
-        allowed_value, allowed_source = resolve_scalar(
-            allowed_option,
-            toml_data={},
-            managed_toml_data=managed_data,
+        allowed_resolved = resolve_managed_option(
+            "models.allowed", managed_data, status=status
         )
-        if allowed_source == MANAGED_SOURCE and isinstance(allowed_value, tuple):
+        allowed_result = (
+            allowed_resolved.tier_health.get(MANAGED_RANK)
+            if allowed_resolved is not None
+            else None
+        )
+        if isinstance(allowed_result, Found) and isinstance(
+            allowed_result.value, tuple
+        ):
+            allowed_models = {
+                entry for entry in allowed_result.value if isinstance(entry, str)
+            }
             models = managed_data.get("models")
             if isinstance(models, dict):
-                allowed = set(allowed_value)
                 for field in ("default", "recent", "auto_classifier"):
                     candidate = models.get(field)
-                    if (
-                        isinstance(candidate, str)
-                        and candidate.strip()
-                        and candidate.strip() not in allowed
+                    if not isinstance(candidate, str) or not candidate.strip():
+                        continue
+                    normalized = candidate.strip()
+                    provider, separator, _model = normalized.partition(":")
+                    if normalized not in allowed_models and (
+                        not separator or f"{provider}:*" not in allowed_models
                     ):
                         violations.append(f"models.{field}")
     return tuple(sorted(set(violations)))
@@ -385,7 +390,7 @@ def managed_policy_violations(
 
 def resolve_managed_option(
     key: str,
-    managed_data: Mapping[str, Any],
+    managed_data: dict[str, Any],
     *,
     status: ProviderStatus | None = None,
 ) -> ResolvedValue[object] | None:
@@ -394,20 +399,25 @@ def resolve_managed_option(
     Returns:
         The ranked resolution, or `None` when `key` is not manifest-backed.
     """
-    from deepagents_code.config_manifest import get_option, resolve_ranked_scalar
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
 
     option = get_option(key)
     if option is None:
         return None
-    return resolve_ranked_scalar(
-        option,
-        toml_data={},
-        managed_toml_data=managed_data,
-        managed_status=status,
-    )
+    # The caller is inspecting a specific managed generation — often a
+    # candidate being validated before it takes force — so resolution must not
+    # read the process-wide snapshots behind the shared resolver.
+    return resolver_from_snapshots(
+        managed=TomlSnapshot(
+            managed_data,
+            status or ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        user=TomlSnapshot.declaring_nothing("config.toml"),
+    ).get(option)
 
 
-def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:
+def managed_rejections(managed_data: dict[str, Any]) -> tuple[str, ...]:
     """Return manifest keys managed policy declares whose value was dropped.
 
     Not a launch failure: only `ENFORCED_MANAGED_KEYS` stops a launch, and every
@@ -456,7 +466,7 @@ def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def managed_section_shape_violations(
-    managed_data: Mapping[str, Any],
+    managed_data: dict[str, Any],
 ) -> tuple[str, ...]:
     """Return known managed sections declared as non-table values.
 
@@ -696,14 +706,17 @@ def invalidate_config_sources() -> None:
     reset_config_resolver()
 
 
-def require_healthy_managed_config(*, refresh: bool = False) -> None:
-    """Fail startup when present managed policy cannot be parsed or enforced.
+def get_healthy_managed_snapshot(*, refresh: bool = False) -> TomlSnapshot:
+    """Return managed policy only when it can be enforced.
 
     A file that parses is not necessarily enforceable: a privilege-affecting
     key can carry a value the manifest rejects, or a known section can be a
     scalar instead of a table. Both can otherwise resolve in the user's favor
     or erase a user subtree, so they stop the launch here rather than at each
     consumer.
+
+    Returns:
+        The exact managed snapshot that passed validation.
 
     Raises:
         ManagedConfigError: If managed policy is present but unusable.
@@ -717,6 +730,21 @@ def require_healthy_managed_config(*, refresh: bool = False) -> None:
     violations = managed_policy_violations(snapshot.data, status=status)
     if violations:
         raise ManagedPolicyError(status, violations)
+    return snapshot
+
+
+def require_healthy_managed_config(*, refresh: bool = False) -> None:
+    """Fail startup when present managed policy cannot be parsed or enforced.
+
+    Propagates from `get_healthy_managed_snapshot`: `ManagedConfigError` when
+    a managed file is present but unreadable, and `ManagedPolicyError` when it
+    parses but declares policy that cannot be enforced. Both fail startup at
+    every call site.
+
+    Args:
+        refresh: Re-read the managed file before checking it.
+    """
+    get_healthy_managed_snapshot(refresh=refresh)
 
 
 def _managed_resolver(snapshot: TomlSnapshot) -> ConfigResolver:
@@ -727,11 +755,10 @@ def _managed_resolver(snapshot: TomlSnapshot) -> ConfigResolver:
     """
     from deepagents_code.configuration.resolver import resolver_from_snapshots
 
-    user = TomlSnapshot(
-        {},
-        ProviderStatus("config.toml", None, ProviderHealth.MISSING),
+    return resolver_from_snapshots(
+        managed=snapshot,
+        user=TomlSnapshot.absent("config.toml"),
     )
-    return resolver_from_snapshots(snapshot, user)
 
 
 def managed_config_status(*, refresh: bool = False) -> ProviderStatus:

@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (40)
+## Public (41)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -36,6 +36,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/notifications` |  | Review notifications and configure warning settings |
 | `/offload` | `/compact` | Summarize and offload older messages to free context |
 | `/plugins` |  | Manage plugins |
+| `/prompts` |  | Search and reuse a previous prompt |
 | `/quit` | `/q` | Exit app |
 | `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |

@@ -5,7 +5,7 @@ import logging
 from time import time
 from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from deepagents.backends.utils import (
@@ -540,8 +540,8 @@ class TestAssistantMessagePointer:
 class TestAssistantMessageStreamCoalescing:
     """Tests for the throttled streaming flush that keeps input responsive."""
 
-    async def test_append_buffers_until_flush(self) -> None:
-        """Tokens accumulate in `_content` but defer the markdown write."""
+    async def test_first_append_flushes_immediately(self) -> None:
+        """The first fragment renders immediately while later text is buffered."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
             stream = MagicMock()
@@ -549,16 +549,17 @@ class TestAssistantMessageStreamCoalescing:
             msg._stream = stream
 
             await msg.append_content("hello ")
+            stream.write.assert_awaited_once_with("hello ")
+
             await msg.append_content("world")
 
-            # No immediate write — tokens are buffered for the timer.
-            stream.write.assert_not_awaited()
+            assert stream.write.await_count == 1
             assert msg._content == "hello world"
-            assert msg._pending_append == "hello world"
+            assert msg._pending_append == "world"
             assert msg._flush_timer is not None
 
-    async def test_timer_flushes_coalesced_text_once(self) -> None:
-        """The throttled timer writes buffered tokens as a single fragment."""
+    async def test_timer_flushes_later_text(self) -> None:
+        """The throttled timer coalesces fragments after the immediate first write."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
             stream = MagicMock()
@@ -570,7 +571,7 @@ class TestAssistantMessageStreamCoalescing:
             await asyncio.sleep(msg._STREAM_FLUSH_INTERVAL * 2)
             await pilot.pause()
 
-            stream.write.assert_awaited_once_with("foobar")
+            assert stream.write.await_args_list[:2] == [call("foo"), call("bar")]
             assert msg._pending_append == ""
 
     async def test_stop_stream_flushes_and_cancels_timer(self) -> None:
@@ -615,8 +616,9 @@ class TestAssistantMessageStreamCoalescing:
 
             assert msg._flush_timer is None
             assert msg._pending_append == ""
-            # Buffered token must not bleed into the replacement render.
-            stream.write.assert_not_awaited()
+            # The initial fragment rendered immediately and must not bleed into
+            # the replacement render again.
+            stream.write.assert_awaited_once_with("buffered")
             markdown.update.assert_awaited_once_with("replacement")
 
     async def test_timer_created_once_across_appends(self) -> None:
@@ -681,7 +683,8 @@ class TestAssistantMessageStreamCoalescing:
             # via the Textual timer's exception handler.
             await msg._flush_pending_append()
 
-            stream.write.assert_awaited_once_with("kept")
+            assert stream.write.await_count == 2
+            stream.write.assert_awaited_with("kept")
             assert msg._pending_append == "kept"
 
             # Text arriving after the failure queues behind the retried fragment.
@@ -1014,6 +1017,9 @@ class TestToolCallMessageDuration:
             content = status._Static__content  # ty: ignore
             assert isinstance(content, Content)
             assert content.plain == "Took 4.9s"
+            assert app.msg._preview_row is not None
+            children = list(app.msg.children)
+            assert children.index(status) > children.index(app.msg._preview_row)
 
     async def test_execute_shows_fractional_seconds(self) -> None:
         """Sub-minute `execute` runs report tenths — `elapsed` is a float.
@@ -1574,6 +1580,13 @@ class TestToolCallMessageAppearance:
         async with app.run_test():
             assert app.msg.styles.padding.left == 0
             assert app.msg.styles.padding.right == 1
+
+    async def test_output_prefix_aligns_with_tool_name(self) -> None:
+        """The output prefix starts beneath the tool name after its marker."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test():
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_row.styles.margin.left == 2
 
 
 class TestToolCallMessageOutputGutter:

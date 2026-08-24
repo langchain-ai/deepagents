@@ -140,6 +140,24 @@ class TestReloadFromEnvironment:
         assert any(change.startswith("shell_allow_list:") for change in changes)
         assert settings.shell_allow_list is None
 
+    def test_preview_reload_retains_shell_allow_list_on_corrupt_toml(
+        self, tmp_path: Path
+    ) -> None:
+        """Preview and apply retain the last readable user snapshot."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.shell_allow_list == ["ls"]
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+
+        preview = settings.preview_reload_from_environment(start_path=tmp_path)
+        applied = settings.reload_from_environment(start_path=tmp_path)
+
+        assert not any(change.startswith("shell_allow_list:") for change in preview)
+        assert not any(change.startswith("shell_allow_list:") for change in applied)
+        assert settings.shell_allow_list == ["ls"]
+
     def test_preserves_model_state(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

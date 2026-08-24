@@ -1346,6 +1346,92 @@ def test_validated_context_fields_exist_on_the_schema() -> None:
     assert validated <= declared, validated - declared
 
 
+class TestThreadLock:
+    """Concurrent offloads of one thread are serialized in-process.
+
+    The whole design is read-check-execute-recheck-write against a checkpoint.
+    The per-thread lock is what makes the recheck meaningful for two requests in
+    the same process: without it both can pass the status and checkpoint gates
+    before either writes.
+    """
+
+    def test_each_thread_gets_its_own_lock(self) -> None:
+        from deepagents_code import offload_api
+
+        first = offload_api._thread_lock("thread-1")
+
+        assert offload_api._thread_lock("thread-1") is first
+        assert offload_api._thread_lock("thread-2") is not first
+
+    async def test_execute_waits_for_the_threads_lock(self) -> None:
+        """An offload must not touch thread state while the lock is held.
+
+        Holding the lock externally proves the `async with` is on the path:
+        remove it, or key it on `operation_id` instead of `thread_id`, and the
+        operation reads state immediately.
+        """
+        from deepagents_code import offload_api
+
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "busy"}),
+            get_state=AsyncMock(),
+            update_state=AsyncMock(),
+        )
+
+        async def run() -> None:
+            with contextlib.suppress(offload_api._OffloadConflictError):
+                await offload_api._execute_offload(
+                    "thread-1",
+                    operation_id="op-2",
+                    context={},
+                    hook_responses={},
+                )
+
+        with patch.object(
+            offload_api,
+            "get_client",
+            return_value=SimpleNamespace(threads=threads),
+        ):
+            async with offload_api._thread_lock("thread-1"):
+                blocked = asyncio.create_task(run())
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                threads.get.assert_not_awaited()
+
+            await asyncio.wait_for(blocked, timeout=5)
+
+        threads.get.assert_awaited_once()
+
+    async def test_a_different_thread_is_not_blocked(self) -> None:
+        """The lock is per thread, so unrelated threads must not serialize."""
+        from deepagents_code import offload_api
+
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "busy"}),
+            get_state=AsyncMock(),
+            update_state=AsyncMock(),
+        )
+
+        with patch.object(
+            offload_api,
+            "get_client",
+            return_value=SimpleNamespace(threads=threads),
+        ):
+            async with offload_api._thread_lock("thread-1"):
+                with pytest.raises(offload_api._OffloadConflictError):
+                    await asyncio.wait_for(
+                        offload_api._execute_offload(
+                            "thread-2",
+                            operation_id="op-1",
+                            context={},
+                            hook_responses={},
+                        ),
+                        timeout=5,
+                    )
+
+        threads.get.assert_awaited_once()
+
+
 class TestOffloadRoute:
     """The HTTP layer maps operation outcomes onto distinct status codes."""
 

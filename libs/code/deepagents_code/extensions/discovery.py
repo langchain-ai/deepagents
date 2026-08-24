@@ -56,16 +56,26 @@ def _scan(directory: Path, scope: SourceScope) -> tuple[list[SourceInfo], list[s
         return [], [f"Could not scan extension directory {directory}: {exc}"]
 
     sources: list[SourceInfo] = []
+    errors: list[str] = []
     for entry in entries:
-        if entry.is_file() and entry.suffix == ".py":
-            sources.append(_source(entry, scope))
+        try:
+            source = _entry_source(entry, scope)
+        except (OSError, RuntimeError) as exc:
+            errors.append(f"Could not inspect extension entry {entry}: {exc}")
             continue
-        for filename in ("__init__.py", "extension.py"):
-            candidate = entry / filename
-            if candidate.is_file():
-                sources.append(_source(candidate, scope, package=True))
-                break
-    return sources, []
+        if source is not None:
+            sources.append(source)
+    return sources, errors
+
+
+def _entry_source(entry: Path, scope: SourceScope) -> SourceInfo | None:
+    if entry.is_file() and entry.suffix == ".py":
+        return _source(entry, scope)
+    for filename in ("__init__.py", "extension.py"):
+        candidate = entry / filename
+        if candidate.is_file():
+            return _source(candidate, scope, package=True)
+    return None
 
 
 def _resolve_explicit(path: Path, scope: SourceScope) -> DiscoveryResult:

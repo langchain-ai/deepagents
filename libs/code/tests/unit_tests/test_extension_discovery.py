@@ -72,3 +72,30 @@ def test_invalid_explicit_path_is_isolated(
     assert [source.path for source in result.sources] == [valid.resolve()]
     assert len(result.errors) == 1
     assert "missing.py" in result.errors[0]
+
+
+def test_unreadable_directory_entry_is_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An entry that fails inspection is reported without aborting the scan."""
+    user = tmp_path / "user"
+    _extension(user, "broken.py")
+    valid = _extension(user, "valid.py")
+    monkeypatch.setattr(
+        "deepagents_code.extensions.discovery.user_extensions_dir", lambda: user
+    )
+    is_file = Path.is_file
+
+    def guarded(self: Path) -> bool:
+        if self.name == "broken.py":
+            msg = "unreadable"
+            raise OSError(msg)
+        return is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", guarded)
+
+    result = discover_extensions()
+
+    assert [source.path for source in result.sources] == [valid.resolve()]
+    assert len(result.errors) == 1
+    assert "broken.py" in result.errors[0]

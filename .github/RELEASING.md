@@ -932,10 +932,12 @@ The `pre-release-checks` job runs after the package is built but before anything
 
 **Steps:**
 
-1. **Look at the workflow logs** to see why it failed. Pre-release checks install the built package in a clean environment and run:
+1. **Look at the workflow logs** to see why it failed. Pre-release checks run on every Python version allowed by the package's `requires-python`, install the built package in a clean environment, and run:
    - `python -c "import <pkg>"` — does the package even import?
    - `make test` — do the unit tests pass against the built wheel?
    - `make integration_test` (if defined) — do the integration tests pass?
+
+   A failure on only one matrix leg usually indicates a version-specific dependency or compatibility problem rather than a broken wheel on every interpreter.
 
 2. **Open a `hotfix(<scope>): <description>` PR with the fix.** Merge it to `main` on top of the release-please commit. **Leave `pyproject.toml`'s version exactly as the release-please PR set it.**
 

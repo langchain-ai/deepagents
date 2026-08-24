@@ -521,17 +521,17 @@ the cross-format suppression notice all key into this one set. A burst of one
 kind can therefore evict the memory of another, which only ever costs a
 duplicate log line.
 
-`load_trusted_cache_endpoints` re-reads `config.toml` on every turn so a live
-edit takes effect without a restart. Without this, one malformed entry would
-warn once per turn, crowding out the other warnings in the bounded debug-log
-buffer (which partitions retention per level, so the damage is confined to
-that level -- see `_debug_buffer.InMemoryLogBuffer`).
+`load_trusted_cache_endpoints` resolves the option on every turn, from the
+shared process generation -- so a hand edit needs `/reload`. Without this set,
+one malformed entry would warn once per turn, crowding out the other warnings
+in the bounded debug-log buffer (which partitions retention per level, so the
+damage is confined to that level -- see `_debug_buffer.InMemoryLogBuffer`).
 
 Bounded, because the key embeds the rejected entry: a config edited repeatedly
 into new bad states would otherwise accumulate one string per distinct typo
 for the life of the process. On overflow the whole set is dropped rather than
 evicted one by one -- re-warning about a still-broken entry is the harmless
-direction, and it keeps a live-edit session from going permanently quiet.
+direction, and it keeps a long session from going permanently quiet.
 
 Mutated from worker threads (`app` and `configurable_model` both reach it via
 `asyncio.to_thread`). The check-then-clear-then-add below is not atomic, so a
@@ -587,24 +587,27 @@ def load_trusted_cache_endpoints(
     value by type. Each distinct rejection is logged once per process.
 
     Args:
-        config: Parsed user `config.toml` mapping. When omitted, the user
-            configuration is loaded from disk and resolved with managed
-            configuration, which takes precedence.
+        config: Parsed user `config.toml` table. When omitted, the option is
+            resolved through the shared process generation, with managed
+            configuration taking precedence -- no disk read, so a hand edit
+            needs `/reload` to take effect.
 
     Returns:
         Lowercase hostnames of configured trusted endpoints (possibly empty).
     """
     if config is None:
         from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
             get_option,
-            load_config_toml,
-            resolve_scalar,
         )
+        from deepagents_code.configuration.resolver import get_config_resolver
 
         option = get_option("warnings.trusted_cache_endpoints")
         if option is None:
             return frozenset()
-        entries, _ = resolve_scalar(option, toml_data=load_config_toml())
+        resolved = get_config_resolver().get(option)
+        _emit_ranked_diagnostics(option, resolved)
+        entries = resolved.value
         # The manifest has no default for this optional structured setting.
         # Preserve the absent-setting behavior without changing diagnostics
         # for malformed configured values.

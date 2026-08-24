@@ -195,10 +195,16 @@ def test_no_hand_rolled_ui_config_readers() -> None:
 
 
 # Readers that resolve an option but deliberately emit no ranked diagnostics.
-# Each reports source health through its own channel: `dcode config` prints
-# provenance per option, `dcode doctor` reports file health, and the managed
-# validators inspect a candidate generation that is not yet in force. All five
-# went through the non-emitting `resolve_ranked_scalar` before it was retired.
+# Each reports what it rejected through its own channel: the two shared
+# primitives hand the `ResolvedValue` back for the caller to emit against,
+# `dcode config` prints provenance per option, the managed validator inspects a
+# candidate generation not yet in force, and the sandbox, theme, and update
+# readers log their own rejections in terms of the setting they own.
+#
+# Adding to this set should be a deliberate act with a channel named here. It
+# is not a place to park a reader that reports nothing: file health is not
+# value health, and a rejected value in a file that parses is invisible to
+# `dcode doctor`.
 _SILENT_RESOLVER_READERS = frozenset(
     {
         # The shared resolution primitives, not readers: each returns the
@@ -229,6 +235,15 @@ def test_resolver_reads_emit_ranked_diagnostics() -> None:
     behavioral one. Readers that report health through another channel are
     listed in `_SILENT_RESOLVER_READERS`; adding to that set should be a
     deliberate act with a reason.
+
+    Three blind spots it cannot close, because it matches a literal `.get`
+    call in the same function body: a reader that goes through
+    `resolve_options` or `resolve_all` instead (`config.py` does, and passes
+    only because it happens to emit per option); one that receives a
+    `ConfigResolver` as a parameter rather than building one; and one that
+    resolves several options and emits for only some of them --
+    `sandbox_config.load` was exactly that, and being on the allowlist meant
+    the guard could not have flagged it either way.
     """
     import ast
     from pathlib import Path

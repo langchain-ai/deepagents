@@ -478,8 +478,14 @@ _INVALID = object()
 def load_config_toml() -> dict[str, Any]:
     """Load `~/.deepagents/config.toml`.
 
+    Parses the file on every call, so it sits outside the shared process
+    generation every manifest reader resolves against. Prefer
+    `get_config_resolver`; reach for this only to inspect one specific
+    generation of the file, and see `ARCHITECTURE.md` for why that is the
+    exception rather than the default.
+
     Returns:
-        The parsed config mapping, or `{}` when the file is absent or invalid.
+        The parsed config table, or `{}` when the file is absent or invalid.
     """
     import tomllib
 
@@ -615,15 +621,15 @@ def _resolve_option(
     Emits no diagnostics. Pair the result with `_emit_ranked_diagnostics` so a
     provider rejection before the effective value is still reported.
 
+    Omitting *both* tables reads the shared process generation. Supplying
+    either one puts this on the ad-hoc path, where the other half is read to
+    complete the pair -- so a partial call is a deliberate request for a
+    specific generation, not a cheaper way to reach the shared one.
+
     Args:
         option: Manifest option to resolve.
-        toml_data: Parsed user `config.toml` mapping.
-        managed_toml_data: Parsed managed mapping.
-
-    Omitting *both* reads the shared process generation. Supplying either one
-    puts this on the ad-hoc path, where the other half is read to complete the
-    pair -- so a partial call is a deliberate request for a specific
-    generation, not a cheaper way to reach the shared one.
+        toml_data: Parsed user `config.toml` table.
+        managed_toml_data: Parsed managed table.
 
     Returns:
         A rank-keyed `ResolvedValue`.
@@ -678,8 +684,10 @@ def _resolve_option_without_managed(
     resolver's snapshot rather than a fresh parse. `_resolve_option` fills a
     missing half from disk, which is what let a hand edit made after startup
     change a later-built agent's value without `/reload`; the shared
-    resolver's `EnvProvider` still reads `os.environ` live here, but its user
-    snapshot stays pinned to the generation every other reader observes.
+    ad-hoc resolver built here has a fresh `EnvProvider`, which reads
+    `os.environ` live, and takes only the user *snapshot* from the shared
+    resolver -- so that half stays pinned to the generation every other reader
+    observes.
 
     Returns:
         A rank-keyed `ResolvedValue` with the managed tier masked out.
@@ -739,11 +747,14 @@ def _emit_ranked_diagnostics(
     Callers pass the resolved value to get one warning per resolution, which is
     what a reader that parsed the file itself would have logged.
 
-    Two rejections are file-wide rather than per-option and are therefore
-    emitted once per process: a scalar that shadows a whole table, and a source
-    that could not be read at all. `config` resolves the full manifest in one
+    Some rejections are file-wide rather than per-option -- a scalar that
+    shadows a whole table, a source that could not be read at all, and a
+    source whose last usable snapshot was retained. Those are emitted once per
+    config generation, tracked in `_warned_non_table_paths` and re-armed by
+    `reset_source_diagnostics`. `config` resolves the full manifest in one
     pass, and logging per option would print the same line roughly a hundred
-    times for a single typo.
+    times for a single typo; scoping the dedup to the process instead would
+    silence the second `/reload` of a file the user is still repairing.
 
     Args:
         option: Manifest option being resolved.
@@ -757,15 +768,15 @@ def _emit_ranked_diagnostics(
     from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
     from deepagents_code.configuration.types import Found, Invalid
 
-    once_per_process = (
+    once_per_generation = (
         SHADOWED_TABLE_SUFFIX,
         UNUSABLE_SOURCE_SUFFIX,
         RETAINED_SOURCE_SUFFIX,
     )
 
     def emit(reason: str) -> None:
-        """Log one provider rejection, at most once per process when marked."""
-        if any(suffix in reason for suffix in once_per_process):
+        """Log one rejection, at most once per generation when marked."""
+        if any(suffix in reason for suffix in once_per_generation):
             warning_key = ("ranked provider", reason)
             if warning_key in _warned_non_table_paths:
                 return
@@ -1393,8 +1404,11 @@ def resolve_recursion_limit(
             return value
 
     # Invalid higher-precedence values must fall through instead of jumping
-    # straight to the default. Hide the rejected env var (if any) and re-resolve
-    # so remaining env fallbacks, then TOML, then the typed default still apply.
+    # straight to the default. Hide the rejected env var (if any) and
+    # re-resolve so the remaining sources still apply. Both bounded options
+    # declare no `fallback_env_vars`, so "remaining env fallbacks" is empty
+    # today and the next source is TOML, then the typed default; a bounded
+    # option that grew aliases would need this to loop over them.
     if source.startswith("env (") and source.endswith(")"):
         env_name = source[len("env (") : -1]
         logger.warning(

@@ -531,7 +531,7 @@ Bounded, because the key embeds the rejected entry: a config edited repeatedly
 into new bad states would otherwise accumulate one string per distinct typo
 for the life of the process. On overflow the whole set is dropped rather than
 evicted one by one -- re-warning about a still-broken entry is the harmless
-direction, and it keeps a live-edit session from going permanently quiet.
+direction, and it keeps a long session from going permanently quiet.
 
 Mutated from worker threads (`app` and `configurable_model` both reach it via
 `asyncio.to_thread`). The check-then-clear-then-add below is not atomic, so a
@@ -587,9 +587,10 @@ def load_trusted_cache_endpoints(
     value by type. Each distinct rejection is logged once per process.
 
     Args:
-        config: Parsed user `config.toml` mapping. When omitted, the user
-            configuration is loaded from disk and resolved with managed
-            configuration, which takes precedence.
+        config: Parsed user `config.toml` table. When omitted, the option is
+            resolved through the shared process generation, with managed
+            configuration taking precedence -- no disk read, so a hand edit
+            needs `/reload` to take effect.
 
     Returns:
         Lowercase hostnames of configured trusted endpoints (possibly empty).

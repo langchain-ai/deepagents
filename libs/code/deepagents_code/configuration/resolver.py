@@ -237,7 +237,11 @@ class ConfigResolver:
         return self.resolve_options(get_config_options())
 
     def reload(self) -> None:
-        """Propagate a source refresh to every provider."""
+        """Propagate a source refresh to every provider.
+
+        Advances the generation, so this also re-arms the source-level
+        diagnostics -- see `reload_with_replacements`, which does the work.
+        """
         self.reload_with_replacements({})
 
     def reload_with_replacements(
@@ -313,6 +317,9 @@ class ConfigResolver:
         generation this resolver is serving -- for example, re-resolving an
         option with the managed tier masked while keeping the shared user
         snapshot instead of re-parsing `config.toml` off disk.
+
+        Propagates the `RuntimeError` `current_snapshot` raises when the
+        provider at `rank` produced no snapshot.
 
         Args:
             rank: Precedence rank whose snapshot to return.

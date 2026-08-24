@@ -695,7 +695,16 @@ def get_healthy_managed_snapshot(*, refresh: bool = False) -> TomlSnapshot:
 
 
 def require_healthy_managed_config(*, refresh: bool = False) -> None:
-    """Fail startup when present managed policy cannot be parsed or enforced."""
+    """Fail startup when present managed policy cannot be parsed or enforced.
+
+    Propagates from `get_healthy_managed_snapshot`: `ManagedConfigError` when
+    a managed file is present but unreadable, and `ManagedPolicyError` when it
+    parses but declares policy that cannot be enforced. Both fail startup at
+    every call site.
+
+    Args:
+        refresh: Re-read the managed file before checking it.
+    """
     get_healthy_managed_snapshot(refresh=refresh)
 
 

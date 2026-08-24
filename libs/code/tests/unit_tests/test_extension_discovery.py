@@ -24,6 +24,34 @@ def _extension(directory: Path, name: str) -> Path:
     return path
 
 
+def test_experimental_mode_gates_all_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A disabled experiment performs no extension source inspection."""
+    monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL")
+
+    def fail(*_: object, **__: object) -> None:
+        msg = "extension discovery crossed the experimental gate"
+        raise AssertionError(msg)
+
+    for name in (
+        "user_extensions_dir",
+        "_resolve_paths",
+        "_entry_point_sources",
+        "_plugin_sources",
+    ):
+        monkeypatch.setattr(f"deepagents_code.extensions.discovery.{name}", fail)
+
+    result = discover_extensions(
+        config_files=(Path("configured.py"),),
+        cli_paths=(Path("temporary.py"),),
+        project_dir=Path("project"),
+    )
+
+    assert not result.sources
+    assert not result.errors
+
+
 def test_sources_resolve_in_authority_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

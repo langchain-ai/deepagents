@@ -89,7 +89,7 @@ class DeepAgentsPathSnapshot:
 
     profile: ProfilePaths
     installation: InstallationPaths
-    launch_home: Path
+    launch_home: Path | None
     uses_default_profile: bool
 
     @staticmethod
@@ -189,20 +189,23 @@ def _normalize_absolute(path: Path) -> Path:
 
 
 def _resolve_profile_root(
-    configured: str | None, launch_home: Path
-) -> tuple[Path, bool]:
+    configured: str | None, launch_home: Path | None
+) -> tuple[Path, bool, Path | None]:
     """Resolve a launch value using only the captured launch-user home.
 
     Returns:
-        The normalized root and whether it is the default profile.
+        The normalized root, whether it is the default profile, and the
+        captured launch home when resolution required one.
 
     Raises:
         DeepAgentsHomeError: If the configured value is not supported.
     """
     if not configured:
-        return _normalize_absolute(launch_home / ".deepagents"), True
+        home = _normalize_launch_home(launch_home)
+        return _normalize_absolute(home / ".deepagents"), True, home
     if configured.startswith("~/"):
-        return _normalize_absolute(launch_home / configured[2:]), False
+        home = _normalize_launch_home(launch_home)
+        return _normalize_absolute(home / configured[2:]), False, home
     if configured.startswith("~"):
         msg = (
             "Invalid DEEPAGENTS_HOME: only an absolute path or a leading '~/' "
@@ -217,7 +220,13 @@ def _resolve_profile_root(
             "a path beginning with '~/'."
         )
         raise DeepAgentsHomeError(msg)
-    return _normalize_absolute(path), False
+    home = _normalize_absolute(launch_home) if launch_home is not None else None
+    return _normalize_absolute(path), False, home
+
+
+def _normalize_launch_home(launch_home: Path | None) -> Path:
+    """Return the explicit or OS-resolved launch home as an absolute path."""
+    return _normalize_absolute(launch_home if launch_home is not None else Path.home())
 
 
 def _profile_paths(root: Path) -> ProfilePaths:
@@ -269,8 +278,7 @@ def _capture_paths(
     Returns:
         An immutable path snapshot.
     """
-    home = _normalize_absolute(launch_home or Path.home())
-    profile_root, uses_default = _resolve_profile_root(configured, home)
+    profile_root, uses_default, home = _resolve_profile_root(configured, launch_home)
     return DeepAgentsPathSnapshot(
         profile=_profile_paths(profile_root),
         installation=_installation_paths(),

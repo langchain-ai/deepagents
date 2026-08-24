@@ -164,6 +164,30 @@ def _subprocess_env(*, home: Path, configured: str | None) -> dict[str, str]:
 class TestLaunchSnapshotSubprocess:
     """Regressions that must exercise a clean import generation."""
 
+    def test_absolute_override_launches_when_home_lookup_fails(
+        self, tmp_path: Path
+    ) -> None:
+        """An absolute profile does not require a resolvable OS home."""
+        configured = tmp_path / "profile"
+        code = """
+import os
+from pathlib import Path
+from unittest.mock import patch
+with patch.object(Path, "home", side_effect=RuntimeError("home unavailable")):
+    from deepagents_code._paths import PATHS
+assert PATHS.launch_home is None
+print(PATHS.profile.root)
+"""
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            env=_subprocess_env(home=tmp_path, configured=str(configured)),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == str(configured)
+
     def test_import_time_consumers_and_server_agree_across_cwd(
         self, tmp_path: Path
     ) -> None:

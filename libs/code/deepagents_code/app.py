@@ -15087,6 +15087,7 @@ class DeepAgentsApp(App):
                 f"  {newline_shortcut():<15} Insert newline\n"
                 f"  Ctrl+X          {editor_help}\n"
                 "  Ctrl+R          Search and reuse submitted prompts\n"
+                "                  (press again for the full-screen view)\n"
                 "  Ctrl+N          Review pending notifications\n"
                 "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"

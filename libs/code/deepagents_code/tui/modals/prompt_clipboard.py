@@ -247,6 +247,18 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         self._update_preview()
 
     def _apply_selection(self, index: int) -> None:
+        """Move the selection to an already-rendered row.
+
+        Preconditions, established by every caller before it gets here:
+        `_rows` mirrors `_filtered` one-to-one, and both `index` and
+        `_selected_index` are in range. Callers settle any queued filter edit
+        (`_sync_filter_value`, then `_render_rows` if the lengths disagree) to
+        guarantee that, which is why this indexes without guarding. A new
+        caller that skips those steps will raise `IndexError` here.
+
+        Args:
+            index: Row to select. Must be a valid index into `_rows`.
+        """
         self._rows[self._selected_index].remove_class("prompt-row-selected")
         self._selected_index = index
         selected = self._rows[index]

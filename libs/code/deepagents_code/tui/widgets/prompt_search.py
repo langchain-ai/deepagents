@@ -128,8 +128,15 @@ class PromptSearchInput(Input):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         # The app binds these chords with priority, so they never reach a
-        # focused widget unless `check_action` steps them aside; it does while
-        # the panel is open (see `DeepAgentsApp.check_action`).
+        # focused widget unless `check_action` steps them aside.
+        #
+        # `escape` and `shift+tab` get an explicit panel-aware clause there
+        # (see `DeepAgentsApp.check_action`). `tab` does not: its app binding
+        # is `approval_reject_with_reason`, which steps aside whenever an
+        # approval is pending *and* the chat input is unfocused. This works
+        # here only because `_is_input_focused()` walks `ChatInput`'s children
+        # and finds the query input -- narrowing it to the text area alone
+        # would silently break Tab paging with nothing to flag it.
         Binding("escape", "abandon_search", "Cancel", show=False, priority=True),
         Binding("tab", "page(True)", "Page Down", show=False, priority=True),
         Binding("shift+tab", "page(False)", "Page Up", show=False, priority=True),
@@ -321,6 +328,9 @@ class PromptSearchPanel(Vertical):
         self._hint_static: Static | None = None
         self._options: list[PromptSearchOption] = []
         self._empty_widget: Static | None = None
+        # `_selected_index` is the selection currently applied to the mounted
+        # rows; `_pending_selected` is the one the next rebuild will apply.
+        # They diverge whenever a rebuild is queued but has not run.
         self._selected_index = 0
         self._pending_titles: list[str] = []
         self._pending_selected: int = 0
@@ -377,10 +387,17 @@ class PromptSearchPanel(Vertical):
             titles: All filtered row titles; the panel renders a window of
                 them around `selected_index`.
             selected_index: Index of the selected row.
-            empty: Empty-state message to show instead of rows, if any.
+            empty: Empty-state message to show instead of rows, if any. It
+                replaces the rows rather than joining them, so passing both is
+                a caller error; `titles` is dropped in that case rather than
+                rendered underneath the message.
         """
+        if empty is not None:
+            titles = []
         self._selected_index = selected_index
-        self._pending_titles = titles
+        # Copy: the panel keeps this list across frames, so an owner that
+        # mutated the list it passed would rewrite the pending window in place.
+        self._pending_titles = list(titles)
         self._pending_selected = selected_index
         self._pending_empty = empty
         # Increment generation so stale callbacks from prior calls are skipped.
@@ -389,6 +406,54 @@ class PromptSearchPanel(Vertical):
         if self._query_input is not None and self._query_input.value != query:
             self._query_input.value = query
         self.call_next(lambda: self._rebuild_options(gen))
+
+    async def _fit_rows_to_window(
+        self, window: list[str], start: int, selected_index: int
+    ) -> None:
+        """Make the mounted rows match `window`, reusing what is already there.
+
+        Reusing DOM nodes avoids the flicker of a full teardown/mount cycle
+        while the panel is visible, so this re-titles the overlap and only
+        mounts or removes the difference.
+
+        Args:
+            window: Titles for the slice of the list being shown.
+            start: Index in the full list that `window[0]` corresponds to.
+            selected_index: Index in the full list of the selected row.
+        """
+        existing = len(self._options)
+        needed = len(window)
+
+        for offset in range(min(existing, needed)):
+            self._options[offset].set_content(
+                window[offset],
+                start + offset,
+                is_selected=(start + offset == selected_index),
+            )
+
+        # The empty-state message is a single tracked widget, not a
+        # per-rebuild mount: the previous one must come down before anything
+        # new goes up, or every no-match keystroke adds a row.
+        if self._empty_widget is not None:
+            await self._empty_widget.remove()
+            self._empty_widget = None
+
+        if existing > needed:
+            for option in self._options[needed:]:
+                await option.remove()
+            del self._options[needed:]
+        elif needed > existing:
+            new_widgets = [
+                PromptSearchOption(
+                    title=window[offset],
+                    index=start + offset,
+                    is_selected=(start + offset == selected_index),
+                )
+                for offset in range(existing, needed)
+            ]
+            self._options.extend(new_widgets)
+            if self._results is not None:
+                await self._results.mount(*new_widgets)
 
     async def _rebuild_options(self, generation: int) -> None:
         """Rebuild row widgets from pending state.
@@ -402,44 +467,12 @@ class PromptSearchPanel(Vertical):
         if generation != self._rebuild_generation or self._results is None:
             return
 
-        titles = self._pending_titles
         selected_index = self._pending_selected
-
-        start, stop = _window_bounds(len(titles), selected_index)
-        window = titles[start:stop]
-
-        existing = len(self._options)
-        needed = len(window)
-
-        for i in range(min(existing, needed)):
-            self._options[i].set_content(
-                window[i], start + i, is_selected=(start + i == selected_index)
-            )
+        start, stop = _window_bounds(len(self._pending_titles), selected_index)
+        window = self._pending_titles[start:stop]
 
         try:
-            # The empty-state message is a single tracked widget, not a
-            # per-rebuild mount: the previous one must come down before
-            # anything new goes up, or every no-match keystroke adds a row.
-            if self._empty_widget is not None:
-                await self._empty_widget.remove()
-                self._empty_widget = None
-
-            if existing > needed:
-                for option in self._options[needed:]:
-                    await option.remove()
-                del self._options[needed:]
-
-            if needed > existing:
-                new_widgets = [
-                    PromptSearchOption(
-                        title=window[idx],
-                        index=start + idx,
-                        is_selected=(start + idx == selected_index),
-                    )
-                    for idx in range(existing, needed)
-                ]
-                self._options.extend(new_widgets)
-                await self._results.mount(*new_widgets)
+            await self._fit_rows_to_window(window, start, selected_index)
         except Exception:
             logger.exception("Failed to rebuild prompt search panel; abandoning search")
             # Hiding alone would leave `ChatInput` still holding a draft
@@ -483,7 +516,9 @@ class PromptSearchPanel(Vertical):
                 Content(self._pending_empty), classes="prompt-search-empty"
             )
             await self._results.mount(self._empty_widget)
-        self.show(len(self._options) if not self._pending_empty else 1)
+        # `update_state` clears `titles` whenever `empty` is set, so exactly
+        # one of the two is ever on screen.
+        self.show(1 if self._pending_empty else len(self._options))
 
         if start <= selected_index < start + len(self._options):
             self._options[selected_index - start].scroll_visible(animate=False)

@@ -1,8 +1,9 @@
 """Auto-install pinned upstream binaries for optional tools.
 
 Today this only manages `ripgrep`. The SDK shells out to `rg` via `PATH`,
-so installing into `~/.deepagents/bin/` and prepending that directory to
-`os.environ["PATH"]` is sufficient — no SDK change required.
+so installing beside the dcode tool environment and prepending that directory
+to `os.environ["PATH"]` is sufficient — no SDK change required. Keeping helper
+binaries installation-scoped lets multiple profiles reuse one verified binary.
 
 The pinned `RIPGREP_VERSION` and `RIPGREP_ASSETS` table is the single
 source of truth for what gets downloaded and verified. When bumping the
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER, is_env_truthy
-from deepagents_code._paths import get_deepagents_home
+from deepagents_code._paths import PATHS
 
 if TYPE_CHECKING:
     import zipfile
@@ -63,7 +64,7 @@ RIPGREP_ASSETS: dict[tuple[str, str], tuple[str, str]] = {
 }
 """`(sys.platform, normalized arch) -> (asset filename, sha256 hex)`."""
 
-BIN_DIR: Path = get_deepagents_home() / "bin"
+BIN_DIR: Path = PATHS.installation.managed_bin_dir
 """Directory holding managed binaries. Prepended to `PATH` on startup."""
 
 _DOWNLOAD_TIMEOUT_SECONDS = 120

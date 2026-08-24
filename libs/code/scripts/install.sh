@@ -66,7 +66,7 @@
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   DEEPAGENTS_CODE_RIPGREP_INSTALLER — how to provision ripgrep:
 #     "managed" (default) eagerly installs the pinned, SHA-256-verified binary
-#     into ~/.deepagents/bin (no sudo) via `dcode tools install`; "system"
+#     inside the dcode tool environment via `dcode tools install`; "system"
 #     keeps the interactive package-manager install (brew/apt/cargo/...),
 #     which only counts as success when the resulting `rg` meets the minimum
 #     supported version. Set DEEPAGENTS_CODE_OFFLINE=1 to skip the managed
@@ -144,7 +144,7 @@ Environment variables:
   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
   DEEPAGENTS_CODE_RIPGREP_INSTALLER — how to provision ripgrep:
     "managed" (default) eagerly installs the pinned, SHA-256-verified binary
-    into ~/.deepagents/bin (no sudo) via `dcode tools install`; "system"
+    inside the dcode tool environment via `dcode tools install`; "system"
     keeps the interactive package-manager install (brew/apt/cargo/...). Set
     DEEPAGENTS_CODE_OFFLINE=1 to skip the managed download entirely.
   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
@@ -443,12 +443,79 @@ if [ "$OS" = "macos" ] && { [ -z "${HOME:-}" ] || [ "$(id -u)" -eq 0 ]; }; then
   export HOME
 fi
 
+# Normalize a POSIX absolute path lexically without requiring it to exist.
+# This mirrors `_paths._normalize_absolute`: repeated separators and `.` / `..`
+# components are collapsed, but no symlink or filesystem lookup is performed.
+normalize_absolute_path() {
+  local rest="$1"
+  local normalized="/"
+  local part
+  case "$rest" in
+    /*) rest="${rest#/}" ;;
+    *) return 1 ;;
+  esac
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"
+    if [ "$rest" = "$part" ]; then
+      rest=""
+    else
+      rest="${rest#*/}"
+    fi
+    case "$part" in
+      ""|.) ;;
+      ..)
+        if [ "$normalized" != "/" ]; then
+          normalized="${normalized%/*}"
+          [ -n "$normalized" ] || normalized="/"
+        fi
+        ;;
+      *)
+        if [ "$normalized" = "/" ]; then
+          normalized="/${part}"
+        else
+          normalized="${normalized}/${part}"
+        fi
+        ;;
+    esac
+  done
+  printf '%s' "$normalized"
+}
+
+normalize_deepagents_home() {
+  local raw="${DEEPAGENTS_HOME:-}"
+  local candidate
+  case "$raw" in
+    "") candidate="${HOME}/.deepagents" ;;
+    \~/*) candidate="${HOME}/${raw#\~/}" ;;
+    \~*)
+      log_error "Invalid DEEPAGENTS_HOME: use an absolute path or a path beginning with '~/' ('~user' forms are not allowed)."
+      exit 1
+      ;;
+    /*) candidate="$raw" ;;
+    *)
+      log_error "Invalid DEEPAGENTS_HOME '${raw}': use an absolute path or a path beginning with '~/'."
+      exit 1
+      ;;
+  esac
+  if ! DEEPAGENTS_HOME="$(normalize_absolute_path "$candidate")"; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': the resolved path must be absolute."
+    exit 1
+  fi
+  export DEEPAGENTS_HOME
+  if [ -n "$raw" ]; then
+    log_info "Using DEEPAGENTS_HOME: ${DEEPAGENTS_HOME}"
+  fi
+}
+
+normalize_deepagents_home
+UV_TOOL_DIR_ENV="${UV_TOOL_DIR:-}"
+
 # ---------------------------------------------------------------------------
 # Ownership fix for root installs
 # ---------------------------------------------------------------------------
 # When running as root, files created under $HOME will be owned by root.
 # Resolve the target user so we can fix ownership after install steps.
-# When not root, fix_owner is a no-op.
+# When not root, the exact-path ownership helper is a no-op.
 if [ "$(id -u)" -eq 0 ]; then
   if [ "$OS" = "macos" ]; then
     # Reuse CONSOLE_USER from above; fall back to basename of the
@@ -461,15 +528,9 @@ if [ "$(id -u)" -eq 0 ]; then
 
   if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
     log_warn "Could not determine non-root target user. Files under ${HOME} may remain owned by root."
-    log_warn "  After install, run: sudo chown -R YOUR_USERNAME ~/.local"
-    fix_owner() { :; }
+    log_warn "  Re-run as the target user, or repair only the exact installed paths reported above."
     fix_file_owner() { :; }
   else
-    fix_owner() {
-      if ! chown -R "$TARGET_USER" "$@" 2>&1; then
-        log_warn "Could not fix ownership of $* for user ${TARGET_USER}."
-      fi
-    }
     fix_file_owner() {
       local path
       for path in "$@"; do
@@ -480,7 +541,6 @@ if [ "$(id -u)" -eq 0 ]; then
     }
   fi
 else
-  fix_owner() { :; }
   fix_file_owner() { :; }
 fi
 
@@ -959,16 +1019,48 @@ release_install_lock_reclaim_guard() {
   INSTALL_LOCK_RECLAIM_TOKEN=""
 }
 
+resolve_installation_root() {
+  local tool_dir=""
+  if [ -n "${UV_BIN:-}" ]; then
+    tool_dir="$("$UV_BIN" tool dir 2>/dev/null || true)"
+  fi
+  if [ -z "$tool_dir" ] && [ -n "${UV_TOOL_DIR_ENV:-}" ]; then
+    tool_dir="$UV_TOOL_DIR_ENV"
+  fi
+  if [ -z "$tool_dir" ]; then
+    tool_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/uv/tools"
+  fi
+  case "$tool_dir" in
+    /*) ;;
+    *) tool_dir="$(pwd -P)/${tool_dir}" ;;
+  esac
+  normalize_absolute_path "${tool_dir}/deepagents-code"
+}
+
 # Serialize concurrent installs (racing `curl | bash` runs corrupting a shared
 # uv tool dir). Use an atomic mkdir lock dir with a PID + timestamp so a crashed
 # holder's lock can be aged out (see install_lock_is_stale). Avoid shell
-# redirection to a lock file here: when the installer runs as root and HOME is
-# user-writable, opening ~/.deepagents/install.lock would follow a symlink before
-# any post-open validation can run.
+# redirection to a lock file here. The lock is derived from the uv tool
+# environment, not `DEEPAGENTS_HOME`, so profiles sharing an installation also
+# share serialization.
 acquire_install_lock() {
-  local lock_root="${DEEPAGENTS_HOME:-$HOME/.deepagents}"
-  mkdir -p "$lock_root"
-  fix_owner "$lock_root"
+  local installation_root
+  local installation_parent
+  local installation_name
+  local lock_root
+  installation_root="$(resolve_installation_root)"
+  installation_parent="${installation_root%/*}"
+  installation_name="${installation_root##*/}"
+  lock_root="${installation_parent}/.${installation_name}.deepagents-code-locks"
+  if [ -L "$lock_root" ]; then
+    log_error "Installer lock root is a symlink: $lock_root"
+    log_error "Remove it or choose a different uv tool directory, then retry."
+    exit 1
+  fi
+  if [ ! -d "$lock_root" ]; then
+    mkdir -p "$lock_root"
+    fix_file_owner "$lock_root"
+  fi
 
   INSTALL_LOCK_DIR="$lock_root/install.lock.d"
   INSTALL_LOCK_RECLAIM_DIR="$lock_root/install.lock.reclaim.d"
@@ -1027,7 +1119,8 @@ acquire_install_lock() {
   fi
   printf '%s\n' "$$" >"$INSTALL_LOCK_DIR/pid"
   date +%s >"$INSTALL_LOCK_DIR/started_at" 2>/dev/null || true
-  fix_owner "$INSTALL_LOCK_DIR"
+  fix_file_owner "$INSTALL_LOCK_DIR" "$INSTALL_LOCK_DIR/token" \
+    "$INSTALL_LOCK_DIR/pid" "$INSTALL_LOCK_DIR/started_at"
   INSTALL_LOCK_KIND="mkdir"
 }
 
@@ -1079,8 +1172,8 @@ case "$ASSUME_YES" in
   *)          ASSUME_YES="0" ;;
 esac
 # How ripgrep gets provisioned: "managed" (default) eagerly fetches the
-# pinned, SHA-256-verified binary into ~/.deepagents/bin via `dcode tools
-# install`; "system" keeps the interactive package-manager path below. Any
+# pinned, SHA-256-verified binary beside the dcode tool environment via
+# `dcode tools install`; "system" keeps the interactive package-manager path below. Any
 # value other than "system" normalizes to "managed".
 #
 # Lowercase and strip whitespace first so this matches the `.strip().lower()`
@@ -1618,6 +1711,11 @@ UV_TOOL_DIR=""
 if UV_TOOL_DIR_RAW=$("$UV_BIN" tool dir 2>/dev/null); then
   UV_TOOL_DIR="$UV_TOOL_DIR_RAW"
 fi
+MANAGED_BIN_DIR="${UV_TOOL_DIR:+${UV_TOOL_DIR}/deepagents-code/share/deepagents-code/bin}"
+UV_TOOL_ENV_PREEXISTED=false
+[ -z "$UV_TOOL_DIR" ] || [ ! -e "${UV_TOOL_DIR}/deepagents-code" ] || UV_TOOL_ENV_PREEXISTED=true
+MANAGED_BIN_DIR_PREEXISTED=false
+[ -z "$MANAGED_BIN_DIR" ] || [ ! -e "$MANAGED_BIN_DIR" ] || MANAGED_BIN_DIR_PREEXISTED=true
 if [ -n "$UV_TOOL_DIR" ] && [ -d "${UV_TOOL_DIR}/deepagents-code" ]; then
   shopt -s nullglob
   for du in "${UV_TOOL_DIR}"/deepagents-code/lib/python*/site-packages/deepagents_code-*.dist-info/direct_url.json; do
@@ -2236,15 +2334,9 @@ if path_is_under_home "$TOOL_BIN_DIR"; then
   fi
   fix_file_owner "${TOOL_BIN_DIR}/dcode" "${TOOL_BIN_DIR}/deepagents-code"
 fi
-if [ -n "$UV_TOOL_DIR" ] && path_is_under_home "${UV_TOOL_DIR}/deepagents-code"; then
-  fix_owner "${UV_TOOL_DIR}/deepagents-code"
-elif [ -d "${HOME}/.local/share/uv" ]; then
-  fix_owner "${HOME}/.local/share/uv"
-fi
-if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
-  fix_owner "${HOME}/Library/Caches/uv"
-elif [ -d "${HOME}/.cache/uv" ]; then
-  fix_owner "${HOME}/.cache/uv"
+if [ "$UV_TOOL_ENV_PREEXISTED" = false ] && [ -n "$UV_TOOL_DIR" ] && \
+  path_is_under_home "${UV_TOOL_DIR}/deepagents-code"; then
+  fix_file_owner "${UV_TOOL_DIR}/deepagents-code"
 fi
 # Restore ownership for the log path without recursively chowning a cache path
 # that could have been swapped after creation.
@@ -3379,7 +3471,7 @@ install_ripgrep_via_cargo() {
   if command -v cargo >/dev/null 2>&1; then
     log_info "Installing ripgrep via cargo (no sudo needed)..."
     if cargo install ripgrep; then
-      fix_owner "${HOME}/.cargo"
+      fix_file_owner "${HOME}/.cargo/bin/rg"
       installed_rg_is_acceptable && return 0
       log_warn "cargo install succeeded but rg not found in PATH or too old."
     fi
@@ -3404,7 +3496,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
   if [ "$RIPGREP_INSTALLER" = "managed" ] && [ "$VERIFY_OK" = true ] && [ -n "$DCODE_BIN" ]; then
     # Eager, non-prompting managed install through the freshly installed binary
     # — the same pinned, SHA-256-verified path dcode uses on first run
-    # (downloads into ~/.deepagents/bin, no sudo). Doing it here removes the
+    # (downloads beside the dcode tool environment). Doing it here removes the
     # first-run download latency. The binary reuses a system `rg` already on
     # PATH and honors DEEPAGENTS_CODE_OFFLINE and
     # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system. Routine output stays behind
@@ -3413,7 +3505,9 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       echo ""
       log_info "Setting up ripgrep..."
       if "$DCODE_BIN" tools install; then
-        fix_owner "${DEEPAGENTS_HOME:-${HOME}/.deepagents}/bin"
+        if [ "$MANAGED_BIN_DIR_PREEXISTED" = false ] && [ -n "$MANAGED_BIN_DIR" ]; then
+          fix_file_owner "$MANAGED_BIN_DIR"
+        fi
       else
         ripgrep_managed_failed
       fi
@@ -3423,7 +3517,9 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       if ripgrep_setup_out=$(mktemp 2>/dev/null); then
         register_temp "$ripgrep_setup_out"
         if "$DCODE_BIN" tools install >"$ripgrep_setup_out" 2>&1; then
-          fix_owner "${DEEPAGENTS_HOME:-${HOME}/.deepagents}/bin"
+          if [ "$MANAGED_BIN_DIR_PREEXISTED" = false ] && [ -n "$MANAGED_BIN_DIR" ]; then
+            fix_file_owner "$MANAGED_BIN_DIR"
+          fi
         else
           echo ""
           cat "$ripgrep_setup_out" >&2 2>/dev/null || true

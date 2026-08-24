@@ -3776,8 +3776,8 @@ class TestUpdateInstallLock:
         with update_install_lock() as holding:
             assert holding is True
 
-    def test_lock_file_lands_in_the_state_directory(self) -> None:
-        """The production path is a state-dir sibling, not a temp file.
+    def test_lock_file_lands_in_the_installation_lock_directory(self) -> None:
+        """The production path is installation-scoped, not profile-scoped.
 
         Checked in a subprocess because the autouse state-dir fixture patches
         `UPDATE_LOCK_FILE` for every test in this suite, so the real value is
@@ -3785,9 +3785,9 @@ class TestUpdateInstallLock:
         somewhere per-process would exclude nothing.
         """
         probe = (
-            "from deepagents_code.update_check import "
-            "DEFAULT_STATE_DIR, UPDATE_LOCK_FILE\n"
-            "print(UPDATE_LOCK_FILE == DEFAULT_STATE_DIR / 'update.lock')\n"
+            "from deepagents_code._paths import PATHS\n"
+            "from deepagents_code.update_check import UPDATE_LOCK_FILE\n"
+            "print(UPDATE_LOCK_FILE == PATHS.installation.locks_dir / 'update.lock')\n"
         )
         result = subprocess.run(
             [sys.executable, "-c", probe],
@@ -3798,6 +3798,29 @@ class TestUpdateInstallLock:
         )
 
         assert result.stdout.strip() == "True"
+
+    def test_profiles_share_the_same_update_lock(self, tmp_path: Path) -> None:
+        """Two profile homes using this tool environment contend on one lock."""
+        probe = (
+            "from deepagents_code.update_check import UPDATE_LOCK_FILE\n"
+            "print(UPDATE_LOCK_FILE)\n"
+        )
+        paths = []
+        for profile in (tmp_path / "first", tmp_path / "second"):
+            env = os.environ.copy()
+            env["DEEPAGENTS_HOME"] = str(profile)
+            result = subprocess.run(
+                [sys.executable, "-c", probe],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
+            )
+            paths.append(result.stdout.strip())
+
+        assert paths[0] == paths[1]
+        assert str(tmp_path) not in paths[0]
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_lock_directory_is_owner_only(self, tmp_path) -> None:

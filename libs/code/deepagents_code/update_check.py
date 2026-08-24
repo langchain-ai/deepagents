@@ -39,6 +39,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
+from deepagents_code._paths import PATHS
 from deepagents_code._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __version__
 from deepagents_code.model_config import (
     DEFAULT_CONFIG_PATH,
@@ -61,13 +62,14 @@ when it is younger than `CACHE_TTL`. SDK upload timestamps are stored under
 `_SDK_RELEASE_TIMES_KEY`.
 """
 
-UPDATE_LOCK_FILE: Path = DEFAULT_STATE_DIR / "update.lock"
+UPDATE_LOCK_FILE: Path = PATHS.installation.locks_dir / "update.lock"
 """Advisory lock file serializing dcode self-upgrades across processes.
 
 Held for the duration of an install by whichever process is upgrading, so
 several concurrently launched terminals do not each run their own
 `uv tool install -U` against the same tool environment. Carries no data — only
-the lock matters. See `update_install_lock`.
+the lock matters. Its installation-derived location is shared by every profile
+that launches this tool environment. See `update_install_lock`.
 """
 
 UPDATE_STATE_FILE: Path = DEFAULT_STATE_DIR / "update_state.json"

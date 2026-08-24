@@ -118,6 +118,17 @@ class TestGetDeepagentsHome:
             tmp_path / "repo" / ".deepagents" / ".mcp.json"
         )
 
+    def test_profiles_share_installation_paths(self, tmp_path: Path) -> None:
+        """Changing profile selection cannot move shared tool resources or locks."""
+        first = _capture_paths(str(tmp_path / "first"), launch_home=tmp_path)
+        second = _capture_paths(str(tmp_path / "second"), launch_home=tmp_path)
+
+        assert first.profile.root != second.profile.root
+        assert first.installation == second.installation
+        assert first.installation.managed_bin_dir.is_relative_to(
+            first.installation.root
+        )
+
 
 def _subprocess_env(*, home: Path, configured: str | None) -> dict[str, str]:
     """Return a synthetic launch environment without reading secret files."""

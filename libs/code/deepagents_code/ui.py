@@ -666,10 +666,10 @@ def show_tools_install_help() -> None:
         "Download the pinned, SHA-256-verified ripgrep binary into",
     )
     console.print(
-        "~/.deepagents/bin (no sudo). Reuses a system `rg` already on PATH and",
+        "dcode's installation (no sudo). Reuses a system `rg` already on PATH",
     )
     console.print(
-        "is also handy for repairing a missing or stale managed binary.",
+        "and is also handy for repairing a missing or stale managed binary.",
     )
     console.print()
     _print_option_section()

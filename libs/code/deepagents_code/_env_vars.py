@@ -500,9 +500,9 @@ settable as `[features].resume_term_program` in config.toml.
 RIPGREP_INSTALLER = "DEEPAGENTS_CODE_RIPGREP_INSTALLER"
 """Select how ripgrep is provisioned: `managed` (default) or `system`.
 
-`managed` downloads the pinned, SHA-256-verified upstream binary into
-`~/.deepagents/bin` (no sudo). `system` skips that download so power users can
-rely on their distro package / existing toolchain instead; the install script's
+`managed` downloads the pinned, SHA-256-verified upstream binary into the dcode
+installation (no sudo). `system` skips that download so power users can rely on
+their distro package / existing toolchain instead; the install script's
 `system` mode keeps the brew/apt/cargo path. A system `rg` already on `PATH` is
 reused under either setting. Unrecognized values fall back to `managed`. See
 `managed_tools.ripgrep_installer`."""

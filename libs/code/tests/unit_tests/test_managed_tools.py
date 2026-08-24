@@ -16,6 +16,7 @@ import pytest
 
 from deepagents_code import managed_tools
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER
+from deepagents_code._paths import PATHS
 from deepagents_code.managed_tools import (
     ChecksumMismatchError,
     ManagedToolUnavailableError,
@@ -29,6 +30,12 @@ _EXPECTED_PLATFORM_ARCHS = {
     ("win32", "arm64"),
     ("win32", "x86_64"),
 }
+
+
+def test_managed_bin_is_installation_scoped() -> None:
+    """Managed helpers belong to the tool environment, not the active profile."""
+    assert PATHS.installation.managed_bin_dir == managed_tools.BIN_DIR
+    assert not managed_tools.BIN_DIR.is_relative_to(PATHS.profile.root)
 
 
 def test_ripgrep_assets_has_all_expected_keys() -> None:

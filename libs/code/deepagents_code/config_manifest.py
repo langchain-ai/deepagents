@@ -260,6 +260,36 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class CliSpec:
+    """Binding from one session-scoped CLI flag to a manifest option."""
+
+    flag: str
+    """Long CLI flag spelling, such as `--auto-approve`."""
+
+    dest: str | None = None
+    """Argparse destination, derived mechanically from `flag` when omitted."""
+
+    def __post_init__(self) -> None:
+        """Reject malformed flags and destinations at manifest construction.
+
+        Raises:
+            ValueError: If `flag` is not a non-empty long option, or `dest` is
+                supplied but blank.
+        """
+        if not self.flag.removeprefix("--") or not self.flag.startswith("--"):
+            msg = f"CLI flag must be a long option starting with '--': {self.flag!r}"
+            raise ValueError(msg)
+        if self.dest is not None and not self.dest:
+            msg = f"CLI destination for {self.flag} must not be empty"
+            raise ValueError(msg)
+
+    @property
+    def dest_name(self) -> str:
+        """Explicit or mechanically derived argparse destination."""
+        return self.dest or self.flag.removeprefix("--").replace("-", "_")
+
+
 @dataclass(frozen=True)
 class ConfigOption:
     """One user-tunable configuration option and where it can be set."""
@@ -304,7 +334,10 @@ class ConfigOption:
     """Whether a TOML bool should be negated after validation."""
 
     cli_flag: str | None = None
-    """Representative CLI flag that sets the option, or `None`."""
+    """Informational CLI flag for changing the value, or `None`."""
+
+    cli: CliSpec | None = None
+    """Session-scoped CLI binding that participates in ranked resolution."""
 
     redacted: bool = False
     """Whether `config` reports only set/not-set, never the raw value.
@@ -1349,17 +1382,14 @@ def resolve_recursion_limit(
 ) -> int:
     """Resolve the effective main-agent `recursion_limit`.
 
-    Resolves `runtime.recursion_limit` through the standard managed → env →
+    Resolves `runtime.recursion_limit` through the standard managed → CLI → env →
     `config.toml` → default precedence. An out-of-range value (below
     `RECURSION_LIMIT_FLOOR` or above `RECURSION_LIMIT_CEILING`) is discarded
     with a logged warning and the next lower-precedence layer is tried, so a bad
     higher-precedence override cannot mask a valid TOML setting (or the
     default).
 
-    An out-of-range *managed* value falls through here, but stops an agent
-    launch: `main._apply_managed_runtime_policy` treats it as unenforceable
-    policy and exits 78, because the CLI flag it would otherwise leave in force
-    outranks this bounded resolver.
+    Managed values remain subject to the launch-time managed-health gate.
 
     Args:
         toml_data: Parsed `config.toml`.
@@ -1885,6 +1915,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.AUTO_CLASSIFIER_MODEL,
         toml_keys=("models", "auto_classifier"),
         cli_flag="--auto-classifier-model",
+        cli=CliSpec("--auto-classifier-model"),
     ),
     ConfigOption(
         key="models.auto_classifier_timeout",
@@ -2031,6 +2062,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.SHELL_ALLOW_LIST,
         toml_keys=("shell", "allow_list"),
         cli_flag="--shell-allow-list",
+        cli=CliSpec("--shell-allow-list"),
         settings_field="shell_allow_list",
     ),
     ConfigOption(
@@ -2134,6 +2166,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=INTERPRETER_ENABLE_DEFAULT,
         toml_keys=("interpreter", "enable_interpreter"),
         cli_flag="--interpreter",
+        cli=CliSpec("--interpreter"),
         settings_field="enable_interpreter",
     ),
     ConfigOption(
@@ -2180,6 +2213,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=INTERPRETER_PTC_DEFAULT,
         toml_keys=("interpreter", "ptc"),
         cli_flag="--interpreter-tools",
+        cli=CliSpec("--interpreter-tools"),
         settings_field="interpreter_ptc",
     ),
     ConfigOption(
@@ -2210,6 +2244,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=True,
         toml_keys=("threads", "relative_time"),
         cli_flag="--relative",
+        cli=CliSpec("--relative"),
     ),
     ConfigOption(
         key="threads.sort_order",
@@ -2219,6 +2254,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="updated_at",
         toml_keys=("threads", "sort_order"),
         cli_flag="--sort",
+        cli=CliSpec("--sort"),
     ),
     ConfigOption(
         key="threads.columns",
@@ -2399,6 +2435,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.RECURSION_LIMIT,
         toml_keys=("runtime", "recursion_limit"),
         cli_flag="--recursion-limit",
+        cli=CliSpec("--recursion-limit"),
     ),
     ConfigOption(
         key="runtime.offline",
@@ -2436,6 +2473,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="manual",
         toml_keys=("startup", "mode"),
         cli_flag="--auto-approve",
+        cli=CliSpec("--auto-approve"),
     ),
     ConfigOption(
         key="startup.read_project_dotenv",

@@ -34,7 +34,7 @@ MANAGED_RANK = 200
 """Managed policy rank; lower numeric ranks have stronger precedence."""
 
 CLI_RANK = 300
-"""Reserved seam for a future CLI provider; no CLI provider ships today."""
+"""Parsed command-line argument rank."""
 
 ENVIRONMENT_RANK = 400
 """Process-environment rank."""
@@ -344,6 +344,7 @@ def resolver_from_snapshots(
     user: TomlSnapshot,
     managed_loader: Callable[[], TomlSnapshot] | None = None,
     user_loader: Callable[[], TomlSnapshot] | None = None,
+    cli_provider: ConfigProvider | None = None,
 ) -> ConfigResolver:
     """Build the standard provider chain from one file-snapshot generation.
 
@@ -359,9 +360,10 @@ def resolver_from_snapshots(
         user: User TOML snapshot.
         managed_loader: Optional managed reload operation.
         user_loader: Optional user reload operation.
+        cli_provider: Optional parsed-argument provider for this process.
 
     Returns:
-        Resolver containing managed, environment, user, and default providers.
+        Resolver containing managed, CLI, environment, user, and default providers.
     """
     from deepagents_code.configuration.providers import (
         DefaultProvider,
@@ -376,28 +378,28 @@ def resolver_from_snapshots(
     # to sit in the repo the agent is running in and treat it as policy.
     managed_path = managed.status.path
     user_path = user.status.path
-    return ConfigResolver(
-        (
-            TomlFileProvider(
-                name=managed.status.name,
-                path=managed_path,
-                rank=MANAGED_RANK,
-                durable=True,
-                snapshot=managed,
-                loader=managed_loader,
-            ),
-            EnvProvider(),
-            TomlFileProvider(
-                name=user.status.name,
-                path=user_path,
-                rank=USER_RANK,
-                durable=True,
-                snapshot=user,
-                loader=user_loader,
-            ),
-            DefaultProvider(),
-        )
+    providers: tuple[ConfigProvider, ...] = (
+        TomlFileProvider(
+            name=managed.status.name,
+            path=managed_path,
+            rank=MANAGED_RANK,
+            durable=True,
+            snapshot=managed,
+            loader=managed_loader,
+        ),
+        *((cli_provider,) if cli_provider is not None else ()),
+        EnvProvider(),
+        TomlFileProvider(
+            name=user.status.name,
+            path=user_path,
+            rank=USER_RANK,
+            durable=True,
+            snapshot=user,
+            loader=user_loader,
+        ),
+        DefaultProvider(),
     )
+    return ConfigResolver(providers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,6 +425,7 @@ class _ResolverCache:
     """
 
     entry: tuple[_ResolverKey, ConfigResolver] | None = None
+    cli_provider: ConfigProvider | None = None
 
 
 _resolver_cache_lock = threading.RLock()
@@ -449,6 +452,7 @@ def get_config_resolver(
     *,
     refresh_managed: bool = False,
     managed_snapshot: TomlSnapshot | None = None,
+    cli_provider: ConfigProvider | None = None,
 ) -> ConfigResolver:
     """Return the shared process resolver for the active config paths.
 
@@ -462,6 +466,7 @@ def get_config_resolver(
             misses. On a cache hit it is installed only when `refresh_managed`
             is set -- without it the resolver keeps the generation it is
             already serving, so the snapshot must be that same generation.
+        cli_provider: Parsed-argument provider to install for this process.
 
     Returns:
         Resolver shared by consumers of the active managed and user paths.
@@ -482,8 +487,22 @@ def get_config_resolver(
     )
     key = _ResolverKey(DEFAULT_CONFIG_PATH, managed.status.path)
     with _resolver_cache_lock:
+        installed_cli = _resolver_cache.cli_provider
+        if cli_provider is not None:
+            if installed_cli is not None and installed_cli != cli_provider:
+                msg = "a different CLI provider is already installed for this process"
+                raise ValueError(msg)
+            _resolver_cache.cli_provider = cli_provider
+            installed_cli = cli_provider
         entry = _resolver_cache.entry
-        if entry is None or entry[0] != key:
+        if (
+            entry is None
+            or entry[0] != key
+            or (
+                cli_provider is not None
+                and CLI_RANK not in entry[1].provider_statuses()
+            )
+        ):
             user_provider = TomlFileProvider(
                 name="config.toml", path=DEFAULT_CONFIG_PATH
             )
@@ -493,6 +512,7 @@ def get_config_resolver(
                 user=user,
                 managed_loader=_reload_enforceable_managed_snapshot,
                 user_loader=user_provider.load,
+                cli_provider=installed_cli,
             )
             _resolver_cache.entry = (key, resolver)
             # A rebuild is a generation advance too: the key changes when
@@ -550,6 +570,7 @@ def reset_config_resolver() -> None:
     # teardown path also breaks the test that stubs it out of `sys.modules`.
     with _resolver_cache_lock:
         _resolver_cache.entry = None
+        _resolver_cache.cli_provider = None
 
 
 def resolve_ranked[T](

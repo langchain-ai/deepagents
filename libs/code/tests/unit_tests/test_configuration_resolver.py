@@ -15,7 +15,7 @@ from deepagents_code.config_manifest import (
     get_config_options,
     get_option,
 )
-from deepagents_code.configuration.provider import ConfigProvider
+from deepagents_code.configuration.provider import CliProvider, ConfigProvider
 from deepagents_code.configuration.providers import (
     DefaultProvider,
     EnvProvider,
@@ -785,6 +785,52 @@ def test_every_composing_option_composes(key: str) -> None:
         assert set(resolved.value) == {"from_managed", "from_user"}, (
             f"{key} did not merge sibling leaves"
         )
+
+
+def test_cli_rank_beats_environment_user_and_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    option = get_option("runtime.recursion_limit")
+    assert option is not None
+    monkeypatch.setenv("DEEPAGENTS_RECURSION_LIMIT", "50")
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot(
+            {}, ProviderStatus("managed config", None, ProviderHealth.OK)
+        ),
+        user=TomlSnapshot(
+            {"runtime": {"recursion_limit": 75}},
+            ProviderStatus("config.toml", None, ProviderHealth.OK),
+        ),
+        cli_provider=CliProvider({"recursion_limit": 100}),
+    )
+
+    resolved = resolver.get(option)
+
+    assert resolved.value == 100
+    assert resolved.ranks == (CLI_RANK,)
+    assert resolved.provider_status[CLI_RANK].name == "CLI argument"
+
+
+def test_managed_rank_masks_cli_but_user_does_not() -> None:
+    option = get_option("runtime.recursion_limit")
+    assert option is not None
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot(
+            {"runtime": {"recursion_limit": 25}},
+            ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        user=TomlSnapshot(
+            {"runtime": {"recursion_limit": 75}},
+            ProviderStatus("config.toml", None, ProviderHealth.OK),
+        ),
+        cli_provider=CliProvider({"recursion_limit": 100}),
+    )
+
+    resolved = resolver.get(option)
+
+    assert resolved.value == 25
+    assert resolved.ranks == (MANAGED_RANK,)
+    assert resolved.masked_ranks == frozenset({CLI_RANK})
 
 
 def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> None:

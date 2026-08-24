@@ -7933,6 +7933,13 @@ class TestCopyCommand:
             MessageData(type=MessageType.ASSISTANT, content="   ")
         )
         app._message_store.append(MessageData(type=MessageType.APP, content="status"))
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="```text\nlocal shell output\n```",
+                assistant_local_only=True,
+            )
+        )
 
         async with app.run_test() as pilot:
             await pilot.pause()

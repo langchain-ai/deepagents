@@ -15388,7 +15388,10 @@ class DeepAgentsApp(App):
             content: str | None = None
             streaming_pending = False
             for message in reversed(self._message_store.get_all_messages()):
-                if message.type != MessageType.ASSISTANT:
+                if (
+                    message.type != MessageType.ASSISTANT
+                    or message.assistant_local_only
+                ):
                     continue
                 if not message.content.strip():
                     continue

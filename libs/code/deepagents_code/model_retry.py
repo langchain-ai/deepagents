@@ -13,11 +13,18 @@ from __future__ import annotations
 import logging
 import random
 import time
+from contextlib import contextmanager
+from copy import copy
 from typing import TYPE_CHECKING
 
 from langchain.agents.middleware import ModelRetryMiddleware
+from langchain_core.callbacks import BaseCallbackManager
 from langchain_core.exceptions import ModelError
+from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.errors import GraphBubbleUp
+from langgraph.pregel._messages import (  # noqa: PLC2701  # not publicly re-exported
+    StreamMessagesHandler,
+)
 
 from deepagents_code.config import (
     DEFAULT_MODEL_RETRIES,
@@ -26,10 +33,12 @@ from deepagents_code.config import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
+    from langchain_core.callbacks import BaseCallbackHandler
     from langchain_core.messages import AIMessage
+    from langgraph.pregel.protocol import StreamChunk
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +84,85 @@ distinct from `APIStatusError`, which carries an HTTP status handled separately.
 
 _HTTP_SERVER_ERROR_FLOOR = 500
 _HTTP_SERVER_ERROR_CEILING = 600
+
+
+class _MessageStreamBuffer:
+    """Buffer LangGraph message-stream callbacks until a model attempt succeeds."""
+
+    def __init__(self) -> None:
+        self._chunks: list[tuple[StreamMessagesHandler, StreamChunk]] = []
+
+    def callbacks_with_buffered_messages(
+        self, callbacks: BaseCallbackManager
+    ) -> BaseCallbackManager | None:
+        """Return a callback-manager copy with message streams redirected here."""
+        replacements: dict[int, StreamMessagesHandler] = {}
+
+        def replace(handler: BaseCallbackHandler) -> BaseCallbackHandler:
+            if not isinstance(handler, StreamMessagesHandler):
+                return handler
+            key = id(handler)
+            if key not in replacements:
+                buffered = type(handler)(
+                    lambda chunk, source=handler: self._chunks.append((source, chunk)),
+                    handler.subgraphs,
+                    parent_ns=handler.parent_ns,
+                )
+                buffered.seen.update(handler.seen)
+                replacements[key] = buffered
+            return replacements[key]
+
+        buffered_callbacks = copy(callbacks)
+        buffered_callbacks.handlers = [replace(item) for item in callbacks.handlers]
+        buffered_callbacks.inheritable_handlers = [
+            replace(item) for item in callbacks.inheritable_handlers
+        ]
+        return buffered_callbacks if replacements else None
+
+    def flush(self) -> None:
+        """Publish buffered chunks and preserve LangGraph's message de-duplication."""
+        for handler, chunk in self._chunks:
+            data = chunk[2]
+            if isinstance(data, tuple) and data:
+                message_id = getattr(data[0], "id", None)
+                if isinstance(message_id, str | int):
+                    handler.seen.add(message_id)
+            handler.stream(chunk)
+        self._chunks.clear()
+
+
+@contextmanager
+def _buffer_message_streams() -> Iterator[_MessageStreamBuffer]:
+    """Redirect the current run's LangGraph message callbacks for one attempt.
+
+    Yields:
+        The attempt-local stream buffer to flush after a successful model call.
+    """
+    buffer = _MessageStreamBuffer()
+    try:
+        from langgraph.config import get_config
+
+        config = get_config()
+    except RuntimeError:
+        yield buffer
+        return
+
+    callbacks = config.get("callbacks")
+    if not isinstance(callbacks, BaseCallbackManager):
+        yield buffer
+        return
+    buffered_callbacks = buffer.callbacks_with_buffered_messages(callbacks)
+    if buffered_callbacks is None:
+        yield buffer
+        return
+
+    buffered_config = config.copy()
+    buffered_config["callbacks"] = buffered_callbacks
+    token = var_child_runnable_config.set(buffered_config)
+    try:
+        yield buffer
+    finally:
+        var_child_runnable_config.reset(token)
 
 
 def _extract_status_code(exc: Exception) -> int | None:
@@ -323,7 +411,8 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         max_retries = self._request_max_retries(request)
         for attempt in range(max_retries + 1):
             try:
-                return handler(request)
+                with _buffer_message_streams() as stream_buffer:
+                    response = handler(request)
             except GraphBubbleUp:
                 raise
             except Exception as exc:  # noqa: BLE001  # classified by _is_retryable_model_error
@@ -333,6 +422,9 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                 delay = self._compute_delay(attempt)
                 if delay > 0:
                     time.sleep(delay)
+            else:
+                stream_buffer.flush()
+                return response
         msg = "Unexpected: retry loop completed without returning"
         raise RuntimeError(msg)
 
@@ -361,7 +453,8 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         max_retries = self._request_max_retries(request)
         for attempt in range(max_retries + 1):
             try:
-                return await handler(request)
+                with _buffer_message_streams() as stream_buffer:
+                    response = await handler(request)
             except GraphBubbleUp:
                 raise
             except Exception as exc:  # noqa: BLE001  # classified by _is_retryable_model_error
@@ -371,5 +464,8 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                 delay = self._compute_delay(attempt)
                 if delay > 0:
                     await asyncio.sleep(delay)
+            else:
+                stream_buffer.flush()
+                return response
         msg = "Unexpected: retry loop completed without returning"
         raise RuntimeError(msg)

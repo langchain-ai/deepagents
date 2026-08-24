@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 
 import httpx
 import pytest
+from langchain.agents import create_agent
 from langchain_core.exceptions import (
     ContextOverflowError,
     ModelAPIError,
@@ -20,13 +21,17 @@ from langchain_core.exceptions import (
     ModelRateLimitError,
     ModelTimeoutError,
 )
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langgraph.errors import GraphBubbleUp
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
     from pathlib import Path
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
+    from langchain_core.callbacks import CallbackManagerForLLMRun
 
 from deepagents_code import model_config
 from deepagents_code.config import (
@@ -68,6 +73,42 @@ class AuthenticationError(Exception):
     def __init__(self) -> None:
         super().__init__("auth")
         self.status_code = 401
+
+
+class _RetryingStreamingModel(BaseChatModel):
+    """Emit one orphaned chunk, fail, then complete on the retry."""
+
+    attempts: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "retrying-stream"
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ChatResult:
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="final"))]
+        )
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Iterator[ChatGenerationChunk]:
+        self.attempts += 1
+        if self.attempts == 1:
+            yield ChatGenerationChunk(message=AIMessageChunk(content="orphaned"))
+            raise _READ_ERROR
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(content="final", chunk_position="last")
+        )
 
 
 def _write_config(tmp_path: Path, text: str) -> Path:
@@ -351,6 +392,41 @@ async def test_async_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None
     mw = CodeModelRetryMiddleware(max_retries=3)
     assert await mw.awrap_model_call(_req(), _async_handler(handler)) == "OK"
     assert calls["n"] == 2
+
+
+async def test_failed_attempt_stream_chunks_are_discarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only chunks from the successful model attempt reach `messages` stream."""
+
+    async def _no_sleep(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    model = _RetryingStreamingModel()
+    agent = create_agent(
+        model,
+        middleware=[CodeModelRetryMiddleware(max_retries=1)],
+    )
+
+    chunks = [
+        chunk
+        async for chunk in agent.astream(
+            {"messages": [HumanMessage("hi")]},
+            stream_mode=["messages", "custom"],
+            subgraphs=True,
+        )
+    ]
+    message_text = "".join(
+        message.text
+        for _namespace, mode, data in chunks
+        if mode == "messages"
+        for message in [data[0]]
+        if isinstance(message, AIMessageChunk)
+    )
+
+    assert model.attempts == 2
+    assert message_text == "final"
 
 
 @pytest.mark.parametrize("ellipsis", [UNICODE_GLYPHS.ellipsis, ASCII_GLYPHS.ellipsis])

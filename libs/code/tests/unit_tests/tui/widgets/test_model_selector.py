@@ -2355,6 +2355,43 @@ class TestModelSelectorFiltering:
         assert "models.allowed" in notify.call_args.args[0]
         assert notify.call_args.kwargs["severity"] == "error"
 
+    def test_allowed_bare_name_is_selectable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A supported bare name is not rejected for lacking a provider prefix.
+
+        With `allowed = ["openai:gpt-5.6-terra"]`, entering `gpt-5.6-terra` must
+        be accepted: `create_model` infers `openai`, builds the canonical spec,
+        and allows it. The preflight has to judge the same canonical form.
+        """
+        from deepagents_code import model_config
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test-placeholder-not-a-real-key")
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["openai:gpt-5.6-terra"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        screen = _model_selector_for_filtering()
+
+        class FakeInput:
+            value = "gpt-5.6-terra"
+
+        screen._filtered_models = []
+        monkeypatch.setattr(screen, "query_one", lambda *_args, **_kwargs: FakeInput())
+        dismiss = MagicMock()
+        notify = MagicMock()
+        monkeypatch.setattr(screen, "_dismiss_with_result", dismiss)
+        monkeypatch.setattr(screen, "notify", notify)
+
+        screen.action_select()
+
+        # A bare name has no provider to pass along, so it takes the
+        # no-prefix branch and `create_model` infers the provider downstream.
+        dismiss.assert_called_once_with(("gpt-5.6-terra", ""))
+        notify.assert_not_called()
+
     def test_enter_selects_highlighted_model_not_filter_text(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

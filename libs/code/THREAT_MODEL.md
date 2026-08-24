@@ -269,6 +269,7 @@
   - Tables deep-merge. Deny lists union. An explicit managed allow or trust list replaces lower-precedence grants.
   - `[models].allowed` is an exact local-model ceiling. Discovery and selector filtering improve usability only.
   - `create_model` is authoritative. It checks the canonical `provider:model` before credential bridging, provider hooks, imports, or constructors, so a blocked specification touches no stored key and runs no provider hook.
+  - Preflight checks on text a user typed resolve a bare name to the same canonical form first, so they neither reject a model that construction would allow nor accept one it would block. A name whose provider cannot be established stays unmatchable.
   - `create_cli_agent` checks every model *string* it forwards: the primary model, the Auto classifier, the rubric grader, and an explicit local-subagent model. The SDK resolves a string through `init_chat_model`, which does not pass through `create_model`. A prebuilt model object came from a path that already checked.
   - Runtime-context switches are rechecked server-side. A policy denial propagates instead of falling back to the previous model.
   - A malformed `[models].allowed` blocks all model use at either layer. The managed layer also refuses to start.

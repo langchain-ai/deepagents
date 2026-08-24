@@ -3387,8 +3387,51 @@ class ModelConfig:
         parsed = ModelSpec.try_parse(model_spec.strip())
         return parsed is not None and str(parsed) in self.allowed_models
 
+    def canonical_model_spec(self, model_spec: str) -> str | None:
+        """Resolve a user-typed spec to the form the policy gate matches on.
+
+        Mirrors `create_model`'s provider resolution, including the custom
+        provider, Bedrock, and leading-colon branches, so a preflight check
+        agrees with the authoritative gate instead of rejecting a bare name
+        that `create_model` would infer a provider for and allow.
+
+        Args:
+            model_spec: A spec as the user typed it, bare name included.
+
+        Returns:
+            The canonical `provider:model` string, or `None` when no provider
+                can be established -- which policy treats as unmatchable.
+        """
+        from deepagents_code.config import detect_provider
+
+        normalized = model_spec.strip()
+        if not normalized:
+            return None
+        inferred = detect_provider(normalized)
+        parsed = ModelSpec.try_parse(normalized)
+        if parsed and parsed.provider in self.providers:
+            provider, model_name = parsed.provider, parsed.model
+        elif inferred == "bedrock":
+            provider, model_name = inferred, normalized
+        elif parsed:
+            provider, model_name = parsed.provider, parsed.model
+        elif ":" in normalized:
+            _, _, after = normalized.partition(":")
+            if not after:
+                return None
+            model_name = after
+            provider = detect_provider(model_name) or ""
+        else:
+            model_name = normalized
+            provider = inferred or ""
+        return f"{provider}:{model_name}" if provider else None
+
     def policy_error(
-        self, model_spec: str | None, *, context: str | None = None
+        self,
+        model_spec: str | None,
+        *,
+        context: str | None = None,
+        canonicalize: bool = False,
     ) -> ModelNotAllowedError | None:
         """Build the policy error blocking a spec, or `None` when it is allowed.
 
@@ -3400,14 +3443,28 @@ class ModelConfig:
             model_spec: The spec to check, or `None` to ask for the error that
                 describes a deny-all policy blocking default resolution.
             context: Where the spec was declared, prefixed to the message.
+            canonicalize: Infer a provider for a bare name before matching, the
+                way `create_model` does. Set this on preflight checks against
+                text a user typed; leave it off where the caller already holds a
+                canonical spec, so resolution stays off hot paths such as the
+                recent-models cache.
 
         Returns:
             The error to raise or render, or `None` when no policy blocks this.
         """
         if self.allowed_models is None:
             return None
-        if model_spec is not None and self.is_model_allowed(model_spec):
-            return None
+        if model_spec is not None:
+            candidate = model_spec
+            if canonicalize:
+                # Fall back to the raw text when no provider can be inferred:
+                # it stays unmatchable, and the message then advises a fully
+                # qualified spec, which is the actionable advice.
+                candidate = self.canonical_model_spec(model_spec) or model_spec
+            if self.is_model_allowed(candidate):
+                return None
+        # The message quotes what the user supplied, not the canonical form, so
+        # it echoes back the text they can see in front of them.
         return ModelNotAllowedError(
             model_spec=model_spec,
             source=self.allowed_models_source,

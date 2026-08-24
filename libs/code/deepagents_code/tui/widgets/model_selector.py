@@ -1210,14 +1210,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 typed = self._filter_text.strip()
                 policy = ModelConfig.load()
                 # Blame the policy only when the user typed something that
-                # *is* a spec and the policy rejects it. `typed` is filter
-                # text, so an empty box or a substring ("clade", "anthropic")
-                # is not a spec -- attributing those to the administrator
-                # would misdiagnose a typo, and an empty filter would make
-                # this branch fire for every allowlist.
-                blocked_spec = ModelSpec.try_parse(
-                    typed
-                ) is not None and not policy.is_model_allowed(typed)
+                # resolves to a real model and the policy rejects it. `typed`
+                # is filter text, so an empty box or a substring ("clade",
+                # "anthropic") canonicalizes to nothing -- attributing those to
+                # the administrator would misdiagnose a typo, and an empty
+                # filter would make this branch fire for every allowlist.
+                # Canonicalizing also judges a supported bare name the way
+                # `create_model` will judge it.
+                canonical = policy.canonical_model_spec(typed) if typed else None
+                blocked_spec = canonical is not None and not policy.is_model_allowed(
+                    canonical
+                )
                 if blocked_spec:
                     owner = (
                         "administrator-managed"
@@ -1946,11 +1949,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         custom_input = filter_input.value.strip()
 
         blocked = (
-            ModelConfig.load().policy_error(custom_input) if custom_input else None
+            ModelConfig.load().policy_error(custom_input, canonicalize=True)
+            if custom_input
+            else None
         )
         if blocked is not None:
             # Returning silently would read as a dead keybinding. `create_model`
             # would reject this spec anyway; saying so here saves a round trip.
+            # `canonicalize` keeps this preflight in step with that gate: a bare
+            # name whose provider can be inferred is matched in the same
+            # canonical form, so an allowed model is not rejected here merely
+            # for lacking a `provider:` prefix.
             self.notify(str(blocked), severity="error", timeout=8)
             return
 

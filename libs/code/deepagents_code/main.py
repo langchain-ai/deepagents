@@ -2586,7 +2586,9 @@ def _classifier_model_after_policy(spec: str | None) -> str | None:
 
     if spec is None or spec == INHERIT_CLASSIFIER_MODEL:
         return spec
-    if ModelConfig.load().is_model_allowed(spec):
+    # Canonicalize for the same reason `_auto_classifier_spec_problem` does, and
+    # so this decision cannot disagree with the warning the user just saw.
+    if ModelConfig.load().policy_error(spec, canonicalize=True) is None:
         return spec
     return INHERIT_CLASSIFIER_MODEL
 
@@ -2623,7 +2625,10 @@ def _auto_classifier_spec_problem(spec: str) -> str | None:
         get_provider_auth_status,
     )
 
-    blocked = ModelConfig.load().policy_error(spec)
+    # `canonicalize` keeps this in step with `create_model`: a bare name whose
+    # provider can be inferred must not be reported as blocked here when
+    # construction would infer the same provider and allow it.
+    blocked = ModelConfig.load().policy_error(spec, canonicalize=True)
     if blocked is not None:
         return str(blocked)
 

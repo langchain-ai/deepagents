@@ -390,6 +390,74 @@ class TestModelAllowlist:
                 "openai:blocked", context="subagent 'rev' (a/b.md)"
             )
 
+    def test_canonicalize_accepts_an_inferable_bare_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bare name whose provider is inferable matches like the canonical form.
+
+        `create_model` checks the *resolved* spec, so a preflight that checked
+        the raw text rejected supported bare names the authoritative gate would
+        have allowed.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "test-placeholder-not-a-real-key")
+        config = ModelConfig(
+            allowed_models=("openai:gpt-5.6-terra",),
+            allowed_models_source="config.toml",
+        )
+
+        assert config.canonical_model_spec("gpt-5.6-terra") == "openai:gpt-5.6-terra"
+        assert config.policy_error("gpt-5.6-terra", canonicalize=True) is None
+        # Without canonicalization the raw text is unmatchable, which is why the
+        # flag exists rather than being the unconditional behavior.
+        assert config.policy_error("gpt-5.6-terra") is not None
+
+    def test_canonicalize_still_blocks_a_disallowed_bare_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Inference is not a bypass: the resolved spec must still be allowed."""
+        monkeypatch.setenv("OPENAI_API_KEY", "test-placeholder-not-a-real-key")
+        config = ModelConfig(
+            allowed_models=("anthropic:claude-opus-5",),
+            allowed_models_source="config.toml",
+        )
+
+        assert config.canonical_model_spec("gpt-5.6-terra") == "openai:gpt-5.6-terra"
+        error = config.policy_error("gpt-5.6-terra", canonicalize=True)
+        assert error is not None
+        # The message echoes what the user typed, not the canonical form.
+        assert "'gpt-5.6-terra'" in str(error)
+
+    def test_canonicalize_rejects_a_name_with_no_inferable_provider(self) -> None:
+        """A name whose provider cannot be established stays unmatchable."""
+        config = ModelConfig(
+            allowed_models=("openai:gpt-5.6-terra",),
+            allowed_models_source="config.toml",
+        )
+
+        assert config.canonical_model_spec("mystery-model") is None
+        error = config.policy_error("mystery-model", canonicalize=True)
+        assert error is not None
+        assert "fully qualified provider:model" in str(error)
+
+    def test_canonicalize_handles_custom_providers_bedrock_and_leading_colon(
+        self,
+    ) -> None:
+        """Canonicalization mirrors every branch of `create_model`'s resolution."""
+        config = ModelConfig(
+            providers={"acme": {"class_path": "example.models:ChatModel"}},
+            allowed_models=("acme:production",),
+            allowed_models_source="config.toml",
+        )
+
+        # Registered custom provider.
+        assert config.canonical_model_spec("acme:production") == "acme:production"
+        # Bedrock keeps its full ID, version colon included.
+        bedrock_id = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+        assert config.canonical_model_spec(bedrock_id) == f"bedrock:{bedrock_id}"
+        # A lone colon establishes no model name.
+        assert config.canonical_model_spec(":") is None
+        assert config.canonical_model_spec("") is None
+
     def test_error_lists_the_allowed_models(self) -> None:
         """The message names what *is* permitted, not only what is not."""
         config = ModelConfig(

@@ -75,8 +75,15 @@ class TestCollectBuiltInTools:
         to read its bound tool node -- nothing is ever invoked. Enforcing
         `models.allowed` here turned `dcode tools list` into a crash and made
         `/tools` report a false reason.
+
+        The subagent's own model is still resolved by the SDK during assembly,
+        which is pre-existing behavior and needs a credential for the provider
+        it names. A placeholder key isolates this test to the policy question
+        rather than the environment's credentials.
         """
         from deepagents_code.model_config import ModelConfig
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test-placeholder-not-a-real-key")
 
         policy = ModelConfig(
             allowed_models=("anthropic:allowed",),

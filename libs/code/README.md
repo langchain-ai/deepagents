@@ -123,6 +123,10 @@ The rules:
   silently remove the restriction the user asked for. Fix or remove the key.
 - Matching is exact and splits only the first colon, so model identifiers may
   contain additional colons. Matching is also case-sensitive.
+- Entries must be fully qualified. A bare model name that you type at a prompt
+  is first resolved to `provider:model`, the same as at construction, so
+  `gpt-5.6-terra` matches an `openai:gpt-5.6-terra` entry. A bare name whose
+  provider dcode cannot infer never matches.
 - Write a Bedrock model as `bedrock:<id>`. A bare Bedrock ID is rejected,
   because its version colon would make it a specification that nothing matches.
 - The list filters model discovery and the selector. Construction-time checks

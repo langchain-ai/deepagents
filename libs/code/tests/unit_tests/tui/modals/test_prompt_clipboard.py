@@ -197,6 +197,33 @@ class TestPromptClipboardScreen:
             assert rows_list.show_vertical_scrollbar
             assert help_.region.bottom <= outer.region.bottom
 
+    async def test_short_terminal_keeps_filter_and_preview_on_screen(self) -> None:
+        """A terminal shorter than the modal must not bury the controls.
+
+        The modal's `height: 80%` alone can be shorter than the fixed
+        controls (filter, labels, borders/padding, wrapped help), which placed
+        the preview and key help entirely below the screen. The `min-height`
+        clamp makes Textual center the overflowing modal and clip it top and
+        bottom instead, keeping the filter on screen and clipping the preview
+        last.
+        """
+        app = _PromptClipboardApp()
+        async with app.run_test(size=(45, 10)) as pilot:
+            screen = app.open(tuple(f"prompt {index}" for index in range(30)))
+            await pilot.pause()
+            await pilot.pause()
+
+            outer = screen.query_one(Vertical)
+            filter_ = screen.query_one("#prompt-filter", Input)
+            preview = screen.query_one("#prompt-preview-scroll", VerticalScroll)
+            help_ = screen.query_one(".prompt-help", Static)
+            assert outer.region.height == 12
+            assert filter_.region.y >= 0
+            assert filter_.region.bottom <= screen.size.height
+            assert preview.region.y >= 0
+            assert preview.region.bottom <= screen.size.height
+            assert help_.region.bottom <= outer.region.bottom
+
     async def test_tab_and_shift_tab_page_selection(self) -> None:
         """Tab/Shift+Tab page through results; the filter input keeps focus."""
         app = _PromptClipboardApp()

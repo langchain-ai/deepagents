@@ -8,6 +8,13 @@ PromptClipboardScreen > Vertical {
     /* Fixed size: the modal must not grow or shrink with the selected
        prompt's preview length, so the list below takes all leftover space. */
     height: 80%;
+    /* 80% of a very short terminal can be shorter than the fixed controls
+       (title, filter, borders, padding, wrapped help), pushing the preview
+       and help below the screen. Clamp to roughly the fixed-controls height;
+       Textual centers the overflowing modal and clips it top and bottom, so
+       the filter stays on screen and the preview is clipped last, while the
+       `min-height: 0` panes still absorb leftover space above this floor. */
+    min-height: 12;
     background: $surface;
     border: solid $primary;
     padding: 1 2;

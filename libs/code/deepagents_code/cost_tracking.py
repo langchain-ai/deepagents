@@ -492,9 +492,8 @@ def _start_price_updater() -> None:
 
     Does nothing when the `update.prices_auto_update` option resolves to
     disabled or `DEEPAGENTS_CODE_OFFLINE` is truthy. Either opt-out still marks
-    the start as attempted: config is read once at process start in practice,
-    so a later flip would not take effect anyway, and re-resolving on every
-    priced request would re-read `config.toml` each time.
+    the start as attempted: the updater thread is started once and never
+    stopped, so a later flip would not take effect anyway.
     """
     global _PRICE_UPDATER, _PRICE_UPDATER_ATTEMPTED  # noqa: PLW0603
     if is_env_truthy(OFFLINE):

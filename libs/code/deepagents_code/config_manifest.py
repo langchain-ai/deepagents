@@ -143,16 +143,16 @@ class OptionKind(Enum):
 
     All kinds flow through the ranked resolver. The scalar kinds (`BOOL`,
     `BOOL_MODE_DEFAULT`, `BOOL_PRESENCE`, `INT`, `NON_NEGATIVE_INT`, `FLOAT`,
-    `STR`, and `NON_EMPTY_STR`) are coerced by the source providers (with
-    `_coerce_toml` kept as the public validation seam for `option_accepts_toml`).
+    `STR`, and `NON_EMPTY_STR`) are coerced by the source providers;
+    `option_accepts_toml` is the public seam over that same coercion.
     `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
     bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
     resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
     allowlists — do not compress into a generic coercion). `THEME_DELEGATE` is
-    resolved by a dedicated provider branch and never reaches the
-    inline coercers. `STRUCTURED` marks user-defined tables that the scalar
-    resolver only passes through for display.
+    resolved per layer by `_resolve_theme`, outside the ranked resolver, and
+    never reaches the inline coercers. `STRUCTURED` marks user-defined tables
+    that the scalar resolver only passes through for display.
     """
 
     BOOL = "bool"
@@ -573,12 +573,21 @@ def _resolve_option(
 ) -> ResolvedValue[object]:
     """Resolve one option through the ranked durable-mask engine.
 
-    Shared by the manifest's remaining bespoke readers (bounded resolvers and
-    the display-preference loader), which take explicit parsed tables from
-    callers that snapshot one generation themselves. Each table pairs with a
-    default `OK` status, matching the health these readers historically
-    reported; callers with real health metadata use `resolver_from_snapshots`
-    directly.
+    Shared by the manifest's remaining bespoke readers: the bounded resolvers
+    and the display-preference loader. These readers deliberately resolve
+    against a freshly parsed generation -- their own `load_config_toml()` call,
+    or a table the caller supplies -- rather than the shared process snapshot
+    behind `get_config_resolver()`. Use that shared resolver instead unless a
+    reader needs the file as it is on disk right now.
+
+    Each table pairs with a default `OK` status, matching the health these
+    readers historically reported. `TomlSnapshot` rejects a non-`OK` status
+    carrying a non-empty table, because an unhealthy source is one every reader
+    must treat as declaring nothing; callers with real health metadata pass
+    both halves to `resolver_from_snapshots` directly.
+
+    Emits no diagnostics. Pair the result with `_emit_ranked_diagnostics` so a
+    provider rejection before the effective value is still reported.
 
     Args:
         option: Manifest option to resolve.
@@ -616,7 +625,7 @@ def _ranked_source(resolved: ResolvedValue[object]) -> str:
     """Render rank-keyed provenance through provider display metadata.
 
     Returns:
-        The `(value, source)`-style compatibility source label.
+        The user-facing source label, joining every selected tier.
     """
     return " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
 
@@ -628,8 +637,8 @@ def _emit_ranked_diagnostics(
 
     Providers retain rejection reasons without logging so resolution can be
     inspected by diagnostics and startup policy without duplicating warnings.
-    Callers invoke this with the resolved value to preserve the historical
-    per-call logging behavior of the retired `resolve_scalar` wrapper.
+    Callers pass the resolved value to get one warning per resolution, which is
+    what a reader that parsed the file itself would have logged.
 
     Two rejections are file-wide rather than per-option and are therefore
     emitted once per process: a scalar that shadows a whole table, and a source

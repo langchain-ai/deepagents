@@ -269,10 +269,11 @@ def _resume_term_program() -> str | None:
     """Return the `TERM_PROGRAM` value to echo in the resume hint, if any.
 
     Gated on `features.resume_term_program` (off unless the user opts in, on by
-    default in debug or experimental mode), so this reads `config.toml` from
-    disk. The value comes from `LAUNCH_TERM_PROGRAM` -- the snapshot `cli_main`
-    takes at process entry -- so a `TERM_PROGRAM` that only appears later, from
-    a project or global `.env` file, never reaches the hint.
+    default in debug or experimental mode), so this resolves the option through
+    the shared config resolver. The value comes from `LAUNCH_TERM_PROGRAM` --
+    the snapshot `cli_main` takes at process entry -- so a `TERM_PROGRAM` that
+    only appears later, from a project or global `.env` file, never reaches the
+    hint.
 
     Returns:
         The printable launch-time value when the feature is enabled, else `None`.

@@ -2890,7 +2890,7 @@ def test_resolve_float_env_coerces_and_falls_back(monkeypatch, caplog) -> None:
     """The FLOAT env branch coerces a number and logs+falls back on garbage.
 
     Interpreter floats are TOML-only, so — like the INT branch — a synthetic
-    env-backed option exercises both arms of `_coerce_env`'s FLOAT path.
+    env-backed option exercises both arms of the FLOAT env-coercion path.
     """
     import logging
 
@@ -2935,7 +2935,7 @@ def test_resolve_shell_list_env_happy_and_invalid(monkeypatch, caplog) -> None:
     assert any("Ignoring invalid" in r.getMessage() for r in caplog.records)
 
 
-def test_coerce_env_delegate_returns_invalid_not_raw() -> None:
+def test_environment_coercion_delegate_returns_invalid_not_raw() -> None:
     """A delegate kind reaching env coercion returns `Invalid`, never raw.
 
     PTC/STRUCTURED options declare no env var, so this branch is unreachable in

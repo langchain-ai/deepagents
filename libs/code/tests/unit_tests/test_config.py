@@ -1598,6 +1598,12 @@ class TestRetriesConfig:
             "max_retries": 0
         }
 
+    def test_provider_retry_disable_kwargs_uses_google_attempt_semantics(self) -> None:
+        """Google needs one total attempt because zero restores its default."""
+        assert _provider_retry_disable_kwargs(None, "google_genai", {}) == {
+            "max_retries": 1
+        }
+
     def test_provider_retry_disable_kwargs_uses_configured_param(self) -> None:
         """Custom providers can name the SDK retry constructor kwarg."""
         section = {"custom_provider": {"param": "retries"}}

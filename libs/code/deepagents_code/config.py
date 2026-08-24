@@ -2518,10 +2518,13 @@ def _provider_retry_disable_kwargs(
         model_kwargs: Constructor kwargs after all user overrides are merged.
 
     Returns:
-        A one-item mapping from retry parameter to zero when the provider's
+        A one-item mapping that disables provider retries when the provider's
         retry control is known, otherwise an empty mapping.
     """
-    from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
+    from deepagents_code.model_config import (
+        RETRY_DISABLE_VALUE_BY_PROVIDER,
+        RETRY_PARAM_BY_PROVIDER,
+    )
 
     retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
     if retry_param is None and section:
@@ -2547,7 +2550,7 @@ def _provider_retry_disable_kwargs(
             provider,
         )
         return {}
-    return {retry_param: 0}
+    return {retry_param: RETRY_DISABLE_VALUE_BY_PROVIDER.get(provider, 0)}
 
 
 CLI_MAX_RETRIES_KEY = "__deepagents_cli_max_retries__"

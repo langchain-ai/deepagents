@@ -891,9 +891,17 @@ RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
 """Constructor kwargs used to disable provider-owned retry loops.
 
 dcode's model-node middleware owns the retry budget, so integrations with a
-known retry-count parameter receive zero at construction time. Providers absent
-from this mapping either do not expose an integer retry-count parameter or must
-declare one with `[retries.<provider>].param` in `config.toml`.
+known retry-count parameter receive their provider-specific disable value at
+construction time. Providers absent from this mapping either do not expose an
+integer retry-count parameter or must declare one with
+`[retries.<provider>].param` in `config.toml`.
+"""
+
+RETRY_DISABLE_VALUE_BY_PROVIDER: dict[str, int] = {"google_genai": 1}
+"""Non-zero provider-specific values that disable SDK retries.
+
+The Google SDK interprets zero attempts as "use the default"; one means the
+initial request only. Other registered providers disable retries with zero.
 """
 
 LANGSMITH_SERVICE = "langsmith"

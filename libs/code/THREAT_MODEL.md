@@ -87,8 +87,8 @@
 │                            │                                         │
 │                 ┌──────────┴───────────┐                             │
 │                 ▼                      ▼                             │
-│       C18: Offload HTTP Boundary  C3: Agent Engine                  │
-│       (custom route + operation)  (server_graph.py)                 │
+│       C18: Offload HTTP Boundary  C3: Agent Engine                   │
+│       (custom route + operation)  (server_graph.py)                  │
 │                 │                      │                             │
 │                 └──────────┬───────────┘                             │
 │                            │                                         │
@@ -147,7 +147,7 @@
 | C15 | LocalContext Middleware      | Runs a bash detection script via backend; injects git/project/env context into system prompt each turn              | framework-controlled | Yes⁶     | `local_context.LocalContextMiddleware.before_agent`, `local_context.build_detect_script`          |
 | C16 | Custom Subagent Loader      | Reads `{dir}/{name}/AGENTS.md` YAML frontmatter from `.deepagents/agents/` and project `.agents/` directories      | user-controlled      | No       | `subagents.list_subagents`, `subagents._parse_subagent_file`                                      |
 | C17 | Model Config Loader         | Resolves model provider, supports `class_path` for arbitrary `BaseChatModel` instantiation via `importlib`          | user-controlled      | N/A      | `config.create_model`, `config._create_model_from_class`, `model_config.ModelConfig.load`         |
-| C18 | Server Offload Boundary     | Custom HTTP route registered with LangGraph's route-auth layer; reads thread state, runs the agent's shared compaction/hooks/backend, and commits a state-only result plus cost | framework-controlled | Yes for built-in graph⁷ | `offload_api.offload`, `offload_api._execute_offload`, `offload_middleware.OffloadOperation.execute` |
+| C18 | Server Offload Boundary     | Custom HTTP route registered with LangGraph's route-auth layer (inert under the shipped `noop` auth, which relies on the loopback bind); reads thread state, runs the agent's shared compaction/hooks/backend, and commits a state-only result plus cost | framework-controlled | Yes for built-in graph⁷ | `offload_api.offload`, `offload_api._execute_offload`, `offload_middleware.OffloadOperation.execute` |
 | C19 | Goal/Rubric State Notice    | Projects persisted goal objectives, active criteria, and status notes into synthetic messages for the primary model | framework-controlled | Yes      | `goal_state_notice.build_goal_state_notice`, `goal_tools.GoalToolsMiddleware`                     |
 
 **Notes:**
@@ -168,7 +168,7 @@
 | DC1 | API Keys / Credentials | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `TAVILY_API_KEY`, `LANGSMITH_API_KEY`, `LANGGRAPH_API_KEY` | Critical | Process environment only; never written to disk by CLI code | N/A (in-memory) | Process lifetime | All — breach trigger |
 | DC2 | Conversation Messages  | User prompts, LLM responses, tool args/results, goal objectives, rubric criteria, and status notes | High | SQLite (`~/.deepagents/*.db`) via LangGraph checkpointer | No (local file, unencrypted) | Unbounded (session files persist) | GDPR if personal data is discussed |
 | DC3 | System Prompt Content  | `DA_SERVER_SYSTEM_PROMPT` env var; custom AGENTS.md contents | Medium | Process environment (transient); `~/.deepagents/{agent}/AGENTS.md` on disk | No | Config lifetime | None direct |
-| DC5 | Offloaded Conversation History | Summarized + raw conversation messages written to sandbox backend | High | Sandbox filesystem at `/conversation_history/{thread_id}.md` | Depends on sandbox provider | Sandbox session lifetime | GDPR if personal data is discussed |
+| DC5 | Offloaded Conversation History | Summarized + raw conversation messages written to sandbox backend | High | Sandbox filesystem at `/conversation_history/session_{uuid4hex}.md` | Depends on sandbox provider | Sandbox session lifetime | GDPR if personal data is discussed |
 
 ### Data Classification Details
 
@@ -194,14 +194,18 @@
 
 #### DC5: Offloaded Conversation History
 
-- **Fields**: Timestamped, formatted conversation messages written by `offload.offload_messages_to_backend`.
-- **Producers**: Three paths write this data — automatic trigger-based compaction, the model-initiated `compact_conversation` tool (HITL-gated, see TB2), and the explicit `/offload` command. The last is available only through C18 on a built-in server, which reads checkpoint state and writes the archive without entering the tool-approval path. This server-owned `/offload` path wraps the backend in `offload_middleware._ArchiveReadGuard`, which fails closed rather than truncating existing history when its prerequisite read fails; the automatic and model-initiated paths write through the raw backend on the SDK's own code path. The guard is applied per write site rather than by the backend's type, so a new write site does not inherit it — see the `_guarded_backend()` call site.
+- **Fields**: Timestamped, formatted conversation messages written by the SDK's `SummarizationMiddleware._aoffload_to_backend`, reached through `offload_middleware.CLICompactionMiddleware`.
+- **Producers**: Three paths write this data.
+  - Automatic trigger-based compaction.
+  - The model-initiated `compact_conversation` tool (HITL-gated, see TB2).
+  - The explicit `/offload` command. This one is available only through C18 on a built-in server, which reads checkpoint state and writes the archive without entering the tool-approval path.
+  - **Read guard**: The server-owned `/offload` path wraps the backend in `offload_middleware._ArchiveReadGuard`, which fails closed rather than truncating existing history when its prerequisite read fails. The automatic and model-initiated paths write through the raw backend on the SDK's own code path. The guard is applied per write site rather than by the backend's type, so a new write site does not inherit it — see the `_guarded_backend()` call site.
 - **Storage**: Sandbox backend filesystem at path `/conversation_history/session_{uuid4hex}.md`. The leaf is the *summarization session* id (`SummarizationMiddleware._get_history_path`), not the thread id: it is minted per summarization session and persisted under `_summarization_session_id` so later compactions append to the same file. One thread can therefore own several archives.
 - **Access**: Accessible within the sandbox session; depends on provider access controls.
 - **Encryption**: Depends on sandbox provider storage backend.
 - **Retention**: Sandbox session lifetime (destroyed when sandbox is deleted).
 - **Logging exposure**: Contains full message history including tool results.
-- **Gaps**: Thread ID is UUID7 (no path injection risk), but offloaded content is unstructured markdown containing raw conversation data.
+- **Gaps**: The filename is a framework-minted `session_<uuid4 hex>` with no user-controlled component (no path injection risk), but offloaded content is unstructured markdown containing raw conversation data.
 
 ---
 
@@ -237,7 +241,12 @@
 - **Outside**: Once the user clicks "approve" (interactive) or a command passes the allow-list check (non-interactive), the tool executes with no further framework-level gating.
 - **Crossing mechanism**: LangGraph HITL interrupt routed through `RemoteAgent` SSE stream.
 - **Key note**: `auto_approve` mode bypasses all HITL approval prompts while still displaying Unicode/URL warnings.
-- **Key note**: This boundary gates the *model-initiated* `compact_conversation` tool. The explicit `/offload` command does *not* cross it: C18 invokes the agent's shared compaction service directly, with no tool node or synthetic message, and the slash command is the authorization. The operation still dispatches `PreCompact` and `PreToolUse` against an in-memory forced call. Hooks may veto or interrupt, and the TUI returns opaque hook replies over the operation protocol. A `PreToolUse` `ask` decision cannot prompt on this path — the operation transport carries hook invocations, not HITL review requests, and `interrupt()` requires a Pregel task — so `_ask_permission_via_hitl` converts it into a deny carrying that reason. `ask` is therefore fail-closed here, not an approval prompt. The archive write reaches `backend.awrite()` without traversing tool approval. See DF25 and DF26. Local in-process `Pregel` agents, including ACP mode, do not support `/offload`; custom and older servers without C18 fail at the HTTP boundary rather than entering a client-driven tool path.
+- **Key note**: This boundary gates the *model-initiated* `compact_conversation` tool.
+  - **Authorization**: The explicit `/offload` command does *not* cross it. C18 invokes the agent's shared compaction service directly, with no tool node and no synthetic message. The slash command is the authorization.
+  - **Hook events**: The operation still dispatches `PreCompact` and `PreToolUse` against an in-memory forced call. Hooks may veto or interrupt. The TUI returns opaque hook replies over the operation protocol.
+  - **`ask` is fail-closed**: A `PreToolUse` `ask` decision cannot prompt on this path. The operation transport carries hook invocations, not HITL review requests, and `interrupt()` requires a Pregel task. `_ask_permission_via_hitl` therefore converts `ask` into a deny that carries the reason.
+  - **Archive write**: It reaches `backend.awrite()` without traversing tool approval. See DF25 and DF26.
+  - **Unsupported deployments**: Local in-process `Pregel` agents, including ACP mode, do not support `/offload`. Custom and older servers without C18 fail at the HTTP boundary rather than entering a client-driven tool path.
 - **Key note**: Only the *pre* hook events fire for `/offload` through C18. `PostToolUse`/`PostToolUseFailure`, which `ServerHooksMiddleware` records in `awrap_tool_call` and dispatches from `_before_model` via `_maybe_post_tool_use` on the next model turn, do not fire: there is no tool node to record the pending entry, and no following model turn to drain it. Likewise an allowing `PreToolUse` hook's `additionalContext` is discarded (logged, not injected): there is no tool result to carry it.
 
 #### TB3: Tool Result → LLM Context
@@ -269,7 +278,12 @@
 - **Inside**: Server bound to `127.0.0.1` by default; `client/launch/server.py:_DEFAULT_HOST = "127.0.0.1"`. `RemoteAgent` only connects to the URL returned by `ServerProcess.url`. Server is ephemeral — started at session start, stopped at session end. Binds a free ephemeral port by default (`client/launch/server.py:_EPHEMERAL_PORT`); an explicit port is honored but still falls back to a free port if occupied.
 - **Outside**: `LANGGRAPH_AUTH_TYPE=noop` disables all LangGraph server authentication. Any process on localhost that discovers the port can submit requests, read thread state, or inject messages.
 - **Crossing mechanism**: HTTP POST/GET to `http://127.0.0.1:{port}` using `langgraph.pregel.remote.RemoteGraph` for graph operations and the same configured HTTP client for C18.
-- **Key note**: The default built-in `graph_ref` registers one `agent` graph plus the C18 custom HTTP app. A custom `graph_ref` registers only its graph and does not support `/offload`. C18 accepts operation identity, model/hook context, and opaque hook replies; it does not accept messages, checkpoint identifiers, graph names, or state updates. The server reads and hydrates checkpoint messages, rejects active/pending/changed threads, and refuses any operation update containing the `messages` channel. Its final thread-state update is state-only and targets the latest checkpoint, so it cannot branch from a stale checkpoint and hide concurrently appended messages. `offload_api._execute_offload` and `client.remote_client.RemoteAgent.aoffload` enforce these constraints.
+- **Key note**: Graph registration and the accepted payload are both narrowed here.
+  - **Registration**: The default built-in `graph_ref` registers one `agent` graph plus the C18 custom HTTP app. A custom `graph_ref` registers only its graph and does not support `/offload`.
+  - **Accepted**: Operation identity, model/hook context, and opaque hook replies.
+  - **Rejected**: Messages, checkpoint identifiers, graph names, and state updates. The server refuses any operation update whose channels fall outside `OffloadStateUpdate`.
+  - **Checkpoint invariant**: The server reads and hydrates checkpoint messages itself and rejects active, pending, or changed threads. Its final thread-state update is state-only and targets the latest checkpoint, so it cannot branch from a stale checkpoint and hide concurrently appended messages.
+  - **Enforced by**: `offload_api._execute_offload` and `client.remote_client.RemoteAgent.aoffload`.
 
 #### TB11: Config File → Code Execution
 
@@ -549,7 +563,7 @@
 | Custom subagents (FS) | DF21                  | T8            | `yaml.safe_load`; HITL on `task` tool                                      | User           | Subagent body text not content-filtered                                                      |
 | Async subagent config | DF22                  | None direct   | TOML parse; type validation in `load_async_subagents`                      | User           | URL and headers for remote subagents are user-controlled; no URL validation                 |
 | MCP subprocess env    | DF24                  | T10           | Dict type check only (`_validate_server_config`)                           | User           | No key/value filtering; arbitrary env vars forwarded to subprocess                           |
-| Offloaded history     | DF25                  | None direct   | Thread ID is UUID7 (no path injection); backend handles storage            | Shared         | Raw conversation content written to sandbox filesystem                                       |
+| Offloaded history     | DF25                  | None direct   | Filename is a framework-minted session id (no path injection); backend handles storage | Shared         | Raw conversation content written to sandbox filesystem                                       |
 | Goal/rubric state     | DF28, DF29            | T15, T16, T17 | Lifecycle projection; notice fingerprinting; raw-character validation (8,000 objective; 12,000 rubric and objective-plus-criteria; 4,000 note/blocker; 16,000 notice); boundary-tag escaping | Shared | Untrusted instructions remain model-readable; file contents are automatically transmitted; no post-escape, byte, or token budget or provider-transmission warning |
 
 ---
@@ -598,7 +612,7 @@ Threats that appear valid in isolation but fall outside project responsibility b
 | D1 | Unsafe msgpack deserialization in langgraph checkpoint loading | Verified fix status — confirmed fixed and closed upstream. | Users on current `langgraph` versions are not exposed. | Upstream langgraph has patched the unsafe msgpack deserialization. No longer an active risk. |
 | D2 | Unicode URL homoglyph as project vulnerability | Traced `check_url_safety` + `strip_dangerous_unicode` + `format_warning_detail` → approval dialog display | `unicode_security.check_url_safety`, `agent._format_fetch_url_description` | Warning system is the intended control — the project correctly surfaces the risk to the user in the approval dialog. Not a project vulnerability; classified as mitigated by design (UI warning). |
 | D3 | SSRF via `http_request` / `fetch_url` to internal services | Traced `tools.http_request` and `tools.fetch_url` — no URL scheme or host blocklist. However, both tools require HITL approval in interactive mode. In non-interactive mode, only shell commands are auto-approved via the allow-list; HTTP tools still go through the HITL interrupt gate. | `tools.http_request`, `tools.fetch_url`, `agent._add_interrupt_on` | Not a project vulnerability in isolation — the HITL gate is the intended control for all HTTP tool calls. The user sees the full URL before approving. SSRF is only reachable if the user approves the request (interactive) or enables auto-approve (explicit opt-in). Classified as out-of-scope for the same reason as prompt injection in interactive mode. |
-| D4 | Offload path injection via thread_id | Checked `sessions.generate_thread_id` — returns UUID7 string (alphanumeric + hyphens only, no path separators). | `sessions.generate_thread_id`, `offload.offload_messages_to_backend` | Thread IDs are UUID7 strings generated by the framework. No user-controlled path components reach the file path. Not exploitable. |
+| D4 | Offload path injection via archive filename | Checked `SummarizationMiddleware._get_session_id`/`_get_history_path` — the leaf is `session_` plus a `uuid4().hex`. | `SummarizationMiddleware._get_session_id`, `SummarizationMiddleware._get_history_path` | The archive filename is minted by the framework from a UUID4 hex, so no user-controlled path component reaches the file path. Not exploitable. |
 
 ---
 

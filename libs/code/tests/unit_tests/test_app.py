@@ -17625,6 +17625,38 @@ class TestAppArgumentHints:
 class TestInterruptApprovalPriority:
     """Tests for escape interrupt priority when HITL approval is pending."""
 
+    async def test_escape_rejects_approval_arriving_during_prompt_search(
+        self,
+    ) -> None:
+        """A focused approval should retain Escape after search was opened."""
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            chat_input.open_prompt_search()
+            await pilot.pause()
+
+            menu = ApprovalMenu({"name": "execute", "args": {"command": "pwd"}})
+            future: asyncio.Future[dict[str, str]] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+            app._pending_approval_widget = menu
+            messages = app.query_one("#messages", Container)
+            await messages.mount(menu)
+            menu.focus()
+            await pilot.pause()
+            assert app.focused is menu
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert future.result() == {"type": "reject"}
+            assert chat_input._prompt_search_active is True
+
     async def test_escape_rejects_approval_before_canceling_worker(self) -> None:
         """When both HITL approval and worker are active, reject approval first."""
         app = DeepAgentsApp()

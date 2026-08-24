@@ -23259,9 +23259,9 @@ class DeepAgentsApp(App):
             that binding is stepped aside under either screen.
         - `quit_or_interrupt` (`ctrl+c`): the prompt clipboard owns this chord for
             copying the selected prompt rather than the focused search text.
-        - `interrupt` (`escape`): while the composer's inline prompt search is
-            open, escape belongs to the query input's abandon-search binding,
-            not the global interrupt cascade.
+        - `interrupt` (`escape`): while the prompt-search query has focus,
+            escape belongs to its abandon-search binding, not the global
+            interrupt cascade. A newly focused inline approval keeps priority.
         - `toggle_auto_approve` (`shift+tab`): while the inline prompt search
             is open, shift+tab pages its results (the same step-aside the
             prompt clipboard modal and debug console already get).
@@ -23298,10 +23298,14 @@ class DeepAgentsApp(App):
             # The inline prompt search pages its results with shift+tab.
             if self._inline_prompt_search_active():
                 return False
-        # The inline prompt search owns escape (abandon + restore draft) while
-        # open; the focused query input's own binding handles it.
+        # The prompt-search query owns escape only while it has focus. An inline
+        # approval that arrived after search opened must keep the global binding
+        # enabled so `action_interrupt` can reject it.
         if action == "interrupt" and self._inline_prompt_search_active():
-            return False
+            from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+            if isinstance(self.focused, PromptSearchInput):
+                return False
         if action == "quit_or_interrupt":
             from deepagents_code.tui.modals.prompt_clipboard import (
                 PromptClipboardScreen,

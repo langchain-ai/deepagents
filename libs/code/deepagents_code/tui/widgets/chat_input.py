@@ -118,12 +118,16 @@ leave the box's corner glyphs visible.
 """
 
 _CHAT_INPUT_BOX_MAX_HEIGHT = 25
-"""Rows the bordered input box may occupy, including its border and any popup.
+"""Rows the bordered input box may occupy for its own content and border.
 
-`ChatInputBox._apply_manual_height` subtracts the gutter and the completion
-popup from this to derive the composer budget, so it is load-bearing arithmetic
-rather than a cosmetic cap. Interpolated into `ChatInput.DEFAULT_CSS` as the
-`#input-box` `max-height`.
+`ChatInputBox._apply_manual_height` subtracts the gutter and every inline panel
+row (completion popup and prompt search) from this to derive the composer
+budget, so it is load-bearing arithmetic rather than a cosmetic cap.
+
+This is the composer's budget, not the box's rendered ceiling: the `#input-box`
+`max-height` in `ChatInput.DEFAULT_CSS` interpolates
+`_CHAT_INPUT_BOX_MAX_HEIGHT + PROMPT_SEARCH_PANEL_ROWS`, so a fully expanded
+prompt search panel fits inside the border instead of pushing the draft out.
 """
 
 _CHAT_INPUT_MANUAL_MAX_HEIGHT = 20
@@ -1288,7 +1292,8 @@ class ChatTextArea(PasteBurstTextArea):
             self.post_message(self.Typing())
 
         # While the inline prompt search is open, printable keys feed the
-        # panel's query (handled in `ChatInput.on_key`), so they must never be
+        # panel's query -- the focused `PromptSearchInput` consumes them and
+        # `ChatInput.on_input_changed` re-filters -- so they must never be
         # mistaken for paste-burst replay.
         prompt_search_active = (
             self._chat_input_owner is not None
@@ -3908,11 +3913,17 @@ class ChatInput(Vertical):
         no frames.
 
         Args:
-            event: The key event bubbling up from the text area.
+            event: The key event, bubbling from either the search query input
+                (the usual case, since `open_prompt_search` focuses it) or the
+                text area when focus never moved.
 
         Returns:
-            Whether the key was consumed. A `False` return lets the event
-            continue to completion/default handling.
+            `True` when the panel consumed the key and stopped it here.
+                `False` means the panel does not own the key and the caller
+                decides: `ChatInput.on_key` lets it bubble to the query
+                input's own bindings, while `ChatTextArea._on_key` suppresses
+                it so an unrecognized key cannot edit the frozen draft behind
+                the panel.
         """
         if event.key == "escape":
             self._close_prompt_search(restore_draft=True)

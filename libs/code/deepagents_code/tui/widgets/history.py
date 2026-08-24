@@ -112,8 +112,11 @@ class HistoryManager:
         Side effects: re-reads the file into the in-memory entries and resets
         up-arrow navigation.
 
-        The dedup runs over the whole file rather than the bounded navigation
-        window, so this can surface prompts older than up-arrow reaches.
+        When the read succeeds the dedup runs over the persisted file rather
+        than the bounded navigation window, so this can surface prompts older
+        than up-arrow reaches. (The file is itself bounded: `_compact_history`
+        truncates it at twice `max_entries`.) On a read failure the fallback is
+        the navigation window, so that reach is lost along with it.
 
         Returns:
             A bounded immutable prompt snapshot.

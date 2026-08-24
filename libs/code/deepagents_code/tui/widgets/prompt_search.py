@@ -73,8 +73,10 @@ PROMPT_SEARCH_PANEL_ROWS = 1 + PROMPT_SEARCH_MAX_ROWS + PROMPT_SEARCH_MAX_HINT_R
 
 This is the ceiling on what `show()` can report, so it is what `ChatInputBox`
 reserves when fitting a manual composer height and what the panel's own
-`max-height` clamps to. `show()` clamps its hint estimate to
-`PROMPT_SEARCH_MAX_HINT_ROWS` so the two can never disagree.
+`max-height` clamps to. `_hint_rows()` clamps the hint estimate to
+`PROMPT_SEARCH_MAX_HINT_ROWS` so the two can never disagree -- the clamp lives
+there, not in `show()`, because `on_resize` re-measures through the same helper
+without going through `show()`.
 """
 
 
@@ -331,7 +333,11 @@ class PromptSearchPanel(Vertical):
     def update_state(
         self, query: str, titles: list[str], selected_index: int, empty: str | None
     ) -> None:
-        """Show the panel for a new query/result set.
+        """Queue a rebuild that shows the panel for a new query/result set.
+
+        The panel is shown by `_rebuild_options` via `call_next`, not here, and
+        not at all if that rebuild hits its recovery path -- which hides and
+        abandons the search instead.
 
         Args:
             query: Current filter text, rendered on the query line.

@@ -21769,7 +21769,10 @@ class DeepAgentsApp(App):
             return
 
         # Escalating from the inline panel carries the typed query into the
-        # modal's filter and leaves the draft as the user had it.
+        # modal's filter and leaves the draft as the user had it. The
+        # autocomplete case reaches "modal" without a panel ever opening, so
+        # `escalate_prompt_search` returns "" there and the filter starts
+        # empty.
         self._open_prompt_clipboard_modal(chat_input.escalate_prompt_search())
 
     def _open_prompt_clipboard_modal(self, initial_query: str = "") -> None:

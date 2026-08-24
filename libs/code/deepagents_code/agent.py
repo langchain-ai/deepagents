@@ -2693,14 +2693,6 @@ def create_cli_agent(
         if gated_names := gated_mcp_tool_names(mcp_tools):
             agent_middleware.append(HeadlessMCPGuardMiddleware(gated_names))
 
-    # Model-node retry: wraps only the model call so transient connection
-    # failures are retried without replaying completed tool calls. Keep it in
-    # the stack when the startup budget is zero because a runtime `/model`
-    # switch may select a provider with a non-zero request-time budget.
-    from deepagents_code.model_retry import CodeModelRetryMiddleware
-
-    agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
-
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
     # is written by `ConfigurableModelMiddleware` from the actual completed model
@@ -3107,6 +3099,15 @@ def create_cli_agent(
         )
 
     agent_middleware.append(compaction_middleware)
+
+    # Model-node retry sits inside side-effecting automatic compaction so a
+    # failed provider attempt repeats only the final model handler, not summary
+    # generation or the archive append. Keep it in the stack when the startup
+    # budget is zero because a runtime `/model` switch may select a provider
+    # with a non-zero request-time budget.
+    from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+    agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
 
     grader_context_tools = _normalize_rubric_grader_context_tools(
         rubric_grader_tools or ()

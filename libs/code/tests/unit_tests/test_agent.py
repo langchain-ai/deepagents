@@ -5018,6 +5018,22 @@ class TestCreateCliAgentInterpreterWiring:
             compaction_middleware
         )
 
+    def test_model_retry_wraps_only_inside_compaction(self, tmp_path: Path) -> None:
+        """Automatic compaction must not be replayed by a model retry."""
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+        from deepagents_code.offload_middleware import CLICompactionMiddleware
+
+        middleware = self._capture_middleware(tmp_path)
+        compaction = next(
+            item for item in middleware if isinstance(item, CLICompactionMiddleware)
+        )
+        retry = next(
+            item for item in middleware if isinstance(item, CodeModelRetryMiddleware)
+        )
+
+        # LangChain composes the first middleware as the outermost wrapper.
+        assert middleware.index(compaction) < middleware.index(retry)
+
     def test_auto_classifier_model_argument_reaches_middleware(
         self, tmp_path: Path
     ) -> None:

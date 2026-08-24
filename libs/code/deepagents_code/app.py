@@ -339,9 +339,12 @@ offering a way back to. `USER` alone is not enough: local-only flows
 (`/update`, `!shell`, most slash commands) mount a `UserMessage` widget
 without ever invoking the server.
 
-Membership in this set is necessary but not sufficient — non-incognito `!`
-shell output renders through `AssistantMessage`, so `_store_has_server_output`
-also excludes rows flagged `assistant_local_only`.
+Membership in this set is necessary but not sufficient — both `!` and `!!`
+shell output render through `AssistantMessage`, so `_store_has_server_output`
+also excludes rows flagged `assistant_local_only`. That flag is now the *only*
+thing keeping a shell-only thread from reading as agent work: `!!` output used
+to be an `APP` row, excluded by type, so dropping the flag check would no
+longer be a no-op.
 
 This is deliberately *stricter* than "has a resumable checkpoint row".
 Non-conversational commands (`/goal`, `/rubric set`) persist thread state
@@ -10163,9 +10166,10 @@ class DeepAgentsApp(App):
         """Execute the `--startup-cmd` and render its output in the transcript.
 
         Uses the same worker-backed subprocess path as the interactive shell
-        prefix, with an app-style header (since the user did not type the
-        command). Startup command output is local setup output and is not
-        buffered into model context. Non-zero exit is already rendered as an
+        prefix, with an app-style header *and* app-style output (since the
+        user did not type the command) — hence `output_as_app_message=True`.
+        Startup command output is local setup output and is not buffered into
+        model context. Non-zero exit is already rendered as an
         error by `_run_shell_task` but does not abort the session.
 
         Raises:
@@ -10187,7 +10191,11 @@ class DeepAgentsApp(App):
 
         try:
             worker = self.run_worker(
-                self._run_shell_task(command, incognito=True),
+                self._run_shell_task(
+                    command,
+                    incognito=True,
+                    output_as_app_message=True,
+                ),
                 exclusive=False,
             )
         except Exception:
@@ -11725,10 +11733,13 @@ class DeepAgentsApp(App):
 
         Args:
             command: The shell command to execute.
-            incognito: Whether the command/output should remain local-only.
+            incognito: Whether to keep the command/output out of model context
+                (`!!`). Transcript rendering is identical to `!`; only the
+                displayed prefix and the buffering in `_run_shell_task`
+                differ.
         """
-        if not incognito:
-            await self._mount_message(UserMessage(f"!{command}"))
+        prefix = "!!" if incognito else "!"
+        await self._mount_message(UserMessage(f"{prefix}{command}"))
         self._shell_running = True
 
         if self._chat_input:
@@ -11739,7 +11750,13 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
-    async def _run_shell_task(self, command: str, *, incognito: bool = False) -> None:
+    async def _run_shell_task(
+        self,
+        command: str,
+        *,
+        incognito: bool = False,
+        output_as_app_message: bool = False,
+    ) -> None:
         """Run a shell command in a background worker.
 
         This mirrors `_run_agent_task`: running in a worker keeps the event
@@ -11748,11 +11765,28 @@ class DeepAgentsApp(App):
 
         Args:
             command: The shell command to execute.
-            incognito: Whether the command/output should remain local-only.
+            incognito: Whether to keep the command/output out of model context
+                (`!!`). This is the *only* thing it controls here — rendering
+                is identical either way.
+            output_as_app_message: Render output as an `AppMessage` status note
+                instead of a local-only `AssistantMessage`. Exists for
+                `--startup-cmd`, whose output is setup noise the user did not
+                type; it governs only the success-output branch, not the
+                timeout, nonzero-exit, or no-output messages. Requires
+                `incognito` — app-style output would otherwise read as local
+                setup noise while still being buffered for the model.
 
         Raises:
             CancelledError: If the command is interrupted by the user.
+            ValueError: If `output_as_app_message` is set without `incognito`.
         """
+        if output_as_app_message and not incognito:
+            msg = (
+                "output_as_app_message requires incognito=True; refusing to "
+                "buffer app-rendered shell output for the model"
+            )
+            raise ValueError(msg)
+
         refresh_started = False
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -11797,22 +11831,34 @@ class DeepAgentsApp(App):
                 output += f"\n[stderr]\n{stderr_text}"
 
             if output:
-                if incognito:
+                if output_as_app_message:
                     await self._mount_message(
                         AppMessage(f"```text\n{output}\n```", markdown=True),
                     )
                 else:
                     msg = AssistantMessage(f"```text\n{output}\n```", local_only=True)
-                    await self._mount_message(msg)
-                    await msg.write_initial_content()
+                    # `write_initial_content` queries the composed Markdown
+                    # child, so it raises `NoMatches` on a widget that never
+                    # reached the screen. `_mount_message` returns `False`
+                    # exactly then (teardown mid-command), so skip the write
+                    # rather than turning an ordinary shutdown race into a
+                    # spurious "Shell command crashed" in the log.
+                    if await self._mount_message(msg):
+                        await msg.write_initial_content()
+                    else:
+                        logger.warning(
+                            "Shell output row skipped (screen torn down); "
+                            "output was not shown",
+                        )
             else:
                 await self._mount_message(AppMessage("Command completed (no output)"))
 
             if proc.returncode and proc.returncode != 0:
                 await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
-            # Non-incognito `!` only; `!!` stays local. Buffered, not written
-            # now — see `_buffer_shell_for_model_context` for the rationale.
+            # Non-incognito `!` only; `!!` output never reaches model context.
+            # Rendering is identical for both — this is the sole difference.
+            # Buffered, not written now — see `_buffer_shell_for_model_context`.
             if not incognito:
                 self._buffer_shell_for_model_context(command, output, proc.returncode)
 
@@ -15371,7 +15417,10 @@ class DeepAgentsApp(App):
             content: str | None = None
             streaming_pending = False
             for message in reversed(self._message_store.get_all_messages()):
-                if message.type != MessageType.ASSISTANT:
+                if (
+                    message.type != MessageType.ASSISTANT
+                    or message.assistant_local_only
+                ):
                     continue
                 if not message.content.strip():
                     continue
@@ -18615,8 +18664,8 @@ class DeepAgentsApp(App):
 
         Feeds `_mount_previous_thread_hint`'s `had_agent_output` gate; see
         `_SERVER_OUTPUT_MESSAGE_TYPES` for why `USER` rows do not count.
-        `assistant_local_only` rows are excluded too: non-incognito `!` shell
-        output borrows `AssistantMessage` to render, so the row type alone
+        `assistant_local_only` rows are excluded too: both `!` and `!!` shell
+        output borrow `AssistantMessage` to render, so the row type alone
         would let a thread that only ran a shell command look like agent work.
 
         Callers must read this *before* `_clear_messages` empties the store —

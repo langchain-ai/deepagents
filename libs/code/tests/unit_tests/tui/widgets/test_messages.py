@@ -1569,7 +1569,7 @@ def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
 
 
 class TestToolCallMessageAppearance:
-    """Tool rows align their prefix glyph with the transcript edge."""
+    """Tool rows align their prefix and hover affordance with real actions."""
 
     async def test_has_flush_left_glyph_with_right_padding(self) -> None:
         """The tool prefix has no left inset while content keeps its right inset."""
@@ -1577,6 +1577,37 @@ class TestToolCallMessageAppearance:
         async with app.run_test():
             assert app.msg.styles.padding.left == 0
             assert app.msg.styles.padding.right == 1
+
+    async def test_short_execute_output_has_no_actionable_hover(self) -> None:
+        """Fully visible shell output must not advertise a dead row action."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("hi")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_not_called()
+            assert app.msg._expanded is False
+
+    async def test_expandable_execute_output_has_actionable_hover(self) -> None:
+        """Truncated shell output opts the row into hover and click expansion."""
+        output = "\n".join(f"line {index}" for index in range(10))
+        app = _tool_msg_app("execute", {"command": "printf lots"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._expanded is True
 
 
 class TestToolCallMessageOutputGutter:

@@ -57,10 +57,12 @@ def _resolve(
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
     resolved = resolver_from_snapshots(
-        TomlSnapshot(
+        managed=TomlSnapshot(
             managed, ProviderStatus("managed config", None, ProviderHealth.OK)
         ),
-        TomlSnapshot(toml_data, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+        user=TomlSnapshot(
+            toml_data, ProviderStatus("config.toml", None, ProviderHealth.OK)
+        ),
     ).get(option)
     _emit_ranked_diagnostics(option, resolved)
     return resolved.value, _ranked_source(resolved)

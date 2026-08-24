@@ -2163,11 +2163,11 @@ class TestGetLangsmithProjectName:
         def resolve() -> object:
             return (
                 resolver_from_snapshots(
-                    TomlSnapshot(
+                    managed=TomlSnapshot(
                         {},
                         ProviderStatus("managed config", None, ProviderHealth.OK),
                     ),
-                    TomlSnapshot(
+                    user=TomlSnapshot(
                         {},
                         ProviderStatus("config.toml", None, ProviderHealth.OK),
                     ),

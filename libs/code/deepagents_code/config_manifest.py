@@ -621,11 +621,11 @@ def _resolve_option(
     )
     user_data = load_config_toml() if toml_data is None else toml_data
     resolver = resolver_from_snapshots(
-        TomlSnapshot(
+        managed=TomlSnapshot(
             managed_data,
             ProviderStatus("managed config", None, ProviderHealth.OK),
         ),
-        TomlSnapshot(
+        user=TomlSnapshot(
             user_data,
             ProviderStatus("config.toml", None, ProviderHealth.OK),
         ),

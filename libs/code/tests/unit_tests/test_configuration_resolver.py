@@ -522,7 +522,7 @@ def test_real_manifest_options_merge_across_tiers() -> None:
         },
         ProviderStatus("config.toml", None, ProviderHealth.OK),
     )
-    resolved = resolver_from_snapshots(managed, user).resolve_all()
+    resolved = resolver_from_snapshots(managed=managed, user=user).resolve_all()
 
     # A REPLACE scalar is the control: the stronger rank wins outright.
     startup = resolved["startup.mode"]
@@ -781,7 +781,7 @@ def test_a_pathless_provider_does_not_read_the_working_directory(
         ProviderStatus("managed config", None, ProviderHealth.MISSING),
     )
     user = TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.MISSING))
-    resolver = resolver_from_snapshots(managed, user)
+    resolver = resolver_from_snapshots(managed=managed, user=user)
     option = get_option("startup.mode")
     assert option is not None
 

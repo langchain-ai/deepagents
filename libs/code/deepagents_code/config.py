@@ -3002,8 +3002,8 @@ class Settings:
                 ).load()
                 if user_candidate.status.usable:
                     shell_resolver = resolver_from_snapshots(
-                        managed_snapshot,
-                        user_candidate,
+                        managed=managed_snapshot,
+                        user=user_candidate,
                     )
                     user_notice = None
                 else:

@@ -273,13 +273,20 @@ class ConfigResolver:
 
 
 def resolver_from_snapshots(
+    *,
     managed: TomlSnapshot,
     user: TomlSnapshot,
-    *,
     managed_loader: Callable[[], TomlSnapshot] | None = None,
     user_loader: Callable[[], TomlSnapshot] | None = None,
 ) -> ConfigResolver:
     """Build the standard provider chain from one file-snapshot generation.
+
+    Keyword-only by design. The two snapshots share a type, so a positional
+    transposition would load the user's writable `config.toml` at
+    `MANAGED_RANK` -- user data acquiring managed precedence, which is the one
+    escalation this trust boundary exists to prevent. Nothing downstream
+    rejects it: this function never inspects `managed.status.name`, and
+    `TomlFileProvider` accepts whatever rank it is handed.
 
     Args:
         managed: Managed TOML snapshot.
@@ -390,8 +397,8 @@ def get_config_resolver(
             user_provider = TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH)
             user = user_provider.load()
             resolver = resolver_from_snapshots(
-                managed,
-                user,
+                managed=managed,
+                user=user,
                 managed_loader=_reload_enforceable_managed_snapshot,
                 user_loader=user_provider.load,
             )

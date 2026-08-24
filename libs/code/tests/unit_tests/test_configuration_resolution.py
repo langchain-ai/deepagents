@@ -49,11 +49,11 @@ def _resolve(
     source through the same compatibility label.
     """
     resolved = resolver_from_snapshots(
-        TomlSnapshot(
+        managed=TomlSnapshot(
             managed_toml_data,
             ProviderStatus("managed config", None, ProviderHealth.OK),
         ),
-        TomlSnapshot(
+        user=TomlSnapshot(
             toml_data,
             ProviderStatus("config.toml", None, ProviderHealth.OK),
         ),

@@ -533,7 +533,9 @@ def _managed_config_diagnostic() -> DiagnosticItem:
         {},
         ProviderStatus("config.toml", None, ProviderHealth.MISSING),
     )
-    status = resolver_from_snapshots(snapshot, user).provider_statuses()[MANAGED_RANK]
+    status = resolver_from_snapshots(managed=snapshot, user=user).provider_statuses()[
+        MANAGED_RANK
+    ]
     health = managed_snapshot_health(TomlSnapshot(snapshot.data, status))
     path = status.path or "(unknown)"
     suffix = status.health.value.lower()

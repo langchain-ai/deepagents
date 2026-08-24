@@ -1692,11 +1692,13 @@ def _save_ui_bool_result(
         # this option after the save?"), so resolve the freshly loaded managed
         # table against an empty user tier rather than the shared cache.
         resolved = resolver_from_snapshots(
-            TomlSnapshot(
+            managed=TomlSnapshot(
                 load_managed_config_toml(),
                 ProviderStatus("managed config", None, ProviderHealth.OK),
             ),
-            TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+            user=TomlSnapshot(
+                {}, ProviderStatus("config.toml", None, ProviderHealth.OK)
+            ),
         ).get(option)
         # A malformed managed entry is the one signal an administrator has that
         # their policy is not being applied, and this write is the moment the

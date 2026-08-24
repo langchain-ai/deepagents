@@ -606,7 +606,9 @@ def _load_user_themes(
     # deliberately excludes managed policy, and the shared process cache
     # always reads the default path.
     themes_section: Any = (
-        resolver_from_snapshots(sources.managed, sources.user).get(option).value
+        resolver_from_snapshots(managed=sources.managed, user=sources.user)
+        .get(option)
+        .value
     )
     if not isinstance(themes_section, dict) or not themes_section:
         return

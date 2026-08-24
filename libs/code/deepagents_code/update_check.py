@@ -3711,7 +3711,7 @@ def _resolve_update_setting(
     # Resolve against this exact snapshot generation: the caller reports the
     # sources' health next to the value, so both must come from the same read
     # rather than the shared process cache.
-    resolved = resolver_from_snapshots(sources.managed, sources.user).get(
+    resolved = resolver_from_snapshots(managed=sources.managed, user=sources.user).get(
         resolver_option
     )
     return sources, option, resolved

@@ -367,11 +367,11 @@ def resolve_managed_option(
     # candidate being validated before it takes force — so resolution must not
     # read the process-wide snapshots behind the shared resolver.
     return resolver_from_snapshots(
-        TomlSnapshot(
+        managed=TomlSnapshot(
             managed_data,
             status or ProviderStatus("managed config", None, ProviderHealth.OK),
         ),
-        TomlSnapshot(
+        user=TomlSnapshot(
             {},
             ProviderStatus("config.toml", None, ProviderHealth.OK),
         ),
@@ -711,7 +711,7 @@ def _managed_resolver(snapshot: TomlSnapshot) -> ConfigResolver:
         {},
         ProviderStatus("config.toml", None, ProviderHealth.MISSING),
     )
-    return resolver_from_snapshots(snapshot, user)
+    return resolver_from_snapshots(managed=snapshot, user=user)
 
 
 def managed_config_status(*, refresh: bool = False) -> ProviderStatus:

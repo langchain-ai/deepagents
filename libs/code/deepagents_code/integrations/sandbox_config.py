@@ -175,7 +175,7 @@ class SandboxConfig:
         # Resolve against the supplied snapshots: a non-default `config_path`
         # deliberately excludes managed policy, and the shared process cache
         # always reads the default path.
-        resolver = resolver_from_snapshots(sources.managed, sources.user)
+        resolver = resolver_from_snapshots(managed=sources.managed, user=sources.user)
         default = resolver.get(default_option).value
         providers_resolved = resolver.get(providers_option)
         providers = providers_resolved.value

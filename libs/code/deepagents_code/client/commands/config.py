@@ -324,11 +324,11 @@ def _resolve(
     # against those exact tables, so this builds an ad-hoc resolver from the
     # supplied snapshots rather than reading the shared process cache.
     resolved = resolver_from_snapshots(
-        TomlSnapshot(
+        managed=TomlSnapshot(
             managed_toml_data,
             ProviderStatus("managed config", None, ProviderHealth.OK),
         ),
-        TomlSnapshot(
+        user=TomlSnapshot(
             toml_data,
             ProviderStatus("config.toml", None, ProviderHealth.OK),
         ),
@@ -512,11 +512,11 @@ def _option_provenance(
     # reported, so it resolves against the caller's snapshots rather than the
     # shared process cache.
     resolved = resolver_from_snapshots(
-        TomlSnapshot(
+        managed=TomlSnapshot(
             managed_toml_data or {},
             ProviderStatus("managed config", None, ProviderHealth.OK),
         ),
-        TomlSnapshot(
+        user=TomlSnapshot(
             toml_data or {},
             ProviderStatus("config.toml", None, ProviderHealth.OK),
         ),

@@ -5,7 +5,7 @@ import logging
 import sys
 import threading
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, suppress
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -1735,6 +1735,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["cohere"] == "COHERE_API_KEY"
         assert PROVIDER_API_KEY_ENV["deepseek"] == "DEEPSEEK_API_KEY"
         assert PROVIDER_API_KEY_ENV["fireworks"] == "FIREWORKS_API_KEY"
+        assert PROVIDER_API_KEY_ENV["google_anthropic_vertex"] == "GOOGLE_CLOUD_PROJECT"
         assert PROVIDER_API_KEY_ENV["google_genai"] == "GOOGLE_API_KEY"
         assert PROVIDER_API_KEY_ENV["google_vertexai"] == "GOOGLE_CLOUD_PROJECT"
         assert PROVIDER_API_KEY_ENV["groq"] == "GROQ_API_KEY"
@@ -4739,11 +4740,12 @@ models = ["llama3"]
         assert status.env_var == "OLLAMA_API_KEY"
         assert legacy is True
 
-    def test_google_vertexai_missing_project_uses_implicit_auth(self):
-        """Vertex AI should not fail just because GOOGLE_CLOUD_PROJECT is unset."""
+    @pytest.mark.parametrize("provider", ["google_anthropic_vertex", "google_vertexai"])
+    def test_vertex_missing_project_uses_implicit_auth(self, provider: str):
+        """Vertex providers should allow ADC when project env vars are unset."""
         with patch.dict("os.environ", {}, clear=True):
-            status = get_provider_auth_status("google_vertexai")
-            legacy = has_provider_credentials("google_vertexai")
+            status = get_provider_auth_status(provider)
+            legacy = has_provider_credentials(provider)
 
         assert status.state is ProviderAuthState.IMPLICIT
         assert legacy is True
@@ -8809,3 +8811,169 @@ class TestLoadStartupMode:
         config = tmp_path / "config.toml"
         config.write_text("this is not valid toml [[[\n")
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+
+class TestWritesReachTheSharedResolver:
+    """Every `model_config` writer must advance the shared config generation.
+
+    These writers edit `config.toml` directly instead of going through
+    `configuration.writer.update_user_config`, so they own the refresh
+    themselves. A writer that forgets it leaves the resolver serving the
+    pre-write generation for the life of the process: the file on disk is
+    correct, the UI reports "saved", and the setting never takes effect until
+    the user restarts or runs `/reload`.
+    """
+
+    @pytest.mark.parametrize(
+        ("save", "option_key", "expected"),
+        [
+            (
+                lambda: model_config.save_auto_classifier_model("openai:gpt-5.6-luna"),
+                "models.auto_classifier",
+                "openai:gpt-5.6-luna",
+            ),
+            (
+                lambda: model_config.save_thread_relative_time(enabled=False),
+                "threads.relative_time",
+                False,
+            ),
+            (
+                lambda: model_config.save_thread_sort_order("created_at"),
+                "threads.sort_order",
+                "created_at",
+            ),
+        ],
+        ids=["auto_classifier", "relative_time", "sort_order"],
+    )
+    def test_saved_value_is_visible_to_the_next_resolver_read(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        save: Callable[[], bool],
+        option_key: str,
+        expected: object,
+    ) -> None:
+        """A committed write is readable through the shared generation."""
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+
+        option = get_option(option_key)
+        assert option is not None
+        # Warm the resolver so the write has a stale generation to invalidate.
+        get_config_resolver().get(option)
+
+        assert save() is True
+
+        assert get_config_resolver().get(option).value == expected
+
+    def test_cleared_value_is_visible_to_the_next_resolver_read(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A clear is a write too -- the resolver must stop serving the old value."""
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL", raising=False)
+        model_config.clear_caches()
+
+        option = get_option("models.auto_classifier")
+        assert option is not None
+
+        assert model_config.save_auto_classifier_model("openai:gpt-5.6-luna") is True
+        assert get_config_resolver().get(option).value == "openai:gpt-5.6-luna"
+
+        assert model_config.clear_auto_classifier_model() is True
+
+        assert get_config_resolver().get(option).value is None
+
+    def test_a_failed_refresh_does_not_escape_a_committed_write(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The bytes are on disk, so the writer must still report success.
+
+        `refresh_shared_resolver` caught only `OSError`, but a reload also
+        raises `ValueError` from the snapshot invariants and `RuntimeError`
+        from a provider with no snapshot. Those escaped a `-> bool` writer into
+        UI code after the write had already landed.
+        """
+        import logging
+
+        from deepagents_code.configuration import resolver as resolver_module
+
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+
+        def explode(_self: object) -> None:
+            msg = "synthetic reload failure"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(resolver_module.ConfigResolver, "reload", explode)
+
+        with caplog.at_level(logging.WARNING):
+            assert model_config.save_thread_sort_order("created_at") is True
+
+        assert "created_at" in config_path.read_text(encoding="utf-8")
+        assert "could not refresh the shared config resolver" in caplog.text
+
+    def test_every_config_writer_invalidates_the_shared_generation(self) -> None:
+        """No `model_config` writer may skip the refresh.
+
+        The behavioral cases above cover five writers by name, so removing the
+        refresh from `save_thread_columns` or `clear_default_agent` left the
+        suite green. There are eleven, and the failure is invisible at runtime
+        -- the file on disk is correct and the UI reports "saved" -- so the
+        class needs a structural guard rather than one case per writer.
+
+        A writer here is a function that takes a `config_path` and commits it
+        with an atomic replace. `touch_recent_model` writes the MRU state file
+        the same way but takes a `state_dir`, so it is correctly not a writer.
+        """
+        import ast
+        from pathlib import Path
+
+        source = Path(model_config.__file__).read_text(encoding="utf-8")
+        missing: set[str] = set()
+        writers: set[str] = set()
+        for function in ast.walk(ast.parse(source)):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            params = {argument.arg for argument in function.args.args} | {
+                argument.arg for argument in function.args.kwonlyargs
+            }
+            if "config_path" not in params:
+                continue
+            calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)]
+            commits = any(
+                isinstance(call.func, ast.Attribute) and call.func.attr == "replace"
+                for call in calls
+            )
+            if not commits:
+                continue
+            writers.add(function.name)
+            # A *call*, not the name: the helper is referenced in comments and
+            # docstrings, so a substring check passes after the call is gone.
+            refreshes = any(
+                isinstance(call.func, ast.Name)
+                and call.func.id == "_invalidate_config_caches"
+                for call in calls
+            )
+            if not refreshes:
+                missing.add(function.name)
+
+        assert writers, "the AST probe stopped recognizing any config writer"
+        assert not missing, (
+            f"`model_config` writers that never refresh the resolver: "
+            f"{sorted(missing)}. Call `_invalidate_config_caches(config_path)` "
+            "after a committed write, or the saved value stays invisible to "
+            "every reader for the life of the process."
+        )

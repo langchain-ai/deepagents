@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from deepagents_code.app import _PluginFingerprint
+    from deepagents_code.configuration.types import TomlSnapshot
     from deepagents_code.plugins.models import PluginInstance
     from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
     from deepagents_code.tui.modals.plugin_manager.models import PluginManagerResult
@@ -57,6 +58,7 @@ _RELOAD_ENV_KEYS = (
     "DEEPAGENTS_CODE_GOOGLE_CLOUD_PROJECT",
     "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
     "DEEPAGENTS_CODE_SHELL_ALLOW_LIST",
+    "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS",
 )
 
 
@@ -117,6 +119,171 @@ class TestReloadFromEnvironment:
         assert any(change.startswith("shell_allow_list:") for change in changes)
         assert settings.shell_allow_list is None
         assert "DEEPAGENTS_CODE_SHELL_ALLOW_LIST" not in os.environ
+
+    def test_preview_reload_sees_shell_allow_list_toml_edit(
+        self, tmp_path: Path
+    ) -> None:
+        """A preview reports a `[shell].allow_list` edit made since startup.
+
+        The shared resolver's user snapshot is cached at startup; a preview
+        that read it would report no change while the accepted reload applies
+        the edit, breaking the preview/apply contract. The preview resolves
+        the user tier from a fresh file read instead.
+        """
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.shell_allow_list is None
+
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        changes = settings.preview_reload_from_environment(start_path=tmp_path)
+
+        assert any(change.startswith("shell_allow_list:") for change in changes)
+        assert settings.shell_allow_list is None
+
+    def test_preview_reload_sees_extra_skill_roots_toml_edit(
+        self, tmp_path: Path
+    ) -> None:
+        """A preview and accepted reload use the same fresh skill roots."""
+        from deepagents_code import model_config
+
+        skills_dir = tmp_path / "external-skills"
+        skills_dir.mkdir()
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.extra_skills_dirs is None
+
+        config_path.write_text(
+            f'[skills]\nextra_allowed_dirs = ["{skills_dir}"]\n',
+            encoding="utf-8",
+        )
+        preview = settings.preview_reload_from_environment(start_path=tmp_path)
+        applied = settings.reload_from_environment(start_path=tmp_path)
+
+        assert any(change.startswith("extra_skills_dirs:") for change in preview)
+        assert preview == applied
+        assert settings.extra_skills_dirs == [skills_dir]
+
+    def test_preview_reload_retains_shell_allow_list_on_corrupt_toml(
+        self, tmp_path: Path
+    ) -> None:
+        """Preview and apply retain the last readable user snapshot."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.shell_allow_list == ["ls"]
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+
+        preview = settings.preview_reload_from_environment(start_path=tmp_path)
+        applied = settings.reload_from_environment(start_path=tmp_path)
+
+        assert not any(change.startswith("shell_allow_list:") for change in preview)
+        assert not any(change.startswith("shell_allow_list:") for change in applied)
+        assert settings.shell_allow_list == ["ls"]
+
+    def test_reload_reports_an_unparseable_user_config(self, tmp_path: Path) -> None:
+        """A corrupt `config.toml` must not be reported as a clean reload.
+
+        Retaining the previous generation is the right runtime behavior, but
+        the retention is otherwise silent: the only signal is a warning in the
+        debug buffer, while the report the user reads says "Configuration
+        reloaded. No changes detected." They edited the file a moment ago and
+        would have no way to tell the edit was rejected.
+        """
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.shell_allow_list == ["ls"]
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert changes
+        assert changes[0].startswith("Kept previous config.toml:")
+        # The retained value is still in force -- the notice reports the
+        # rejection, it does not describe a rollback.
+        assert settings.shell_allow_list == ["ls"]
+
+    def test_preview_reports_an_unparseable_user_config(self, tmp_path: Path) -> None:
+        """The preview reports its own read, so accept/decline agree with it."""
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+        preview = settings.preview_reload_from_environment(start_path=tmp_path)
+
+        assert preview
+        assert preview[0].startswith("Kept previous config.toml:")
+        assert settings.shell_allow_list == ["ls"]
+
+    def test_reload_reports_no_notice_for_a_readable_config(
+        self, tmp_path: Path
+    ) -> None:
+        """A healthy file reports changes only -- no spurious notice."""
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        config_path.write_text(
+            '[shell]\nallow_list = ["ls", "cat"]\n', encoding="utf-8"
+        )
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert not any(
+            change.startswith("Kept previous config.toml:") for change in changes
+        )
+        assert settings.shell_allow_list == ["ls", "cat"]
+
+    def test_reload_retains_extra_skill_roots_on_corrupt_toml(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed user-config reload cannot drop active skill containment roots."""
+        skills_dir = tmp_path / "external-skills"
+        skills_dir.mkdir()
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            f'[skills]\nextra_allowed_dirs = ["{skills_dir}"]\n',
+            encoding="utf-8",
+        )
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.extra_skills_dirs == [skills_dir]
+
+        config_path.write_text("[skills\n", encoding="utf-8")
+
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert not any(change.startswith("extra_skills_dirs:") for change in changes)
+        assert settings.extra_skills_dirs == [skills_dir]
+
+    def test_reload_reads_managed_policy_once(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """One reload must use one managed-policy file generation."""
+        from deepagents_code.configuration import service
+
+        settings = Settings.from_environment(start_path=tmp_path)
+        original_load = service._load_managed
+        loads = 0
+
+        def counted_load(path: Path | None = None) -> TomlSnapshot:
+            nonlocal loads
+            loads += 1
+            return original_load(path)
+
+        monkeypatch.setattr(service, "_load_managed", counted_load)
+
+        settings.reload_from_environment(start_path=tmp_path)
+
+        assert loads == 1
 
     def test_preserves_model_state(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -930,6 +1097,17 @@ class TestReloadFromEnvironment:
 
         assert settings.openai_api_key == "sk-override"
 
+    def test_google_cloud_location_uses_prefixed_var(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Google Cloud location follows the standard prefixed-env precedence."""
+        monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        monkeypatch.setenv("DEEPAGENTS_CODE_GOOGLE_CLOUD_LOCATION", "us-east5")
+
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        assert settings.google_cloud_location == "us-east5"
+
     def test_preview_dotenv_shell_beats_project(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -1125,6 +1303,7 @@ class TestReloadErrorPaths:
         settings = Settings.from_environment(start_path=tmp_path)
         sentinel = [tmp_path / "skills"]
         settings.extra_skills_dirs = sentinel
+        monkeypatch.setenv("DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS", str(sentinel[0]))
 
         def boom(*_args: object, **_kwargs: object) -> list[Path] | None:
             msg = "broken symlink loop"
@@ -2923,3 +3102,202 @@ class TestReloadPluginsViaReload:
             await app._run_reload()
 
             assert [message.text for message in app._pending_messages] == ["follow up"]
+
+
+class TestConfigGenerationAdvancesOnlyOnReload:
+    """Config files are read once into one generation; `/reload` advances it.
+
+    The whole point of a single process-wide generation is that no two readers
+    disagree, which means a hand edit is deliberately inert until an explicit
+    reload. Both halves need pinning: without the first assertion a future
+    change could reintroduce per-call file reads and nothing would notice;
+    without the second, `/reload` could stop refreshing the shared resolver and
+    every reader would be frozen for the life of the process.
+    """
+
+    def test_hand_edit_is_inert_until_reload(self, tmp_path: Path) -> None:
+        """A settings edit takes effect on `/reload`, not before."""
+        from deepagents_code.config import is_memory_auto_save_enabled
+
+        # `_isolate_state_dir` redirects `DEFAULT_CONFIG_PATH` here, and the
+        # path is stable across this test — so the resolver cache key does not
+        # change and staleness is genuinely observable.
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[memory]\nauto_save = true\n", encoding="utf-8")
+
+        settings = Settings.from_environment()
+        assert is_memory_auto_save_enabled() is True
+
+        config_path.write_text("[memory]\nauto_save = false\n", encoding="utf-8")
+        assert is_memory_auto_save_enabled() is True, (
+            "a hand edit must not change a value mid-session"
+        )
+
+        settings.reload_from_environment()
+        assert is_memory_auto_save_enabled() is False, (
+            "`/reload` must advance the shared generation"
+        )
+
+    def test_preview_does_not_advance_the_generation(self, tmp_path: Path) -> None:
+        """A dry run must not swap the config every other reader observes."""
+        from deepagents_code.config import is_memory_auto_save_enabled
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[memory]\nauto_save = true\n", encoding="utf-8")
+
+        settings = Settings.from_environment()
+        assert is_memory_auto_save_enabled() is True
+
+        config_path.write_text("[memory]\nauto_save = false\n", encoding="utf-8")
+        settings.preview_reload_from_environment()
+
+        assert is_memory_auto_save_enabled() is True, (
+            "a preview must leave the in-force generation untouched"
+        )
+
+
+class TestClearCachesDropsEveryConfigView:
+    """`clear_caches` must drop every module cache holding `config.toml`.
+
+    `[threads]` is cached separately from the `[models]` snapshot, and its read
+    path deliberately has no invalidator -- so `clear_caches` is the only thing
+    standing between a `/reload` and a value frozen for the process lifetime.
+    The four in-app thread writers invalidate it themselves, which is why
+    dropping it here regressed only hand edits and left the suite green.
+    """
+
+    def test_reload_picks_up_a_hand_edited_thread_setting(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A `[threads]` hand edit takes effect once caches are cleared."""
+        from deepagents_code.model_config import clear_caches, load_thread_config
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[threads]\nsort_order = "created_at"\n', encoding="utf-8"
+        )
+        # Populates `_thread_config_cache`; only `load_thread_config` reads it.
+        assert load_thread_config().sort_order == "created_at"
+
+        config_path.write_text(
+            '[threads]\nsort_order = "updated_at"\n', encoding="utf-8"
+        )
+        assert load_thread_config().sort_order == "created_at", (
+            "a hand edit must not change a value mid-session"
+        )
+
+        clear_caches()
+
+        assert load_thread_config().sort_order == "updated_at", (
+            "`clear_caches` must invalidate the thread config cache"
+        )
+
+
+class TestDiagnosticDedupIsPerGeneration:
+    """A repeated `/reload` of a still-broken file must keep reporting it.
+
+    The dedup exists so one `dcode config` sweep over the whole manifest
+    reports a bad file once instead of once per option. Scoped to the process
+    it also silenced the second `/reload` -- the reason string is identical --
+    which is the edit-and-retry loop where the user most needs the message.
+    """
+
+    def test_reload_lets_the_same_rejection_be_reported_again(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The same corrupt file warns once per generation, not once ever."""
+        import logging
+
+        from deepagents_code import model_config
+        from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            get_option,
+        )
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        option = get_option("shell.allow_list")
+        assert option is not None
+        resolver = get_config_resolver()
+        resolver.get(option)
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+
+        def reload_and_count() -> int:
+            resolver.reload()
+            with caplog.at_level(
+                logging.WARNING, logger="deepagents_code.config_manifest"
+            ):
+                caplog.clear()
+                _emit_ranked_diagnostics(option, resolver.get(option))
+            return len(caplog.records)
+
+        assert reload_and_count() == 1
+        # Second attempt, same failure, same reason string.
+        assert reload_and_count() == 1
+
+    def test_one_generation_still_reports_a_bad_file_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Within a generation the sweep stays deduplicated."""
+        import logging
+
+        from deepagents_code import model_config
+        from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            get_option,
+        )
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        option = get_option("shell.allow_list")
+        assert option is not None
+        resolver = get_config_resolver()
+        resolver.get(option)
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+        resolver.reload()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+            caplog.clear()
+            for _ in range(5):
+                _emit_ranked_diagnostics(option, resolver.get(option))
+
+        assert len(caplog.records) == 1
+
+    def test_rebuilding_the_resolver_re_arms_the_dedup(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A rebuilt resolver is a new generation and must report afresh.
+
+        The set was cleared on reload but not on the cache miss that builds a
+        fresh resolver, and the cache key includes the managed path -- so
+        installing or removing policy advanced the generation while the dedup
+        stayed alive from the one before it.
+
+        Asserted on the set rather than on log output: the rejection reasons
+        differ across a rebuild (the source paths change), so counting log
+        records passes either way and pins nothing. The key is moved by
+        repointing the user path, because the managed route to a rebuild runs
+        through `invalidate_config_sources`, which clears the set itself and
+        would mask what this test is for.
+        """
+        from deepagents_code import config_manifest, model_config
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        get_config_resolver()
+        config_manifest._warned_non_table_paths.add(("ranked provider", "stale"))
+
+        moved = tmp_path / "moved" / "config.toml"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("", encoding="utf-8")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", moved)
+
+        get_config_resolver()
+
+        assert config_manifest._warned_non_table_paths == set(), (
+            "a rebuilt generation must re-arm the source diagnostics"
+        )

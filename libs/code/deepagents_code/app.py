@@ -102,15 +102,30 @@ from deepagents_code.configuration.theme_resolution import (
     resolve_theme_name as _resolve_theme_name,
 )
 from deepagents_code.formatting import format_message_timestamp
+from deepagents_code.goal_state_limits import (
+    GOAL_APPLICATION_CHAR_LIMIT,
+    GOAL_OBJECTIVE_CHAR_LIMIT,
+    RUBRIC_CHAR_LIMIT,
+    GoalStateSizeError,
+    validate_goal_application,
+    validate_goal_notice_text,
+    validate_goal_objective,
+    validate_goal_objective_rendered,
+    validate_rubric,
+)
 from deepagents_code.goal_state_notice import (
     build_goal_continuation,
     build_goal_state_notice,
+    goal_notice_size_error,
     goal_state_fingerprint,
     has_goal_or_rubric_state,
     is_human_message,
     is_internal_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
+    log_malformed_summarization_event as _log_malformed_summarization_event,
+    summarization_cutoff as _summarization_cutoff,
+    validated_summarization_cutoff as _validated_summarization_cutoff,
 )
 from deepagents_code.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_code.notifications import (
@@ -324,9 +339,12 @@ offering a way back to. `USER` alone is not enough: local-only flows
 (`/update`, `!shell`, most slash commands) mount a `UserMessage` widget
 without ever invoking the server.
 
-Membership in this set is necessary but not sufficient — non-incognito `!`
-shell output renders through `AssistantMessage`, so `_store_has_server_output`
-also excludes rows flagged `assistant_local_only`.
+Membership in this set is necessary but not sufficient — both `!` and `!!`
+shell output render through `AssistantMessage`, so `_store_has_server_output`
+also excludes rows flagged `assistant_local_only`. That flag is now the *only*
+thing keeping a shell-only thread from reading as agent work: `!!` output used
+to be an `APP` row, excluded by type, so dropping the flag check would no
+longer be a no-op.
 
 This is deliberately *stricter* than "has a resumable checkpoint row".
 Non-conversational commands (`/goal`, `/rubric set`) persist thread state
@@ -367,7 +385,6 @@ def _load_float_option(
     default: float,
     *,
     label: str,
-    toml_data: dict[str, Any],
     minimum: float | None = None,
 ) -> float:
     """Resolve a float config option, falling back to *default* when unusable.
@@ -376,19 +393,25 @@ def _load_float_option(
         key: Manifest option key.
         default: Value used when the option is absent or fails validation.
         label: Human-readable option name for the invalid-value warning.
-        toml_data: Pre-loaded config data, so callers reading several options
-            parse `config.toml` once.
         minimum: Lowest accepted value, or `None` to accept any finite float.
 
     Returns:
         The configured value, or *default* when it is missing or invalid.
     """
-    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option(key)
     value: object = default
-    if option is not None:
-        value, _ = resolve_scalar(option, toml_data=toml_data)
+    if option is None:
+        # Pre-seeding `value` with a valid float means the check below cannot
+        # fire for a missing option, so an unregistered key would return the
+        # default with nothing logged. The siblings all report this.
+        logger.warning("Unknown config option %r; using the default", key)
+        return default
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    value = resolved.value
     if (
         not isinstance(value, float)
         or not math.isfinite(value)
@@ -573,35 +596,30 @@ user why an unrelated next turn might fail and how to recover.
 """
 
 
-def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
-    """Return the absolute cutoff index of a `_summarization_event`.
-
-    Args:
-        event: A `_summarization_event` mapping (as persisted in state), or
-            `None`.
-
-    Returns:
-        The `cutoff_index`, or `0` when the event is missing or malformed.
-    """
-    if isinstance(event, dict):
-        cutoff = event.get("cutoff_index")
-        if isinstance(cutoff, int):
-            return cutoff
-    return 0
-
-
 def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # noqa: ANN401
     """Reconstruct the effective conversation the model would see.
 
     A hardened local variant of
     `SummarizationMiddleware._apply_event_to_messages`, kept in the client
     because it runs against possibly-malformed remote-snapshot dicts and must
-    degrade gracefully (a `None` summary or non-int cutoff returns the full
-    list) rather than raise or emit a `None`-led list. Like the SDK method,
-    when a prior summarization event exists the effective conversation is the
-    summary message followed by the messages from `cutoff_index` onward, and it
+    degrade gracefully rather than raise or emit a `None`-led list. When the
+    event is usable the effective conversation is the summary message followed
+    by the messages from `cutoff_index` onward, matching the SDK method, and it
     works on both LangChain message objects and serialized dicts since it only
     slices and prepends.
+
+    An unusable event — a `None` summary, or a cutoff that is not a non-negative
+    int within bounds — is logged and returns the full list.
+
+    The bounds case diverges deliberately from the SDK. The SDK reads a cutoff
+    past the end as "everything was summarized" and returns `[summary]` alone.
+    Here, a list shorter than the cutoff means history was removed after the
+    summary was written; the `/offload` failure paths issue `RemoveMessage`. The
+    survivors are therefore recent messages, and `[summary]` would hide live
+    turns. Callers size context and detect dangling tool calls, where
+    over-reporting the window is the safe direction.
+    `validated_summarization_cutoff` holds the matching decision for the notice
+    predicate.
 
     Args:
         messages: Full message list from state.
@@ -610,14 +628,19 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
     Returns:
         The effective message list.
     """
+    if event is None:
+        return list(messages)
     if not isinstance(event, dict):
+        _log_malformed_summarization_event(event, len(messages))
         return list(messages)
     summary = event.get("summary_message")
-    cutoff = event.get("cutoff_index")
-    if summary is None or not isinstance(cutoff, int):
+    cutoff = _validated_summarization_cutoff(
+        event,
+        message_count=len(messages),
+    )
+    if summary is None or cutoff is None:
+        _log_malformed_summarization_event(event, len(messages))
         return list(messages)
-    if cutoff > len(messages):
-        return [summary]
     return [summary, *messages[cutoff:]]
 
 
@@ -1090,6 +1113,7 @@ if TYPE_CHECKING:
     from deepagents_code.cold_cache import ColdCacheReason, ColdCacheWarning
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
+    from deepagents_code.configuration.types import ProviderStatus
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
     from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
@@ -1257,6 +1281,74 @@ def _load_terminal_default() -> str | None:
             )
         return None
     return _resolve_terminal_mapping(ui)
+
+
+def _managed_source_health_note(
+    status: ProviderStatus,
+    diagnostics: Sequence[str],
+) -> str | None:
+    """Describe a managed source rejected during the latest reload.
+
+    Args:
+        status: Current health of the managed provider's file.
+        diagnostics: Rejections attached to the resolved managed tier.
+
+    Returns:
+        A user-facing warning clause, or `None` when the source is healthy.
+    """
+    if status.usable:
+        return None
+    detail = status.health.value
+    if status.detail:
+        detail = f"{detail}: {status.detail}"
+
+    from deepagents_code.configuration.providers import RETAINED_SOURCE_SUFFIX
+
+    if any(RETAINED_SOURCE_SUFFIX in reason for reason in diagnostics):
+        return (
+            "the current managed config file was rejected as unreadable "
+            f"({detail}); the last readable version remains effective."
+        )
+    return f"A managed config file is present but unreadable: {detail}."
+
+
+def _managed_theme_note() -> str | None:
+    """Describe managed theme policy for a preference-write toast.
+
+    The theme writes cannot use `_managed_verdict`: theme resolution is
+    bespoke (a `[ui.terminal_themes]` entry decides only when it matches the
+    running terminal), so a per-option probe would report policy as effective
+    when it is not.
+
+    Reads the shared resolver generation because a failed managed reload keeps
+    the last enforceable snapshot while recording the rejected file only on
+    that provider's health and diagnostics.
+
+    Returns:
+        A clause for the toast, or `None` when no policy affects the theme.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import (
+        MANAGED_RANK,
+        get_config_resolver,
+    )
+    from deepagents_code.configuration.types import Found
+
+    option = get_option("display.theme")
+    if option is None:
+        return None
+    resolver = get_config_resolver()
+    resolved = resolver.get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    note = _managed_source_health_note(
+        resolver.provider_statuses()[MANAGED_RANK],
+        resolved.tier_diagnostics.get(MANAGED_RANK, ()),
+    )
+    if note is not None:
+        return note
+    if isinstance(resolved.tier_health.get(MANAGED_RANK), Found):
+        return "managed config remains effective."
+    return None
 
 
 def _load_theme_preference() -> str:
@@ -1448,22 +1540,10 @@ def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
             "error",
         )
 
-    from deepagents_code.config_manifest import (
-        _resolve_theme,
-        load_managed_config_toml,
-    )
-
-    if (
-        _resolve_theme(
-            load_managed_config_toml(),
-            source="managed config",
-        )
-        is not None
-    ):
+    note = _managed_theme_note()
+    if note is not None:
         return _ConfigWriteResult(
-            True,
-            "Theme preference saved, but managed config remains effective.",
-            "warning",
+            True, f"Theme preference saved, but {note}", "warning"
         )
     return _ConfigWriteResult(True, repair_message)
 
@@ -1496,19 +1576,20 @@ def _load_cursor_blink_preference() -> bool:
 def _load_cursor_style_preference() -> CursorStyle:
     """Resolve the chat input cursor style.
 
-    Precedence follows `resolve_scalar`: the `DEEPAGENTS_CODE_CURSOR_STYLE` env
-    var wins, then `[ui].cursor_style` in `~/.deepagents/config.toml`, falling
-    back to `"block"` when unset or invalid.
+    Precedence follows the shared resolver: the `DEEPAGENTS_CODE_CURSOR_STYLE`
+    env var wins, then `[ui].cursor_style` in `~/.deepagents/config.toml`,
+    falling back to `"block"` when unset or invalid.
 
     Returns:
         The resolved cursor style.
     """
     from deepagents_code.config_manifest import (
         CURSOR_STYLE_DEFAULT,
+        _emit_ranked_diagnostics,
         get_option,
-        load_config_toml,
-        resolve_scalar,
+        is_cursor_style,
     )
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("display.cursor_style")
     if option is None:
@@ -1516,8 +1597,17 @@ def _load_cursor_style_preference() -> CursorStyle:
             "Unknown config option %r; using block cursor", "display.cursor_style"
         )
         return CURSOR_STYLE_DEFAULT
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return cast("CursorStyle", value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    if is_cursor_style(resolved.value):
+        return resolved.value
+    # The docstring promises this fallback; nothing upstream enforced it.
+    logger.warning(
+        "Ignoring invalid display.cursor_style %r; using %r",
+        resolved.value,
+        CURSOR_STYLE_DEFAULT,
+    )
+    return CURSOR_STYLE_DEFAULT
 
 
 def _load_terminal_progress_preference() -> bool:
@@ -1593,22 +1683,10 @@ def _save_terminal_theme_mapping_result(
             "error",
         )
 
-    from deepagents_code.config_manifest import (
-        _resolve_theme,
-        load_managed_config_toml,
-    )
-
-    if (
-        _resolve_theme(
-            load_managed_config_toml(),
-            source="managed config",
-        )
-        is not None
-    ):
+    note = _managed_theme_note()
+    if note is not None:
         return _ConfigWriteResult(
-            True,
-            "Terminal mapping saved, but managed config remains effective.",
-            "warning",
+            True, f"Terminal mapping saved, but {note}", "warning"
         )
     return _ConfigWriteResult(True, " ".join(repair_messages) or None)
 
@@ -1633,6 +1711,51 @@ def save_terminal_theme_mapping(term_program: str, name: str) -> bool:
             occurred.
     """
     return _save_terminal_theme_mapping_result(term_program, name).ok
+
+
+def _managed_verdict(option_key: str) -> tuple[bool, bool, str | None]:
+    """Probe whether managed policy still decides an option after a user write.
+
+    Reads the shared resolver generation refreshed by the preceding write. A
+    failed managed reload retains the last enforceable snapshot, so the
+    provider's current health and retained-source diagnostics must accompany
+    the resolved value to distinguish retained policy from a healthy file.
+
+    Emitting the ranked diagnostics is the point, not a side effect. A
+    malformed managed entry is reported nowhere else, and this write is the
+    moment the user is told whether their change took effect.
+
+    Args:
+        option_key: Manifest key just written by the user.
+
+    Returns:
+        `(decided, rejected, health_note)` -- whether managed policy supplies
+        the effective value, whether its entry was malformed, and any failure
+        from reloading the managed source. The booleans are `False` and the
+        note is `None` for an unknown option.
+    """
+    from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
+        get_option,
+    )
+    from deepagents_code.configuration.resolver import MANAGED_RANK, get_config_resolver
+    from deepagents_code.configuration.service import managed_decided
+    from deepagents_code.configuration.types import Invalid
+
+    option = get_option(option_key)
+    if option is None:
+        return False, False, None
+
+    resolver = get_config_resolver()
+    resolved = resolver.get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    rejected = isinstance(resolved.tier_health.get(MANAGED_RANK), Invalid)
+    note = _managed_source_health_note(
+        resolver.provider_statuses()[MANAGED_RANK],
+        resolved.tier_diagnostics.get(MANAGED_RANK, ()),
+    )
+    return managed_decided(_ranked_source(resolved)), rejected, note
 
 
 def _save_ui_bool_result(
@@ -1670,27 +1793,29 @@ def _save_ui_bool_result(
             "error",
         )
 
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_managed_config_toml,
-        resolve_scalar,
-    )
-
-    option = get_option(option_key)
-    if option is not None:
-        from deepagents_code.configuration.service import managed_decided
-
-        _, source = resolve_scalar(
-            option,
-            toml_data={},
-            managed_toml_data=load_managed_config_toml(),
+    decided, rejected, health_note = _managed_verdict(option_key)
+    if health_note is not None:
+        return _ConfigWriteResult(
+            True,
+            f"Preference saved, but {health_note}",
+            "warning",
         )
-        if managed_decided(source):
-            return _ConfigWriteResult(
-                True,
-                "Preference saved, but managed config remains effective.",
-                "warning",
-            )
+    if decided:
+        return _ConfigWriteResult(
+            True,
+            "Preference saved, but managed config remains effective.",
+            "warning",
+        )
+    if rejected:
+        # The administrator who wrote the malformed policy is not at this
+        # keyboard and will never see the log line. Putting it in the toast
+        # gives the user something they can forward.
+        return _ConfigWriteResult(
+            True,
+            "Preference saved. A managed policy for this option was rejected "
+            "as malformed and is not being applied.",
+            "warning",
+        )
     return _ConfigWriteResult(True, repair_message)
 
 
@@ -2129,6 +2254,16 @@ class _ThreadHistoryPayload:
     goal_criteria_request_active: bool = False
     """Whether a newer or unfinished criteria request remains in the checkpoint."""
 
+    goal_status_recorded: bool = False
+    """Whether the checkpoint carried a `_goal_status` channel at all.
+
+    Distinct from `goal_status`: legacy checkpoints predate the status channel,
+    so absence means the goal ran as `active` (the implicit pre-status status),
+    while a *present* value that `coerce_goal_status` does not recognize means a
+    corrupt or forward-version checkpoint. Only the latter is normalized to
+    `paused` on restore; the former keeps its legacy `active` behavior.
+    """
+
     @property
     def has_model_usage(self) -> bool:
         """Whether restored state contains evidence of model usage."""
@@ -2176,18 +2311,25 @@ class _GoalApplication:
     request_id: str | None = None
 
     def __post_init__(self) -> None:
-        """Reject empty objective or rubric at construction.
+        """Reject an empty or oversized objective or rubric at construction.
 
-        Callers already screen these (`_accept_goal_rubric`), so this only
-        guards against a future construction site skipping that check and
-        queuing a goal that would clear the active one to nothing.
+        Callers already screen these (`_accept_goal_rubric`), so this guards
+        against a future construction site skipping that check — queuing a goal
+        that would clear the active one to nothing, or one whose text cannot
+        render as a goal-state notice. Holding both invariants here means they
+        do not depend on every construction site remembering; callers keep their
+        own checks so they can report a targeted message before mutating UI
+        state.
 
         Raises:
             ValueError: If `objective` or `rubric` is empty.
-        """
+            GoalStateSizeError: If either exceeds its own limit, or their
+                combined text exceeds `GOAL_APPLICATION_CHAR_LIMIT`.
+        """  # noqa: DOC502 - propagates from `validate_goal_application`
         if not self.objective or not self.rubric:
             msg = "goal application requires a non-empty objective and rubric"
             raise ValueError(msg)
+        validate_goal_application(self.objective, self.rubric)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2980,6 +3122,13 @@ class DeepAgentsApp(App):
             "ctrl+x",
             "open_editor",
             "Open Editor",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+r",
+            "open_prompt_clipboard",
+            "Prompt Clipboard",
             show=False,
             priority=True,
         ),
@@ -4096,15 +4245,12 @@ class DeepAgentsApp(App):
         from deepagents_code.config_manifest import (
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
             SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
-            load_config_toml,
         )
 
-        toml_data = load_config_toml()
         self._session_cost_warning_threshold_usd = _load_float_option(
             "warnings.session_cost_threshold_usd",
             SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
             label="session cost warning threshold",
-            toml_data=toml_data,
         )
         """Configured soft limit for the active thread's estimated cost."""
 
@@ -4115,7 +4261,6 @@ class DeepAgentsApp(App):
             "warnings.cold_cache_min_delta_usd",
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
             label="cold-cache warning threshold",
-            toml_data=toml_data,
             minimum=0.0,
         )
         """Minimum estimated cold-versus-warm cost delta that opens the modal."""
@@ -10138,9 +10283,10 @@ class DeepAgentsApp(App):
         """Execute the `--startup-cmd` and render its output in the transcript.
 
         Uses the same worker-backed subprocess path as the interactive shell
-        prefix, with an app-style header (since the user did not type the
-        command). Startup command output is local setup output and is not
-        buffered into model context. Non-zero exit is already rendered as an
+        prefix, with an app-style header *and* app-style output (since the
+        user did not type the command) — hence `output_as_app_message=True`.
+        Startup command output is local setup output and is not buffered into
+        model context. Non-zero exit is already rendered as an
         error by `_run_shell_task` but does not abort the session.
 
         Raises:
@@ -10162,7 +10308,11 @@ class DeepAgentsApp(App):
 
         try:
             worker = self.run_worker(
-                self._run_shell_task(command, incognito=True),
+                self._run_shell_task(
+                    command,
+                    incognito=True,
+                    output_as_app_message=True,
+                ),
                 exclusive=False,
             )
         except Exception:
@@ -10334,6 +10484,34 @@ class DeepAgentsApp(App):
             self.notify(
                 "Could not save the goal criteria preference. Auto will keep "
                 "asking for review; edit ~/.deepagents/config.toml to change it.",
+                severity="warning",
+                markup=False,
+            )
+            return
+        # `goals.auto_accept_criteria` declares `toml_keys`, so managed policy
+        # can decide it -- and this write reports "saved" either way. Without
+        # the probe the user is told their choice took effect while policy
+        # quietly keeps the opposite, on the setting that decides whether Auto
+        # applies generated goal criteria without review.
+        decided, rejected, health_note = await asyncio.to_thread(
+            _managed_verdict, "goals.auto_accept_criteria"
+        )
+        if health_note is not None:
+            self.notify(
+                f"Preference saved, but {health_note}",
+                severity="warning",
+                markup=False,
+            )
+        elif decided:
+            self.notify(
+                "Preference saved, but managed config remains effective.",
+                severity="warning",
+                markup=False,
+            )
+        elif rejected:
+            self.notify(
+                "Preference saved. A managed policy for this option was "
+                "rejected as malformed and is not being applied.",
                 severity="warning",
                 markup=False,
             )
@@ -11035,10 +11213,9 @@ class DeepAgentsApp(App):
                 base_url=base_url,
                 # Only consulted for a custom endpoint: with no `base_url`,
                 # `_official_endpoint` short-circuits to `True` and the trust
-                # set is provably unused. Loading it eagerly would re-read and
-                # re-parse `config.toml` from disk on every turn of the common
-                # official-API path, which is the very cost the comment below
-                # is about.
+                # set is provably unused. Loading it eagerly would still cost
+                # the trust-set resolution and its diagnostics on every turn of
+                # the common official-API path.
                 trusted_endpoints=load_trusted_cache_endpoints() if base_url else None,
             )
             # Resolved before the suppression lookup so the common
@@ -11700,10 +11877,13 @@ class DeepAgentsApp(App):
 
         Args:
             command: The shell command to execute.
-            incognito: Whether the command/output should remain local-only.
+            incognito: Whether to keep the command/output out of model context
+                (`!!`). Transcript rendering is identical to `!`; only the
+                displayed prefix and the buffering in `_run_shell_task`
+                differ.
         """
-        if not incognito:
-            await self._mount_message(UserMessage(f"!{command}"))
+        prefix = "!!" if incognito else "!"
+        await self._mount_message(UserMessage(f"{prefix}{command}"))
         self._shell_running = True
 
         if self._chat_input:
@@ -11714,7 +11894,13 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
-    async def _run_shell_task(self, command: str, *, incognito: bool = False) -> None:
+    async def _run_shell_task(
+        self,
+        command: str,
+        *,
+        incognito: bool = False,
+        output_as_app_message: bool = False,
+    ) -> None:
         """Run a shell command in a background worker.
 
         This mirrors `_run_agent_task`: running in a worker keeps the event
@@ -11723,11 +11909,28 @@ class DeepAgentsApp(App):
 
         Args:
             command: The shell command to execute.
-            incognito: Whether the command/output should remain local-only.
+            incognito: Whether to keep the command/output out of model context
+                (`!!`). This is the *only* thing it controls here — rendering
+                is identical either way.
+            output_as_app_message: Render output as an `AppMessage` status note
+                instead of a local-only `AssistantMessage`. Exists for
+                `--startup-cmd`, whose output is setup noise the user did not
+                type; it governs only the success-output branch, not the
+                timeout, nonzero-exit, or no-output messages. Requires
+                `incognito` — app-style output would otherwise read as local
+                setup noise while still being buffered for the model.
 
         Raises:
             CancelledError: If the command is interrupted by the user.
+            ValueError: If `output_as_app_message` is set without `incognito`.
         """
+        if output_as_app_message and not incognito:
+            msg = (
+                "output_as_app_message requires incognito=True; refusing to "
+                "buffer app-rendered shell output for the model"
+            )
+            raise ValueError(msg)
+
         refresh_started = False
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -11772,22 +11975,34 @@ class DeepAgentsApp(App):
                 output += f"\n[stderr]\n{stderr_text}"
 
             if output:
-                if incognito:
+                if output_as_app_message:
                     await self._mount_message(
                         AppMessage(f"```text\n{output}\n```", markdown=True),
                     )
                 else:
                     msg = AssistantMessage(f"```text\n{output}\n```", local_only=True)
-                    await self._mount_message(msg)
-                    await msg.write_initial_content()
+                    # `write_initial_content` queries the composed Markdown
+                    # child, so it raises `NoMatches` on a widget that never
+                    # reached the screen. `_mount_message` returns `False`
+                    # exactly then (teardown mid-command), so skip the write
+                    # rather than turning an ordinary shutdown race into a
+                    # spurious "Shell command crashed" in the log.
+                    if await self._mount_message(msg):
+                        await msg.write_initial_content()
+                    else:
+                        logger.warning(
+                            "Shell output row skipped (screen torn down); "
+                            "output was not shown",
+                        )
             else:
                 await self._mount_message(AppMessage("Command completed (no output)"))
 
             if proc.returncode and proc.returncode != 0:
                 await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
-            # Non-incognito `!` only; `!!` stays local. Buffered, not written
-            # now — see `_buffer_shell_for_model_context` for the rationale.
+            # Non-incognito `!` only; `!!` output never reaches model context.
+            # Rendering is identical for both — this is the sole difference.
+            # Buffered, not written now — see `_buffer_shell_for_model_context`.
             if not incognito:
                 self._buffer_shell_for_model_context(command, output, proc.returncode)
 
@@ -12624,7 +12839,18 @@ class DeepAgentsApp(App):
             latest = latest_goal_state_notice(messages)
             latest_candidate = latest_goal_state_message_index(messages)
             fingerprint = goal_state_fingerprint(desired_state)
-            cutoff = _summarization_cutoff(state_values.get("_summarization_event"))
+            event = state_values.get("_summarization_event")
+            validated_cutoff = _validated_summarization_cutoff(
+                event,
+                message_count=len(messages),
+            )
+            if event is not None and validated_cutoff is None:
+                # Collapsing to 0 makes the `latest[0] >= cutoff` test below
+                # trivially true, so a stale notice counts as visible and the
+                # durable write is skipped. Silent here and loud in the middleware
+                # would make the two sides disagree for no visible reason.
+                _log_malformed_summarization_event(event, len(messages))
+            cutoff = validated_cutoff or 0
             if (
                 latest is not None
                 and latest[0] == latest_candidate
@@ -12932,6 +13158,7 @@ class DeepAgentsApp(App):
             sticky_rubric_recorded="_sticky_rubric" in state_values,
             goal_objective=_as_str(state_values.get("_goal_objective")),
             goal_status=coerce_goal_status(state_values.get("_goal_status")),
+            goal_status_recorded="_goal_status" in state_values,
             goal_rubric=_as_str(state_values.get("_goal_rubric")),
             goal_status_note=_as_str(state_values.get("_goal_status_note")),
             pending_goal_completion_note=_as_str(
@@ -12960,7 +13187,7 @@ class DeepAgentsApp(App):
             ),
         )
 
-    def _restore_goal_rubric_state(
+    async def _restore_goal_rubric_state(
         self,
         payload: _ThreadHistoryPayload,
         *,
@@ -12980,7 +13207,25 @@ class DeepAgentsApp(App):
         # Wiring a persisted "satisfied" status into restore would reintroduce
         # stale auto-completion on resume/thread-switch.
         self._active_goal = payload.goal_objective
-        self._goal_status = payload.goal_status
+        status_unrecognized = (
+            payload.goal_objective is not None
+            and payload.goal_status is None
+            and payload.goal_status_recorded
+        )
+        if status_unrecognized:
+            # `coerce_goal_status` discarded a corrupt or forward-version status,
+            # leaving the objective without a usable status. Without a value the
+            # goal is stuck: the notice projects `paused` (so the model will not
+            # work it), but `_resume_goal` requires exactly `"paused"` to resume,
+            # so neither side can move it. Restore the same recoverable `paused`
+            # the notice shows, and persist it so the checkpoint itself becomes
+            # resumable and the two reads stop disagreeing. A checkpoint with no
+            # `_goal_status` channel at all is legacy, not corrupt: it keeps its
+            # implicit pre-status `active` (matching the notice) instead of
+            # being silently paused.
+            self._goal_status = "paused"
+        else:
+            self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
         self._pending_goal_completion_note = payload.pending_goal_completion_note
         if payload.goal_rubric:
@@ -13006,6 +13251,43 @@ class DeepAgentsApp(App):
             self._pending_goal_kind = "create"
         self._next_rubric = None
         self._sync_status_rubric()
+        if status_unrecognized:
+            # Write the coerced `paused` back so the raw value is replaced
+            # everywhere it is read from; on failure the in-memory status still
+            # makes `/goal resume` usable for this session, and the next restore
+            # retries the normalization.
+            await self._persist_goal_rubric_state()
+
+    def _active_goal_state_size_error(self) -> str | None:
+        """Return why restored active state cannot fit a safe model notice.
+
+        Returns:
+            A user-facing validation error, or `None` when active state is safe.
+        """
+        error = goal_notice_size_error(self._goal_state_update())
+        return str(error) if error is not None else None
+
+    def _next_rubric_size_error(self, criteria: str) -> str | None:
+        """Return why a one-shot rubric cannot fit the turn's notice budget.
+
+        The per-rubric limit alone is not sufficient: the turn notice embeds the
+        rubric alongside the actionable goal's objective and status note, and
+        `validate_goal_notice_text` rejects the combined text. Without this
+        check, `/rubric next` would accept criteria that the notice then drops,
+        silently disabling the promised one-shot grade.
+
+        Args:
+            criteria: Candidate next-turn rubric text.
+
+        Returns:
+            A user-facing validation error, or `None` when the combined notice
+            text is safe.
+        """
+        error = goal_notice_size_error(
+            self._goal_state_update(),
+            criteria_override=criteria,
+        )
+        return str(error) if error is not None else None
 
     async def _announce_goal_status_transition(
         self, previous_status: str | None
@@ -13354,7 +13636,7 @@ class DeepAgentsApp(App):
             # instead of re-listing all of them.
             payload = replace(payload, rubric=self._last_consumed_next_previous_rubric)
         previous_status = self._goal_status
-        self._restore_goal_rubric_state(
+        await self._restore_goal_rubric_state(
             payload,
             preserve_queued_application=True,
         )
@@ -13589,6 +13871,11 @@ class DeepAgentsApp(App):
 
         objective = remainder
         await self._mount_message(UserMessage(command))
+        try:
+            validate_goal_objective(objective)
+        except GoalStateSizeError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return
         await self._start_goal_proposal(
             lambda: self._propose_goal_rubric(objective),
             cleanup_context="goal replacement cleanup",
@@ -13697,7 +13984,10 @@ class DeepAgentsApp(App):
             "Use /goal when you have a plain-language objective; dcode will "
             "draft a checklist for it. Once applied, the goal stays active for "
             "this thread until paused, completed, blocked, or cleared. "
-            "Follow-up prompts continue working toward that goal."
+            "Follow-up prompts continue working toward that goal.\n"
+            f"Objectives are limited to {GOAL_OBJECTIVE_CHAR_LIMIT:,} characters, "
+            f"and an objective plus its criteria to "
+            f"{GOAL_APPLICATION_CHAR_LIMIT:,}."
         )
 
     async def _show_goal_state(
@@ -13817,6 +14107,11 @@ class DeepAgentsApp(App):
                 )
             )
             return
+        try:
+            validate_goal_application(base_objective, base_criteria)
+        except GoalStateSizeError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return
         await self._run_goal_criteria_request(
             {
                 "request_id": uuid.uuid4().hex,
@@ -13843,6 +14138,17 @@ class DeepAgentsApp(App):
         """
         if not objective.strip():
             await self._mount_message(AppMessage("Usage: /goal <objective>"))
+            return
+        try:
+            validate_goal_objective(objective)
+            # The criteria model counts raw characters, not escaped ones, and
+            # escaping can expand text fivefold. An objective whose escaped form
+            # already fills the notice leaves no criteria the model could return
+            # that acceptance would not reject, so refuse before spending the
+            # generation request.
+            validate_goal_objective_rendered(objective)
+        except GoalStateSizeError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
             return
         request: GoalCreateRequest = {
             "request_id": uuid.uuid4().hex,
@@ -14193,6 +14499,11 @@ class DeepAgentsApp(App):
         if not rubric:
             await self._mount_message(AppMessage("Cannot accept empty goal criteria."))
             return False
+        try:
+            validate_goal_application(objective, rubric)
+        except GoalStateSizeError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return False
         kind = self._pending_goal_kind or "create"
         if kind == "amend" and (
             not self._active_goal or self._goal_status == "complete"
@@ -14342,6 +14653,7 @@ class DeepAgentsApp(App):
             elif not is_amendment and not self._agent_running:
                 await self._continue_created_goal_work(
                     application.objective,
+                    application.rubric,
                     persisted=persisted,
                 )
         return result
@@ -14349,6 +14661,7 @@ class DeepAgentsApp(App):
     async def _continue_created_goal_work(
         self,
         objective: str,
+        criteria: str | None,
         *,
         persisted: bool,
     ) -> None:
@@ -14359,6 +14672,7 @@ class DeepAgentsApp(App):
             await self._continue_goal_work(
                 "created",
                 unsaved_objective=objective,
+                unsaved_criteria=criteria,
             )
 
     async def _continue_goal_work(
@@ -14366,11 +14680,13 @@ class DeepAgentsApp(App):
         transition: Literal["amended", "resumed", "created"],
         *,
         unsaved_objective: str | None = None,
+        unsaved_criteria: str | None = None,
     ) -> None:
         """Send one hidden command that resumes work after a goal transition."""
         continuation = build_goal_continuation(
             transition,
             unsaved_objective=unsaved_objective,
+            unsaved_criteria=unsaved_criteria,
         )
         await self._send_to_agent(
             cast("str", continuation.content),
@@ -14439,6 +14755,25 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(
                     "Goal is not paused. Use `/goal show` to inspect its current state."
+                )
+            )
+            return
+        try:
+            # Deliberately not routed through `notice_text_sections`, unlike its
+            # two siblings. The goal is still `paused` here, so projecting it would
+            # withhold the objective and status note — exactly the text the notice
+            # will embed once the resume lands. This validates the state as it will
+            # be *after* the transition, so the fields are read directly.
+            validate_goal_notice_text(
+                objective=self._active_goal,
+                criteria=self._active_rubric,
+                status_note=self._goal_status_note,
+            )
+        except GoalStateSizeError as exc:
+            await self._mount_message(
+                ErrorMessage(
+                    "This saved goal is too large to resume safely. Clear and "
+                    f"recreate it with a shorter objective and criteria. {exc}"
                 )
             )
             return
@@ -14549,6 +14884,11 @@ class DeepAgentsApp(App):
             if not arg:
                 await self._mount_message(AppMessage(self._rubric_set_usage_text()))
                 return
+            try:
+                validate_rubric(arg)
+            except GoalStateSizeError as exc:
+                await self._mount_message(ErrorMessage(str(exc)))
+                return
             async with self._goal_state_mutation_boundary():
                 previous_state = self._goal_state_update()
                 self._reset_goal_tracking()
@@ -14567,6 +14907,21 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             if not arg:
                 await self._mount_message(AppMessage(self._rubric_next_usage_text()))
+                return
+            try:
+                validate_rubric(arg)
+            except GoalStateSizeError as exc:
+                await self._mount_message(ErrorMessage(str(exc)))
+                return
+            size_error = self._next_rubric_size_error(arg)
+            if size_error is not None:
+                await self._mount_message(
+                    ErrorMessage(
+                        "This rubric cannot be applied to the next turn alongside "
+                        "the active goal. Shorten it, or clear the goal first. "
+                        f"{size_error}"
+                    )
+                )
                 return
             self._next_rubric = arg
             self._sync_status_rubric()
@@ -14627,6 +14982,7 @@ class DeepAgentsApp(App):
             "  /rubric max-iterations <N|clear>\n\n"
             "Use /rubric next for a one-turn quality gate. Use /rubric set "
             "when you want explicit acceptance criteria to persist across turns.\n"
+            f"Criteria are limited to {RUBRIC_CHAR_LIMIT:,} characters.\n"
             "Example: /rubric set tests pass; keep the diff minimal"
         )
 
@@ -14655,6 +15011,7 @@ class DeepAgentsApp(App):
         return (
             "Usage: /rubric file <path>\n\n"
             "Load acceptance criteria from a file (same as /rubric set).\n"
+            f"The file must hold at most {RUBRIC_CHAR_LIMIT:,} characters.\n"
             "Example: /rubric file ./rubric.md"
         )
 
@@ -14755,6 +15112,11 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Rubric file {str(path)!r} is empty.")
             )
+            return
+        try:
+            validate_rubric(rubric)
+        except GoalStateSizeError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
             return
         async with self._goal_state_mutation_boundary():
             previous_state = self._goal_state_update()
@@ -15086,6 +15448,8 @@ class DeepAgentsApp(App):
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
                 f"  Ctrl+X          {editor_help}\n"
+                "  Ctrl+R          Search and reuse submitted prompts\n"
+                "                  (press again for the full-screen view)\n"
                 "  Ctrl+N          Review pending notifications\n"
                 "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
@@ -15197,7 +15561,10 @@ class DeepAgentsApp(App):
             content: str | None = None
             streaming_pending = False
             for message in reversed(self._message_store.get_all_messages()):
-                if message.type != MessageType.ASSISTANT:
+                if (
+                    message.type != MessageType.ASSISTANT
+                    or message.assistant_local_only
+                ):
                     continue
                 if not message.content.strip():
                     continue
@@ -15231,6 +15598,16 @@ class DeepAgentsApp(App):
                     else "Failed to copy latest assistant message to clipboard."
                 )
                 await self._mount_message(AppMessage(fail_msg))
+        elif cmd == "/prompts":
+            # Unlike Ctrl+R, the command cannot silently no-op. `/prompts`
+            # carries `BypassTier.IMMEDIATE_UI`, so it runs while the agent is
+            # busy -- exactly when an approval is on screen and the clipboard
+            # is blocked. A bare return there reads as a broken command.
+            reason = self._prompt_clipboard_block_reason()
+            if reason is not None:
+                await self._mount_message(AppMessage(reason))
+            else:
+                self.action_open_prompt_clipboard()
         elif cmd == "/editor":
             await self.action_open_editor()
         elif cmd in {"/offload", "/compact"}:
@@ -16255,7 +16632,16 @@ class DeepAgentsApp(App):
 
             prior_event = state_values.get("_summarization_event")
             before_messages = state_values.get("messages", [])
-            prior_cutoff = _summarization_cutoff(prior_event)
+            # Bounds-checked against the list it indexes, matching
+            # `_effective_conversation` below. Without `message_count`, an
+            # out-of-bounds cutoff is trusted here while that call rejects it, and
+            # the two disagree: `messages_offloaded` inflates, `messages_kept`
+            # collapses to 0, and the report claims a large offload beside roughly
+            # zero token savings.
+            prior_cutoff = _summarization_cutoff(
+                prior_event,
+                message_count=len(before_messages),
+            )
             conversation_tokens_before = count_tokens_approximately(
                 _effective_conversation(before_messages, prior_event)
             )
@@ -16292,7 +16678,11 @@ class DeepAgentsApp(App):
                         await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
                     raise stream_error from state_error
                 reconciled_event = new_state.get("_summarization_event")
-                if _summarization_cutoff(reconciled_event) <= prior_cutoff:
+                reconciled_cutoff = _summarization_cutoff(
+                    reconciled_event,
+                    message_count=len(new_state.get("messages", [])),
+                )
+                if reconciled_cutoff <= prior_cutoff:
                     # Compaction did not commit, so the seeded tool call was
                     # never answered. Remove it before re-raising so a failed
                     # `/offload` cannot wedge the thread with a dangling
@@ -16320,7 +16710,10 @@ class DeepAgentsApp(App):
             self._sync_session_cost_from_state(new_state)
             self._sync_cache_state_from_state(new_state)
             new_event = new_state.get("_summarization_event")
-            new_cutoff = _summarization_cutoff(new_event)
+            new_cutoff = _summarization_cutoff(
+                new_event,
+                message_count=len(new_state.get("messages", [])),
+            )
 
             if new_event is None or new_cutoff <= prior_cutoff:
                 # A failure and a genuine no-op both leave `_summarization_event`
@@ -17570,6 +17963,26 @@ class DeepAgentsApp(App):
                     if goal_notice_ready:
                         self._last_consumed_next_rubric = None
                         self._last_consumed_next_previous_rubric = None
+                if self._next_rubric is not None:
+                    # `/rubric next` validated this against the goal state as it
+                    # stood when the command was typed, but that state is mutable:
+                    # a `/goal amend` or a blocker note recorded via `update_goal`
+                    # since then can push the combined notice over budget. Without
+                    # re-checking, the notice degrades and silently disables the
+                    # one-shot grade the command promised. Dropping it here, ahead
+                    # of the selection below, lets the normal active-rubric
+                    # fallback apply instead of duplicating that choice.
+                    size_error = self._next_rubric_size_error(self._next_rubric)
+                    if size_error is not None:
+                        self._next_rubric = None
+                        self._sync_status_rubric()
+                        await self._mount_message(
+                            ErrorMessage(
+                                "The next-turn rubric no longer fits alongside "
+                                "the current goal state, so it was dropped "
+                                f"instead of grading this turn. {size_error}"
+                            )
+                        )
                 rubric = self._next_rubric
                 if rubric is None and not (
                     self._active_goal and self._goal_status in {"paused", "complete"}
@@ -17695,9 +18108,22 @@ class DeepAgentsApp(App):
             # the raw exception text to a generic message, so surface a
             # self-contained, actionable message here rather than relying on it.
             if graph_input is not None and graph_input.get("goal_criteria_request"):
+                # A size rejection is the one failure here the user can act on,
+                # so keep its text: it names the budget and the excess. The
+                # overflow usually comes from the model-authored criteria (the
+                # objective is validated before this worker starts), and
+                # criteria drafting is non-deterministic, so a plain retry can
+                # succeed and shortening the objective buys headroom for both.
+                # A remote deployment redacts the raw text, so the generic
+                # message is still the fallback there.
                 body = (
-                    "Could not generate acceptance criteria for this goal. "
-                    "Run `/goal` again to retry."
+                    f"{e} Retry with `/goal`, or shorten the objective to leave "
+                    "room for the generated criteria."
+                    if isinstance(e, GoalStateSizeError)
+                    else (
+                        "Could not generate acceptance criteria for this goal. "
+                        "Run `/goal` again to retry."
+                    )
                 )
             try:
                 await self._mount_message(ErrorMessage(body))
@@ -17930,6 +18356,7 @@ class DeepAgentsApp(App):
                     # once the apply succeeds.
                     try:
                         queued_objective = application.objective
+                        queued_criteria = application.rubric
                         queued_result = await self._apply_goal_application(
                             application,
                             continue_work=False,
@@ -17940,6 +18367,7 @@ class DeepAgentsApp(App):
                             "Failed to apply queued goal update during agent cleanup"
                         )
                         queued_objective = None
+                        queued_criteria = None
                         queued_result = None
                         with suppress(Exception):
                             await self._mount_message(
@@ -17968,6 +18396,7 @@ class DeepAgentsApp(App):
                 if unsaved_creation and queued_objective is not None:
                     await self._continue_created_goal_work(
                         queued_objective,
+                        queued_criteria,
                         persisted=False,
                     )
                 else:
@@ -17982,6 +18411,7 @@ class DeepAgentsApp(App):
                 elif queued_objective is not None:
                     await self._continue_created_goal_work(
                         queued_objective,
+                        queued_criteria,
                         persisted=queued_result.persisted,
                     )
 
@@ -18366,8 +18796,8 @@ class DeepAgentsApp(App):
 
         Feeds `_mount_previous_thread_hint`'s `had_agent_output` gate; see
         `_SERVER_OUTPUT_MESSAGE_TYPES` for why `USER` rows do not count.
-        `assistant_local_only` rows are excluded too: non-incognito `!` shell
-        output borrows `AssistantMessage` to render, so the row type alone
+        `assistant_local_only` rows are excluded too: both `!` and `!!` shell
+        output borrow `AssistantMessage` to render, so the row type alone
         would let a thread that only ran a shell command look like agent work.
 
         Callers must read this *before* `_clear_messages` empties the store —
@@ -18539,6 +18969,15 @@ class DeepAgentsApp(App):
             )
             return
 
+        # Mounted from the `finally` block, so it survives every early return
+        # and the resilient `except` below. Oversized saved state disables goal
+        # work and grading until the user clears or shortens it, and
+        # `_restore_goal_rubric_state` has already made it live by then, so a
+        # path that bails out silently would leave the user with a
+        # non-functional goal and no explanation. Mounting last also keeps it
+        # below the restored transcript.
+        size_warning: ErrorMessage | None = None
+
         try:
             # Fetch + convert, or reuse preloaded payload on thread switch.
             payload = (
@@ -18546,7 +18985,18 @@ class DeepAgentsApp(App):
                 if preloaded_payload is not None
                 else await self._fetch_thread_history_data(history_thread_id)
             )
-            self._restore_goal_rubric_state(payload)
+            await self._restore_goal_rubric_state(payload)
+            size_error = self._active_goal_state_size_error()
+            size_warning = (
+                ErrorMessage(
+                    "Saved goal/rubric state is too large to use safely, so "
+                    "goal work and grading are disabled. Clear and recreate "
+                    "the goal, or replace/clear the rubric. "
+                    f"{size_error}"
+                )
+                if size_error is not None
+                else None
+            )
             self._hooks.record_messages(
                 payload.transcript_messages,
                 thread_id=history_thread_id,
@@ -18590,6 +19040,10 @@ class DeepAgentsApp(App):
             try:
                 messages_container = self.query_one("#messages", Container)
             except NoMatches:
+                logger.warning(
+                    "Skipping transcript render for %s: no #messages container",
+                    history_thread_id,
+                )
                 return
             await self._ensure_transcript_spacers(messages_container)
 
@@ -18689,7 +19143,6 @@ class DeepAgentsApp(App):
                 prefix="Resumed thread",
                 thread_id=history_thread_id,
             )
-
             # 10. Scroll once to bottom after history loads. Leave `immediate`
             # at its default: `scroll_end()` defers via `call_after_refresh` so
             # `max_scroll_y` is read once layout has settled. With
@@ -18709,6 +19162,17 @@ class DeepAgentsApp(App):
             )
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
         finally:
+            if size_warning is not None:
+                try:
+                    await self._mount_message(size_warning)
+                except Exception:
+                    # This message is the only explanation the user gets for a
+                    # non-functional goal, so losing it silently is the outcome
+                    # the `finally` exists to prevent.
+                    logger.exception(
+                        "Failed to surface oversized goal-state warning for %s",
+                        history_thread_id,
+                    )
             if resolve_pending_goal:
                 try:
                     await self._remount_pending_goal_rubric_review()
@@ -21750,6 +22214,120 @@ class DeepAgentsApp(App):
         finally:
             restore_focus()
 
+    def _prompt_clipboard_block_reason(self) -> str | None:
+        """Return why the prompt clipboard cannot open, or `None` if it can.
+
+        The reason is user-facing: `/prompts` echoes it so the command never
+        appears to do nothing. `Ctrl+R` discards it, because `check_action`
+        steps the binding aside and the key belongs to whatever is blocking.
+        """
+        if self._chat_input is None:
+            return "The prompt clipboard needs the composer, which is not ready yet."
+        if isinstance(self.screen, ModalScreen):
+            return "Close the open dialog before opening the prompt clipboard."
+        if self._pending_approval_widget is not None:
+            return "Answer the pending approval before opening the prompt clipboard."
+        if self._pending_ask_user_widget is not None:
+            return "Answer the pending question before opening the prompt clipboard."
+        if self._pending_goal_review_widget is not None:
+            return "Finish the goal review before opening the prompt clipboard."
+        return None
+
+    def _prompt_clipboard_blocked(self) -> bool:
+        """Return whether the prompt clipboard cannot open right now.
+
+        True when the composer does not exist, or when another input surface
+        (a modal, an approval, an ask-user prompt, a goal review) owns the
+        keyboard.
+        """
+        return self._prompt_clipboard_block_reason() is not None
+
+    def _inline_prompt_search_active(self) -> bool:
+        """Return whether the composer's inline prompt search panel is open."""
+        chat_input = self._chat_input
+        return chat_input is not None and chat_input._prompt_search_active
+
+    def action_open_prompt_clipboard(self) -> None:
+        """Open prompt history: inline panel first, full modal on a second press.
+
+        The first Ctrl+R opens the composer's inline search panel; pressing
+        Ctrl+R again while that panel is open escalates to the full
+        `PromptClipboardScreen`. The modal also opens directly when autocomplete
+        owns the inline rows.
+        """
+        if self._prompt_clipboard_blocked():
+            return
+        chat_input = self._chat_input
+        if chat_input is None:
+            return
+
+        tier = chat_input.open_prompt_search()
+        if tier == "inline":
+            return
+        if tier == "noop":
+            # The composer is mounted but its text area or search panel is not.
+            # Nothing opens; log it rather than leaving a bare silent return,
+            # since this only happens when the widget tree is malformed.
+            logger.warning(
+                "Prompt search unavailable: composer is missing its text area "
+                "or search panel"
+            )
+            return
+
+        # Escalating from the inline panel carries its query into the modal's
+        # filter and leaves the draft as the user had it. The autocomplete
+        # case reaches "modal" without a panel ever opening, so the current
+        # chat input becomes the modal query directly.
+        self._open_prompt_clipboard_modal(chat_input.escalate_prompt_search())
+
+    def _open_prompt_clipboard_modal(self, initial_query: str = "") -> None:
+        """Open the full searchable prompt history modal."""
+        chat_input = self._chat_input
+        if chat_input is None:
+            return
+
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        def handle_result(result: str | None) -> None:
+            def apply_result() -> None:
+                current_input = self._chat_input
+                if current_input is None:
+                    if result is not None:
+                        self.notify(
+                            "Could not insert the prompt: the composer is gone",
+                            severity="warning",
+                        )
+                    return
+                if result is not None and not current_input.insert_at_cursor(result):
+                    self.notify(
+                        "Could not insert the prompt: the composer is unavailable",
+                        severity="warning",
+                    )
+                current_input.focus_input()
+
+            self.call_after_refresh(apply_result)
+
+        prompts = chat_input.recent_prompts()
+        history_error = chat_input.prompt_history_error()
+        if history_error is not None and prompts:
+            # `empty_message` only reaches the user when the list is empty, but
+            # `recent_prompts` falls back to this session's entries on a read
+            # failure -- so the common outcome is a non-empty list that looks
+            # complete and is silently truncated. Warn independently of count.
+            self.notify(
+                f"{history_error}; showing this session's prompts only",
+                severity="warning",
+                markup=False,
+            )
+        self.push_screen(
+            PromptClipboardScreen(
+                prompts,
+                initial_query=initial_query,
+                empty_message=history_error,
+            ),
+            handle_result,
+        )
+
     async def action_open_editor(self) -> None:
         """Open the focused editable surface in $VISUAL/$EDITOR."""
         goal_editor = self._focused_goal_review_editor()
@@ -23194,6 +23772,11 @@ class DeepAgentsApp(App):
         reverts to the active screen's own handling. Depending on the screen that
         is either a competing screen binding or default key handling:
 
+        - `open_prompt_clipboard` (`ctrl+r`): modals and inline prompts keep
+            ownership of the chord, including selectors with their own Ctrl+R.
+            The one deliberate pass-through is the composer's inline prompt
+            search panel: it is not a screen, so the key reaches the app
+            action, which lets a second Ctrl+R escalate to the full modal.
         - `open_notifications` (`ctrl+n`): `ModelSelectorScreen` has its own
             priority `ctrl+n -> toggle_names` binding that then wins.
         - `toggle_auto_approve` (`shift+tab`): `DebugConsoleScreen` has no
@@ -23203,10 +23786,19 @@ class DeepAgentsApp(App):
             cursor-style modals via `_SupportsReverseNav` and otherwise no-ops
             under a `ModalScreen` that lacks dedicated `shift+tab` handling
             (as `DebugConsoleScreen` does), so the key would be silently
-            swallowed. Note this keys on the action, and `toggle_auto_approve`
-            is also bound to `ctrl+t`, so that (harmless, already a no-op
-            under modals) binding is stepped aside too while the console is
-            open.
+            swallowed. `PromptClipboardScreen` also steps aside so its own
+            priority `shift+tab -> page_newer` binding wins and the key does not
+            fall through to `Screen.focus_previous`. Note this keys on the
+            action, and `toggle_auto_approve` is also bound to `ctrl+t`, so
+            that binding is stepped aside under either screen. The composer's
+            inline prompt search gets the same step-aside so shift+tab pages
+            its results, but only while the query input holds focus: an
+            approval that arrives mid-search must keep the chord.
+        - `quit_or_interrupt` (`ctrl+c`): the prompt clipboard owns this chord for
+            copying the selected prompt rather than the focused search text.
+        - `interrupt` (`escape`): while the prompt-search query has focus,
+            escape belongs to its abandon-search binding, not the global
+            interrupt cascade. A newly focused inline approval keeps priority.
         - `approval_reject_with_reason` (`tab`): unlike the other approval keys
             this one must be `priority=True` to beat `Screen`'s
             `tab -> app.focus_next`, which means it would otherwise swallow
@@ -23222,15 +23814,46 @@ class DeepAgentsApp(App):
                 active screen or default key handling take the key); `True` to
                 leave it enabled.
         """
+        if action == "open_prompt_clipboard":
+            return not self._prompt_clipboard_blocked()
         if action == "open_notifications":
             from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
             if isinstance(self.screen, ModelSelectorScreen):
                 return False
         if action == "toggle_auto_approve":
+            from deepagents_code.tui.modals.prompt_clipboard import (
+                PromptClipboardScreen,
+            )
             from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+            from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
 
-            if isinstance(self.screen, DebugConsoleScreen):
+            if isinstance(self.screen, (DebugConsoleScreen, PromptClipboardScreen)):
+                return False
+            # The inline prompt search pages its results with shift+tab.
+            # Gate on focus, not just on the panel being open. An inline
+            # approval that arrives mid-search takes focus, and its menu needs
+            # shift+tab/ctrl+t to keep toggling auto-approve; stepping aside on
+            # panel state alone also drops shift+tab through to
+            # `Screen.focus_previous`, moving focus off the pending approval.
+            if self._inline_prompt_search_active() and isinstance(
+                self.focused, PromptSearchInput
+            ):
+                return False
+        # The prompt-search query owns escape only while it has focus. An inline
+        # approval that arrived after search opened must keep the global binding
+        # enabled so `action_interrupt` can reject it.
+        if action == "interrupt" and self._inline_prompt_search_active():
+            from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+            if isinstance(self.focused, PromptSearchInput):
+                return False
+        if action == "quit_or_interrupt":
+            from deepagents_code.tui.modals.prompt_clipboard import (
+                PromptClipboardScreen,
+            )
+
+            if isinstance(self.screen, PromptClipboardScreen):
                 return False
         if action == "approval_reject_with_reason":
             return self._pending_approval_widget is not None and (
@@ -25141,13 +25764,20 @@ class DeepAgentsApp(App):
                 worker.error,
                 exc_info=worker.error,
             )
-            self.call_later(
-                self._mount_message,
-                ErrorMessage(
+            # Defense in depth: the size rejection normally surfaces from the
+            # turn handler, which keeps its limit text. Should one escape to
+            # here, surface the same actionable message rather than a bare
+            # "failed unexpectedly".
+            message = (
+                f"{worker.error} Retry with `/goal`, or shorten the objective "
+                "to leave room for the generated criteria."
+                if isinstance(worker.error, GoalStateSizeError)
+                else (
                     "Drafting acceptance criteria failed unexpectedly. "
                     "Try `/goal <objective>` again."
-                ),
+                )
             )
+            self.call_later(self._mount_message, ErrorMessage(message))
 
     def _start_mcp_login(self, server_name: str) -> bool:
         """Begin in-TUI OAuth login for `server_name`.
@@ -27223,17 +27853,18 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.config_manifest import (
             COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
+            _emit_ranked_diagnostics,
             get_option,
-            load_config_toml,
-            resolve_scalar,
         )
+        from deepagents_code.configuration.resolver import get_config_resolver
 
         threshold = COMPACT_ON_RESUME_THRESHOLD_DEFAULT
         option = get_option("threads.compact_on_resume_threshold")
         if option is not None:
-            resolved, _ = resolve_scalar(option, toml_data=load_config_toml())
-            if isinstance(resolved, int):
-                threshold = resolved
+            resolved = get_config_resolver().get(option)
+            _emit_ranked_diagnostics(option, resolved)
+            if isinstance(resolved.value, int):
+                threshold = resolved.value
         if threshold <= 0 or self._context_tokens <= threshold:
             return
 

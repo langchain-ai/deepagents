@@ -23,6 +23,7 @@ from deepagents_code.client.non_interactive import (
     _build_non_interactive_header,
     _process_rubric_event,
 )
+from deepagents_code.goal_state_limits import RUBRIC_CHAR_LIMIT
 from deepagents_code.main import _resolve_rubric_text
 
 
@@ -77,6 +78,16 @@ class TestResolveRubricText:
         f.write_text("   \n", encoding="utf-8")
         with pytest.raises(ValueError, match="is empty"):
             _resolve_rubric_text(f"@{f}")
+
+    def test_oversized_literal_and_file_are_rejected(self, tmp_path: Path) -> None:
+        """Both CLI rubric forms fail before an agent session can start."""
+        oversized = "x" * (RUBRIC_CHAR_LIMIT + 1)
+        path = tmp_path / "large.md"
+        path.write_text(oversized, encoding="utf-8")
+
+        for value in (oversized, f"@{path}"):
+            with pytest.raises(ValueError, match="maximum is 12,000"):
+                _resolve_rubric_text(value)
 
 
 def _run_cli_main_devnull_stdin(argv: list[str]) -> subprocess.CompletedProcess[str]:

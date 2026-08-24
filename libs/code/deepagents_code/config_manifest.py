@@ -6,14 +6,16 @@ locations. The typed defaults for config-file-only options (notably the
 `[interpreter]` section) live here as module constants, and `Settings` derives
 its dataclass defaults from them — so a default is defined in exactly one place.
 
-`resolve_scalar` is the shared resolution engine used both by the runtime
-(`Settings.from_environment`) and by the `config` CLI command, so introspection
-can never drift from what the app actually reads. Resolution precedence mirrors
-the loaders: managed TOML beats `DEEPAGENTS_CODE_`-prefixed and canonical env,
-env beats user `config.toml`, and the typed default is the final fallback. A
-malformed numeric/list/PTC value, an unrecognized boolean token, or a
-wrong-typed TOML value is logged and falls back to the next layer rather than
-raising, so one bad entry does not discard valid sibling policy.
+Resolution runs through the shared `ConfigResolver` (see
+`configuration.resolver`): the runtime (`Settings.from_environment`) reads the
+shared process resolver and the `config` CLI command builds one from the
+generation it snapshots, so introspection can never drift from what the app
+actually reads. Resolution precedence mirrors the loaders: managed TOML beats
+`DEEPAGENTS_CODE_`-prefixed and canonical env, env beats user `config.toml`,
+and the typed default is the final fallback. A malformed numeric/list/PTC
+value, an unrecognized boolean token, or a wrong-typed TOML value is logged
+and falls back to the next layer rather than raising, so one bad entry does
+not discard valid sibling policy.
 
 Structured, user-defined config is *not* a flat scalar option and is parsed by
 dedicated typed loaders elsewhere; the manifest references those tables as
@@ -39,13 +41,14 @@ from enum import Enum, StrEnum
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
+from typing_extensions import TypeIs
+
 from deepagents_code import _env_vars
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
     from deepagents_code.configuration.resolver import ResolvedValue
-    from deepagents_code.configuration.types import ProviderStatus
 
 logger = logging.getLogger(__name__)
 
@@ -147,18 +150,20 @@ VALID_CURSOR_STYLES: frozenset[str] = frozenset(get_args(CursorStyle))
 class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
-    All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
+    All kinds flow through the ranked resolver. The scalar kinds (`BOOL`,
     `BOOL_MODE_DEFAULT`, `BOOL_PRESENCE`, `INT`, `NON_NEGATIVE_INT`, `FLOAT`,
-    `STR`, and `NON_EMPTY_STR`) are coerced by the source providers behind the
-    compatibility `_coerce_env`/`_coerce_toml` wrappers.
+    `STR`, and `NON_EMPTY_STR`) are coerced by the source providers;
+    `option_accepts_toml` is the public seam over that same coercion.
     `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
     bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
     resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
     allowlists — do not compress into a generic coercion). `THEME_DELEGATE` is
-    resolved separately at the top of `resolve_scalar` and never reaches the
-    inline coercers. `STRUCTURED` marks user-defined tables that the scalar
-    resolver only passes through for display.
+    coerced by the providers themselves (`ranked_theme_toml_value` and
+    `ranked_theme_environment_value`) rather than the inline coercers;
+    `_resolve_theme` is a separate single-layer helper for callers that need
+    one tier at a time. `STRUCTURED` marks user-defined tables
+    that the scalar resolver only passes through for display.
     """
 
     BOOL = "bool"
@@ -167,7 +172,7 @@ class OptionKind(Enum):
 
     BOOL_MODE_DEFAULT = "bool_mode_default"
     """Same token handling as `BOOL`, but with no static default: when no env or
-    TOML value applies, `resolve_scalar` derives the default from debug or
+    TOML value applies, resolution derives the default from debug or
     experimental mode. Declaring a `default` is rejected at construction."""
 
     BOOL_PRESENCE = "bool_presence"
@@ -356,7 +361,8 @@ class ConfigOption:
         one would otherwise slip through to runtime — a wrong-typed default
         feeds `Settings` unchecked, and a mutable default is shared by reference
         through the `get_config_options` `lru_cache` and returned verbatim by
-        `resolve_scalar`. Catching it here fails the import (and the test suite).
+        the resolver's default provider. Catching it here fails the import (and
+        the test suite).
 
         Raises:
             TypeError: When `fallback_env_vars` is not a tuple of non-empty
@@ -405,7 +411,7 @@ class ConfigOption:
             msg = f"{self.key}: STRUCTURED options must not declare a default"
             raise TypeError(msg)
         if self.kind is OptionKind.BOOL_MODE_DEFAULT:
-            # `resolve_scalar` computes this kind's default from debug/experimental
+            # Resolution computes this kind's default from debug/experimental
             # mode and returns before reading `default`, so a declared value would
             # be dead -- yet `dcode config` still renders it, advertising a default
             # that contradicts the real one.
@@ -479,8 +485,14 @@ _INVALID = object()
 def load_config_toml() -> dict[str, Any]:
     """Load `~/.deepagents/config.toml`.
 
+    Parses the file on every call, so it sits outside the shared process
+    generation every manifest reader resolves against. Prefer
+    `get_config_resolver`; reach for this only to inspect one specific
+    generation of the file, and see `ARCHITECTURE.md` for why that is the
+    exception rather than the default.
+
     Returns:
-        The parsed config mapping, or `{}` when the file is absent or invalid.
+        The parsed config table, or `{}` when the file is absent or invalid.
     """
     import tomllib
 
@@ -508,11 +520,11 @@ def load_config_toml() -> dict[str, Any]:
         return {}
 
 
-def load_managed_config_toml(*, refresh: bool = False) -> Mapping[str, Any]:
+def load_managed_config_toml(*, refresh: bool = False) -> dict[str, Any]:
     """Load the fixed operating-system managed TOML source.
 
     Returns:
-        Parsed managed mapping, or an empty mapping when unavailable.
+        Parsed managed table, or an empty table when unavailable.
     """
     from deepagents_code.configuration.service import get_managed_snapshot
 
@@ -520,23 +532,28 @@ def load_managed_config_toml(*, refresh: bool = False) -> Mapping[str, Any]:
 
 
 _warned_non_table_paths: set[tuple[str, ...]] = set()
+"""Source-level rejections already logged for the current config generation.
+
+Deduplicates the `shadowed` / `unusable` / `retained` diagnostics so one
+`dcode config` sweep over the whole manifest reports a bad file once rather
+than once per option. Cleared by `reset_source_diagnostics` wherever a
+generation is replaced: each generation gets to report its own problems, so a
+repeated `/reload` of a file the user is still repairing keeps telling them it
+is broken."""
 
 
-def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
-    """Delegate environment coercion to the provider boundary.
+def reset_source_diagnostics() -> None:
+    """Re-arm the source-level rejections for a new config generation.
 
-    Returns:
-        The typed value, or `_INVALID` when the raw value cannot be coerced.
+    Called by the resolver whenever it installs a new generation -- on a
+    reload, and on the cache miss that builds a fresh resolver when managed
+    policy is installed or removed. Missing the second path left the dedup set
+    alive across a generation the user was told nothing about.
+
+    Public because `configuration.resolver` is deliberately unaware of this
+    module; reaching in for the private set would make that claim false.
     """
-    from deepagents_code.configuration.providers import coerce_environment_value
-    from deepagents_code.configuration.types import Found, Invalid
-
-    result = coerce_environment_value(option, raw, name)
-    if isinstance(result, Found):
-        return result.value
-    if isinstance(result, Invalid):
-        logger.warning("%s", result.reason)
-    return _INVALID
+    _warned_non_table_paths.clear()
 
 
 def _coerce_toml(
@@ -558,9 +575,7 @@ def _coerce_toml(
     return _INVALID
 
 
-def _resolve_theme(
-    toml_data: Mapping[str, Any], *, source: str
-) -> tuple[str, str] | None:
+def _resolve_theme(toml_data: dict[str, Any], *, source: str) -> tuple[str, str] | None:
     """Resolve a theme from one TOML layer.
 
     Returns:
@@ -587,56 +602,125 @@ def _resolve_theme(
     return None
 
 
-def resolve_ranked_scalar(
+def _resolve_option(
     option: ConfigOption,
     *,
-    toml_data: Mapping[str, Any],
-    managed_toml_data: Mapping[str, Any] | None = None,
-    managed_status: ProviderStatus | None = None,
-    user_status: ProviderStatus | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> ResolvedValue[object]:
     """Resolve one option through the ranked durable-mask engine.
 
-    Consumers that need health or per-leaf provenance use this typed form;
-    `resolve_scalar` preserves the established `(value, source)` compatibility
-    surface by rendering from the same result.
+    Shared by the manifest's bespoke readers: the bounded resolvers and the
+    display-preference loader.
 
-    Each table must be paired with the status of the source it came from.
-    `TomlSnapshot` rejects a non-`OK` status carrying a non-empty table with a
-    `ValueError`, because an unhealthy source is one every reader must treat as
-    declaring nothing. This is not hypothetical bookkeeping: the two halves are
-    separate parameters, so a caller can supply one snapshot's data beside
-    another's health. A missing default provider surfaces as a `RuntimeError`
-    from the resolver.
+    With no caller-supplied tables this resolves through the shared process
+    resolver, so every reader that reaches it observes one generation of the
+    config files. See `ARCHITECTURE.md` for when that generation advances.
+    Pass explicit tables only to inspect a specific generation -- a candidate
+    being validated, or the one snapshot a CLI invocation reads.
+
+    A supplied table pairs with a default `OK` status, matching the health
+    these readers historically reported. `TomlSnapshot` rejects a non-`OK`
+    status carrying a non-empty table, because an unhealthy source is one every
+    reader must treat as declaring nothing; callers with real health metadata
+    pass both halves to `resolver_from_snapshots` directly.
+
+    Emits no diagnostics. Pair the result with `_emit_ranked_diagnostics` so a
+    provider rejection before the effective value is still reported.
+
+    Omitting *both* tables reads the shared process generation. Supplying
+    either one puts this on the ad-hoc path, where the other half is read to
+    complete the pair -- so a partial call is a deliberate request for a
+    specific generation, not a cheaper way to reach the shared one.
 
     Args:
         option: Manifest option to resolve.
-        toml_data: Parsed user `config.toml` mapping.
-        managed_toml_data: Parsed managed mapping, or the process snapshot when
-            omitted.
-        managed_status: Health/display metadata for the supplied managed table.
-        user_status: Health/display metadata for the supplied user table.
+        toml_data: Parsed user `config.toml` table.
+        managed_toml_data: Parsed managed table.
 
     Returns:
         A rank-keyed `ResolvedValue`.
     """
-    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.resolver import (
+        get_config_resolver,
+        resolver_from_snapshots,
+    )
     from deepagents_code.configuration.types import (
-        ProviderHealth,
-        ProviderStatus,
         TomlSnapshot,
     )
 
-    managed_status = managed_status or ProviderStatus(
-        "managed config", None, ProviderHealth.OK
-    )
-    user_status = user_status or ProviderStatus("config.toml", None, ProviderHealth.OK)
+    if toml_data is None and managed_toml_data is None:
+        return get_config_resolver().get(option)
+
+    # Reached only when a caller supplied at least one table. The other half is
+    # filled in here: the managed snapshot from the process cache, the user
+    # table by a fresh parse. A caller that supplies only one side therefore
+    # pairs its own generation with whatever the other source currently holds,
+    # which is why supplying both is the way to pin one generation exactly.
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
+    user_data = load_config_toml() if toml_data is None else toml_data
     resolver = resolver_from_snapshots(
-        TomlSnapshot(managed_data, managed_status),
-        TomlSnapshot(toml_data, user_status),
+        managed=TomlSnapshot.from_table("managed config", managed_data),
+        user=TomlSnapshot.from_table("config.toml", user_data),
+    )
+    return resolver.get(option)
+
+
+def _resolve_option_without_managed(
+    option: ConfigOption,
+    *,
+    toml_data: dict[str, Any] | None,
+) -> ResolvedValue[object]:
+    """Re-resolve `option` with the managed tier declaring nothing.
+
+    Companion to `_resolve_option` for the bounded readers' managed
+    fall-through: an out-of-range managed value is rejected, and the option
+    must be re-read from env, `config.toml`, and the typed default only.
+
+    With `toml_data=None` the user half comes out of the shared process
+    resolver's snapshot rather than a fresh parse. `_resolve_option` fills a
+    missing half from disk, which is what let a hand edit made after startup
+    change a later-built agent's value without `/reload`; the shared
+    ad-hoc resolver built here has a fresh `EnvProvider`, which reads
+    `os.environ` live, and takes only the user *snapshot* from the shared
+    resolver -- so that half stays pinned to the generation every other reader
+    observes.
+
+    Returns:
+        A rank-keyed `ResolvedValue` with the managed tier masked out.
+    """
+    from deepagents_code.configuration.resolver import (
+        USER_RANK,
+        get_config_resolver,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.types import (
+        TomlSnapshot,
+    )
+
+    if toml_data is not None:
+        user = TomlSnapshot.from_table("config.toml", toml_data)
+    else:
+        shared = get_config_resolver().toml_snapshot(USER_RANK)
+        if shared is None:
+            # The shared resolver always has a user provider, so this is a
+            # programming error rather than a config problem. Substituting an
+            # empty tier keeps the read working; saying so keeps it from
+            # looking like the user simply declared nothing.
+            logger.error(
+                "Shared resolver has no user provider at rank %d; resolving "
+                "%s against an empty user tier",
+                USER_RANK,
+                option.key,
+            )
+        user = (
+            shared if shared is not None else TomlSnapshot.unknown_origin("config.toml")
+        )
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot.declaring_nothing("managed config"),
+        user=user,
     )
     return resolver.get(option)
 
@@ -645,7 +729,7 @@ def _ranked_source(resolved: ResolvedValue[object]) -> str:
     """Render rank-keyed provenance through provider display metadata.
 
     Returns:
-        The compatibility source label for `resolve_scalar`.
+        The user-facing source label, joining every selected tier.
     """
     return " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
 
@@ -657,14 +741,17 @@ def _emit_ranked_diagnostics(
 
     Providers retain rejection reasons without logging so resolution can be
     inspected by diagnostics and startup policy without duplicating warnings.
-    This compatibility boundary preserves `resolve_scalar`'s fall-through
-    messages for callers that expect the historical logging behavior.
+    Callers pass the resolved value to get one warning per resolution, which is
+    what a reader that parsed the file itself would have logged.
 
-    Two rejections are file-wide rather than per-option and are therefore
-    emitted once per process: a scalar that shadows a whole table, and a source
-    that could not be read at all. `config` resolves the full manifest in one
+    Some rejections are file-wide rather than per-option -- a scalar that
+    shadows a whole table, a source that could not be read at all, and a
+    source whose last usable snapshot was retained. Those are emitted once per
+    config generation, tracked in `_warned_non_table_paths` and re-armed by
+    `reset_source_diagnostics`. `config` resolves the full manifest in one
     pass, and logging per option would print the same line roughly a hundred
-    times for a single typo.
+    times for a single typo; scoping the dedup to the process instead would
+    silence the second `/reload` of a file the user is still repairing.
 
     Args:
         option: Manifest option being resolved.
@@ -678,15 +765,15 @@ def _emit_ranked_diagnostics(
     from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
     from deepagents_code.configuration.types import Found, Invalid
 
-    once_per_process = (
+    once_per_generation = (
         SHADOWED_TABLE_SUFFIX,
         UNUSABLE_SOURCE_SUFFIX,
         RETAINED_SOURCE_SUFFIX,
     )
 
     def emit(reason: str) -> None:
-        """Log one provider rejection, at most once per process when marked."""
-        if any(suffix in reason for suffix in once_per_process):
+        """Log one rejection, at most once per generation when marked."""
+        if any(suffix in reason for suffix in once_per_generation):
             warning_key = ("ranked provider", reason)
             if warning_key in _warned_non_table_paths:
                 return
@@ -725,41 +812,10 @@ def _emit_ranked_diagnostics(
             break
 
 
-def resolve_scalar(
-    option: ConfigOption,
-    *,
-    toml_data: Mapping[str, Any],
-    managed_toml_data: Mapping[str, Any] | None = None,
-) -> tuple[Any, str]:
-    """Resolve an option through ranked providers with a stable return shape.
-
-    The public-ish signature remains unchanged for embedders. Coercion happens
-    at provider boundaries, precedence is numeric, and durable providers mask
-    lower-priority ephemeral tiers structurally.
-
-    Args:
-        option: Manifest option to resolve.
-        toml_data: Parsed user `config.toml` mapping.
-        managed_toml_data: Parsed managed TOML mapping. The process snapshot is
-            used when omitted; pass an empty mapping for an isolated user source.
-
-    Returns:
-        `(value, source)` from the ranked engine. Human-readable source labels
-            are rendered from rank-keyed `ProviderStatus` metadata.
-    """
-    resolved = resolve_ranked_scalar(
-        option,
-        toml_data=toml_data,
-        managed_toml_data=managed_toml_data,
-    )
-    _emit_ranked_diagnostics(option, resolved)
-    return resolved.value, _ranked_source(resolved)
-
-
 def resolve_read_project_dotenv(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
     global_dotenv: Mapping[str, str] | None = None,
 ) -> bool:
     """Resolve whether the project `.env` should be loaded into the process env.
@@ -797,10 +853,19 @@ def resolve_read_project_dotenv(
     # resolve them (and TOML, which we discard here in favor of the global
     # file) through the standard engine, then layer the global dotenv between
     # the env and TOML to match the option's env-over-file precedence.
+    #
+    # Parsed here rather than taken from the shared resolver: the `global_dotenv`
+    # tier below has no provider, so the resolver cannot express this option's
+    # precedence and its TOML tier is discarded on the fall-through path anyway.
+    # Keeping the parse local also means dotenv bootstrap -- which runs before
+    # the project `.env` is layered into `os.environ`, and again on every cwd
+    # switch -- never establishes the process generation as a side effect.
     data = load_config_toml() if toml_data is None else toml_data
-    value, source = resolve_scalar(
+    resolved = _resolve_option(
         option, toml_data=data, managed_toml_data=managed_toml_data
     )
+    _emit_ranked_diagnostics(option, resolved)
+    value, source = resolved.value, _ranked_source(resolved)
     if source.startswith(("managed", "env (")):
         return bool(value)
 
@@ -832,9 +897,9 @@ def load_bool_display_preference(
 ) -> bool:
     """Resolve a boolean `Display` option through the config manifest.
 
-    Precedence follows `resolve_scalar`: managed config wins, then the option's
-    `DEEPAGENTS_CODE_*` env var if it declares one (not all do), then its
-    `[ui]` key in `~/.deepagents/config.toml`, then the declared default.
+    Precedence follows the ranked resolver: managed config wins, then the
+    option's `DEEPAGENTS_CODE_*` env var if it declares one (not all do), then
+    its `[ui]` key in `~/.deepagents/config.toml`, then the declared default.
     Resolution is intentionally forgiving — an unreadable config, a non-table
     `[ui]`, or a wrong-typed value is logged and falls through, so a typo in a
     cosmetic setting never breaks startup.
@@ -883,9 +948,10 @@ def load_bool_display_preference(
             fallback,
         )
         return fallback
-    # Inlines `resolve_scalar` rather than calling it, because the rejection
-    # reasons `on_rejected` needs live on the ranked result that it discards.
-    ranked = resolve_ranked_scalar(option, toml_data=load_config_toml())
+    # Works on the ranked result rather than a plain `(value, source)` pair,
+    # because the rejection reasons `on_rejected` needs live on the tier
+    # health that pair discards.
+    ranked = _resolve_option(option)
     _emit_ranked_diagnostics(option, ranked)
     resolved = bool(ranked.value)
     # Keep the source: a display option turned off by managed policy is
@@ -907,11 +973,21 @@ def load_bool_display_preference(
     return resolved
 
 
-def _is_valid_auto_classifier_timeout(value: object) -> bool:
+def is_cursor_style(value: object) -> TypeIs[CursorStyle]:
+    """Return whether `value` is one of the accepted cursor styles.
+
+    `OptionKind.CURSOR_STYLE_DELEGATE` constrains the option's default to
+    `str`, not to a `CursorStyle` member, so a reader that trusts the kind is
+    asserting more than the manifest checks.
+    """
+    return value in VALID_CURSOR_STYLES
+
+
+def _is_valid_auto_classifier_timeout(value: object) -> TypeIs[float]:
     """Return whether `value` is an accepted Auto classifier timeout.
 
     Expects the `float` that `OptionKind.FLOAT` resolution produces on every
-    layer (`_coerce_env` and `_coerce_toml` both widen to `float`, and the typed
+    layer (env and TOML coercion both widen to `float`, and the typed
     default is a `float`); a bare `int` is rejected.
     """
     return (
@@ -923,15 +999,16 @@ def _is_valid_auto_classifier_timeout(value: object) -> bool:
 
 def resolve_auto_classifier_timeout_with_source(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[float, str]:
     """Resolve the Auto classifier decision-batch budget and its source.
 
     Args:
-        toml_data: Parsed `config.toml`; loaded automatically when omitted.
-        managed_toml_data: Parsed managed TOML; the process snapshot is used when
-            omitted.
+        toml_data: Parsed `config.toml`.
+        managed_toml_data: Parsed managed TOML. Omit both to read the shared
+            process generation; supplying either puts this on the ad-hoc path
+            described in `_resolve_option`.
 
     Returns:
         `(timeout_seconds, source)`, where `source` is the layer that supplied
@@ -941,25 +1018,25 @@ def resolve_auto_classifier_timeout_with_source(
             an out-of-range layer is discarded in favor of the next one, so the
             returned source never credits a rejected layer.
     """
-    data = load_config_toml() if toml_data is None else toml_data
+    data = toml_data
     option = get_option("models.auto_classifier_timeout")
     if option is None:
         return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
 
-    managed_data = (
-        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
-    )
-    value, source = resolve_scalar(
+    resolved = _resolve_option(
         option,
         toml_data=data,
-        managed_toml_data=managed_data,
+        managed_toml_data=managed_toml_data,
     )
+    _emit_ranked_diagnostics(option, resolved)
+    value, source = resolved.value, _ranked_source(resolved)
     if _is_valid_auto_classifier_timeout(value):
         return value, source
 
     from deepagents_code.configuration.service import managed_decided
 
-    if managed_decided(source):
+    managed_rejected = managed_decided(source)
+    if managed_rejected:
         logger.warning(
             "Ignoring managed auto_classifier_timeout %r (expected seconds in "
             "[%g, %g]); falling through to the next config source",
@@ -967,10 +1044,11 @@ def resolve_auto_classifier_timeout_with_source(
             AUTO_CLASSIFIER_TIMEOUT_FLOOR,
             AUTO_CLASSIFIER_TIMEOUT_CEILING,
         )
-        return resolve_auto_classifier_timeout_with_source(
-            toml_data=data,
-            managed_toml_data={},
-        )
+        resolved = _resolve_option_without_managed(option, toml_data=data)
+        _emit_ranked_diagnostics(option, resolved)
+        value, source = resolved.value, _ranked_source(resolved)
+        if _is_valid_auto_classifier_timeout(value):
+            return value, source
 
     # Invalid higher-precedence values must fall through instead of jumping
     # straight to the default. Hide the rejected env var and re-resolve so
@@ -988,7 +1066,7 @@ def resolve_auto_classifier_timeout_with_source(
         )
         previous = os.environ.pop(env_name, None)
         if previous is None:
-            # The name reconstructed from `source` is not the key `resolve_scalar`
+            # The name reconstructed from `source` is not the key the resolver
             # read, so re-resolving would see the same rejected value and recurse
             # forever. Unreachable today (the source label is built from the
             # environ key), but this runs on the startup path where a
@@ -1000,10 +1078,17 @@ def resolve_auto_classifier_timeout_with_source(
             )
             return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
         try:
-            return resolve_auto_classifier_timeout_with_source(
-                toml_data=data,
-                managed_toml_data=managed_data,
-            )
+            if managed_rejected:
+                resolved = _resolve_option_without_managed(option, toml_data=data)
+                _emit_ranked_diagnostics(option, resolved)
+                value, source = resolved.value, _ranked_source(resolved)
+                if _is_valid_auto_classifier_timeout(value):
+                    return value, source
+            else:
+                return resolve_auto_classifier_timeout_with_source(
+                    toml_data=data,
+                    managed_toml_data=managed_toml_data,
+                )
         finally:
             os.environ[env_name] = previous
 
@@ -1022,8 +1107,8 @@ def resolve_auto_classifier_timeout_with_source(
 
 def resolve_auto_classifier_timeout(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> float:
     """Resolve the wall-clock budget for one Auto classifier decision batch.
 
@@ -1036,9 +1121,10 @@ def resolve_auto_classifier_timeout(
     classifier from hanging every gated tool call.
 
     Args:
-        toml_data: Parsed `config.toml`; loaded automatically when omitted.
-        managed_toml_data: Parsed managed TOML; the process snapshot is used when
-            omitted.
+        toml_data: Parsed `config.toml`.
+        managed_toml_data: Parsed managed TOML. Omit both to read the shared
+            process generation; supplying either puts this on the ad-hoc path
+            described in `_resolve_option`.
 
     Returns:
         The resolved timeout in seconds, guaranteed within
@@ -1056,8 +1142,8 @@ def blank_auto_classifier_env_name() -> str | None:
 
     A present-but-blank `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` means "inherit
     the main agent model" and deliberately outranks `config.toml`, unlike every
-    other option, where `resolve_scalar` treats a blank env value as unset. That
-    veto is why this cannot go through `resolve_scalar`.
+    other option, where the resolver treats a blank env value as unset. That
+    veto is why this reads the environment directly.
 
     Returns:
         The name of the blank env var, or `None` when no env var is set or the
@@ -1084,8 +1170,8 @@ def blank_auto_classifier_env_name() -> str | None:
 
 def resolve_auto_classifier_model_with_source(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[str | None, str]:
     """Resolve the effective Auto classifier model spec and its source.
 
@@ -1096,28 +1182,28 @@ def resolve_auto_classifier_model_with_source(
     managed value means inherit, credited to `managed config`.
 
     Args:
-        toml_data: Parsed `config.toml`; loaded automatically when omitted.
-        managed_toml_data: Parsed managed TOML; the process snapshot is used when
-            omitted.
+        toml_data: Parsed `config.toml`.
+        managed_toml_data: Parsed managed TOML. Omit both to read the shared
+            process generation; supplying either puts this on the ad-hoc path
+            described in `_resolve_option`.
 
     Returns:
         `(spec, source)`. `source` credits the layer that decided the outcome,
             including the env var whose blank value forced the inherit, so the
             source never points at a value the runtime ignored.
     """
-    data = load_config_toml() if toml_data is None else toml_data
+    data = toml_data
     option = get_option("models.auto_classifier")
     if option is None:
         return None, "default"
 
-    managed_data = (
-        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
-    )
-    value, source = resolve_scalar(
+    resolved = _resolve_option(
         option,
         toml_data=data,
-        managed_toml_data=managed_data,
+        managed_toml_data=managed_toml_data,
     )
+    _emit_ranked_diagnostics(option, resolved)
+    value, source = resolved.value, _ranked_source(resolved)
     from deepagents_code.configuration.service import managed_decided
 
     if managed_decided(source):
@@ -1129,11 +1215,9 @@ def resolve_auto_classifier_model_with_source(
     if blank_env is not None:
         return None, f"env ({blank_env})"
 
-    value, source = resolve_scalar(
-        option,
-        toml_data=data,
-        managed_toml_data={},
-    )
+    resolved = _resolve_option_without_managed(option, toml_data=data)
+    _emit_ranked_diagnostics(option, resolved)
+    value, source = resolved.value, _ranked_source(resolved)
     if isinstance(value, str) and value.strip():
         return value.strip(), source
     # A blank or wrong-typed `config.toml` entry reverts to the main agent model;
@@ -1143,8 +1227,8 @@ def resolve_auto_classifier_model_with_source(
 
 def resolve_startup_mode_with_source(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Resolve the effective startup approval mode and its source for display.
 
@@ -1171,6 +1255,11 @@ def resolve_startup_mode_with_source(
     """
     from deepagents_code.model_config import is_recent_startup_mode_restorable
 
+    # Keeps its own parse: the `[startup].recent` fall-through below inspects
+    # the raw user table, which `ResolvedValue` does not expose. Omitting
+    # `toml_data` therefore reads the file here rather than the shared
+    # generation -- state the property rather than counting callers, because
+    # the signature does not stop a new one from omitting it.
     data = load_config_toml() if toml_data is None else toml_data
     option = get_option("startup.mode")
     if option is None:
@@ -1179,11 +1268,27 @@ def resolve_startup_mode_with_source(
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
-    value, source = resolve_scalar(
+    resolved = _resolve_option(
         option,
         toml_data=data,
         managed_toml_data=managed_data,
     )
+    _emit_ranked_diagnostics(option, resolved)
+    # `STARTUP_MODE_DELEGATE` coercion yields a `str` on every tier, so this
+    # guard should never fire. It replaces a `cast`, which fails in the wrong
+    # direction: a non-`str` that slipped past coercion would propagate typed
+    # as `str` into the display path, while a guard falls back the way the
+    # sibling readers do (`is_cursor_style`, `is_valid_recursion_limit`).
+    source = _ranked_source(resolved)
+    if not isinstance(resolved.value, str):
+        logger.warning(
+            "Ignoring non-string startup.mode %r from %s; using %r",
+            resolved.value,
+            source,
+            "manual",
+        )
+        return "manual", "default"
+    value = resolved.value
     if source != "default":
         return value, source
 
@@ -1199,11 +1304,13 @@ def resolve_startup_mode_with_source(
     recent_option = get_option("startup.recent")
     if recent_option is None:
         return value, source
-    recent, recent_source = resolve_scalar(
+    recent_resolved = _resolve_option(
         recent_option,
         toml_data=data,
         managed_toml_data=managed_data,
     )
+    _emit_ranked_diagnostics(recent_option, recent_resolved)
+    recent, recent_source = recent_resolved.value, _ranked_source(recent_resolved)
     if isinstance(recent, str) and is_recent_startup_mode_restorable(recent):
         return recent, recent_source
     return value, source
@@ -1228,8 +1335,13 @@ def option_accepts_toml(
     return _coerce_toml(option, value, source=source) is not _INVALID
 
 
-def is_valid_recursion_limit(value: object) -> bool:
-    """Return whether `value` is an accepted main-agent `recursion_limit`."""
+def is_valid_recursion_limit(value: object) -> TypeIs[int]:
+    """Return whether `value` is an accepted main-agent `recursion_limit`.
+
+    Narrows so callers need no `cast`. `bool` is rejected at runtime but is a
+    subclass of `int`, so the negative branch is not narrowed for it -- no
+    caller inspects that branch's type.
+    """
     return (
         isinstance(value, int)
         and not isinstance(value, bool)
@@ -1239,8 +1351,8 @@ def is_valid_recursion_limit(value: object) -> bool:
 
 def resolve_recursion_limit(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> int:
     """Resolve the effective main-agent `recursion_limit`.
 
@@ -1257,33 +1369,34 @@ def resolve_recursion_limit(
     outranks this bounded resolver.
 
     Args:
-        toml_data: Parsed `config.toml`; loaded automatically when omitted.
-        managed_toml_data: Parsed managed TOML; the process snapshot is used when
-            omitted.
+        toml_data: Parsed `config.toml`.
+        managed_toml_data: Parsed managed TOML. Omit both to read the shared
+            process generation; supplying either puts this on the ad-hoc path
+            described in `_resolve_option`.
 
     Returns:
         The resolved recursion limit, guaranteed within
             `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
     """
-    data = load_config_toml() if toml_data is None else toml_data
+    data = toml_data
     option = get_option("runtime.recursion_limit")
     if option is None:
         return RECURSION_LIMIT_DEFAULT
 
-    managed_data = (
-        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
-    )
-    value, source = resolve_scalar(
+    resolved = _resolve_option(
         option,
         toml_data=data,
-        managed_toml_data=managed_data,
+        managed_toml_data=managed_toml_data,
     )
+    _emit_ranked_diagnostics(option, resolved)
+    value, source = resolved.value, _ranked_source(resolved)
     if is_valid_recursion_limit(value):
         return value
 
     from deepagents_code.configuration.service import managed_decided
 
-    if managed_decided(source):
+    managed_rejected = managed_decided(source)
+    if managed_rejected:
         logger.warning(
             "Ignoring managed recursion_limit %r (expected int in [%d, %d]); "
             "falling through to the next config source",
@@ -1291,14 +1404,18 @@ def resolve_recursion_limit(
             RECURSION_LIMIT_FLOOR,
             RECURSION_LIMIT_CEILING,
         )
-        return resolve_recursion_limit(
-            toml_data=data,
-            managed_toml_data={},
-        )
+        resolved = _resolve_option_without_managed(option, toml_data=data)
+        _emit_ranked_diagnostics(option, resolved)
+        value, source = resolved.value, _ranked_source(resolved)
+        if is_valid_recursion_limit(value):
+            return value
 
     # Invalid higher-precedence values must fall through instead of jumping
-    # straight to the default. Hide the rejected env var (if any) and re-resolve
-    # so remaining env fallbacks, then TOML, then the typed default still apply.
+    # straight to the default. Hide the rejected env var (if any) and
+    # re-resolve so the remaining sources still apply. Both bounded options
+    # declare no `fallback_env_vars`, so "remaining env fallbacks" is empty
+    # today and the next source is TOML, then the typed default; a bounded
+    # option that grew aliases would need this to loop over them.
     if source.startswith("env (") and source.endswith(")"):
         env_name = source[len("env (") : -1]
         logger.warning(
@@ -1311,10 +1428,17 @@ def resolve_recursion_limit(
         )
         previous = os.environ.pop(env_name, None)
         try:
-            return resolve_recursion_limit(
-                toml_data=data,
-                managed_toml_data=managed_data,
-            )
+            if managed_rejected:
+                resolved = _resolve_option_without_managed(option, toml_data=data)
+                _emit_ranked_diagnostics(option, resolved)
+                value, source = resolved.value, _ranked_source(resolved)
+                if is_valid_recursion_limit(value):
+                    return value
+            else:
+                return resolve_recursion_limit(
+                    toml_data=data,
+                    managed_toml_data=managed_toml_data,
+                )
         finally:
             if previous is not None:
                 os.environ[env_name] = previous
@@ -1349,6 +1473,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "cohere": ("langchain_cohere", "cohere"),
     "deepseek": ("langchain_deepseek", "deepseek"),
     "fireworks": ("langchain_fireworks", "fireworks"),
+    "google_anthropic_vertex": ("langchain_google_vertexai", "vertex"),
     "google_genai": ("langchain_google_genai", "google-genai"),
     "google_vertexai": ("langchain_google_vertexai", "vertex"),
     "groq": ("langchain_groq", "groq"),
@@ -1475,12 +1600,8 @@ def _credential_options() -> tuple[ConfigOption, ...]:
     from deepagents_code.model_config import PROVIDER_API_KEY_ENV
 
     options: list[ConfigOption] = []
-    seen: set[str] = set()
     sources = {**PROVIDER_API_KEY_ENV, **_EXTRA_CREDENTIAL_ENV}
     for name, env_var in sorted(sources.items()):
-        if env_var in seen:
-            continue
-        seen.add(env_var)
         redacted = _is_secret_env(env_var)
         summary = (
             f"Credential for the {name} provider."
@@ -1509,6 +1630,15 @@ def _credential_options() -> tuple[ConfigOption, ...]:
 # drift test asserts every `DEEPAGENTS_CODE_*` constant in `_env_vars` appears
 # here (or in `NON_OPTION_ENV_VARS`).
 _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
+    # --- Credentials ----------------------------------------------------
+    ConfigOption(
+        key="credentials.google_cloud_location",
+        group="Credentials",
+        summary="Google Cloud region for Anthropic models on Vertex AI.",
+        kind=OptionKind.NON_EMPTY_STR,
+        env_var="GOOGLE_CLOUD_LOCATION",
+        settings_field="google_cloud_location",
+    ),
     # --- Display / UI ---------------------------------------------------
     ConfigOption(
         key="display.charset",

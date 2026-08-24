@@ -10,6 +10,7 @@ import pytest
 
 from deepagents_code.config_manifest import (
     ConfigOption,
+    MergeStrategy,
     OptionKind,
     get_config_options,
     get_option,
@@ -541,6 +542,101 @@ def test_real_manifest_options_merge_across_tiers() -> None:
     assert set(columns.ranks) == {MANAGED_RANK, USER_RANK}
     assert isinstance(columns.value, dict)
     assert set(columns.value) == {"title", "summary"}
+
+
+def _nest(keys: tuple[str, ...], value: object) -> dict[str, Any]:
+    """Wrap `value` in the nested tables named by a manifest option's keys."""
+    nested: dict[str, Any] = {keys[-1]: value}
+    for key in reversed(keys[:-1]):
+        nested = {key: nested}
+    return nested
+
+
+# Every option that must compose its tiers rather than replace them.
+#
+# Frozen deliberately: deriving this from `option.merge_strategy` would be a
+# tautology, because a downgraded option simply drops out of the list and
+# stops being tested. The expected strategy has to be written down here for a
+# downgrade to fail anything.
+_COMPOSING_OPTIONS = {
+    "display.themes": MergeStrategy.DEEP_MERGE,
+    "display.terminal_themes": MergeStrategy.DEEP_MERGE,
+    "models.providers": MergeStrategy.DEEP_MERGE,
+    "agents.async_subagents": MergeStrategy.DEEP_MERGE,
+    "sandboxes.providers": MergeStrategy.DEEP_MERGE,
+    "threads.columns": MergeStrategy.DEEP_MERGE,
+    "mcp.enabled_project_server_approvals": MergeStrategy.DEEP_MERGE,
+    "mcp.disabled_project_servers": MergeStrategy.UNION,
+    "mcp.disabled_servers": MergeStrategy.UNION,
+}
+
+
+def test_composing_options_are_the_expected_set() -> None:
+    """A new or removed composing option must update the frozen table.
+
+    Without this, `_COMPOSING_OPTIONS` silently stops covering the manifest:
+    a new `DEEP_MERGE` table would ship with no merge coverage at all.
+    """
+    actual = {
+        option.key: option.merge_strategy
+        for option in get_config_options()
+        if option.merge_strategy is not MergeStrategy.REPLACE
+    }
+
+    assert actual == _COMPOSING_OPTIONS
+
+
+@pytest.mark.parametrize("key", sorted(_COMPOSING_OPTIONS))
+def test_every_composing_option_composes(key: str) -> None:
+    """Every non-`REPLACE` option must keep both tiers' contributions.
+
+    The test above names three options, which is enough to pin those three and
+    nothing else: flipping `display.terminal_themes`, `agents.async_subagents`,
+    or `sandboxes.providers` to `REPLACE` passed the whole suite.
+
+    Losing this is silent and looks like success: a `UNION` deny-list flipped
+    to `REPLACE` drops every user entry the moment an administrator denies one
+    server, and a `DEEP_MERGE` table drops the user's sibling leaves. Both
+    read as "policy applied" rather than as data loss.
+    """
+    option = get_option(key)
+    assert option is not None
+    assert option.toml_keys, f"{key} must declare the table it composes"
+    strategy = _COMPOSING_OPTIONS[key]
+    assert option.merge_strategy is strategy, (
+        f"{key} must stay {strategy}: a weaker strategy discards a tier"
+    )
+
+    if strategy is MergeStrategy.UNION:
+        managed_value: object = ["from-managed"]
+        user_value: object = ["from-user"]
+    else:
+        managed_value = {"from_managed": {"width": 10}}
+        user_value = {"from_user": {"width": 20}}
+    resolved = resolver_from_snapshots(
+        managed=TomlSnapshot(
+            _nest(option.toml_keys, managed_value),
+            ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        user=TomlSnapshot(
+            _nest(option.toml_keys, user_value),
+            ProviderStatus("config.toml", None, ProviderHealth.OK),
+        ),
+    ).get(option)
+
+    assert set(resolved.ranks) == {MANAGED_RANK, USER_RANK}, (
+        f"{key} ({strategy}) dropped a tier"
+    )
+    if strategy is MergeStrategy.UNION:
+        assert isinstance(resolved.value, list)
+        assert set(resolved.value) == {"from-managed", "from-user"}, (
+            f"{key} did not union both tiers"
+        )
+    else:
+        assert isinstance(resolved.value, dict)
+        assert set(resolved.value) == {"from_managed", "from_user"}, (
+            f"{key} did not merge sibling leaves"
+        )
 
 
 def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> None:

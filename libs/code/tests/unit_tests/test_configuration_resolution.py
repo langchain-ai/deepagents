@@ -86,6 +86,8 @@ def _invalid_toml_value(option: ConfigOption) -> object:
         return 7
     if kind is OptionKind.NON_EMPTY_STR:
         return "   "
+    if kind is OptionKind.MODEL_LIST_DELEGATE:
+        return "not-a-list-of-model-specs"
     if kind in {OptionKind.SHELL_LIST_DELEGATE, OptionKind.SKILLS_DIRS_DELEGATE}:
         return 7
     if kind is OptionKind.PTC_DELEGATE:

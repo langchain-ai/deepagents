@@ -403,11 +403,15 @@ class TestCheckProjectDotenvTrust:
             lambda **_kwargs: True,
         )
         self._answer(monkeypatch, _TrustAction.REMEMBER)
+        # Rich wraps to the detected width, and a deep tmp path is long enough
+        # to split the name mid-tag on CI. Widen the console so the assertion
+        # is about escaping, not line breaking.
+        monkeypatch.setenv("COLUMNS", "300")
 
         main_module._check_project_dotenv_trust()
 
         # The literal tag survives; it is never interpreted as a style.
-        err = capsys.readouterr().err
+        err = capsys.readouterr().err.replace("\n", "")
         assert "repo[red]spoofed[bold]" in err
 
     @pytest.mark.usefixtures("project")

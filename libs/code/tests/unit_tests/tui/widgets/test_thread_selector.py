@@ -4077,15 +4077,15 @@ class TestFetchThreadHistoryData:
         with patch(
             "deepagents_code.app.asyncio.to_thread",
             new_callable=AsyncMock,
-            return_value=converted,
+            return_value=(converted, ()),
         ) as to_thread_mock:
             payload = await app._fetch_thread_history_data("tid-1")
 
         assert payload.messages == converted
-        to_thread_mock.assert_awaited_once()
-        await_args = to_thread_mock.await_args
-        assert await_args is not None
-        assert await_args.args[1] == raw_messages
+        to_thread_mock.assert_awaited_once_with(
+            app._prepare_thread_history_messages,
+            raw_messages,
+        )
 
     async def test_extracts_nonzero_context_tokens(self) -> None:
         """Persisted _context_tokens should propagate to the payload."""
@@ -4102,7 +4102,7 @@ class TestFetchThreadHistoryData:
         with patch(
             "deepagents_code.app.asyncio.to_thread",
             new_callable=AsyncMock,
-            return_value=converted,
+            return_value=(converted, ()),
         ):
             payload = await app._fetch_thread_history_data("tid-1")
 
@@ -4126,7 +4126,7 @@ class TestFetchThreadHistoryData:
         with patch(
             "deepagents_code.app.asyncio.to_thread",
             new_callable=AsyncMock,
-            return_value=converted,
+            return_value=(converted, ()),
         ):
             payload = await app._fetch_thread_history_data("tid-1")
 
@@ -4147,7 +4147,7 @@ class TestFetchThreadHistoryData:
         with patch(
             "deepagents_code.app.asyncio.to_thread",
             new_callable=AsyncMock,
-            return_value=converted,
+            return_value=(converted, ()),
         ):
             payload = await app._fetch_thread_history_data("tid-1")
 
@@ -4172,7 +4172,7 @@ class TestFetchThreadHistoryData:
         with patch(
             "deepagents_code.app.asyncio.to_thread",
             new_callable=AsyncMock,
-            return_value=converted,
+            return_value=(converted, ()),
         ):
             payload = await app._fetch_thread_history_data("tid-1")
 
@@ -4197,7 +4197,7 @@ class TestFetchThreadHistoryData:
         with patch(
             "deepagents_code.app.asyncio.to_thread",
             new_callable=AsyncMock,
-            return_value=converted,
+            return_value=(converted, ()),
         ):
             payload = await app._fetch_thread_history_data("tid-1")
 

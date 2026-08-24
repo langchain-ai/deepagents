@@ -8174,6 +8174,95 @@ class TestPromptSearchPanel:
             assert "Could not read prompt history" in messages[0]
             assert "No prompts yet" not in messages[0]
 
+    async def test_rebuild_failure_ends_the_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed rebuild must abandon the search, not just hide the panel.
+
+        Hiding alone leaves `_prompt_search_active` true, so the composer keeps
+        swallowing every key into an invisible panel.
+        """
+        from unittest.mock import AsyncMock
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt", "second prompt"])
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            panel = chat._prompt_search
+            assert panel is not None
+            results = panel.query_one("#prompt-search-results")
+            monkeypatch.setattr(
+                results, "mount", AsyncMock(side_effect=RuntimeError("boom"))
+            )
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert panel.styles.display == "none"
+            assert panel._options == []
+            assert [message for message, _ in notifications] == [
+                "Prompt search could not be displayed"
+            ]
+
+            # The composer takes typed keys again rather than routing them into
+            # an invisible panel.
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.focus()
+            await pilot.pause()
+            await pilot.press("x")
+            await pilot.pause()
+            assert text_area.text == "x"
+
+    async def test_abandon_recovery_survives_a_detached_panel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recovery must not raise in turn.
+
+        `hide`, `post_message`, and `notify` all reach for `self.app`, and
+        detachment is a plausible cause of the failure being recovered from. A
+        second exception would escape the `call_next` callback that runs
+        `_rebuild_options` and panic the app during error recovery, masking the
+        original failure.
+        """
+        from unittest.mock import MagicMock
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt"])
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+
+            # Stand in for a detached widget: every app-touching step raises.
+            hide = MagicMock(side_effect=RuntimeError("no app"))
+            post_message = MagicMock(side_effect=RuntimeError("no app"))
+            notify = MagicMock(side_effect=RuntimeError("no app"))
+            monkeypatch.setattr(panel, "hide", hide)
+            monkeypatch.setattr(panel, "post_message", post_message)
+            monkeypatch.setattr(panel, "notify", notify)
+
+            panel._abandon_quietly()
+
+            # Every step was attempted even though each earlier one failed:
+            # ending the session matters more than any single step succeeding.
+            hide.assert_called_once()
+            post_message.assert_called_once()
+            notify.assert_called_once()
+
+            # Restore before the app shuts down: a still-raising `post_message`
+            # would break teardown rather than the code under test.
+            monkeypatch.undo()
+
     async def test_unwritable_history_warns_once_per_session(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

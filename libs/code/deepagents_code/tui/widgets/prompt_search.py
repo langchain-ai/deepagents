@@ -409,15 +409,23 @@ class PromptSearchPanel(Vertical):
             # the session and restores the draft, and the rows have to come out
             # of the DOM here: `hide()` only sets `display: none`, so dropping
             # the list without unmounting orphans them beside the next rebuild.
+            #
+            # Every step below is guarded, not just the unmount. `hide()`,
+            # `post_message`, and `notify` all reach for `self.app`, which
+            # raises `NoActiveAppError` on a detached widget -- and detachment
+            # is one of the plausible causes of the failure being recovered
+            # from. `_rebuild_options` runs as a `call_next` callback, so a
+            # second exception here escapes into Textual's callback machinery
+            # and panics the app during error recovery, masking the first.
+            # Ending the session is what matters most, so `AbandonSearch` is
+            # attempted even if the unmount or `hide()` failed.
             try:
                 await self._results.remove_children()
-            except Exception:  # Recovery must not raise in turn
+            except Exception:
                 logger.exception("Failed to clear prompt search rows")
             self._options = []
             self._empty_widget = None
-            self.hide()
-            self.post_message(PromptSearchInput.AbandonSearch())
-            self.notify("Prompt search could not be displayed", severity="warning")
+            self._abandon_quietly()
             return
 
         # The DOM mutations above can await, during which a hide() (or a newer
@@ -440,6 +448,36 @@ class PromptSearchPanel(Vertical):
 
         if start <= selected_index < start + len(self._options):
             self._options[selected_index - start].scroll_visible(animate=False)
+
+    def _abandon_quietly(self) -> None:
+        """End the search session without letting recovery raise in turn.
+
+        Each step is attempted independently and logged on failure. `hide()`,
+        `post_message`, and `notify` all reach for `self.app`, which raises
+        `NoActiveAppError` on a detached widget -- and detachment is one of the
+        plausible causes of the failure being recovered from. `_rebuild_options`
+        runs as a `call_next` callback, so a second exception escapes into
+        Textual's callback machinery and panics the app during error recovery,
+        masking the original. Ending the session matters most, so
+        `AbandonSearch` is attempted even when `hide()` has already failed.
+        """
+        for description, step in (
+            ("hide the prompt search panel", self.hide),
+            (
+                "end the prompt search session",
+                lambda: self.post_message(PromptSearchInput.AbandonSearch()),
+            ),
+            (
+                "report the prompt search failure",
+                lambda: self.notify(
+                    "Prompt search could not be displayed", severity="warning"
+                ),
+            ),
+        ):
+            try:
+                step()
+            except Exception:
+                logger.exception("Failed to %s during recovery", description)
 
     def update_selection(self, selected_index: int) -> None:
         """Update which row is selected, re-windowing the DOM when needed.

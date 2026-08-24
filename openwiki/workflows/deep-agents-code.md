@@ -6,11 +6,11 @@ tags: [dcode, security, approvals, mcp, workflow, tui, transcript, tracing]
 openwiki:
   roles: [workflow, integration]
   change_kinds: [ui, transcript, client-server, trace-metadata]
-  source_paths: [libs/code/deepagents_code/config.py, libs/code/deepagents_code/config_manifest.py, libs/code/deepagents_code/configuration/resolver.py, libs/code/deepagents_code/_ask_user_types.py, libs/code/deepagents_code/tui/widgets/messages.py, libs/code/deepagents_code/app.py, libs/code/deepagents_code/server_graph.py]
-  symbols: [build_stream_config, resolve_ranked, require_healthy_managed_config, encode_multi_select_answer, ask_user_answer_is_empty, UserMessage, QueuedUserMessage, create_cli_agent, make_graph]
+  source_paths: [libs/code/deepagents_code/config.py, libs/code/deepagents_code/config_manifest.py, libs/code/deepagents_code/configuration/resolver.py, libs/code/deepagents_code/_ask_user_types.py, libs/code/deepagents_code/tui/widgets/messages.py, libs/code/deepagents_code/tui/textual_adapter.py, libs/code/deepagents_code/app.py, libs/code/deepagents_code/server_graph.py]
+  symbols: [build_stream_config, resolve_ranked, require_healthy_managed_config, encode_multi_select_answer, ask_user_answer_is_empty, UserMessage, QueuedUserMessage, AssistantMessage, append_content, _flush_pending_append, _stop_assistant_streams, create_cli_agent, make_graph]
   test_paths: [libs/code/tests/unit_tests/test_coding_agent_metadata.py, libs/code/tests/unit_tests/test_configuration.py, libs/code/tests/unit_tests/test_configuration_resolver.py, libs/code/tests/unit_tests/test_ask_user_types.py, libs/code/tests/unit_tests/tui/test_textual_adapter.py, libs/code/tests/unit_tests/tui/widgets/test_messages.py, libs/code/tests/unit_tests/test_app.py]
-  invariants: ["A valid managed policy masks lower-precedence environment values for replacement options.", "An empty or malformed multi-select answer never becomes Auto consent evidence.", "Sent-prompt continuation lines align under the message body, not the prefix glyph.", "Full-message selection returns submitted text rather than display-truncated content.", "Trace-wide editable metadata is always a boolean and agrees with the dcode lc_versions value."]
-  validation_commands: ["cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_coding_agent_metadata.py tests/unit_tests/tui/test_textual_adapter.py -k 'ContractCompliance or versions_contains_cli_version or versions_marks_editable_cli_version'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_configuration.py tests/unit_tests/test_configuration_resolver.py -k 'managed_provider_failure_is_fail_closed or corrupt_managed_config_does_not_empty_the_mcp_deny_set or durable_found_masks_only_lower_priority_ephemeral_tiers'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_ask_user_types.py -k 'MultiSelectAnswerEncoding or AskUserAnswerIsEmpty'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k UserMessageAppearance"]
+  invariants: ["A valid managed policy masks lower-precedence environment values for replacement options.", "An empty or malformed multi-select answer never becomes Auto consent evidence.", "Sent-prompt continuation lines align under the message body, not the prefix glyph.", "Full-message selection returns submitted text rather than display-truncated content.", "The first assistant-text fragment renders immediately and later fragments are batched without loss at stream shutdown.", "Trace-wide editable metadata is always a boolean and agrees with the dcode lc_versions value."]
+  validation_commands: ["cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_coding_agent_metadata.py tests/unit_tests/tui/test_textual_adapter.py -k 'ContractCompliance or versions_contains_cli_version or versions_marks_editable_cli_version'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_configuration.py tests/unit_tests/test_configuration_resolver.py -k 'managed_provider_failure_is_fail_closed or corrupt_managed_config_does_not_empty_the_mcp_deny_set or durable_found_masks_only_lower_priority_ephemeral_tiers'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_ask_user_types.py -k 'MultiSelectAnswerEncoding or AskUserAnswerIsEmpty'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k UserMessageAppearance", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k TestAssistantMessageStreamCoalescing"]
 ---
 # Deep Agents Code: runtime, approvals, and MCP trust
 
@@ -142,6 +142,37 @@ uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_te
 ```
 
 Broaden to the surrounding message-widget tests when changing collapse, selection, pointer handling, mode parsing, or queued-message behavior. Do not run server, approval, or integration tests for a CSS/layout-only change unless the edit also crosses the client/server submission boundary.
+
+## Assistant response streaming
+
+Consult this section when changing dcode assistant-text latency, markdown streaming, batching, or turn-exit cleanup. This is a **Textual transcript** concern, not a graph-execution change: the adapter that receives streamed graph events dispatches output to `AssistantMessage` in `libs/code/deepagents_code/tui/widgets/messages.py`.
+
+```mermaid
+flowchart TD
+    Fragment["Assistant text fragment"] --> Append["append_content stores source text"]
+    Append --> First{"Flush timer exists"}
+    First -->|No| Immediate["Write first fragment immediately"]
+    Immediate --> Timer["Start 100 ms flush timer"]
+    First -->|Yes| Pending["Buffer later fragment"]
+    Timer --> Flush["Flush pending text to MarkdownStream"]
+    Pending --> Flush
+    Finish["Completion or adapter exit"] --> Stop["Stop timer and flush pending text"]
+    Stop --> Final["Stop stream and re-render full markdown"]
+```
+
+This lifecycle makes the first visible assistant text prompt while preserving timer coalescing for later fragments, which avoids a markdown write per token on the UI event loop.
+
+`AssistantMessage.append_content()` appends every non-empty fragment to `_content_parts` and `_pending_append`. With no timer, it awaits `_flush_pending_append()` immediately and then creates one interval timer at `_STREAM_FLUSH_INTERVAL` (0.1 seconds). With a timer already running, it only buffers the text; the timer drains it. `_flush_pending_append()` restores text to the front of the buffer after a write failure, logs the rendering error, and leaves a later tick able to retry rather than dropping content.
+
+`stop_stream()` is the ordinary terminal boundary: it stops the timer, drains pending text, stops `MarkdownStream`, and fully re-renders `_content` to preserve the existing fenced-code correctness workaround. `set_content()` instead stops the timer, clears pending text, stops an active stream, and performs one replacement render. `execute_task_textual()`’s `finally` calls `_stop_assistant_streams()` as an error-path backstop, so a non-cancellation mid-stream error also drains buffered content; that cleanup must not mask the original exception. This adapter-to-widget relationship prevents a silent truncated reply when a stream exits unexpectedly.
+
+When modifying this seam, preserve all of these observable boundaries: the first fragment is immediate, later writes are coalesced by a single timer, full source content remains available for final rendering, stream completion drains pending text, and replacement content cannot be overwritten by a stale timer. Do not move batching into graph assembly or apply it to sent `UserMessage` rendering. Changes that alter event ownership or when a stream is finalized should additionally inspect `tui/textual_adapter.py` and its stream-loop tests; ordinary widget batching does not require server, approval, or integration checks.
+
+The narrow behavioral suite is `libs/code/tests/unit_tests/tui/widgets/test_messages.py::TestAssistantMessageStreamCoalescing`. Its `test_first_append_flushes_immediately`, `test_timer_flushes_later_text`, `test_stop_stream_flushes_and_cancels_timer`, and `test_set_content_drains_and_cancels_active_timer` cover first-write latency, later batching, completion drain, and stale-timer isolation. Run it quietly from `libs/code`:
+
+```bash
+uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k TestAssistantMessageStreamCoalescing
+```
 
 ## Approval modes are safety policy, not containment
 

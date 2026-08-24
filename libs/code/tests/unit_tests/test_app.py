@@ -18316,6 +18316,34 @@ class TestActionOpenEditor:
         assert text_area.text == "edited"
         chat_input.focus_input.assert_called_once()
 
+    async def test_prompt_search_cancel_preserves_external_editor_result(self) -> None:
+        """Escape after Ctrl+X should not restore the pre-editor draft."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            text_area = chat_input._text_area
+            assert text_area is not None
+            text_area.insert("original draft")
+            chat_input.open_prompt_search()
+            await pilot.pause()
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="external editor result",
+                ),
+            ):
+                await app.action_open_editor()
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert chat_input._prompt_search_active is False
+            assert text_area.text == "external editor result"
+
     async def test_no_update_when_editor_returns_none(self) -> None:
         app = DeepAgentsApp(agent=MagicMock())
         text_area = MagicMock()

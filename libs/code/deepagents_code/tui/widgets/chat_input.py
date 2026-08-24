@@ -3766,22 +3766,27 @@ class ChatInput(Vertical):
                 modal skips this so the modal's own filter input takes focus.
         """
         draft = self._prompt_search_draft
+        cursor = self._prompt_search_cursor
         self._prompt_search_draft = None
+        self._prompt_search_cursor = None
         self._prompt_search_query = ""
         self._prompt_search_prompts = ()
         self._prompt_search_filtered = []
         self._prompt_search_index = 0
         if self._prompt_search is not None:
             self._prompt_search.hide()
-        if restore_draft and draft is not None and self._text_area is not None:
+        if (
+            restore_draft
+            and draft is not None
+            and self._text_area is not None
+            and self._text_area.text == draft
+        ):
             self._text_area._skip_history_change_events += 1
             self._text_area.text = draft
             # Restore the exact cursor position from the snapshot, matching
             # readline/codex cancel semantics rather than jumping to the end.
-            cursor = self._prompt_search_cursor
             if cursor is not None:
                 self._text_area.move_cursor(cursor)
-            self._prompt_search_cursor = None
         if refocus:
             self.focus_input()
 

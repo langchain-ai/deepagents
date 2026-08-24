@@ -7544,6 +7544,26 @@ class TestPromptSearchPanel:
             assert chat._prompt_search_active is False
             assert chat._text_area.text == "my draft"
 
+    async def test_escape_preserves_concurrently_updated_draft(self, tmp_path) -> None:
+        """Cancel should not replace a draft changed outside prompt search."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["some prompt"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("original draft")
+            chat.open_prompt_search()
+            await pilot.pause()
+
+            chat.value = "external editor result"
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat.value == "external editor result"
+
     async def test_typing_does_not_enter_textarea(self, tmp_path) -> None:
         app = _RecordingApp()
         async with app.run_test() as pilot:

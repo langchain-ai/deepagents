@@ -40,6 +40,7 @@ from unit_tests.conftest import redirect_managed_config, resolve_option_for_test
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
+    from urllib.request import Request
 
 
 def _resolve(
@@ -580,6 +581,77 @@ def test_remote_managed_policy_outranks_lower_sources(
         toml_data={"startup": {"mode": "yolo"}},
         managed_toml_data=service.get_managed_snapshot().data,
     ) == ("manual", "managed config")
+
+
+def test_remote_opener_installs_both_destination_guards() -> None:
+    """The real opener rejects redirects, not just environment proxies.
+
+    The safe-failure parametrization above stubs an `HTTPError(302)`, so it
+    pins the message mapping and not the handler that makes a real 302 raise
+    at all. Without this test, deleting `_RejectRedirects` from the opener
+    turns an administrator-pinned host into attacker-chosen egress with the
+    whole suite still green.
+    """
+    from urllib.request import HTTPRedirectHandler, ProxyHandler
+
+    from deepagents_code.configuration.providers import _build_remote_opener
+
+    # `handlers` is set in `OpenerDirector.__init__` but absent from typeshed,
+    # so read it the way the proxy assertion above reads `proxies`.
+    handlers: list[Any] = vars(_build_remote_opener())["handlers"]
+    # `ProxyHandler({})` registers no `*_open` method, so `build_opener` never
+    # adds it to the chain. Passing it still does the work: it displaces the
+    # default `ProxyHandler` class, whose `getproxies()` would install
+    # `HTTPS_PROXY`. Absence is therefore the assertion that env proxies lost.
+    assert not any(isinstance(h, ProxyHandler) for h in handlers)
+    redirectors = [h for h in handlers if isinstance(h, HTTPRedirectHandler)]
+    assert len(redirectors) == 1
+    assert (
+        redirectors[0].redirect_request(
+            None,
+            None,
+            302,
+            "Found",
+            Message(),
+            "https://elsewhere.example/policy.toml",
+        )
+        is None
+    )
+
+
+def test_remote_descriptor_source_is_the_url_fetched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The descriptor's URL reaches the request, normalized and unsubstituted.
+
+    Every other service-level remote test stubs `RemoteTomlProvider.load`
+    wholesale, so nothing ties `[managed_config].source` in the local trust
+    anchor to the host actually contacted. This walks descriptor to request.
+    """
+    from deepagents_code.configuration import providers, service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "  https://Config.Example.com./policy.toml  "\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+    captured: dict[str, object] = {}
+
+    class Opener:
+        def open(self, request: Request, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            captured["url"] = request.full_url
+            return _RemoteResponse(b'[startup]\nmode = "manual"\n')
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    service.invalidate_config_sources()
+
+    require_healthy_managed_config(refresh=True)
+
+    assert captured["url"] == "https://config.example.com/policy.toml"
+    assert service.get_managed_snapshot().data == {"startup": {"mode": "manual"}}
 
 
 def test_failed_remote_reload_keeps_previous_policy(

@@ -2969,7 +2969,10 @@ class Settings:
             _ranked_source,
             get_option,
         )
-        from deepagents_code.configuration.resolver import get_config_resolver
+        from deepagents_code.configuration.resolver import (
+            get_config_resolver,
+            resolver_from_snapshots,
+        )
 
         # A real `/reload` exists to pick up file edits made since the shared
         # resolver's snapshot was taken. Refreshing every provider here is what
@@ -2992,6 +2995,24 @@ class Settings:
 
         shell_option = get_option("shell.allow_list")
         if shell_option is not None:
+            if refresh_managed:
+                shell_resolver = resolver
+            else:
+                # The shared resolver's cached user snapshot may predate the
+                # edit being previewed, which would show no allow-list change
+                # while the real reload applies it. Read the user file fresh —
+                # but keep the current managed snapshot, because a preview must
+                # not refresh policy the process is enforcing. The skills read
+                # below needs no fresh user tier: it only accepts
+                # managed-decided values.
+                from deepagents_code.configuration.providers import TomlFileProvider
+                from deepagents_code.configuration.service import get_managed_snapshot
+                from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+                shell_resolver = resolver_from_snapshots(
+                    get_managed_snapshot(),
+                    TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load(),
+                )
             # Accepting an *env*-tier hit would defeat the `env` argument this
             # method exists to honor: the resolver's env provider reads
             # `os.environ` directly, so a preview of a `.env` edit reported the
@@ -2999,7 +3020,7 @@ class Settings:
             # Managed policy and the user's file are file-backed and safe to
             # take from here; the env tier stays with the `env`-derived value
             # computed above.
-            shell_resolved = resolver.get(shell_option)
+            shell_resolved = shell_resolver.get(shell_option)
             _emit_ranked_diagnostics(shell_option, shell_resolved)
             shell_source = _ranked_source(shell_resolved)
             if managed_decided(shell_source) or shell_source == "config.toml":

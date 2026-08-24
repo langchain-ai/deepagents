@@ -118,6 +118,28 @@ class TestReloadFromEnvironment:
         assert settings.shell_allow_list is None
         assert "DEEPAGENTS_CODE_SHELL_ALLOW_LIST" not in os.environ
 
+    def test_preview_reload_sees_shell_allow_list_toml_edit(
+        self, tmp_path: Path
+    ) -> None:
+        """A preview reports a `[shell].allow_list` edit made since startup.
+
+        The shared resolver's user snapshot is cached at startup; a preview
+        that read it would report no change while the accepted reload applies
+        the edit, breaking the preview/apply contract. The preview resolves
+        the user tier from a fresh file read instead.
+        """
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.shell_allow_list is None
+
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        changes = settings.preview_reload_from_environment(start_path=tmp_path)
+
+        assert any(change.startswith("shell_allow_list:") for change in changes)
+        assert settings.shell_allow_list is None
+
     def test_preserves_model_state(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

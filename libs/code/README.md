@@ -75,11 +75,14 @@ policy. Remote policy cannot declare another `[managed_config]` source. The URL
 must use HTTPS and cannot contain credentials, a query string, or a fragment.
 `dcode` connects directly with the system TLS trust store, ignores environment
 proxy settings, refuses redirects, times out after five seconds, and rejects
-responses larger than 1 MiB. Private enterprise hosts are supported because the
-administrator-owned URL is the destination allowlist. There is no persistent
-cache or remote authentication in this prototype. A fetch failure blocks startup
-just like an unreadable local policy; a failed `/reload` keeps the last policy
-that was enforceable in the running process.
+responses larger than 1 MiB. Note that `SSL_CERT_FILE` and `SSL_CERT_DIR` still
+select the trust store, so a local user who controls the environment of the
+`dcode` process can substitute the certificate authorities this fetch accepts.
+Private enterprise hosts are supported because the administrator-owned URL is
+the destination allowlist. There is no persistent cache or remote
+authentication. A fetch failure blocks startup just like an unreadable local
+policy; a failed `/reload` keeps the last policy that was enforceable in the
+running process.
 
 For an agent launch, managed values also override these CLI flags: the model,
 the auto-classifier model, the interpreter toggle, the programmatic tool-calling

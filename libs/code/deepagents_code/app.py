@@ -10193,7 +10193,11 @@ class DeepAgentsApp(App):
 
         try:
             worker = self.run_worker(
-                self._run_shell_task(command, incognito=True),
+                self._run_shell_task(
+                    command,
+                    incognito=True,
+                    output_as_app_message=True,
+                ),
                 exclusive=False,
             )
         except Exception:
@@ -11745,7 +11749,13 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
-    async def _run_shell_task(self, command: str, *, incognito: bool = False) -> None:
+    async def _run_shell_task(
+        self,
+        command: str,
+        *,
+        incognito: bool = False,
+        output_as_app_message: bool = False,
+    ) -> None:
         """Run a shell command in a background worker.
 
         This mirrors `_run_agent_task`: running in a worker keeps the event
@@ -11755,6 +11765,7 @@ class DeepAgentsApp(App):
         Args:
             command: The shell command to execute.
             incognito: Whether the command/output should remain local-only.
+            output_as_app_message: Render output as app status instead of shell output.
 
         Raises:
             CancelledError: If the command is interrupted by the user.
@@ -11803,7 +11814,7 @@ class DeepAgentsApp(App):
                 output += f"\n[stderr]\n{stderr_text}"
 
             if output:
-                if incognito:
+                if output_as_app_message:
                     await self._mount_message(
                         AppMessage(f"```text\n{output}\n```", markdown=True),
                     )

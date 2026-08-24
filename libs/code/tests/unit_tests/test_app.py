@@ -17697,8 +17697,8 @@ class TestShellCommandInterrupt:
             coro = mock_rw.call_args[0][0]
             coro.close()
 
-    async def test_incognito_shell_output_is_app_message(self) -> None:
-        """Incognito shell output should avoid assistant transcript records."""
+    async def test_incognito_shell_output_uses_regular_shell_widget(self) -> None:
+        """Incognito output should use the regular shell output widget."""
         from deepagents_code.tui.widgets.message_store import MessageType
 
         app = DeepAgentsApp()
@@ -17729,15 +17729,15 @@ class TestShellCommandInterrupt:
 
         messages = app._message_store.get_all_messages()
         assert any(
-            msg.type == MessageType.APP and msg.content == "```text\nsecret\n```"
+            msg.type == MessageType.ASSISTANT
+            and msg.assistant_local_only
+            and msg.content == "```text\nsecret\n```"
             for msg in messages
         )
         assert not any(
-            msg.type in {MessageType.USER, MessageType.ASSISTANT}
-            and "secret" in msg.content
-            for msg in messages
+            msg.type == MessageType.APP and "secret" in msg.content for msg in messages
         )
-        write_mock.assert_not_awaited()
+        write_mock.assert_awaited_once()
 
     async def test_incognito_nonzero_exit_keeps_stderr_out_of_model(self) -> None:
         """A failing incognito command must not leak stderr to model records."""
@@ -17995,6 +17995,15 @@ class TestShellCommandInterrupt:
                 await app._run_startup_command("echo secret-startup")
                 await pilot.pause()
 
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        messages = app._message_store.get_all_messages()
+        assert any(
+            msg.type == MessageType.APP
+            and msg.content == "```text\nsecret-startup\n```"
+            for msg in messages
+        )
+        assert not any(msg.type == MessageType.ASSISTANT for msg in messages)
         assert app._pending_shell_messages == []
         app._agent.aupdate_state.assert_not_awaited()
 

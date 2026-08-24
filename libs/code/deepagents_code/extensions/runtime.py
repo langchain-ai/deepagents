@@ -33,6 +33,8 @@ class ExtensionLoadResult:
 
     registry: ExtensionRegistry = field(default_factory=ExtensionRegistry)
     errors: tuple[str, ...] = ()
+    active: bool = False
+    """Whether at least one authorized extension source activated the runtime."""
 
 
 _shutdown_registry: ExtensionRegistry | None = None
@@ -117,7 +119,7 @@ async def load_extensions(
         except Exception as exc:
             logger.exception("Unexpected extension failure: %s", source.path)
             errors.append(f"{source.path}: {type(exc).__name__}: {exc}")
-    return ExtensionLoadResult(registry, tuple(errors))
+    return ExtensionLoadResult(registry, tuple(errors), active=True)
 
 
 def bind_server_extensions(

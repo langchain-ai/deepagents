@@ -59,6 +59,33 @@ def _plugin(root: Path, entries: list[str]) -> PluginInstance:
     )
 
 
+async def test_experimental_mode_gates_runtime_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disabled experiment performs no config, trust, or plugin lookup."""
+    from deepagents_code.extensions import runtime
+
+    monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL")
+
+    def fail(*_: object, **__: object) -> None:
+        msg = "extension runtime crossed the experimental gate"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(runtime, "load_extension_settings", fail)
+    monkeypatch.setattr(runtime, "is_project_extensions_trusted", fail)
+    monkeypatch.setattr("deepagents_code.plugins.discover_plugins", fail)
+
+    result = await load_extensions(
+        project_root=tmp_path,
+        project_trust_granted=True,
+        cli_paths=(tmp_path / "extension.py",),
+    )
+
+    assert not result.registry.registrations()
+    assert not result.errors
+    assert not result.active
+
+
 async def test_failures_roll_back_and_teardown_stays_on_factory_loop(
     tmp_path: Path,
 ) -> None:

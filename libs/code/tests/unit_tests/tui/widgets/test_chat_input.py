@@ -5144,6 +5144,20 @@ class TestChatInputTypingBubble:
 
             assert app.chat_input_typing_count == 2
 
+    async def test_prompt_search_typing_bubbles_to_chat_input(self) -> None:
+        """Editing the prompt-search query should count as typing activity."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            chat_input.open_prompt_search()
+            await pilot.pause()
+
+            before = app.chat_input_typing_count
+            await pilot.press("y")
+            await pilot.pause()
+
+            assert app.chat_input_typing_count == before + 1
+
 
 class TestArgumentHints:
     """Test inline argument-hint ghost text for slash commands."""

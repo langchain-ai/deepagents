@@ -3900,6 +3900,7 @@ class ChatInput(Vertical):
             return
         if not isinstance(event.input, PromptSearchInput):
             return
+        self.post_message(self.Typing())
         self._prompt_search_query = event.value
         self._prompt_search_index = 0
         self._refresh_prompt_search_panel()

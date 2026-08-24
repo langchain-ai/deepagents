@@ -544,6 +544,55 @@ def test_real_manifest_options_merge_across_tiers() -> None:
     assert set(columns.value) == {"title", "summary"}
 
 
+def test_reload_with_replacements_rejects_an_unknown_rank(tmp_path: Path) -> None:
+    """A replacement for a rank this resolver does not have is a mistake."""
+    managed_path = tmp_path / "managed.toml"
+    managed_path.write_text('startup.mode = "manual"\n', encoding="utf-8")
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot(
+            {"startup": {"mode": "manual"}},
+            ProviderStatus("managed config", managed_path, ProviderHealth.OK),
+        ),
+        user=TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+    )
+
+    with pytest.raises(ValueError, match="unknown provider ranks"):
+        resolver.reload_with_replacements(
+            {
+                999: TomlFileProvider(
+                    "managed config",
+                    managed_path,
+                    999,
+                    True,
+                )
+            }
+        )
+
+
+def test_reload_with_replacements_rejects_an_unusable_source(tmp_path: Path) -> None:
+    """An unusable replacement would silently drop the tier's restrictions.
+
+    Replacements bypass `TomlFileProvider.reload`, and with it the guarantee
+    that a snapshot the source cannot use never displaces the last usable one.
+    An unusable snapshot carries an empty table, which resolves as "declares
+    nothing" -- so installing one at `MANAGED_RANK` reads as "no policy".
+    """
+    managed_path = tmp_path / "managed.toml"
+    managed_path.write_text("[startup\n", encoding="utf-8")
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot(
+            {"startup": {"mode": "manual"}},
+            ProviderStatus("managed config", managed_path, ProviderHealth.OK),
+        ),
+        user=TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+    )
+    broken = TomlFileProvider("managed config", managed_path, MANAGED_RANK, True)
+    broken.reload()
+
+    with pytest.raises(ValueError, match="unusable"):
+        resolver.reload_with_replacements({MANAGED_RANK: broken})
+
+
 def test_an_ignored_managed_snapshot_is_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

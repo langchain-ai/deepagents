@@ -249,16 +249,35 @@ class ConfigResolver:
         Args:
             replacements: Providers already bound to the desired generation,
                 keyed by the rank they replace. Replacements are installed but
-                not reloaded.
+                not reloaded, so each must already hold a usable snapshot.
 
         Raises:
-            ValueError: If a replacement rank is not in this resolver.
+            ValueError: If a replacement rank is not in this resolver, or a
+                replacement's source is not usable.
         """
         with self._lock:
             ranks = {provider.rank for provider in self._providers}
             unknown = replacements.keys() - ranks
             if unknown:
                 msg = f"cannot replace unknown provider ranks: {sorted(unknown)}"
+                raise ValueError(msg)
+            # A replacement bypasses `reload`, and with it the guarantee that a
+            # snapshot the source cannot use never displaces the last usable
+            # one. An unusable snapshot carries an empty table, which resolves
+            # as "this source declares nothing" -- so installing one at
+            # `MANAGED_RANK` silently drops policy and lets lower ranks win.
+            # Today's only caller validates first; the contract should not
+            # depend on that.
+            unusable = sorted(
+                rank
+                for rank, provider in replacements.items()
+                if not provider.status().usable
+            )
+            if unusable:
+                msg = (
+                    f"replacement providers at ranks {unusable} are unusable; "
+                    "installing one would drop the source's restrictions"
+                )
                 raise ValueError(msg)
             self._providers = tuple(
                 replacements.get(provider.rank, provider)

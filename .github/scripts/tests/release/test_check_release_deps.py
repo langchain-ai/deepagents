@@ -201,7 +201,7 @@ def test_load_release_packages_resolves_name_then_component_then_path(tmp_path) 
                         "package-name": "deepagents",
                         "component": "sdk",
                     },
-                    "libs/cli": {"component": "cli"},
+                    "libs/talon": {"component": "talon"},
                     "libs/acp": {},
                     "libs/skip": "not-a-dict",
                 }
@@ -214,7 +214,7 @@ def test_load_release_packages_resolves_name_then_component_then_path(tmp_path) 
 
     assert packages == {
         "libs/deepagents": "deepagents",
-        "libs/cli": "cli",
+        "libs/talon": "talon",
         "libs/acp": "libs/acp",
     }
 

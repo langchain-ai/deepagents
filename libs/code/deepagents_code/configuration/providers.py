@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 import tomllib
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, assert_never, cast, override
@@ -582,14 +583,22 @@ def _validate_remote_url(source: str) -> str:
     return parsed._replace(scheme="https", netloc=netloc).geturl()
 
 
-def _read_limited_response(response: HTTPResponse) -> bytes:
-    """Read one response without crossing the policy-size boundary.
+_READ_CHUNK_SIZE = 65536
+
+
+def _read_limited_response(
+    response: HTTPResponse,
+    *,
+    deadline: float,
+) -> bytes:
+    """Read one response without crossing the size or time boundary.
 
     Returns:
         The bounded response body.
 
     Raises:
         ValueError: If the declared or actual body exceeds the fixed limit.
+        TimeoutError: If the total elapsed time crosses *deadline*.
     """
     raw_length = response.headers.get("Content-Length")
     if raw_length is not None:
@@ -600,7 +609,18 @@ def _read_limited_response(response: HTTPResponse) -> bytes:
         if declared > REMOTE_MANAGED_CONFIG_MAX_BYTES:
             msg = "remote source response exceeds the size limit"
             raise ValueError(msg)
-    payload = response.read(REMOTE_MANAGED_CONFIG_MAX_BYTES + 1)
+    chunks: list[bytes] = []
+    remaining = REMOTE_MANAGED_CONFIG_MAX_BYTES + 1
+    while remaining > 0:
+        if time.monotonic() >= deadline:
+            msg = "remote source timed out"
+            raise TimeoutError(msg)
+        chunk = response.read(min(_READ_CHUNK_SIZE, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    payload = b"".join(chunks)
     if len(payload) > REMOTE_MANAGED_CONFIG_MAX_BYTES:
         msg = "remote source response exceeds the size limit"
         raise ValueError(msg)
@@ -672,12 +692,13 @@ class RemoteTomlProvider:
             headers={"Accept": "application/toml"},
         )
         opener = build_opener(ProxyHandler({}), _RejectRedirects())
+        deadline = time.monotonic() + REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS
         try:
             with opener.open(
                 request,
                 timeout=REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS,
             ) as response:
-                payload = _read_limited_response(response)
+                payload = _read_limited_response(response, deadline=deadline)
         except HTTPError as exc:
             detail = (
                 "remote source refused redirects"

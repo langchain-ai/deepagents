@@ -270,15 +270,13 @@ def load_manifest(
             component_paths[field_name] = paths
 
     version_value = raw.get("version")
-    version = (
-        version_value if isinstance(version_value, str) and version_value else None
-    )
+    version = version_value if isinstance(version_value, str) else None
     display_name_value = raw.get("displayName")
     extension_settings = raw.get("extensions")
     if isinstance(extension_settings, dict):
         extension_settings = extension_settings.get("com.langchain.deepagents.code")
     python_extensions = _python_extensions(extension_settings, root, warnings)
-    if python_extensions and version is None:
+    if python_extensions and not version:
         warnings.append(
             f"ignoring {_PYTHON_EXTENSIONS_FIELD}: "
             "Python extensions require a non-empty plugin version"

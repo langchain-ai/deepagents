@@ -30,16 +30,6 @@ class SourceScope(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class RegistrySnapshot:
-    """Registration counts used to restore registry state."""
-
-    middleware: int
-    tools: int
-    backend_routes: int
-    shutdown_hooks: int
-
-
-@dataclass(frozen=True, slots=True)
 class SourceInfo:
     """An extension entry file, ownership, and import shape."""
 
@@ -111,21 +101,22 @@ class ExtensionRegistry:
         with self._lock:
             self._restart_required = True
 
-    def _snapshot(self) -> RegistrySnapshot:
+    def _snapshot(self) -> tuple[int, int, int, int]:
         with self._lock:
-            return RegistrySnapshot(
-                middleware=len(self.middleware),
-                tools=len(self.tools),
-                backend_routes=len(self.backend_routes),
-                shutdown_hooks=len(self.shutdown_hooks),
+            return (
+                len(self.middleware),
+                len(self.tools),
+                len(self.backend_routes),
+                len(self.shutdown_hooks),
             )
 
-    def _rollback(self, snapshot: RegistrySnapshot) -> None:
+    def _rollback(self, snapshot: tuple[int, int, int, int]) -> None:
         with self._lock:
-            del self.middleware[snapshot.middleware :]
-            del self.tools[snapshot.tools :]
-            del self.backend_routes[snapshot.backend_routes :]
-            del self.shutdown_hooks[snapshot.shutdown_hooks :]
+            middleware, tools, backend_routes, shutdown_hooks = snapshot
+            del self.middleware[middleware:]
+            del self.tools[tools:]
+            del self.backend_routes[backend_routes:]
+            del self.shutdown_hooks[shutdown_hooks:]
 
     def retain_api(self, api: ExtensionAPI) -> None:
         """Keep a successful factory registrar active for this session."""

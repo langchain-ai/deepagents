@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, assert_never, cast
 
 from deepagents_code._env_vars import classify_env_bool
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.resolver import RankedProviderValue
 
+from deepagents_code.configuration.resolver import (
+    DEFAULT_RANK,
+    ENVIRONMENT_RANK,
+    USER_RANK,
+)
 from deepagents_code.configuration.types import (
     Found,
     Invalid,
@@ -32,6 +38,21 @@ SHADOWED_TABLE_SUFFIX = "— every option under it falls back to its next source
 warning across a full-manifest pass. Both sides must share one constant: a
 reworded message that no longer matches would silently restore roughly one
 duplicated line per option for a single typo.
+"""
+
+UNUSABLE_SOURCE_SUFFIX = "— using defaults for every option it would have set"
+"""Tail of the rejection raised when a whole TOML source could not be read.
+
+Deduplicated the same way, and for the same reason: a rejected file affects
+every option at once, so the warning belongs to the file, not to each key.
+"""
+
+RETAINED_SOURCE_SUFFIX = "— still applying the last readable version of it"
+"""Tail of the rejection raised when a failed reload kept the previous values.
+
+Distinct from `UNUSABLE_SOURCE_SUFFIX` because the consequence is different:
+nothing fell back to a default, but the file on disk no longer describes what
+the process is enforcing, and an edit the user just made is not in effect.
 """
 
 
@@ -355,8 +376,11 @@ def ranked_theme_toml_value(
     Returns:
         Ranked theme result with the selected TOML path in its display status.
     """
-    from deepagents_code.app import _resolve_terminal_mapping, _resolve_theme_name
     from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.theme_resolution import (
+        resolve_terminal_mapping,
+        resolve_theme_name,
+    )
 
     if not status.usable:
         return RankedProviderValue(rank, durable, status, Unset())
@@ -370,7 +394,7 @@ def ranked_theme_toml_value(
         )
         return RankedProviderValue(rank, durable, status, result)
 
-    resolved = _resolve_terminal_mapping(ui)
+    resolved = resolve_terminal_mapping(ui)
     if resolved is not None:
         import os
 
@@ -382,7 +406,7 @@ def ranked_theme_toml_value(
         return RankedProviderValue(rank, durable, selected, Found(resolved))
 
     saved = ui.get("theme")
-    resolved = _resolve_theme_name(saved)
+    resolved = resolve_theme_name(saved)
     if resolved is not None:
         selected = replace(status, name=f"{status.name} [ui.theme]")
         return RankedProviderValue(rank, durable, selected, Found(resolved))
@@ -405,14 +429,14 @@ def ranked_theme_environment_value(
         Ranked theme result with the concrete variable name in its status.
     """
     from deepagents_code._env_vars import THEME
-    from deepagents_code.app import _resolve_theme_name
     from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.theme_resolution import resolve_theme_name
 
     status = ProviderStatus(f"env ({THEME})", None, ProviderHealth.OK)
     raw = environ.get(THEME)
     if raw is None:
         return RankedProviderValue(rank, False, status, Unset())
-    resolved = _resolve_theme_name(raw)
+    resolved = resolve_theme_name(raw)
     if resolved is not None:
         return RankedProviderValue(rank, False, status, Found(resolved))
     return RankedProviderValue(
@@ -459,19 +483,67 @@ def ranked_default_value(
     return RankedProviderValue(rank, True, status, Found(value))
 
 
+@dataclass(slots=True)
+class _TomlSnapshotState:
+    """Mutable snapshot cell owned by a frozen provider."""
+
+    value: TomlSnapshot | None = None
+    """Last usable snapshot, or the empty failed snapshot from an initial read."""
+
+    failure: ProviderStatus | None = None
+    """Status of the most recent failed reload, kept for health reporting."""
+
+
 @dataclass(frozen=True, slots=True)
 class TomlFileProvider:
-    """Provider that parses one local TOML file per `load` call."""
+    """Ranked provider backed by one local TOML file snapshot."""
 
     name: str
-    path: Path
+    path: Path | None
+    """File this provider reads, or `None` for a snapshot with no known origin.
+
+    A `None` path is not a filename to guess at. Inventing one would make
+    `load` read a relative path against the process working directory, and for
+    the managed tier that is a trust boundary, not a cosmetic default.
+    """
+
+    rank: int = USER_RANK
+    durable: bool = True
+    snapshot: TomlSnapshot | None = field(default=None, repr=False, compare=False)
+    loader: Callable[[], TomlSnapshot] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _state: _TomlSnapshotState = field(
+        default_factory=_TomlSnapshotState,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Seed the mutable snapshot cell when a generation is supplied."""
+        self._state.value = self.snapshot
 
     def load(self) -> TomlSnapshot:
         """Parse the file and classify missing, unreadable, or corrupt states.
 
         Returns:
-            Parsed data and provider health.
+            Parsed data and provider health. A provider with no path reports
+            `INDETERMINATE`, which is not usable: an empty read proves nothing
+            about a file whose location is unknown.
         """
+        if self.path is None:
+            return TomlSnapshot(
+                {},
+                ProviderStatus(
+                    self.name,
+                    None,
+                    ProviderHealth.INDETERMINATE,
+                    "no path is known for this source, so it cannot be re-read",
+                ),
+            )
         try:
             with self.path.open("rb") as handle:
                 data = tomllib.load(handle)
@@ -521,3 +593,225 @@ class TomlFileProvider:
             data,
             ProviderStatus(self.name, self.path, ProviderHealth.OK),
         )
+
+    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+        """Read one option from the current file snapshot.
+
+        Args:
+            option: Manifest option to read.
+
+        Returns:
+            Ranked and coerced provider result.
+        """
+        from deepagents_code.config_manifest import OptionKind
+
+        snapshot = self.current_snapshot()
+        if option.kind is OptionKind.THEME_DELEGATE:
+            ranked = ranked_theme_toml_value(
+                snapshot.data,
+                rank=self.rank,
+                durable=self.durable,
+                status=snapshot.status,
+            )
+        else:
+            ranked = ranked_toml_value(
+                option,
+                snapshot.data,
+                rank=self.rank,
+                durable=self.durable,
+                status=snapshot.status,
+            )
+        # The status of the file on disk, which is not the status of the
+        # snapshot resolution just read: a failed reload keeps enforcing the
+        # last readable generation while `failure` records why the current
+        # contents were refused.
+        failure = self._state.failure
+        return self._with_rejection_diagnostic(
+            ranked,
+            failure or snapshot.status,
+            # Values were retained only when the generation in hand is itself
+            # usable. A first read that fails records a failure too, but there
+            # is no earlier generation behind it - those options fall back.
+            retained=snapshot.status.usable,
+        )
+
+    @staticmethod
+    def _with_rejection_diagnostic(
+        ranked: RankedProviderValue[object],
+        status: ProviderStatus,
+        *,
+        retained: bool,
+    ) -> RankedProviderValue[object]:
+        """Attach the reason when the file on disk was rejected as a whole.
+
+        Neither rejection is visible in the result otherwise. A file refused on
+        first read coerces to `Unset` for every option, which resolution reads
+        as "this source declares nothing" — indistinguishable from a file that
+        omits the key. A file refused on *reload* is quieter still: resolution
+        keeps returning the previous generation's values, so nothing looks
+        wrong at all while the user's latest edit silently fails to apply.
+
+        Args:
+            ranked: Result already coerced from the snapshot.
+            status: Health of the file on disk.
+            retained: Whether resolution is still serving an earlier generation
+                rather than falling through to lower tiers.
+
+        Returns:
+            The result, with a rejection diagnostic when the source is unusable.
+        """
+        if status.usable:
+            return ranked
+        location = f" ({status.path})" if status.path is not None else ""
+        detail = f": {status.detail}" if status.detail else ""
+        suffix = RETAINED_SOURCE_SUFFIX if retained else UNUSABLE_SOURCE_SUFFIX
+        reason = (
+            f"Ignoring {status.name}{location} — it is "
+            f"{status.health.value}{detail} {suffix}"
+        )
+        return replace(ranked, diagnostics=(reason, *ranked.diagnostics))
+
+    def status(self) -> ProviderStatus:
+        """Return health for the current file snapshot.
+
+        A failed reload reports its own health even though resolution keeps
+        using the retained snapshot: diagnostics must describe the file on
+        disk, not the generation still being enforced.
+
+        Raises:
+            RuntimeError: If a reload produces no snapshot.
+        """
+        state = self._state
+        if state.value is None:
+            self.reload()
+        if state.failure is not None:
+            return state.failure
+        snapshot = state.value
+        if snapshot is None:
+            msg = f"{self.name} reload produced no snapshot"
+            raise RuntimeError(msg)
+        return snapshot.status
+
+    def reload(self) -> None:
+        """Replace the current snapshot with a fresh file read.
+
+        A reload the source cannot use never replaces the last usable
+        snapshot. An unusable candidate carries an empty table, which
+        resolution reads as "this source declares nothing"; installing it
+        would drop the source's restrictions and let lower ranks win. The
+        failed status is still recorded so health surfaces report the file on
+        disk.
+        """
+        snapshot = self.loader() if self.loader is not None else self.load()
+        if snapshot.status.usable:
+            self._state.value = snapshot
+            self._state.failure = None
+        else:
+            if self._state.value is None:
+                self._state.value = snapshot
+            self._state.failure = snapshot.status
+
+    def current_snapshot(self) -> TomlSnapshot:
+        """Return the cached snapshot, loading it on first access.
+
+        Public so `ConfigResolver.toml_snapshot` can hand the generation this
+        provider is serving to a caller building a masked variant resolver.
+
+        Returns:
+            Current parsed file snapshot.
+
+        Raises:
+            RuntimeError: If a reload produces no snapshot.
+        """
+        if self._state.value is None:
+            self.reload()
+        snapshot = self._state.value
+        if snapshot is None:
+            msg = f"{self.name} reload produced no snapshot"
+            raise RuntimeError(msg)
+        return snapshot
+
+
+@dataclass(frozen=True, slots=True)
+class EnvProvider:
+    """Live process-environment configuration provider."""
+
+    name: str = "environment"
+    rank: int = ENVIRONMENT_RANK
+    environ: Mapping[str, str] = field(
+        default_factory=lambda: os.environ,
+        repr=False,
+        compare=False,
+    )
+
+    @property
+    def durable(self) -> bool:
+        """Never durable: the environment does not survive the process.
+
+        A property rather than a field because the coercion helpers below stamp
+        durability onto every value they emit. A settable field would
+        type-check, enter `__eq__`, and change nothing about masking - a lie in
+        the one attribute that decides whether a tier can hide another.
+        """
+        return False
+
+    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+        """Read one option from the live environment.
+
+        Args:
+            option: Manifest option to read.
+
+        Returns:
+            Ranked and coerced provider result.
+        """
+        from deepagents_code.config_manifest import OptionKind
+
+        if option.kind is OptionKind.THEME_DELEGATE:
+            return ranked_theme_environment_value(self.environ, rank=self.rank)
+        return ranked_environment_value(option, self.environ, rank=self.rank)
+
+    def status(self) -> ProviderStatus:
+        """Return the always-healthy environment provider status."""
+        return ProviderStatus(self.name, None, ProviderHealth.OK)
+
+    def reload(self) -> None:
+        """Keep reading the live environment without cached state."""
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultProvider:
+    """Typed manifest-default configuration provider."""
+
+    name: str = "default"
+    rank: int = DEFAULT_RANK
+
+    @property
+    def durable(self) -> bool:
+        """Always durable: manifest defaults are compiled into the process.
+
+        A property for the same reason as `EnvProvider.durable`: the value the
+        helpers stamp on each result is the truth, so the attribute must not be
+        able to disagree with it.
+        """
+        return True
+
+    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+        """Return one option's manifest default.
+
+        Args:
+            option: Manifest option whose default should be returned.
+
+        Returns:
+            Ranked default provider result.
+        """
+        ranked = ranked_default_value(option, rank=self.rank)
+        if isinstance(ranked.result, Unset):
+            return replace(ranked, result=Found(option.default))
+        return ranked
+
+    def status(self) -> ProviderStatus:
+        """Return the always-healthy default provider status."""
+        return ProviderStatus(self.name, None, ProviderHealth.OK)
+
+    def reload(self) -> None:
+        """Retain immutable manifest defaults without cached state."""

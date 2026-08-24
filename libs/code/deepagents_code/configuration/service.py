@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
-    from deepagents_code.configuration.resolver import ResolvedValue
+    from deepagents_code.configuration.resolver import ConfigResolver, ResolvedValue
 
 from deepagents_code.configuration.paths import (
     managed_config_path,
@@ -39,8 +39,8 @@ UNION_PATHS = frozenset(
 Deny lists must union across layers: replacing a managed deny list with a user
 one would be a fail-open.
 
-Governs the two *table merges* — `merge_managed_over_user` and
-`config_manifest.resolve_scalar`. It does not govern the two readers that union
+Governs the two *table merges* — `merge_managed_over_user` and the resolver's
+deep-merge strategy. It does not govern the two readers that union
 name sets rather than TOML tables: `model_config.load_mcp_server_trust_lists`
 and `mcp_disabled.get_disabled_servers` accumulate their own layers directly,
 including the env tier this set knows nothing about. A third deny list therefore
@@ -260,7 +260,7 @@ resolve, so a rename would turn enforcement into a silent no-op.
 
 
 def managed_declaration(
-    managed_data: Mapping[str, Any], toml_keys: tuple[str, ...]
+    managed_data: dict[str, Any], toml_keys: tuple[str, ...]
 ) -> Literal["declared", "shadowed"] | None:
     """Classify what managed policy says at one manifest path.
 
@@ -284,7 +284,7 @@ def managed_declaration(
 
 
 def managed_policy_violations(
-    managed_data: Mapping[str, Any],
+    managed_data: dict[str, Any],
     *,
     status: ProviderStatus | None = None,
 ) -> tuple[str, ...]:
@@ -348,7 +348,7 @@ def managed_policy_violations(
 
 def resolve_managed_option(
     key: str,
-    managed_data: Mapping[str, Any],
+    managed_data: dict[str, Any],
     *,
     status: ProviderStatus | None = None,
 ) -> ResolvedValue[object] | None:
@@ -357,20 +357,25 @@ def resolve_managed_option(
     Returns:
         The ranked resolution, or `None` when `key` is not manifest-backed.
     """
-    from deepagents_code.config_manifest import get_option, resolve_ranked_scalar
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
 
     option = get_option(key)
     if option is None:
         return None
-    return resolve_ranked_scalar(
-        option,
-        toml_data={},
-        managed_toml_data=managed_data,
-        managed_status=status,
-    )
+    # The caller is inspecting a specific managed generation — often a
+    # candidate being validated before it takes force — so resolution must not
+    # read the process-wide snapshots behind the shared resolver.
+    return resolver_from_snapshots(
+        managed=TomlSnapshot(
+            managed_data,
+            status or ProviderStatus("managed config", None, ProviderHealth.OK),
+        ),
+        user=TomlSnapshot.declaring_nothing("config.toml"),
+    ).get(option)
 
 
-def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:
+def managed_rejections(managed_data: dict[str, Any]) -> tuple[str, ...]:
     """Return manifest keys managed policy declares whose value was dropped.
 
     Not a launch failure: only `ENFORCED_MANAGED_KEYS` stops a launch, and every
@@ -419,7 +424,7 @@ def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def managed_section_shape_violations(
-    managed_data: Mapping[str, Any],
+    managed_data: dict[str, Any],
 ) -> tuple[str, ...]:
     """Return known managed sections declared as non-table values.
 
@@ -642,24 +647,34 @@ def get_config_sources(
 
 
 def invalidate_config_sources() -> None:
-    """Drop the cached managed snapshot.
+    """Drop the cached managed snapshot and the shared process resolver.
 
     Test-only. Production reloads pass `refresh=True` instead, which keeps the
     last snapshot that parsed cleanly if the new one fails; clearing the cache
     first would leave readers with an empty managed table on a failed reload.
+
+    Both caches are cleared together because they are keyed differently:
+    dropping only the managed snapshot leaves the resolver holding the previous
+    generation, which is the half most tests actually read.
     """
+    from deepagents_code.configuration.resolver import reset_config_resolver
+
     with _snapshot_lock:
         _snapshot_state.managed = None
+    reset_config_resolver()
 
 
-def require_healthy_managed_config(*, refresh: bool = False) -> None:
-    """Fail startup when present managed policy cannot be parsed or enforced.
+def get_healthy_managed_snapshot(*, refresh: bool = False) -> TomlSnapshot:
+    """Return managed policy only when it can be enforced.
 
     A file that parses is not necessarily enforceable: a privilege-affecting
     key can carry a value the manifest rejects, or a known section can be a
     scalar instead of a table. Both can otherwise resolve in the user's favor
     or erase a user subtree, so they stop the launch here rather than at each
     consumer.
+
+    Returns:
+        The exact managed snapshot that passed validation.
 
     Raises:
         ManagedConfigError: If managed policy is present but unusable.
@@ -673,11 +688,43 @@ def require_healthy_managed_config(*, refresh: bool = False) -> None:
     violations = managed_policy_violations(snapshot.data, status=status)
     if violations:
         raise ManagedPolicyError(status, violations)
+    return snapshot
+
+
+def require_healthy_managed_config(*, refresh: bool = False) -> None:
+    """Fail startup when present managed policy cannot be parsed or enforced.
+
+    Propagates from `get_healthy_managed_snapshot`: `ManagedConfigError` when
+    a managed file is present but unreadable, and `ManagedPolicyError` when it
+    parses but declares policy that cannot be enforced. Both fail startup at
+    every call site.
+
+    Args:
+        refresh: Re-read the managed file before checking it.
+    """
+    get_healthy_managed_snapshot(refresh=refresh)
+
+
+def _managed_resolver(snapshot: TomlSnapshot) -> ConfigResolver:
+    """Build a resolver whose managed provider owns `snapshot`.
+
+    Returns:
+        Resolver bound to the supplied managed generation.
+    """
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+
+    return resolver_from_snapshots(
+        managed=snapshot,
+        user=TomlSnapshot.absent("config.toml"),
+    )
 
 
 def managed_config_status(*, refresh: bool = False) -> ProviderStatus:
     """Return managed provider health for diagnostics and config inspection."""
-    return get_managed_snapshot(refresh=refresh).status
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+
+    snapshot = get_managed_snapshot(refresh=refresh)
+    return _managed_resolver(snapshot).provider_statuses()[MANAGED_RANK]
 
 
 @dataclass(frozen=True, slots=True)
@@ -713,7 +760,11 @@ def managed_health(*, refresh: bool = False) -> ManagedHealth:
     Returns:
         Health, violations, and ignored rejections that cannot disagree.
     """
-    return managed_snapshot_health(get_managed_snapshot(refresh=refresh))
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+
+    snapshot = get_managed_snapshot(refresh=refresh)
+    status = _managed_resolver(snapshot).provider_statuses()[MANAGED_RANK]
+    return managed_snapshot_health(replace(snapshot, status=status))
 
 
 def managed_snapshot_health(snapshot: TomlSnapshot) -> ManagedHealth:

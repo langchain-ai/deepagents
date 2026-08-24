@@ -43,6 +43,7 @@ warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarnin
 
 from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
 from deepagents_code._version import __version__
+from deepagents_code.goal_state_limits import RUBRIC_CHAR_LIMIT, validate_rubric
 
 logger = logging.getLogger(__name__)
 
@@ -269,10 +270,11 @@ def _resume_term_program() -> str | None:
     """Return the `TERM_PROGRAM` value to echo in the resume hint, if any.
 
     Gated on `features.resume_term_program` (off unless the user opts in, on by
-    default in debug or experimental mode), so this reads `config.toml` from
-    disk. The value comes from `LAUNCH_TERM_PROGRAM` -- the snapshot `cli_main`
-    takes at process entry -- so a `TERM_PROGRAM` that only appears later, from
-    a project or global `.env` file, never reaches the hint.
+    default in debug or experimental mode), so this resolves the option through
+    the shared config resolver. The value comes from `LAUNCH_TERM_PROGRAM` --
+    the snapshot `cli_main` takes at process entry -- so a `TERM_PROGRAM` that
+    only appears later, from a project or global `.env` file, never reaches the
+    hint.
 
     Returns:
         The printable launch-time value when the feature is enabled, else `None`.
@@ -283,11 +285,8 @@ def _resume_term_program() -> str | None:
         `VAR=value` prefix. POSIX markers (`SHELL` from git-bash/MSYS,
         `MSYSTEM`, `WSL_DISTRO_NAME`) restore the prefix there.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("features.resume_term_program")
     if option is None:
@@ -298,8 +297,9 @@ def _resume_term_program() -> str | None:
             "features.resume_term_program",
         )
         return None
-    enabled, _ = resolve_scalar(option, toml_data=load_config_toml())
-    if not enabled:
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    if not resolved.value:
         return None
 
     raw = os.environ.get(LAUNCH_TERM_PROGRAM, "").strip()
@@ -1261,8 +1261,10 @@ def _resolve_rubric_text(rubric: str | None) -> str | None:
         The resolved rubric text, or `None` when the flag was not supplied.
 
     Raises:
-        ValueError: If the rubric is empty, or a referenced file is missing,
-            unreadable, or empty.
+        ValueError: If the rubric is empty, exceeds `RUBRIC_CHAR_LIMIT`, or a
+            referenced file is missing, unreadable, or empty. The size case is
+            a `GoalStateSizeError`, whose message names the limit and the
+            excess.
     """
     if rubric is None:
         return None
@@ -1285,12 +1287,28 @@ def _resolve_rubric_text(rubric: str | None) -> str | None:
         if not text.strip():
             msg = f"Rubric file {path!r} is empty."
             raise ValueError(msg)
-        return text.strip()
+        resolved = text.strip()
+        validate_rubric(resolved)
+        return resolved
 
     if not rubric.strip():
         msg = "--rubric must not be empty."
         raise ValueError(msg)
-    return rubric.strip()
+    resolved = rubric.strip()
+    validate_rubric(resolved)
+    return resolved
+
+
+# The standalone `validate_rubric` above is sufficient here, unlike `/rubric next`,
+# which additionally runs the combined notice check via `_next_rubric_size_error`.
+# That check exists because an in-session one-shot rubric is embedded in the notice
+# beside an actionable goal's objective and status note, and the pair can exceed
+# `GOAL_NOTICE_TEXT_CHAR_LIMIT` even when each fits alone. `--rubric` cannot reach
+# that state: it requires `-n`, and `run_non_interactive` takes no resume or
+# thread-id argument, so it always starts a fresh thread with no checkpointed goal.
+# `--goal` is rejected alongside `--rubric` and is interactive-only, so no goal
+# objective can be set on this path either. Add the combined check here if the
+# non-interactive path ever gains thread resumption.
 
 
 def _warn_if_interpreter_tools_without_interpreter(
@@ -2261,6 +2279,7 @@ def parse_args() -> argparse.Namespace:
         help="Acceptance criteria the agent self-evaluates against, looping "
         "until satisfied. Accepts literal text or '@path' to read a file "
         "(relative to the current working directory; '~' supported). "
+        f"Limited to {RUBRIC_CHAR_LIMIT:,} characters. "
         "Requires -n or piped stdin.",
     )
     parser.add_argument(
@@ -2302,14 +2321,18 @@ def parse_args() -> argparse.Namespace:
         "--auto-approve",
         action="store_true",
         default=None,
-        help="Enable classifier-backed Auto mode in the local TUI or ACP server.",
+        help=(
+            "Enable classifier-backed Auto mode in the local TUI or ACP server; "
+            "ignored with a warning in headless mode."
+        ),
     )
     approval_group.add_argument(
         "--yolo",
         action="store_true",
         help=(
             "Run gated actions without review after the one-time local risk "
-            "acknowledgement (interactive TUI or ACP mode)."
+            "acknowledgement (interactive TUI or ACP mode); ignored with a "
+            "warning in headless mode."
         ),
     )
 
@@ -4388,10 +4411,10 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
     if found:
         # Only *revoke*: `_resolve_approval_mode` ends at
         # `coerce_approval_mode(load_startup_mode())`, which already reads
-        # merged managed policy, so the positive value needs no flag. Setting
-        # the flags positively also breaks every headless launch, because
-        # `--auto-approve` with `--non-interactive-message` exits 2 — naming a
-        # flag the user never passed.
+        # merged managed policy, so the positive value needs no flag. The
+        # headless warning keys off `explicit_approval_flag`, captured before
+        # this runs, so a positive value set here would not warn — but it would
+        # still misreport a user-supplied flag to every other reader of `args`.
         if startup_mode != "auto":
             args.auto_approve = False
         if startup_mode != "yolo":
@@ -4525,6 +4548,13 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+        explicit_approval_flag = (
+            "--yolo"
+            if getattr(args, "yolo", False)
+            else "--auto-approve"
+            if getattr(args, "auto_approve", False)
+            else None
+        )
         allow_fs_tools = _parse_allow_fs_tools_flag(
             getattr(args, "allow_fs_tools", None)
         )
@@ -4767,23 +4797,60 @@ def cli_main() -> None:
 
             warn_if_editable_deps_stale()
 
-        # Validated here, before mode dispatch and any heavy session setup:
-        # `apply_stdin_pipe` has finalized `non_interactive_message` (the same
-        # predicate that selects the headless branch below), so this reliably
-        # rejects `--auto-approve` on both the `-n` and piped-stdin paths while
-        # leaving interactive launches untouched.
-        if (
-            args.auto_approve or getattr(args, "yolo", False)
-        ) and args.non_interactive_message:
+        # Checked *before* the approval-flag warning below, so a run that
+        # exits here does not first print a warning about `--auto-approve`
+        # being ignored — the exit is the outcome, and the warning would only
+        # add noise. Both flags are final by now: `args.sandbox` comes from
+        # `parse_args` and `apply_stdin_pipe` has settled
+        # `non_interactive_message`.
+        #
+        # Auto approval mode (and therefore its classifier) requires the
+        # interactive TUI *and* no sandbox — `agent.create_cli_agent` disables
+        # Auto for either. Accepting the flag in those runs would silently do
+        # nothing to a setting that governs action authorization.
+        if getattr(args, "auto_classifier_model", None) is not None and (
+            args.non_interactive_message or args.sandbox not in {"none", None}
+        ):
             from rich.console import Console as _Console
 
-            flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
+            unavailable_because = (
+                "a sandbox is in use"
+                if not args.non_interactive_message
+                else "it runs headlessly"
+            )
             _Console(stderr=True).print(
-                f"[bold red]Error:[/bold red] {flag} is only supported in "
-                "interactive mode. Headless mode uses fail-closed MCP routing and "
-                "--shell-allow-list for shell access."
+                "[bold red]Error:[/bold red] --auto-classifier-model is only "
+                "supported in the interactive TUI, where Auto approval mode "
+                f"runs; {unavailable_because}.\n"
+                "  dcode --auto-classifier-model anthropic:claude-haiku-4-5"
             )
             sys.exit(2)
+
+        # Cleared here, before mode dispatch reads the flags and before any
+        # session output could bury the warning: `apply_stdin_pipe` has
+        # finalized `non_interactive_message` (the same predicate that selects
+        # the headless branch below), so this reliably clears the flags on both
+        # the `-n` and piped-stdin paths while leaving interactive launches
+        # untouched. `explicit_approval_flag` was captured at parse time, so
+        # only a flag the user actually typed warns.
+        if explicit_approval_flag is not None and args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            # `soft_wrap` keeps the message on one line. Rich otherwise hard
+            # wraps at width 80 off a TTY, and the break moves with the flag
+            # name — leaving no substring a CI job can grep for both spellings.
+            # With the pre-existing `sys.exit(2)` gone, this text is the only
+            # signal that the requested mode was dropped. Deliberately not also
+            # logged: with no handler configured, `logging.lastResort` would
+            # emit a WARNING to the same stderr and double the message.
+            _Console(stderr=True).print(
+                f"[bold yellow]Warning:[/bold yellow] {explicit_approval_flag} has "
+                "no effect in headless mode; ignoring it. Shell access is "
+                "governed by --shell-allow-list, and MCP routing is fail-closed.",
+                soft_wrap=True,
+            )
+            args.auto_approve = False
+            args.yolo = False
 
         if getattr(args, "no_mcp", False) and getattr(args, "mcp_config", None):
             from rich.console import Console as _Console
@@ -4900,28 +4967,6 @@ def cli_main() -> None:
                 "--rubric-max-iterations require "
                 "--non-interactive (-n) or piped stdin\n"
                 "  dcode -n 'implement X' --rubric 'tests pass'"
-            )
-            sys.exit(2)
-
-        # Auto approval mode (and therefore its classifier) requires the
-        # interactive TUI *and* no sandbox — `agent.create_cli_agent` disables
-        # Auto for either. Accepting the flag in those runs would silently do
-        # nothing to a setting that governs action authorization.
-        if getattr(args, "auto_classifier_model", None) is not None and (
-            args.non_interactive_message or args.sandbox not in {"none", None}
-        ):
-            from rich.console import Console as _Console
-
-            unavailable_because = (
-                "a sandbox is in use"
-                if not args.non_interactive_message
-                else "it runs headlessly"
-            )
-            _Console(stderr=True).print(
-                "[bold red]Error:[/bold red] --auto-classifier-model is only "
-                "supported in the interactive TUI, where Auto approval mode "
-                f"runs; {unavailable_because}.\n"
-                "  dcode --auto-classifier-model anthropic:claude-haiku-4-5"
             )
             sys.exit(2)
 

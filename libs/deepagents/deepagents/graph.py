@@ -631,12 +631,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # async-subagent) default to emitting none of it; only the essential dynamic
     # bits remain (filesystem's host-path routing, empty for non-composite
     # backends; the available-agent list, which reaches the model through the
-    # `task` tool / async tools). `TodoListMiddleware` is from langchain and
-    # defaults to its full prompt, so it is the one middleware passed
-    # `system_prompt=""` here to trim it. Skills and Memory keep their fragment:
-    # it is the only channel that surfaces the loaded skill index / memory
-    # content, and both are built only when the caller passes `skills=` /
-    # `memory=`.
+    # `task` tool / async tools). Skills and Memory keep their fragment: it is
+    # the only channel that surfaces the loaded skill index / memory content,
+    # and both are built only when the caller passes `skills=` / `memory=`.
 
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit

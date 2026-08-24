@@ -102,7 +102,8 @@ jobs:
     outputs:
       package: ${{ steps.parse.outputs.package }}
       working-dir: ${{ steps.parse.outputs.working-dir }}
-      python-version: ${{ steps.parse.outputs.python-version }}
+      python-version: ${{ steps.python-matrix.outputs.python-version }}
+      python-versions: ${{ steps.python-matrix.outputs.python-versions }}
       release-sha: ${{ steps.resolve-sha.outputs.sha }}
     steps:
       - name: Parse package input
@@ -118,17 +119,6 @@ jobs:
             PACKAGE="$PACKAGE_INPUT"
           fi
           echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
-
-          # deepagents-code requires Python 3.12 or newer, and deepagents-talon
-          # depends on it. Other packages keep the baseline interpreter.
-          case "$PACKAGE" in
-            deepagents-code|deepagents-talon)
-              echo "python-version=3.12" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "python-version=3.11" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
 
           # Map package name to working directory
           case "$PACKAGE" in
@@ -352,6 +342,17 @@ jobs:
             echo "| Resolution | ${RELEASE_SHA_SOURCE} |"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write resolved release target to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
+
+      - name: Resolve Python matrix
+        id: python-matrix
+        env:
+          RELEASE_SHA: ${{ steps.resolve-sha.outputs.sha }}
+          WORKING_DIR: ${{ steps.parse.outputs.working-dir }}
+        run: |
+          set -euo pipefail
+          git show "${RELEASE_SHA}:${WORKING_DIR}/pyproject.toml" \
+            | python .github/scripts/release/resolve_python_matrix.py \
+            >> "$GITHUB_OUTPUT"
 
   # Build the distribution package and extract version info
   # Runs in isolated environment with minimal permissions for security
@@ -614,7 +615,7 @@ jobs:
           attestations: false
 
   pre-release-checks:
-    name: ✅ Pre-release checks
+    name: ✅ Pre-release checks (Python ${{ matrix.python-version }})
     needs:
       - setup
       - build
@@ -623,6 +624,10 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.setup.outputs.python-versions) }}
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
@@ -647,7 +652,7 @@ jobs:
         uses: "./.github/actions/uv_setup"
         id: setup-python
         with:
-          python-version: ${{ needs.setup.outputs.python-version }}
+          python-version: ${{ matrix.python-version }}
           enable-cache: "false"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

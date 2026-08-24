@@ -5,14 +5,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 import httpx
 import pytest
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
+
+    from langchain.agents.middleware.types import ModelRequest, ModelResponse
 
 from deepagents_code import model_config
 from deepagents_code.config import (
@@ -60,9 +63,24 @@ def _write_config(tmp_path: Path, text: str) -> Path:
     return p
 
 
-def _req(events: list[dict] | None = None) -> SimpleNamespace:
-    writer = (lambda e: events.append(e)) if events is not None else None
-    return SimpleNamespace(runtime=SimpleNamespace(stream_writer=writer))
+def _req(events: list[dict[str, object]] | None = None) -> ModelRequest:
+    writer = (lambda event: events.append(event)) if events is not None else None
+    return cast(
+        "ModelRequest",
+        SimpleNamespace(runtime=SimpleNamespace(stream_writer=writer)),
+    )
+
+
+def _handler(
+    function: Callable[[object], object],
+) -> Callable[[ModelRequest], ModelResponse]:
+    return cast("Callable[[ModelRequest], ModelResponse]", function)
+
+
+def _async_handler(
+    function: Callable[[object], Awaitable[object]],
+) -> Callable[[ModelRequest], Awaitable[ModelResponse]]:
+    return cast("Callable[[ModelRequest], Awaitable[ModelResponse]]", function)
 
 
 # --- resolve_model_retries / config resolution ---
@@ -184,7 +202,7 @@ def test_middleware_defaults() -> None:
 
 def test_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
-    events: list[dict] = []
+    events: list[dict[str, object]] = []
     calls = {"n": 0}
 
     def handler(_req_arg: object) -> str:
@@ -194,7 +212,7 @@ def test_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
         return "OK"
 
     mw = CodeModelRetryMiddleware(max_retries=5)
-    assert mw.wrap_model_call(_req(events), handler) == "OK"
+    assert mw.wrap_model_call(_req(events), _handler(handler)) == "OK"
     assert calls["n"] == 3
     assert [e["type"] for e in events] == ["model_retry", "model_retry"]
     assert "retrying 1/5" in events[0]["message"]
@@ -210,7 +228,7 @@ def test_exhaustion_reraises_original(monkeypatch: pytest.MonkeyPatch) -> None:
 
     mw = CodeModelRetryMiddleware(max_retries=2)
     with pytest.raises(httpx.ReadError):
-        mw.wrap_model_call(_req(), handler)
+        mw.wrap_model_call(_req(), _handler(handler))
     assert calls["n"] == 3
 
 
@@ -223,7 +241,7 @@ def test_non_retryable_raises_immediately() -> None:
 
     mw = CodeModelRetryMiddleware(max_retries=5)
     with pytest.raises(ValueError, match="bad request"):
-        mw.wrap_model_call(_req(), handler)
+        mw.wrap_model_call(_req(), _handler(handler))
     assert calls["n"] == 1
 
 
@@ -237,7 +255,7 @@ def test_zero_retries_calls_handler_once() -> None:
         raise _READ_ERROR
 
     with pytest.raises(httpx.ReadError):
-        mw.wrap_model_call(_req(), handler)
+        mw.wrap_model_call(_req(), _handler(handler))
     assert calls["n"] == 1
 
 
@@ -255,7 +273,7 @@ def test_retry_scoped_to_model_node(monkeypatch: pytest.MonkeyPatch) -> None:
         return "OK"
 
     mw = CodeModelRetryMiddleware(max_retries=3)
-    assert mw.wrap_model_call(_req(), handler) == "OK"
+    assert mw.wrap_model_call(_req(), _handler(handler)) == "OK"
     assert model_calls["n"] == 2
     assert tool_calls == []
 
@@ -274,7 +292,7 @@ async def test_async_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None
         return "OK"
 
     mw = CodeModelRetryMiddleware(max_retries=3)
-    assert await mw.awrap_model_call(_req(), handler) == "OK"
+    assert await mw.awrap_model_call(_req(), _async_handler(handler)) == "OK"
     assert calls["n"] == 2
 
 
@@ -284,4 +302,4 @@ def test_status_helpers() -> None:
     assert event["type"] == "model_retry"
     assert event["attempt"] == 2
     assert event["max_retries"] == 5
-    assert "retrying 2/5" in event["message"]
+    assert "retrying 2/5" in str(event["message"])

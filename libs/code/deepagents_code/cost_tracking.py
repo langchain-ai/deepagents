@@ -101,6 +101,7 @@ tell a broken remote install from models with no published rates.
 _PROVIDER_ALIASES: dict[str, str] = {
     "azure_openai": "azure",
     "bedrock": "aws",
+    "google_anthropic_vertex": "google",
     "google_genai": "google",
     "google_vertexai": "google",
     "mistralai": "mistral",
@@ -454,7 +455,7 @@ def _build_price_updater(update_prices_cls: type[UpdatePrices]) -> UpdatePrices:
 def _prices_auto_update_enabled() -> bool:
     """Resolve the `update.prices_auto_update` option through the manifest.
 
-    Routing the gate through `resolve_scalar` keeps env-over-TOML precedence
+    Routing the gate through the shared resolver keeps env-over-TOML precedence
     and the `config get update.prices_auto_update` report in lockstep with what
     the updater actually does; reading the env var inline would show a user who
     opted out in `config.toml` `false` while the hourly fetch still started.
@@ -463,17 +464,15 @@ def _prices_auto_update_enabled() -> bool:
         `True` unless the option resolved to disabled or its manifest entry is
             missing.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("update.prices_auto_update")
     if option is None:
         return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def _start_price_updater() -> None:
@@ -494,9 +493,8 @@ def _start_price_updater() -> None:
 
     Does nothing when the `update.prices_auto_update` option resolves to
     disabled or `DEEPAGENTS_CODE_OFFLINE` is truthy. Either opt-out still marks
-    the start as attempted: config is read once at process start in practice,
-    so a later flip would not take effect anyway, and re-resolving on every
-    priced request would re-read `config.toml` each time.
+    the start as attempted: the updater thread is started once and never
+    stopped, so a later flip would not take effect anyway.
     """
     global _PRICE_UPDATER, _PRICE_UPDATER_ATTEMPTED  # noqa: PLW0603
     if is_env_truthy(OFFLINE):

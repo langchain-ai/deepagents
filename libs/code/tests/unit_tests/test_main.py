@@ -2011,7 +2011,7 @@ class TestPrintSessionStats:
         The spy records rather than raises: `usage_table_enabled` catches
         exceptions and returns `True`, so a raising stub would make a regressed
         guard order pass vacuously. `load_config_toml` is the read being
-        trapped; it is evaluated as an argument before `resolve_scalar` runs, so
+        trapped; `load_bool_display_preference` loads it before resolving, so
         no lookup can slip past it.
         """
         calls: list[object] = []
@@ -2083,6 +2083,7 @@ class TestRenderTeardownThreadHints:
         *,
         thread_exists_mock: AsyncMock,
         thread_url: str | None,
+        tmp_path: Path | None = None,
         return_code: int = 0,
         launch_name: str = "dcode",
         term_program: str = "",
@@ -2093,7 +2094,14 @@ class TestRenderTeardownThreadHints:
         toml_data: dict | None = None,
         toml_error: Exception | None = None,
     ) -> str:
-        """Render teardown hints under controlled feature configuration."""
+        """Render teardown hints under controlled feature configuration.
+
+        The hint reads the option through the shared resolver, which loads the
+        user tier from `DEFAULT_CONFIG_PATH` (the `_isolate_state_dir` fixture
+        redirects it under the test's `tmp_path`), so TOML cases write a real
+        file rather than patching a loader the renderer no longer calls.
+        `tmp_path` is required exactly for those cases.
+        """
         buffer = StringIO()
         console = Console(file=buffer, width=200)
         # `launch_name` is resolved (and cached) inside the renderer.
@@ -2108,16 +2116,25 @@ class TestRenderTeardownThreadHints:
             env[LAUNCH_TERM_PROGRAM] = launch_term_program
         if resume_term_program is not None:
             env[RESUME_TERM_PROGRAM] = "1" if resume_term_program else "0"
+        if toml_data is not None:
+            assert tmp_path is not None, "toml_data requires tmp_path"
+            import tomli_w
+
+            (tmp_path / "config.toml").write_text(
+                tomli_w.dumps(toml_data), encoding="utf-8"
+            )
+        elif toml_error is not None:
+            # A corrupt file exercises the same failure class as a raising read:
+            # the user tier degrades to unusable and resolution falls through.
+            assert tmp_path is not None, "toml_error requires tmp_path"
+            (tmp_path / "config.toml").write_text(
+                "not = = valid toml\n", encoding="utf-8"
+            )
         with (
             patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
             patch(
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
-            ),
-            patch(
-                "deepagents_code.config_manifest.load_config_toml",
-                side_effect=toml_error,
-                return_value={} if toml_data is None else toml_data,
             ),
             patch.dict(os.environ, env),
             patch.object(sys, "platform", "darwin"),
@@ -2144,10 +2161,10 @@ class TestRenderTeardownThreadHints:
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
 
-    def test_resume_hint_honors_toml_feature_flag(self) -> None:
+    def test_resume_hint_honors_toml_feature_flag(self, tmp_path: Path) -> None:
         """`[features] resume_term_program` reaches the hint without an env var.
 
-        The helper otherwise stubs `load_config_toml` to `{}`, so without this
+        The helper otherwise leaves the user config absent, so without this
         case the entire config.toml route to the prefix could break with the
         suite still green.
         """
@@ -2156,27 +2173,32 @@ class TestRenderTeardownThreadHints:
         output = self._render(
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
+            tmp_path=tmp_path,
             launch_term_program="iTerm.app",
             toml_data={"features": {"resume_term_program": True}},
         )
 
         assert "TERM_PROGRAM=iTerm.app dcode -r test123" in output
 
-    def test_resume_hint_survives_config_read_failure(self) -> None:
-        """A raising config read must not take down the exit path.
+    def test_resume_hint_survives_config_read_failure(self, tmp_path: Path) -> None:
+        """A failed config read must not take down the exit path.
 
         `_render_teardown_thread_hints` runs from a bare `finally` in
         `cli_main`, so an exception escaping here would replace whatever is
         already unwinding -- including the `KeyboardInterrupt` that produces
         exit code 130.
+
+        The option is enabled only in the (corrupt) user file: an unreadable
+        user tier resolves to unset, so the mode-dependent default (`False`
+        here) applies and the prefix stays out.
         """
         thread_exists_mock = AsyncMock(return_value=True)
 
         output = self._render(
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
+            tmp_path=tmp_path,
             launch_term_program="iTerm.app",
-            resume_term_program=True,
             toml_error=RecursionError("deeply nested TOML"),
         )
 
@@ -2371,7 +2393,6 @@ class TestRenderTeardownThreadHints:
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=None,
             ),
-            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
             patch.object(sys, "platform", platform),
             patch.dict(os.environ, env),
         ):

@@ -30,16 +30,8 @@ logger = logging.getLogger(__name__)
 _warned_usage_stats_rejections: set[str] = set()
 """Rejection reasons already reported by `_warn_rejected_usage_stats_value`."""
 
-SpinnerStatus = (
-    Literal[
-        "Thinking",
-        "Offloading",
-        "Loading thread",
-        "Drafting acceptance criteria",
-    ]
-    | None
-)
-"""Valid spinner display states, or `None` to hide."""
+SpinnerStatus = str | None
+"""Spinner display text, or `None` to hide."""
 
 UsageKind = Literal["assistant", "subagent", "offload", "auto"]
 """Billing/display class for a model request."""

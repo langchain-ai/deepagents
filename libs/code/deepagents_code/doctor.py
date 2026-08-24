@@ -514,10 +514,28 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     Returns:
         Managed config diagnostic row.
     """
-    from deepagents_code.configuration.service import managed_health
+    from deepagents_code.configuration.resolver import (
+        MANAGED_RANK,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_snapshot_health,
+    )
+    from deepagents_code.configuration.types import (
+        TomlSnapshot,
+    )
 
-    health = managed_health(refresh=True)
-    status = health.status
+    snapshot = get_managed_snapshot(refresh=True)
+    user = TomlSnapshot.absent("config.toml")
+    status = resolver_from_snapshots(managed=snapshot, user=user).provider_statuses()[
+        MANAGED_RANK
+    ]
+    # `status` round-trips from a provider seeded with this same snapshot, so
+    # re-wrapping it was a no-op that read as meaningful -- and the one place
+    # `TomlSnapshot.__post_init__` could raise inside the command whose job is
+    # to survive a broken config.
+    health = managed_snapshot_health(snapshot)
     path = status.path or "(unknown)"
     suffix = status.health.value.lower()
     detail = f" - {status.detail}" if status.detail else ""
@@ -527,8 +545,9 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     hint = "" if status.usable else "; ask your administrator to repair or remove it"
     # A file that parses is not necessarily enforceable, and both halves of
     # exit 78 have to show up here: reporting only `usable` gives a green row
-    # to the `ManagedPolicyError` half. `managed_health` reads both from one
-    # snapshot, so the refreshed status cannot be paired with stale violations.
+    # to the `ManagedPolicyError` half. Status and violations are both derived
+    # from the single `snapshot` read above, so a refreshed status can never be
+    # paired with stale violations.
     violations = health.violations
     if violations:
         detail += f" - rejects {', '.join(violations)}"
@@ -545,23 +564,50 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     )
 
 
+def _user_config_diagnostic() -> DiagnosticItem:
+    """Report user TOML location and parse health.
+
+    `_path_status` answers only "is there a file there", so a `config.toml`
+    that exists and does not parse produced a green `exists` row - in the one
+    command a user runs when their settings are not taking effect. Resolution
+    treats an unparseable file as declaring nothing, which is exactly the state
+    the row has to distinguish.
+
+    Returns:
+        User config diagnostic row.
+    """
+    from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.types import ProviderHealth
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    status = TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load().status
+    suffix = {
+        ProviderHealth.OK: "exists",
+        ProviderHealth.MISSING: "not created",
+    }.get(status.health, status.health.value.lower())
+    detail = f" - {status.detail}" if status.detail else ""
+    hint = "" if status.usable else "; every option in it falls back to its default"
+    return DiagnosticItem(
+        "Config file",
+        f"{DEFAULT_CONFIG_PATH} ({suffix}){detail}{hint}",
+        ok=status.usable,
+    )
+
+
 def _collect_configuration() -> DiagnosticSection:
     """Collect on-disk configuration and data locations.
 
     Returns:
         The `Configuration` section.
     """
-    from deepagents_code.model_config import (
-        DEFAULT_CONFIG_DIR,
-        DEFAULT_CONFIG_PATH,
-    )
+    from deepagents_code.model_config import DEFAULT_CONFIG_DIR
 
     return DiagnosticSection(
         title="Configuration",
         items=[
             _path_status("Data directory", DEFAULT_CONFIG_DIR),
             _managed_config_diagnostic(),
-            _path_status("Config file", DEFAULT_CONFIG_PATH),
+            _user_config_diagnostic(),
         ],
     )
 

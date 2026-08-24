@@ -28,6 +28,9 @@ Concurrent cancels keep aggregate wall time bounded by this value regardless of
 how many runs are active.
 """
 
+_OFFLOAD_CANCEL_WAIT_SECONDS = 10.0
+"""Bound the Esc path while the server confirms offload termination."""
+
 _OFFLOAD_MAX_RESUME_ROUNDS = 32
 """Bound hook transport rounds for a single server operation.
 
@@ -37,7 +40,7 @@ many distinct invocations means either genuinely many hooks or an unstable
 invocation-id derivation server-side.
 """
 
-_OFFLOAD_PROTOCOL_VERSION = 1
+_OFFLOAD_PROTOCOL_VERSION = 2
 """Offload operation protocol version this client speaks.
 
 Must equal `offload_api._OFFLOAD_API_VERSION`; the duplication is deliberate,
@@ -52,6 +55,67 @@ _OFFLOAD_RESULT_INT_FIELDS = (
     "tokens_before",
     "tokens_after",
 )
+
+
+async def _join_task_deferring_cancellation[T](task: asyncio.Task[T]) -> None:
+    """Join a task despite repeated cancellation of the waiting caller."""
+    while not task.done():
+        try:
+            await asyncio.wait((task,))
+        except asyncio.CancelledError:
+            continue
+
+
+async def _cancel_server_offload(
+    graph: Any,  # noqa: ANN401  # untyped RemoteGraph client
+    thread_id: str,
+    operation_id: str,
+) -> str:
+    """Request cancellation and wait for the server's terminal acknowledgement.
+
+    Returns:
+        Server terminal status (`cancelled` or `finished`).
+
+    Raises:
+        RuntimeError: If the server returns an invalid acknowledgement.
+    """
+    response = await asyncio.wait_for(
+        graph.client.http.post(
+            f"/dcode/threads/{thread_id}/offload/{operation_id}/cancel"
+        ),
+        timeout=_OFFLOAD_CANCEL_WAIT_SECONDS,
+    )
+    status = response.get("status") if isinstance(response, dict) else None
+    if status not in {"cancelled", "finished"}:
+        msg = "Offload server returned an invalid cancellation acknowledgement."
+        raise RuntimeError(msg)
+    return status
+
+
+async def _await_offload_step[T](
+    awaitable: Awaitable[T],
+    *,
+    graph: Any,  # noqa: ANN401  # untyped RemoteGraph client
+    thread_id: str,
+    operation_id: str,
+) -> T:
+    """Await one offload step and confirm server termination if cancelled.
+
+    Returns:
+        The awaited step's result.
+
+    Raises:
+        asyncio.CancelledError: After the server confirms the operation ended.
+    """
+    try:
+        return await awaitable
+    except asyncio.CancelledError:
+        cancellation = asyncio.create_task(
+            _cancel_server_offload(graph, thread_id, operation_id)
+        )
+        await _join_task_deferring_cancellation(cancellation)
+        cancellation.result()
+        raise
 
 
 def _validated_offload_result(result: object) -> OffloadResult:
@@ -261,13 +325,18 @@ class RemoteAgent:
         hook_responses: dict[str, object] = {}
         graph = self._get_graph()
         for round_index in range(_OFFLOAD_MAX_RESUME_ROUNDS + 1):
-            response = await graph.client.http.post(
-                f"/dcode/threads/{thread_id}/offload",
-                json={
-                    "operation_id": operation_id,
-                    "context": dict(context),
-                    "hook_responses": hook_responses,
-                },
+            response = await _await_offload_step(
+                graph.client.http.post(
+                    f"/dcode/threads/{thread_id}/offload",
+                    json={
+                        "operation_id": operation_id,
+                        "context": dict(context),
+                        "hook_responses": hook_responses,
+                    },
+                ),
+                graph=graph,
+                thread_id=thread_id,
+                operation_id=operation_id,
             )
             if not isinstance(response, dict):
                 msg = "Offload server returned a non-object response."
@@ -298,7 +367,12 @@ class RemoteAgent:
                 # read the result, not to answer one more hook. Without this the
                 # loop fulfills 33 hooks and then reports "after 32 rounds".
                 break
-            hook_responses[invocation_id] = await fulfill_hook(request)
+            hook_responses[invocation_id] = await _await_offload_step(
+                fulfill_hook(request),
+                graph=graph,
+                thread_id=thread_id,
+                operation_id=operation_id,
+            )
         # The server only re-requests an invocation id it has not been given, so
         # exhaustion means this many *distinct* ids. That is either genuinely
         # many hooks or an unstable invocation-id derivation server-side; log the

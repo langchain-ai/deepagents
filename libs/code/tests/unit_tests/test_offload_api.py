@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
-def _reset_thread_client() -> Iterator[None]:
-    """Clear the module's cached SDK client between tests.
+def _reset_offload_globals() -> Iterator[None]:
+    """Clear cached clients and operation state between tests.
 
     `offload_api` caches one `httpx`-backed client per process (building one per
     request leaks a connection pool). Tests patch `get_client`, so the cache has
@@ -29,10 +29,14 @@ def _reset_thread_client() -> Iterator[None]:
     from deepagents_code import offload_api
 
     offload_api._client = None
+    offload_api._active_operations.clear()
+    offload_api._operation_outcomes.clear()
     try:
         yield
     finally:
         offload_api._client = None
+        offload_api._active_operations.clear()
+        offload_api._operation_outcomes.clear()
 
 
 class TestOperationPayload:
@@ -408,6 +412,60 @@ class TestExecuteOffload:
         assert response["result"]["archive_path"] is None
         append.rollback.assert_awaited_once()
         prepared.rollback.assert_not_called()
+
+    async def test_cancellation_waits_for_checkpoint_archive_settlement(self) -> None:
+        """A reserved commit must settle before cancellation becomes terminal."""
+        from deepagents_code import offload_api
+
+        before = _thread_state()
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(side_effect=[before, before]),
+            update_state=AsyncMock(),
+        )
+        operation = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=OffloadExecution(
+                    {"_summarization_event": {"cutoff_index": 1}},
+                    _result(),  # ty: ignore[invalid-argument-type]
+                )
+            )
+        )
+        prepared = SimpleNamespace(
+            update={"_session_cost_usd": 0.25}, rollback=MagicMock()
+        )
+        settlement_started = asyncio.Event()
+        finish_settlement = asyncio.Event()
+
+        async def settle(*_args: object, **_kwargs: object) -> None:
+            settlement_started.set()
+            await finish_settlement.wait()
+
+        with (
+            self._patched(offload_api, threads, operation, prepared),
+            patch.object(
+                offload_api,
+                "_commit_deferred_archive",
+                new=AsyncMock(side_effect=settle),
+            ) as commit,
+        ):
+            task = asyncio.create_task(
+                offload_api._execute_offload(
+                    "thread-1",
+                    operation_id="operation-1",
+                    context={},
+                    hook_responses={},
+                )
+            )
+            await asyncio.wait_for(settlement_started.wait(), timeout=1)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            finish_settlement.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        commit.assert_awaited_once()
 
     async def test_request_transport_cannot_replace_checkpointed_model(self) -> None:
         """Offload uses the model settings from the target thread checkpoint."""
@@ -1140,6 +1198,13 @@ class TestOffloadRoute:
             json=AsyncMock(return_value=payload),
         )
 
+    @staticmethod
+    def _cancel_request(operation_id: str = "op-1") -> SimpleNamespace:
+        """Build a minimal request for the cancellation route."""
+        return SimpleNamespace(
+            path_params={"thread_id": "thread-1", "operation_id": operation_id}
+        )
+
     async def test_capability_reports_the_pinned_version(self) -> None:
         import json
 
@@ -1162,6 +1227,57 @@ class TestOffloadRoute:
 
         assert response.status_code == 422
         assert "operation_id" in json.loads(bytes(response.body))["detail"]
+
+    async def test_cancel_stops_and_joins_an_active_operation(self) -> None:
+        """The cancel response is sent only after the operation task exits."""
+        import json
+
+        from deepagents_code import offload_api
+
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+
+        async def execute(*_args: object, **_kwargs: object) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        with patch.object(
+            offload_api, "_execute_offload", new=AsyncMock(side_effect=execute)
+        ):
+            operation = asyncio.create_task(
+                offload_api.offload(
+                    self._request({"operation_id": "op-1", "context": {}})  # ty: ignore[invalid-argument-type]
+                )
+            )
+            await asyncio.wait_for(started.wait(), timeout=1)
+            response = await offload_api.cancel_offload(self._cancel_request())  # ty: ignore[invalid-argument-type]
+
+        assert response.status_code == 200
+        assert json.loads(bytes(response.body)) == {"status": "cancelled"}
+        assert stopped.is_set()
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+
+    async def test_cancel_before_request_prevents_operation_start(self) -> None:
+        """A reordered cancel closes the disconnect-before-register race."""
+        import json
+
+        from deepagents_code import offload_api
+
+        cancel = await offload_api.cancel_offload(self._cancel_request())  # ty: ignore[invalid-argument-type]
+        execute = AsyncMock()
+        with patch.object(offload_api, "_execute_offload", new=execute):
+            response = await offload_api.offload(
+                self._request({"operation_id": "op-1", "context": {}})  # ty: ignore[invalid-argument-type]
+            )
+
+        assert json.loads(bytes(cancel.body)) == {"status": "cancelled"}
+        assert response.status_code == 409
+        assert "cancelled" in json.loads(bytes(response.body))["detail"]
+        execute.assert_not_awaited()
 
     async def test_conflict_is_409(self) -> None:
         import json

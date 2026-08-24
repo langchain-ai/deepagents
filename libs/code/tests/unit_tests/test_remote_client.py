@@ -1,5 +1,6 @@
 """Tests for RemoteAgent, _convert_message_data, and helpers."""
 
+import asyncio
 import itertools
 import logging
 import uuid
@@ -1127,6 +1128,50 @@ def _offload_graph(http: SimpleNamespace) -> SimpleNamespace:
 
 class TestServerOffload:
     """The remote client transports operation data without graph state."""
+
+    async def test_cancellation_waits_for_server_acknowledgement(self) -> None:
+        """Esc must not release the caller while server offload is still live."""
+        request_started = asyncio.Event()
+        cancel_started = asyncio.Event()
+        acknowledge_cancel = asyncio.Event()
+
+        async def post(path: str, **_kwargs: object) -> dict[str, object]:
+            if path.endswith("/cancel"):
+                cancel_started.set()
+                await acknowledge_cancel.wait()
+                return {"status": "cancelled"}
+            request_started.set()
+            await asyncio.Event().wait()
+            return {}
+
+        http = SimpleNamespace(post=AsyncMock(side_effect=post))
+        graph = _offload_graph(http)
+        agent = RemoteAgent("http://localhost:1234")
+
+        with patch.object(agent, "_get_graph", return_value=graph):
+            task = asyncio.create_task(
+                agent.aoffload(
+                    config={"configurable": {"thread_id": "thread"}},
+                    context={},
+                    fulfill_hook=AsyncMock(),
+                )
+            )
+            await asyncio.wait_for(request_started.wait(), timeout=1)
+            task.cancel()
+            await asyncio.wait_for(cancel_started.wait(), timeout=1)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            acknowledge_cancel.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert http.post.await_count == 2
+        request_call, cancel_call = http.post.await_args_list
+        operation_id = request_call.kwargs["json"]["operation_id"]
+        assert cancel_call.args[0] == (
+            f"/dcode/threads/thread/offload/{operation_id}/cancel"
+        )
 
     async def test_registers_the_thread_before_the_first_request(self) -> None:
         """The operation must not be requested against an unregistered thread.

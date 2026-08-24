@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from weakref import WeakValueDictionary
 
 from langchain_core.messages import convert_to_messages
@@ -39,7 +40,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_OFFLOAD_API_VERSION = 1
+_OFFLOAD_API_VERSION = 2
 """Protocol version this route speaks.
 
 Must equal `client.remote_client._OFFLOAD_PROTOCOL_VERSION`; the duplication is
@@ -48,6 +49,12 @@ deliberate so neither side imports the other, and
 together. Bump both, or that test fails.
 """
 _thread_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+type _OperationKey = tuple[str, str]
+type _OperationOutcome = Literal["cancelled", "finished"]
+_active_operations: dict[_OperationKey, asyncio.Task[object]] = {}
+_operation_outcomes: OrderedDict[_OperationKey, _OperationOutcome] = OrderedDict()
+_MAX_OPERATION_OUTCOMES = 1024
+"""Bound completed/cancelled ids retained to close request/cancel races."""
 
 # One client for the process. `get_client` builds a fresh `httpx.AsyncClient`
 # (with its own connection pool) per call and exposes no close hook we own, so
@@ -71,6 +78,43 @@ def _thread_lock(thread_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _thread_locks[thread_id] = lock
     return lock
+
+
+def _remember_operation(key: _OperationKey, outcome: _OperationOutcome) -> None:
+    """Retain a bounded terminal outcome for late or reordered cancellation."""
+    _operation_outcomes[key] = outcome
+    _operation_outcomes.move_to_end(key)
+    while len(_operation_outcomes) > _MAX_OPERATION_OUTCOMES:
+        _operation_outcomes.popitem(last=False)
+
+
+def _register_operation(key: _OperationKey) -> str | None:
+    """Register the current request task.
+
+    Returns:
+        A refusal reason, or `None` when registration succeeds.
+    """
+    outcome = _operation_outcomes.get(key)
+    if outcome == "cancelled":
+        return "The offload operation was cancelled."
+    if outcome == "finished":
+        return "The offload operation already finished."
+    if key in _active_operations:
+        return "This offload operation already has an active request."
+    task = asyncio.current_task()
+    if task is None:
+        return "The server could not register the offload operation."
+    _active_operations[key] = cast("asyncio.Task[object]", task)
+    return None
+
+
+def _finish_operation(key: _OperationKey, outcome: _OperationOutcome | None) -> None:
+    """Release an active round and optionally retain its terminal outcome."""
+    task = asyncio.current_task()
+    if _active_operations.get(key) is task:
+        _active_operations.pop(key, None)
+    if outcome is not None:
+        _remember_operation(key, outcome)
 
 
 class _OffloadConflictError(RuntimeError):
@@ -529,6 +573,23 @@ async def _commit_deferred_archive(
         execution.result["archive_path"] = append.path
 
 
+async def _join_task_deferring_cancellation[T](
+    task: asyncio.Task[T],
+) -> asyncio.CancelledError | None:
+    """Join a settlement task while retaining the first cancellation edge.
+
+    Returns:
+        The cancellation to re-raise after settlement, or `None`.
+    """
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.wait((task,))
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+    return cancellation
+
+
 async def _execute_offload(
     thread_id: str,
     *,
@@ -660,14 +721,20 @@ async def _execute_offload(
             # spend from the thread's lifetime total (the drain is destructive).
             prepared.rollback()
             return {"status": "complete", "result": execution.result}
-        await _commit_deferred_archive(
-            client,
-            thread_id,
-            checkpoint_id,
-            execution,
-            update,
-            prepared,
+        commit = asyncio.create_task(
+            _commit_deferred_archive(
+                client,
+                thread_id,
+                checkpoint_id,
+                execution,
+                update,
+                prepared,
+            )
         )
+        cancellation = await _join_task_deferring_cancellation(commit)
+        commit.result()
+        if cancellation is not None:
+            raise cancellation
         return {"status": "complete", "result": execution.result}
 
 
@@ -721,6 +788,9 @@ async def offload(request: Request) -> JSONResponse:
 
     Returns:
         JSON operation response.
+
+    Raises:
+        asyncio.CancelledError: When the cancellation route stops this operation.
     """
     # Request validation is scoped to its own block so that a `TypeError` or
     # `ValueError` raised *inside* the operation (a server-side fault) is not
@@ -731,31 +801,67 @@ async def offload(request: Request) -> JSONResponse:
     except (TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
+    key = (thread_id, operation_id)
+    refusal = _register_operation(key)
+    if refusal is not None:
+        return JSONResponse({"detail": refusal}, status_code=409)
+    outcome: _OperationOutcome | None = "finished"
     try:
-        response = await _execute_offload(
-            thread_id,
-            operation_id=operation_id,
-            context=context,
-            hook_responses=hook_responses,
-        )
-    except _OffloadConflictError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=409)
-    except _OffloadUnavailableError as exc:
-        # 503: the server cannot serve this operation at all, as distinct from a
-        # thread-state conflict (409) or an ambiguous write (500).
-        logger.exception("Offload unavailable: the server runtime failed to build")
-        return JSONResponse({"detail": str(exc)}, status_code=503)
-    except _OffloadIndeterminateError as exc:
-        # 500: the operation did not complete cleanly. The detail is honest
-        # about the uncertainty rather than asserting nothing was written.
-        return JSONResponse({"detail": str(exc)}, status_code=500)
-    except Exception:
-        logger.exception("Server-owned /offload failed")
-        return JSONResponse(
-            {"detail": "Offload failed on the server; see the server log for details."},
-            status_code=500,
-        )
-    return JSONResponse(response)
+        try:
+            response = await _execute_offload(
+                thread_id,
+                operation_id=operation_id,
+                context=context,
+                hook_responses=hook_responses,
+            )
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        except _OffloadConflictError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=409)
+        except _OffloadUnavailableError as exc:
+            logger.exception("Offload unavailable: server runtime build failed")
+            return JSONResponse({"detail": str(exc)}, status_code=503)
+        except _OffloadIndeterminateError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=500)
+        except Exception:
+            logger.exception("Server-owned /offload failed")
+            return JSONResponse(
+                {
+                    "detail": (
+                        "Offload failed on the server; see the server log for details."
+                    )
+                },
+                status_code=500,
+            )
+        if response["status"] == "interrupt":
+            outcome = None
+        return JSONResponse(response)
+    finally:
+        _finish_operation(key, outcome)
+
+
+async def cancel_offload(request: Request) -> JSONResponse:
+    """Cancel one operation id and wait until its server task is terminal.
+
+    Returns:
+        JSON containing `cancelled` when cancellation won, or `finished` when
+            the operation had already reached a terminal result.
+    """
+    key = (
+        request.path_params["thread_id"],
+        request.path_params["operation_id"],
+    )
+    outcome = _operation_outcomes.get(key)
+    if outcome is not None:
+        return JSONResponse({"status": outcome})
+    task = _active_operations.get(key)
+    if task is None:
+        _remember_operation(key, "cancelled")
+        return JSONResponse({"status": "cancelled"})
+    task.cancel()
+    await asyncio.wait((task,))
+    return JSONResponse({"status": _operation_outcomes.get(key, "finished")})
 
 
 app = Starlette(
@@ -764,6 +870,11 @@ app = Starlette(
         Route(
             "/dcode/threads/{thread_id:str}/offload",
             offload,
+            methods=["POST"],
+        ),
+        Route(
+            "/dcode/threads/{thread_id:str}/offload/{operation_id:str}/cancel",
+            cancel_offload,
             methods=["POST"],
         ),
     ]

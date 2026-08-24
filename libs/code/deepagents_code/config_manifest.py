@@ -710,6 +710,17 @@ def _resolve_option_without_managed(
         )
     else:
         shared = get_config_resolver().toml_snapshot(USER_RANK)
+        if shared is None:
+            # The shared resolver always has a user provider, so this is a
+            # programming error rather than a config problem. Substituting an
+            # empty tier keeps the read working; saying so keeps it from
+            # looking like the user simply declared nothing.
+            logger.error(
+                "Shared resolver has no user provider at rank %d; resolving "
+                "%s against an empty user tier",
+                USER_RANK,
+                option.key,
+            )
         user = (
             shared
             if shared is not None

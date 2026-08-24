@@ -400,10 +400,15 @@ def _load_float_option(
 
     option = get_option(key)
     value: object = default
-    if option is not None:
-        resolved = get_config_resolver().get(option)
-        _emit_ranked_diagnostics(option, resolved)
-        value = resolved.value
+    if option is None:
+        # Pre-seeding `value` with a valid float means the check below cannot
+        # fire for a missing option, so an unregistered key would return the
+        # default with nothing logged. The siblings all report this.
+        logger.warning("Unknown config option %r; using the default", key)
+        return default
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    value = resolved.value
     if (
         not isinstance(value, float)
         or not math.isfinite(value)

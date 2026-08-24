@@ -610,7 +610,13 @@ def _load_user_themes(
         .get(option)
         .value
     )
-    if not isinstance(themes_section, dict) or not themes_section:
+    if not isinstance(themes_section, dict):
+        # Not merely absent: the table resolved to something that is not a
+        # table, which means every user theme is inert. This reader emits no
+        # ranked diagnostics, so nothing else reports it.
+        logger.warning("Ignoring [themes]: expected a table, got %r", themes_section)
+        return
+    if not themes_section:
         return
 
     valid_color_names = {f.name for f in fields(ThemeColors)}

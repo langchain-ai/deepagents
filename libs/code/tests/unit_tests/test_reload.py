@@ -160,6 +160,66 @@ class TestReloadFromEnvironment:
         assert not any(change.startswith("shell_allow_list:") for change in applied)
         assert settings.shell_allow_list == ["ls"]
 
+    def test_reload_reports_an_unparseable_user_config(self, tmp_path: Path) -> None:
+        """A corrupt `config.toml` must not be reported as a clean reload.
+
+        Retaining the previous generation is the right runtime behavior, but
+        the retention is otherwise silent: the only signal is a warning in the
+        debug buffer, while the report the user reads says "Configuration
+        reloaded. No changes detected." They edited the file a moment ago and
+        would have no way to tell the edit was rejected.
+        """
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.shell_allow_list == ["ls"]
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert changes
+        assert changes[0].startswith("Kept previous config.toml:")
+        # The retained value is still in force -- the notice reports the
+        # rejection, it does not describe a rollback.
+        assert settings.shell_allow_list == ["ls"]
+
+    def test_preview_reports_an_unparseable_user_config(self, tmp_path: Path) -> None:
+        """The preview reports its own read, so accept/decline agree with it."""
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+        preview = settings.preview_reload_from_environment(start_path=tmp_path)
+
+        assert preview
+        assert preview[0].startswith("Kept previous config.toml:")
+        assert settings.shell_allow_list == ["ls"]
+
+    def test_reload_reports_no_notice_for_a_readable_config(
+        self, tmp_path: Path
+    ) -> None:
+        """A healthy file reports changes only -- no spurious notice."""
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        config_path.write_text(
+            '[shell]\nallow_list = ["ls", "cat"]\n', encoding="utf-8"
+        )
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert not any(
+            change.startswith("Kept previous config.toml:") for change in changes
+        )
+        assert settings.shell_allow_list == ["ls", "cat"]
+
     def test_reload_retains_extra_skill_roots_on_corrupt_toml(
         self, tmp_path: Path
     ) -> None:

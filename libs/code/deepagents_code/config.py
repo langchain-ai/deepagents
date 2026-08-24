@@ -2901,8 +2901,11 @@ class Settings:
                 other reader observes, which is not something a dry run may do.
 
         Returns:
-            Reloadable setting values keyed by field name, and a notice when
-            managed policy blocked the reload (`None` when it did not).
+            Reloadable setting values keyed by field name, and a notice when a
+            source could not be applied (`None` when both applied cleanly).
+            Managed policy that blocks the reload and a `config.toml` that
+            fails to parse both keep the previous values in force, so both must
+            say so rather than letting the caller report "no changes".
         """
         from deepagents_code._env_vars import (
             EXTRA_SKILLS_DIRS,
@@ -2955,6 +2958,20 @@ class Settings:
             managed_snapshot=managed_snapshot,
         )
 
+        # A user file that fails to parse keeps the previous generation in
+        # force, which is the right runtime behavior but silent: the only
+        # signal is a `logger.warning` in the debug buffer, while the report
+        # the user reads says "Configuration reloaded. No changes detected."
+        # Managed corruption is already surfaced as a notice above; a
+        # `config.toml` the user just edited deserves the same treatment, and
+        # more so -- they are staring at the edit that did not take.
+        user_notice: str | None = None
+        user_status = resolver.provider_statuses().get(USER_RANK)
+        if user_status is not None and not user_status.usable:
+            detail = user_status.detail or user_status.health.value
+            user_notice = f"Kept previous config.toml: {detail}"
+            logger.error("Keeping previous config.toml: %s", detail)
+
         try:
             shell_allow_list = parse_shell_allow_list(env.get(SHELL_ALLOW_LIST))
         except ValueError:
@@ -2983,14 +3000,22 @@ class Settings:
                 user_candidate = TomlFileProvider(
                     "config.toml", DEFAULT_CONFIG_PATH
                 ).load()
-                shell_resolver = (
-                    resolver_from_snapshots(
+                if user_candidate.status.usable:
+                    shell_resolver = resolver_from_snapshots(
                         managed_snapshot,
                         user_candidate,
                     )
-                    if user_candidate.status.usable
-                    else resolver
-                )
+                    user_notice = None
+                else:
+                    # The preview's own read failed, so report that rather than
+                    # the shared resolver's status: the file on disk right now
+                    # is what the user would be accepting.
+                    shell_resolver = resolver
+                    detail = (
+                        user_candidate.status.detail
+                        or user_candidate.status.health.value
+                    )
+                    user_notice = f"Kept previous config.toml: {detail}"
             # Accepting an *env*-tier hit would defeat the `env` argument this
             # method exists to honor: the resolver's env provider reads
             # `os.environ` directly, so a preview of a `.env` edit reported the
@@ -3060,7 +3085,7 @@ class Settings:
             "project_root": project_root,
             "shell_allow_list": shell_allow_list,
             "extra_skills_dirs": extra_skills_dirs,
-        }, None
+        }, user_notice
 
     @staticmethod
     def _format_reload_changes(

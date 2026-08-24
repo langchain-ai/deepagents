@@ -8891,3 +8891,56 @@ class TestWritesReachTheSharedResolver:
         assert model_config.clear_auto_classifier_model() is True
 
         assert get_config_resolver().get(option).value is None
+
+    def test_every_config_writer_invalidates_the_shared_generation(self) -> None:
+        """No `model_config` writer may skip the refresh.
+
+        The behavioral cases above cover five writers by name, so removing the
+        refresh from `save_thread_columns` or `clear_default_agent` left the
+        suite green. There are eleven, and the failure is invisible at runtime
+        -- the file on disk is correct and the UI reports "saved" -- so the
+        class needs a structural guard rather than one case per writer.
+
+        A writer here is a function that takes a `config_path` and commits it
+        with an atomic replace. `touch_recent_model` writes the MRU state file
+        the same way but takes a `state_dir`, so it is correctly not a writer.
+        """
+        import ast
+        from pathlib import Path
+
+        source = Path(model_config.__file__).read_text(encoding="utf-8")
+        missing: set[str] = set()
+        writers: set[str] = set()
+        for function in ast.walk(ast.parse(source)):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            params = {argument.arg for argument in function.args.args} | {
+                argument.arg for argument in function.args.kwonlyargs
+            }
+            if "config_path" not in params:
+                continue
+            calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)]
+            commits = any(
+                isinstance(call.func, ast.Attribute) and call.func.attr == "replace"
+                for call in calls
+            )
+            if not commits:
+                continue
+            writers.add(function.name)
+            # A *call*, not the name: the helper is referenced in comments and
+            # docstrings, so a substring check passes after the call is gone.
+            refreshes = any(
+                isinstance(call.func, ast.Name)
+                and call.func.id == "_invalidate_config_caches"
+                for call in calls
+            )
+            if not refreshes:
+                missing.add(function.name)
+
+        assert writers, "the AST probe stopped recognizing any config writer"
+        assert not missing, (
+            f"`model_config` writers that never refresh the resolver: "
+            f"{sorted(missing)}. Call `_invalidate_config_caches(config_path)` "
+            "after a committed write, or the saved value stays invisible to "
+            "every reader for the life of the process."
+        )

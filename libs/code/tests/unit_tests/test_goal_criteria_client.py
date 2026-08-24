@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.goal_state_limits import GoalStateSizeError
 from deepagents_code.tui.widgets.messages import ErrorMessage
 
 if TYPE_CHECKING:
@@ -193,6 +194,53 @@ async def test_criteria_request_requires_a_running_server() -> None:
     message = await_args.args[0]
     assert isinstance(message, ErrorMessage)
     assert "requires the Deep Agents Code server" in str(message._content)
+
+
+async def test_criteria_size_rejection_keeps_its_limit_text() -> None:
+    """A size rejection must not be flattened into generic retry advice.
+
+    The limit message is the only thing that tells the user which budget was
+    exceeded and by how much, so the criteria-request rewrite has to preserve
+    it instead of replacing it like a redactable server fault.
+    """
+    app = _app()
+    mount = AsyncMock()
+    error = GoalStateSizeError(
+        label="Goal objective and criteria combined",
+        actual=12_500,
+        limit=12_000,
+    )
+    execute = AsyncMock(side_effect=error)
+
+    with (
+        patch(
+            "deepagents_code.tui.textual_adapter.execute_task_textual",
+            execute,
+        ),
+        patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+        patch.object(app, "_mount_message", mount),
+        patch(
+            "deepagents_code.app._langsmith_gateway_key_mismatch",
+            return_value=None,
+        ),
+    ):
+        await app._run_agent_task(
+            "",
+            graph_input={
+                "messages": [],
+                "goal_criteria_request": {
+                    "request_id": "request-oversized",
+                    "kind": "create",
+                    "objective": "ship it",
+                },
+            },
+        )
+
+    assert mount.await_args is not None
+    body = str(mount.await_args.args[0]._content)
+    assert "Goal objective and criteria combined is 12,500 characters" in body
+    assert "Remove at least 500 characters" in body
+    assert "Could not generate acceptance criteria" not in body
 
 
 async def test_failed_criteria_turn_shows_actionable_message() -> None:

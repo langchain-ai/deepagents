@@ -1518,7 +1518,7 @@ def test_rejected_managed_privilege_value_stops_the_launch(
         service.invalidate_config_sources()
 
 
-def test_managed_auto_mode_does_not_set_the_headless_incompatible_flag(
+def test_managed_auto_mode_does_not_set_the_interactive_only_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1526,7 +1526,10 @@ def test_managed_auto_mode_does_not_set_the_headless_incompatible_flag(
 
     Regression: assigning the flag positively made every headless launch exit 2
     with "--auto-approve is only supported in interactive mode", naming a flag
-    the user never passed. `_resolve_approval_mode` already ends at
+    the user never passed. That launch now warns and continues instead, and the
+    warning keys off a parse-time capture that a positive value here would not
+    reach — but the flag would still misreport user intent to every other
+    reader of `args`. `_resolve_approval_mode` already ends at
     `coerce_approval_mode(load_startup_mode())`, which reads merged managed
     policy, so the positive value needs no flag.
     """

@@ -725,6 +725,7 @@ class TestSdkContractGuards:
             "_partition_messages",
             "_create_summary",
             "_acreate_summary",
+            "_get_session_id",
             "_offload_to_backend",
             "_aoffload_to_backend",
         ):
@@ -736,6 +737,29 @@ class TestSdkContractGuards:
             "_nothing_to_compact",
         ):
             assert callable(getattr(SummarizationToolMiddleware, name, None)), name
+
+    def test_summarization_cutoff_is_an_absolute_index(self) -> None:
+        """`cutoff_index` must index unfiltered persisted messages.
+
+        `goal_state_notice.validated_summarization_cutoff` and
+        `GoalToolsMiddleware._request_with_goal_notice` both depend on this: the
+        goal middleware wraps the summarizer, so anything it removes from the
+        request below the cutoff shifts the indices this slice uses. If the SDK
+        ever stored an effective-list index instead, the bounds check would keep
+        returning a plausible integer and the notice logic would degrade
+        silently rather than fail.
+        """
+        from deepagents.middleware.summarization import SummarizationMiddleware
+
+        messages = ["m0", "m1", "m2", "m3"]
+        event = {"summary_message": "S", "cutoff_index": 2}
+
+        applied = SummarizationMiddleware._apply_event_to_messages(
+            messages,  # ty: ignore[invalid-argument-type]
+            event,  # ty: ignore[invalid-argument-type]
+        )
+
+        assert applied == ["S", "m2", "m3"]
 
     def test_failure_prefix_matches_sdk_failure_message(self) -> None:
         """Dcode's prefix must match the SDK's own compaction-failure wording.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -19,6 +20,7 @@ from langchain.agents.middleware.human_in_the_loop import (
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import (
     AIMessage,
+    BaseMessage,
     FunctionMessage,
     HumanMessage,
     SystemMessage,
@@ -29,6 +31,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphInterrupt, GraphRecursionError
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
+from pydantic import ValidationError
 
 from deepagents_code._repository_bounds import (
     REPOSITORY_DIRECTORY_ENTRY_LIMIT as _REPOSITORY_DIRECTORY_ENTRY_LIMIT,
@@ -37,7 +40,10 @@ from deepagents_code._repository_bounds import (
     REPOSITORY_READ_LINE_LIMIT as _REPOSITORY_READ_LINE_LIMIT,
     REPOSITORY_TOOL_RESULT_LIMIT as _REPOSITORY_TOOL_RESULT_LIMIT,
 )
-from deepagents_code._testing_models import GoalCriteriaIntegrationChatModel
+from deepagents_code._testing_models import (
+    GoalCriteriaIntegrationChatModel,
+    _tool_call_result,
+)
 from deepagents_code.goal_rubric import (
     _CONVERSATION_CONTEXT_MESSAGE_LIMIT,
     _CONVERSATION_CONTEXT_SERIALIZED_LIMIT,
@@ -53,6 +59,7 @@ from deepagents_code.goal_rubric import (
     GoalCriteriaMiddleware,
     GoalCriteriaRequest,
     GoalCriteriaState,
+    GoalProposal,
     _coerce_goal_proposal,
     _ContextToolCallBudgetMiddleware,
     _conversation_context,
@@ -66,6 +73,7 @@ from deepagents_code.goal_rubric import (
     _GoalContextFallbackMiddleware,
     _prompt_with_conversation_context,
     _proposal_from_result,
+    _raise_terminal_goal_state_size_error,
     _RepositoryToolBudgetMiddleware,
     _rubric_interrupt_on,
     _summarize_criteria_result,
@@ -73,16 +81,49 @@ from deepagents_code.goal_rubric import (
     create_goal_criteria_agent,
     create_goal_criteria_fallback_agent,
 )
+from deepagents_code.goal_state_limits import (
+    GOAL_APPLICATION_CHAR_LIMIT,
+    GOAL_OBJECTIVE_CHAR_LIMIT,
+    RUBRIC_CHAR_LIMIT,
+    GoalStateSizeError,
+)
 from deepagents_code.goal_tools import GoalToolState
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.outputs import ChatResult
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
 
     from deepagents_code.agent import AsyncApprovalHITLMiddleware
+
+
+class _OversizedThenValidCriteriaModel(GoalCriteriaIntegrationChatModel):
+    """Return invalid long criteria once, then honor structured-output feedback."""
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ChatResult:
+        """Retry with concise criteria after receiving the validation error.
+
+        Returns:
+            An oversized proposal first, then a valid proposal.
+        """
+        saw_error = any(isinstance(message, ToolMessage) for message in messages)
+        criteria = "- concise result" if saw_error else "x" * (RUBRIC_CHAR_LIMIT + 1)
+        call_id = "valid-proposal" if saw_error else "oversized-proposal"
+        return _tool_call_result(
+            "GoalProposal",
+            {"objective": "ship it", "criteria": criteria},
+            call_id,
+        )
 
 
 class _LoopBoundAsyncStore:
@@ -1693,6 +1734,82 @@ class TestNoCompleteProposalFailure:
         with pytest.raises(RuntimeError, match="no complete proposal"):
             middleware.before_agent(state, TestGoalCriteriaMiddleware._runtime())
 
+    def test_before_agent_rejects_oversized_pair_from_raw_json(self) -> None:
+        """The text-fallback path cannot smuggle oversized state past the schema.
+
+        `_proposal_from_result` parses raw JSON out of message content when
+        structured output is absent, so `GoalProposal`'s validators never run.
+        `_update`'s own check is the only thing standing between that path and a
+        goal too large to include in the notice the model reads every turn.
+        """
+        criteria = MagicMock()
+        criteria.invoke.return_value = {
+            "messages": [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "objective": "ship it",
+                            "criteria": "x" * GOAL_APPLICATION_CHAR_LIMIT,
+                        }
+                    )
+                )
+            ]
+        }
+        middleware = GoalCriteriaMiddleware(criteria)
+        state = cast(
+            "GoalCriteriaState",
+            {
+                "messages": [],
+                "goal_criteria_request": {
+                    "request_id": "r",
+                    "kind": "create",
+                    "objective": "ship it",
+                },
+            },
+        )
+
+        with pytest.raises(GoalStateSizeError, match="combined"):
+            middleware.before_agent(state, TestGoalCriteriaMiddleware._runtime())
+
+    def test_before_agent_validates_the_objective_it_actually_applies(self) -> None:
+        """A `create` applies the user's objective, not the model's paraphrase.
+
+        The model is told to preserve the objective verbatim and nothing enforces
+        that. A shortened paraphrase can satisfy `GoalProposal._fit_notice_budget`
+        while the pair that actually gets persisted exceeds the budget, so the
+        check has to run against the applied objective.
+        """
+        user_objective = "u" * (GOAL_APPLICATION_CHAR_LIMIT // 2)
+        criteria_text = "c" * (GOAL_APPLICATION_CHAR_LIMIT // 2 + 1)
+        criteria = MagicMock()
+        criteria.invoke.return_value = {
+            "messages": [
+                AIMessage(
+                    content=json.dumps(
+                        {"objective": "short", "criteria": criteria_text}
+                    )
+                )
+            ]
+        }
+        middleware = GoalCriteriaMiddleware(criteria)
+        state = cast(
+            "GoalCriteriaState",
+            {
+                "messages": [],
+                "goal_criteria_request": {
+                    "request_id": "r",
+                    "kind": "create",
+                    "objective": user_objective,
+                },
+            },
+        )
+
+        # The proposal the model returned fits on its own; the applied pair does not.
+        GoalProposal.model_validate({"objective": "short", "criteria": criteria_text})
+
+        with pytest.raises(GoalStateSizeError, match="combined"):
+            middleware.before_agent(state, TestGoalCriteriaMiddleware._runtime())
+
     def test_summarize_result_is_bounded(self) -> None:
         big = "x" * (_CRITERIA_RESULT_LOG_LIMIT + 100)
 
@@ -2132,6 +2249,49 @@ class TestGoalCriteriaFallback:
         assert update["_pending_goal_rubric"] == "- salvaged criteria"
         fallback.invoke.assert_called_once()
 
+    def test_size_rejection_is_never_swallowed_by_the_fallback(self) -> None:
+        """A size rejection is deterministic, so the fallback cannot help.
+
+        `GoalStateSizeError` is a `ValueError`, which `_CRITERIA_FALLBACK_ERRORS`
+        would otherwise catch — logging a character-limit problem as a context
+        fault and re-asking with less context, which fails the same way while
+        the limit message never reaches the caller.
+        """
+        criteria = MagicMock()
+        criteria.invoke.side_effect = GoalStateSizeError(
+            label="Goal objective and criteria combined",
+            actual=12_500,
+            limit=12_000,
+        )
+        fallback = self._fallback()
+        middleware = GoalCriteriaMiddleware(criteria, fallback)
+
+        with pytest.raises(GoalStateSizeError, match="Remove at least 500"):
+            middleware.before_agent(
+                self._state(), TestGoalCriteriaMiddleware._runtime()
+            )
+        fallback.invoke.assert_not_called()
+
+    async def test_async_size_rejection_is_never_swallowed_by_the_fallback(
+        self,
+    ) -> None:
+        criteria = MagicMock()
+        criteria.ainvoke = AsyncMock(
+            side_effect=GoalStateSizeError(
+                label="Goal objective and criteria combined",
+                actual=12_500,
+                limit=12_000,
+            )
+        )
+        fallback = self._fallback()
+        middleware = GoalCriteriaMiddleware(criteria, fallback)
+
+        with pytest.raises(GoalStateSizeError, match="Remove at least 500"):
+            await middleware.abefore_agent(
+                self._state(), TestGoalCriteriaMiddleware._runtime()
+            )
+        fallback.ainvoke.assert_not_awaited()
+
     def test_hitl_interrupt_is_never_swallowed_by_the_fallback(self) -> None:
         criteria = MagicMock()
         criteria.invoke.side_effect = GraphInterrupt(())
@@ -2181,6 +2341,188 @@ class TestGoalCriteriaFallback:
                 self._state(), TestGoalCriteriaMiddleware._runtime()
             )
         fallback.ainvoke.assert_not_awaited()
+
+    def test_structured_output_validation_retries_oversized_criteria(self) -> None:
+        """The nested model self-corrects before an error reaches the user."""
+        agent = create_goal_criteria_fallback_agent(
+            model=_OversizedThenValidCriteriaModel()
+        )
+
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="ship it")],
+                "criteria_objective": "ship it",
+                "criteria_operation_id": "retry-op",
+            },
+            context={},
+        )
+
+        assert _proposal_from_result(result) == ("ship it", "- concise result")
+        messages = result["messages"]
+        assert any(
+            isinstance(message, ToolMessage) and "12000" in message.text
+            for message in messages
+        )
+
+    def test_goal_proposal_schema_rejects_oversized_combination(self) -> None:
+        """The structured schema reports pair limits through ToolStrategy."""
+        with pytest.raises(ValueError, match="combined"):
+            GoalProposal.model_validate(
+                {
+                    "objective": "goal",
+                    "criteria": "x" * RUBRIC_CHAR_LIMIT,
+                }
+            )
+
+    @staticmethod
+    def _rejection(objective: str, criteria: str) -> BaseException:
+        """Wrap an invalid proposal exactly as the structured-output loop does.
+
+        The layering matters and cannot be faked: pydantic converts the
+        validator's `ValueError` into a `ValidationError` without chaining the
+        original, the parser rewraps that as a plain `ValueError`, and the agent
+        builds a `StructuredOutputValidationError` that has not been raised yet,
+        so it has neither `__cause__` nor `__context__`. Anything that recovers
+        the size error by walking the exception chain passes a hand-built double
+        and fails here.
+
+        Returns:
+            The exception the agent hands to its `handle_errors` callable.
+        """
+        from langchain.agents.structured_output import (
+            StructuredOutputValidationError,
+            _parse_with_schema,
+        )
+
+        data = {"objective": objective, "criteria": criteria}
+        ai_message = AIMessage(
+            content="",
+            tool_calls=[{"name": "GoalProposal", "args": data, "id": "call-1"}],
+        )
+        try:
+            _parse_with_schema(GoalProposal, "pydantic", data)
+        except Exception as exc:  # noqa: BLE001
+            return StructuredOutputValidationError("GoalProposal", exc, ai_message)
+        pytest.fail("proposal was expected to be invalid")
+
+    def test_combined_budget_rejection_ends_the_turn(self) -> None:
+        """The limit message must reach the user, not a retry loop.
+
+        The model is never told the combined budget, so retrying it is blind. The
+        old default retried until `GraphRecursionError`, which the fallback tuple
+        logged as a context fault, spent the fallback agent on the same request,
+        and finally reported as "could not generate acceptance criteria" — the
+        character count the user has to act on never arrived.
+        """
+        rejection = self._rejection("o" * 7_000, "c" * 6_000)
+
+        with pytest.raises(GoalStateSizeError, match="Remove at least 1,000"):
+            _raise_terminal_goal_state_size_error(rejection)
+
+    def test_combined_budget_rejection_names_the_real_excess(self) -> None:
+        """The error is rebuilt from the arguments, so its numbers are the real ones."""
+        rejection = self._rejection("o" * 7_000, "c" * 6_000)
+
+        with pytest.raises(GoalStateSizeError) as caught:
+            _raise_terminal_goal_state_size_error(rejection)
+
+        assert caught.value.label == "Goal objective and criteria combined"
+        assert caught.value.actual == 13_000
+        assert caught.value.limit == GOAL_APPLICATION_CHAR_LIMIT
+
+    def test_oversized_single_field_still_retries(self) -> None:
+        """A field over its own `max_length` is feedback the model can act on.
+
+        The schema publishes both per-field limits, and shortening the overlong
+        field usually brings the combined total inside its budget too — so this
+        must stay a retry even though the combined total also overshoots here.
+        """
+        rejection = self._rejection("ship it", "x" * (RUBRIC_CHAR_LIMIT + 1))
+
+        assert "Please fix your mistakes" in _raise_terminal_goal_state_size_error(
+            rejection
+        )
+
+    def test_oversized_objective_still_retries(self) -> None:
+        """Symmetric to the criteria case: the objective limit is in the schema."""
+        rejection = self._rejection("o" * (GOAL_OBJECTIVE_CHAR_LIMIT + 1), "- ok")
+
+        assert "Please fix your mistakes" in _raise_terminal_goal_state_size_error(
+            rejection
+        )
+
+    def test_whitespace_only_field_still_retries(self) -> None:
+        """Whitespace-only output is a model mistake with no user action attached."""
+        rejection = self._rejection("   ", "- ok")
+
+        assert "Please fix your mistakes" in _raise_terminal_goal_state_size_error(
+            rejection
+        )
+
+    def test_error_without_tool_call_arguments_still_retries(self) -> None:
+        """An error carrying no proposal must not crash the handler."""
+        assert "Please fix your mistakes" in _raise_terminal_goal_state_size_error(
+            ValueError("malformed tool call")
+        )
+
+    @pytest.mark.parametrize(
+        "factory_kwargs",
+        [{}, {"repository_backend": None, "context_tools": []}],
+        ids=["fallback_agent", "context_agent"],
+    )
+    def test_both_criteria_agents_install_the_terminal_size_handler(
+        self, factory_kwargs: dict[str, Any]
+    ) -> None:
+        """A missing handler silently restores the retry-to-exhaustion behavior."""
+        factory = (
+            create_goal_criteria_agent
+            if factory_kwargs
+            else create_goal_criteria_fallback_agent
+        )
+        graph = MagicMock()
+        graph.with_config.return_value = "configured-graph"
+
+        with patch("langchain.agents.create_agent", return_value=graph) as create:
+            factory(model=MagicMock(), **factory_kwargs)
+
+        response_format = create.call_args.kwargs["response_format"]
+        assert response_format.schema is GoalProposal
+        assert response_format.handle_errors is _raise_terminal_goal_state_size_error
+
+    @pytest.mark.parametrize("field", ["objective", "criteria"])
+    def test_goal_proposal_schema_rejects_whitespace_only_field(
+        self, field: str
+    ) -> None:
+        """Whitespace-only structured output becomes retry feedback, not a goal."""
+        payload = {"objective": "goal", "criteria": "- tests pass"}
+        payload[field] = "   \n\t "
+
+        with pytest.raises(ValueError, match="non-whitespace"):
+            GoalProposal.model_validate(payload)
+
+    def test_goal_proposal_schema_forbids_extra_keys(self) -> None:
+        """Unknown keys fail rather than being silently dropped downstream."""
+        with pytest.raises(ValueError, match="extra"):
+            GoalProposal.model_validate(
+                {
+                    "objective": "goal",
+                    "criteria": "- tests pass",
+                    "unexpected": "value",
+                }
+            )
+
+    def test_goal_proposal_is_frozen_after_validation(self) -> None:
+        """Validated text cannot be swapped for oversized text after the fact.
+
+        Pydantic does not validate assignment by default, so without `frozen`
+        a plain attribute write would bypass `_fit_notice_budget`.
+        """
+        proposal = GoalProposal.model_validate(
+            {"objective": "goal", "criteria": "- tests pass"}
+        )
+
+        with pytest.raises(ValidationError):
+            proposal.criteria = "x" * (RUBRIC_CHAR_LIMIT + 1)  # ty: ignore[invalid-assignment]
 
     def test_fallback_agent_can_be_created(self) -> None:
         agent = create_goal_criteria_fallback_agent(

@@ -102,15 +102,30 @@ from deepagents_code.configuration.theme_resolution import (
     resolve_theme_name as _resolve_theme_name,
 )
 from deepagents_code.formatting import format_message_timestamp
+from deepagents_code.goal_state_limits import (
+    GOAL_APPLICATION_CHAR_LIMIT,
+    GOAL_OBJECTIVE_CHAR_LIMIT,
+    RUBRIC_CHAR_LIMIT,
+    GoalStateSizeError,
+    validate_goal_application,
+    validate_goal_notice_text,
+    validate_goal_objective,
+    validate_goal_objective_rendered,
+    validate_rubric,
+)
 from deepagents_code.goal_state_notice import (
     build_goal_continuation,
     build_goal_state_notice,
+    goal_notice_size_error,
     goal_state_fingerprint,
     has_goal_or_rubric_state,
     is_human_message,
     is_internal_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
+    log_malformed_summarization_event as _log_malformed_summarization_event,
+    summarization_cutoff as _summarization_cutoff,
+    validated_summarization_cutoff as _validated_summarization_cutoff,
 )
 from deepagents_code.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_code.notifications import (
@@ -573,35 +588,30 @@ user why an unrelated next turn might fail and how to recover.
 """
 
 
-def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
-    """Return the absolute cutoff index of a `_summarization_event`.
-
-    Args:
-        event: A `_summarization_event` mapping (as persisted in state), or
-            `None`.
-
-    Returns:
-        The `cutoff_index`, or `0` when the event is missing or malformed.
-    """
-    if isinstance(event, dict):
-        cutoff = event.get("cutoff_index")
-        if isinstance(cutoff, int):
-            return cutoff
-    return 0
-
-
 def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # noqa: ANN401
     """Reconstruct the effective conversation the model would see.
 
     A hardened local variant of
     `SummarizationMiddleware._apply_event_to_messages`, kept in the client
     because it runs against possibly-malformed remote-snapshot dicts and must
-    degrade gracefully (a `None` summary or non-int cutoff returns the full
-    list) rather than raise or emit a `None`-led list. Like the SDK method,
-    when a prior summarization event exists the effective conversation is the
-    summary message followed by the messages from `cutoff_index` onward, and it
+    degrade gracefully rather than raise or emit a `None`-led list. When the
+    event is usable the effective conversation is the summary message followed
+    by the messages from `cutoff_index` onward, matching the SDK method, and it
     works on both LangChain message objects and serialized dicts since it only
     slices and prepends.
+
+    An unusable event — a `None` summary, or a cutoff that is not a non-negative
+    int within bounds — is logged and returns the full list.
+
+    The bounds case diverges deliberately from the SDK. The SDK reads a cutoff
+    past the end as "everything was summarized" and returns `[summary]` alone.
+    Here, a list shorter than the cutoff means history was removed after the
+    summary was written; the `/offload` failure paths issue `RemoveMessage`. The
+    survivors are therefore recent messages, and `[summary]` would hide live
+    turns. Callers size context and detect dangling tool calls, where
+    over-reporting the window is the safe direction.
+    `validated_summarization_cutoff` holds the matching decision for the notice
+    predicate.
 
     Args:
         messages: Full message list from state.
@@ -610,14 +620,19 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
     Returns:
         The effective message list.
     """
+    if event is None:
+        return list(messages)
     if not isinstance(event, dict):
+        _log_malformed_summarization_event(event, len(messages))
         return list(messages)
     summary = event.get("summary_message")
-    cutoff = event.get("cutoff_index")
-    if summary is None or not isinstance(cutoff, int):
+    cutoff = _validated_summarization_cutoff(
+        event,
+        message_count=len(messages),
+    )
+    if summary is None or cutoff is None:
+        _log_malformed_summarization_event(event, len(messages))
         return list(messages)
-    if cutoff > len(messages):
-        return [summary]
     return [summary, *messages[cutoff:]]
 
 
@@ -2189,6 +2204,16 @@ class _ThreadHistoryPayload:
     goal_criteria_request_active: bool = False
     """Whether a newer or unfinished criteria request remains in the checkpoint."""
 
+    goal_status_recorded: bool = False
+    """Whether the checkpoint carried a `_goal_status` channel at all.
+
+    Distinct from `goal_status`: legacy checkpoints predate the status channel,
+    so absence means the goal ran as `active` (the implicit pre-status status),
+    while a *present* value that `coerce_goal_status` does not recognize means a
+    corrupt or forward-version checkpoint. Only the latter is normalized to
+    `paused` on restore; the former keeps its legacy `active` behavior.
+    """
+
     @property
     def has_model_usage(self) -> bool:
         """Whether restored state contains evidence of model usage."""
@@ -2236,18 +2261,25 @@ class _GoalApplication:
     request_id: str | None = None
 
     def __post_init__(self) -> None:
-        """Reject empty objective or rubric at construction.
+        """Reject an empty or oversized objective or rubric at construction.
 
-        Callers already screen these (`_accept_goal_rubric`), so this only
-        guards against a future construction site skipping that check and
-        queuing a goal that would clear the active one to nothing.
+        Callers already screen these (`_accept_goal_rubric`), so this guards
+        against a future construction site skipping that check — queuing a goal
+        that would clear the active one to nothing, or one whose text cannot
+        render as a goal-state notice. Holding both invariants here means they
+        do not depend on every construction site remembering; callers keep their
+        own checks so they can report a targeted message before mutating UI
+        state.
 
         Raises:
             ValueError: If `objective` or `rubric` is empty.
-        """
+            GoalStateSizeError: If either exceeds its own limit, or their
+                combined text exceeds `GOAL_APPLICATION_CHAR_LIMIT`.
+        """  # noqa: DOC502 - propagates from `validate_goal_application`
         if not self.objective or not self.rubric:
             msg = "goal application requires a non-empty objective and rubric"
             raise ValueError(msg)
+        validate_goal_application(self.objective, self.rubric)
 
 
 @dataclass(frozen=True, slots=True)
@@ -12693,7 +12725,18 @@ class DeepAgentsApp(App):
             latest = latest_goal_state_notice(messages)
             latest_candidate = latest_goal_state_message_index(messages)
             fingerprint = goal_state_fingerprint(desired_state)
-            cutoff = _summarization_cutoff(state_values.get("_summarization_event"))
+            event = state_values.get("_summarization_event")
+            validated_cutoff = _validated_summarization_cutoff(
+                event,
+                message_count=len(messages),
+            )
+            if event is not None and validated_cutoff is None:
+                # Collapsing to 0 makes the `latest[0] >= cutoff` test below
+                # trivially true, so a stale notice counts as visible and the
+                # durable write is skipped. Silent here and loud in the middleware
+                # would make the two sides disagree for no visible reason.
+                _log_malformed_summarization_event(event, len(messages))
+            cutoff = validated_cutoff or 0
             if (
                 latest is not None
                 and latest[0] == latest_candidate
@@ -13001,6 +13044,7 @@ class DeepAgentsApp(App):
             sticky_rubric_recorded="_sticky_rubric" in state_values,
             goal_objective=_as_str(state_values.get("_goal_objective")),
             goal_status=coerce_goal_status(state_values.get("_goal_status")),
+            goal_status_recorded="_goal_status" in state_values,
             goal_rubric=_as_str(state_values.get("_goal_rubric")),
             goal_status_note=_as_str(state_values.get("_goal_status_note")),
             pending_goal_completion_note=_as_str(
@@ -13029,7 +13073,7 @@ class DeepAgentsApp(App):
             ),
         )
 
-    def _restore_goal_rubric_state(
+    async def _restore_goal_rubric_state(
         self,
         payload: _ThreadHistoryPayload,
         *,
@@ -13049,7 +13093,25 @@ class DeepAgentsApp(App):
         # Wiring a persisted "satisfied" status into restore would reintroduce
         # stale auto-completion on resume/thread-switch.
         self._active_goal = payload.goal_objective
-        self._goal_status = payload.goal_status
+        status_unrecognized = (
+            payload.goal_objective is not None
+            and payload.goal_status is None
+            and payload.goal_status_recorded
+        )
+        if status_unrecognized:
+            # `coerce_goal_status` discarded a corrupt or forward-version status,
+            # leaving the objective without a usable status. Without a value the
+            # goal is stuck: the notice projects `paused` (so the model will not
+            # work it), but `_resume_goal` requires exactly `"paused"` to resume,
+            # so neither side can move it. Restore the same recoverable `paused`
+            # the notice shows, and persist it so the checkpoint itself becomes
+            # resumable and the two reads stop disagreeing. A checkpoint with no
+            # `_goal_status` channel at all is legacy, not corrupt: it keeps its
+            # implicit pre-status `active` (matching the notice) instead of
+            # being silently paused.
+            self._goal_status = "paused"
+        else:
+            self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
         self._pending_goal_completion_note = payload.pending_goal_completion_note
         if payload.goal_rubric:
@@ -13075,6 +13137,43 @@ class DeepAgentsApp(App):
             self._pending_goal_kind = "create"
         self._next_rubric = None
         self._sync_status_rubric()
+        if status_unrecognized:
+            # Write the coerced `paused` back so the raw value is replaced
+            # everywhere it is read from; on failure the in-memory status still
+            # makes `/goal resume` usable for this session, and the next restore
+            # retries the normalization.
+            await self._persist_goal_rubric_state()
+
+    def _active_goal_state_size_error(self) -> str | None:
+        """Return why restored active state cannot fit a safe model notice.
+
+        Returns:
+            A user-facing validation error, or `None` when active state is safe.
+        """
+        error = goal_notice_size_error(self._goal_state_update())
+        return str(error) if error is not None else None
+
+    def _next_rubric_size_error(self, criteria: str) -> str | None:
+        """Return why a one-shot rubric cannot fit the turn's notice budget.
+
+        The per-rubric limit alone is not sufficient: the turn notice embeds the
+        rubric alongside the actionable goal's objective and status note, and
+        `validate_goal_notice_text` rejects the combined text. Without this
+        check, `/rubric next` would accept criteria that the notice then drops,
+        silently disabling the promised one-shot grade.
+
+        Args:
+            criteria: Candidate next-turn rubric text.
+
+        Returns:
+            A user-facing validation error, or `None` when the combined notice
+            text is safe.
+        """
+        error = goal_notice_size_error(
+            self._goal_state_update(),
+            criteria_override=criteria,
+        )
+        return str(error) if error is not None else None
 
     async def _announce_goal_status_transition(
         self, previous_status: str | None
@@ -13423,7 +13522,7 @@ class DeepAgentsApp(App):
             # instead of re-listing all of them.
             payload = replace(payload, rubric=self._last_consumed_next_previous_rubric)
         previous_status = self._goal_status
-        self._restore_goal_rubric_state(
+        await self._restore_goal_rubric_state(
             payload,
             preserve_queued_application=True,
         )
@@ -13658,6 +13757,11 @@ class DeepAgentsApp(App):
 
         objective = remainder
         await self._mount_message(UserMessage(command))
+        try:
+            validate_goal_objective(objective)
+        except GoalStateSizeError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return
         await self._start_goal_proposal(
             lambda: self._propose_goal_rubric(objective),
             cleanup_context="goal replacement cleanup",
@@ -13766,7 +13870,10 @@ class DeepAgentsApp(App):
             "Use /goal when you have a plain-language objective; dcode will "
             "draft a checklist for it. Once applied, the goal stays active for "
             "this thread until paused, completed, blocked, or cleared. "
-            "Follow-up prompts continue working toward that goal."
+            "Follow-up prompts continue working toward that goal.\n"
+            f"Objectives are limited to {GOAL_OBJECTIVE_CHAR_LIMIT:,} characters, "
+            f"and an objective plus its criteria to "
+            f"{GOAL_APPLICATION_CHAR_LIMIT:,}."
         )
 
     async def _show_goal_state(
@@ -13886,6 +13993,11 @@ class DeepAgentsApp(App):
                 )
             )
             return
+        try:
+            validate_goal_application(base_objective, base_criteria)
+        except GoalStateSizeError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return
         await self._run_goal_criteria_request(
             {
                 "request_id": uuid.uuid4().hex,
@@ -13912,6 +14024,17 @@ class DeepAgentsApp(App):
         """
         if not objective.strip():
             await self._mount_message(AppMessage("Usage: /goal <objective>"))
+            return
+        try:
+            validate_goal_objective(objective)
+            # The criteria model counts raw characters, not escaped ones, and
+            # escaping can expand text fivefold. An objective whose escaped form
+            # already fills the notice leaves no criteria the model could return
+            # that acceptance would not reject, so refuse before spending the
+            # generation request.
+            validate_goal_objective_rendered(objective)
+        except GoalStateSizeError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
             return
         request: GoalCreateRequest = {
             "request_id": uuid.uuid4().hex,
@@ -14262,6 +14385,11 @@ class DeepAgentsApp(App):
         if not rubric:
             await self._mount_message(AppMessage("Cannot accept empty goal criteria."))
             return False
+        try:
+            validate_goal_application(objective, rubric)
+        except GoalStateSizeError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return False
         kind = self._pending_goal_kind or "create"
         if kind == "amend" and (
             not self._active_goal or self._goal_status == "complete"
@@ -14411,6 +14539,7 @@ class DeepAgentsApp(App):
             elif not is_amendment and not self._agent_running:
                 await self._continue_created_goal_work(
                     application.objective,
+                    application.rubric,
                     persisted=persisted,
                 )
         return result
@@ -14418,6 +14547,7 @@ class DeepAgentsApp(App):
     async def _continue_created_goal_work(
         self,
         objective: str,
+        criteria: str | None,
         *,
         persisted: bool,
     ) -> None:
@@ -14428,6 +14558,7 @@ class DeepAgentsApp(App):
             await self._continue_goal_work(
                 "created",
                 unsaved_objective=objective,
+                unsaved_criteria=criteria,
             )
 
     async def _continue_goal_work(
@@ -14435,11 +14566,13 @@ class DeepAgentsApp(App):
         transition: Literal["amended", "resumed", "created"],
         *,
         unsaved_objective: str | None = None,
+        unsaved_criteria: str | None = None,
     ) -> None:
         """Send one hidden command that resumes work after a goal transition."""
         continuation = build_goal_continuation(
             transition,
             unsaved_objective=unsaved_objective,
+            unsaved_criteria=unsaved_criteria,
         )
         await self._send_to_agent(
             cast("str", continuation.content),
@@ -14508,6 +14641,25 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(
                     "Goal is not paused. Use `/goal show` to inspect its current state."
+                )
+            )
+            return
+        try:
+            # Deliberately not routed through `notice_text_sections`, unlike its
+            # two siblings. The goal is still `paused` here, so projecting it would
+            # withhold the objective and status note — exactly the text the notice
+            # will embed once the resume lands. This validates the state as it will
+            # be *after* the transition, so the fields are read directly.
+            validate_goal_notice_text(
+                objective=self._active_goal,
+                criteria=self._active_rubric,
+                status_note=self._goal_status_note,
+            )
+        except GoalStateSizeError as exc:
+            await self._mount_message(
+                ErrorMessage(
+                    "This saved goal is too large to resume safely. Clear and "
+                    f"recreate it with a shorter objective and criteria. {exc}"
                 )
             )
             return
@@ -14618,6 +14770,11 @@ class DeepAgentsApp(App):
             if not arg:
                 await self._mount_message(AppMessage(self._rubric_set_usage_text()))
                 return
+            try:
+                validate_rubric(arg)
+            except GoalStateSizeError as exc:
+                await self._mount_message(ErrorMessage(str(exc)))
+                return
             async with self._goal_state_mutation_boundary():
                 previous_state = self._goal_state_update()
                 self._reset_goal_tracking()
@@ -14636,6 +14793,21 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             if not arg:
                 await self._mount_message(AppMessage(self._rubric_next_usage_text()))
+                return
+            try:
+                validate_rubric(arg)
+            except GoalStateSizeError as exc:
+                await self._mount_message(ErrorMessage(str(exc)))
+                return
+            size_error = self._next_rubric_size_error(arg)
+            if size_error is not None:
+                await self._mount_message(
+                    ErrorMessage(
+                        "This rubric cannot be applied to the next turn alongside "
+                        "the active goal. Shorten it, or clear the goal first. "
+                        f"{size_error}"
+                    )
+                )
                 return
             self._next_rubric = arg
             self._sync_status_rubric()
@@ -14696,6 +14868,7 @@ class DeepAgentsApp(App):
             "  /rubric max-iterations <N|clear>\n\n"
             "Use /rubric next for a one-turn quality gate. Use /rubric set "
             "when you want explicit acceptance criteria to persist across turns.\n"
+            f"Criteria are limited to {RUBRIC_CHAR_LIMIT:,} characters.\n"
             "Example: /rubric set tests pass; keep the diff minimal"
         )
 
@@ -14724,6 +14897,7 @@ class DeepAgentsApp(App):
         return (
             "Usage: /rubric file <path>\n\n"
             "Load acceptance criteria from a file (same as /rubric set).\n"
+            f"The file must hold at most {RUBRIC_CHAR_LIMIT:,} characters.\n"
             "Example: /rubric file ./rubric.md"
         )
 
@@ -14824,6 +14998,11 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Rubric file {str(path)!r} is empty.")
             )
+            return
+        try:
+            validate_rubric(rubric)
+        except GoalStateSizeError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
             return
         async with self._goal_state_mutation_boundary():
             previous_state = self._goal_state_update()
@@ -16324,7 +16503,16 @@ class DeepAgentsApp(App):
 
             prior_event = state_values.get("_summarization_event")
             before_messages = state_values.get("messages", [])
-            prior_cutoff = _summarization_cutoff(prior_event)
+            # Bounds-checked against the list it indexes, matching
+            # `_effective_conversation` below. Without `message_count`, an
+            # out-of-bounds cutoff is trusted here while that call rejects it, and
+            # the two disagree: `messages_offloaded` inflates, `messages_kept`
+            # collapses to 0, and the report claims a large offload beside roughly
+            # zero token savings.
+            prior_cutoff = _summarization_cutoff(
+                prior_event,
+                message_count=len(before_messages),
+            )
             conversation_tokens_before = count_tokens_approximately(
                 _effective_conversation(before_messages, prior_event)
             )
@@ -16361,7 +16549,11 @@ class DeepAgentsApp(App):
                         await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
                     raise stream_error from state_error
                 reconciled_event = new_state.get("_summarization_event")
-                if _summarization_cutoff(reconciled_event) <= prior_cutoff:
+                reconciled_cutoff = _summarization_cutoff(
+                    reconciled_event,
+                    message_count=len(new_state.get("messages", [])),
+                )
+                if reconciled_cutoff <= prior_cutoff:
                     # Compaction did not commit, so the seeded tool call was
                     # never answered. Remove it before re-raising so a failed
                     # `/offload` cannot wedge the thread with a dangling
@@ -16389,7 +16581,10 @@ class DeepAgentsApp(App):
             self._sync_session_cost_from_state(new_state)
             self._sync_cache_state_from_state(new_state)
             new_event = new_state.get("_summarization_event")
-            new_cutoff = _summarization_cutoff(new_event)
+            new_cutoff = _summarization_cutoff(
+                new_event,
+                message_count=len(new_state.get("messages", [])),
+            )
 
             if new_event is None or new_cutoff <= prior_cutoff:
                 # A failure and a genuine no-op both leave `_summarization_event`
@@ -17639,6 +17834,26 @@ class DeepAgentsApp(App):
                     if goal_notice_ready:
                         self._last_consumed_next_rubric = None
                         self._last_consumed_next_previous_rubric = None
+                if self._next_rubric is not None:
+                    # `/rubric next` validated this against the goal state as it
+                    # stood when the command was typed, but that state is mutable:
+                    # a `/goal amend` or a blocker note recorded via `update_goal`
+                    # since then can push the combined notice over budget. Without
+                    # re-checking, the notice degrades and silently disables the
+                    # one-shot grade the command promised. Dropping it here, ahead
+                    # of the selection below, lets the normal active-rubric
+                    # fallback apply instead of duplicating that choice.
+                    size_error = self._next_rubric_size_error(self._next_rubric)
+                    if size_error is not None:
+                        self._next_rubric = None
+                        self._sync_status_rubric()
+                        await self._mount_message(
+                            ErrorMessage(
+                                "The next-turn rubric no longer fits alongside "
+                                "the current goal state, so it was dropped "
+                                f"instead of grading this turn. {size_error}"
+                            )
+                        )
                 rubric = self._next_rubric
                 if rubric is None and not (
                     self._active_goal and self._goal_status in {"paused", "complete"}
@@ -17764,9 +17979,22 @@ class DeepAgentsApp(App):
             # the raw exception text to a generic message, so surface a
             # self-contained, actionable message here rather than relying on it.
             if graph_input is not None and graph_input.get("goal_criteria_request"):
+                # A size rejection is the one failure here the user can act on,
+                # so keep its text: it names the budget and the excess. The
+                # overflow usually comes from the model-authored criteria (the
+                # objective is validated before this worker starts), and
+                # criteria drafting is non-deterministic, so a plain retry can
+                # succeed and shortening the objective buys headroom for both.
+                # A remote deployment redacts the raw text, so the generic
+                # message is still the fallback there.
                 body = (
-                    "Could not generate acceptance criteria for this goal. "
-                    "Run `/goal` again to retry."
+                    f"{e} Retry with `/goal`, or shorten the objective to leave "
+                    "room for the generated criteria."
+                    if isinstance(e, GoalStateSizeError)
+                    else (
+                        "Could not generate acceptance criteria for this goal. "
+                        "Run `/goal` again to retry."
+                    )
                 )
             try:
                 await self._mount_message(ErrorMessage(body))
@@ -17999,6 +18227,7 @@ class DeepAgentsApp(App):
                     # once the apply succeeds.
                     try:
                         queued_objective = application.objective
+                        queued_criteria = application.rubric
                         queued_result = await self._apply_goal_application(
                             application,
                             continue_work=False,
@@ -18009,6 +18238,7 @@ class DeepAgentsApp(App):
                             "Failed to apply queued goal update during agent cleanup"
                         )
                         queued_objective = None
+                        queued_criteria = None
                         queued_result = None
                         with suppress(Exception):
                             await self._mount_message(
@@ -18037,6 +18267,7 @@ class DeepAgentsApp(App):
                 if unsaved_creation and queued_objective is not None:
                     await self._continue_created_goal_work(
                         queued_objective,
+                        queued_criteria,
                         persisted=False,
                     )
                 else:
@@ -18051,6 +18282,7 @@ class DeepAgentsApp(App):
                 elif queued_objective is not None:
                     await self._continue_created_goal_work(
                         queued_objective,
+                        queued_criteria,
                         persisted=queued_result.persisted,
                     )
 
@@ -18608,6 +18840,15 @@ class DeepAgentsApp(App):
             )
             return
 
+        # Mounted from the `finally` block, so it survives every early return
+        # and the resilient `except` below. Oversized saved state disables goal
+        # work and grading until the user clears or shortens it, and
+        # `_restore_goal_rubric_state` has already made it live by then, so a
+        # path that bails out silently would leave the user with a
+        # non-functional goal and no explanation. Mounting last also keeps it
+        # below the restored transcript.
+        size_warning: ErrorMessage | None = None
+
         try:
             # Fetch + convert, or reuse preloaded payload on thread switch.
             payload = (
@@ -18615,7 +18856,18 @@ class DeepAgentsApp(App):
                 if preloaded_payload is not None
                 else await self._fetch_thread_history_data(history_thread_id)
             )
-            self._restore_goal_rubric_state(payload)
+            await self._restore_goal_rubric_state(payload)
+            size_error = self._active_goal_state_size_error()
+            size_warning = (
+                ErrorMessage(
+                    "Saved goal/rubric state is too large to use safely, so "
+                    "goal work and grading are disabled. Clear and recreate "
+                    "the goal, or replace/clear the rubric. "
+                    f"{size_error}"
+                )
+                if size_error is not None
+                else None
+            )
             self._hooks.record_messages(
                 payload.transcript_messages,
                 thread_id=history_thread_id,
@@ -18659,6 +18911,10 @@ class DeepAgentsApp(App):
             try:
                 messages_container = self.query_one("#messages", Container)
             except NoMatches:
+                logger.warning(
+                    "Skipping transcript render for %s: no #messages container",
+                    history_thread_id,
+                )
                 return
             await self._ensure_transcript_spacers(messages_container)
 
@@ -18758,7 +19014,6 @@ class DeepAgentsApp(App):
                 prefix="Resumed thread",
                 thread_id=history_thread_id,
             )
-
             # 10. Scroll once to bottom after history loads. Leave `immediate`
             # at its default: `scroll_end()` defers via `call_after_refresh` so
             # `max_scroll_y` is read once layout has settled. With
@@ -18778,6 +19033,17 @@ class DeepAgentsApp(App):
             )
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
         finally:
+            if size_warning is not None:
+                try:
+                    await self._mount_message(size_warning)
+                except Exception:
+                    # This message is the only explanation the user gets for a
+                    # non-functional goal, so losing it silently is the outcome
+                    # the `finally` exists to prevent.
+                    logger.exception(
+                        "Failed to surface oversized goal-state warning for %s",
+                        history_thread_id,
+                    )
             if resolve_pending_goal:
                 try:
                     await self._remount_pending_goal_rubric_review()
@@ -25210,13 +25476,20 @@ class DeepAgentsApp(App):
                 worker.error,
                 exc_info=worker.error,
             )
-            self.call_later(
-                self._mount_message,
-                ErrorMessage(
+            # Defense in depth: the size rejection normally surfaces from the
+            # turn handler, which keeps its limit text. Should one escape to
+            # here, surface the same actionable message rather than a bare
+            # "failed unexpectedly".
+            message = (
+                f"{worker.error} Retry with `/goal`, or shorten the objective "
+                "to leave room for the generated criteria."
+                if isinstance(worker.error, GoalStateSizeError)
+                else (
                     "Drafting acceptance criteria failed unexpectedly. "
                     "Try `/goal <objective>` again."
-                ),
+                )
             )
+            self.call_later(self._mount_message, ErrorMessage(message))
 
     def _start_mcp_login(self, server_name: str) -> bool:
         """Begin in-TUI OAuth login for `server_name`.

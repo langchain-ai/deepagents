@@ -1735,6 +1735,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["cohere"] == "COHERE_API_KEY"
         assert PROVIDER_API_KEY_ENV["deepseek"] == "DEEPSEEK_API_KEY"
         assert PROVIDER_API_KEY_ENV["fireworks"] == "FIREWORKS_API_KEY"
+        assert PROVIDER_API_KEY_ENV["google_anthropic_vertex"] == "GOOGLE_CLOUD_PROJECT"
         assert PROVIDER_API_KEY_ENV["google_genai"] == "GOOGLE_API_KEY"
         assert PROVIDER_API_KEY_ENV["google_vertexai"] == "GOOGLE_CLOUD_PROJECT"
         assert PROVIDER_API_KEY_ENV["groq"] == "GROQ_API_KEY"
@@ -4739,11 +4740,12 @@ models = ["llama3"]
         assert status.env_var == "OLLAMA_API_KEY"
         assert legacy is True
 
-    def test_google_vertexai_missing_project_uses_implicit_auth(self):
-        """Vertex AI should not fail just because GOOGLE_CLOUD_PROJECT is unset."""
+    @pytest.mark.parametrize("provider", ["google_anthropic_vertex", "google_vertexai"])
+    def test_vertex_missing_project_uses_implicit_auth(self, provider: str):
+        """Vertex providers should allow ADC when project env vars are unset."""
         with patch.dict("os.environ", {}, clear=True):
-            status = get_provider_auth_status("google_vertexai")
-            legacy = has_provider_credentials("google_vertexai")
+            status = get_provider_auth_status(provider)
+            legacy = has_provider_credentials(provider)
 
         assert status.state is ProviderAuthState.IMPLICIT
         assert legacy is True

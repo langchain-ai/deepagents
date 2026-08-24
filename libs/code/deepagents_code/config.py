@@ -2614,6 +2614,7 @@ _RELOADABLE_FIELDS = (
     "nvidia_api_key",
     "tavily_api_key",
     "google_cloud_project",
+    "google_cloud_location",
     "deepagents_langchain_project",
     "project_root",
     "shell_allow_list",
@@ -2664,6 +2665,9 @@ class Settings:
 
     google_cloud_project: str | None
     """Google Cloud project ID for VertexAI authentication."""
+
+    google_cloud_location: str | None
+    """Google Cloud region for Anthropic models on Vertex AI."""
 
     deepagents_langchain_project: str | None
     """LangSmith project name for deepagents agent tracing."""
@@ -2779,6 +2783,7 @@ class Settings:
         nvidia_key = resolve_env_var("NVIDIA_API_KEY")
         tavily_key = resolve_env_var("TAVILY_API_KEY")
         google_cloud_project = resolve_env_var("GOOGLE_CLOUD_PROJECT")
+        google_cloud_location = resolve_env_var("GOOGLE_CLOUD_LOCATION")
 
         # Detect LangSmith configuration
         # DEEPAGENTS_CODE_LANGSMITH_PROJECT: Project for deepagents agent tracing
@@ -2872,6 +2877,7 @@ class Settings:
             nvidia_api_key=nvidia_key,
             tavily_api_key=tavily_key,
             google_cloud_project=google_cloud_project,
+            google_cloud_location=google_cloud_location,
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
             project_root=project_root,
@@ -3080,6 +3086,9 @@ class Settings:
             "nvidia_api_key": _resolve_env_var_from(env, "NVIDIA_API_KEY"),
             "tavily_api_key": _resolve_env_var_from(env, "TAVILY_API_KEY"),
             "google_cloud_project": _resolve_env_var_from(env, "GOOGLE_CLOUD_PROJECT"),
+            "google_cloud_location": _resolve_env_var_from(
+                env, "GOOGLE_CLOUD_LOCATION"
+            ),
             "deepagents_langchain_project": _resolve_env_var_from(
                 env,
                 LANGSMITH_PROJECT,
@@ -4800,7 +4809,7 @@ def detect_provider(model_name: str) -> str | None:
     if model_lower.startswith("claude"):
         s = _get_settings()
         if not s.has_anthropic and s.has_vertex_ai:
-            return "google_vertexai"
+            return "google_anthropic_vertex"
         return "anthropic"
 
     if model_lower.startswith("gemini"):
@@ -4974,7 +4983,7 @@ def _get_provider_kwargs(
             )
     if api_key_env:
         api_key = resolve_env_var(api_key_env)
-        if api_key:
+        if api_key and provider != "google_anthropic_vertex":
             result["api_key"] = api_key
 
     # `langchain-ollama` has no `api_key` kwarg; hosted Ollama (Cloud or
@@ -5016,6 +5025,32 @@ def _get_provider_kwargs(
         result.setdefault(key, value)
 
     return result
+
+
+def _apply_google_anthropic_vertex_kwargs(
+    provider: str, kwargs: dict[str, Any]
+) -> None:
+    """Apply required Claude-on-Vertex project and location defaults.
+
+    Raises:
+        ModelConfigError: If no location is configured.
+    """
+    if provider != "google_anthropic_vertex":
+        return
+    settings = _get_settings()
+    if settings.google_cloud_project:
+        kwargs.setdefault("project", settings.google_cloud_project)
+    if settings.google_cloud_location:
+        kwargs.setdefault("location", settings.google_cloud_location)
+    if not kwargs.get("location"):
+        from deepagents_code.model_config import ModelConfigError
+
+        msg = (
+            "Google Cloud location is required for provider "
+            "'google_anthropic_vertex'. Set GOOGLE_CLOUD_LOCATION or "
+            "DEEPAGENTS_CODE_GOOGLE_CLOUD_LOCATION, or pass 'location' in model params."
+        )
+        raise ModelConfigError(msg)
 
 
 def _compose_openai_reasoning_effort(
@@ -5158,6 +5193,7 @@ def _create_model_via_init(
         package_map = {
             "anthropic": "langchain-anthropic",
             "openai": "langchain-openai",
+            "google_anthropic_vertex": "langchain-google-vertexai",
             "google_genai": "langchain-google-genai",
             "google_vertexai": "langchain-google-vertexai",
             "nvidia": "langchain-nvidia-ai-endpoints",
@@ -5395,6 +5431,15 @@ def create_model(
         model_name = model_spec
         provider = inferred_provider or ""
 
+    if provider == "google_vertexai" and model_name.lower().startswith("claude-"):
+        msg = (
+            f"Claude model '{model_name}' uses the Anthropic Messages API on "
+            "Vertex AI. Use "
+            f"'google_anthropic_vertex:{model_name}' instead of "
+            f"'google_vertexai:{model_name}'."
+        )
+        raise ModelConfigError(msg)
+
     # Stored API keys (added via `/auth`) take effect by being copied onto
     # the env var name LangChain reads. Apply before the credential check so
     # `has_provider_credentials` and the downstream SDK see the same value.
@@ -5492,6 +5537,8 @@ def create_model(
     # the `extra_kwargs` merge so it wins over a `max_retries` in `--model-params`.
     if cli_max_retries is not None:
         kwargs[_resolve_retry_param_name(provider)] = cli_max_retries
+
+    _apply_google_anthropic_vertex_kwargs(provider, kwargs)
 
     # Check if this provider uses a custom BaseChatModel class
     class_path = config.get_class_path(provider) if provider else None

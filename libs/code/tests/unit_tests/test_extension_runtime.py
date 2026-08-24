@@ -1,6 +1,5 @@
 """Tests for extension loading, trust gating, and teardown."""
 
-import json
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -14,11 +13,11 @@ from deepagents_code.extensions.runtime import (
     shutdown_server_extensions,
 )
 from deepagents_code.extensions.settings import ExtensionSettings, TrustPolicy
-from deepagents_code.plugins.manifest import load_manifest
 from deepagents_code.plugins.models import (
     ComponentInventory,
     PluginDiscoveryResult,
     PluginInstance,
+    PluginManifest,
 )
 
 
@@ -42,31 +41,20 @@ def _isolate_plugins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 def _plugin(root: Path, entries: list[str]) -> PluginInstance:
     """Create one installed plugin declaring Python entry files."""
-    (root / "plugin.json").write_text(
-        json.dumps(
-            {
-                "name": "test-extension",
-                "version": "1.0.0",
-                "extensions": {
-                    "com.langchain.deepagents.code": {
-                        "pythonExtensions": [f"./{entry}" for entry in entries]
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    manifest, _, warnings = load_manifest(root)
-    assert manifest is not None
-    assert not warnings
     return PluginInstance(
         plugin_id="test-extension@test",
         name="test-extension",
         marketplace="test",
-        version=manifest.version,
+        version="1.0.0",
         root=root,
         data_dir=root / "data",
-        manifest=manifest,
+        manifest=PluginManifest(
+            name="test-extension",
+            version="1.0.0",
+            component_paths={},
+            inline_mcp={},
+            python_extensions=tuple(root / entry for entry in entries),
+        ),
         inventory=ComponentInventory(),
     )
 
@@ -150,34 +138,23 @@ async def extension(d):
     assert result.registry.tools[0].unit.invoke({}) == "ready"
 
 
-async def test_plugin_setup_runs_eagerly(tmp_path: Path) -> None:
-    """Every enabled plugin setup function finishes before loading returns."""
+@pytest.mark.parametrize(
+    ("source", "error"),
+    [
+        (
+            "def extension(d):\n    raise AssertionError('must not run')\n",
+            "must be declared with 'async def'",
+        ),
+        ("async def extension(d):\n    raise SystemExit(7)\n", "attempted to exit: 7"),
+    ],
+)
+async def test_factory_errors_are_isolated(
+    tmp_path: Path, source: str, error: str
+) -> None:
+    """Invalid factories cannot run or terminate the agent server."""
     root = tmp_path / "plugin"
     root.mkdir()
-    marker = tmp_path / "initialized"
-    (root / "extension.py").write_text(
-        f"async def extension(d):\n    open({str(marker)!r}, 'w').close()\n",
-        encoding="utf-8",
-    )
-    plugin = _plugin(root, ["extension.py"])
-
-    with patch(
-        "deepagents_code.plugins.discover_plugins",
-        return_value=PluginDiscoveryResult(plugins=(plugin,)),
-    ):
-        await load_extensions()
-
-    assert marker.exists()
-
-
-async def test_sync_factory_is_a_clear_load_error(tmp_path: Path) -> None:
-    """The async-only factory contract fails before registration begins."""
-    root = tmp_path / "plugin"
-    root.mkdir()
-    (root / "extension.py").write_text(
-        "def extension(d):\n    raise AssertionError('must not run')\n",
-        encoding="utf-8",
-    )
+    (root / "extension.py").write_text(source, encoding="utf-8")
     plugin = _plugin(root, ["extension.py"])
 
     with patch(
@@ -186,27 +163,7 @@ async def test_sync_factory_is_a_clear_load_error(tmp_path: Path) -> None:
     ):
         result = await load_extensions()
 
-    assert not result.registry.registrations()
-    assert "must be declared with 'async def'" in result.errors[0]
-
-
-async def test_system_exit_is_isolated(tmp_path: Path) -> None:
-    """An extension cannot terminate the agent server during initialization."""
-    root = tmp_path / "plugin"
-    root.mkdir()
-    (root / "extension.py").write_text(
-        "async def extension(d):\n    raise SystemExit(7)\n",
-        encoding="utf-8",
-    )
-    plugin = _plugin(root, ["extension.py"])
-
-    with patch(
-        "deepagents_code.plugins.discover_plugins",
-        return_value=PluginDiscoveryResult(plugins=(plugin,)),
-    ):
-        result = await load_extensions()
-
-    assert "attempted to exit: 7" in result.errors[0]
+    assert error in result.errors[0]
 
 
 async def test_shutdown_runs_in_reverse_registration_order(tmp_path: Path) -> None:

@@ -44,11 +44,6 @@ class ExtensionSettings:
 
 
 def _read_config_section() -> dict[str, object]:
-    """Read `[extensions]` from the user configuration.
-
-    Returns:
-        Section contents, or an empty mapping when absent or unreadable.
-    """
     import tomllib
 
     from deepagents_code.model_config import DEFAULT_CONFIG_PATH
@@ -126,8 +121,7 @@ def load_extension_settings() -> ExtensionSettings:
         else:
             enabled = parsed_enabled
 
-    configured_trust = parse_trust_policy(section.get("trust")) or TrustPolicy.ASK
-    trust = configured_trust
+    trust = parse_trust_policy(section.get("trust")) or TrustPolicy.ASK
     env_trust = os.environ.get(EXTENSIONS_TRUST)
     if env_trust is not None and env_trust.strip():
         parsed_trust = parse_trust_policy(env_trust)

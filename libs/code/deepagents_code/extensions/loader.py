@@ -42,16 +42,15 @@ def _import_factory(
     sys.modules[name] = module
     try:
         spec.loader.exec_module(module)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit, Exception) as exc:
         sys.modules.pop(name, None)
-        raise
-    except SystemExit as exc:
-        sys.modules.pop(name, None)
-        msg = f"Extension import in {source.path} attempted to exit: {exc}"
-        raise ExtensionError(msg) from exc
-    except Exception as exc:
-        sys.modules.pop(name, None)
-        msg = f"Failed to import {source.path}: {exc}"
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        msg = (
+            f"Extension import in {source.path} attempted to exit: {exc}"
+            if isinstance(exc, SystemExit)
+            else f"Failed to import {source.path}: {exc}"
+        )
         raise ExtensionError(msg) from exc
     factory = getattr(module, "extension", None)
     if not callable(factory):
@@ -95,16 +94,14 @@ async def load_extension(
         api._deactivate()
         sys.modules.pop(name, None)
         raise
-    except SystemExit as exc:
+    except (SystemExit, Exception) as exc:
         registry._rollback(snapshot)
         api._deactivate()
         sys.modules.pop(name, None)
-        msg = f"Extension factory in {source.path} attempted to exit: {exc}"
-        raise ExtensionError(msg) from exc
-    except Exception as exc:
-        registry._rollback(snapshot)
-        api._deactivate()
-        sys.modules.pop(name, None)
-        msg = f"Extension factory in {source.path} failed: {exc}"
+        msg = (
+            f"Extension factory in {source.path} attempted to exit: {exc}"
+            if isinstance(exc, SystemExit)
+            else f"Extension factory in {source.path} failed: {exc}"
+        )
         raise ExtensionError(msg) from exc
     registry.retain_api(api)

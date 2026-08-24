@@ -71,14 +71,6 @@ def _read_env_json(suffix: str) -> Any:  # noqa: ANN401
 
 
 def _read_env_str_list(suffix: str) -> tuple[str, ...]:
-    """Read a JSON string list and reject a tampered server payload.
-
-    Returns:
-        The decoded strings, or an empty tuple when absent.
-
-    Raises:
-        ValueError: If the payload is not a JSON string list.
-    """
     raw = _read_env_json(suffix)
     if raw is None:
         return ()

@@ -555,6 +555,12 @@ def _validate_remote_url(source: str) -> str:
         ValueError: If the URL could redirect trust or leak credentials.
     """
     parsed = urlsplit(source)
+    if any(char <= " " or char == "\x7f" for char in source):
+        # urllib raises `http.client.InvalidURL` (an `HTTPException`, not a
+        # `ValueError`) when `opener.open()` meets control characters, which
+        # would escape the failure handling in `RemoteTomlProvider.load()`.
+        msg = "remote source must not contain whitespace or control characters"
+        raise ValueError(msg)
     if parsed.scheme.lower() != "https" or not parsed.hostname:
         msg = "remote source must be an absolute HTTPS URL"
         raise ValueError(msg)

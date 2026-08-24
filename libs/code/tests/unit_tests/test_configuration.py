@@ -200,6 +200,10 @@ class _RemoteResponse:
         "https://user@example.com/policy.toml",
         "https://config.example.com/policy.toml?token=secret",
         "https://config.example.com/policy.toml#fragment",
+        "https://config.example.com/policy file.toml",
+        "https://config.example.com/policy\tfile.toml",
+        "https://config.example.com/policy\x01file.toml",
+        "https://config.example.com/policy\x7ffile.toml",
     ],
 )
 def test_remote_toml_provider_rejects_unsafe_urls(

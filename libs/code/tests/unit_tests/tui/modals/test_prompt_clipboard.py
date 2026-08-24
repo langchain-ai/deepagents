@@ -303,6 +303,141 @@ class TestPromptClipboardScreen:
             assert len(rows) == 1
             assert "No matching prompts." in str(rows[0].render())
 
+    async def test_copy_on_an_empty_filter_bells_instead_of_copying(self) -> None:
+        """Ctrl+C with no matches must not copy the last selected prompt.
+
+        `action_copy` leaves the modal open, so without the empty guard it
+        would put stale text on the clipboard under a "Prompt copied" toast.
+        """
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("alpha", "beta"))
+            await pilot.pause()
+            await pilot.pause()
+
+            screen.query_one("#prompt-filter", Input).value = "no such prompt"
+            await pilot.pause()
+            await pilot.pause()
+            assert list(screen._filtered) == []
+
+            with (
+                patch("deepagents_code.clipboard.copy_text_with_feedback") as copy_text,
+                patch.object(app, "bell") as bell,
+            ):
+                screen.action_copy()
+
+            copy_text.assert_not_called()
+            bell.assert_called_once()
+            assert app.results == []
+
+    async def test_enter_on_an_empty_filter_bells_instead_of_dismissing(self) -> None:
+        """Enter with no matches must keep the modal open."""
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("alpha", "beta"))
+            await pilot.pause()
+            await pilot.pause()
+
+            screen.query_one("#prompt-filter", Input).value = "no such prompt"
+            await pilot.pause()
+            await pilot.pause()
+
+            with patch.object(app, "bell") as bell:
+                screen.action_select()
+                await pilot.pause()
+
+            bell.assert_called_once()
+            assert app.results == []
+            assert app.screen is screen
+
+    async def test_moving_at_a_boundary_bells(self) -> None:
+        """Arrowing past either end is a no-op with feedback."""
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("newest", "oldest"))
+            await pilot.pause()
+            await pilot.pause()
+            assert screen._selected_index == 0
+
+            with patch.object(app, "bell") as bell:
+                await screen.action_move_up()
+            bell.assert_called_once()
+            assert screen._selected_index == 0
+
+            await screen.action_move_down()
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+            with patch.object(app, "bell") as bell:
+                await screen.action_move_down()
+            bell.assert_called_once()
+            assert screen._selected_index == 1
+
+    async def test_moving_on_an_empty_filter_bells(self) -> None:
+        """Arrowing with no matches has nothing to move to."""
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("alpha",))
+            await pilot.pause()
+            await pilot.pause()
+
+            screen.query_one("#prompt-filter", Input).value = "no such prompt"
+            await pilot.pause()
+            await pilot.pause()
+
+            with patch.object(app, "bell") as bell:
+                await screen.action_move_down()
+            bell.assert_called_once()
+
+    async def test_clicking_a_stale_row_is_ignored(self) -> None:
+        """A click on rows that no longer match `_filtered` must not select.
+
+        The row indexes then describe a different list, so acting on one would
+        select a prompt the user did not point at.
+        """
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(tuple(f"prompt {index}" for index in range(12)))
+            await pilot.pause()
+
+            search = screen.query_one("#prompt-filter", Input)
+            search.value = "prompt 1"
+            screen._apply_filter("prompt 1")
+            await pilot.pause()
+            assert len(screen._rows) == len(screen._filtered)
+
+            # Widen the filter behind the modal's back, then act before the
+            # deferred re-render lands.
+            search.value = "prompt"
+            with patch("deepagents_code.clipboard.copy_text_with_feedback"):
+                screen.action_copy()
+            assert len(screen._rows) != len(screen._filtered)
+
+            previous = screen._selected_index
+            screen._select_row(len(screen._rows) - 1)
+
+            assert screen._selected_index == previous
+
+    async def test_hovering_moves_the_highlight_between_rows(self) -> None:
+        """Moving the pointer must unmark the row it left."""
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("newest", "middle", "oldest"))
+            await pilot.pause()
+            await pilot.pause()
+
+            await pilot.hover(screen._rows[1])
+            await pilot.pause()
+            assert screen._rows[1].mouse_hover
+
+            await pilot.hover(screen._rows[2])
+            await pilot.pause()
+
+            # Exactly one row is hovered, so no stale highlight is left behind.
+            assert screen._rows[2].mouse_hover
+            assert not screen._rows[1].mouse_hover
+            assert screen._selected_index == 0
+
     async def test_moving_consumes_a_queued_filter_edit(self) -> None:
         """Arrow keys must settle a queued filter edit before navigating.
 

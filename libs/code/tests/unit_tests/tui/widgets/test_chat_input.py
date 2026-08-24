@@ -8302,6 +8302,35 @@ class TestPromptSearchPanel:
             assert chat._prompt_search_index == 1
             assert text_area.text == ""
 
+    async def test_hovering_moves_the_highlight_between_panel_rows(
+        self, tmp_path: Path
+    ) -> None:
+        """Moving the pointer must unmark the row it left."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            await pilot.hover(panel._options[1])
+            await pilot.pause()
+            assert panel._options[1].mouse_hover
+
+            await pilot.hover(panel._options[2])
+            await pilot.pause()
+
+            # Exactly one row is hovered, so no stale highlight is left behind.
+            assert panel._options[2].mouse_hover
+            assert not panel._options[1].mouse_hover
+            assert chat._prompt_search_index == 0
+
     async def test_focus_query_reports_whether_focus_moved(
         self, tmp_path: Path
     ) -> None:

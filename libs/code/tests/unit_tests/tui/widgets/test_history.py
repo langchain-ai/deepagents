@@ -238,6 +238,58 @@ class TestRecentPrompts:
         )
         assert mgr.get_previous("") == "append failed"
 
+    def test_history_unreadable_resets_after_a_successful_read(
+        self, tmp_path: Path
+    ) -> None:
+        """A sticky flag would report a transient failure forever.
+
+        Both empty-state messages and the new degraded-list warning hang on
+        this flag, so it has to clear once the file is readable again.
+        """
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file)
+        mgr.add("persisted")
+        assert mgr.history_unreadable is False
+
+        # A directory in place of the file is an OSError on read.
+        blocker = tmp_path / "blocker"
+        blocker.mkdir()
+        mgr.history_file = blocker
+        mgr.recent_prompts()
+        assert mgr.history_unreadable is True
+
+        mgr.history_file = history_file
+        mgr.recent_prompts()
+        assert mgr.history_unreadable is False
+
+    def test_history_unreadable_is_false_when_the_file_is_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """An absent file and an unreadable one are opposite facts."""
+        mgr = HistoryManager(tmp_path / "never-written.jsonl")
+        assert mgr.recent_prompts() == ()
+        assert mgr.history_unreadable is False
+
+    def test_failed_persist_is_bounded_by_max_entries(self, tmp_path: Path) -> None:
+        """Unpersisted entries stop being tracked once they age out."""
+        history_file = tmp_path / "history.jsonl"
+        blocker = tmp_path / "blocker"
+        blocker.touch()
+        mgr = HistoryManager(history_file, max_entries=3)
+        mgr.history_file = blocker / "history.jsonl"
+
+        for index in range(10):
+            mgr.add(f"prompt {index}")
+        assert len(mgr._failed_persist) == 10
+
+        # The bounding runs on a successful read, so the file has to exist.
+        history_file.write_text(json.dumps("from disk") + "\n", encoding="utf-8")
+        mgr.history_file = history_file
+        mgr.recent_prompts()
+
+        # Only the newest bounded suffix can still reach the navigation window.
+        assert len(mgr._failed_persist) <= mgr.max_entries
+
     def test_history_unwritable_latches_on_a_failed_append(
         self, tmp_path: Path
     ) -> None:

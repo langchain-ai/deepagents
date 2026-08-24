@@ -40786,6 +40786,98 @@ class TestPromptClipboard:
             )
             assert app.screen is screen
 
+    async def test_escalation_carries_the_typed_query_into_the_modal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The second Ctrl+R must seed the modal filter with what was typed.
+
+        The inline side asserts an empty query and the modal side constructs
+        its filter directly, so the seam between them -- `escalate_prompt_search`
+        returning the query and `_open_prompt_clipboard_modal` passing it on --
+        had no coverage. A reordering in `_close_prompt_search` that cleared
+        the query before it was captured would open the modal unfiltered.
+        """
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(
+                chat_input,
+                "recent_prompts",
+                lambda: ("fix the bug", "add a feature"),
+            )
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("f", "i", "x")
+            await pilot.pause()
+            assert chat_input._prompt_search_query == "fix"
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.pause()
+
+            screen = cast("PromptClipboardScreen", app.screen)
+            assert isinstance(screen, PromptClipboardScreen)
+            assert screen.query_one("#prompt-filter", Input).value == "fix"
+            assert list(screen._filtered) == ["fix the bug"]
+
+    async def test_insertion_failure_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A refused insert must say so rather than dropping the prompt."""
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(chat_input, "recent_prompts", lambda: ("a prompt",))
+            monkeypatch.setattr(chat_input, "insert_at_cursor", lambda _text: False)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert isinstance(app.screen, PromptClipboardScreen)
+
+            with patch.object(app, "notify") as notify:
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.pause()
+
+            notify.assert_called_once()
+            assert "Could not insert the prompt" in notify.call_args.args[0]
+            assert notify.call_args.kwargs["severity"] == "warning"
+
+    async def test_insertion_into_a_vanished_composer_is_reported(self) -> None:
+        """Losing the composer between dismiss and apply must not be silent."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+
+            app._open_prompt_clipboard_modal()
+            await pilot.pause()
+
+            # The callback re-reads `_chat_input`, so clearing it stands in for
+            # the composer being torn down while the modal was open.
+            app._chat_input = None
+            with patch.object(app, "notify") as notify:
+                app.screen.dismiss("a prompt")
+                await pilot.pause()
+                await pilot.pause()
+
+            notify.assert_called_once()
+            assert "the composer is gone" in notify.call_args.args[0]
+            assert notify.call_args.kwargs["severity"] == "warning"
+            app._chat_input = chat_input
+
     async def test_ctrl_r_steps_aside_for_model_selector(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

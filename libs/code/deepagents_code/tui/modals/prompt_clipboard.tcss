@@ -72,9 +72,10 @@ PromptClipboardScreen .prompt-row-selected {
     color: $background;
 }
 
-PromptClipboardScreen .prompt-row-hovered {
-    /* Hover marks where the cursor is pointing without implying a selection
-       change, so it stays subtler than the selected row's solid primary. */
+PromptClipboardScreen .prompt-row:hover {
+    /* Textual's built-in :hover covers transient pointing: it never touches
+       the selection, so arrow keys still resume from the selected row. It
+       stays subtler than the selected row's solid primary. */
     background: $surface-lighten-2;
 }
 

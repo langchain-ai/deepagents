@@ -374,8 +374,8 @@ class TestPromptClipboardScreen:
             assert "Could not read prompt history" in message
             assert "No prompts yet" not in message
 
-    async def test_hovering_marks_a_row_without_moving_the_selection(self) -> None:
-        """Hover is visual only: arrows still move from the selected row."""
+    async def test_hovering_a_row_does_not_move_the_selection(self) -> None:
+        """Hover is visual only (:hover CSS): arrows move from the selection."""
         app = _PromptClipboardApp()
         async with app.run_test() as pilot:
             screen = app.open(("newest", "middle", "oldest"))
@@ -385,8 +385,9 @@ class TestPromptClipboardScreen:
             await pilot.hover(screen._rows[2])
             await pilot.pause()
 
-            # The hovered row is marked, but selection and preview stay put.
-            assert "prompt-row-hovered" in screen._rows[2].classes
+            # Textual tracks the hovered widget for :hover styling; selection
+            # and preview stay put.
+            assert screen._rows[2].mouse_hover
             assert screen._selected_index == 0
             preview = screen.query_one("#prompt-preview", Static)
             assert str(preview.content) == "newest"

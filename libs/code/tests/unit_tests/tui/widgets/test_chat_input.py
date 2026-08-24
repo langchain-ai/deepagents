@@ -7519,10 +7519,10 @@ class TestPromptSearchPanel:
             assert chat._text_area is not None
             assert chat._text_area.text == "newest prompt"
 
-    async def test_hovering_marks_a_row_without_moving_the_selection(
+    async def test_hovering_a_row_does_not_move_the_selection(
         self, tmp_path: Path
     ) -> None:
-        """Hover is visual only: arrows still move from the selected row."""
+        """Hover is visual only (:hover CSS): arrows move from the selection."""
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -7541,8 +7541,9 @@ class TestPromptSearchPanel:
             await pilot.hover(panel._options[2])
             await pilot.pause()
 
-            # The hovered row is marked, but the selection stays put.
-            assert "prompt-search-hovered" in panel._options[2].classes
+            # Textual tracks the hovered widget for :hover styling; the
+            # selection stays put.
+            assert panel._options[2].mouse_hover
             assert chat._prompt_search_index == 0
             assert panel._options[0]._is_selected
             assert not panel._options[2]._is_selected

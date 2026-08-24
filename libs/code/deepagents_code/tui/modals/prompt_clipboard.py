@@ -19,7 +19,7 @@ from deepagents_code.tui.widgets.prompt_search import (
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
-    from textual.events import Click, MouseMove
+    from textual.events import Click
 
 
 class _PromptRow(Static):
@@ -29,13 +29,6 @@ class _PromptRow(Static):
         classes = "prompt-row prompt-row-selected" if selected else "prompt-row"
         super().__init__(self._content(prompt), classes=classes)
         self._index = index
-
-    def on_mouse_move(self, event: MouseMove) -> None:
-        """Hover-mark the row under the cursor without moving the selection."""
-        event.stop()
-        screen = self.screen
-        if isinstance(screen, PromptClipboardScreen):
-            screen.hover_row(self._index)
 
     def on_click(self, event: Click) -> None:
         """Select the clicked row; Enter is still required to insert it."""
@@ -101,7 +94,6 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         self._empty_message = empty_message
         self._selected_index = 0
         self._rows: list[_PromptRow] = []
-        self._hovered_index: int | None = None
 
     @override
     def compose(self) -> ComposeResult:
@@ -185,9 +177,6 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         rows_list = self.query_one("#prompt-list", VerticalScroll)
         await rows_list.remove_children()
         self._rows = []
-        # The hovered row is unmounted below, so its mark dies with it; the
-        # next mouse movement re-marks whichever row the cursor is over.
-        self._hovered_index = None
         if not self._filtered:
             if self._prompts:
                 message = "No matching prompts."
@@ -213,23 +202,6 @@ class PromptClipboardScreen(ModalScreen[str | None]):
             preview.update("")
             return
         preview.update(Content(self._filtered[self._selected_index]))
-
-    def hover_row(self, index: int) -> None:
-        """Hover-mark the row at `index` without moving the selection.
-
-        Hover is transient pointing, not a commitment: it must not disturb
-        `_selected_index`, or arrow keys would resume from wherever the mouse
-        last rested instead of from the row the user actually selected.
-        """
-        if len(self._rows) != len(self._filtered):
-            # A filter edit is still queued, so row indexes describe the old
-            # list; the hover is stale and the rebuild drops the mark anyway.
-            return
-        if self._hovered_index is not None and self._hovered_index < len(self._rows):
-            self._rows[self._hovered_index].remove_class("prompt-row-hovered")
-        self._hovered_index = index
-        if 0 <= index < len(self._rows):
-            self._rows[index].add_class("prompt-row-hovered")
 
     def select_row(self, index: int) -> None:
         """Move the selection to `index`, as if navigated to by key.

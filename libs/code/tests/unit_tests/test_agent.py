@@ -5378,6 +5378,19 @@ class TestCreateCliAgentInterpreterWiring:
         with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
             self._capture_middleware(tmp_path, model="openai:blocked")
 
+    def test_graph_only_primary_model_skips_eager_retry_resolution(
+        self, tmp_path: Path
+    ) -> None:
+        """Tool enumeration leaves its never-invoked model string unresolved."""
+        with patch("deepagents_code.agent._resolve_retry_owned_model") as resolve:
+            self._capture_middleware(
+                tmp_path,
+                model="openai:catalog-placeholder",
+                enforce_model_policy=False,
+            )
+
+        resolve.assert_not_called()
+
     def test_prebuilt_model_object_is_exempt_from_policy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

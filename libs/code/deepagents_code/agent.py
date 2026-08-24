@@ -2583,12 +2583,13 @@ def create_cli_agent(
     from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
     from deepagents_code.model_config import ModelConfig
 
-    # Every model string is checked before it is resolved. Known providers go
-    # through `create_model` here so the SDK retry loop is disabled before Deep
+    # Every runtime model string is checked before it is resolved. Known providers
+    # go through `create_model` here so the SDK retry loop is disabled before Deep
     # Agents builds the graph and every request carries dcode's retry metadata.
-    # Provider-less placeholders remain strings for graph-only test/tool
-    # enumeration paths; dcode cannot identify a retry constructor parameter for
-    # them. A `BaseChatModel` was already built by a checked path, so it is exempt.
+    # Graph-only tool enumeration leaves all strings to SDK assembly because it
+    # never invokes them. Provider-less placeholders also remain strings because
+    # dcode cannot identify a retry constructor parameter for them. A
+    # `BaseChatModel` was already built by a checked path, so it is exempt.
     model_policy = ModelConfig.load()
     if not enforce_model_policy:
         # Read-only enumeration (`dcode tools list`, `/tools`) compiles a graph
@@ -2601,7 +2602,7 @@ def create_cli_agent(
         )
     if isinstance(model, str):
         model_policy.require_model_allowed(model)
-        if _has_resolvable_model_provider(model):
+        if enforce_model_policy and _has_resolvable_model_provider(model):
             model = _resolve_retry_owned_model(model, model_retries)
     if (
         isinstance(auto_classifier_model, str)
@@ -2641,7 +2642,7 @@ def create_cli_agent(
             )
             subagent["model"] = (
                 _resolve_retry_owned_model(model_spec, model_retries)
-                if _has_resolvable_model_provider(model_spec)
+                if enforce_model_policy and _has_resolvable_model_provider(model_spec)
                 else model_spec
             )
         subagent_middleware = _subagent_cli_middleware(

@@ -111,7 +111,6 @@ Avoid broad repository searches during normal SDK work. Target these paths:
 
 - SDK source and tests: `libs/deepagents/deepagents`, `libs/deepagents/tests`
 - Coding agent: `libs/code`
-- Deployment CLI: `libs/cli`
 - ACP: `libs/acp`
 - Talon: `libs/talon`
 - Evals: `libs/evals`
@@ -125,11 +124,9 @@ Exclude package `.venv` directories, hidden worktrees, `deepagents.egg-info`, ge
 - [`libs/evals/AGENTS.md`](libs/evals/AGENTS.md) — eval commands, reports, and Harbor integration.
 - [`libs/partners/AGENTS.md`](libs/partners/AGENTS.md) — partner-package CI and release wiring.
 - [`libs/code/DEVELOPMENT.md`](libs/code/DEVELOPMENT.md) — coding-agent setup and local development.
-- [`libs/cli/DEVELOPMENT.md`](libs/cli/DEVELOPMENT.md) — deployment-CLI setup and package layout.
 - [`.github/LAYOUT.md`](.github/LAYOUT.md) — map of CI workflows, composite actions, and labeling.
 
-`deepagents-code` is the terminal coding agent launched by `dcode`. `deepagents-cli` contains the `init`, `deploy`, `agents`, and `mcp-servers` deployment commands.
-
+`deepagents-code` is the terminal coding agent launched by `dcode`.
 ### Benchmarks
 
 Benchmarks live in `deepagents`, `code`, and `partners/quickjs`; other packages have no `bench` target. Use the package's `bench` and `bench-memory` Make targets rather than invoking pytest directly — they are the source of truth for local and CI invocation. See [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md#benchmarks) for commands, thresholds, dashboards, and the nightly sweep.

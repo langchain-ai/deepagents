@@ -39,7 +39,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       deepagents: ${{ steps.filter.outputs.deepagents }}
-      cli: ${{ steps.filter.outputs.cli }}
       code: ${{ steps.filter.outputs.code }}
       talon: ${{ steps.filter.outputs.talon }}
       evals: ${{ steps.filter.outputs.evals }}
@@ -56,7 +55,7 @@ jobs:
           fetch-depth: 0
 
       - name: "🔍 Check for changes"
-        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         id: filter
         with:
           # Each package filter includes workflow/action paths so that CI
@@ -74,13 +73,6 @@ jobs:
           # on main, where every job runs unconditionally.
           filters: |
             deepagents:
-              - 'libs/deepagents/**'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/_lint.yml'
-              - '.github/workflows/_test.yml'
-              - '.github/actions/**'
-            cli:
-              - 'libs/cli/**'
               - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
@@ -169,15 +161,6 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/deepagents"
-      python-version: "3.11"
-
-  lint-cli:
-    name: "🧹 Lint cli"
-    needs: changes
-    if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_lint.yml
-    with:
-      working-directory: "libs/cli"
       python-version: "3.11"
 
   lint-code:
@@ -271,16 +254,6 @@ jobs:
       working-directory: "libs/deepagents"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       extra-configurations: '[{"python-version": "3.13", "os": "windows-latest"}]'
-      coverage-python-version: "3.12"
-
-  test-cli:
-    name: "🧪 Test cli"
-    needs: changes
-    if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_test.yml
-    with:
-      working-directory: "libs/cli"
-      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
   test-code:
@@ -532,7 +505,6 @@ jobs:
     needs:
       - changes
       - lint-deepagents
-      - lint-cli
       - lint-code
       - lint-talon
       - lint-evals
@@ -543,7 +515,6 @@ jobs:
       - lint-vercel
       - lint-quickjs
       - test-deepagents
-      - test-cli
       - test-code
       - test-talon
       - test-evals

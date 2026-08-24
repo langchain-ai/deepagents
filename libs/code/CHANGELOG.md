@@ -2,6 +2,27 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.61](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.60...deepagents-code==0.1.61) (2026-08-24)
+
+### Features
+
+- Added `google_anthropic_vertex` provider support for Claude on Vertex AI ([#5760](https://github.com/langchain-ai/deepagents/issues/5760)).
+- Enforced configured model allowlists ([#5649](https://github.com/langchain-ai/deepagents/issues/5649)).
+- Injected goal and rubric context directly, replacing `get_goal` and `get_rubric` ([#5041](https://github.com/langchain-ai/deepagents/issues/5041)).
+- Made `/offload` server-owned ([#5261](https://github.com/langchain-ai/deepagents/issues/5261)).
+- Added prompt clipboard support ([#5733](https://github.com/langchain-ai/deepagents/issues/5733)).
+- Show Auto approval review progress ([#5729](https://github.com/langchain-ai/deepagents/issues/5729)).
+
+### Bug Fixes
+
+- Kept long thread resumes responsive ([#5772](https://github.com/langchain-ai/deepagents/issues/5772)).
+- Render first streamed text immediately ([#5761](https://github.com/langchain-ai/deepagents/issues/5761)).
+- Show the incognito shell command widget ([#5768](https://github.com/langchain-ai/deepagents/issues/5768)).
+- Only highlight actionable tool rows ([#5769](https://github.com/langchain-ai/deepagents/issues/5769)).
+- Warn and ignore `--auto-approve` and `--yolo` in headless mode ([#5750](https://github.com/langchain-ai/deepagents/issues/5750)).
+- Sweep expired history archives at startup ([#5751](https://github.com/langchain-ai/deepagents/issues/5751)).
+- Clarified auth environment setup ([#5767](https://github.com/langchain-ai/deepagents/issues/5767)).
+
 ## [0.1.60](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.59...deepagents-code==0.1.60) (2026-08-23)
 
 ### Features

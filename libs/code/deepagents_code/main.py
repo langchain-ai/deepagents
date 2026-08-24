@@ -2749,7 +2749,7 @@ def parse_args() -> argparse.Namespace:
         "--trust-project-extensions",
         action="store_true",
         help="Trust project-level `.deepagents/extensions/` Python extensions "
-        "(required for headless/CI runs without persisted trust)",
+        "(requires DEEPAGENTS_CODE_EXPERIMENTAL=1)",
     )
     parser.add_argument(
         "-e",
@@ -2757,7 +2757,8 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         metavar="PATH",
-        help="Load an extension file or directory for this run (repeatable)",
+        help="Load an extension file or directory for this run; requires "
+        "DEEPAGENTS_CODE_EXPERIMENTAL=1 (repeatable)",
     )
     parser.add_argument(
         "--interpreter",
@@ -2851,6 +2852,16 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if (
+        getattr(args, "trust_project_extensions", False)
+        or getattr(args, "extension", ())
+    ) and not is_env_truthy(EXPERIMENTAL):
+        parser.error(
+            "--extension and --trust-project-extensions require "
+            "DEEPAGENTS_CODE_EXPERIMENTAL=1"
+        )
     # `--auto-classifier-model ""` yields the empty string, not `None`. Keep it
     # distinct from an absent flag (just trimmed): an explicit blank is the
     # "inherit the main agent model" instruction and must override a classifier

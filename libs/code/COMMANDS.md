@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (42)
+## Public (43)
 
 | Command | Aliases | Description |
 | --- | --- | --- |

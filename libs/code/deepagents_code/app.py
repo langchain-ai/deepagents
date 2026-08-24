@@ -12851,6 +12851,16 @@ class DeepAgentsApp(App):
 
     async def _handle_extensions_command(self, command: str) -> None:
         await self._mount_message(UserMessage(command))
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        if not is_env_truthy(EXPERIMENTAL):
+            await self._mount_message(
+                AppMessage(
+                    "Python extensions require `DEEPAGENTS_CODE_EXPERIMENTAL=1` "
+                    "before starting dcode."
+                )
+            )
+            return
         if self._server_proc is None:
             await self._mount_message(
                 AppMessage("Extension provenance is unavailable for this agent.")

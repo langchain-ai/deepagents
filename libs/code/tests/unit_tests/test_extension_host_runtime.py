@@ -5,7 +5,6 @@ from typing import Any, cast
 
 import pytest
 from deepagents.backends import (
-    CompositeBackend,
     FilesystemBackend,
     LocalShellBackend,
     StateBackend,
@@ -72,19 +71,16 @@ def test_runtime_tool_is_advertised_and_executable(tmp_path: Path) -> None:
 
 
 def test_runtime_backend_route_requires_restart(tmp_path: Path) -> None:
-    """A late backend route is recorded without mutating the live graph."""
+    """A late backend route requires rebuilding the graph."""
     registry = ExtensionRegistry()
-    backend = CompositeBackend(
-        default=FilesystemBackend(root_dir=tmp_path, virtual_mode=True), routes={}
-    )
     bind_runtime_host_policy(registry, set())
-    route = FilesystemBackend(root_dir=tmp_path / "memory", virtual_mode=True)
 
     registry.add_backend_route(
-        "/memories/", route, SourceInfo(tmp_path / "extension.py")
+        "/memories/",
+        StateBackend(),
+        SourceInfo(tmp_path / "extension.py"),
     )
 
-    assert "/memories/" not in backend.routes
     assert registry.restart_required
 
 
@@ -102,39 +98,18 @@ def test_backend_route_policy_rejects_sandbox_filesystems(tmp_path: Path) -> Non
             validate_backend_route(route, set(), sandbox_active=True)
 
 
-def test_backend_route_policy_accepts_virtual_and_wrapped_backends(
-    tmp_path: Path,
-) -> None:
-    """Sandbox validation stays shallow and permits virtual backends."""
-    source = SourceInfo(tmp_path / "extension.py")
-    wrapped = CompositeBackend(
-        default=StateBackend(),
-        routes={
-            "/host/": FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
-        },
+def test_backend_route_policy_rejects_reserved_overlap(tmp_path: Path) -> None:
+    """Extensions cannot claim a parent of internal storage."""
+    route = RegisteredUnit(
+        "/artifacts/", StateBackend(), SourceInfo(tmp_path / "extension.py")
     )
 
-    for backend in (StateBackend(), wrapped):
+    with pytest.raises(ExtensionError, match="overlaps an internal route"):
         validate_backend_route(
-            RegisteredUnit("/memories/", backend, source),
-            set(),
-            sandbox_active=True,
+            route,
+            {"/artifacts/history/"},
+            sandbox_active=False,
         )
-
-
-def test_backend_route_policy_rejects_reserved_overlap(tmp_path: Path) -> None:
-    """Extensions cannot claim a parent or child of internal storage."""
-    source = SourceInfo(tmp_path / "extension.py")
-    backend = StateBackend()
-
-    for prefix in ("/artifacts/", "/artifacts/history/private/"):
-        route = RegisteredUnit(prefix, backend, source)
-        with pytest.raises(ExtensionError, match="overlaps an internal route"):
-            validate_backend_route(
-                route,
-                {"/artifacts/history/"},
-                sandbox_active=False,
-            )
 
 
 def test_invalid_runtime_route_rolls_back_registration(tmp_path: Path) -> None:

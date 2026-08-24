@@ -45,4 +45,3 @@ app = Starlette(
     lifespan=_lifespan,
     routes=[Route("/extensions", _extensions, methods=["GET"])],
 )
-"""Local metadata route and lifecycle integration merged into LangGraph."""

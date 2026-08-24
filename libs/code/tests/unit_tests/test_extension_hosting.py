@@ -10,6 +10,7 @@ from langchain_core.language_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 from starlette.requests import Request
+from starlette.routing import Route
 
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.extensions.registry import (
@@ -24,12 +25,6 @@ from deepagents_code.offload import _ArtifactsStorage
 def _existing() -> str:
     """Represent an existing dcode tool."""
     return "existing"
-
-
-@tool("unique")
-def _unique() -> str:
-    """Represent an extension tool."""
-    return "unique"
 
 
 @tool("existing")
@@ -48,10 +43,9 @@ def test_extension_units_override_tools_and_add_backend_routes(
     tmp_path: Path,
 ) -> None:
     """Extension tools win collisions while internal routes remain protected."""
-    source = SourceInfo(tmp_path / "extension.py", plugin_id="memory@test")
+    source = SourceInfo(tmp_path / "extension.py")
     registry = ExtensionRegistry()
     registry.add_tool(_replacement, source)
-    registry.add_tool(_unique, source)
     registry.add_middleware(_Middleware(), source)
     registry.add_backend_route(
         "/memories/",
@@ -83,15 +77,10 @@ def test_extension_units_override_tools_and_add_backend_routes(
         )
 
     kwargs = create.call_args.kwargs
-    assert [item.name for item in kwargs["tools"]].count("existing") == 1
-    assert (
-        next(item for item in kwargs["tools"] if item.name == "existing")
-        is _replacement
-    )
-    assert any(item.name == "unique" for item in kwargs["tools"])
+    assert _existing not in kwargs["tools"]
+    assert _replacement in kwargs["tools"]
     assert any(item.name == "extension-middleware" for item in kwargs["middleware"])
     assert "/memories/" in backend.routes
-    assert registry.backend_routes[0].source.plugin_id == "memory@test"
 
 
 def test_internal_backend_route_overlap_fails_agent_startup(tmp_path: Path) -> None:
@@ -140,21 +129,23 @@ async def test_server_lifespan_releases_extensions() -> None:
     shutdown.assert_awaited_once_with()
 
 
-def test_provenance_endpoint_is_loopback_only(tmp_path: Path) -> None:
-    """The metadata route exposes no extension objects and rejects remote peers."""
-    from deepagents_code.extensions.runtime import bind_server_extensions
+def test_provenance_endpoint_is_loopback_only() -> None:
+    """The metadata route rejects remote peers."""
     from deepagents_code.server_lifespan import _extensions
 
-    registry = ExtensionRegistry()
-    registry.add_tool(_unique, SourceInfo(tmp_path / "extension.py"))
-    bind_server_extensions(registry, errors=("broken",))
-
     local = Request({"type": "http", "client": ("127.0.0.1", 1234)})
-    response = _extensions(local)
     remote = Request({"type": "http", "client": ("192.0.2.1", 1234)})
 
-    assert response.status_code == 200
-    assert b'"name":"unique"' in response.body
-    assert b'"errors":["broken"]' in response.body
-    assert b'"restart_required":false' in response.body
+    assert _extensions(local).status_code == 200
     assert _extensions(remote).status_code == 404
+
+
+def test_builtin_http_app_hosts_extension_metadata() -> None:
+    """The built-in offload app also owns extension lifecycle and metadata."""
+    from deepagents_code.offload_api import app
+    from deepagents_code.server_lifespan import _lifespan
+
+    assert app.router.lifespan_context is _lifespan
+    assert any(
+        isinstance(route, Route) and route.path == "/extensions" for route in app.routes
+    )

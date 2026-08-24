@@ -32,6 +32,10 @@ from deepagents_code.offload_middleware import (
     unchanged_offload_result,
 )
 from deepagents_code.server_graph import get_server_runtime
+from deepagents_code.server_lifespan import (
+    _extensions,
+    _lifespan as _extension_lifespan,
+)
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -152,7 +156,8 @@ async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
         Control for the lifetime of the application.
     """
     try:
-        yield
+        async with _extension_lifespan(_app):
+            yield
     finally:
         await _flush_traces()
 
@@ -1016,5 +1021,6 @@ app = Starlette(
             cancel_offload,
             methods=["POST"],
         ),
+        Route("/extensions", _extensions, methods=["GET"]),
     ],
 )

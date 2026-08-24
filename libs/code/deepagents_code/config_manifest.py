@@ -1014,7 +1014,8 @@ def resolve_auto_classifier_timeout_with_source(
 
     from deepagents_code.configuration.service import managed_decided
 
-    if managed_decided(source):
+    managed_rejected = managed_decided(source)
+    if managed_rejected:
         logger.warning(
             "Ignoring managed auto_classifier_timeout %r (expected seconds in "
             "[%g, %g]); falling through to the next config source",
@@ -1027,17 +1028,6 @@ def resolve_auto_classifier_timeout_with_source(
         value, source = resolved.value, _ranked_source(resolved)
         if _is_valid_auto_classifier_timeout(value):
             return value, source
-        if source != "default":
-            logger.warning(
-                "Ignoring %s auto_classifier_timeout %r (expected seconds in "
-                "[%g, %g]); using %g",
-                source,
-                value,
-                AUTO_CLASSIFIER_TIMEOUT_FLOOR,
-                AUTO_CLASSIFIER_TIMEOUT_CEILING,
-                AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
-            )
-        return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
 
     # Invalid higher-precedence values must fall through instead of jumping
     # straight to the default. Hide the rejected env var and re-resolve so
@@ -1067,10 +1057,17 @@ def resolve_auto_classifier_timeout_with_source(
             )
             return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
         try:
-            return resolve_auto_classifier_timeout_with_source(
-                toml_data=data,
-                managed_toml_data=managed_toml_data,
-            )
+            if managed_rejected:
+                resolved = _resolve_option_without_managed(option, toml_data=data)
+                _emit_ranked_diagnostics(option, resolved)
+                value, source = resolved.value, _ranked_source(resolved)
+                if _is_valid_auto_classifier_timeout(value):
+                    return value, source
+            else:
+                return resolve_auto_classifier_timeout_with_source(
+                    toml_data=data,
+                    managed_toml_data=managed_toml_data,
+                )
         finally:
             os.environ[env_name] = previous
 
@@ -1367,7 +1364,8 @@ def resolve_recursion_limit(
 
     from deepagents_code.configuration.service import managed_decided
 
-    if managed_decided(source):
+    managed_rejected = managed_decided(source)
+    if managed_rejected:
         logger.warning(
             "Ignoring managed recursion_limit %r (expected int in [%d, %d]); "
             "falling through to the next config source",
@@ -1380,16 +1378,6 @@ def resolve_recursion_limit(
         value, source = resolved.value, _ranked_source(resolved)
         if is_valid_recursion_limit(value):
             return value
-        if source != "default":
-            logger.warning(
-                "Ignoring %s recursion_limit %r (expected int in [%d, %d]); using %d",
-                source,
-                value,
-                RECURSION_LIMIT_FLOOR,
-                RECURSION_LIMIT_CEILING,
-                RECURSION_LIMIT_DEFAULT,
-            )
-        return RECURSION_LIMIT_DEFAULT
 
     # Invalid higher-precedence values must fall through instead of jumping
     # straight to the default. Hide the rejected env var (if any) and re-resolve
@@ -1406,10 +1394,17 @@ def resolve_recursion_limit(
         )
         previous = os.environ.pop(env_name, None)
         try:
-            return resolve_recursion_limit(
-                toml_data=data,
-                managed_toml_data=managed_toml_data,
-            )
+            if managed_rejected:
+                resolved = _resolve_option_without_managed(option, toml_data=data)
+                _emit_ranked_diagnostics(option, resolved)
+                value, source = resolved.value, _ranked_source(resolved)
+                if is_valid_recursion_limit(value):
+                    return value
+            else:
+                return resolve_recursion_limit(
+                    toml_data=data,
+                    managed_toml_data=managed_toml_data,
+                )
         finally:
             if previous is not None:
                 os.environ[env_name] = previous

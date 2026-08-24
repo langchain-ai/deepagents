@@ -3598,6 +3598,20 @@ def test_resolve_auto_classifier_timeout_invalid_env_falls_through_to_toml(
     assert resolved == pytest.approx(30.0)
 
 
+def test_resolve_auto_classifier_timeout_invalid_managed_and_env_reach_toml(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rejected managed and env values do not mask a valid user value."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}},
+        managed_toml_data={"models": {"auto_classifier_timeout": 500}},
+    )
+    assert resolved == pytest.approx(30.0)
+
+
 def test_resolve_auto_classifier_timeout_invalid_env_leaves_env_intact(
     monkeypatch,
 ) -> None:
@@ -3915,6 +3929,22 @@ def test_resolve_recursion_limit_invalid_env_falls_through_to_toml(
     monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "10")
     assert (
         resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
+        == 1500
+    )
+
+
+def test_resolve_recursion_limit_invalid_managed_and_env_reach_toml(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rejected managed and env limits do not mask a valid user limit."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "10")
+    assert (
+        resolve_recursion_limit(
+            toml_data={"runtime": {"recursion_limit": 1500}},
+            managed_toml_data={"runtime": {"recursion_limit": 500_000}},
+        )
         == 1500
     )
 

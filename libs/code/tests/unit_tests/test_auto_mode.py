@@ -625,6 +625,78 @@ async def test_classifier_review_lifecycle_balances_blocked_results(
     assert lifecycle[1]["approved_tool_call_ids"] == []
 
 
+@pytest.mark.parametrize(
+    "corrupt_review_ids",
+    ["not-a-list", ["call-1", "call-1"], ["call-unknown"], [None]],
+)
+async def test_a_corrupt_review_id_list_keeps_the_decision_plan(
+    tmp_path: Path,
+    corrupt_review_ids: object,
+) -> None:
+    """The reviewed IDs only pause rows, so they must not void a denial.
+
+    A rejected plan routes to Manual, and for a batch with no `interrupt_on`
+    tools it drops the classifier's denials and runs the calls instead.
+    """
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_deny_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    plan["review_tool_call_ids"] = corrupt_review_ids
+    update = await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert update is not None
+    assert any(isinstance(message, ToolMessage) for message in update["messages"])
+
+
+async def test_repeated_review_ids_emit_one_completion_entry(
+    tmp_path: Path,
+) -> None:
+    """The client rejects a duplicated ID, so the producer must dedupe."""
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    plan["review_tool_call_ids"] = ["call-1", "call-1"]
+    events = _capture_review_events(request)
+    await _route_plan(
+        middleware,
+        request,
+        plan,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert events[-1]["event"] == "review_completed"
+    assert events[-1]["tool_call_ids"] == ["call-1"]
+
+
 async def test_classifier_review_completion_uses_hook_permission(
     tmp_path: Path,
 ) -> None:

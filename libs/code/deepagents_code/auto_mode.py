@@ -15,7 +15,7 @@ import stat
 import tempfile
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from enum import StrEnum
 from hashlib import sha256
 from operator import itemgetter
@@ -325,7 +325,12 @@ class AutoDecisionPlan(TypedDict):
     counters_applied: bool
     fallback_reason: str | None
     review_tool_call_ids: NotRequired[list[str]]
-    """Calls whose classifier lifecycle event is active for this plan."""
+    """Tool calls this plan's classifier review covers.
+
+    Final routing emits exactly one `review_completed` for these IDs. Without it
+    the client holds their rows paused for the rest of the turn. Absent on plans
+    checkpointed before the field existed.
+    """
 
 
 class AutoTempArtifact(TypedDict):
@@ -1539,6 +1544,41 @@ def _validate_unique_tool_call_ids(calls: Sequence[ToolCall]) -> None:
 def _batch_id(calls: Sequence[ToolCall]) -> str:
     encoded = "\0".join(_tool_call_id(call) for call in calls).encode("utf-8")
     return sha256(encoded).hexdigest()
+
+
+def _review_tool_call_ids(
+    raw_plan: object,
+    valid_tool_call_ids: Collection[str],
+) -> list[str]:
+    """Return the reviewed tool-call IDs a checkpointed plan still covers.
+
+    These IDs only pause and resume tool rows in the client, so a malformed
+    value degrades instead of invalidating the plan that carries it: rejecting
+    the plan would discard the classifier's authorization decisions over
+    presentation metadata. Drop anything the current message cannot key, and
+    drop repeats — the client rejects a duplicated ID and falls back to
+    resuming every reviewed row, which reports as producer drift.
+
+    Absent on plans checkpointed before the field existed, so absence and an
+    unusable value both yield an empty list.
+    """
+    if not isinstance(raw_plan, Mapping):
+        return []
+    raw_ids = raw_plan.get("review_tool_call_ids")
+    if not isinstance(raw_ids, list):
+        return []
+    seen: set[str] = set()
+    reviewed: list[str] = []
+    for tool_call_id in raw_ids:
+        if (
+            not isinstance(tool_call_id, str)
+            or tool_call_id not in valid_tool_call_ids
+            or tool_call_id in seen
+        ):
+            continue
+        seen.add(tool_call_id)
+        reviewed.append(tool_call_id)
+    return reviewed
 
 
 def _event_scope(runtime: object, calls: Sequence[ToolCall]) -> str:
@@ -3224,7 +3264,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         manual_ids = raw.get("manual_gated_ids")
         pending_ids = raw.get("pending_result_ids")
         processed_ids = raw.get("processed_result_ids")
-        review_ids = raw.get("review_tool_call_ids", [])
         if not all(
             isinstance(value, list)
             for value in (
@@ -3232,7 +3271,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 manual_ids,
                 pending_ids,
                 processed_ids,
-                review_ids,
             )
         ):
             return None
@@ -3249,11 +3287,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 isinstance(tool_id, str) and tool_id in valid_ids
                 for tool_id in [*pending_ids, *processed_ids]
             )
-            or not all(
-                isinstance(tool_id, str) and tool_id in valid_ids
-                for tool_id in review_ids
-            )
-            or len(review_ids) != len(set(review_ids))
         ):
             return None
         dispositions = {
@@ -3339,20 +3372,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             if behavior == "allow"
         }
         valid_tool_call_ids = {_tool_call_id(call) for call in ai_message.tool_calls}
-        raw_plan = state.get("_auto_decision_plan")
-        raw_review_tool_call_ids = (
-            raw_plan.get("review_tool_call_ids")
-            if isinstance(raw_plan, Mapping)
-            else None
-        )
-        review_tool_call_ids = (
-            [
-                tool_call_id
-                for tool_call_id in raw_review_tool_call_ids
-                if isinstance(tool_call_id, str) and tool_call_id in valid_tool_call_ids
-            ]
-            if isinstance(raw_review_tool_call_ids, list)
-            else []
+        # Read this straight from raw state, not from `_validated_plan`: the
+        # `plan is None` branch below must still complete the review for rows a
+        # `review_started` already paused.
+        review_tool_call_ids = _review_tool_call_ids(
+            state.get("_auto_decision_plan"), valid_tool_call_ids
         )
         batch_id = _batch_id(ai_message.tool_calls)
         thread_key = _thread_key(runtime)

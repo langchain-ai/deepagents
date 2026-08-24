@@ -45,8 +45,9 @@ the panel renders a sliding window instead. Navigation re-windows via
 unmounted rows are simply never the selection target.
 """
 
-PROMPT_SEARCH_PANEL_ROWS = 1 + PROMPT_SEARCH_MAX_ROWS + 1
-"""Rows the panel reports at its tallest: query, results, hint.
+PROMPT_SEARCH_PANEL_ROWS = 1 + PROMPT_SEARCH_MAX_ROWS + 2
+"""Rows the panel reports at its tallest: query, results, and up to two for
+the hint (it wraps on narrow windows).
 
 `ChatInputBox` reserves exactly this when fitting a manual composer height,
 so the constant must match what the panel actually renders.
@@ -219,7 +220,9 @@ class PromptSearchPanel(Vertical):
     }}
 
     PromptSearchPanel .prompt-search-hint {{
-        height: 1;
+        /* auto height + wrapping so a narrow window wraps the hint onto a
+           second line instead of dropping its tail. */
+        height: auto;
         padding: 0 1;
         color: $text-muted;
         text-style: italic;
@@ -437,4 +440,14 @@ class PromptSearchPanel(Vertical):
                 count. Capped at `PROMPT_SEARCH_MAX_ROWS`.
         """
         self.styles.display = "block"
-        self._report_rows(2 + min(result_rows, PROMPT_SEARCH_MAX_ROWS))
+        # The hint line wraps on narrow windows. Estimate its wrapped height
+        # from the panel width (minus its horizontal padding); before the first
+        # layout the width is 0, which the max() floors to one row.
+        hint_rows = 1
+        if self._hint_static is not None:
+            from rich.cells import cell_len
+
+            width = self._hint_static.content_region.width
+            if width > 0:
+                hint_rows = max(1, -(-cell_len(PROMPT_SEARCH_HINT) // width))
+        self._report_rows(1 + min(result_rows, PROMPT_SEARCH_MAX_ROWS) + hint_rows)

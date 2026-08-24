@@ -318,7 +318,7 @@ class TestHeadlessApprovalFlagHandling:
         post-dispatch clear would still look green).
 
         The managed-policy cases cover the flag the user typed surviving
-        `_apply_managed_runtime_policy` revoking it: the warning keys off a
+        `_apply_managed_runtime_exceptions` revoking it: the warning keys off a
         parse-time capture, so it must still fire.
         """
         from deepagents_code.main import cli_main

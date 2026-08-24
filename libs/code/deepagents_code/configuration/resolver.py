@@ -311,6 +311,31 @@ class ConfigResolver:
             }
         return MappingProxyType(statuses)
 
+    def install_provider(self, provider: ConfigProvider) -> None:
+        """Insert a provider into the live chain, keeping rank order.
+
+        Used for the CLI tier, which exists only after `argparse` runs — long
+        after this resolver may have been built and cached. Unlike
+        `reload_with_replacements`, this advances no generation and touches no
+        files: the CLI provider is in-memory, so there is nothing to reload,
+        and re-arming source diagnostics for an install that invalidates no
+        snapshot would only risk a duplicate warning on the next resolution.
+
+        Args:
+            provider: Provider to insert. Its rank must not already be present.
+
+        Raises:
+            ValueError: If a provider already serves the new provider's rank.
+        """
+        with self._lock:
+            ranks = {existing.rank for existing in self._providers}
+            if provider.rank in ranks:
+                msg = f"a provider already serves rank {provider.rank}"
+                raise ValueError(msg)
+            self._providers = tuple(
+                sorted((*self._providers, provider), key=lambda p: p.rank)
+            )
+
     def toml_snapshot(self, rank: int) -> TomlSnapshot | None:
         """Return the cached TOML snapshot at `rank`, if that provider is one.
 
@@ -552,6 +577,35 @@ def get_config_resolver(
             }
         )
         return resolver
+
+
+def install_cli_provider(cli_provider: ConfigProvider) -> None:
+    """Install the process CLI provider without touching config files.
+
+    Unlike `get_config_resolver(cli_provider=...)`, this never imports
+    `deepagents_code.model_config` and never reads a TOML snapshot: it either
+    attaches the provider to the already-cached resolver or stashes it for the
+    first real `get_config_resolver` call to pick up. The startup fast paths
+    (`--help`, bare command groups) parse arguments and return before any
+    config resolution happens, so paying the settings-bootstrap import cost
+    here would break the startup-perf contract those paths are tested
+    against.
+
+    Args:
+        cli_provider: Parsed-argument provider to install for this process.
+
+    Raises:
+        ValueError: If a different CLI provider is already installed.
+    """
+    with _resolver_cache_lock:
+        installed = _resolver_cache.cli_provider
+        if installed is not None and installed != cli_provider:
+            msg = "a different CLI provider is already installed for this process"
+            raise ValueError(msg)
+        _resolver_cache.cli_provider = cli_provider
+        entry = _resolver_cache.entry
+        if entry is not None and CLI_RANK not in entry[1].provider_statuses():
+            entry[1].install_provider(cli_provider)
 
 
 def reset_config_resolver() -> None:

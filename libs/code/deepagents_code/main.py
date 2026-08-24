@@ -1043,8 +1043,17 @@ def _resolver_for_args(args: argparse.Namespace) -> "ConfigResolver":
 
 
 def _install_cli_provider(args: argparse.Namespace) -> None:
-    """Install parsed arguments into the shared resolution chain."""
-    _resolver_for_args(args)
+    """Install parsed arguments into the shared resolution chain.
+
+    Uses the deferred install: building the full resolver here would import
+    `deepagents_code.model_config` and read both TOML snapshots, which the
+    help-only fast paths (`dcode help`, bare command groups) must not pay
+    before they return.
+    """
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import install_cli_provider
+
+    install_cli_provider(CliProvider(args))
 
 
 def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
@@ -1083,24 +1092,40 @@ def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":
     return coerce_approval_mode(resolved.value)
 
 
-def _resolved_recursion_limit() -> int:
-    """Return the bounded resolver-backed recursion limit."""
-    from deepagents_code.config_manifest import resolve_recursion_limit
+def _resolved_recursion_limit(args: argparse.Namespace) -> int | None:
+    """Return the explicit `--recursion-limit`, or `None` to defer resolution.
 
-    return resolve_recursion_limit()
+    `None` lets the agent-build path call `resolve_recursion_limit()` itself,
+    which reads the shared resolver — CLI provider included since
+    `_install_cli_provider` ran at startup — and applies the same env/TOML/
+    managed/default chain. Pre-resolving here would flatten that tri-state:
+    callers like `create_cli_agent` treat `None` as "not set" and would
+    otherwise receive the typed default (2000) indistinguishable from an
+    explicit override.
 
+    An explicit-but-invalid flag value (below the floor or above the ceiling)
+    is discarded with a warning so the lower tiers still apply, matching the
+    resolver's fall-through rule for bad env and TOML values.
+    """
+    raw = getattr(args, "recursion_limit", None)
+    if raw is None:
+        return None
+    from deepagents_code.config_manifest import (
+        RECURSION_LIMIT_CEILING,
+        RECURSION_LIMIT_FLOOR,
+        is_valid_recursion_limit,
+    )
 
-def _resolved_config_value(key: str, fallback: object = None) -> object:
-    """Return one value from the shared CLI-aware resolver."""
-    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
-    from deepagents_code.configuration.resolver import get_config_resolver
-
-    option = get_option(key)
-    if option is None:
-        return fallback
-    resolved = get_config_resolver().get(option)
-    _emit_ranked_diagnostics(option, resolved)
-    return resolved.value
+    if not is_valid_recursion_limit(raw):
+        logger.warning(
+            "Ignoring --recursion-limit=%r (expected int in [%d, %d]); "
+            "falling through to the next config source",
+            raw,
+            RECURSION_LIMIT_FLOOR,
+            RECURSION_LIMIT_CEILING,
+        )
+        return None
+    return raw
 
 
 def _resolve_auto_approve(args: argparse.Namespace) -> bool:
@@ -4684,8 +4709,12 @@ def cli_main() -> None:
 
         # Import console/settings AFTER arg parsing and after the bare-help
         # fast path so neither argparse's `--help`/`-h` exit nor
-        # `deepagents <group>` pays the settings bootstrap cost.
-        from deepagents_code.config import console
+        # `deepagents <group>` pays the settings bootstrap cost. `settings`
+        # must be named here even though this scope does not read it: the
+        # import is what triggers `_ensure_bootstrap()` (dotenv loading), and
+        # commands dispatched below — notably `auth status` — resolve
+        # credentials from the environment expecting `.env` to be loaded.
+        from deepagents_code.config import console, settings  # noqa: F401
 
         if command is None:
             # The health gate already ran above, for every command, so the
@@ -4799,7 +4828,7 @@ def cli_main() -> None:
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
                     allow_fs_tools=allow_fs_tools,
-                    recursion_limit=_resolved_recursion_limit(),
+                    recursion_limit=_resolved_recursion_limit(args),
                     auto=getattr(args, "auto_approve", False),
                     yolo=getattr(args, "yolo", False),
                     auto_classifier_model=getattr(args, "auto_classifier_model", None),
@@ -5438,20 +5467,15 @@ def cli_main() -> None:
                         "filtering by stored metadata anyway.",
                         file=sys.stderr,
                     )
-                resolved_sort = _resolved_config_value("threads.sort_order")
                 asyncio.run(
                     list_threads_command(
                         agent_name=getattr(args, "agent", None),
                         limit=getattr(args, "limit", None),
-                        sort_by=(
-                            "created" if resolved_sort == "created_at" else "updated"
-                        ),
+                        sort_by=getattr(args, "sort", None),
                         branch=getattr(args, "branch", None),
                         cwd=cwd_filter,
                         verbose=getattr(args, "verbose", False),
-                        relative=bool(
-                            _resolved_config_value("threads.relative_time", True)
-                        ),
+                        relative=getattr(args, "relative", None),
                         output_format=output_format,
                     )
                 )
@@ -5523,9 +5547,8 @@ def cli_main() -> None:
             # Non-interactive mode - execute single task and exit
             from deepagents_code.client.non_interactive import run_non_interactive
 
-            interpreter_ptc = cast(
-                "str | list[str] | None",
-                _resolved_config_value("interpreter.ptc"),
+            interpreter_ptc = _parse_interpreter_tools_flag(
+                getattr(args, "interpreter_tools", None)
             )
             _warn_if_interpreter_tools_without_interpreter(
                 args, enable_interpreter=enable_interpreter
@@ -5573,7 +5596,7 @@ def cli_main() -> None:
                             rubric_max_iterations=getattr(
                                 args, "rubric_max_iterations", None
                             ),
-                            recursion_limit=_resolved_recursion_limit(),
+                            recursion_limit=_resolved_recursion_limit(args),
                         ),
                         timeout=timeout,
                     )
@@ -5682,9 +5705,8 @@ def cli_main() -> None:
             return_code = 0
             request_count = 0
             try:
-                interpreter_ptc = cast(
-                    "str | list[str] | None",
-                    _resolved_config_value("interpreter.ptc"),
+                interpreter_ptc = _parse_interpreter_tools_flag(
+                    getattr(args, "interpreter_tools", None)
                 )
                 # A stderr warning here would be clobbered by the alternate
                 # screen the moment the TUI launches; the app surfaces the
@@ -5740,7 +5762,7 @@ def cli_main() -> None:
                         auto_classifier_model=getattr(
                             args, "auto_classifier_model", None
                         ),
-                        recursion_limit=_resolved_recursion_limit(),
+                        recursion_limit=_resolved_recursion_limit(args),
                     )
                 )
                 return_code = result.return_code

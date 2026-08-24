@@ -2649,7 +2649,7 @@ def test_managed_yolo_switcher_removes_yolo_from_the_approval_cycle(
 
     The rejection half of this key was covered; the applied half was not. It
     reaches the runtime through the resolver's implicit managed tier rather
-    than through `_apply_managed_runtime_policy`, so a reader switched to
+    than through `_apply_managed_runtime_exceptions`, so a reader switched to
     `managed_toml_data={}` — as two auto-classifier readers deliberately are —
     would make enforcement a silent no-op with the fail-closed test still green.
     """
@@ -3360,6 +3360,7 @@ def test_managed_recursion_limit_is_range_checked_before_it_wins(
 ) -> None:
     """A valid managed limit is applied; the resolver alone never bounds it."""
     from deepagents_code import main
+    from deepagents_code.config_manifest import resolve_recursion_limit
     from deepagents_code.configuration import service
 
     managed = tmp_path / "managed.toml"
@@ -3369,11 +3370,19 @@ def test_managed_recursion_limit_is_range_checked_before_it_wins(
     args = _managed_policy_args()
     try:
         main._resolver_for_args(args)
-        assert main._resolved_recursion_limit() == 500
+        # No CLI flag: main defers, and the managed value wins at build time.
+        assert main._resolved_recursion_limit(args) is None
+        assert resolve_recursion_limit() == 500
+        # A valid user flag stays in force only below managed policy: the
+        # launcher forwards the explicit value, but agent-build resolution
+        # (resolver-backed) still applies the managed 500.
+        args.recursion_limit = 75
+        assert main._resolved_recursion_limit(args) == 75
+        # An out-of-range flag is discarded so lower tiers still apply.
+        args.recursion_limit = 3
+        assert main._resolved_recursion_limit(args) is None
     finally:
         service.invalidate_config_sources()
-
-    assert args.recursion_limit is None
 
 
 @pytest.mark.parametrize(

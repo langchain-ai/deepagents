@@ -1381,6 +1381,26 @@ class TestVirtualizationFlow:
 class TestBulkLoad:
     """Tests for MessageStore.bulk_load."""
 
+    def test_bulk_load_uses_bounded_initial_tail(self):
+        """Resume mounts 30 rows unless the soft window is smaller."""
+        data = [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(50)
+        ]
+
+        store = MessageStore()
+        archived, visible = store.bulk_load(data)
+        assert len(archived) == 20
+        assert len(visible) == 30
+        assert visible[0].id == "id-20"
+
+        store = MessageStore()
+        store.WINDOW_SIZE = 12
+        archived, visible = store.bulk_load(data)
+        assert len(archived) == 38
+        assert len(visible) == 12
+        assert visible[0].id == "id-38"
+
     def test_bulk_load_under_window_size(self):
         """All messages should be visible when count <= WINDOW_SIZE."""
         store = MessageStore()

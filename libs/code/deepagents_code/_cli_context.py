@@ -70,8 +70,6 @@ class CLIContextSchema:
 
     turn_id: str | None = None
 
-    offload_tool_call_id: str | None = None
-
     hooks_snapshot_id: str | None = None
 
     hooks_server_events: list[str] = field(default_factory=list)
@@ -138,13 +136,6 @@ class CLIContext(TypedDict, total=False):
 
     turn_id: str | None
     """Current user-turn ID for binding trusted interactive responses."""
-
-    offload_tool_call_id: str | None
-    """The sole tool-call ID authorized during a server-driven `/offload` run.
-
-    This is set by the client, not graph state, so model-generated calls cannot
-    grant themselves permission to execute during the hidden compaction turn.
-    """
 
     hooks_snapshot_id: str | None
     """Canonical Hooks v2 configuration hash for this session.

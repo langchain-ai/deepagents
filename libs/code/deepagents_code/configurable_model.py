@@ -293,7 +293,7 @@ def _resolve_openai_prompt_cache_key_enabled() -> bool:
     Called once when `ConfigurableModelMiddleware` is constructed. The read is
     kept off the blockbuster-guarded server loop by the caller: on the server
     path `create_cli_agent` runs inside `asyncio.to_thread` (see
-    `server_graph._make_graph`), so the synchronous `config.toml` read happens
+    `server_graph._make_graphs`), so the synchronous `config.toml` read happens
     on a worker thread.
 
     On an unexpected failure this defaults to enabled: breaking agent
@@ -366,15 +366,16 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
 
 def _model_spec_from_model(model: BaseChatModel) -> str | None:
     """Return a resumable `provider:model` spec for a model object."""
-    provider = _get_ls_provider(model)
     model_name = get_model_identifier(model)
-    if provider and model_name:
-        return f"{provider}:{model_name}"
-
     from deepagents_code.config import settings
 
     settings_provider = settings.model_provider or ""
     settings_model = settings.model_name or ""
+    if settings_provider and settings_model and model_name == settings_model:
+        return f"{settings_provider}:{settings_model}"
+    provider = _get_ls_provider(model)
+    if provider and model_name:
+        return f"{provider}:{model_name}"
     if settings_provider and settings_model:
         return f"{settings_provider}:{settings_model}"
     return None

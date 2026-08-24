@@ -15,7 +15,7 @@ import asyncio
 import atexit
 import logging
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from deepagents_code._server_config import ServerConfig
 from deepagents_code._startup_error import (
@@ -26,6 +26,10 @@ from deepagents_code.project_utils import ProjectContext, get_server_project_con
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+    from deepagents.backends.composite import CompositeBackend
+
+    from deepagents_code.offload_middleware import OffloadOperation
 
 logger = logging.getLogger(__name__)
 
@@ -185,15 +189,35 @@ def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
     return mcp_tool_is_coherently_read_only(tool)
 
 
-async def _make_graph() -> Any:  # noqa: ANN401
-    """Create the agent graph from environment-based configuration.
+class ServerRuntime(NamedTuple):
+    """The one-per-process result of building this server's agent.
+
+    A named tuple rather than a bare tuple so the three slots are addressed by
+    name: `agent` is structurally opaque to the type checker (the SDK exposes no
+    usable compiled-graph type here), so a positional transposition would hand
+    LangGraph the backend as its compiled graph with no complaint.
+    """
+
+    agent: Any
+    """Compiled LangGraph agent graph served as `agent`."""
+
+    backend: CompositeBackend
+    """Composite backend the agent and its operations were built with."""
+
+    offload: OffloadOperation
+    """Server-owned thread offload operation bound to `backend`."""
+
+
+async def _make_graphs() -> ServerRuntime:
+    """Create the agent graph and the backend carrying its shared resources.
 
     Reads `DEEPAGENTS_CODE_SERVER_*` env vars via `ServerConfig.from_env()`
     (the inverse of `ServerConfig.to_env()` used by the app process), resolves a
     model, assembles tools, and compiles the agent graph.
 
     Returns:
-        Compiled LangGraph agent graph.
+        The agent graph, its configured composite backend, and the server-owned
+            offload operation bound to that backend.
     """
     config = ServerConfig.from_env()
 
@@ -319,7 +343,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
             )
             sys.exit(1)
 
-    def _create_cli_agent_sync() -> Any:  # noqa: ANN401
+    def _create_cli_graphs_sync() -> ServerRuntime:
         async_subagents = load_async_subagents() or None
         auto_mode_enabled = config.interactive and sandbox_backend is None
 
@@ -332,7 +356,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
         if config.enable_interpreter:
             settings.enable_interpreter = True
 
-        agent, _composite_backend = create_cli_agent(
+        agent, composite_backend = create_cli_agent(
             model=result.model,
             assistant_id=config.assistant_id,
             tools=tools,
@@ -363,65 +387,119 @@ async def _make_graph() -> Any:  # noqa: ANN401
             goal_criteria_tools=read_only_context_tools,
             rubric_grader_tools=read_only_context_tools,
         )
-        return agent
+        from deepagents_code.offload_middleware import offload_operation_from
 
-    return await asyncio.to_thread(_create_cli_agent_sync)
+        offload = offload_operation_from(composite_backend)
+        if offload is None:
+            msg = (
+                "Agent backend did not publish its offload operation; "
+                "/offload has no server implementation."
+            )
+            raise RuntimeError(msg)
+        return ServerRuntime(
+            agent=agent,
+            backend=composite_backend,
+            offload=offload,
+        )
+
+    return await asyncio.to_thread(_create_cli_graphs_sync)
+
+
+def _build_runtime_factory(
+    builder: Callable[[], Awaitable[ServerRuntime]] | None = None,
+) -> Callable[[], Awaitable[ServerRuntime]]:
+    """Build the cached factory for all server-owned runtime resources.
+
+    The cache is load-bearing, not an optimization: MCP discovery, sandbox
+    creation, and `atexit` registration each must happen exactly once. Building
+    per request would re-discover MCP servers, leak sandbox sessions, and stack
+    duplicate `atexit` handlers. Two consumers now share this cache -- the
+    interactive graph and the offload HTTP route -- so both must resolve the
+    *same* agent, backend, and compaction policy for a server-side archive to be
+    readable by the agent.
+
+    The cache and its lock live in this closure rather than in module-level
+    globals, so importing this module introduces no shared mutable state; the
+    single process-wide instance is created explicitly at the bottom of the
+    module.
+
+    Args:
+        builder: Optional alternate builder used by unit tests.
+
+    Returns:
+        Async runtime factory shared by the graph and custom operation API.
+    """
+    runtime: ServerRuntime | None = None
+    lock = asyncio.Lock()
+
+    async def get_runtime() -> ServerRuntime:
+        """Return the cached interactive graph and operation resources."""
+        nonlocal runtime
+        if runtime is None:
+            async with lock:
+                if runtime is None:
+                    try:
+                        from deepagents_code.configuration.service import (
+                            require_healthy_managed_config,
+                        )
+
+                        require_healthy_managed_config(refresh=True)
+                        runtime = await (builder or _make_graphs)()
+                    except Exception as exc:  # noqa: BLE001  # startup barrier
+                        emit_startup_failure(exc)
+                        sys.exit(1)
+        return runtime
+
+    return get_runtime
 
 
 def _build_graph_factory(
-    builder: Callable[[], Awaitable[Any]] | None = None,
+    builder: Callable[[], Awaitable[ServerRuntime]] | None = None,
 ) -> Callable[[], Awaitable[Any]]:
-    """Build the cached async graph factory exposed to `langgraph dev`.
+    """Build a cached graph factory, for tests.
 
-    The returned coroutine function is what `langgraph.json` references. It keeps
-    its cache and lock in this closure rather than in module-level globals, so
-    importing the module (e.g. for import-only checks) introduces no shared
-    mutable state.
+    `langgraph.json` references the module-level `make_graph`, which delegates to
+    `get_server_runtime`; nothing in production calls this. It survives so unit
+    tests can inject a builder.
 
     Args:
-        builder: Optional alternate graph builder.
+        builder: Optional alternate runtime builder used by unit tests.
 
     Returns:
-        A zero-arg async factory that builds the graph once and returns the
-        cached instance on every subsequent call.
+        Async graph factory for the interactive `agent` graph.
     """
-    missing = object()
-    graph: Any = missing
-    lock = asyncio.Lock()
+    get_runtime = _build_runtime_factory(builder)
 
     async def make_graph() -> Any:  # noqa: ANN401
-        """Create (or return the cached) agent graph for `langgraph dev`.
-
-        LangGraph loads this async factory from the generated `langgraph.json`
-        and invokes it lazily on its event loop — and again on every run. The
-        built graph is cached for the process lifetime so MCP discovery, sandbox
-        creation, and `atexit` registration each happen exactly once; re-running
-        them per request would re-discover MCP servers, leak sandbox sessions,
-        and stack duplicate `atexit` handlers. Any construction failure is
-        converted into a startup-error marker (scraped by the parent app
-        process) before exiting.
+        """Create or return the cached agent graph for `langgraph dev`.
 
         Returns:
             Compiled LangGraph agent graph.
         """
-        nonlocal graph
-        if graph is not missing:
-            return graph
-        async with lock:
-            if graph is missing:
-                try:
-                    from deepagents_code.configuration.service import (
-                        require_healthy_managed_config,
-                    )
-
-                    require_healthy_managed_config(refresh=True)
-                    graph = await (builder or _make_graph)()
-                except Exception as exc:  # noqa: BLE001  # top-level barrier: any construction failure must surface to the parent as a marker
-                    emit_startup_failure(exc)
-                    sys.exit(1)
-            return graph
+        return (await get_runtime()).agent
 
     return make_graph
 
 
-make_graph = _build_graph_factory()
+_get_runtime = _build_runtime_factory()
+
+
+async def get_server_runtime() -> ServerRuntime:
+    """Return resources shared by the graph and dcode operation routes.
+
+    Builds once and caches. A construction failure is converted into a
+    startup-error marker (scraped by the parent app process) before
+    `sys.exit(1)`, which is right for the `langgraph.json` graph factory at
+    startup. Callers in request scope must contain that exit -- `SystemExit` is a
+    `BaseException` -- as `offload_api._execute_offload` does, mapping it to a 503
+    rather than killing the server mid-request.
+
+    Returns:
+        The cached server runtime.
+    """
+    return await _get_runtime()
+
+
+async def make_graph() -> Any:  # noqa: ANN401
+    """Return the cached interactive graph for `langgraph.json`."""
+    return (await get_server_runtime()).agent

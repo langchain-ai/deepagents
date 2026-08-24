@@ -34,9 +34,13 @@
 #   This script installs deepagents-code as a uv tool. To remove it:
 #     uv tool uninstall deepagents-code
 #   That removes the dcode/deepagents-code binary and its isolated venv.
-#   User config and data live separately in ${DEEPAGENTS_HOME:-~/.deepagents}
-#   (config.toml, hooks.json, a global .env, and a .state/ dir holding sessions
-#   and saved credentials) and are NOT removed by the uninstall above.
+#   User config and data live in the effective DEEPAGENTS_HOME (default:
+#   ~/.deepagents) and are NOT removed by the uninstall above. Before
+#   uninstalling, run `dcode doctor` and record its exact "Data directory".
+#   To erase the profile too, remove only that confirmed dedicated directory;
+#   never recursively remove `/`, your home, a checkout, or an unresolved env
+#   expression. Managed support binaries live in the tool environment and are
+#   removed with it.
 #   Optionally clear uv's shared tool cache (~/.cache/uv on Linux,
 #   ~/Library/Caches/uv on macOS) — only if no other uv tools rely on it.
 #

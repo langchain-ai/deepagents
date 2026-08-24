@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from rich.console import Console
 
+from deepagents_code._paths import PATHS
 from deepagents_code.main import parse_args
 from deepagents_code.ui import show_help, show_threads_list_help
 
@@ -607,23 +608,24 @@ class TestMcpCommandDispatch:
             config_path="/subcommand/config.json",
         )
 
-    def test_mcp_config_subcommand_prints_discovery_paths(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_mcp_config_subcommand_prints_discovery_paths(self) -> None:
         """`dcode mcp config` prints each discovery path."""
         from deepagents_code.main import cli_main
 
+        output = io.StringIO()
+        test_console = Console(file=output, highlight=False, width=500)
         with (
             patch.object(sys, "argv", ["deepagents", "mcp", "config"]),
             patch("deepagents_code.main.check_cli_dependencies"),
             patch("deepagents_code.main.apply_stdin_pipe"),
+            patch("deepagents_code.ui.console", test_console),
             pytest.raises(SystemExit) as exc_info,
         ):
             cli_main()
 
         assert exc_info.value.code == 0
-        out = capsys.readouterr().out
-        assert "~/.deepagents/.mcp.json" in out
+        out = output.getvalue()
+        assert PATHS.display(PATHS.profile.mcp_config_file) in out
         assert "<project-root>/.deepagents/.mcp.json" in out
         assert "<project-root>/.mcp.json" in out
 

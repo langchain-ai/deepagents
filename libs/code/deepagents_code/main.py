@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
 from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
-from deepagents_code._paths import get_deepagents_home
+from deepagents_code._paths import PATHS, get_deepagents_home
 from deepagents_code._version import __version__
 from deepagents_code.goal_state_limits import RUBRIC_CHAR_LIMIT, validate_rubric
 
@@ -1535,19 +1535,18 @@ def _warn_if_interpreter_tools_without_interpreter(
 
 
 def _recent_agent_is_valid(name: str) -> bool:
-    """Return `True` when `~/.deepagents/<name>/` still exists on disk.
+    """Return whether the selected profile still contains agent `name`.
 
     Used to guard against a stale `[agents].recent` entry pointing at an
     agent the user has since deleted — in that case we silently fall back
     to the hard-coded default instead of failing at server start.
 
-    Path is rebuilt from `Path.home()` rather than `settings.user_deepagents_dir`
-    because `settings` is intentionally imported *after* argparse in `cli_main`
-    (per the startup-hot-path guidance there), and pulling it in here would
-    undo that deferral.
+    The path comes from the lightweight immutable launch snapshot rather than
+    `settings`, which is intentionally imported *after* argparse in `cli_main`
+    (per the startup-hot-path guidance there).
 
-    `is_dir()` is wrapped in `try/except OSError` so permission errors on
-    `~/.deepagents` (symlink loops, EACCES) don't crash the launch — we
+    `is_dir()` is wrapped in `try/except OSError` so permission errors on the
+    profile root (symlink loops, EACCES) don't crash the launch — we
     treat them the same as "not valid" and fall back to the default.
     """
     try:
@@ -1592,14 +1591,25 @@ def check_cli_dependencies() -> None:
 _RIPGREP_URL = "https://github.com/BurntSushi/ripgrep#installation"
 """Fallback installation URL when no platform package manager is detected."""
 
-_SUPPRESS_HINT_CLI = (
-    'To suppress, edit ~/.deepagents/config.toml:\n\\[warnings]\nsuppress = \\["<key>"]'
-)
-"""Suppression hint for non-interactive output.
 
-Contains a `<key>` placeholder that callers replace with the warning key
-(e.g. `"ripgrep"`, `"tavily"`).
-"""
+def _rich_path_display(path: Path) -> str:
+    """Return an effective path escaped for Rich markup."""
+    from rich.markup import escape
+
+    return escape(PATHS.display(path))
+
+
+def _suppress_hint_cli(key: str) -> str:
+    """Return a configured-path suppression hint for non-interactive output.
+
+    Args:
+        key: Warning key to place in the example TOML.
+
+    Returns:
+        Rich-safe instructions for editing the effective user config.
+    """
+    config_path = _rich_path_display(PATHS.profile.config_file)
+    return f'To suppress, edit {config_path}:\n\\[warnings]\nsuppress = \\["{key}"]'
 
 
 def _ripgrep_install_hint() -> str:
@@ -1849,7 +1859,7 @@ def format_tool_warning_cli(tool: str) -> str:
         hint = _ripgrep_install_hint()
         if hint.startswith("http"):
             hint = f"[link={hint}]{hint}[/link]"
-        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "ripgrep")
+        suppress = _suppress_hint_cli("ripgrep")
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
             f"Install: {hint}\n\n"
@@ -1857,7 +1867,7 @@ def format_tool_warning_cli(tool: str) -> str:
         )
     if tool == "tavily":
         url = "https://tavily.com"
-        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "tavily")
+        suppress = _suppress_hint_cli("tavily")
         return (
             "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
             f"Get a key at [link={url}]{url}[/link]\n\n"
@@ -2733,6 +2743,7 @@ def _resolve_and_validate_sandbox(
     from deepagents_code.integrations.sandbox_registry import SandboxRegistry
 
     registry = SandboxRegistry.load()
+    config_display = PATHS.display(PATHS.profile.config_file)
 
     def _config_note() -> str:
         """Build a breadcrumb when the config file failed to parse.
@@ -2743,7 +2754,7 @@ def _resolve_and_validate_sandbox(
         """
         if registry.config_error:
             return (
-                f"\n\nNote: ~/.deepagents/config.toml could not be used "
+                f"\n\nNote: {config_display} could not be used "
                 f"({registry.config_error}); any providers or default it "
                 "declares were ignored."
             )
@@ -2754,7 +2765,7 @@ def _resolve_and_validate_sandbox(
         if not default:
             parser.error(
                 "--sandbox was given with no value but no [sandboxes].default "
-                "is configured in ~/.deepagents/config.toml. Pass a provider "
+                f"is configured in {config_display}. Pass a provider "
                 "name explicitly or set [sandboxes].default." + _config_note()
             )
         args.sandbox = default
@@ -2768,7 +2779,7 @@ def _resolve_and_validate_sandbox(
             "publishes it and re-run:\n"
             "  /install <package-name> --package\n"
             f"or declare [sandboxes.providers.{args.sandbox}] in "
-            "~/.deepagents/config.toml." + _config_note()
+            f"{config_display}." + _config_note()
         )
 
     metadata = registry.get_metadata(args.sandbox)
@@ -5502,7 +5513,7 @@ def cli_main() -> None:
                 logger.warning("--auto-update failed: filesystem error", exc_info=True)
                 console.print(
                     "[bold red]Error:[/bold red] Failed to toggle auto-updates. "
-                    "Check permissions for ~/.deepagents/"
+                    f"Check permissions for {_rich_path_display(PATHS.profile.root)}"
                 )
                 sys.exit(1)
             except Exception:
@@ -5522,7 +5533,7 @@ def cli_main() -> None:
             else:
                 console.print(
                     "[bold red]Error:[/bold red] Could not clear default model. "
-                    "Check permissions for ~/.deepagents/"
+                    f"Check permissions for {_rich_path_display(PATHS.profile.root)}"
                 )
                 sys.exit(1)
             sys.exit(0)
@@ -5573,7 +5584,7 @@ def cli_main() -> None:
             else:
                 console.print(
                     "[bold red]Error:[/bold red] Could not save default model. "
-                    "Check permissions for ~/.deepagents/"
+                    f"Check permissions for {_rich_path_display(PATHS.profile.root)}"
                 )
                 sys.exit(1)
             sys.exit(0)

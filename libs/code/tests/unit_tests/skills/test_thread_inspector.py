@@ -478,16 +478,14 @@ def test_connect_read_only_rejects_unsupported_schema(
 def test_default_db_path_prefers_env_override(
     inspector: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from deepagents_code._paths import PATHS
+
     monkeypatch.setenv("DEEPAGENTS_SESSIONS_DB", "/tmp/custom/sessions.db")
     assert inspector._default_db_path() == Path("/tmp/custom/sessions.db")
     monkeypatch.delenv("DEEPAGENTS_SESSIONS_DB")
-    assert inspector._default_db_path() == Path.home() / ".deepagents" / ".state" / (
-        "sessions.db"
-    )
+    assert inspector._default_db_path() == PATHS.profile.sessions_file
     monkeypatch.setenv("DEEPAGENTS_HOME", "~/custom-dcode")
-    assert inspector._default_db_path() == Path.home() / "custom-dcode" / ".state" / (
-        "sessions.db"
-    )
+    assert inspector._default_db_path() == PATHS.profile.sessions_file
 
 
 def test_default_db_path_without_package(

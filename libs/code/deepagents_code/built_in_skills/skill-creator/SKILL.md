@@ -14,7 +14,7 @@ The deepagents CLI loads skills from five sources, listed here from lowest to hi
 | # | Directory | Scope | Notes |
 |---|-----------|-------|-------|
 | 0 | `<package>/built_in_skills/` | Built-in | Ships with deepagents CLI |
-| 1 | `~/.deepagents/<agent>/skills/` | User (deepagents alias) | Default for `deepagents skills create` |
+| 1 | `$DEEPAGENTS_HOME/<agent>/skills/` | User (deepagents alias) | Default for `deepagents skills create` |
 | 2 | `~/.agents/skills/` | User | Shared across agent tools |
 | 3 | `.deepagents/skills/` | Project (deepagents alias) | Default for `deepagents skills create --project` |
 | 4 | `.agents/skills/` | Project | Shared across agent tools |
@@ -24,7 +24,7 @@ The deepagents CLI loads skills from five sources, listed here from lowest to hi
 Example directory layout:
 
 ```
-~/.deepagents/agent/skills/     # user skills (lowest precedence)
+$DEEPAGENTS_HOME/agent/skills/     # user skills (lowest precedence)
 ├── skill-name-1/
 │   └── SKILL.md
 └── ...
@@ -288,7 +288,7 @@ For deepagents CLI, use any of the skill directories listed in "Skill Location f
 
 ```bash
 # User skills (default)
-scripts/init_skill.py <skill-name> --path ~/.deepagents/agent/skills
+scripts/init_skill.py <skill-name> --path "$DEEPAGENTS_HOME/agent/skills"
 
 # Project skills
 scripts/init_skill.py <skill-name> --path .deepagents/skills

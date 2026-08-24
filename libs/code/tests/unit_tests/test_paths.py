@@ -81,6 +81,26 @@ class TestGetDeepagentsHome:
         assert snapshot.profile.root == tmp_path / ".deepagents"
         assert snapshot.uses_default_profile
 
+    def test_default_display_keeps_tilde_readable(self, tmp_path: Path) -> None:
+        """Default profile diagnostics use the familiar compact spelling."""
+        snapshot = _capture_paths(None, launch_home=tmp_path)
+
+        assert snapshot.display(snapshot.profile.config_file) == (
+            "~/.deepagents/config.toml"
+        )
+
+    def test_configured_display_uses_effective_absolute_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Configured profile diagnostics show the normalized effective path."""
+        snapshot = _capture_paths(
+            str(tmp_path / "profiles" / ".." / "custom"), launch_home=tmp_path
+        )
+
+        assert snapshot.display(snapshot.profile.config_file) == str(
+            tmp_path / "custom" / "config.toml"
+        )
+
     def test_rejects_relative_override(self, tmp_path: Path) -> None:
         """Other relative values fail instead of depending on cwd."""
         with pytest.raises(DeepAgentsHomeError, match="absolute path"):

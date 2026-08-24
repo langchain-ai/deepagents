@@ -639,6 +639,9 @@ class TestListSkillsBuiltIn:
         built_in_dir = Settings.get_built_in_skills_dir()
         skill_md = built_in_dir / "skill-creator" / "SKILL.md"
         assert skill_md.exists(), f"Expected {skill_md} to exist"
+        instructions = skill_md.read_text()
+        assert "$DEEPAGENTS_HOME" in instructions
+        assert "~/.deepagents" not in instructions
 
         skills = list_skills(
             built_in_skills_dir=built_in_dir,
@@ -661,6 +664,9 @@ class TestListSkillsBuiltIn:
         built_in_dir = Settings.get_built_in_skills_dir()
         skill_md = built_in_dir / "remember" / "SKILL.md"
         assert skill_md.exists(), f"Expected {skill_md} to exist"
+        instructions = skill_md.read_text()
+        assert "$DEEPAGENTS_HOME" in instructions
+        assert "~/.deepagents" not in instructions
 
         skills = list_skills(
             built_in_skills_dir=built_in_dir,
@@ -686,6 +692,9 @@ class TestListSkillsBuiltIn:
         script = skill_dir / "scripts" / "inspect_sessions.py"
         assert skill_md.exists(), f"Expected {skill_md} to exist"
         assert script.exists(), f"Expected {script} to exist"
+        instructions = skill_md.read_text()
+        assert "$DEEPAGENTS_HOME" in instructions
+        assert "parse ~/.deepagents" not in instructions
 
         skills = list_skills(
             built_in_skills_dir=built_in_dir,

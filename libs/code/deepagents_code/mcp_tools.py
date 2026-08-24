@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 
 from deepagents_code import _env_vars
-from deepagents_code._paths import get_deepagents_home
+from deepagents_code._paths import PATHS, get_deepagents_home
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
@@ -1334,7 +1334,7 @@ def filter_trusted_project_servers(
 
 
 MCP_CONFIG_DISCOVERY_PATHS: tuple[tuple[str, str], ...] = (
-    ("~/.deepagents/.mcp.json", "user-level"),
+    (PATHS.display(PATHS.profile.mcp_config_file), "user-level"),
     ("<project-root>/.deepagents/.mcp.json", "project subdir"),
     ("<project-root>/.mcp.json", "project root"),
 )

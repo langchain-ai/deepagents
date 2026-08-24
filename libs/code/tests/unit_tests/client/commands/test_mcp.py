@@ -546,3 +546,36 @@ class TestRunMCPLogin:
 
         assert exit_code == 1
         assert "Login failed" in capsys.readouterr().err
+
+    async def test_permission_hint_uses_actual_token_store_source(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Permission remediation uses the same directory as `mcp_auth`."""
+        from deepagents_code.client.commands.mcp import run_mcp_login
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        actual_store = tmp_path / "selected-profile" / "tokens"
+
+        async def _denied(**_: Any) -> None:
+            msg = "read-only token store"
+            raise PermissionError(msg)
+
+        with (
+            patch("deepagents_code.mcp_auth.login", _denied),
+            patch(
+                "deepagents_code.mcp_auth.token_store_dir",
+                return_value=actual_store,
+            ) as store_dir,
+        ):
+            exit_code = await run_mcp_login(
+                server="notion",
+                config_path=str(config_path),
+            )
+
+        assert exit_code == 1
+        assert str(actual_store) in capsys.readouterr().err
+        store_dir.assert_called_once_with()

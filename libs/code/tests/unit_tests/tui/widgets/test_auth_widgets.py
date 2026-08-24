@@ -14,6 +14,7 @@ from textual.containers import Container
 from textual.widgets import Input, OptionList, RadioButton, RadioSet, Static
 
 from deepagents_code import auth_store, model_config
+from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets.auth import (
     _ENDPOINT_BY_REGION,
@@ -1811,7 +1812,8 @@ api_key_url = "javascript:alert(1)"
             assert "dcode only, highest priority" in text
             assert "OPENAI_API_KEY" in text
             assert "shared, lowest priority" in text
-            assert "project .env or ~/.deepagents/.env" in text
+            dotenv_display = PATHS.display(PATHS.profile.dotenv_file)
+            assert f"project .env or {dotenv_display}" in text
             assert "Ctrl+R in this dialog to reload" in text
             assert "New shell exports require restarting the app" in text
             assert "Configuration docs" in text

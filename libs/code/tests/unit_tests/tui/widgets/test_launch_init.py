@@ -11,6 +11,7 @@ from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 
+from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs
 from deepagents_code.extras_info import (
     MODEL_PROVIDER_EXTRAS,
@@ -94,7 +95,7 @@ class TestLaunchGoalCriteriaPreferenceScreen:
 
         assert options.highlighted == 0
         assert "How should Auto mode handle goal criteria?" in content
-        assert "~/.deepagents/config.toml" in content
+        assert PATHS.display(PATHS.profile.config_file) in content
         assert "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA" in content
 
     async def test_enter_chooses_review(self) -> None:

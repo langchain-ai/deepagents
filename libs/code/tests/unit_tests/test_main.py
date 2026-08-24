@@ -1442,10 +1442,16 @@ class TestStartupAutoUpdate:
         """Text wider than the pane counts each wrapped row.
 
         Deliberately left unmocked: this is the canary that should fail if a
-        future Rich version changes how it wraps text, so its `options` must
-        stay real rather than being pinned to a forced width.
+        future Rich version changes how it wraps text. Pin both constructor
+        dimensions so Rich honors the requested width even under `TERM=dumb`.
         """
-        console = Console(file=StringIO(), force_terminal=True, no_color=True, width=10)
+        console = Console(
+            file=StringIO(),
+            force_terminal=True,
+            no_color=True,
+            width=10,
+            height=25,
+        )
         # 20 characters at width 10 wraps to exactly 2 rows.
         assert _terminal_row_count(console, "abcdefghijklmnopqrst") == 2
 

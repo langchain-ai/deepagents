@@ -413,8 +413,8 @@ def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
     filesystem and therefore atomic on POSIX. Windows keeps replacing the
     user-facing `rg.exe` directly because symlink support varies by developer
     mode and policy. POSIX installs use a versioned real binary plus a relative
-    `rg` symlink so moving or bind-mounting `~/.deepagents` does not bake in
-    the original home directory path. `_verify_sha256` propagates
+    `rg` symlink so moving or bind-mounting the tool environment does not bake
+    in its original absolute path. `_verify_sha256` propagates
     `ChecksumMismatchError` to abort install before any move.
 
     Returns:

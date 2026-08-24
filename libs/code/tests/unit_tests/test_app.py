@@ -65,6 +65,7 @@ from deepagents_code._constants import (
     SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
     SYSTEM_MESSAGE_PREFIX,
 )
+from deepagents_code._paths import PATHS
 from deepagents_code._session_stats import SessionStats
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
@@ -16131,8 +16132,9 @@ class TestMessageTimestampFooters:
             await app._load_thread_history(
                 thread_id="t-spacer", preloaded_payload=payload
             )
-            await pilot.pause()
 
+            # Assert the synchronous restore window before the post-refresh
+            # prefetch is allowed to hydrate archived rows above it.
             assert app._message_store.total_count >= 5
             assert app._message_store.has_messages_above
             top = app.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", Static)
@@ -31453,7 +31455,8 @@ class TestLiveApprovalModeWrites:
 
         notify.assert_called_once_with(
             "Approval mode changed for this session, but the startup preference "
-            "could not be saved. Check permissions for ~/.deepagents/.",
+            "could not be saved. Check permissions for "
+            f"{PATHS.display(PATHS.profile.root)}.",
             severity="warning",
             markup=False,
         )

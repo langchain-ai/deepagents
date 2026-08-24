@@ -414,7 +414,8 @@ class ProviderAuthStatus:
             return self.detail
         return (
             f"provider '{self.provider}' is not recognized. "
-            "Add it to ~/.deepagents/config.toml with an api_key_env field"
+            f"Add it to {PATHS.display(PATHS.profile.config_file)} with an "
+            "api_key_env field"
         )
 
 
@@ -731,15 +732,15 @@ DEFAULT_CONFIG_DIR = PATHS.profile.root
 """User-level Deep Agents directory, optionally set by `DEEPAGENTS_HOME`."""
 
 DEFAULT_CONFIG_PATH = PATHS.profile.config_file
-"""Path to the user's model configuration file (`~/.deepagents/config.toml`)."""
+"""Path to the selected profile's model configuration file."""
 
 DEFAULT_STATE_DIR = PATHS.profile.state_dir
-"""Directory for app-managed internal state (`~/.deepagents/.state`).
+"""Directory for app-managed internal state in the selected profile.
 
 Holds files the app writes for its own bookkeeping — OAuth tokens, the
 sessions database, version-check caches, input history. Kept separate from
-top-level user-facing config and agent directories so listing/iterating
-`~/.deepagents` doesn't conflate state with agents.
+top-level user-facing config and agent directories so listing the profile root
+doesn't conflate state with agents.
 """
 
 

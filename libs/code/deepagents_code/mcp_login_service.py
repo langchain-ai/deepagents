@@ -406,9 +406,12 @@ def select_server(
 
 def _policy_error_message(policy_error: str) -> str:
     """Return the user-facing message for an unreadable trust policy."""
+    from deepagents_code._paths import PATHS
+
+    config_display = PATHS.display(PATHS.profile.config_file)
     return (
         f"Refusing to trust project MCP servers: {policy_error}. Fix "
-        "~/.deepagents/config.toml, or pass --mcp-config <path> to load "
+        f"{config_display}, or pass --mcp-config <path> to load "
         "a file explicitly."
     )
 

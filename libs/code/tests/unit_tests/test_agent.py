@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
+from deepagents_code._paths import PATHS
 from deepagents_code._repository_bounds import REPOSITORY_TOOL_CALL_LIMIT
 from deepagents_code.agent import (
     _AGENT_DIR_MARKER,
@@ -1413,6 +1414,19 @@ class TestGetSystemPromptModelIdentity:
             prompt = get_system_prompt("test-agent")
 
         assert "### Model Identity" not in prompt
+
+    def test_skills_path_uses_launch_profile(self) -> None:
+        """Agent-facing instructions name the effective configured skills root."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.has_tavily = False
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        expected = PATHS.display(PATHS.profile.agent_skills_dir("test-agent"))
+        assert expected in prompt
+        assert "~/.deepagents/test-agent/skills" not in prompt
 
     def test_excludes_provider_when_not_set(self) -> None:
         """Test that provider is excluded when model_provider is None."""

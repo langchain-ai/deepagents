@@ -27,16 +27,21 @@ Run:
 dcode
 ```
 
-Set `DEEPAGENTS_HOME` to relocate all user-level configuration and persistent
-state from the default `~/.deepagents` directory:
+Set `DEEPAGENTS_HOME` to select a user profile and trust root instead of the
+default `~/.deepagents` directory:
 
 ```bash
 export DEEPAGENTS_HOME="$HOME/.local/share/deepagents"
 dcode
 ```
 
-Set this before starting dcode. Existing data is not migrated automatically; move
-it from `~/.deepagents` yourself if you want to keep using it from the new root.
+Set it in the inherited launch environment before starting dcode. It accepts an
+absolute path or a leading `~/`; other relative paths and `~user` forms are
+rejected. Project and global dotenv files cannot change it, and reloads or
+working-directory changes keep the launch-time value. Existing data is not
+migrated automatically; move it from `~/.deepagents` yourself if you want to
+keep using it from the new root. Managed support binaries and install/update
+locks remain tied to the dcode installation so profiles can safely share them.
 
 ## 🤔 What is this?
 
@@ -71,7 +76,8 @@ Administrators can enforce any supported `config.toml` setting with a read-only
 - Linux and other supported POSIX systems: `/etc/dcode/managed_config.toml`
 
 Managed values override two lower layers: the `DEEPAGENTS_CODE_` and
-compatibility environment variables, and `~/.deepagents/config.toml`.
+compatibility environment variables, and `$DEEPAGENTS_HOME/config.toml`
+(default: `~/.deepagents/config.toml`).
 
 For an agent launch, managed values also override these CLI flags: the model,
 the auto-classifier model, the interpreter toggle, the programmatic tool-calling
@@ -114,10 +120,10 @@ lower-precedence value stays in effect. Two exceptions:
   still replaces a colliding user table there, the same as on the top-level
   merge.
 
-`[shell].allow_list` is read from `~/.deepagents/config.toml` and from
-`DEEPAGENTS_CODE_SHELL_ALLOW_LIST`, so a managed file can enforce it. A user can
-also grant themselves shell auto-approval from their own config file. An empty
-managed list removes every lower-precedence grant.
+`[shell].allow_list` is read from `$DEEPAGENTS_HOME/config.toml` and from
+`DEEPAGENTS_CODE_SHELL_ALLOW_LIST`, so a managed file can enforce it. A user
+can also grant themselves shell auto-approval from their own config file. An
+empty managed list removes every lower-precedence grant.
 
 `[models].allowed` narrows dcode to exact `provider:model` specifications:
 
@@ -173,8 +179,8 @@ same way: the key is present, so policy means to narrow access, and reading its
 presence as absence would leave both the user's approvals and the
 `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` bypass in force.
 
-A corrupt `~/.deepagents/config.toml` does not disable managed policy: the user
-file is ignored and managed values still apply.
+A corrupt `$DEEPAGENTS_HOME/config.toml` does not disable managed policy: the
+user file is ignored and managed values still apply.
 
 Deployment tooling must create and protect this file with administrator or root
 permissions. `dcode` does not validate the file owner or mode. `dcode` provides

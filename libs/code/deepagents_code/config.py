@@ -3256,10 +3256,10 @@ class Settings:
 
     @property
     def user_deepagents_dir(self) -> Path:
-        """Base user-level `.deepagents` directory.
+        """The immutable launch-time user profile root.
 
         Returns:
-            Path to `~/.deepagents`
+            The normalized `DEEPAGENTS_HOME`, defaulting to `~/.deepagents`.
         """
         return PATHS.profile.root
 
@@ -3273,7 +3273,7 @@ class Settings:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/AGENTS.md
+            Path to `{DEEPAGENTS_HOME}/{agent_name}/AGENTS.md`.
         """
         return PATHS.profile.agent_dir(agent_name) / "AGENTS.md"
 
@@ -3317,7 +3317,7 @@ class Settings:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}
+            Path to `{DEEPAGENTS_HOME}/{agent_name}`.
 
         Raises:
             ValueError: If the agent name contains invalid characters.
@@ -3337,7 +3337,7 @@ class Settings:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}
+            Path to `{DEEPAGENTS_HOME}/{agent_name}`.
 
         Raises:
             ValueError: If the agent name contains invalid characters.
@@ -3359,7 +3359,7 @@ class Settings:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/skills/
+            Path to `{DEEPAGENTS_HOME}/{agent_name}/skills/`.
         """
         return self.get_agent_dir(agent_name) / "skills"
 
@@ -3370,7 +3370,7 @@ class Settings:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/skills/
+            Path to `{DEEPAGENTS_HOME}/{agent_name}/skills/`.
         """
         skills_dir = self.get_user_skills_dir(agent_name)
         skills_dir.mkdir(parents=True, exist_ok=True)
@@ -3407,7 +3407,7 @@ class Settings:
             agent_name: Name of the agent (e.g., "deepagents")
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/agents/
+            Path to `{DEEPAGENTS_HOME}/{agent_name}/agents/`.
         """
         return self.get_agent_dir(agent_name) / "agents"
 

@@ -725,7 +725,7 @@ class TestOffloadFallbackRoot:
         root = tmp_path / ".deepagents"
         root.mkdir(mode=0o755)
         root.chmod(0o755)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: root)
 
         assert _offload_fallback_root() == root
         # The shared config root's permissions are left untouched.
@@ -735,12 +735,12 @@ class TestOffloadFallbackRoot:
         assert archive_dir.is_dir()
         assert stat.S_IMODE(archive_dir.stat().st_mode) == 0o700
 
-    def test_fallback_root_uses_deepagents_home_override(
+    def test_fallback_root_uses_launch_profile(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Persistent history follows `DEEPAGENTS_HOME`."""
+        """Persistent history follows the captured launch profile."""
         root = tmp_path / "custom-home"
-        monkeypatch.setenv("DEEPAGENTS_HOME", str(root))
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: root)
 
         assert _offload_fallback_root() == root
         assert (root / "conversation_history").is_dir()
@@ -758,7 +758,7 @@ class TestOffloadFallbackRoot:
         getuid = getattr(os, "getuid", None)
         uid = getuid() if getuid is not None else os.getpid()
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: home_root)
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
 
@@ -790,7 +790,7 @@ class TestOffloadFallbackRoot:
             side_effect=[PermissionError("read-only home"), nullcontext()]
         )
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: home_root)
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
         monkeypatch.setattr(offload, "_UNIQUE_OFFLOAD_FALLBACK_ROOT", None)
@@ -834,7 +834,7 @@ class TestOffloadFallbackRoot:
                 return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid + 1)
             return info
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: home_root)
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
         monkeypatch.setattr(Path, "lstat", fake_lstat)
@@ -868,7 +868,7 @@ class TestOffloadFallbackRoot:
         # subdir is rejected by S_ISDIR before the user dir is probed.
         probe = MagicMock(return_value=nullcontext())
 
-        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: base)
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
 
@@ -895,7 +895,7 @@ class TestOffloadFallbackRoot:
         archive_dir = root / "conversation_history"
         archive_dir.mkdir(mode=0o755)
         archive_dir.chmod(0o755)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: root)
 
         assert _offload_fallback_root() == root
         assert stat.S_IMODE(archive_dir.stat().st_mode) == 0o700
@@ -912,8 +912,9 @@ class TestDeleteOffloadedHistory:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The per-thread archive under `~/.deepagents` is removed."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        archive_dir = tmp_path / ".deepagents" / "conversation_history"
+        profile_root = tmp_path / ".deepagents"
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: profile_root)
+        archive_dir = profile_root / "conversation_history"
         archive_dir.mkdir(parents=True)
         archive = archive_dir / "thread-1.md"
         archive.write_text("history")
@@ -940,7 +941,7 @@ class TestDeleteOffloadedHistory:
             side_effect=[PermissionError("read-only home"), nullcontext()]
         )
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: home_root)
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
         monkeypatch.setattr(offload, "_UNIQUE_OFFLOAD_FALLBACK_ROOT", None)
@@ -958,7 +959,8 @@ class TestDeleteOffloadedHistory:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Deleting a thread with no archive reports nothing removed."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        profile_root = tmp_path / ".deepagents"
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: profile_root)
 
         assert delete_offloaded_history("thread-1") is False
 
@@ -966,7 +968,8 @@ class TestDeleteOffloadedHistory:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An empty thread id never touches the filesystem."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        profile_root = tmp_path / ".deepagents"
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: profile_root)
 
         assert delete_offloaded_history("") is False
 
@@ -974,9 +977,10 @@ class TestDeleteOffloadedHistory:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A failing `unlink` is logged and reported as nothing removed."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        profile_root = tmp_path / ".deepagents"
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: profile_root)
         monkeypatch.setattr(offload, "_UNIQUE_OFFLOAD_FALLBACK_ROOT", None)
-        archive_dir = tmp_path / ".deepagents" / "conversation_history"
+        archive_dir = profile_root / "conversation_history"
         archive_dir.mkdir(parents=True)
         archive = archive_dir / "thread-1.md"
         archive.write_text("history")
@@ -1004,11 +1008,12 @@ class TestDeleteOffloadedHistory:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A crafted thread id cannot escape the archive directory."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        (tmp_path / ".deepagents" / "conversation_history").mkdir(parents=True)
+        profile_root = tmp_path / ".deepagents"
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: profile_root)
+        (profile_root / "conversation_history").mkdir(parents=True)
         # A relative escape resolves to `.deepagents/config.md`, so a decoy there
         # is load-bearing: were the guard removed, `unlink` would delete it.
-        relative_decoy = tmp_path / ".deepagents" / "config.md"
+        relative_decoy = profile_root / "config.md"
         relative_decoy.write_text("secret")
         # An absolute thread id resets the join, escaping the archive tree
         # entirely; place its decoy where that reset lands.

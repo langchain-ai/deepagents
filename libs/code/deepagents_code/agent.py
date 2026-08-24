@@ -68,6 +68,7 @@ from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
     _GlmTerminalStallRecovery,
 )
+from deepagents_code._paths import PATHS
 from deepagents_code._repository_bounds import (
     REPOSITORY_GREP_MATCH_LIMIT,
     REPOSITORY_TOOL_CALL_LIMIT,
@@ -1255,10 +1256,13 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
 
             write_json("list", [])
             return
+        from rich.markup import escape as escape_markup
+
+        agents_display = escape_markup(PATHS.display(agents_dir))
         console.print("[yellow]No agents found.[/yellow]")
         console.print(
-            "[dim]Agents will be created in ~/.deepagents/ "
-            "when you first use them.[/dim]",
+            f"[dim]Agents will be created in {agents_display} when you first "
+            "use them.[/dim]",
             style=theme.MUTED,
         )
         return
@@ -1528,7 +1532,7 @@ def get_system_prompt(
     prompt_dir = Path(__file__).parent
     template = (prompt_dir / "system_prompt.md").read_text()
 
-    skills_path = f"~/.deepagents/{assistant_id}/skills"
+    skills_path = PATHS.display(PATHS.profile.agent_skills_dir(assistant_id))
 
     if interactive:
         mode_description = "an interactive TUI on the user's computer"

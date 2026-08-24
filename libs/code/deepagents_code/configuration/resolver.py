@@ -413,12 +413,23 @@ def get_config_resolver(
     """Return the shared process resolver for the active config paths.
 
     Args:
-        refresh_managed: Re-read all providers on an existing matching resolver.
-        managed_snapshot: Already refreshed and validated managed snapshot. Passing
-            it keeps a reload on one managed-file generation.
+        refresh_managed: Refresh the user and environment tiers on an existing
+            matching resolver. The managed tier is not re-read: it is replaced
+            with the snapshot the caller already validated, so one reload
+            observes one managed-file generation.
+        managed_snapshot: Already refreshed and validated managed snapshot.
+            Supplies the cache key, and builds the resolver when the cache
+            misses. On a cache hit it is installed only when `refresh_managed`
+            is set -- without it the resolver keeps the generation it is
+            already serving, so the snapshot must be that same generation.
 
     Returns:
         Resolver shared by consumers of the active managed and user paths.
+
+    Raises:
+        ValueError: If `managed_snapshot` is a different generation than the
+            one already installed and `refresh_managed` is not set. The
+            snapshot would otherwise be discarded in silence.
     """
     from deepagents_code.configuration.providers import TomlFileProvider
     from deepagents_code.configuration.service import get_managed_snapshot
@@ -444,19 +455,34 @@ def get_config_resolver(
             _resolver_cache.entry = (key, resolver)
             return resolver
         resolver = entry[1]
-        if refresh_managed:
-            resolver.reload_with_replacements(
-                {
-                    MANAGED_RANK: TomlFileProvider(
-                        managed.status.name,
-                        managed.status.path,
-                        MANAGED_RANK,
-                        True,
-                        managed,
-                        _reload_enforceable_managed_snapshot,
+        if not refresh_managed:
+            # A caller that hands over a snapshot and does not ask for a
+            # refresh is telling the resolver to keep serving what it has, so
+            # the two must already agree. They do today -- the preview path
+            # takes its snapshot with `refresh=False`, which returns the
+            # cached one -- but nothing in the signature says so, and the
+            # alternative is discarding a validated generation in silence.
+            if managed_snapshot is not None:
+                installed = resolver.toml_snapshot(MANAGED_RANK)
+                if installed is not None and installed != managed_snapshot:
+                    msg = (
+                        "managed_snapshot is a different generation than the "
+                        "one in force; pass refresh_managed=True to install it"
                     )
-                }
-            )
+                    raise ValueError(msg)
+            return resolver
+        resolver.reload_with_replacements(
+            {
+                MANAGED_RANK: TomlFileProvider(
+                    managed.status.name,
+                    managed.status.path,
+                    MANAGED_RANK,
+                    True,
+                    managed,
+                    _reload_enforceable_managed_snapshot,
+                )
+            }
+        )
         return resolver
 
 

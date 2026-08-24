@@ -544,6 +544,51 @@ def test_real_manifest_options_merge_across_tiers() -> None:
     assert set(columns.value) == {"title", "summary"}
 
 
+def test_an_ignored_managed_snapshot_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A snapshot that would be discarded must fail loudly instead.
+
+    `managed_snapshot` is honored on a cache miss and installed on a refresh,
+    but a cache hit without `refresh_managed` keeps the generation already in
+    force. That is correct for the preview path, which passes the snapshot it
+    is already enforcing -- and silently wrong for anyone who passes a newer
+    one and expects it to take effect.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import resolver as resolver_module, service
+    from unit_tests.conftest import redirect_managed_config
+
+    managed_path = tmp_path / "managed.toml"
+    managed_path.write_text('startup.mode = "manual"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed_path)
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(
+        resolver_module, "_resolver_cache", resolver_module._ResolverCache()
+    )
+    service.invalidate_config_sources()
+    try:
+        # Populate the cache, then offer a different generation without asking
+        # for it to be installed.
+        resolver_module.get_config_resolver()
+        newer = TomlSnapshot(
+            {"startup": {"mode": "auto"}},
+            ProviderStatus("managed config", managed_path, ProviderHealth.OK),
+        )
+
+        with pytest.raises(ValueError, match="different generation"):
+            resolver_module.get_config_resolver(managed_snapshot=newer)
+
+        # The same generation is what the preview path passes, and it is fine.
+        installed = resolver_module.get_config_resolver().toml_snapshot(MANAGED_RANK)
+        assert installed is not None
+        assert (
+            resolver_module.get_config_resolver(managed_snapshot=installed) is not None
+        )
+    finally:
+        service.invalidate_config_sources()
+
+
 def _nest(keys: tuple[str, ...], value: object) -> dict[str, Any]:
     """Wrap `value` in the nested tables named by a manifest option's keys."""
     nested: dict[str, Any] = {keys[-1]: value}

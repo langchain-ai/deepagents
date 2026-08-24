@@ -1,5 +1,6 @@
 """Tests for resume-state persistence and token display callbacks."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast, get_type_hints
 
@@ -374,11 +375,13 @@ class TestCostDisplayCallbacks:
         assert app._displayed_cost_usd == pytest.approx(1.25)
 
     def test_cost_threshold_warns_once_per_thread(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        monkeypatch.setattr(
-            "deepagents_code.config_manifest.load_config_toml",
-            lambda: {"warnings": {"session_cost_threshold_usd": 1.0}},
+        # `DeepAgentsApp` reads the threshold through the shared resolver, whose
+        # user tier is the `DEFAULT_CONFIG_PATH` file `_isolate_state_dir`
+        # redirects under `tmp_path`.
+        (tmp_path / "config.toml").write_text(
+            "[warnings]\nsession_cost_threshold_usd = 1.0\n", encoding="utf-8"
         )
         app = DeepAgentsApp()
         notifications: list[str] = []

@@ -1034,6 +1034,29 @@ def clear_caches() -> None:
     _ollama_model_profiles_cache.clear()
     _profiles_cache = None
     _profiles_override_cache = None
+    # The thread config cache holds `[threads]` from the same file. Its read
+    # path deliberately has no invalidator (see `load_thread_config`), so
+    # `/reload` is the only thing that picks up a hand edit -- dropping this
+    # call left one cache serving the pre-reload file for the process lifetime.
+    invalidate_thread_config_cache()
+
+
+def _invalidate_config_caches(config_path: Path) -> None:
+    """Drop cached views of `config.toml` after a committed write.
+
+    Two caches hold the file: this module's `[models]` snapshot, and the shared
+    process resolver every manifest reader resolves against. A writer that
+    clears only the first leaves the resolver serving the pre-write generation
+    for the life of the process, so the saved preference never takes effect.
+
+    Args:
+        config_path: Path the caller just wrote.
+    """
+    global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    _default_config_cache = None
+    from deepagents_code.configuration.writer import refresh_shared_resolver
+
+    refresh_shared_resolver(config_path)
     invalidate_thread_config_cache()
 
 
@@ -3470,9 +3493,7 @@ def _save_toml_field(
         logger.exception("Could not save %s.%s preference", section, field)
         return False
     else:
-        # Invalidate config cache so the next load() picks up the change.
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 
@@ -3676,8 +3697,7 @@ def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
         logger.exception("Could not clear models.%s preference", field)
         return False
     else:
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 
@@ -3851,12 +3871,7 @@ def _update_effort_for_model(
         )
         return False
     else:
-        # `_default_config_cache` holds only the `[models]` table (default /
-        # recent / providers), never `[effort]`, so this write cannot stale it.
-        # Invalidating anyway is defensive parity with the other config writers
-        # (`_save_toml_field`, `clear_default_model`, ...) that share the file.
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 
@@ -4009,6 +4024,7 @@ def suppress_warning_reason(key: str, config_path: Path | None = None) -> str | 
     except OSError:
         logger.exception("Could not save warning suppression for '%s'", key)
         return f"{config_path} could not be written"
+    _invalidate_config_caches(config_path)
     return None
 
 
@@ -4074,6 +4090,7 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not remove warning suppression for '%s'", key)
         return False
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5339,6 +5356,7 @@ def add_enabled_project_mcp_servers(
             "Could not save enabled project MCP servers to %s", config_path
         )
         return False
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5518,6 +5536,7 @@ def save_thread_columns(
         logger.exception("Could not save thread column preferences")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5581,6 +5600,7 @@ def save_thread_relative_time(enabled: bool, config_path: Path | None = None) ->
         logger.exception("Could not save thread relative_time preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5809,6 +5829,7 @@ def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> 
         logger.exception("Could not save thread sort_order preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5858,6 +5879,7 @@ def save_thread_scope(scope: str, config_path: Path | None = None) -> bool:
         logger.exception("Could not save thread scope preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -6070,8 +6092,7 @@ def clear_default_agent(config_path: Path | None = None) -> bool:
         logger.exception("Could not clear default agent preference")
         return False
     else:
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 

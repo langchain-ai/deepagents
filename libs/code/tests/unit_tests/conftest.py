@@ -10,13 +10,14 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Generator, Iterator
+    from collections.abc import Callable, Coroutine, Generator, Iterator, Mapping
     from pathlib import Path
 
     from textual.pilot import Pilot
     from textual.screen import Screen
 
     from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.config_manifest import ConfigOption
 
 
 class DrainModalCommands(Protocol):
@@ -815,3 +816,41 @@ def _close_leaked_debug_handlers() -> None:
     variant would reintroduce them for the import-time handler nobody owns.
     """
     _sweep_debug_handlers()
+
+
+def resolve_option_for_test(
+    option: ConfigOption,
+    *,
+    toml_data: dict[str, Any],
+    managed_toml_data: dict[str, Any] | None = None,
+) -> tuple[Any, str]:
+    """Resolve `option` through production code, returning `(value, source)`.
+
+    Stand-in for the retired `resolve_scalar` wrapper. It delegates to
+    `_resolve_option` rather than rebuilding the resolver, so the assertions
+    that ride on it -- especially the `caplog` ones -- exercise the shipped
+    resolution and diagnostics path instead of a copy maintained in the test
+    suite. Three modules kept private copies that did rebuild it, which left
+    roughly forty logging assertions verifying test scaffolding.
+
+    Args:
+        option: Manifest option to resolve.
+        toml_data: User `config.toml` table for this resolution.
+        managed_toml_data: Managed table. Omit for the process snapshot, which
+            `_isolate_managed_config` points at an absent file and
+            `redirect_managed_config` repoints per test.
+
+    Returns:
+        The resolved value and its compatibility source label.
+    """
+    from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
+        _resolve_option,
+    )
+
+    resolved = _resolve_option(
+        option, toml_data=toml_data, managed_toml_data=managed_toml_data
+    )
+    _emit_ranked_diagnostics(option, resolved)
+    return resolved.value, _ranked_source(resolved)

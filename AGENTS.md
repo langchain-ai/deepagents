@@ -1,463 +1,157 @@
 # Global development guidelines for the Deep Agents monorepo
 
-This document provides context to understand the Deep Agents Python project and assist with development.
+This file contains repository-wide rules for agents and contributors. Use these sources for details instead of duplicating them here:
 
-For environment setup, pre-commit installation, and the standard edit-test-lint loop, see [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md). The rest of this document covers conventions and architecture reference.
+- [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md) — repository layout, setup, commands, pre-commit, the edit-test-lint loop, testing, and benchmarks.
+- [`libs/ARCHITECTURE.md`](libs/ARCHITECTURE.md) — runtime structure and SDK starting points.
+- [`.github/RELEASING.md`](.github/RELEASING.md) — releases, version lines, fan-out, CI labels, and troubleshooting.
+- [LangChain contributing guide](https://docs.langchain.com/oss/python/contributing/overview) — general contribution policy.
 
-## Project architecture and context
+<corridor>
 
-### Monorepo structure
+## Corridor security analysis
 
-This is a Python monorepo with multiple independently versioned packages:
+When Corridor's `analyzePlan` tool is available, create a plan and use the tool to analyze it before generating or modifying code. Apply the resulting security guidance before writing code.
 
-```txt
-deepagents/
-├── libs/
-│   ├── deepagents/  # SDK
-│   ├── cli/         # CLI tool
-│   ├── acp/         # Agent Context Protocol support
-│   ├── evals/       # Evaluation suite and Harbor integration
-│   └── partners/    # Integration packages
-│       └── daytona/
-│       └── ...
-├── .github/         # CI/CD workflows and templates
-└── README.md        # Information about Deep Agents
-```
+</corridor>
 
-### Development tools & commands
+## Development workflow
 
-- `uv` – Package installer and resolver (replaces pip/poetry)
-- `make` – Task runner. Look at the `Makefile` for available commands and usage patterns.
-- `ruff` – Linter and formatter
-- `ty` – Static type checking
+Work inside the package you are changing; [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md) covers environment setup (`uv`, `make`) and the edit-test-lint loop.
 
-Local development uses editable installs: `[tool.uv.sources]`
+Do not add dependencies unless required. When adding one, justify its maintenance, adoption, and release activity.
 
-```bash
-# Run unit tests (no network)
-make test
+### Suppressing ruff rules
 
-# Run specific test file
-uv run --group test pytest tests/unit_tests/test_specific.py
-```
+Use inline `# noqa: RULE` with a justification for individual exceptions. Reserve `[tool.ruff.lint.per-file-ignores]` for categorical policies that apply to a whole class of files, such as tests not requiring docstrings. Do not hide a single violation with a file-wide ignore. If you cannot justify a suppression, the code is probably the problem. See [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md#suppressing-ruff-rules) for worked examples.
 
-```bash
-# Lint code
-make lint
+## PR conventions
 
-# Format code
-make format
-```
+### Titles and scope
 
-#### Environment and dependency management
+Follow Conventional Commits and include a scope. Allowed types and scopes are defined in `.github/workflows/pr_lint.yml`.
 
-Use `uv` for all environment and dependency operations in this monorepo. Do not invoke `pip`, `poetry`, or `conda` directly.
-
-- Let `uv` manage the interpreter and virtual environments — `uv sync` and `uv run` operate without manual `source .venv/bin/activate`. Do not create ad-hoc virtual environments outside the package directory.
-- Each package targets its own supported Python range via its `pyproject.toml`; do not pin a global Python version. If you need an interpreter explicitly, defer to the package's `requires-python` rather than assuming system Python.
-- Install dependencies explicitly through `uv sync` (optionally `--group <name>` / `--all-groups`); never let them install implicitly.
-- Don't mix environments within a session, and don't add new dependencies unless strictly required — when you do, justify them (recent releases/commits, adoption).
-
-#### Suppressing ruff lint rules
-
-Prefer inline `# noqa: RULE` over `[tool.ruff.lint.per-file-ignores]` for individual exceptions. `per-file-ignores` silences a rule for the *entire* file — If you add it for one violation, all future violations of that rule in the same file are silently ignored. Inline `# noqa` is precise to the line, self-documenting, and keeps the safety net intact for the rest of the file. Add comments to justify silencing. If you can't make a good justification for the ignore, it is probably code smell and should be re-evaluated.
-
-Reserve `per-file-ignores` for **categorical policy** that applies to a whole class of files (e.g., `"tests/**" = ["D1", "S101"]` — tests don't need docstrings, `assert` is expected). These are not exceptions; they are different rules for a different context.
-
-```toml
-# GOOD – categorical policy in pyproject.toml
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D1", "S101"]
-
-# BAD – single-line exception buried in pyproject.toml
-"deepagents_cli/agent.py" = ["PLR2004"]
-```
-
-```python
-# GOOD – precise, self-documenting inline suppression
-timeout = 30  # noqa: PLR2004  # default HTTP timeout, not arbitrary
-```
-
-#### PR and commit titles
-
-Follow Conventional Commits. See `.github/workflows/pr_lint.yml` for allowed types and scopes. All titles must include a scope with no exceptions.
-
-- Start the text after `type(scope):` with a lowercase letter, unless the first word is a proper noun (e.g. `Azure`, `GitHub`, `OpenAI`) or a named entity (class, function, method, parameter, or variable name).
-- Wrap named entities in backticks so they render as code. Proper nouns are left unadorned.
-- Keep titles short and descriptive — save detail for the body.
-- Do not include Linear issue-closing markers such as `[closes DCD-52]` in PR titles. Put issue references and closing metadata in the PR description instead.
-- For version-branch sync PRs, use a title like `chore(repo): sync main into vX.Y`. Do not use `release` as the scope; PR title lint reserves `release` for the type and disallows it as a scope.
-- **One PR = one releasable component.** release-please scopes commits by **changed file path**, not title scope. A bump-worthy title (`feat`/`fix`/etc.) that touches files under multiple managed packages opens a **separate release PR per package**. Keep the user-facing change in a single package-scoped PR; ship cross-package dependency / lockfile churn as a separate `chore(deps):` PR (`chore` is hidden and does not cut releases). See [Multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [Lockfile churn fan-out](.github/RELEASING.md#lockfile-churn-fan-out).
-
-Examples:
-
-```txt
-feat(sdk): add new chat completion feature
-fix(cli): resolve type hinting issue
-chore(evals): update infrastructure dependencies
-test(cli): missing unit tests for `_git`
-feat(cli): `--startup-cmd` flag
-style(cli): strip trailing annotations from `ask_user` questions
-```
-
-See [PR labeling and linting](#pr-labeling-and-linting) for more info.
-
-#### Branch naming
-
-Branches should be prefixed `<github-username>/<scope>/<short-description>`:
-
-- `<github-username>` — the author's GitHub login (e.g. `mdrxy`).
-- `<scope>` — the same scope used in the Conventional Commit title (`sdk`, `cli`, `code`, `evals`, `acp`, partner name, `infra`, `docs`).
-- `<short-description>` — kebab-case, brief, no trailing slash.
-
-Examples:
-
-```txt
-mdrxy/sdk/concrete-toolruntime-middleware-tools
-mdrxy/code/help-screen-drift-test
-mdrxy/cli/startup-cmd-flag
-```
-
-#### PR descriptions
-
-Do not add a `# Summary`, `## Release note`, or `## Release Note` heading. The plain paragraph above `---` *is* the release note — never restate that same idea later under a heading. Use an opening block ("frontmatter") in this order:
-
-```md
-Closes #123
-
-A high-level, plain-English summary of the user-visible change.
-
----
-
-<rest of PR body>
-```
-
-Bad example (do not do this — the opening paragraph already covers the user-visible change):
-
-```md
-Resume hints now echo the launched command name instead of always printing `dcode`.
-
----
-
-<details about motivation>
-
-## Release Note
-
-Resume hints now echo the launched command name instead of always printing `dcode`.
-```
-
-- The issue or PR relationship line is optional. Use the appropriate keyword, such as `Fixes`, `Closes`, `Resolves`, `Supersedes`, `Depends on`, or `Related`. Only `Closes`, `Fixes`, and `Resolves` auto-close the referenced GitHub issue on merge.
-- For net new features or behavior-changing bugfixes, put one high-level plain-English summary of the user-visible change in the opening block only (no label or heading). That text is the release note; do not duplicate it below `---` or under any `Release note` / `Release Note` heading. Omit the opening summary for chores, refactors, or test-only changes.
-- Below `---`, explain the *why*: the motivation and why this solution is the right one. Limit prose. Do not repeat the opening summary.
-- Write for readers who may be unfamiliar with this area of the codebase. Avoid insider shorthand and prefer language that is friendly to public viewers — this aids interpretability.
-- Do **not** cite line numbers; they go stale as soon as the file changes.
-- Rarely include full file paths or filenames. Reference the affected symbol, class, or subsystem by name instead.
+- Start the text after `type(scope):` with a lowercase letter unless it begins with a proper noun or named code entity.
 - Wrap class, function, method, parameter, and variable names in backticks.
-- Do not include a dedicated "Test plan" or "Testing" section unless the PR is large or the changes are highly consequential. When one is warranted, keep it collapsed with GitHub's `<details>` and `<summary>` elements:
+- Do not put Linear issue-closing markers in titles; put issue relationships in the PR body.
+- For version-branch syncs, use `chore(repo): sync main into vX.Y`; `release` is a type, not a scope.
+- Keep each bump-worthy PR to one releasable component. Put cross-package dependency or lockfile churn in a separate `chore(deps):` PR. See [multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [lockfile churn fan-out](.github/RELEASING.md#lockfile-churn-fan-out).
 
-  ```html
-  <details>
-  <summary>Test plan</summary>
+### Branch naming
 
-  - Describe the verification performed.
+Name branches `<github-username>/<scope>/<short-description>`, where the description is brief kebab-case. Use the same scope as the PR title, except documentation-only branches may use the branch-only `docs` scope.
 
-  </details>
-  ```
-- Call out areas of the change that require careful review.
+### PR bodies
+
+Follow [the PR template](.github/PULL_REQUEST_TEMPLATE.md).
+
+- An issue relationship line is optional; only `Closes`, `Fixes`, and `Resolves` auto-close issues.
+- For features and behavior-changing fixes, place one plain-English user-visible summary above `---`. It is the release note; do not add a release-note heading or repeat it below the divider. Omit it for chores, refactors, and test-only changes.
+- Below `---`, explain why the change is needed and why the approach is appropriate. Keep prose concise and public-reader friendly.
+- Do not cite line numbers. Prefer symbols or subsystems over full paths, and format code entities with backticks.
+- Add a collapsed test plan only for large or consequential changes. Call out areas needing careful review.
 
 ## Core development principles
 
-### Maintain stable public interfaces
+### Public interfaces
 
-CRITICAL: Always attempt to preserve function signatures, argument positions, and names for exported/public methods. Do not make breaking changes.
+Preserve exported function signatures, argument positions, and names. Before changing a public API:
 
-You should warn the developer for any function signature changes, regardless of whether they look breaking or not.
+- Check exports in `__init__.py` and usage in tests and examples.
+- Add new parameters as keyword-only with defaults.
+- Mark experimental features with MkDocs Material docstring warnings.
+- Warn the developer about any signature change, even if it appears compatible.
 
-**Before making ANY changes to public APIs:**
+### Code and documentation
 
-- Check if the function/class is exported in `__init__.py`
-- Look for existing usage patterns in tests and examples
-- Use keyword-only arguments for new parameters: `*, new_param: str = "default"`
-- Mark experimental features clearly with docstring warnings (using MkDocs Material admonitions, like `!!! warning`)
+- Add type hints and return types to Python code. Avoid `Any`; use a precise type and follow local patterns.
+- Use Google-style docstrings for public functions ([template](libs/DEVELOPMENT.md#docstrings)). Put types in signatures, not docstrings; do not repeat defaults unless post-processing or conditional behavior changes them.
+- Document public parameters, return values, and exceptions concisely, focusing on why rather than restating code.
+- Use American English and single backticks for inline code; do not use Sphinx-style double backticks.
+- Use descriptive variable names. Prefer a single word when it reads clearly.
+- Keep functions under about 20 lines. Split a longer one into focused helpers.
+- Build error text in a `msg` variable and raise with it, matching the surrounding code.
+- Remove unreachable or commented-out code before committing.
 
-Ask: "Would this change break someone's code if they used it last week?"
+When adding or updating model names in docs, examples, or defaults, verify the latest generally available IDs in the provider's official documentation. Do not rely on remembered model names.
 
-### Code quality standards
+### Testing
 
-All Python code MUST include type hints and return types.
+Every feature or bugfix needs unit coverage.
 
-```python title="Example"
-def filter_unknown_users(users: list[str], known_users: set[str]) -> list[str]:
-    """Single line description of the function.
-
-    Any additional context about the function can go here.
-
-    Args:
-        users: List of user identifiers to filter.
-        known_users: Set of known/valid user identifiers.
-
-    Returns:
-        List of users that are not in the `known_users` set.
-    """
-```
-
-- Use descriptive, self-explanatory variable names.
-- Follow existing patterns in the codebase you're modifying
-- Attempt to break up complex functions (>20 lines) into smaller, focused functions where it makes sense
-- Avoid using the `any` type
-- Prefer single word variable names where possible
-
-### Testing requirements
-
-Every new feature or bugfix MUST be covered by unit tests.
-
-- Unit tests: `tests/unit_tests/` (no network calls allowed)
-- Integration tests: `tests/integration_tests/` (network calls permitted)
-- We use `pytest` as the testing framework; if in doubt, check other existing tests for examples.
-- Do NOT add `@pytest.mark.asyncio` to async tests — every package sets `asyncio_mode = "auto"` in `pyproject.toml`, so pytest-asyncio discovers them automatically.
-- The testing file structure should mirror the source code structure.
-- Avoid mocks as much as possible
-- Test actual implementation, do not duplicate logic into tests
-
-Ensure the following:
-
-- Does the test suite fail if your new logic is broken?
-- Edge cases and error conditions are tested
-- Tests are deterministic (no flaky tests)
+- Put network-free tests in `tests/unit_tests/` and networked tests in `tests/integration_tests/`.
+- Do not add `@pytest.mark.asyncio`; packages use `asyncio_mode = "auto"`.
+- Test behavior rather than duplicating implementation logic. Cover edge cases and keep tests deterministic.
 
 #### Warnings are errors
 
-Every package under `libs/` puts `"error"` first in its pytest `filterwarnings`, so any warning the repo has not explicitly accepted fails the run. The entries after `"error"` are the reviewed allowlist.
+All packages treat unaccepted pytest warnings as errors. Fix actionable warnings before adding filters. See [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md#warnings-fail-the-suite) for how a stray warning surfaces and for the `bypass-warnings-check` label.
 
-- Fix actionable warnings first; an allowlist entry is the last resort, not the default.
-- When one test deliberately emits a warning, scope the exception to it with `@pytest.mark.filterwarnings("ignore:<message>:<category>")` instead of a package-level entry.
-- Reserve package-level entries for categorical or third-party warnings nothing in the repo can act on. Each one needs a justification comment; when the filter is message-scoped, the prefix must be narrow enough to not swallow adjacent warnings.
-- Prefer `default::` over `ignore::` when the category is one that reports failures Python otherwise swallows (`PytestUnhandledThreadExceptionWarning`, `PytestUnraisableExceptionWarning`). `ignore` deletes the report, so an assertion failing inside a worker thread would pass silently; `default` keeps it printed without failing the run.
-- Warning filter specs split on `:`, so end the message prefix before the first colon that appears in the warning text.
-- In `filterwarnings` ini entries the message field is an **unescaped regex** (unlike a command-line `-W`, which escapes it). Escape any `.`, `(`, or `+` you mean literally — an unescaped metacharacter can produce a filter that silently never matches.
-- A filter can be version-specific (e.g. only firing on Python 3.14); a filter that does not match anything is harmless.
+Keep this heading stable: package `pyproject.toml` comments cite it by name.
 
-Three failure modes to expect: a warning inside a test fails that test, one during import fails collection, and one raised while pytest is *configuring* (typically from a plugin) aborts with `INTERNALERROR` — the last is the hardest to read from CI output. Warnings emitted while pytest loads its plugins, before the ini filters are installed, are not caught at all; do not assume a clean run proves a dependency is warning-free.
+- Scope an expected warning to the test with `@pytest.mark.filterwarnings`; reserve package-level entries for categorical or third-party warnings and justify them.
+- Prefer `default::` to `ignore::` for warnings such as `PytestUnhandledThreadExceptionWarning` and `PytestUnraisableExceptionWarning`, so failures remain visible.
+- Warning filter message fields in ini files are unescaped regexes. Escape literal metacharacters and stop message prefixes before warning-text colons.
+- Keep a message-scoped prefix narrow enough that it cannot swallow an adjacent warning.
+- A filter may be version-specific, such as one that only fires on Python 3.14. A filter that matches nothing is harmless.
 
-Maintainers can apply the `bypass-warnings-check` PR label and re-run failed jobs to run the suite with warnings demoted. This is an escape hatch for landing fixes under time pressure, not a permanent fix: merge queue runs enforce the policy again, so the warning must still be addressed or allowlisted. Two caveats on its reach:
+### Security and resources
 
-- It applies only to jobs that go through `_test.yml`. The `test-quickjs-sdk-smoke` job in `ci.yml` invokes pytest directly and has no bypass path.
-- Release runs (`release.yml`) always enforce, so a warning that only appears against the built wheel cannot be labeled past.
+Do not use `eval()`, `exec()`, or `pickle` on user-controlled input. Avoid bare `except:` blocks, clean up files, connections, sockets, and threads, and check changes for leaks or races.
 
-### Security and risk assessment
+## Repository routing
 
-- No `eval()`, `exec()`, or `pickle` on user-controlled input
-- Proper exception handling (no bare `except:`) and use a `msg` variable for error messages
-- Remove unreachable/commented code before committing
-- Race conditions or resource leaks (file handles, sockets, threads).
-- Ensure proper resource cleanup (file handles, connections)
+### SDK and dependencies
 
-### Documentation standards
-
-Use Google-style docstrings with Args section for all public functions.
-
-```python title="Example"
-def send_email(to: str, msg: str, *, priority: str = "normal") -> bool:
-    """Send an email to a recipient with specified priority.
-
-    Any additional context about the function can go here.
-
-    Args:
-        to: The email address of the recipient.
-        msg: The message body to send.
-        priority: Email priority level.
-
-    Returns:
-        `True` if email was sent successfully, `False` otherwise.
-
-    Raises:
-        InvalidEmailError: If the email address format is invalid.
-        SMTPConnectionError: If unable to connect to email server.
-    """
-```
-
-- Types go in function signatures, NOT in docstrings
-  - If a default is present, DO NOT repeat it in the docstring unless there is post-processing or it is set conditionally.
-- Focus on "why" rather than "what" in descriptions
-- Document all parameters, return values, and exceptions
-- Keep descriptions concise but clear
-- Ensure American English spelling (e.g., "behavior", not "behaviour")
-- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`code`) for inline code references in docstrings and comments.
-
-#### Model references in docs and examples
-
-Always use the latest generally available models when referencing LLMs in docstrings, examples, and default values. Outdated model names signal stale code and confuse users. Before writing or updating model references, look up the current model IDs from each provider's official docs (Anthropic, OpenAI, Google). Do not rely on memorized model names — they go stale quickly.
-
-## Package-specific guidance
-
-### Deep Agents SDK (`libs/deepagents/`)
-
-For SDK questions about `create_deep_agent`, middleware, tools, subagents, or agent construction, start in:
-
-- `libs/deepagents/deepagents/graph.py`
-  - `create_deep_agent` is the public construction entry point.
-  - It builds the Deep Agents middleware stack and delegates to `langchain.agents.create_agent(...)`.
-  - The final call currently happens near the end of `create_deep_agent`, followed by `.with_config(...)` for Deep Agents metadata and recursion config.
-- `libs/deepagents/deepagents/middleware/`
-  - Built-in Deep Agents middleware lives here.
-  - `subagents.py` handles subagent middleware and nested `create_agent` use.
-  - `filesystem.py`, `skills.py`, `memory.py`, `permissions.py`, and `summarization.py` are feature-specific middleware modules.
-- `libs/deepagents/tests/`
-  - Unit tests for SDK behavior.
-
-If investigating LangChain `create_agent` internals, Deep Agents usually delegates into LangChain rather than owning the graph node assembly itself. Resolve the installed dependency source directly rather than searching the whole repo.
+For SDK architecture and common starting points, use [`libs/ARCHITECTURE.md`](libs/ARCHITECTURE.md). Deep Agents delegates graph assembly to LangChain's `create_agent`; when investigating dependency internals, locate and read the installed dependency source directly.
 
 ### Search hygiene
 
-Avoid broad repo-level `glob` / `grep` for normal SDK work. This repo contains package `.venv`s, hidden worktrees, generated metadata, and scratch files that make broad searches noisy.
+Avoid broad repository searches during normal SDK work. Target these paths:
 
-Prefer targeted paths:
+- SDK source and tests: `libs/deepagents/deepagents`, `libs/deepagents/tests`
+- Coding agent: `libs/code`
+- Deployment CLI: `libs/cli`
+- ACP: `libs/acp`
+- Talon: `libs/talon`
+- Evals: `libs/evals`
+- Partner packages: `libs/partners/<partner>`
 
-- SDK source: `libs/deepagents/deepagents`
-- SDK tests: `libs/deepagents/tests`
-- Deep Agents Code/TUI package: `libs/code` (terminal coding agent)
-- CLI deploy package: `libs/cli`
-- ACP package: `libs/acp`
+Exclude package `.venv` directories, hidden worktrees, `deepagents.egg-info`, generated metadata, benchmark results, and scratch files unless needed. For dependency internals, find the exact environment file instead of searching all of `site-packages`.
 
-Avoid searching these unless explicitly needed:
+### Scoped guides
 
-- `.venv/`
-- `.worktrees/`
-- `.claude/worktrees/`
-- `deepagents.egg-info/`
-- benchmark result JSONs and scratch scripts at repo root
+- [`libs/code/AGENTS.md`](libs/code/AGENTS.md) — Textual, startup performance, slash commands, providers, and the SDK pin.
+- [`libs/evals/AGENTS.md`](libs/evals/AGENTS.md) — eval commands, reports, and Harbor integration.
+- [`libs/partners/AGENTS.md`](libs/partners/AGENTS.md) — partner-package CI and release wiring.
+- [`libs/code/DEVELOPMENT.md`](libs/code/DEVELOPMENT.md) — coding-agent setup and local development.
+- [`libs/cli/DEVELOPMENT.md`](libs/cli/DEVELOPMENT.md) — deployment-CLI setup and package layout.
+- [`.github/LAYOUT.md`](.github/LAYOUT.md) — map of CI workflows, composite actions, and labeling.
 
-For dependency internals, first locate the dependency file from the package environment, then read that exact file instead of grepping all `site-packages`.
-
-### Deep Agents Code (`libs/code/`)
-
-The `deepagents-code` package ships the interactive terminal coding agent, launched via the `dcode` console command (`dcode` is the short alias for `deepagents-code`).
-
-See `libs/code/AGENTS.md` for package-specific guidance — Textual, startup performance, slash commands, model providers, SDK pin, help-screen drift.
-
-### Deep Agents CLI (`libs/cli/`)
-
-As of `deepagents-cli==0.1.0` this package contains only the deployment subcommands — `init`, `dev`, and `deploy`. The interactive Textual REPL moved to `libs/code/` (`deepagents-code`); see [Deep Agents Code](#deep-agents-code-libscode) above for Textual/widget/slash-command guidance.
-
-#### Surface
-
-- Entry points: `deepagents` and `deepagents-cli` console scripts → `deepagents_cli.cli_main`.
-- Subcommands: `init` (scaffold project), `dev` (`langgraph dev` against a bundled project), `deploy` (`langgraph deploy` to LangGraph Platform).
-- Bare `deepagents` invocations print a deprecation notice pointing at `deepagents-code` and exit non-zero.
-
-#### Layout
-
-- `deepagents_cli/main.py` — argparse wiring + `cli_main` dispatch.
-- `deepagents_cli/deploy/` — the entire deploy/dev/init pipeline (`commands.py`, `bundler.py`, `config.py`, `templates.py`, `context_hub.py`, `frontend_dist/`).
-- `deepagents_cli/config.py` — slim `_load_dotenv` helper used by deploy/dev.
-- `deepagents_cli/model_config.py` — slim `resolve_env_var` helper for the `DEEPAGENTS_CLI_` env-var prefix.
-- `deepagents_cli/_version.py` — `__version__` (managed by release-please).
-
-Everything else (REPL widgets, Textual app, MCP, skills, sandbox bootstrap, agent picker, slash commands, splash tips, help-screen drift test, model-provider drift test, SDK-pin check) lived under `libs/cli/` before 0.1.0 and now lives under `libs/code/`.
-
-### Evals (`libs/evals/`)
-
-**Vendored data files:**
-
-`libs/evals/tests/evals/tau2_airline/data/` contains vendored data from the upstream [tau-bench](https://github.com/sierra-research/tau-bench) project. These files must stay byte-identical to upstream. Pre-commit hooks (`end-of-file-fixer`, `trailing-whitespace`, `fix-smartquotes`, `fix-spaces`) are excluded from this directory in `.pre-commit-config.yaml`. Do not remove those exclusions or reformat files in this directory.
+`deepagents-code` is the terminal coding agent launched by `dcode`. `deepagents-cli` contains the `init`, `deploy`, `agents`, and `mcp-servers` deployment commands.
 
 ### Benchmarks
 
-Each package's `Makefile` defines `bench` (walltime) and `bench-memory` (heap) targets that are the **single source of truth for the bench invocation** — both local runs and the reusable CI workflow (`.github/workflows/_benchmark.yml`) call these targets. To change how benchmarks are invoked, edit the Makefile; CI inherits the change automatically.
+Benchmarks live in `deepagents`, `code`, and `partners/quickjs`; other packages have no `bench` target. Use the package's `bench` and `bench-memory` Make targets rather than invoking pytest directly — they are the source of truth for local and CI invocation. See [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md#benchmarks) for commands, thresholds, dashboards, and the nightly sweep.
 
-**Run locally:**
+## CI and releases
 
-```bash
-# Single package (same target CI invokes):
-make -C libs/deepagents bench
-make -C libs/cli bench
+Use [`.github/RELEASING.md`](.github/RELEASING.md) for release-please behavior, version branches, changelog overrides, reverts, and release troubleshooting, including the CI guardrails that gate a release. Use [`.github/LAYOUT.md`](.github/LAYOUT.md) to find a workflow by what it does. Workflow files are authoritative for linting and labeling behavior.
 
-# All benched packages in one go:
-make -C libs bench-all
-
-# Existing `benchmark` target (no CodSpeed instrumentation, faster, suitable
-# for ad-hoc local tuning with pytest-benchmark):
-make -C libs/deepagents benchmark
-```
-
-The `bench` target adds `--codspeed`; the older `benchmark` target stays around for plain `pytest-benchmark` runs that don't need walltime profiling. `bench-memory` runs the `memory_benchmark`-marked subset and is gated in CI behind `has-memory-benchmarks: true` on the workflow input — currently set by `libs/partners/quickjs`.
-
-**Dashboard:** https://codspeed.io/langchain-ai/deepagents — separate views per package via the upper-left selector. PR comments with performance reports are posted by the CodSpeed GitHub App when it is enabled for the repository (independent of this workflow's configuration).
-
-**Regression thresholds:** currently 10% global, managed in the CodSpeed dashboard. Tighten per-benchmark thresholds for benches whose noise floor is well below 10% (e.g., the `create_deep_agent` construction benches in `libs/deepagents/tests/benchmarks/`) — wide thresholds will mask real regressions in tight code.
-
-**Nightly full sweep:** `.github/workflows/_benchmark_nightly.yml` runs every benched package on a daily cron without path gating, so baselines for unchanged packages don't drift. Use `workflow_dispatch` on that workflow for an ad-hoc full sweep before bumping `pytest-codspeed` or the `CodSpeedHQ/action` SHA.
-
-## CI/CD infrastructure
-
-### Release process
-
-Releases use **release-please** automation. When conventional commits land on `main`, release-please creates/updates a release PR with version bumps and CHANGELOG entries. Merging the release PR triggers `.github/workflows/release.yml` via `.github/workflows/release-please.yml`.
-
-The release pipeline: build → unit tests against built package → publish to Test PyPI → publish to PyPI (trusted publishing/OIDC) → create GitHub release.
-
-See `.github/RELEASING.md` for the full workflow (version bumping, pre-releases, troubleshooting failed releases, and label management).
-
-#### Overriding a merged commit's changelog entry
-
-See [Overriding a Merged Commit's Changelog Entry](.github/RELEASING.md#overriding-a-merged-commits-changelog-entry) in `RELEASING.md` for the workflow (when to use it, the block format, and the squash-merge caveats).
-
-#### Reverting a merged-but-unreleased PR
-
-See [Reverting a Merged-but-Unreleased PR](.github/RELEASING.md#reverting-a-merged-but-unreleased-pr) in `RELEASING.md` when a PR has landed on `main` but its `release(<component>): X.Y.Z` PR has not yet shipped. Covers the quiet path (override to `chore` + `chore` revert, so the entry never appears in the changelog) and the `revert:` audit-trail path.
-
-#### Developing a new version line
-
-See [Developing a new version line](.github/RELEASING.md#developing-a-new-version-line) in `RELEASING.md` before creating a version branch (e.g. staging `0.7` while `main` stays `0.6.x`, or maintaining `0.6.x` after `main` moves on). Branches must be named `vX.Y` to match the protection ruleset (CI-passing PRs required like `main`, but `v[0-9].*` additionally allows merge commits — `main` stays squash-only); release-please only runs on `main`; keep a staging branch current by opening forward-merge PRs from `main` (a merge commit, not squash), reserving cherry-pick for when the branch deliberately diverges; and the cutover is an admin merge-commit to `main` that preserves individual commits (don't squash) so the changelog stays itemized.
-
-### PR labeling and linting
-
-**Title linting** (`.github/workflows/pr_lint.yml`) – Enforces Conventional Commits format with required scope on PR titles
-
-**Release-please parse check** (`.github/workflows/release_please_parse_check.yml`) – Runs `@conventional-commits/parser` on the would-be squash-merge message (`<title> (#<num>)\n\n<body>`) at PR time. Fails the check and posts a sticky comment with a paste-ready `BEGIN_COMMIT_OVERRIDE` block when the parser would reject the body, preventing silent changelog drops. Mirrors release-please's `preprocessCommitMessage` and `splitMessages` so per-sub-message parse failures are caught the same way release-please catches them. The parser is exact-pinned (not a semver range) and must stay in lock-step with `release-please/package.json`.
-
-**Release-please fan-out guards** – `release_please_scope_check.yml` blocks bump-worthy PRs that touch real files in more than one managed component or only lockfiles inside a managed package; `release_fanout_bypass_warn.yml` posts a loud sticky when `allow-lockfile-release` / `allow-scope-mismatch` is applied; `release_please_fanout_watch.yml` is a post-merge safety net that comments on open release PRs whose package delta is lockfile-only. See [`.github/RELEASING.md`](./.github/RELEASING.md#multi-component-fan-out).
-
-**Auto-labeling:**
-
-- `.github/workflows/pr_labeler.yml` – Unified PR labeler (size, file, title, external/internal, contributor tier)
-- `.github/workflows/pr_labeler_backfill.yml` – Manual backfill of PR labels on open PRs
-- `.github/workflows/auto-label-by-package.yml` – Issue labeling by package
-- `.github/workflows/tag-external-issues.yml` – Issue external/internal classification and contributor tier labeling
-
-### Adding a new partner to CI
-
-When adding a new partner package, update these files:
-
-- `.github/ISSUE_TEMPLATE/bug-report.yml` – Add to Area checkbox options
-- `.github/ISSUE_TEMPLATE/feature-request.yml` – Add to Area checkbox options
-- `.github/ISSUE_TEMPLATE/privileged.yml` – Add to Area checkbox options
-- `.github/dependabot.yml` – Add dependency update directory
-- `.github/scripts/labeling/pr-labeler-config.json` – Add scope-to-label mapping and file rule
-- `.github/workflows/auto-label-by-package.yml` – Add package label mapping
-- `.github/workflows/ci.yml` – Add to change detection and lint/test jobs
-- `.github/workflows/pr_lint.yml` – Add to allowed scopes
-- `.github/workflows/release.yml` – Add to `package` input options and `setup` job mapping
-- `.github/workflows/release-please.yml` – Add release detection output and trigger job
-- `release-please-config.json` – Add package entry under `packages`
-- `.release-please-manifest.json` – Add the latest-released baseline; for a new package whose first release should be `0.0.1`, use `0.0.0`
-- `.github/RELEASING.md` – Add to Managed Packages table
-- `.github/workflows/harbor.yml` – Add sandbox option and credential check (sandbox-backed partners only)
-
-### GitHub Actions & Workflows
-
-This repository require actions to be pinned to a full-length commit SHA. Attempting to use a tag will fail. Use the `gh` cli to query. Verify tags are not annotated tag objects (which would need dereferencing).
+Pin GitHub Actions to full-length commit SHAs; a tag reference is rejected. Verify whether a tag is annotated and dereference it before using its commit. Use the `gh` CLI to resolve one.
 
 ## Additional resources
 
-- **Documentation:** https://docs.langchain.com/oss/python/deepagents/overview and source at https://github.com/langchain-ai/docs or `../docs/`. Prefer the local install and use file search tools for best results. If needed, use the docs MCP server as defined in `.mcp.json` for programmatic access.
-- **Contributing Guide:** [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview)
+- [Deep Agents documentation](https://docs.langchain.com/oss/python/deepagents/overview) — source lives in the `langchain-ai/docs` repo; a local checkout supports file search, and the docs MCP server is configured in `.mcp.json`
 
 <!-- OPENWIKI:START -->
 
 ## OpenWiki
 
-This repository uses OpenWiki for recurring code documentation. Start with `openwiki/quickstart.md`, then follow its links to architecture, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+This repository has a generated `openwiki/` evidence index. It is optional just-in-time context, not required startup reading.
+
+- Treat source code and tests as authoritative. A brief's unknowns and review items are verification gaps, not automatic requirements.
+- Prefer the narrowest quiet validation that proves the changed behavior. Preserve complete failure output.
 
 The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
 

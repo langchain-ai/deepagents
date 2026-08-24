@@ -12,6 +12,10 @@ Written from inside the graph on successful model turns:
     in use for the turn, written by `ConfigurableModelMiddleware` after a
     successful model call. Lets `dcode -r` restore the model the resumed thread
     was actually using instead of falling back to the user's global default.
+- `_last_model_request_at` / `_last_cache_model_spec` — UTC request-start time
+    and requested model identity captured by `ConfigurableModelMiddleware` and
+    committed only after that call succeeds. Lets the TUI detect when the
+    provider's reusable prompt prefix may be cold.
 
 Written through the main graph or by the TUI client via `aupdate_state` (see
 `DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned. Their
@@ -66,22 +70,14 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage
 
+from deepagents_code.goal_state_limits import GOAL_STATUS_VALUES, GoalStatus
+
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
-
-GoalStatus = Literal["active", "paused", "blocked", "complete"]
-"""Lifecycle status of a TUI-owned goal.
-
-`active` and `blocked` are unfinished working states, `paused` preserves the goal
-without driving work, and `complete` is terminal. A blocked goal is still
-considered actionable (`active=True`) by `get_goal`, whereas a paused goal is
-unfinished but reports `active=False`.
-"""
 
 GoalProposalKind = Literal["create", "amend"]
 """Whether a pending review creates a goal or amends the current one."""
 
-_GOAL_STATUS_VALUES: frozenset[str] = frozenset(get_args(GoalStatus))
 _GOAL_PROPOSAL_KIND_VALUES: frozenset[str] = frozenset(get_args(GoalProposalKind))
 
 
@@ -136,10 +132,16 @@ def coerce_goal_status(value: object) -> GoalStatus | None:
     string (or a non-string). Coercing to `None` rather than passing the raw
     value through keeps the `GoalStatus` `Literal` load-bearing on the read
     path, so an unknown status is treated as "no goal status" instead of a
-    silently active goal. Resume/restore callers should log the discard
-    separately so it is surfaced rather than dropped; the model-read path
-    (`_goal_snapshot`) intentionally treats an unknown status as `active`
-    without logging.
+    silently active goal. Resume/restore callers should log the discard separately
+    so it is surfaced rather than dropped.
+
+    The goal-state notice path does not use this helper: `project_goal_state`
+    normalizes separately, to keep `goal_state_notice` off this module's heavy
+    import chain. It fails closed the same way, degrading an unrecognized status
+    to `paused` so the notice cannot present a corrupt status as an actionable
+    goal, and logging the discard. Both read the vocabulary from
+    `GOAL_STATUS_VALUES` in `goal_state_limits`, so adding a member cannot make it
+    actionable in one place and unknown in the other.
 
     Args:
         value: Raw value read from checkpoint state.
@@ -147,7 +149,7 @@ def coerce_goal_status(value: object) -> GoalStatus | None:
     Returns:
         The value when it is a recognized `GoalStatus`, otherwise `None`.
     """
-    if isinstance(value, str) and value in _GOAL_STATUS_VALUES:
+    if isinstance(value, str) and value in GOAL_STATUS_VALUES:
         return cast("GoalStatus", value)
     return None
 
@@ -199,6 +201,27 @@ class ResumeState(GoalRubricChannels):
 
     _model_params: Annotated[NotRequired[dict[str, Any] | None], PrivateStateAttr]
     """Invocation params effectively in use for the latest turn."""
+
+    _last_model_request_at: Annotated[NotRequired[str], PrivateStateAttr]
+    """UTC request-start timestamp for the latest successful main-model call.
+
+    Must be written together with `_last_cache_model_spec` -- see that key. The
+    TypedDict cannot express the pairing, so `_checkpoint_command` is the only
+    writer and guards both behind one condition.
+    """
+
+    _last_cache_model_spec: Annotated[NotRequired[str], PrivateStateAttr]
+    """Requested model spec associated with `_last_model_request_at`.
+
+    Paired with the timestamp above: a timestamp with no identity reads back as
+    a permanent "model changed", and an identity with no timestamp reads back
+    as an unknown age. Duplicates `_model_spec` on every current write; it
+    exists separately so the cold-cache comparison is not coupled to whatever
+    else `_model_spec` comes to mean.
+    """
+
+    _last_cache_endpoint: Annotated[NotRequired[str], PrivateStateAttr]
+    """Normalized endpoint identity associated with `_last_model_request_at`."""
 
     _pending_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Goal objective awaiting acceptance of proposed criteria."""

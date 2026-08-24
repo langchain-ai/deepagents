@@ -43,6 +43,13 @@
 #   started. It diverges from `find_run_url` in one deliberate way: that
 #   helper takes only the most recent match, while this keeps every match.
 #
+#   The run's `display_title` normally carries the head commit's subject, but
+#   GitHub intermittently serves the workflow name instead (observed on the
+#   merged release PR run for `release(deepagents): 0.7.7`, whose title came
+#   back as `⚠️ (Automated) Release Please`). When the display title fails
+#   the release-title pattern and equals the workflow name exactly, the gate
+#   below retries the match against the head commit's subject line instead.
+#
 #   Runs are NOT matched on head SHA: `trigger-releases` dispatches with
 #   `gh workflow run --ref main`, so a dispatched run's head SHA is whatever
 #   main resolves to at dispatch time, which can drift from the merge commit
@@ -97,9 +104,9 @@ permissions:
   actions: read
   contents: read
   issues: write
-  # `/commits/{sha}/pulls` is a pull-requests-scoped endpoint, even though the
-  # comment itself goes through the issues API.
-  pull-requests: read
+  # `/commits/{sha}/pulls` needs read access; posting the outcome comment on the
+  # release PR needs write access, matching `trigger-releases` in release-please.yml.
+  pull-requests: write
 
 concurrency:
   # One comment attempt per completed release-please run; a rerun of this
@@ -172,6 +179,18 @@ jobs:
           # syntax error written inline, and quoting it inline would match it
           # verbatim instead of as a regex.
           title_re='^(release\([^)]+\): .+) \(#[0-9]+\)$'
+          if ! [[ "$run_display" =~ $title_re ]] && [ "$run_display" = "⚠️ (Automated) Release Please" ]; then
+            # GitHub intermittently serves the workflow name as
+            # `display_title` instead of the head commit's subject (see the
+            # header's "Matching" note). Fall back to the commit message,
+            # which is what `display_title` was supposed to render.
+            echo "::notice::display_title is the workflow name; falling back to the head commit subject for $run_sha."
+            run_display=$(
+              gh api "repos/${GITHUB_REPOSITORY}/commits/${run_sha}" \
+                --jq '.commit.message' | head -n 1
+            )
+            echo "Resolved title from commit: $run_display"
+          fi
           if ! [[ "$run_display" =~ $title_re ]]; then
             echo "::notice::Run title '$run_display' is not a merged release PR run; nothing to comment on."
             echo "skip=true" >> "$GITHUB_OUTPUT"

@@ -9,11 +9,12 @@ from typing import TYPE_CHECKING
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
+from textual.color import Color
 from textual.containers import Container
 from textual.widgets import Static
 from textual.widgets.text_area import Selection
 
-from deepagents_code import _textual_patches as _textual_patches
+from deepagents_code import _textual_patches as _textual_patches, theme
 from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.input import MediaTracker
 from deepagents_code.media_utils import ImageData, create_multimodal_content
@@ -240,6 +241,10 @@ class _ChatInputResizeTestApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static(id="spacer")
         yield ChatInput(id="chat-input")
+
+
+class _DispatchError(RuntimeError):
+    """Stand-in for a burst dispatch that raises (media decode, notify, ...)."""
 
 
 class _RecordingApp(App[None]):
@@ -569,20 +574,90 @@ class TestChatInputResize:
             assert text_area.size.height == 1
             assert text_area._settled_content_height() == _CHAT_INPUT_AUTO_MAX_HEIGHT
 
-    async def test_double_click_from_a_partial_manual_height_expands(self) -> None:
-        """A part-way manual height still expands rather than collapsing.
+    async def test_double_click_from_a_partial_manual_height_collapses(self) -> None:
+        """A part-way manual height collapses rather than expanding.
 
-        The toggle keys off "already at the maximum", so a drag of a row or two
-        -- including the incidental jitter of a real double-click -- cannot
-        invert what the next double-click means.
+        Deliberate: the gesture keys off whether a manual height is what pins
+        the composer, not off whether it reached the maximum, so one
+        double-click undoes any drag the user can see.
         """
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
             box = app.query_one(ChatInputBox)
             handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
+            text_area.insert("one\ntwo\nthree")
             box.set_manual_height(5)
             await pilot.pause()
+            assert text_area.size.height == 5
+
+            await pilot.double_click(handle, offset=(5, 0))
+            await pilot.pause()
+
+            assert box._requested_height is None
+            assert text_area.size.height == 3
+            # Genuinely automatic again, not a height that happens to equal the
+            # draft: auto growth is back in charge and a further toggle expands.
+            assert text_area._settled_content_height() == _CHAT_INPUT_AUTO_MAX_HEIGHT
+            await pilot.double_click(handle, offset=(5, 0))
+            await pilot.pause()
+            assert box._requested_height == _EXPANDED_HEIGHT
+
+    async def test_double_click_expands_a_manual_height_hidden_by_the_draft(
+        self,
+    ) -> None:
+        """A drag floored by the draft expands instead of collapsing.
+
+        Dragging a tall draft smaller stores a request the content floor then
+        refuses to render, so the composer never moves. Collapsing that request
+        would not move it either, leaving the user with two dead gestures in a
+        row -- so this case expands.
+        """
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            text_area.insert("one\ntwo\nthree\nfour\nfive\nsix")
+            await pilot.pause()
+            assert text_area.size.height == 6
+
+            # Drag downward to shrink; the floor keeps all six rows visible.
+            await pilot.mouse_down(handle, offset=(5, 0))
+            await pilot.hover(handle, offset=(5, 3))
+            await pilot.mouse_up(handle, offset=(5, 3))
+            await pilot.pause()
+            assert box._requested_height == 3
+            assert text_area.size.height == 6
+
+            await pilot.double_click(handle, offset=(5, 0))
+            await pilot.pause()
+
+            assert box._requested_height == _EXPANDED_HEIGHT
+            assert text_area.size.height == _EXPANDED_HEIGHT
+
+    async def test_double_click_expands_after_a_one_row_drag_jitter(self) -> None:
+        """A single row of travel during a press still leaves "expand" next.
+
+        `on_mouse_move` only suppresses sub-cell jitter, so drifting a whole row
+        and back within one press does establish a manual height. It renders no
+        differently from automatic sizing, so the double-click that follows must
+        still expand.
+        """
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            await pilot.pause()
+
+            await pilot.mouse_down(handle, offset=(5, 0))
+            await pilot.hover(handle, offset=(5, 1))
+            await pilot.hover(handle, offset=(5, 0))
+            await pilot.mouse_up(handle, offset=(5, 0))
+            await pilot.pause()
+            assert box._requested_height == 1
+            assert text_area.size.height == 1
 
             await pilot.double_click(handle, offset=(5, 0))
             await pilot.pause()
@@ -595,7 +670,8 @@ class TestChatInputResize:
 
         A double-click only registers when both presses land on the same cell,
         which is exactly when the pointer drifts away and back, emitting a
-        zero-delta move mid-gesture.
+        zero-delta move mid-gesture. Storing a height there would pin the
+        composer and stop it growing as the user keeps typing.
         """
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
@@ -692,6 +768,9 @@ class TestChatInputResize:
 
             short_screen = 12
             await pilot.resize_terminal(80, short_screen)
+            # Textual queues the Resize handler and its resulting layout work.
+            # Wait for that second pass before reading the applied composer size.
+            await pilot.pause()
 
             assert text_area.size.height == (
                 short_screen - _CHAT_INPUT_RESERVED_SCREEN_ROWS
@@ -701,6 +780,7 @@ class TestChatInputResize:
             assert box._requested_height == _EXPANDED_HEIGHT
 
             await pilot.resize_terminal(80, _RESIZE_SCREEN_HEIGHT)
+            await pilot.pause()
 
             assert text_area.size.height == _EXPANDED_HEIGHT
 
@@ -778,6 +858,22 @@ class TestChatInputResize:
                 colors[mode] = handle.styles.color
 
             assert len(set(colors.values())) == len(colors)
+
+    async def test_theme_change_recolors_handle(self) -> None:
+        """Switching themes updates the resize line's inline color."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test() as pilot:
+            handle = app.query_one(ChatInputResizeHandle)
+            await pilot.pause()
+            original_color = handle.styles.color
+
+            app.theme = "textual-light"
+            await pilot.pause()
+
+            assert handle.styles.color == Color.parse(
+                theme.get_theme_colors(app).primary
+            )
+            assert handle.styles.color != original_color
 
     async def test_non_left_press_does_not_start_drag(self) -> None:
         """A non-left press on the handle leaves resize inactive."""
@@ -1470,6 +1566,215 @@ class TestPromptIndicator:
             assert any(m.mode == "shell" for m in messages)
 
 
+class TestShellSyntaxHighlighting:
+    """Shell command modes should render native shell styles in the chat input."""
+
+    @pytest.mark.parametrize("mode", ["shell", "shell_incognito"])
+    async def test_shell_modes_highlight_command(self, mode: str) -> None:
+        """Shell and incognito shell modes should style command tokens."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            command = 'FOO="bar" echo "$FOO"'
+            text_area.text = command
+
+            chat_input.mode = mode
+            await pilot.pause()
+
+            line = text_area.get_line(0)
+            assert line.plain == command
+            assert len({span.style for span in line.spans}) > 1
+
+    async def test_windows_shell_mode_uses_batch_lexer(self) -> None:
+        """Windows shell commands should use `cmd.exe` batch syntax styles."""
+        from unittest.mock import patch
+
+        app = _ChatInputTestApp()
+        with (
+            patch.object(chat_input_module, "sys") as mock_sys,
+            patch.object(
+                chat_input_module,
+                "highlight",
+                wraps=chat_input_module.highlight,
+            ) as mock_highlight,
+        ):
+            mock_sys.platform = "win32"
+            async with app.run_test() as pilot:
+                chat_input = app.query_one(ChatInput)
+                text_area = app.query_one(ChatTextArea)
+                command = "if exist %TEMP% echo %PATH%"
+                text_area.text = command
+
+                chat_input.mode = "shell"
+                await pilot.pause()
+
+                assert text_area.get_line(0).plain == command
+                mock_highlight.assert_called_once_with(
+                    command,
+                    language="batch",
+                    tab_size=1,
+                )
+
+    async def test_posix_shell_mode_uses_bash_lexer(self) -> None:
+        """Non-Windows shell commands should use Bash syntax styles.
+
+        Asserts a Bash-specific outcome rather than only the lexer name: Bash
+        expands `$FOO` inside a double-quoted string, so the expansion carries
+        a different style from the quotes around it. A non-shell grammar (or a
+        shell one applied at the wrong offsets) styles the whole string
+        uniformly and fails here.
+        """
+        from unittest.mock import patch
+
+        app = _ChatInputTestApp()
+        with patch.object(chat_input_module.sys, "platform", "linux"):
+            async with app.run_test() as pilot:
+                chat_input = app.query_one(ChatInput)
+                text_area = app.query_one(ChatTextArea)
+                command = 'FOO="bar" echo "$FOO"'
+                text_area.text = command
+
+                chat_input.mode = "shell"
+                await pilot.pause()
+
+                line = text_area.get_line(0)
+                assert line.plain == command
+                style_by_start = {span.start: span.style for span in line.spans}
+                quote_start = command.index('"$FOO"')
+                variable_start = command.index("$FOO")
+                command_start = command.index("echo")
+                # `$FOO` is styled apart from its enclosing quotes.
+                assert style_by_start[variable_start] != style_by_start[quote_start]
+                # `echo` is a command word, not plain text like the quotes.
+                assert style_by_start[command_start] != style_by_start[quote_start]
+
+    async def test_highlight_failure_never_shows_stale_text(self) -> None:
+        """A failed highlight must fall back to the document, not a stale draft.
+
+        The rendered text has to match the buffer that Enter would submit. If
+        the cache marker were committed before `highlight()` ran, a failure
+        would leave the marker on the new text and the cached lines on the old,
+        so every later call would take the cache-hit path and render the
+        previous draft indefinitely.
+        """
+        from unittest.mock import patch
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            text_area.text = "echo first"
+            chat_input.mode = "shell"
+            await pilot.pause()
+            assert text_area.get_line(0).plain == "echo first"
+
+            text_area.text = "echo second"
+            with patch.object(
+                chat_input_module,
+                "highlight",
+                side_effect=RuntimeError("lexer exploded"),
+            ):
+                line = text_area.get_line(0)
+
+            assert line.plain == "echo second"
+            # Degradation persists rather than re-raising every frame, and the
+            # text stays correct once the patch is lifted.
+            assert text_area.get_line(0).plain == "echo second"
+
+    async def test_leaving_shell_mode_removes_highlighting(self) -> None:
+        """Returning to normal input should clear cached shell styles."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            text_area.text = 'echo "$HOME"'
+
+            chat_input.mode = "shell"
+            await pilot.pause()
+            assert text_area.get_line(0).spans
+
+            chat_input.mode = "normal"
+            await pilot.pause()
+            line = text_area.get_line(0)
+            assert line.plain == 'echo "$HOME"'
+            assert not line.spans
+
+    async def test_shell_highlighting_tracks_multiline_edits(self) -> None:
+        """Editing a shell draft should invalidate all cached highlighted lines."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            chat_input.mode = "shell"
+            text_area.text = 'echo "first"'
+            await pilot.pause()
+            assert text_area.get_line(0).plain == 'echo "first"'
+
+            text_area.text = 'FOO="bar"\nprintf "%s" "$FOO"'
+            await pilot.pause()
+
+            assert text_area.get_line(0).plain == 'FOO="bar"'
+            second_line = text_area.get_line(1)
+            assert second_line.plain == 'printf "%s" "$FOO"'
+            assert second_line.spans
+
+    async def test_tab_keeps_shell_highlight_spans_aligned(self) -> None:
+        """Tabs should not shift the styles applied to later shell tokens."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            command = 'echo\t"$HOME"'
+            text_area.text = command
+            chat_input.mode = "shell"
+            await pilot.pause()
+
+            line = text_area.get_line(0)
+            variable_start = command.index("$HOME")
+            assert line.plain == command
+            assert any(
+                span.start == variable_start
+                and span.end == variable_start + len("$HOME")
+                for span in line.spans
+            )
+
+    async def test_cursor_line_keeps_shell_highlight_colors(self) -> None:
+        """Rendered strip on the cursor line should keep token colors.
+
+        Regression test: `TextArea._render_line` stylizes the whole cursor line
+        with `cursor_line_style`, which carries the widget text color. Without
+        the foreground strip in `ChatTextArea._render_line`, that paints over
+        the syntax spans and every rendered token collapses to one color. The
+        other tests in this class only assert on `get_line()`, which runs
+        before the cursor-line style is applied.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            text_area.text = 'FOO="bar" echo "$FOO"'
+            chat_input.mode = "shell"
+            await pilot.pause()
+
+            # Put the cursor on the line being rendered, but at end-of-line.
+            # The block cursor inverts the cell it sits on, which contributes a
+            # second color on its own - enough to satisfy the assertion below
+            # even with the token colors flattened. Parking it past the last
+            # character puts it on trailing padding, which the `.strip()`
+            # filter drops, so only real token colors are counted.
+            text_area.move_cursor((0, len(text_area.text)))
+            strip = text_area.render_line(0)
+            colors = {
+                segment.style.color.triplet
+                for segment in strip
+                if segment.text.strip() and segment.style and segment.style.color
+            }
+            # Distinct syntax colors must survive to the rendered strip, not
+            # flatten to the single cursor-line text color.
+            assert len(colors) > 1
+
+
 class TestModeSwitchNoJitter:
     """Regression tests: mode glyph and completion popup update atomically.
 
@@ -1696,6 +2001,32 @@ class TestSetValueAtEnd:
             assert text_area.cursor_location == (1, len("second"))
 
 
+class TestInsertAtCursor:
+    """Tests for undoable prompt insertion without submission."""
+
+    async def test_inserts_multiline_text_at_cursor_and_is_undoable(self) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+            text_area.insert("before after")
+            text_area.move_cursor((0, len("before ")))
+
+            assert chat_input.insert_at_cursor("saved\nprompt") is True
+            await pilot.pause()
+
+            assert chat_input.value == "before saved\npromptafter"
+            assert app.submitted == []
+
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == "before after"
+
+    def test_returns_false_before_text_area_is_mounted(self) -> None:
+        assert ChatInput().insert_at_cursor("saved prompt") is False
+
+
 class TestRefocusClickSuppression:
     """Clicks that re-focus the terminal window should not move the cursor."""
 
@@ -1781,6 +2112,160 @@ class TestRefocusClickSuppression:
         text_area._notify_app_blur()
         text_area._notify_app_focus()
         assert text_area._consume_refocus_click() is True
+
+
+class TestCursorHiddenWhileUnfocused:
+    """The chat input must never blink a cursor it cannot type into.
+
+    Textual's `TextArea._draw_cursor` ignores `has_focus` while blinking is on,
+    and mouse-down sets `_selecting`, so the matching mouse-up always restarts
+    the blink through `_end_mouse_selection`. Clicking the chat input while a
+    focus-trapping widget (e.g. the `edit_file` approval menu, which re-focuses
+    itself on blur) owns the keyboard therefore left a blinking cursor in a
+    field that could neither receive keystrokes nor be typed into.
+    """
+
+    async def test_click_while_approval_traps_focus_shows_no_cursor(self) -> None:
+        """Clicking the chat input under an `edit_file` approval draws no cursor."""
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        class _ApprovalApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu(
+                    {
+                        "name": "edit_file",
+                        "args": {
+                            "file_path": "main.py",
+                            "old_string": "a",
+                            "new_string": "b",
+                        },
+                    }
+                )
+                yield ChatInput(id="chat-input")
+
+        app = _ApprovalApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            menu = app.query_one(ApprovalMenu)
+            menu.focus()
+            await pilot.pause()
+            assert text_area._draw_cursor is False
+
+            # Relies on `pilot.click` pausing before each event, so the menu's
+            # deferred `on_blur` refocus lands before the mouse-up restarts the
+            # blink; the phantom cursor is settled by the time `click` returns.
+            await pilot.click(ChatTextArea)
+            await pilot.pause()
+
+            # Pin the precondition. Without this, a `pilot` that stopped
+            # interleaving would leave the input focused, `_watch_has_focus`
+            # would hide the cursor on the later refocus, and the assertion
+            # below would pass for a reason unrelated to the fix.
+            assert text_area.has_focus is False
+
+            assert app.focused is menu
+            assert text_area._draw_cursor is False
+            # `_draw_cursor` alone is a 50/50 read against a regression that
+            # leaves the timer running, since it is False for half of every
+            # blink cycle. The parked timer is the deterministic signal.
+            assert text_area.blink_timer._active.is_set() is False
+
+    async def test_click_without_focus_trap_shows_cursor(self) -> None:
+        """A normal click still focuses the input and blinks its cursor."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("hello world")
+            app.set_focus(None)
+            await pilot.pause()
+            assert text_area._draw_cursor is False
+
+            await pilot.click(ChatTextArea, offset=(3, 0))
+            await pilot.pause()
+
+            assert text_area.has_focus is True
+            # Assert the blink timer is live rather than `_draw_cursor`. Once
+            # the timer is re-armed it toggles `_cursor_visible` every
+            # `cursor_blink` interval, so `_draw_cursor` oscillates and only
+            # reads True inside a visible half-cycle. The timer state is the
+            # stable property, and it is also the only thing that distinguishes
+            # a blinking cursor from one that came back frozen solid: unfocusing
+            # ran `_pause_blink` → `blink_timer.pause()`, and `_restart_blink` →
+            # `reset()` is what re-arms it on this path. Setting `_cursor_visible`
+            # by hand would not catch a frozen timer, because
+            # `_watch__cursor_visible` only refreshes the row and never touches
+            # the timer.
+            assert text_area.blink_timer._active.is_set() is True
+
+    async def test_keyboard_refocus_shows_cursor(self) -> None:
+        """Focusing without a click restores the cursor.
+
+        `_watch_has_focus` flips `has_focus` before calling `_restart_blink()`,
+        so the override sees the focused state and defers to Textual. If that
+        ordering ever inverts, the cursor would never come back on Tab focus.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            app.set_focus(None)
+            await pilot.pause()
+            assert text_area._draw_cursor is False
+
+            chat.focus_input()
+            await pilot.pause()
+
+            assert text_area.has_focus is True
+            # The blink timer, not `_draw_cursor` — see
+            # `test_click_without_focus_trap_shows_cursor` for why the drawn
+            # state oscillates once the timer is re-armed.
+            assert text_area.blink_timer._active.is_set() is True
+
+    async def test_unfocused_insert_with_blink_disabled_shows_no_cursor(self) -> None:
+        """The override stays correct when blinking is turned off.
+
+        `ChatInput.set_cursor_blink(blink=False)` takes `_draw_cursor` down the
+        `has_focus and not cursor_blink` branch, where stock `_restart_blink`
+        returns early. The override calls `_pause_blink` instead; that must not
+        change what is drawn in either focus state.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            chat.set_cursor_blink(blink=False)
+            app.set_focus(None)
+            await pilot.pause()
+
+            text_area.insert("pasted path")
+            await pilot.pause()
+            assert text_area._draw_cursor is False
+
+            chat.focus_input()
+            await pilot.pause()
+            assert text_area._draw_cursor is True
+
+    async def test_programmatic_insert_while_unfocused_shows_no_cursor(self) -> None:
+        """Text inserted into an unfocused input must not raise a cursor."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            app.set_focus(None)
+            await pilot.pause()
+
+            text_area.insert("pasted path")
+            await pilot.pause()
+
+            assert text_area._draw_cursor is False
+            assert text_area.blink_timer._active.is_set() is False
 
 
 class TestHistoryBoundaryNavigation:
@@ -2277,8 +2762,8 @@ class TestModePrefixStripping:
             # Non-trigger characters are never consumed.
             assert chat.handle_mode_prefix_keystroke("a") is False
 
-    async def test_redundant_typed_slash_keystroke_stays_command_mode(self) -> None:
-        """A redundant `/` at the command prompt is consumed as a mode selector."""
+    async def test_second_typed_slash_stays_in_command_text(self) -> None:
+        """A second `/` is retained so key-event path pastes keep both slashes."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -2292,7 +2777,7 @@ class TestModePrefixStripping:
             await pilot.press("/")
             await _pause_for_strip(pilot)
             assert chat.mode == "command"
-            assert chat._text_area.text == ""
+            assert chat._text_area.text == "/"
 
     async def test_typed_bang_keystroke_skips_strip_round_trip(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3663,6 +4148,36 @@ class TestDroppedImagePaste:
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1
 
+    async def test_key_burst_absolute_path_preserves_leading_slash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rapid absolute path recovers the slash consumed by command mode."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 1.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        img_path = tmp_path / "absolute-burst.png"
+        from PIL import Image
+
+        Image.new("RGB", (3, 3), color="navy").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            for char in str(img_path):
+                await chat._text_area._on_key(events.Key(char, char))
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+
+            await pilot.pause(0.35)
+
+            assert chat._text_area.text == "[image 1] "
+            assert len(app.tracker.get_images()) == 1
+
     async def test_submit_absolute_path_without_paste_event_attaches_image(
         self, tmp_path
     ) -> None:
@@ -4629,6 +5144,20 @@ class TestChatInputTypingBubble:
 
             assert app.chat_input_typing_count == 2
 
+    async def test_prompt_search_typing_bubbles_to_chat_input(self) -> None:
+        """Editing the prompt-search query should count as typing activity."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            chat_input.open_prompt_search()
+            await pilot.pause()
+
+            before = app.chat_input_typing_count
+            await pilot.press("y")
+            await pilot.pause()
+
+            assert app.chat_input_typing_count == before + 1
+
 
 class TestArgumentHints:
     """Test inline argument-hint ghost text for slash commands."""
@@ -4981,7 +5510,7 @@ class TestPasteBurstEnterSuppression:
     async def test_rapid_burst_with_newline_does_not_submit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A fast keystroke run followed by enter inserts a newline."""
+        """A fast keystroke run stays visible and enter inserts a newline."""
         # Widen the burst gap so wall-clock delays between pilot.press calls on
         # slow CI runners still register as a single rapid burst.
         monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
@@ -4997,6 +5526,9 @@ class TestPasteBurstEnterSuppression:
 
             for char in "hello":
                 await pilot.press(char)
+            assert ta.text == "hello"
+            assert ta._paste_burst_buffer == ""
+
             await pilot.press("enter")
             await pilot.press("w")
             await pilot.pause(0.15)
@@ -5042,6 +5574,8 @@ class TestPasteBurstEnterSuppression:
 
             ta.text = "abc"
             now = chat_input_module.time.monotonic()
+            ta._paste_burst_run = paste_textarea_module.PASTE_BURST_MIN_CHARS
+            ta._paste_burst_run_text = "abc"
             ta._paste_burst_last_key_time = (
                 now - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS - 0.01
             )
@@ -5137,6 +5671,949 @@ class TestPasteBurstEnterSuppression:
             await pilot.pause()
 
             assert len(app.submitted) == 1
+
+    async def test_late_enter_after_qualifying_run_still_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A qualifying run does not swallow deliberate enter after going idle."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "abc"
+            now = chat_input_module.time.monotonic()
+            # A qualifying run, but the last keystroke landed 50 ms ago —
+            # outside the 30 ms char gap, still inside the 120 ms window.
+            ta._paste_burst_run = paste_textarea_module.PASTE_BURST_MIN_CHARS
+            ta._paste_burst_run_text = "abc"
+            ta._paste_burst_last_key_time = now - 0.05
+            ta._paste_burst_window_until = now + 0.12
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "abc"
+
+
+class TestPasteBurstPromotion:
+    """Promotion of a visible rapid run into the hidden paste buffer.
+
+    Rapid typing stays in the document until something confirms a paste: an
+    embedded newline, a dropped-path shape, or a length no human reaches at
+    burst speed. These tests drive the real `_on_key` path, since the chat
+    input's key handling interleaves several branches ahead of the burst
+    helpers.
+    """
+
+    async def test_multiline_key_event_paste_collapses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A multi-line key-event paste is promoted and collapsed."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        payload = "alpha\n" + "beta gamma delta\n" * 3
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in payload:
+                event = (
+                    events.Key("enter", None)
+                    if char == "\n"
+                    else events.Key(char, char)
+                )
+                await ta._on_key(event)
+            await pilot.pause(0.35)
+
+            assert "[Pasted text #1" in ta.text
+            assert chat._pasted_contents[1].content == payload
+            assert len(app.submitted) == 0
+
+    async def test_key_event_paste_preserves_backslash_before_newline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A burst newline takes priority over the backslash+Enter fallback."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "abc":
+                await ta._on_key(events.Key(char, char))
+            await ta._on_key(events.Key("backslash", "\\"))
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause(0.35)
+
+            assert ta.text == "abc\\\n"
+            assert len(app.submitted) == 0
+
+    async def test_large_single_line_key_event_paste_collapses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A long single-line key-event paste collapses without any newline.
+
+        `should_collapse_paste` triggers on length as well as line count, so a
+        newline must not be required to reach collapse handling.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        payload = "y" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in payload:
+                await ta._on_key(events.Key(char, char))
+            await pilot.pause(0.35)
+
+            assert "[Pasted text #1]" in ta.text
+            assert payload not in ta.text
+            assert chat._pasted_contents[1].content == payload
+
+    async def test_rapid_slash_command_is_not_promoted_as_a_dropped_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key-event `/help` burst must retain command submission semantics."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "/help":
+                await pilot.press(char)
+
+            assert chat.mode == "command"
+            assert ta.text == "help"
+            assert ta._paste_burst_buffer == ""
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "/help"
+            assert app.submitted[0].mode == "command"
+
+    @pytest.mark.parametrize("payload", ["hello world", '"hello world"'])
+    async def test_ordinary_rapid_typing_is_never_promoted(
+        self, monkeypatch: pytest.MonkeyPatch, payload: str
+    ) -> None:
+        """A short rapid run, including quoted text, stays fully visible."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in payload:
+                await pilot.press(char)
+
+            # Asserted before any pause: the flush timer would restore the text
+            # and hide the very regression this covers. Typing must be visible
+            # *while* typing, not once it stops.
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+
+            await pilot.pause(0.15)
+
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+
+    async def test_promotion_falls_back_when_selection_is_active(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A selection at Enter blocks promotion; the newline is inserted plainly.
+
+        Promoting would delete the user's selected range rather than the run.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "abc":
+                await pilot.press(char)
+            ta.selection = Selection((0, 0), (0, 3))
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert ta._paste_burst_buffer == ""
+            assert "abc" in ta.text
+            assert len(app.submitted) == 0
+
+    async def test_promotion_falls_back_when_run_diverges_from_document(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A run that no longer sits before the cursor is dropped, not deleted.
+
+        Moving the cursor mid-run (e.g. a mouse click, which is not a key
+        event) desynchronises the tracker. Promoting on a stale run would
+        delete whatever text now happens to precede the cursor.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "XXXX"
+            for char in "abc":
+                await pilot.press(char)
+            # Relocate the cursor without a key event, so the run survives but
+            # no longer describes the characters before the cursor.
+            ta.selection = Selection((0, 2), (0, 2))
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert ta._paste_burst_buffer == ""
+            # Every character survives; only a newline was added at the cursor.
+            assert ta.text.replace("\n", "") == "abcXXXX"
+            assert ta.text.count("\n") == 1
+            # The diverged run is dropped so it cannot be re-promoted later.
+            assert ta._paste_burst_run_text == ""
+
+    async def test_vscode_space_workaround_keeps_run_in_sync(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A CSI-u space is tracked, so a burst containing one still promotes.
+
+        VS Code sends space as a key with no character; the workaround inserts
+        it directly and returns before the burst helpers, so it must feed the
+        tracker itself or the run text diverges from the document.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "ab":
+                await ta._on_key(events.Key(char, char))
+            await ta._on_key(events.Key("space", None))
+            for char in "cd":
+                await ta._on_key(events.Key(char, char))
+
+            assert ta.text == "ab cd"
+            assert ta._paste_burst_run_text == "ab cd"
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            # Promotion succeeded, so the run moved into the buffer rather than
+            # failing verification and falling back to a plain newline.
+            assert ta.text == ""
+            assert ta._paste_burst_buffer == "ab cd\n"
+            assert len(app.submitted) == 0
+
+    async def test_vscode_space_workaround_flushes_stale_buffer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A delayed CSI-u space starts normal input after a completed burst."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("abc", stale_time)
+
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause()
+
+            assert ta._paste_burst_buffer == ""
+            assert ta.text == "abc "
+            assert ta._paste_burst_run_text == " "
+
+    async def test_vscode_space_follows_queued_stale_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale burst's queued placeholder is inserted before its space."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            payload = "x" * 900
+            ta._start_paste_burst(payload, stale_time)
+
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause()
+
+            assert ta.text == "[Pasted text #1] "
+            assert chat._pasted_contents[1].content == payload
+            assert ta._paste_burst_run_text == " "
+
+    async def test_vscode_space_stays_ahead_of_already_queued_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key queued behind the space must not overtake it."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("abc", stale_time)
+
+            ta.post_message(events.Key("space", None))
+            ta.post_message(events.Key("x", "x"))
+            await pilot.pause()
+
+            assert ta.text == "abc x"
+            assert ta._paste_burst_run_text == " x"
+
+    async def test_vscode_space_is_absorbed_into_a_live_burst(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A CSI-u space mid-paste joins the buffer instead of flushing it.
+
+        This is the common case for a VS Code key-event paste. Without it, every
+        space would flush the paste mid-stream into separate fragments.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            # Promote via a newline so the buffer is live and fresh.
+            for char in "abc":
+                await ta._on_key(events.Key(char, char))
+            await ta._on_key(events.Key("enter", None))
+            assert ta._paste_burst_buffer == "abc\n"
+
+            await ta._on_key(events.Key("space", None))
+
+            # Absorbed into the hidden buffer, not inserted into the document.
+            assert ta._paste_burst_buffer == "abc\n "
+            assert ta.text == ""
+
+            await pilot.pause(0.35)
+            assert ta.text == "abc\n "
+
+    async def test_printable_key_lands_after_a_flushed_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key that breaks a stale burst is inserted after the payload.
+
+        The payload is applied while handling this key, so it cannot be overtaken.
+        Applying it by a posted message instead put the character first, splitting
+        a paste that arrived across a slow terminal read boundary.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            payload = "x" * 900
+            ta._start_paste_burst(payload, stale_time)
+
+            await ta._on_key(events.Key("y", "y"))
+            await pilot.pause()
+
+            assert ta.text == "[Pasted text #1]y"
+            assert chat._pasted_contents[1].content == payload
+
+    async def test_backspace_after_a_flushed_payload_leaves_earlier_text_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backspace breaking a stale burst edits the payload, not the text before it.
+
+        The payload lands first, so the deletion applies to it. Applying the
+        payload later deleted a character the user typed before the paste.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.focus()
+            ta.insert("ab")
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("x" * 900, stale_time)
+
+            # Pressed through the app so the backspace binding actually resolves.
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            # The placeholder is deleted as one token, so only the paste is undone.
+            assert ta.text == "ab"
+
+    async def test_bracketed_paste_stays_ahead_of_a_queued_key(self) -> None:
+        """A key queued behind a bracketed paste must not overtake it."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            payload = "z" * 900
+            ta.post_message(events.Paste(payload))
+            ta.post_message(events.Key("q", "q"))
+            await pilot.pause()
+
+            assert ta.text == "[Pasted text #1]q"
+            assert chat._pasted_contents[1].content == payload
+
+    async def test_run_of_exactly_the_promote_threshold_is_reinserted_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A run of exactly `PASTE_BURST_PROMOTE_CHARS` promotes but does not collapse.
+
+        Promotion uses `>=` while `should_collapse_paste` uses `>`, so this length
+        is hidden and then restored unchanged. Pinned because the two comparisons
+        must keep agreeing that no character is lost between them.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.05
+        )
+        length = paste_textarea_module.PASTE_BURST_PROMOTE_CHARS
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for _ in range(length):
+                await ta._on_key(events.Key("a", "a"))
+
+            # Confirmed by length alone, so the run is hidden before it flushes.
+            assert ta._paste_burst_buffer == "a" * length
+            assert ta.text == ""
+
+            await pilot.pause(0.2)
+
+            assert ta.text == "a" * length
+            assert chat._pasted_contents == {}
+
+    async def test_burst_state_reset_clears_the_restored_slash_flag(self) -> None:
+        """A discarded payload must not leave its slash flag set.
+
+        The flag suppresses one mode re-detection. Surviving the payload it
+        describes would spend that suppression on an unrelated later burst.
+        """
+        app = _RecordingApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta._burst_payload_keeps_leading_slash = True
+            ta._start_paste_burst("/private/tmp", chat_input_module.time.monotonic())
+
+            ta.clear_text()
+
+            assert ta._paste_burst_buffer == ""
+            assert ta._burst_payload_keeps_leading_slash is False
+
+    async def test_keys_queued_behind_a_flushed_payload_keep_their_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Printable keys already in the queue land after the payload, in order."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("x" * 900, stale_time)
+
+            # The space flushes the stale payload; the rest of the paste is
+            # already queued behind it.
+            ta.post_message(events.Key("space", None))
+            for char in "world":
+                ta.post_message(events.Key(char, char))
+            await pilot.pause(0.35)
+
+            assert len(app.submitted) == 0
+            assert ta.text == "[Pasted text #1] world"
+
+    async def test_dropped_path_replacement_is_not_double_spaced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The held space is dropped when the payload already ended with one."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        img_path = tmp_path / "spaced.png"
+        from PIL import Image
+
+        Image.new("RGB", (3, 3), color="teal").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst(str(img_path), stale_time)
+
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause(0.35)
+
+            assert ta.text == "[image 1] "
+
+    async def test_verbatim_payload_ending_in_space_keeps_the_typed_space(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A flushed payload that merely ends in a space must not eat the next one.
+
+        The double-space guard applies only to the trailing space that
+        `_build_path_replacement` appends. A payload inserted verbatim supplies
+        no such space, so the user's own keystroke has to survive — checking the
+        document instead would silently swallow one space of, say, a pasted
+        indent.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("hello ", stale_time)
+
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause(0.35)
+
+            assert ta.text == "hello  "
+
+    async def test_failed_dispatch_reinserts_the_payload_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raising dispatch must not destroy the buffered paste.
+
+        Promotion has already deleted the run from the document and the flush
+        clears the buffer before dispatching, so without the guard the text
+        exists nowhere — not on screen, not in the buffer, not in undo.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            async def _boom(payload: str) -> None:  # noqa: ARG001, RUF029
+                raise _DispatchError
+
+            monkeypatch.setattr(ta, "_dispatch_burst_payload", _boom)
+
+            ta._start_paste_burst("important paste", chat_input_module.time.monotonic())
+
+            with pytest.raises(_DispatchError):
+                await ta._flush_paste_burst()
+            await pilot.pause()
+
+            assert ta.text == "important paste"
+            assert ta._paste_burst_buffer == ""
+
+    async def test_flushed_run_is_not_re_promoted_by_a_later_enter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second Enter after a flush must not re-promote the same run.
+
+        Promotion hands the run's characters to the buffer, which flushes them
+        back into the document. If the run tracker still claimed them, a second
+        Enter inside the window would find them sitting before the cursor,
+        delete them, and re-dispatch text the user had already committed.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "abc":
+                await ta._on_key(events.Key(char, char))
+            await ta._on_key(events.Key("enter", None))
+            for char in "abc":
+                await ta._on_key(events.Key(char, char))
+            # Let the burst flush its payload back into the document.
+            await pilot.pause(0.35)
+            assert ta.text == "abc\nabc"
+            assert ta._paste_burst_buffer == ""
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            # A newline was added; the trailing "abc" was not swallowed.
+            assert ta.text == "abc\nabc\n"
+
+    async def test_consumed_mode_prefix_resets_the_run(self) -> None:
+        """A mode trigger is counted but never inserted, so it clears the run."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await ta._on_key(events.Key("!", "!"))
+            await pilot.pause()
+
+            assert ta._paste_burst_run_text == ""
+
+    async def test_rapid_typing_in_command_mode_stays_visible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fast typing after a `/` is not mistaken for a dropped path.
+
+        The slash-recovery hook prepends `/` before asking whether the payload
+        looks like a path, so a guard phrased as a question about the `/`-prefixed
+        candidate is vacuously true for any text. If that is the only guard, every
+        rapid run in command mode is hidden and the input silently leaves command
+        mode mid-command.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "/git":
+                await pilot.press(char)
+            for char in "add":
+                await pilot.press(char)
+            await pilot.pause(0.35)
+
+            assert ta.text == "gitadd"
+            assert chat.mode == "command"
+            assert ta._paste_burst_buffer == ""
+
+    async def test_rapid_slash_command_with_path_argument_is_not_promoted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A command whose argument is a path keeps its command semantics.
+
+        The payload contains a separator, so a separator-only test would treat
+        `read src/main.py` as the tail of an absolute path — injecting a `/` and
+        dropping out of command mode. Whitespace before the separator rules it out.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            # Driven through `_on_key` rather than `pilot.press` so slash-command
+            # completion cannot rewrite the text out from under the assertion.
+            for char in "/read src/main.py":
+                key = "space" if char == " " else char
+                await ta._on_key(events.Key(key, char))
+            await pilot.pause(0.35)
+
+            # Still a command, and nothing was hidden or slash-prefixed. (The
+            # space itself is swallowed by the open completion popup, so the exact
+            # text is not asserted here.)
+            assert chat.mode == "command"
+            assert ta._paste_burst_buffer == ""
+            assert not ta.text.startswith("/")
+            assert ta.text.endswith("src/main.py")
+
+    async def test_rapid_absolute_path_that_does_not_exist_keeps_its_slash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A recovered slash survives the insert that follows a failed parse.
+
+        Only an existing path takes the dropped-path branch. Everything else
+        falls through to a plain insert at offset 0, which trips mode-prefix
+        detection a second time — stripping the recovered slash again and losing
+        the character for good.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        missing = tmp_path / "no-such-file.txt"
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in str(missing):
+                await ta._on_key(events.Key(char, char))
+            await pilot.pause(0.35)
+
+            assert ta.text == str(missing)
+            assert chat.mode == "normal"
+            assert chat.value == str(missing)
+
+    async def test_rapid_double_slash_path_keeps_both_leading_slashes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key-event UNC-style path does not lose its second slash to mode handling.
+
+        The second slash is text rather than another mode trigger.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        payload = "//host/share"
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in payload:
+                await ta._on_key(events.Key(char, char))
+            await pilot.pause(0.35)
+
+            assert ta.text == payload
+            assert chat.value == payload
+
+    async def test_run_just_below_the_promote_threshold_stays_visible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Length-based promotion brackets exactly at `PASTE_BURST_PROMOTE_CHARS`."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        payload = "z" * (paste_textarea_module.PASTE_BURST_PROMOTE_CHARS - 1)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in payload:
+                await ta._on_key(events.Key(char, char))
+
+            # Before the pause: waiting for the flush timer would restore the
+            # text and mask a run that had wrongly been promoted.
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+
+            await pilot.pause(0.35)
+
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+
+    async def test_run_resets_at_human_typing_speed(self) -> None:
+        """Real inter-key gaps keep the run at one, so nothing ever qualifies.
+
+        Every other test here widens the char gap so each keystroke counts as
+        burst speed. That is the right worst case for visibility, but it never
+        exercises the reset — and if the reset regressed, a slowly typed long
+        paragraph would vanish into a placeholder.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            typed = ""
+            for char in "abcde":
+                await ta._on_key(events.Key(char, char))
+                typed += char
+                # Checked after every keystroke rather than only at the end: the
+                # inter-key sleep is shorter than the flush delay, so a promoted
+                # run would be hidden right here and restored before the final
+                # assertion could see it.
+                assert ta.text == typed
+                await asyncio.sleep(
+                    paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS + 0.01
+                )
+            await pilot.pause()
+
+            assert ta.text == "abcde"
+            assert ta._paste_burst_run == 1
+
+    async def test_completion_space_resets_the_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A space swallowed for completion is counted but never inserted.
+
+        `space` is the one printable key the completion-navigation branch
+        intercepts, so without a reset the tracker claims a character the
+        document never received and later promotions fail verification.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "ab":
+                await ta._on_key(events.Key(char, char))
+            ta._completion_active = True
+            await ta._on_key(events.Key("space", " "))
+            await pilot.pause()
+
+            assert ta.text == "ab"
+            assert ta._paste_burst_run_text == ""
 
 
 class TestPasteCollapseHelpers:
@@ -5602,9 +7079,9 @@ class TestPasteCollapseIntegration:
     ) -> None:
         """A real Paste event over the threshold collapses to a placeholder.
 
-        Exercises the production path (`_on_paste` -> `PastedText` message ->
-        `on_chat_text_area_pasted_text`) rather than `handle_external_paste`,
-        and asserts the collapse toast fires on that path too.
+        Exercises the production path (`_on_paste` -> `apply_paste_payload`)
+        rather than `handle_external_paste`, and asserts the collapse toast fires
+        on that path too.
         """
         big_text = "z" * 900
         app = _RecordingApp()
@@ -5950,3 +7427,1288 @@ class TestPasteCollapseIntegration:
             await pilot.pause()
 
             assert 1 in chat._pasted_contents
+
+
+class TestPromptSearchPanel:
+    """Inline prompt history search (first Ctrl+R tier)."""
+
+    def _seed_history(self, chat: ChatInput, prompts: list[str]) -> None:
+        for prompt in prompts:
+            chat._history.add(prompt)
+
+    async def test_ctrl_r_opens_inline_panel_above_input(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import (
+            PromptSearchInput,
+            PromptSearchPanel,
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt", "second prompt"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("second")
+            await pilot.pause()
+
+            tier = chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert tier == "inline"
+            panel = app.query_one(PromptSearchPanel)
+            assert panel.styles.display == "block"
+            assert chat._prompt_search_active is True
+            assert app.query_one(PromptSearchInput).value == "second"
+            assert chat._prompt_search_filtered == ["second prompt"]
+            # Seeding the filter does not consume or change the draft.
+            assert chat._text_area.text == "second"
+
+    async def test_second_ctrl_r_escalates_to_modal(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt"])
+            await pilot.pause()
+
+            assert chat.open_prompt_search() == "inline"
+            await pilot.pause()
+            assert chat.open_prompt_search() == "modal"
+            query = chat.escalate_prompt_search()
+            await pilot.pause()
+
+            assert query == ""
+            assert chat._prompt_search_active is False
+
+    async def test_typing_filters_results(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchPanel
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["fix the bug", "add feature", "fix tests"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            for char in "fix":
+                await pilot.press(char)
+            await pilot.pause()
+            await pilot.pause()
+
+            # newest-first order, both "fix" prompts retained
+            assert chat._prompt_search_filtered == ["fix tests", "fix the bug"]
+            panel = app.query_one(PromptSearchPanel)
+            assert panel.styles.display == "block"
+
+    async def test_enter_inserts_selected_prompt(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["older prompt", "newest prompt"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            # newest-first: index 0 is "newest prompt"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat._text_area is not None
+            assert chat._text_area.text == "newest prompt"
+
+    async def test_hovering_a_row_does_not_move_the_selection(
+        self, tmp_path: Path
+    ) -> None:
+        """Hover is visual only (:hover CSS): arrows move from the selection."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            assert len(panel._options) == 3
+
+            await pilot.hover(panel._options[2])
+            await pilot.pause()
+
+            # Textual tracks the hovered widget for :hover styling; the
+            # selection stays put.
+            assert panel._options[2].mouse_hover
+            assert chat._prompt_search_index == 0
+            assert panel._options[0].is_selected
+            assert not panel._options[2].is_selected
+
+            # Keyboard navigation resumes from the selection, not the hover.
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._prompt_search_index == 1
+            assert chat._prompt_search_active is True
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+
+    async def test_hovering_the_selected_row_keeps_its_highlight(
+        self, tmp_path: Path
+    ) -> None:
+        """Hover must not repaint the selected row.
+
+        A pseudo-class bumps the class slot of Textual's specificity tuple, so
+        an unqualified `PromptSearchOption:hover` ties the selected rule and
+        wins on source order, stripping the selection background while
+        `color: $background` still applies. The `:not()` qualifier in the
+        stylesheet is what prevents it.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            selected = panel._options[0]
+            unselected = panel._options[1]
+            selected_background = selected.styles.background
+
+            await pilot.hover(selected)
+            await pilot.pause()
+
+            assert selected.mouse_hover
+            assert selected.styles.background == selected_background
+
+            # The same hover on an unselected row does repaint it, so the
+            # assertion above is not passing merely because :hover is inert.
+            await pilot.hover(unselected)
+            await pilot.pause()
+            assert unselected.styles.background != selected_background
+
+    async def test_clicking_a_row_selects_but_does_not_insert(
+        self, tmp_path: Path
+    ) -> None:
+        """Click moves the selection; only Enter inserts."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+
+            await pilot.click(panel._options[2])
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 2
+            assert panel._options[2].is_selected
+            # Clicking alone must not close the panel or touch the draft.
+            assert chat._prompt_search_active is True
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert chat._text_area.text == "oldest"
+
+    async def test_escape_restores_draft(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["some prompt"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("my draft")
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            # Type a query (does not touch the draft)
+            await pilot.press("x")
+            await pilot.pause()
+            assert chat._text_area.text == "my draft"
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat._text_area.text == "my draft"
+
+    async def test_escape_preserves_concurrently_updated_draft(self, tmp_path) -> None:
+        """Cancel should not replace a draft changed outside prompt search."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["some prompt"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("original draft")
+            chat.open_prompt_search()
+            await pilot.pause()
+
+            chat.value = "external editor result"
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat.value == "external editor result"
+
+    async def test_typing_does_not_enter_textarea(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            await pilot.press("h")
+            await pilot.pause()
+
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+            assert chat._prompt_search_query == "h"
+
+    async def test_arrow_navigation_moves_selection(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["one", "two", "three"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 0
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._prompt_search_index == 1
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+    async def test_backspace_on_empty_query_cancels(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+            assert chat._text_area is not None
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat._text_area.text == ""
+
+    async def test_completion_active_routes_to_modal(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("hello")
+            await pilot.pause()
+
+            # Simulate an active completion popup
+            chat._current_suggestions = [("/help", "Show help")]
+            assert chat.open_prompt_search() == "modal"
+            assert chat.escalate_prompt_search() == "hello"
+
+    async def test_tab_pages_through_results(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, [f"prompt {i}" for i in range(12)])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert chat._prompt_search_index == 5
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+    async def test_focus_moves_to_query_input(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+
+            assert isinstance(app.focused, PromptSearchInput)
+
+    async def test_focus_input_restores_query_focus(self, tmp_path) -> None:
+        """App-level focus restoration should keep an active search usable."""
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.focus()
+            chat.focus_input()
+            await pilot.pause()
+
+            assert isinstance(app.focused, PromptSearchInput)
+
+    async def test_clicking_composer_keeps_query_focus(self, tmp_path: Path) -> None:
+        """Clicking the frozen draft must not strand prompt-search keys."""
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            assert chat._text_area is not None
+            await pilot.click(chat._text_area)
+            await pilot.pause()
+
+            assert isinstance(app.focused, PromptSearchInput)
+            await pilot.press("h")
+            await pilot.pause()
+            assert chat._prompt_search_query == "h"
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert chat._prompt_search_active is False
+
+    async def test_single_step_moves_inside_the_window_do_not_rebuild(
+        self, tmp_path: Path
+    ) -> None:
+        """Moving within the mounted window re-styles two rows, not all of them.
+
+        `_window_bounds` shifts the ideal start on every single-step move once
+        the list outgrows `PROMPT_SEARCH_WINDOW`, so rebuilding whenever the
+        ideal start differed put every keystroke on the expensive path -- a
+        full `set_content` over all 50 mounted rows instead of two
+        `set_class` calls.
+        """
+        from deepagents_code.tui.widgets.prompt_search import (
+            PROMPT_SEARCH_REWINDOW_MARGIN,
+            PROMPT_SEARCH_WINDOW,
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            # Comfortably longer than the window, so windowing is in play.
+            self._seed_history(
+                chat, [f"prompt {index}" for index in range(PROMPT_SEARCH_WINDOW * 2)]
+            )
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            panel = chat._prompt_search
+            assert panel is not None
+            assert len(panel._options) == PROMPT_SEARCH_WINDOW
+
+            generation_before = panel._rebuild_generation
+            mounted_before = list(panel._options)
+
+            # Step to just inside the re-window margin: every one of these
+            # moves stays on the cheap path.
+            steps = PROMPT_SEARCH_WINDOW - PROMPT_SEARCH_REWINDOW_MARGIN - 2
+            for _ in range(steps):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_index == steps
+            assert panel._rebuild_generation == generation_before
+            # The same widget objects, re-styled rather than re-mounted.
+            assert panel._options == mounted_before
+            assert panel._options[steps].is_selected
+
+            # Crossing into the margin re-centers the window.
+            for _ in range(3):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert panel._rebuild_generation > generation_before
+            assert panel._options[0].index > 0
+
+    async def test_selection_past_first_page_stays_mounted_and_visible(
+        self, tmp_path
+    ) -> None:
+        """Regression: rows beyond the first page must exist to be shown.
+
+        The panel windows the DOM around the selection, so navigating past the
+        first page (arrows or a Tab page) must keep the selected row mounted
+        and scrolled into view rather than pointing at a row that was never
+        rendered.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, [f"prompt {i}" for i in range(30)])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            panel = chat._prompt_search
+            assert panel is not None
+
+            # Arrow past the first page of 5 rows.
+            for _ in range(12):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 12
+            mounted = {option.index for option in panel._options}
+            assert chat._prompt_search_index in mounted
+            selected = [
+                o for o in panel._options if o.index == chat._prompt_search_index
+            ]
+            assert selected[0].is_selected
+
+            # Enter inserts the exact windowed prompt.
+            await pilot.press("enter")
+            await pilot.pause()
+            assert chat._text_area is not None
+            assert chat._text_area.text == "prompt 17"  # newest-first: 29-12
+
+    async def test_no_match_empty_state_is_a_single_row(self, tmp_path) -> None:
+        """Repeated no-match keystrokes must not stack empty-state rows.
+
+        The empty-state message is one tracked widget replaced per rebuild;
+        previously each rebuild mounted a fresh `Static` without removing the
+        last, so every no-match keystroke added another "No matching prompts."
+        row to the list.
+        """
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello world"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            for char in "zzzz":
+                await pilot.press(char)
+                await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            results = panel.query_one("#prompt-search-results")
+            empty_rows = [
+                child
+                for child in results.children
+                if isinstance(child, Static)
+                and not isinstance(child, PromptSearchOption)
+            ]
+            assert len(empty_rows) == 1
+            assert "No matching prompts." in str(empty_rows[0].content)
+
+    async def test_empty_state_does_not_survive_hide_and_reopen(self, tmp_path) -> None:
+        """A hidden empty state must not linger beside reopened matches.
+
+        `hide()` only sets `display: none`; it does not tear down children.
+        Dropping the `_empty_widget` reference on hide orphaned the mounted
+        empty-state row, so cancelling a no-match search and reopening with
+        matches left a stale "No matching prompts." row beside the options,
+        and repeated cycles accumulated one orphan per hide.
+        """
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello world"])
+            await pilot.pause()
+
+            def empty_rows() -> list[Static]:
+                panel = chat._prompt_search
+                assert panel is not None
+                results = panel.query_one("#prompt-search-results")
+                return [
+                    child
+                    for child in results.children
+                    if isinstance(child, Static)
+                    and not isinstance(child, PromptSearchOption)
+                ]
+
+            # Open with a no-match query, then cancel the search.
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("z")
+            await pilot.pause()
+            await pilot.pause()
+            assert len(empty_rows()) == 1
+            await pilot.press("escape")
+            await pilot.pause()
+
+            # Reopen: the full unfiltered history matches, so no empty state.
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert empty_rows() == []
+            panel = chat._prompt_search
+            assert panel is not None
+            assert len(panel._options) == 1
+
+    async def test_empty_state_reopens_cleanly_after_each_hide(self, tmp_path) -> None:
+        """Empty -> hide cycles must not accumulate orphaned empty rows."""
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello world"])
+            await pilot.pause()
+
+            for _ in range(3):
+                chat.open_prompt_search()
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.press("z")
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            results = panel.query_one("#prompt-search-results")
+            empty_rows = [
+                child
+                for child in results.children
+                if isinstance(child, Static)
+                and not isinstance(child, PromptSearchOption)
+            ]
+            # Exactly one: `<= 1` also passes when the row vanishes entirely,
+            # which is the other half of the bug this locks in.
+            assert len(empty_rows) == 1
+
+    async def test_selection_beyond_the_render_window_inserts_that_prompt(
+        self, tmp_path: Path
+    ) -> None:
+        """Rows past `PROMPT_SEARCH_WINDOW` must keep index and title aligned.
+
+        Below the window size the panel mounts every row and absolute indices
+        are trivially correct. Past it the window slides, so `PromptSearchOption
+        .index` is an offset into the filtered list; an off-by-one there inserts
+        a different prompt than the highlighted row shows.
+        """
+        from deepagents_code.tui.widgets.prompt_search import PROMPT_SEARCH_WINDOW
+
+        total = PROMPT_SEARCH_WINDOW + 30
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, [f"prompt {i}" for i in range(total)])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            panel = chat._prompt_search
+            assert panel is not None
+            assert len(chat._prompt_search_filtered) == total
+
+            target = PROMPT_SEARCH_WINDOW + 10
+            for _ in range(target):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_index == target
+            expected = chat._prompt_search_filtered[target]
+            mounted = {option.index: option for option in panel._options}
+            assert target in mounted
+            assert mounted[target].is_selected
+            # The row's rendered title must describe the prompt at that index.
+            assert str(mounted[target].render()).strip() == expected
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert chat._text_area is not None
+            assert chat._text_area.text == expected
+            # Newest-first, so index N is the (total - 1 - N)th prompt added.
+            assert expected == f"prompt {total - 1 - target}"
+
+    async def test_escape_keeps_the_undo_history(self, tmp_path: Path) -> None:
+        """Cancelling the search must not clear the composer's edit history.
+
+        `TextArea.text` aliases `load_text`, which clears the undo history, so
+        restoring an unchanged draft by assignment silently cost the user their
+        undo stack.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["some old prompt"])
+            await pilot.pause()
+
+            assert chat._text_area is not None
+            for char in "draft":
+                await pilot.press(char)
+            await pilot.pause()
+            assert chat._text_area.text == "draft"
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat._text_area.text == "draft"
+            await pilot.press("ctrl+z")
+            await pilot.pause()
+            assert chat._text_area.text != "draft"
+
+    async def test_backspace_with_a_query_does_not_leave_the_input_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """Keys the search ignores must not reach the composer's own routing.
+
+        Backspace with a non-empty query belongs to the query input. It used to
+        fall through to the mode-exit branch, which dropped shell mode behind
+        the open panel and swallowed the deletion.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["find something"])
+            await pilot.pause()
+
+            await pilot.press("!")
+            await pilot.pause()
+            assert chat.mode == "shell"
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("f")
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.mode == "shell"
+            assert chat._prompt_search_active is True
+            assert chat._prompt_search_query == ""
+
+    async def test_enter_with_no_matches_inserts_nothing(self, tmp_path: Path) -> None:
+        """Enter on an empty result set must bell, not raise or insert."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello world"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            for char in "zzz":
+                await pilot.press(char)
+                await pilot.pause()
+            await pilot.pause()
+            assert chat._prompt_search_filtered == []
+
+            await pilot.press("down")
+            await pilot.press("up")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+
+    async def test_unreadable_history_is_not_reported_as_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """An unreadable history file must not claim the user has no prompts."""
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        # A directory in place of the file is an OSError on read, the same path
+        # permissions and encoding failures take.
+        history_file = tmp_path / "history.jsonl"
+        history_file.mkdir()
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = history_file
+            # Nothing cached in memory, so the read failure is the only reason
+            # the list comes back empty.
+            chat._history._entries = []
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            results = panel.query_one("#prompt-search-results")
+            messages = [
+                str(child.render())
+                for child in results.children
+                if isinstance(child, Static)
+                and not isinstance(child, PromptSearchOption)
+            ]
+            assert messages
+            assert "Could not read prompt history" in messages[0]
+            assert "No prompts yet" not in messages[0]
+
+    async def test_text_area_keys_do_not_edit_the_frozen_draft(
+        self, tmp_path: Path
+    ) -> None:
+        """The text area must not accept edits while the panel is open.
+
+        `open_prompt_search` focuses the query input and `ChatTextArea.on_focus`
+        bounces focus back, so this branch is defensive: it only runs if a key
+        reaches the text area anyway. Driving `_on_key` directly is what
+        exercises it. Without the branch the TextArea defaults apply and
+        printable characters insert into the frozen draft behind the panel.
+        """
+        from textual import events
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("draft text")
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            # Printable keys belong to the focused query input, so the panel
+            # handler declines them -- and the text area must decline them too
+            # rather than falling back to its own insertion.
+            for key, character in (("z", "z"), ("space", " ")):
+                event = events.Key(key, character)
+                await text_area._on_key(event)
+                await pilot.pause()
+                assert event._no_default_action
+                assert event._stop_propagation
+
+            assert text_area.text == "draft text"
+            assert app.submitted == []
+            assert chat._prompt_search_active is True
+
+    async def test_text_area_navigation_keys_reach_the_panel(
+        self, tmp_path: Path
+    ) -> None:
+        """Keys the panel owns are routed on even from the text area."""
+        from textual import events
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+            text_area = chat._text_area
+            assert text_area is not None
+            await text_area._on_key(events.Key("down", None))
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 1
+            assert text_area.text == ""
+
+    async def test_hovering_moves_the_highlight_between_panel_rows(
+        self, tmp_path: Path
+    ) -> None:
+        """Moving the pointer must unmark the row it left."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            await pilot.hover(panel._options[1])
+            await pilot.pause()
+            assert panel._options[1].mouse_hover
+
+            await pilot.hover(panel._options[2])
+            await pilot.pause()
+
+            # Exactly one row is hovered, so no stale highlight is left behind.
+            assert panel._options[2].mouse_hover
+            assert not panel._options[1].mouse_hover
+            assert chat._prompt_search_index == 0
+
+    async def test_focus_query_reports_whether_focus_moved(
+        self, tmp_path: Path
+    ) -> None:
+        """`focus_query` keeps the panel's composition private to it."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["a prompt"])
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            assert panel.focus_query() is True
+            await pilot.pause()
+            assert app.focused is panel._query_input
+
+            # Before `on_mount` there is nothing to focus, and the caller is
+            # told rather than left believing focus moved.
+            query_input = panel._query_input
+            panel._query_input = None
+            try:
+                assert panel.focus_query() is False
+            finally:
+                panel._query_input = query_input
+
+    async def test_panel_reports_its_rendered_height(self, tmp_path: Path) -> None:
+        """`RowsChanged` drives the composer's height reservation.
+
+        `ChatInputBox` subtracts the reported rows from its budget, so an
+        over-report shrinks the draft and an under-report lets the panel
+        overflow the composer border.
+        """
+        from deepagents_code.tui.widgets.prompt_search import (
+            PROMPT_SEARCH_MAX_HINT_ROWS,
+            PROMPT_SEARCH_PANEL_ROWS,
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt", "second prompt"])
+            await pilot.pause()
+
+            box = chat.query_one(ChatInputBox)
+            assert box._prompt_search_rows == 0
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            # One query row, one row per result, plus the measured hint.
+            assert box._prompt_search_rows == 1 + 2 + panel._hint_rows()
+            assert 0 < box._prompt_search_rows <= PROMPT_SEARCH_PANEL_ROWS
+            # A wide terminal wraps the hint to fewer than the pre-layout
+            # maximum, so `on_resize` corrected the initial reservation down.
+            assert panel._hint_rows() < PROMPT_SEARCH_MAX_HINT_ROWS
+
+            chat._close_prompt_search(restore_draft=True)
+            await pilot.pause()
+            assert box._prompt_search_rows == 0
+
+    async def test_panel_renders_inside_the_composer_border(
+        self, tmp_path: Path
+    ) -> None:
+        """The reserved rows must actually keep the panel inside the box."""
+        app = _RecordingApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, [f"prompt {index}" for index in range(20)])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            box = chat.query_one(ChatInputBox)
+            assert panel.region.height > 0
+            assert panel.region.y >= box.region.y
+            assert panel.region.bottom <= box.region.bottom
+
+            # The hint is the last thing in the panel, so a short reservation
+            # clips its final row rather than the results.
+            hint = panel._hint_static
+            assert hint is not None
+            assert hint.region.bottom <= panel.region.bottom
+
+    async def test_narrow_terminal_reserves_the_wrapped_hint(
+        self, tmp_path: Path
+    ) -> None:
+        """A wrapped hint claims more rows, and the panel still fits."""
+        app = _RecordingApp()
+        async with app.run_test(size=(40, 24)) as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            box = chat.query_one(ChatInputBox)
+            hint = panel._hint_static
+            assert hint is not None
+
+            # Narrow enough that the hint wraps past one row.
+            assert panel._hint_rows() > 1
+            assert box._prompt_search_rows == 1 + 1 + panel._hint_rows()
+            assert panel.region.bottom <= box.region.bottom
+            assert hint.region.bottom <= panel.region.bottom
+
+    async def test_rebuild_failure_ends_the_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed rebuild must abandon the search, not just hide the panel.
+
+        Hiding alone leaves `_prompt_search_active` true, so the composer keeps
+        swallowing every key into an invisible panel.
+        """
+        from unittest.mock import AsyncMock
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt", "second prompt"])
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            panel = chat._prompt_search
+            assert panel is not None
+            results = panel.query_one("#prompt-search-results")
+            monkeypatch.setattr(
+                results, "mount", AsyncMock(side_effect=RuntimeError("boom"))
+            )
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert panel.styles.display == "none"
+            assert panel._options == []
+            assert [message for message, _ in notifications] == [
+                "Prompt search could not be displayed"
+            ]
+
+            # The composer takes typed keys again rather than routing them into
+            # an invisible panel.
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.focus()
+            await pilot.pause()
+            await pilot.press("x")
+            await pilot.pause()
+            assert text_area.text == "x"
+
+    async def test_abandon_recovery_survives_a_detached_panel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recovery must not raise in turn.
+
+        `hide`, `post_message`, and `notify` all reach for `self.app`, and
+        detachment is a plausible cause of the failure being recovered from. A
+        second exception would escape the `call_next` callback that runs
+        `_rebuild_options` and panic the app during error recovery, masking the
+        original failure.
+        """
+        from unittest.mock import MagicMock
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt"])
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+
+            # Stand in for a detached widget: every app-touching step raises.
+            hide = MagicMock(side_effect=RuntimeError("no app"))
+            post_message = MagicMock(side_effect=RuntimeError("no app"))
+            notify = MagicMock(side_effect=RuntimeError("no app"))
+            monkeypatch.setattr(panel, "hide", hide)
+            monkeypatch.setattr(panel, "post_message", post_message)
+            monkeypatch.setattr(panel, "notify", notify)
+
+            panel._abandon_quietly()
+
+            # Every step was attempted even though each earlier one failed:
+            # ending the session matters more than any single step succeeding.
+            hide.assert_called_once()
+            post_message.assert_called_once()
+            notify.assert_called_once()
+
+            # Restore before the app shuts down: a still-raising `post_message`
+            # would break teardown rather than the code under test.
+            monkeypatch.undo()
+
+    async def test_unwritable_history_warns_once_per_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Prompts that cannot be saved are lost at exit, so say so -- once.
+
+        A failed append keeps the entry in memory, so up-arrow and the prompt
+        clipboard keep working and nothing on screen suggests a problem.
+        """
+        # A regular file in place of the parent directory makes the append's
+        # mkdir/open raise OSError.
+        blocker = tmp_path / "blocker"
+        blocker.touch()
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = blocker / "history.jsonl"
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            # Drive a real submission so the wiring in `_submit` is covered,
+            # not just the helper.
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("first prompt")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == ["first prompt"]
+            assert len(notifications) == 1
+            message, kwargs = notifications[0]
+            assert "Could not save prompt history" in message
+            assert "lost when it ends" in message
+            assert kwargs["severity"] == "warning"
+            # The message interpolates the history path, so markup must be off.
+            assert kwargs["markup"] is False
+
+            # Still broken, but the user has already been told.
+            text_area.insert("second prompt")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 2
+            assert len(notifications) == 1
+
+    async def test_writable_history_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The healthy path stays quiet."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("a prompt")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == ["a prompt"]
+            assert notifications == []
+
+    async def test_unreadable_history_warns_when_the_list_is_not_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A degraded list looks complete, so the failure needs its own warning.
+
+        The empty-state message only reaches the user when there is nothing to
+        list, but `recent_prompts` falls back to this session's entries on a
+        read failure. The usual outcome is a non-empty, silently truncated list
+        that is indistinguishable from a healthy one.
+        """
+        history_file = tmp_path / "history.jsonl"
+        history_file.mkdir()
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = history_file
+            # Session entries survive the failed read, so the list is non-empty
+            # and the empty state never renders.
+            self._seed_history(chat, ["this session only"])
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_prompts
+            assert len(notifications) == 1
+            message, kwargs = notifications[0]
+            assert "Could not read prompt history" in message
+            assert "this session's prompts only" in message
+            assert kwargs["severity"] == "warning"
+            # The message interpolates the history path, so markup must be off.
+            assert kwargs["markup"] is False
+
+    async def test_readable_history_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The healthy path stays quiet."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["a prompt"])
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_prompts
+            assert notifications == []
+
+    async def test_unreadable_history_path_is_not_markup_parsed(
+        self, tmp_path: Path
+    ) -> None:
+        """The empty-state message interpolates a path, so it must stay literal.
+
+        `Static` markup-parses a bare `str`, so a directory named like a
+        Textual tag is swallowed from the message. (A closing-tag shape goes
+        further and raises `MarkupError`, taking the rebuild down its
+        recovery path.)
+        """
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        # A directory in place of the file is an OSError on read, and the
+        # bracketed segment lands in the interpolated message.
+        history_dir = tmp_path / "proj [v2]"
+        history_dir.mkdir()
+        history_file = history_dir / "history.jsonl"
+        history_file.mkdir()
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = history_file
+            chat._history._entries = []
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            assert chat._prompt_search_active is True
+            results = panel.query_one("#prompt-search-results")
+            messages = [
+                str(child.render())
+                for child in results.children
+                if isinstance(child, Static)
+                and not isinstance(child, PromptSearchOption)
+            ]
+            assert messages
+            # Every literal segment survives rather than being read as markup.
+            assert "proj [v2]" in messages[0]

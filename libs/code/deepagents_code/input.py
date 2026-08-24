@@ -953,7 +953,7 @@ def _safe_exists(path: Path) -> bool:
     failed probe is equivalent to "not there".
 
     `ValueError` needs no guard here: every supported interpreter already
-    absorbs an embedded NUL inside these three probes (3.11-3.13 catch it in
+    absorbs an embedded NUL inside these three probes (3.12-3.13 catch it in
     `pathlib`, 3.14 delegates to `os.path.*`, which catches it). Only
     `resolve()` propagates it — see `_resolve_existing_pasted_path`.
 

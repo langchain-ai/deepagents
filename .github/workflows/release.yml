@@ -75,9 +75,16 @@ on:
         description:
           "(deepagents-code only) Skip SDK pin validation
           (danger!) - Only use when intentionally pinning an older SDK"
+      dangerous-skip-ripgrep-check:
+        required: false
+        type: boolean
+        default: false
+        description:
+          "Tolerate a ripgrep install failure in pre-release checks
+          (danger!) - the rg-gated artifact tests will skip. Passed automatically
+          when the merged release PR carries the bypass-ripgrep-check label"
 
 env:
-  PYTHON_VERSION: "3.11"
   UV_NO_SYNC: "true"
   UV_FROZEN: "true"
 
@@ -95,6 +102,8 @@ jobs:
     outputs:
       package: ${{ steps.parse.outputs.package }}
       working-dir: ${{ steps.parse.outputs.working-dir }}
+      python-version: ${{ steps.python-matrix.outputs.python-version }}
+      python-versions: ${{ steps.python-matrix.outputs.python-versions }}
       release-sha: ${{ steps.resolve-sha.outputs.sha }}
     steps:
       - name: Parse package input
@@ -170,6 +179,7 @@ jobs:
           INPUT_SHA: ${{ inputs.release-sha }}
           IS_DANGEROUS: ${{ inputs.dangerous-nonmain-release }}
           SKIP_SDK_PIN_CHECK: ${{ inputs.dangerous-skip-sdk-pin-check }}
+          SKIP_RIPGREP_CHECK: ${{ inputs.dangerous-skip-ripgrep-check }}
         run: |
           set -euo pipefail
 
@@ -209,6 +219,9 @@ jobs:
             fi
             if [ "${SKIP_SDK_PIN_CHECK}" = "true" ]; then
               echo "| \`dangerous-skip-sdk-pin-check\` | ⚠️ enabled |"
+            fi
+            if [ "${SKIP_RIPGREP_CHECK}" = "true" ]; then
+              echo "| \`dangerous-skip-ripgrep-check\` | ⚠️ enabled |"
             fi
             echo ""
           } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write dispatch-inputs summary to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
@@ -330,6 +343,17 @@ jobs:
             echo ""
           } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write resolved release target to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
 
+      - name: Resolve Python matrix
+        id: python-matrix
+        env:
+          RELEASE_SHA: ${{ steps.resolve-sha.outputs.sha }}
+          WORKING_DIR: ${{ steps.parse.outputs.working-dir }}
+        run: |
+          set -euo pipefail
+          git show "${RELEASE_SHA}:${WORKING_DIR}/pyproject.toml" \
+            | python .github/scripts/release/resolve_python_matrix.py \
+            >> "$GITHUB_OUTPUT"
+
   # Build the distribution package and extract version info
   # Runs in isolated environment with minimal permissions for security
   build:
@@ -358,7 +382,7 @@ jobs:
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
           enable-cache: "false"
 
       # We want to keep this build stage *separate* from the release stage,
@@ -496,7 +520,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
 
       # The release target checkout (above) uses the release SHA, which may
       # predate the notes script. Check out the workflow's own revision into
@@ -591,7 +615,7 @@ jobs:
           attestations: false
 
   pre-release-checks:
-    name: ✅ Pre-release checks
+    name: ✅ Pre-release checks (Python ${{ matrix.python-version }})
     needs:
       - setup
       - build
@@ -600,6 +624,10 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.setup.outputs.python-versions) }}
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
@@ -624,7 +652,7 @@ jobs:
         uses: "./.github/actions/uv_setup"
         id: setup-python
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.python-version }}
           enable-cache: "false"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -694,7 +722,9 @@ jobs:
           if [ "$PKG_NAME" = "deepagents-talon" ]; then
             INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
           fi
-          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
+          # setup-uv exports UV_PYTHON, which overrides VIRTUAL_ENV for
+          # `uv pip`; unset it so the install targets the `.venv` above.
+          env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
           # Replace all dashes in the package name with underscores,
           # since that's how Python imports packages with dashes in the name.
@@ -724,7 +754,62 @@ jobs:
           if [ "$PKG_NAME" = "deepagents-talon" ]; then
             INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
           fi
-          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
+          # setup-uv exports UV_PYTHON, which overrides VIRTUAL_ENV for
+          # `uv pip`; unset it so the install targets the existing `.venv`.
+          env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
+
+      # The install itself has no timeout: release artifacts must be validated
+      # with the real ripgrep path exercised. `DEEPAGENTS_RIPGREP_EXPECTED=1`
+      # makes the rg-gated tests fail rather than skip if `rg` goes missing
+      # anyway. A dispatch carrying `dangerous-skip-ripgrep-check=true` (set
+      # from the `bypass-ripgrep-check` label on the merged release PR)
+      # tolerates an apt failure instead: the install still runs, but a failure
+      # neither fails the job nor promises ripgrep, so the gated tests skip
+      # rather than error.
+      #
+      # The failure path mirrors `_test.yml`'s strict step: unwind dpkg, then
+      # probe for a usable `rg`. Without the probe a publish run would discard
+      # ripgrep coverage that is actually available whenever apt reports
+      # failure but the binary landed (or was already on the image) -- and this
+      # is the run where losing the symlink containment check matters most.
+      - name: Install ripgrep
+        env:
+          SKIP_RIPGREP_CHECK: ${{ inputs.dangerous-skip-ripgrep-check }}
+        run: |
+          set +e
+          sudo apt-get update && sudo apt-get install -y ripgrep
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ "$SKIP_RIPGREP_CHECK" != "true" ]; then
+            echo "::error::ripgrep install failed (apt exit $status) and dangerous-skip-ripgrep-check is not set."
+            exit "$status"
+          fi
+          # A killed or half-applied apt transaction can leave dpkg holding the
+          # lock, which would surface as an unrelated failure in a later step.
+          # A failed recovery is tolerated; the `rg` probe is what decides.
+          sudo timeout --signal=TERM --kill-after=10s 60s \
+            dpkg --configure -a || true
+          if rg --version >/dev/null 2>&1; then
+            echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            echo "::notice::ripgrep install reported failure (apt exit $status) but a usable rg is present; continuing with ripgrep"
+            exit 0
+          fi
+          echo "::warning::ripgrep install failed (apt exit $status); dangerous-skip-ripgrep-check set — the rg-gated artifact tests will skip"
+          # A step annotation alone is not a record: the dispatch-inputs summary
+          # says only that the *input* was set, which cannot distinguish "apt
+          # succeeded, full coverage" from "apt failed, tests skipped". Write
+          # the degraded outcome where an operator reviewing the release sees it.
+          {
+            echo "### ⚠️ Published without ripgrep coverage"
+            echo ""
+            echo "\`apt-get\` failed (exit $status) and \`dangerous-skip-ripgrep-check\` was set, so the job continued."
+            echo "The real-binary grep tests did **not** run against this artifact, including the symlink containment check."
+          } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write ripgrep-bypass summary to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
+          exit 0
 
       - name: Run unit tests
         run: make test COV_ARGS= PYTEST_EXTRA="-v"
@@ -788,7 +873,7 @@ jobs:
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
           enable-cache: "false"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -845,7 +930,7 @@ jobs:
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
           enable-cache: "false"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1087,5 +1172,25 @@ jobs:
           # `-R` is required: this job skips checkout (it only needs the API),
           # and without a repo flag `gh` shells out to `git` to discover the
           # repository, which fails with "fatal: not a git repository".
+          # The dispatch time is recorded first so the poll below can ignore
+          # any earlier workflow_dispatch runs of this workflow.
+          DISPATCHED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
           gh workflow run bump_code_sdk_pin.yml --repo "${GITHUB_REPOSITORY}" --ref main
-          echo "::notice::Dispatched bump_code_sdk_pin.yml after publishing deepagents==${SDK_VERSION}."
+          # `gh workflow run` returns before the run exists and prints no run
+          # ID, so poll for the newest workflow_dispatch run to build its URL.
+          # Without the `--created >=` bound, a previous dispatch of this
+          # workflow would match immediately while the new run is still
+          # propagating. Fall back to the workflow page (newest run listed at
+          # top) if the API hasn't caught up after ~30s.
+          RUN_URL=""
+          for _ in 1 2 3 4 5 6; do
+            sleep 5
+            RUN_URL="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow bump_code_sdk_pin.yml --event workflow_dispatch --created ">=${DISPATCHED_AT}" --limit 1 --json url --jq '.[0].url // ""' || true)"
+            if [ -n "$RUN_URL" ]; then
+              break
+            fi
+          done
+          if [ -z "$RUN_URL" ]; then
+            RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/workflows/bump_code_sdk_pin.yml"
+          fi
+          echo "::notice::Dispatched bump_code_sdk_pin.yml after publishing deepagents==${SDK_VERSION}: ${RUN_URL}"

@@ -181,13 +181,19 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="plugin marketplace skills mcp enable disable install",
     ),
     SlashCommand(
+        name="/prompts",
+        description="Search and reuse a previous prompt",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="history clipboard recent recall submitted",
+    ),
+    SlashCommand(
         name="/model",
         description="Switch models or edit model settings",
         bypass_tier=BypassTier.IMMEDIATE_UI,
     ),
     SlashCommand(
         name="/notifications",
-        description="Configure warning notifications",
+        description="Review notifications and configure warning settings",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="warnings alerts suppress startup yolo",
     ),

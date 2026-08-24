@@ -116,10 +116,205 @@ jobs:
         shell: bash
         run: uv sync --group test
 
-      - name: "🔍 Install ripgrep"
-        if: runner.os == 'Linux'
+      # Maintainer escape hatch: a release PR labeled `bypass-ripgrep-check`
+      # turns a strict ripgrep-install failure into a tolerated continue. The
+      # label is read from the live GitHub API rather than
+      # `github.event.pull_request.labels` because re-running a job replays the
+      # original event payload, which would miss a label added after the fact.
+      #
+      # The condition is the intersection of "this is a `pull_request`" and the
+      # strict step's own `if:` below. Running anywhere else would annotate legs
+      # that have no strict install to bypass -- an `::error::` about a check
+      # that is not enforced there, once per matrix leg. `push` and
+      # `merge_group` carry no PR label context at all, so they skip this step
+      # and the strict install always fails loudly for them.
+      - name: "🏷️ Resolve ripgrep bypass"
+        id: ripgrep-bypass
+        if: >-
+          runner.os == 'Linux' &&
+          github.event_name == 'pull_request' &&
+          (startsWith(github.head_ref, 'release-please--') ||
+          startsWith(github.event.pull_request.title, 'release('))
         shell: bash
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          # `per_page=100` rather than `--paginate`: an issue caps at 100 labels,
+          # and `--paginate` streams each page as it arrives, so a failure on a
+          # later page would leave earlier pages in $LABELS while the nonzero exit
+          # is discarded -- i.e. it could bypass on the strength of a failed call.
+          # A single request makes the exit status an honest all-or-nothing signal.
+          rc=0
+          LABELS="$(gh api "repos/$REPO/issues/$PR/labels?per_page=100" --jq '.[].name')" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            # Fail closed, but loudly: a silent fall-through here is
+            # indistinguishable from "label absent", so a maintainer would apply
+            # the label, re-run, and watch it fail again with no explanation.
+            echo "::error::Could not read labels for PR #$PR (gh api exit $rc); the strict ripgrep install will be ENFORCED. The bypass label cannot take effect until this is resolved."
+            echo "bypass=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s\n' "$LABELS" | grep -Fxq "bypass-ripgrep-check"; then
+            echo "bypass=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::'bypass-ripgrep-check' label present — a failed strict ripgrep install will be tolerated and the rg-gated tests will skip"
+          else
+            echo "bypass=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Release-sensitive runs must exercise the real ripgrep code path rather
+      # than the Python fallback, so the install has no timeout here and a
+      # failure reds the job — unless the PR carries `bypass-ripgrep-check`,
+      # which turns an apt failure into a tolerated continue (see
+      # RELEASING.md > "Release Failed: Ripgrep Install"). `merge_group` and
+      # `push` stay strict even then: they have no PR label context to read,
+      # so an apt flake there still fails (for the merge queue, ejection is
+      # recoverable, whereas a silent skip at the last gate is not).
+      #
+      # `DEEPAGENTS_RIPGREP_EXPECTED=1` is consumed by `require_ripgrep` in
+      # `libs/deepagents/tests/.../test_filesystem_backend.py`: on a runner
+      # that promised ripgrep, a missing `rg` fails the affected tests instead
+      # of skipping them. One of those tests guards symlink containment, and a
+      # silent skip would let a containment regression merge green.
+      - name: "🔍 Install ripgrep (strict)"
+        id: ripgrep-strict
+        if: >-
+          runner.os == 'Linux' &&
+          (github.event_name != 'pull_request' ||
+          startsWith(github.head_ref, 'release-please--') ||
+          startsWith(github.event.pull_request.title, 'release('))
+        shell: bash
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_PYTHON: ${{ matrix.python-version }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          BYPASS: ${{ steps.ripgrep-bypass.outputs.bypass }}
+        run: |
+          set +e
+          sudo apt-get update && sudo apt-get install -y ripgrep
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # apt failed. Tolerate it only when the PR is labeled; otherwise
+          # fail as before. The label only exists on a `pull_request`, so
+          # `push`/`merge_group` always take the strict path.
+          if [ "$BYPASS" != "true" ]; then
+            echo "::error::ripgrep install failed (apt exit $status) on a release-sensitive run and no 'bypass-ripgrep-check' label is present."
+            exit "$status"
+          fi
+          # Bypassed: run the same dpkg unwind and `rg` probe as the
+          # non-release path, then record the same artifact so the timeout
+          # comment workflow reports these legs too. `DEEPAGENTS_RIPGREP_EXPECTED`
+          # is only set when `rg` is actually usable, so a genuinely missing
+          # binary lets `require_ripgrep` skip the gated tests rather than
+          # fail them.
+          sudo timeout --signal=TERM --kill-after=10s 60s \
+            dpkg --configure -a || true
+          if rg --version >/dev/null 2>&1; then
+            echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            echo "::notice::ripgrep install reported failure but a usable rg is present; continuing with ripgrep"
+            exit 0
+          fi
+          echo "timed-out=true" >> "$GITHUB_OUTPUT"
+          # Log the apt status: the bypass tolerates every non-zero status, so
+          # the status is the only thing that separates a mirror flake from a
+          # permanently broken install that will be bypassed on every re-run.
+          echo "::warning::ripgrep install failed (apt exit $status) on release PR; 'bypass-ripgrep-check' present — continuing without ripgrep (rg-gated tests will skip)"
+          package="${WORKING_DIRECTORY//\//-}"
+          artifact="ripgrep-timeout-${package}-${MATRIX_OS}-${MATRIX_PYTHON}"
+          marker="$RUNNER_TEMP/$artifact/warning.txt"
+          mkdir -p "$(dirname "$marker")"
+          printf '%s\n' "$artifact" > "$marker"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "marker=$marker" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: "🔍 Install ripgrep (non-release PR)"
+        id: ripgrep-install
+        if: >-
+          runner.os == 'Linux' &&
+          github.event_name == 'pull_request' &&
+          !startsWith(github.head_ref, 'release-please--') &&
+          !startsWith(github.event.pull_request.title, 'release(')
+        shell: bash
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_PYTHON: ${{ matrix.python-version }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          set +e
+          # `sudo timeout`, not `timeout sudo`: `timeout` must run as root to
+          # signal the root-owned `apt-get`. An unprivileged `timeout` gets
+          # EPERM, leaves the install orphaned holding the dpkg lock, and the
+          # bound silently does nothing.
+          sudo timeout --signal=TERM --kill-after=10s 120s \
+            bash -c 'apt-get update && apt-get install -y ripgrep'
+          status=$?
+          set -e
+
+          # coreutils `timeout` reports 124 when the command dies from the
+          # initial TERM and 137 (128+9) when `--kill-after` escalates to
+          # KILL. apt defers TERM mid-transaction, so 137 is the likely status
+          # for a genuinely wedged install. Both mean "hit the bound"; every
+          # other non-zero status is a real apt failure that must fail the job.
+          if [ "$status" -ne 124 ] && [ "$status" -ne 137 ]; then
+            echo "timed-out=false" >> "$GITHUB_OUTPUT"
+            if [ "$status" -eq 0 ]; then
+              echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            fi
+            exit "$status"
+          fi
+
+          # A killed apt can leave dpkg mid-transaction. Unwind it so later
+          # steps don't trip over the lock, then check what actually landed:
+          # "the bound was hit" and "ripgrep is missing" are different facts,
+          # and only the second one should warn. The recovery itself is
+          # bounded: `dpkg --configure -a` can wait on the same lock or
+          # maintainer script that stalled the install, and without its own
+          # timeout the supposedly bounded step can burn the rest of the job's
+          # 20 minutes. A failed recovery is tolerated here — the
+          # `rg --version` probe below is what decides the warning.
+          sudo timeout --signal=TERM --kill-after=10s 60s \
+            dpkg --configure -a || true
+          if rg --version >/dev/null 2>&1; then
+            echo "timed-out=false" >> "$GITHUB_OUTPUT"
+            echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            echo "::notice::ripgrep install hit the two-minute bound but a usable rg is present; continuing with ripgrep"
+            exit 0
+          fi
+
+          echo "timed-out=true" >> "$GITHUB_OUTPUT"
+          echo "::warning::ripgrep installation exceeded two minutes; continuing without ripgrep"
+          package="${WORKING_DIRECTORY//\//-}"
+          artifact="ripgrep-timeout-${package}-${MATRIX_OS}-${MATRIX_PYTHON}"
+          marker="$RUNNER_TEMP/$artifact/warning.txt"
+          mkdir -p "$(dirname "$marker")"
+          printf '%s\n' "$artifact" > "$marker"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "marker=$marker" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: "📤 Record ripgrep install timeout"
+        # The soft step reports a genuine timeout; the strict step reports a
+        # bypassed release-PR failure. Both produce the same marker artifact.
+        if: >-
+          steps.ripgrep-install.outputs.timed-out == 'true' ||
+          steps.ripgrep-strict.outputs.timed-out == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          # Whichever install step reported `timed-out` is the one that set
+          # `artifact`/`marker`; the other's outputs are empty here, because the
+          # two steps' `if:` conditions are exact complements and a skipped
+          # step's outputs are the empty string. Relax either condition and
+          # this fallback stops being unambiguous.
+          name: ${{ steps.ripgrep-install.outputs.artifact || steps.ripgrep-strict.outputs.artifact }}
+          path: ${{ steps.ripgrep-install.outputs.marker || steps.ripgrep-strict.outputs.marker }}
+          retention-days: 1
 
       # Maintainer escape hatch: a PR labeled `bypass-warnings-check` runs
       # pytest with `-W default`, demoting the ini `filterwarnings` policy

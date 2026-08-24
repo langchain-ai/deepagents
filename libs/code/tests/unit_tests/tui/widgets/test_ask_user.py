@@ -13,7 +13,12 @@ from textual.containers import Horizontal
 from textual.widgets import Markdown, Static
 
 import deepagents_code
-from deepagents_code._ask_user_types import CHOICE_QUESTION_TYPES, QUESTION_TYPES
+from deepagents_code._ask_user_types import (
+    CHOICE_QUESTION_TYPES,
+    QUESTION_TYPES,
+    decode_multi_select_answer,
+    encode_multi_select_answer,
+)
 from deepagents_code.config import ASCII_GLYPHS, get_glyphs
 from deepagents_code.tool_display import format_tool_display
 from deepagents_code.tui.widgets.ask_user import (
@@ -23,7 +28,6 @@ from deepagents_code.tui.widgets.ask_user import (
     MAX_OTHER_ENTRIES_TOAST,
     MISSING_ANSWER_TOAST,
     MISSING_OTHER_TEXT_TOAST,
-    MULTI_SELECT_COMMA_TOAST,
     OTHER_CHOICE_LABEL,
     AskUserMenu,
     AskUserTextArea,
@@ -623,7 +627,8 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {"type": "answered", "answers": [big]}
 
-    async def test_multi_select_toggles_and_joins_answers(self) -> None:
+    async def test_multi_select_toggles_and_collects_answers(self) -> None:
+        """The answer is a JSON array of the selected values, in choice order."""
         app = _AskUserTestApp(
             [
                 {
@@ -658,7 +663,7 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {
                 "type": "answered",
-                "answers": ["red, blue"],
+                "answers": ['["red", "blue"]'],
             }
 
     async def test_multi_select_required_enter_without_selection_does_not_submit(
@@ -696,7 +701,83 @@ class TestAskUserMenu:
             await pilot.pause()
 
             assert future.done()
-            assert future.result() == {"type": "answered", "answers": ["red"]}
+            assert future.result() == {"type": "answered", "answers": ['["red"]']}
+
+    async def test_multi_select_get_answer_encodes_a_json_array(self) -> None:
+        """`get_answer` returns the JSON encoding, decodable back to the values."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [
+                        {"value": "push-to-main — no PR label, always strict"},
+                        {"value": "blue"},
+                    ],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            question = menu.query_one(_QuestionWidget)
+            await pilot.pause()
+
+            await pilot.press("space")
+            await pilot.pause()
+
+            answer = question.get_answer()
+            assert answer == '["push-to-main — no PR label, always strict"]'
+            assert decode_multi_select_answer(answer) == [
+                "push-to-main — no PR label, always strict"
+            ]
+
+    async def test_empty_multi_select_answer_is_empty_for_validation(self) -> None:
+        """`"[]"` is truthy, so a raw `.strip()` would wrongly pass required.
+
+        `answer_is_empty` decodes the answer instead, so an untouched required
+        multi-select still fails the submit check.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}],
+                    "required": True,
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            question = menu.query_one(_QuestionWidget)
+            await pilot.pause()
+
+            assert question.get_answer() == "[]"
+            assert question.answer_is_empty()
+            assert question.validate_for_submit() == MISSING_ANSWER_TOAST
+
+    async def test_a_text_answer_of_literal_brackets_is_not_empty(self) -> None:
+        """Emptiness is routed by question type, not by matching the encoding.
+
+        `[]` is only the empty marker for `multi_select`. Typed into a text
+        question it is a real answer, so a required question must accept it.
+        """
+        app = _AskUserTestApp(
+            [{"question": "Paste it", "type": "text", "required": True}]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            question = menu.query_one(_QuestionWidget)
+            await pilot.pause()
+            await pilot.press("[", "]")
+            await pilot.pause()
+
+            assert question.get_answer() == "[]"
+            assert not question.answer_is_empty()
+            assert question.validate_for_submit() is None
 
     async def test_multi_select_untoggle_clears_choice(self) -> None:
         """Space is a toggle: pressing it twice deselects the choice again."""
@@ -727,7 +808,7 @@ class TestAskUserMenu:
             await pilot.pause()
 
             assert future.done()
-            assert future.result() == {"type": "answered", "answers": ["red"]}
+            assert future.result() == {"type": "answered", "answers": ['["red"]']}
 
     async def test_multi_select_required_blocks_after_untoggling_all(self) -> None:
         """Un-toggling the last choice re-blocks a required question."""
@@ -759,7 +840,7 @@ class TestAskUserMenu:
             assert MISSING_ANSWER_TOAST in [n.message for n in app._notifications]
 
     async def test_multi_select_answer_uses_choice_order_not_toggle_order(self) -> None:
-        """Answers are joined in choice-list order regardless of toggle order."""
+        """Answers list values in choice-list order regardless of toggle order."""
         app = _AskUserTestApp(
             [
                 {
@@ -795,11 +876,11 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {
                 "type": "answered",
-                "answers": ["red, green"],
+                "answers": ['["red", "green"]'],
             }
 
     async def test_multi_select_optional_submits_empty_answer(self) -> None:
-        """An optional multi-select with nothing toggled submits an empty answer."""
+        """An optional multi-select with nothing toggled submits an empty array."""
         app = _AskUserTestApp(
             [
                 {
@@ -823,7 +904,7 @@ class TestAskUserMenu:
             await pilot.pause()
 
             assert future.done()
-            assert future.result() == {"type": "answered", "answers": [""]}
+            assert future.result() == {"type": "answered", "answers": ["[]"]}
             assert MISSING_ANSWER_TOAST not in [n.message for n in app._notifications]
 
     async def test_multi_select_toggle_glyphs_survive_cursor_move(self) -> None:
@@ -906,7 +987,7 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {
                 "type": "answered",
-                "answers": ["red, teal"],
+                "answers": ['["red", "teal"]'],
             }
 
     async def test_multi_select_other_alone_submits_custom_text(self) -> None:
@@ -942,7 +1023,7 @@ class TestAskUserMenu:
             await pilot.pause()
 
             assert future.done()
-            assert future.result() == {"type": "answered", "answers": ["purple"]}
+            assert future.result() == {"type": "answered", "answers": ['["purple"]']}
 
     async def test_typing_on_highlighted_multi_select_other_activates_it(self) -> None:
         """The first typed character toggles and populates a highlighted Other row."""
@@ -969,7 +1050,7 @@ class TestAskUserMenu:
             assert other_entry.text_input.has_focus
             assert other_entry.text_input.text == "p"
 
-    async def test_multi_select_multiple_others_grow_and_join(self) -> None:
+    async def test_multi_select_multiple_others_grow_and_collect(self) -> None:
         """Filling one Other reveals an Add-another slot for more custom values."""
         app = _AskUserTestApp(
             [
@@ -1031,7 +1112,7 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {
                 "type": "answered",
-                "answers": ["teal, cyan"],
+                "answers": ['["teal", "cyan"]'],
             }
             # Exactly one spare empty Add-another row remains mounted after the
             # second custom is filled (2 choices + 3 Other rows); it must not
@@ -1099,7 +1180,8 @@ class TestAskUserMenu:
             assert not future.done()
             assert MISSING_OTHER_TEXT_TOAST in [n.message for n in app._notifications]
 
-    async def test_multi_select_other_rejects_comma_in_custom_text(self) -> None:
+    async def test_multi_select_other_accepts_comma_in_custom_text(self) -> None:
+        """A comma in a custom answer is one value, not a fake second selection."""
         app = _AskUserTestApp(
             [
                 {
@@ -1129,8 +1211,11 @@ class TestAskUserMenu:
             await pilot.press("enter")
             await pilot.pause()
 
-            assert not future.done()
-            assert MULTI_SELECT_COMMA_TOAST in [n.message for n in app._notifications]
+            assert future.done()
+            assert future.result() == {
+                "type": "answered",
+                "answers": ['["teal, cyan"]'],
+            }
 
     async def test_untoggling_confirmed_multi_select_reopens_with_toast(self) -> None:
         """Clearing an already-confirmed required question explains the bounce."""
@@ -1186,19 +1271,19 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {
                 "type": "answered",
-                "answers": ["red", "Alice"],
+                "answers": ['["red"]', "Alice"],
             }
 
-    async def test_comma_edited_into_a_confirmed_custom_answer_blocks_submit(
+    async def test_comma_edited_into_a_confirmed_custom_answer_submits_verbatim(
         self,
     ) -> None:
-        """Editing a confirmed custom answer must be re-validated before submit.
+        """A comma edited into a confirmed custom answer stays one value.
 
         Answers are read live, so confirming question 1 is not a promise that it
         still holds. `focus_input` drops the cursor straight back into a checked
         Other field, so adding a comma afterwards takes no unusual input — and
-        without a final re-validation the agent receives `"teal, cyan"`, reading
-        one custom answer as two selections.
+        with the JSON encoding the agent receives one `"teal, cyan"` value, not
+        two selections.
         """
         app = _AskUserTestApp(
             [
@@ -1235,7 +1320,7 @@ class TestAskUserMenu:
             assert other_input.has_focus
             other_input.text = "teal, cyan"
 
-            # Answer Q2 and submit. Q1 is the question that must bounce.
+            # Answer Q2 and submit; the comma must survive verbatim.
             menu.action_next_question()
             await pilot.pause()
             text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
@@ -1244,10 +1329,11 @@ class TestAskUserMenu:
             await pilot.press("enter")
             await pilot.pause()
 
-            assert not future.done()
-            assert MULTI_SELECT_COMMA_TOAST in [n.message for n in app._notifications]
-            assert menu._current_question == 0
-            assert menu._confirmed[0] is False
+            assert future.done()
+            assert future.result() == {
+                "type": "answered",
+                "answers": ['["teal, cyan"]', "Alice"],
+            }
 
     async def test_clearing_a_confirmed_custom_answer_blocks_submit(self) -> None:
         """A checked-but-emptied Other must bounce, not vanish from the answer.
@@ -1303,14 +1389,15 @@ class TestAskUserMenu:
             assert MISSING_OTHER_TEXT_TOAST in [n.message for n in app._notifications]
             assert menu._current_question == 0
 
-    async def test_unconfirmed_comma_answer_blocks_submit_from_another_question(
+    async def test_unconfirmed_comma_answer_submits_from_another_question(
         self,
     ) -> None:
-        """Tabbing past an invalid question must not smuggle it into the submit.
+        """Tabbing past a valid question keeps its answer in the submit.
 
         `action_next_question` deliberately does no validation, and confirming
         the *last* question re-collects every answer — including one the user
-        never confirmed.
+        never confirmed. A comma in that unconfirmed custom answer is now just
+        content, so the submit goes through with it intact.
         """
         app = _AskUserTestApp(
             [
@@ -1345,8 +1432,11 @@ class TestAskUserMenu:
             await pilot.press("enter")
             await pilot.pause()
 
-            assert not future.done()
-            assert MULTI_SELECT_COMMA_TOAST in [n.message for n in app._notifications]
+            assert future.done()
+            assert future.result() == {
+                "type": "answered",
+                "answers": ['["teal, cyan"]', "Alice"],
+            }
 
     async def test_typing_a_custom_answer_reveals_the_next_slot(self) -> None:
         """Real keystrokes must grow the slots, not only an explicit sync call.
@@ -1430,8 +1520,8 @@ class TestAskUserMenu:
         """A collapsed paste in a custom multi-select answer expands on submit.
 
         `get_answer` and `validate_for_submit` must agree on reading
-        `submitted_value`: if one read raw `.text` instead, a pasted comma would
-        pass validation and then corrupt the joined answer.
+        `submitted_value`: if one read raw `.text` instead, the placeholder
+        token would land in the answer instead of the pasted content.
         """
         from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
 
@@ -1470,12 +1560,15 @@ class TestAskUserMenu:
 
             assert future.done()
             # Stripped, unlike the `multiple_choice` Other path: a custom value is
-            # one item in a `", "`-joined list, and the same strip is what makes
+            # one item in the JSON array, and the same strip is what makes
             # "this slot is filled" decidable for slot growth.
-            assert future.result() == {"type": "answered", "answers": [big.strip()]}
+            assert future.result() == {
+                "type": "answered",
+                "answers": [encode_multi_select_answer([big.strip()])],
+            }
 
-    async def test_pasted_comma_in_a_custom_answer_is_rejected(self) -> None:
-        """Validation reads the expanded paste, not the collapsed placeholder."""
+    async def test_pasted_comma_in_a_custom_answer_passes_validation(self) -> None:
+        """Validation reads the expanded paste and finds nothing to reject."""
         app = _AskUserTestApp(
             [
                 {
@@ -1500,11 +1593,15 @@ class TestAskUserMenu:
             other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
             other_input.text = "teal, cyan"
 
-            assert question.validate_for_submit() == MULTI_SELECT_COMMA_TOAST
+            assert question.validate_for_submit() is None
             other_input.focus()
             await pilot.press("enter")
             await pilot.pause()
-            assert not future.done()
+            assert future.done()
+            assert future.result() == {
+                "type": "answered",
+                "answers": ['["teal, cyan"]'],
+            }
 
     async def test_return_to_multi_select_other_refocuses_input(self) -> None:
         """Tab away from a checked custom answer and Shift+Tab back refocuses it."""
@@ -1570,14 +1667,14 @@ class TestAskUserMenu:
             await pilot.pause()
 
             assert future.done()
-            assert future.result() == {"type": "answered", "answers": ["red"]}
+            assert future.result() == {"type": "answered", "answers": ['["red"]']}
 
     async def test_multiline_custom_answer_keeps_its_newline(self) -> None:
         """A newline inside a custom value is preserved, not flattened.
 
-        Pins the current contract: only `,` is forbidden, because it is what
-        joins selections. A newline is legible in the `A:` transcript block, so
-        it is passed through rather than rejected or silently stripped.
+        Pins the contract: no punctuation is forbidden, because the JSON array
+        is self-delimiting. A newline survives inside its JSON string escape in
+        the `A:` transcript block, and decodes back to the literal value.
         """
         app = _AskUserTestApp(
             [
@@ -1608,7 +1705,7 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {
                 "type": "answered",
-                "answers": ["line one\nline two"],
+                "answers": ['["line one\\nline two"]'],
             }
 
     async def test_out_of_range_cursor_refuses_to_toggle(self, caplog) -> None:
@@ -1841,7 +1938,7 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {
                 "type": "answered",
-                "answers": ["cheese, olives", "Alice"],
+                "answers": ['["cheese", "olives"]', "Alice"],
             }
 
     async def test_enter_advances_sequentially_through_mc_questions(self) -> None:

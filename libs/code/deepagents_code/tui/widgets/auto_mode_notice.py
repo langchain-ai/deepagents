@@ -1,8 +1,8 @@
 """First-enable confirmation modal for Auto mode.
 
-Shown at most once per install (per notice version) after Auto successfully
-becomes active. Enter keeps Auto and records the notice; Esc reverts to Manual
-and leaves the notice unsaved so it can appear again next time.
+Shown at most once per install (per notice version) before Auto activates.
+Enter confirms the switch and records the notice; Esc cancels and leaves the
+notice unsaved so it can appear again next time.
 """
 
 from __future__ import annotations
@@ -36,9 +36,9 @@ without updating this value would silently drop the disclosure — hence the
 
 AUTO_MODE_NOTICE_BODY = (
     "You switched to **Auto**. The agent can approve **routine gated actions** "
-    "without asking first — for example ordinary source edits and read-only "
-    "Git commands.\n\n"
-    f"Anything uncertain is reviewed against your **literal request** by "
+    "without asking first — for example, file edits and read-only Git "
+    "commands.\n\n"
+    "Anything uncertain is reviewed by "
     f"{AUTO_MODE_NOTICE_MODEL_ANCHOR}. If review keeps failing, you're asked "
     "to approve.\n\n"
     "This is **not a sandbox**. The agent still runs on this machine and can "
@@ -99,9 +99,10 @@ def build_auto_mode_notice_body(
 class AutoModeNoticeScreen(ModalScreen[bool]):
     """In-TUI first-run notice describing what Auto mode does.
 
-    Dismisses with `True` on Enter (keep Auto) and `False` on Esc (return to
-    Manual). Programmatic dismiss may yield `None`; callers treat that like
-    cancel so Auto is never left active without an explicit continue.
+    Dismisses with `True` on Enter (confirm switch to Auto) and `False` on
+    Esc (cancel, stay in current mode). Programmatic dismiss may yield `None`;
+    callers treat that like cancel so Auto is never activated without an
+    explicit confirm.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -210,7 +211,7 @@ class AutoModeNoticeScreen(ModalScreen[bool]):
                 open_links=False,
             )
             yield Static(
-                "Enter to keep Auto · Esc for Manual",
+                "Enter switch to Auto · Esc cancel",
                 classes="auto-mode-notice-help",
                 markup=False,
             )
@@ -221,11 +222,11 @@ class AutoModeNoticeScreen(ModalScreen[bool]):
         await open_checked_url_async(event.href, app=self.app, notify_on_success=True)
 
     def action_confirm(self) -> None:
-        """Keep Auto and mark the notice dismissed without re-showing."""
+        """Confirm switch to Auto and mark the notice dismissed without re-showing."""
         self.dismiss(True)
 
     def action_cancel(self) -> None:
-        """Return to Manual without persisting the notice.
+        """Cancel the Auto switch without persisting the notice.
 
         The method name must stay `cancel`: the app owns a priority `escape`
         binding that, for an active `ModalScreen`, dispatches to

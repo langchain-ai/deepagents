@@ -1,5 +1,6 @@
 """Tests for resume-state persistence and token display callbacks."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast, get_type_hints
 
@@ -35,6 +36,39 @@ class TestResumeState:
     def test_state_has_model_params_field(self):
         """ResumeState declares the `_model_params` channel."""
         assert "_model_params" in ResumeState.__annotations__
+
+    def test_last_model_request_timestamp_is_private(self) -> None:
+        """Cache timing must persist without entering public graph I/O."""
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_last_model_request_at"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
+    def test_last_cache_model_spec_is_private(self) -> None:
+        """Cache identity must persist without entering public graph I/O."""
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_last_cache_model_spec"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
+    def test_state_has_last_cache_endpoint_field(self) -> None:
+        """ResumeState declares the `_last_cache_endpoint` channel.
+
+        Without the annotation LangGraph silently drops the
+        `_checkpoint_command` write, so endpoint-change detection never fires
+        again -- and the `configurable_model` tests would stay green, because
+        they assert on the `Command.update` dict rather than on what the schema
+        accepts.
+        """
+        assert "_last_cache_endpoint" in ResumeState.__annotations__
+
+    def test_last_cache_endpoint_is_private(self) -> None:
+        """The endpoint identity must not enter public graph I/O.
+
+        It can embed a proxy hostname and path, so it belongs to the same
+        private set as the spec and timestamp it is checkpointed beside.
+        """
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_last_cache_endpoint"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
 
     def test_sticky_rubric_field_is_private(self):
         """Persistent TUI rubrics must not leak through the public schema."""
@@ -341,11 +375,13 @@ class TestCostDisplayCallbacks:
         assert app._displayed_cost_usd == pytest.approx(1.25)
 
     def test_cost_threshold_warns_once_per_thread(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        monkeypatch.setattr(
-            "deepagents_code.config_manifest.load_config_toml",
-            lambda: {"warnings": {"session_cost_threshold_usd": 1.0}},
+        # `DeepAgentsApp` reads the threshold through the shared resolver, whose
+        # user tier is the `DEFAULT_CONFIG_PATH` file `_isolate_state_dir`
+        # redirects under `tmp_path`.
+        (tmp_path / "config.toml").write_text(
+            "[warnings]\nsession_cost_threshold_usd = 1.0\n", encoding="utf-8"
         )
         app = DeepAgentsApp()
         notifications: list[str] = []

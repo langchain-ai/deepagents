@@ -10,13 +10,14 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Generator
+    from collections.abc import Callable, Coroutine, Generator, Iterator, Mapping
     from pathlib import Path
 
     from textual.pilot import Pilot
     from textual.screen import Screen
 
     from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.config_manifest import ConfigOption
 
 
 class DrainModalCommands(Protocol):
@@ -564,6 +565,54 @@ def _isolate_global_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
+def redirect_managed_config(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Point every managed-config seam at `path`.
+
+    The snapshot loader resolves through `resolve_managed_path`, error messages
+    render `managed_config_path`, and both names are also bound at import time
+    in the modules that read them. Patching one seam leaves a test reading the
+    developer's real host policy file — or, worse, silently reading nothing —
+    so they are redirected together.
+    """
+    from deepagents_code.configuration import paths, service
+    from deepagents_code.configuration.paths import ResolvedManagedPath
+
+    for module in (paths, service):
+        monkeypatch.setattr(module, "managed_config_path", lambda **_kwargs: path)
+        monkeypatch.setattr(
+            module,
+            "resolve_managed_path",
+            lambda **_kwargs: ResolvedManagedPath(path),
+        )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_managed_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Point managed config at a missing file and reset its process cache.
+
+    The managed path is fixed per platform, so without this the suite reads
+    whatever policy the developer's machine (or a CI image) has installed, and
+    unrelated tests change behavior. The snapshot is cached process-wide, so it
+    is also cleared on both sides of every test.
+    """
+    from deepagents_code.configuration import service
+
+    absent = tmp_path / "absent-managed_config.toml"
+    redirect_managed_config(monkeypatch, absent)
+    # The "expected a table" dedup set is process-global. Left alone, the first
+    # test to trip it decides what every later test sees, and the suite runs in
+    # random order.
+    from deepagents_code import config_manifest
+
+    config_manifest._warned_non_table_paths.clear()
+    service.invalidate_config_sources()
+    yield
+    config_manifest._warned_non_table_paths.clear()
+    service.invalidate_config_sources()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Redirect app-managed state and config away from the developer's data."""
@@ -767,3 +816,41 @@ def _close_leaked_debug_handlers() -> None:
     variant would reintroduce them for the import-time handler nobody owns.
     """
     _sweep_debug_handlers()
+
+
+def resolve_option_for_test(
+    option: ConfigOption,
+    *,
+    toml_data: dict[str, Any],
+    managed_toml_data: dict[str, Any] | None = None,
+) -> tuple[Any, str]:
+    """Resolve `option` through production code, returning `(value, source)`.
+
+    Stand-in for the retired `resolve_scalar` wrapper. It delegates to
+    `_resolve_option` rather than rebuilding the resolver, so the assertions
+    that ride on it -- especially the `caplog` ones -- exercise the shipped
+    resolution and diagnostics path instead of a copy maintained in the test
+    suite. Three modules kept private copies that did rebuild it, which left
+    roughly forty logging assertions verifying test scaffolding.
+
+    Args:
+        option: Manifest option to resolve.
+        toml_data: User `config.toml` table for this resolution.
+        managed_toml_data: Managed table. Omit for the process snapshot, which
+            `_isolate_managed_config` points at an absent file and
+            `redirect_managed_config` repoints per test.
+
+    Returns:
+        The resolved value and its compatibility source label.
+    """
+    from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
+        _resolve_option,
+    )
+
+    resolved = _resolve_option(
+        option, toml_data=toml_data, managed_toml_data=managed_toml_data
+    )
+    _emit_ranked_diagnostics(option, resolved)
+    return resolved.value, _ranked_source(resolved)

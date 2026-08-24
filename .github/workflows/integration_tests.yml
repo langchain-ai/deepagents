@@ -6,7 +6,7 @@
 # or type a custom path in the override field.
 
 name: "⏰ Integration Tests"
-run-name: "integration tests — ${{ inputs.working-directory-override || (inputs.working-directory == 'all' && 'all libs') || inputs.working-directory }} (py ${{ inputs.python-version || '3.11, 3.13' }})"
+run-name: "integration tests — ${{ inputs.working-directory-override || (inputs.working-directory == 'all' && 'all libs') || inputs.working-directory }} (py ${{ inputs.python-version || (contains(format('{0} {1}', inputs.working-directory, inputs.working-directory-override), 'libs/code') && '3.12, 3.13') || '3.11, 3.13' }})"
 
 on:
   workflow_dispatch:
@@ -28,7 +28,7 @@ on:
         default: ""
       python-version:
         type: string
-        description: "Python version (defaults to 3.11 and 3.13 matrix)"
+        description: "Python version (defaults to 3.12 and 3.13 for libs/code; otherwise 3.11 and 3.13)"
         default: ""
 
 permissions:
@@ -59,18 +59,21 @@ jobs:
           WORKING_DIRECTORY_OVERRIDE: ${{ inputs.working-directory-override }}
           PYTHON_VERSION_FORCE: ${{ inputs.python-version }}
         run: |
-          python_version='["3.11", "3.13"]'
           working_directory="$DEFAULT_LIBS"
-
-          if [ -n "$PYTHON_VERSION_FORCE" ]; then
-            python_version="[\"$PYTHON_VERSION_FORCE\"]"
-          fi
 
           # Override takes precedence over dropdown
           if [ -n "$WORKING_DIRECTORY_OVERRIDE" ]; then
             working_directory="[\"$WORKING_DIRECTORY_OVERRIDE\"]"
           elif [ "$WORKING_DIRECTORY" != "all" ] && [ -n "$WORKING_DIRECTORY" ]; then
             working_directory="[\"$WORKING_DIRECTORY\"]"
+          fi
+
+          if [ -n "$PYTHON_VERSION_FORCE" ]; then
+            python_version="[\"$PYTHON_VERSION_FORCE\"]"
+          elif [ "$WORKING_DIRECTORY_OVERRIDE" = "libs/code" ] || [ "$WORKING_DIRECTORY" = "libs/code" ]; then
+            python_version='["3.12", "3.13"]'
+          else
+            python_version='["3.11", "3.13"]'
           fi
 
           matrix="{\"python-version\": $python_version, \"working-directory\": $working_directory}"

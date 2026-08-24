@@ -13,12 +13,11 @@ import shlex
 import shutil
 import sys
 import threading
-from collections.abc import Mapping
 from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -29,6 +28,7 @@ from deepagents_code._env_vars import (
     DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
+    READ_PROJECT_DOTENV,
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
@@ -43,6 +43,9 @@ from deepagents_code.config_manifest import (
     INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
     RECURSION_LIMIT_DEFAULT,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +124,14 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "DYLD_LIBRARY_PATH",
         "ENV",
         "GIT_ASKPASS",
+        "GIT_DIR",
+        "GIT_EDITOR",
+        "GIT_EXEC_PATH",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PAGER",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_WORK_TREE",
         "GLOBIGNORE",
         "LD_AUDIT",
         "LD_LIBRARY_PATH",
@@ -135,6 +146,7 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "SSH_ASKPASS",
         "SYSTEMROOT",
         "WINDIR",
+        READ_PROJECT_DOTENV,
         _INHERITED_PYTHONPATH_ENV,
     }
 )
@@ -159,16 +171,74 @@ checking which category it belongs to:
     `execute` commands through non-interactive shells, so these are live vectors.
 - Askpass hijack (`GIT_ASKPASS`, `SSH_ASKPASS`): point credential prompts at an
     attacker-controlled binary.
+- Git config/exec injection (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_OBJECT_DIRECTORY`,
+    `GIT_EXEC_PATH`, `GIT_EDITOR`, `GIT_PAGER`, `GIT_SSH`, `GIT_SSH_COMMAND`):
+    `dcode` runs `git rev-parse`/`git status`/`git for-each-ref` during startup
+    local-context detection (`local_context.build_detect_script`), before any
+    HITL approval. These keys redirect git's object store/exec path or hook its
+    editor/pager/transport helpers into attacker-controlled binaries. The
+    numbered `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` family
+    and the inline `GIT_CONFIG_PARAMETERS` blob are worse: they inject arbitrary
+    config values such as `core.fsmonitor`/`core.pager`/`core.sshCommand`, which
+    git executes. The numbered keys cannot be enumerated in a static set, so
+    they are matched by prefix in `_is_dotenv_denied_env_key`.
 
 `_INHERITED_PYTHONPATH_ENV` is denied so a project `.env` cannot smuggle a
 `PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
 is only meant to relay a value the user set in their launch environment.
 
-Matching is exact and case-sensitive: the protected consumers (the dynamic
-linker, bash, CPython) read these names only in their canonical case, so a
-lowercase `bash_env` injected into the environment is inert. Any future entry
-that some consumer reads case-insensitively would need a different check.
+`READ_PROJECT_DOTENV` is denied from *every* `.env` (not just the project one)
+because it is a trust decision about the loader itself: if a project `.env`
+could set it, first-write-wins would let that file pin it `true` and block the
+trusted global `.env` from opting out, and if the global file set it the
+project file would already have loaded by the time it was read. The option is
+resolved from the trusted global file (read directly, before the project file)
+plus the process env and config.toml, never from dotenv injection.
+
+Matching is case-sensitive on POSIX because the protected consumers (the
+dynamic linker, bash, CPython, git) read these names only in their canonical
+case, so a lowercase `bash_env` injected into the environment is inert there.
+On Windows, however, environment variable names are case-insensitive and
+`os.environ` normalizes assigned keys to uppercase, so a lowercase
+`git_config_key_0` in a `.env` would become an active `GIT_CONFIG_KEY_0` for a
+spawned `git`. `_is_dotenv_denied_env_key` therefore compares the uppercased
+key, which is a superset on POSIX (denied names are already uppercase, so the
+extra denials like `git_config_count` are of otherwise-inert spellings).
 """
+
+_DOTENV_DENIED_ENV_KEY_PREFIXES = (
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_GLOBAL",
+)
+"""Prefixes of env keys that must not be injected from a `.env` file.
+
+`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` are numbered pairs and cannot be listed
+exhaustively; the rest are single keys whose `GIT_CONFIG_` prefix makes them
+unambiguous config-injection vectors. `GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL`
+point git at attacker-controlled config files, which can carry the same
+executable values (`core.fsmonitor`, `core.pager`, ...).
+"""
+
+
+def _is_dotenv_denied_env_key(key: str) -> bool:
+    """Return whether a dotenv key is denied from any `.env` file.
+
+    Combines the exact-match `_DOTENV_DENIED_ENV_KEYS` set with the
+    `_DOTENV_DENIED_ENV_KEY_PREFIXES` family so numbered git config keys
+    (`GIT_CONFIG_KEY_0`, ...) are denied without enumeration. The key is
+    uppercased before both checks so a lowercase or mixed-case spelling cannot
+    slip past on Windows, where `os.environ` assignment would normalize it back
+    to the active uppercase form.
+    """
+    normalized = key.upper()
+    return normalized in _DOTENV_DENIED_ENV_KEYS or normalized.startswith(
+        _DOTENV_DENIED_ENV_KEY_PREFIXES
+    )
+
 
 _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
@@ -257,7 +327,9 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
 
     Returns:
         Environment mapping with project and global dotenv values applied using
-        the same first-write-wins precedence as `_load_dotenv`.
+        the same first-write-wins precedence as `_load_dotenv`. The project
+        `.env` is skipped when `startup.read_project_dotenv` resolves false, so
+        a preview never reports a value a real reload would not load.
     """
     import dotenv
 
@@ -282,7 +354,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
         for key, value in values.items():
             if value is None or key in env:
                 continue
-            if key in _DOTENV_DENIED_ENV_KEYS:
+            if _is_dotenv_denied_env_key(key):
                 # Log the key only — the value is attacker-controlled.
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
@@ -296,21 +368,30 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 continue
             env[key] = value
 
-    project_dotenv: Path | None = None
-    try:
-        project_dotenv = (
-            _find_dotenv_from_start_path(start_path)
-            if start_path is not None
-            else _find_dotenv_from_start_path(Path.cwd())
-        )
-    except OSError:
-        logger.warning(
-            "Could not inspect project dotenv at %s; previewed project env vars may "
-            "be incomplete",
+    from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+    if resolve_read_project_dotenv():
+        project_dotenv: Path | None = None
+        try:
+            project_dotenv = (
+                _find_dotenv_from_start_path(start_path)
+                if start_path is not None
+                else _find_dotenv_from_start_path(Path.cwd())
+            )
+        except OSError:
+            logger.warning(
+                "Could not inspect project dotenv at %s; previewed project env "
+                "vars may be incomplete",
+                start_path or "cwd",
+                exc_info=True,
+            )
+        apply_dotenv(project_dotenv, is_project=True)
+    else:
+        logger.debug(
+            "Skipping project dotenv preview at %s: startup.read_project_dotenv "
+            "is false",
             start_path or "cwd",
-            exc_info=True,
         )
-    apply_dotenv(project_dotenv, is_project=True)
 
     try:
         global_dotenv = _GLOBAL_DOTENV_PATH if _GLOBAL_DOTENV_PATH.is_file() else None
@@ -349,7 +430,8 @@ def _load_dotenv(
 
     Loads in order (first write wins, `override=False`):
 
-    1. Project/CWD `.env` — project-specific values
+    1. Project/CWD `.env` — project-specific values (skipped when
+       `startup.read_project_dotenv` resolves false)
     2. `~/.deepagents/.env` — global user defaults
 
     Both layers use `override=False` (the python-dotenv default) so that
@@ -391,7 +473,7 @@ def _load_dotenv(
         for key, value in values.items():
             if value is None or key in os.environ:
                 continue
-            if key in _DOTENV_DENIED_ENV_KEYS:
+            if _is_dotenv_denied_env_key(key):
                 # Log the key only — the value is attacker-controlled.
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
@@ -410,23 +492,54 @@ def _load_dotenv(
         return applied
 
     # 1. Project/CWD .env — loads first so project values are set before the
-    # global file, which can only fill in vars not already present.
-    dotenv_path: Path | str | None = None
+    # global file, which can only fill in vars not already present. Skipped
+    # entirely when `startup.read_project_dotenv` resolves false. The option's
+    # own env var is denied from *every* `.env` (see `_DOTENV_DENIED_ENV_KEYS`),
+    # so neither file can inject it; but the trusted global `.env` is a
+    # legitimate place to opt out, so read just that key from it *before* the
+    # project file is touched — otherwise a hostile project file would load (and
+    # could pin the var true) before the trusted opt-out was ever seen.
+    from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+    global_toggle: dict[str, str] = {}
     try:
-        if start_path is None:
-            found = dotenv.find_dotenv(usecwd=True)
-            if found:
-                dotenv_path = found
-                loaded = apply_dotenv(Path(found), is_project=True) or loaded
-        else:
-            dotenv_path = _find_dotenv_from_start_path(start_path)
-            if dotenv_path is not None:
-                loaded = apply_dotenv(dotenv_path, is_project=True) or loaded
+        if _GLOBAL_DOTENV_PATH.is_file():
+            raw = dotenv.dotenv_values(dotenv_path=_GLOBAL_DOTENV_PATH).get(
+                READ_PROJECT_DOTENV
+            )
+            if raw is not None:
+                global_toggle[READ_PROJECT_DOTENV] = raw
     except (OSError, ValueError):
         logger.warning(
-            "Could not read project dotenv at %s; project env vars will not be loaded",
-            dotenv_path or start_path or "cwd",
+            "Could not read global dotenv at %s; global defaults will not be applied",
+            _GLOBAL_DOTENV_PATH,
             exc_info=True,
+        )
+
+    read_project = resolve_read_project_dotenv(global_dotenv=global_toggle)
+    dotenv_path: Path | str | None = None
+    if read_project:
+        try:
+            if start_path is None:
+                found = dotenv.find_dotenv(usecwd=True)
+                if found:
+                    dotenv_path = found
+                    loaded = apply_dotenv(Path(found), is_project=True) or loaded
+            else:
+                dotenv_path = _find_dotenv_from_start_path(start_path)
+                if dotenv_path is not None:
+                    loaded = apply_dotenv(dotenv_path, is_project=True) or loaded
+        except (OSError, ValueError):
+            logger.warning(
+                "Could not read project dotenv at %s; project env vars will not "
+                "be loaded",
+                dotenv_path or start_path or "cwd",
+                exc_info=True,
+            )
+    else:
+        logger.debug(
+            "Skipping project dotenv at %s: startup.read_project_dotenv is false",
+            start_path or "cwd",
         )
 
     # 2. Global (~/.deepagents/.env) — fills in any vars not already set by
@@ -1324,6 +1437,7 @@ class Glyphs:
     error: str  # ✗ vs [X]
     circle_empty: str  # ○ vs [ ]
     circle_filled: str  # ● vs [*]
+    square_filled: str  # ■ vs [#]
     checkbox_empty: str  # ☐ vs [ ]
     checkbox_checked: str  # ☑ vs [x]
     output_prefix: str  # ⎿ vs L
@@ -1359,6 +1473,7 @@ UNICODE_GLYPHS = Glyphs(
     error="✗",
     circle_empty="○",
     circle_filled="●",
+    square_filled="■",
     checkbox_empty="☐",
     checkbox_checked="☑",
     output_prefix="⎿",
@@ -1392,6 +1507,7 @@ ASCII_GLYPHS = Glyphs(
     error="[X]",
     circle_empty="[ ]",
     circle_filled="[*]",
+    square_filled="[#]",
     checkbox_empty="[ ]",
     checkbox_checked="[x]",
     output_prefix="L",
@@ -1936,6 +2052,9 @@ def build_stream_config(
     `lc_versions["deepagents"]`; for sibling monorepo packages that suffix
     identifies workspace HEAD relative to the pinned published SDK baseline.
 
+    Also records `editable` as an always-present boolean so editable dcode installs
+    can be filtered without parsing the `lc_versions["deepagents-code"]` suffix.
+
     Also records `dcode_experimental=True` when `DEEPAGENTS_CODE_EXPERIMENTAL`
     is enabled, so experimental runs are filterable in trace metadata.
 
@@ -2006,10 +2125,10 @@ def build_stream_config(
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).
+    editable = _is_editable_install()
+    metadata["editable"] = editable
     metadata["lc_versions"] = {
-        "deepagents-code": _format_lc_version(
-            __version__, editable=_is_editable_install()
-        )
+        "deepagents-code": _format_lc_version(__version__, editable=editable)
     }
     deepagents_version = _get_deepagents_version()
     if deepagents_version is not None:
@@ -2060,8 +2179,8 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
             or `None` if no allow-list configured.
 
     Raises:
-        ValueError: If `'all'` is combined with other commands.
-    """
+        ValueError: If `'all'` appears alongside other commands.
+    """  # noqa: DOC502 - propagates from `parse_shell_allow_list_items`
     if not allow_list_str:
         return None
 
@@ -2075,6 +2194,35 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
 
     # Split by comma and strip whitespace
     commands = [cmd.strip() for cmd in allow_list_str.split(",") if cmd.strip()]
+
+    return parse_shell_allow_list_items(commands)
+
+
+def parse_shell_allow_list_items(items: list[str]) -> list[str] | None:
+    """Parse an already-split shell allow-list.
+
+    Unlike `parse_shell_allow_list`, this takes separate elements so no comma
+    reparsing occurs — a command name containing a comma (valid on POSIX)
+    survives intact instead of being split into two entries.
+
+    Args:
+        items: Individual allow-list entries, e.g. a TOML array's elements.
+            `'all'` must be the sole entry; `'recommended'` merges the curated
+            safe list at its position.
+
+    Returns:
+        List of allowed commands, `SHELL_ALLOW_ALL` if `'all'` was the sole
+        entry, or `None` if every entry was blank.
+
+    Raises:
+        ValueError: If `'all'` is combined with other commands.
+    """
+    commands = [item.strip() for item in items if item.strip()]
+    if not commands:
+        return None
+
+    if len(commands) == 1 and commands[0].lower() == "all":
+        return SHELL_ALLOW_ALL
 
     # Reject ambiguous input: 'all' mixed with other commands
     if any(cmd.lower() == "all" for cmd in commands):
@@ -2190,7 +2338,7 @@ def _parse_interpreter_ptc(
 
 
 def _read_config_toml_retries() -> dict[str, Any] | None:
-    """Read and lightly validate `[retries]` from `~/.deepagents/config.toml`.
+    """Read and lightly validate `[retries]` from managed config over user config.
 
     Provider sub-table names are checked against the set of providers the app
     knows how to authenticate so a mistyped provider (e.g. `[retries.fireorks]`)
@@ -2198,32 +2346,34 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
     deferred to `_resolve_retry_kwargs`, which runs per active provider.
 
     Returns:
-        The raw `[retries]` mapping, or `None` when the section is absent or the
-            file cannot be read.
+        The merged `[retries]` mapping, or `None` when neither layer supplies
+            the section. An unusable `~/.deepagents/config.toml` drops only the
+            user layer; managed policy still applies.
     """
-    import tomllib
-
+    from deepagents_code.configuration.service import get_config_sources
     from deepagents_code.model_config import (
-        DEFAULT_CONFIG_PATH,
         IMPLICIT_AUTH_PROVIDERS,
         NO_AUTH_REQUIRED_PROVIDERS,
         PROVIDER_API_KEY_ENV,
         RETRY_PARAM_BY_PROVIDER,
     )
 
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except FileNotFoundError:
-        return None
-    except (PermissionError, OSError, tomllib.TOMLDecodeError):
+    sources = get_config_sources()
+    if not sources.user.status.usable:
         logger.warning(
             "Could not read retries config from %s",
-            DEFAULT_CONFIG_PATH,
-            exc_info=True,
+            sources.user.status.path,
         )
-        return None
-
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
+        )
+    # Managed policy parsed cleanly and must still apply, so keep going
+    # with the merged data (managed-only when the user file failed).
+    data, _ = sources.merged()
     section = data.get("retries")
     if not isinstance(section, dict):
         return None
@@ -2411,37 +2561,6 @@ def _resolve_retry_param_name(provider: str) -> str:
     return RETRY_PARAM_BY_PROVIDER.get(provider, "max_retries")
 
 
-def _read_config_toml_skills_dirs() -> list[str] | None:
-    """Read `[skills].extra_allowed_dirs` from `~/.deepagents/config.toml`.
-
-    Returns:
-        List of path strings, or `None` if the key is absent or the file
-            cannot be read.
-    """
-    import tomllib
-
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except FileNotFoundError:
-        return None
-    except (PermissionError, OSError, tomllib.TOMLDecodeError):
-        logger.warning(
-            "Could not read skills config from %s",
-            DEFAULT_CONFIG_PATH,
-            exc_info=True,
-        )
-        return None
-
-    skills_section = data.get("skills", {})
-    dirs = skills_section.get("extra_allowed_dirs")
-    if isinstance(dirs, list):
-        return dirs
-    return None
-
-
 def _parse_extra_skills_dirs(
     env_raw: str | None,
     config_toml_dirs: list[str] | None = None,
@@ -2495,6 +2614,7 @@ _RELOADABLE_FIELDS = (
     "nvidia_api_key",
     "tavily_api_key",
     "google_cloud_project",
+    "google_cloud_location",
     "deepagents_langchain_project",
     "project_root",
     "shell_allow_list",
@@ -2545,6 +2665,9 @@ class Settings:
 
     google_cloud_project: str | None
     """Google Cloud project ID for VertexAI authentication."""
+
+    google_cloud_location: str | None
+    """Google Cloud region for Anthropic models on Vertex AI."""
 
     deepagents_langchain_project: str | None
     """LangSmith project name for deepagents agent tracing."""
@@ -2646,6 +2769,10 @@ class Settings:
 
         Returns:
             Settings instance with detected configuration
+
+        Raises:
+            RuntimeError: If the manifest is missing an enforced managed key, so
+                resolving it from the environment alone would bypass policy.
         """
         # Detect API keys (normalize empty strings to None).
         from deepagents_code.model_config import resolve_env_var
@@ -2656,6 +2783,7 @@ class Settings:
         nvidia_key = resolve_env_var("NVIDIA_API_KEY")
         tavily_key = resolve_env_var("TAVILY_API_KEY")
         google_cloud_project = resolve_env_var("GOOGLE_CLOUD_PROJECT")
+        google_cloud_location = resolve_env_var("GOOGLE_CLOUD_LOCATION")
 
         # Detect LangSmith configuration
         # DEEPAGENTS_CODE_LANGSMITH_PROJECT: Project for deepagents agent tracing
@@ -2666,9 +2794,7 @@ class Settings:
         # current os.environ value. Direct callers should ensure
         # bootstrap has run if they depend on the override.
         from deepagents_code._env_vars import (
-            EXTRA_SKILLS_DIRS,
             LANGSMITH_PROJECT,
-            SHELL_ALLOW_LIST,
         )
 
         deepagents_langchain_project = resolve_env_var(LANGSMITH_PROJECT)
@@ -2681,23 +2807,68 @@ class Settings:
 
         project_root = find_project_root(start_path)
 
-        # Parse shell command allow-list from environment
-        # Format: comma-separated list of commands (e.g., "ls,cat,grep,pwd")
-
-        shell_allow_list_str = os.environ.get(SHELL_ALLOW_LIST)
-        shell_allow_list = parse_shell_allow_list(shell_allow_list_str)
-
-        # Parse extra skill containment roots from env var or config.toml.
-        # These extend the path allowlist for load_skill_content but do not
-        # add new skill discovery locations.
-        extra_skills_dirs = _parse_extra_skills_dirs(
-            os.environ.get(EXTRA_SKILLS_DIRS),
-            _read_config_toml_skills_dirs(),
+        from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            get_config_options,
+            get_option,
         )
+        from deepagents_code.configuration.resolver import get_config_resolver
 
-        from deepagents_code.config_manifest import resolve_interpreter_kwargs
+        # Resolve only the options this constructor reads. `resolve_all()`
+        # would also resolve `display.theme`, whose `THEME_DELEGATE` coercion
+        # reaches the theme registry and imports Textual (~470ms) — see
+        # `libs/code/AGENTS.md` on the startup hot path. Four CLI entry points
+        # in `skills/commands.py` build `Settings` without ever drawing a UI.
+        wanted = tuple(
+            option
+            for option in get_config_options()
+            if option.key in {"shell.allow_list", "skills.extra_allowed_dirs"}
+            or (option.group == "Interpreter" and option.settings_field is not None)
+        )
+        resolved_config = get_config_resolver().resolve_options(wanted)
 
-        interpreter_kwargs = resolve_interpreter_kwargs()
+        # No `is None` fallback for either enforced key below. The manifest is a
+        # module-level constant, so a missing option is a programming error, not
+        # a runtime condition — and resolving from the environment alone would
+        # bypass managed policy for a key that grants shell auto-approval or
+        # widens the skill-content allowlist. Failing loudly beats escalating
+        # quietly. `test_every_enforced_managed_key_resolves_to_a_manifest_option`
+        # keeps this unreachable.
+        shell_option = get_option("shell.allow_list")
+        if shell_option is None:
+            msg = "manifest is missing shell.allow_list; refusing to resolve it alone"
+            raise RuntimeError(msg)
+        shell_resolved = resolved_config[shell_option.key]
+        _emit_ranked_diagnostics(shell_option, shell_resolved)
+        # `parse_shell_allow_list_items` is the only producer for this
+        # option on every tier, and it yields `list[str] | None`.
+        shell_allow_list = cast("list[str] | None", shell_resolved.value)
+
+        # Parse extra skill containment roots from managed policy, the env
+        # var, or config.toml. These extend the path allowlist for
+        # load_skill_content but do not add new skill discovery locations.
+        skills_option = get_option("skills.extra_allowed_dirs")
+        if skills_option is None:
+            msg = (
+                "manifest is missing skills.extra_allowed_dirs; refusing to "
+                "resolve it alone"
+            )
+            raise RuntimeError(msg)
+        skills_resolved = resolved_config[skills_option.key]
+        _emit_ranked_diagnostics(skills_option, skills_resolved)
+        extra_skills_dirs = cast("list[Path] | None", skills_resolved.value)
+
+        # Only the Interpreter group is manifest-resolved here. Credentials,
+        # the shell allow-list, and the LangSmith project keep their dedicated
+        # loaders above: their empty-string-to-`None` and reload semantics do
+        # not fit the generic resolver.
+        interpreter_kwargs: dict[str, Any] = {}
+        for option in get_config_options():
+            if option.group != "Interpreter" or option.settings_field is None:
+                continue
+            resolved = resolved_config[option.key]
+            _emit_ranked_diagnostics(option, resolved)
+            interpreter_kwargs[option.settings_field] = resolved.value
 
         return cls(
             openai_api_key=openai_key,
@@ -2706,6 +2877,7 @@ class Settings:
             nvidia_api_key=nvidia_key,
             tavily_api_key=tavily_key,
             google_cloud_project=google_cloud_project,
+            google_cloud_location=google_cloud_location,
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
             project_root=project_root,
@@ -2720,17 +2892,93 @@ class Settings:
         start_path: Path | None,
         env: dict[str, str],
         previous: dict[str, object],
-    ) -> dict[str, object]:
+        refresh_managed: bool = True,
+    ) -> tuple[dict[str, object], str | None]:
         """Resolve reloadable settings from an environment mapping.
 
+        Managed policy outranks the environment for every field it declares. A
+        managed source that is present but unenforceable keeps `previous`
+        unchanged, so a reload can never drop policy that is already in force.
+
+        Args:
+            start_path: Directory to start project detection from.
+            env: Environment mapping to resolve from.
+            previous: Current values, kept for any field that cannot be resolved.
+            refresh_managed: Re-read managed policy from disk. A preview passes
+                `False`: re-reading swaps the process-wide snapshot that every
+                other reader observes, which is not something a dry run may do.
+
         Returns:
-            Reloadable setting values keyed by field name.
+            Reloadable setting values keyed by field name, and a notice when a
+            source could not be applied (`None` when both applied cleanly).
+            Managed policy that blocks the reload and a `config.toml` that
+            fails to parse both keep the previous values in force, so both must
+            say so rather than letting the caller report "no changes".
         """
         from deepagents_code._env_vars import (
             EXTRA_SKILLS_DIRS,
             LANGSMITH_PROJECT,
             SHELL_ALLOW_LIST,
         )
+        from deepagents_code.configuration.service import (
+            ManagedConfigError,
+            get_healthy_managed_snapshot,
+            managed_decided,
+        )
+
+        # Refresh in place rather than invalidating first: dropping the cached
+        # snapshot before the reload would leave every other reader with an
+        # empty managed table if the new file fails to parse, which reads as
+        # "no policy" instead of "policy unchanged". `refresh=True` keeps the
+        # last snapshot that parsed cleanly and still raises on the failure.
+        #
+        # A preview must not refresh at all: it is a dry run, and re-reading
+        # replaces the snapshot that every other reader in the process observes
+        # before the user has accepted anything.
+        try:
+            managed_snapshot = get_healthy_managed_snapshot(refresh=refresh_managed)
+        except ManagedConfigError as exc:
+            logger.error("Keeping previous settings: %s", exc)  # noqa: TRY400
+            # Report the block to the caller. Returning only `previous` reads
+            # as "nothing changed", so the user would be told the reload
+            # succeeded while their environment edits were discarded.
+            return dict(previous), f"Kept previous settings: {exc}"
+
+        from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            _ranked_source,
+            get_option,
+        )
+        from deepagents_code.configuration.resolver import (
+            USER_RANK,
+            get_config_resolver,
+            resolver_from_snapshots,
+        )
+        from deepagents_code.configuration.types import Found
+
+        # A real `/reload` exists to pick up file edits made since the shared
+        # resolver's snapshot was taken, so this method and later
+        # `get_config_resolver()` readers observe the same generation. Seed the
+        # resolver with the snapshot just validated above; asking it to refresh
+        # managed policy again would let one reload observe multiple files.
+        resolver = get_config_resolver(
+            refresh_managed=refresh_managed,
+            managed_snapshot=managed_snapshot,
+        )
+
+        # A user file that fails to parse keeps the previous generation in
+        # force, which is the right runtime behavior but silent: the only
+        # signal is a `logger.warning` in the debug buffer, while the report
+        # the user reads says "Configuration reloaded. No changes detected."
+        # Managed corruption is already surfaced as a notice above; a
+        # `config.toml` the user just edited deserves the same treatment, and
+        # more so -- they are staring at the edit that did not take.
+        user_notice: str | None = None
+        user_status = resolver.provider_statuses().get(USER_RANK)
+        if user_status is not None and not user_status.usable:
+            detail = user_status.detail or user_status.health.value
+            user_notice = f"Kept previous config.toml: {detail}"
+            logger.error("Keeping previous config.toml: %s", detail)
 
         try:
             shell_allow_list = parse_shell_allow_list(env.get(SHELL_ALLOW_LIST))
@@ -2740,6 +2988,47 @@ class Settings:
                 SHELL_ALLOW_LIST,
             )
             shell_allow_list = previous["shell_allow_list"]
+
+        candidate_resolver = resolver
+        if not refresh_managed:
+            # The shared resolver's cached user snapshot may predate the edit
+            # being previewed. Read the user file fresh when possible, but fall
+            # back to the retained snapshot when that read is unusable, matching
+            # the real reload. Keep the current managed snapshot because a
+            # preview must not refresh policy the process is enforcing.
+            from deepagents_code.configuration.providers import TomlFileProvider
+            from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+            user_candidate = TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load()
+            if user_candidate.status.usable:
+                candidate_resolver = resolver_from_snapshots(
+                    managed=managed_snapshot,
+                    user=user_candidate,
+                )
+                user_notice = None
+            else:
+                # The preview's own read failed, so report that rather than
+                # the shared resolver's status: the file on disk right now is
+                # what the user would be accepting.
+                detail = (
+                    user_candidate.status.detail or user_candidate.status.health.value
+                )
+                user_notice = f"Kept previous config.toml: {detail}"
+
+        shell_option = get_option("shell.allow_list")
+        if shell_option is not None:
+            # Accepting an *env*-tier hit would defeat the `env` argument this
+            # method exists to honor: the resolver's env provider reads
+            # `os.environ` directly, so a preview of a `.env` edit reported the
+            # value live in the process instead of the one being previewed.
+            # Managed policy and the user's file are file-backed and safe to
+            # take from here; the env tier stays with the `env`-derived value
+            # computed above.
+            shell_resolved = candidate_resolver.get(shell_option)
+            _emit_ranked_diagnostics(shell_option, shell_resolved)
+            shell_source = _ranked_source(shell_resolved)
+            if managed_decided(shell_source) or shell_source == "config.toml":
+                shell_allow_list = cast("list[str] | None", shell_resolved.value)
 
         try:
             from deepagents_code.project_utils import find_project_root
@@ -2752,9 +3041,24 @@ class Settings:
             project_root = previous["project_root"]
 
         try:
-            extra_skills_dirs = _parse_extra_skills_dirs(
-                env.get(EXTRA_SKILLS_DIRS),
-                _read_config_toml_skills_dirs(),
+            skills_option = get_option("skills.extra_allowed_dirs")
+            resolved_skills: list[Path] | None = None
+            skills_managed = False
+            if skills_option is not None:
+                skills_resolved = candidate_resolver.get(skills_option)
+                _emit_ranked_diagnostics(skills_option, skills_resolved)
+                if managed_decided(_ranked_source(skills_resolved)):
+                    skills_managed = True
+                    resolved_skills = cast("list[Path] | None", skills_resolved.value)
+                else:
+                    user_result = skills_resolved.tier_health[USER_RANK]
+                    if isinstance(user_result, Found):
+                        resolved_skills = cast("list[Path] | None", user_result.value)
+            env_skills = env.get(EXTRA_SKILLS_DIRS)
+            extra_skills_dirs = (
+                resolved_skills
+                if skills_managed or not env_skills
+                else _parse_extra_skills_dirs(env_skills)
             )
         except (OSError, ValueError):
             # Path resolution can fail (e.g. broken symlink loop). Keep the
@@ -2775,6 +3079,9 @@ class Settings:
             "nvidia_api_key": _resolve_env_var_from(env, "NVIDIA_API_KEY"),
             "tavily_api_key": _resolve_env_var_from(env, "TAVILY_API_KEY"),
             "google_cloud_project": _resolve_env_var_from(env, "GOOGLE_CLOUD_PROJECT"),
+            "google_cloud_location": _resolve_env_var_from(
+                env, "GOOGLE_CLOUD_LOCATION"
+            ),
             "deepagents_langchain_project": _resolve_env_var_from(
                 env,
                 LANGSMITH_PROJECT,
@@ -2782,7 +3089,7 @@ class Settings:
             "project_root": project_root,
             "shell_allow_list": shell_allow_list,
             "extra_skills_dirs": extra_skills_dirs,
-        }
+        }, user_notice
 
     @staticmethod
     def _format_reload_changes(
@@ -2824,12 +3131,14 @@ class Settings:
         """
         previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
         env = _preview_dotenv_environ(start_path=start_path)
-        refreshed = self._reload_values(
+        refreshed, blocked = self._reload_values(
             start_path=start_path,
             env=env,
             previous=previous,
+            refresh_managed=False,
         )
-        return self._format_reload_changes(previous, refreshed)
+        changes = self._format_reload_changes(previous, refreshed)
+        return [blocked, *changes] if blocked else changes
 
     def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
         """Reload selected settings from environment variables and project files.
@@ -2845,20 +3154,23 @@ class Settings:
 
         !!! note
 
-            Shell-exported variables always take precedence. Values previously
-            injected from `.env` files are refreshed so an accepted cwd switch
-            can pick up the resumed project's `.env`.
+            Managed config takes precedence over shell-exported variables for
+            the fields it declares. Below managed policy, shell exports still
+            outrank `.env` values. Values previously injected from `.env` files
+            are refreshed so an accepted cwd switch can pick up the resumed
+            project's `.env`.
 
         Args:
             start_path: Directory to start project detection from (defaults to cwd).
 
         Returns:
-            A list of human-readable change descriptions.
+            A list of human-readable change descriptions. Empty when nothing
+            changed; a single notice when managed policy blocked the reload.
         """
         _load_dotenv(start_path=start_path, refresh_loaded=True)
 
         previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
-        refreshed = self._reload_values(
+        refreshed, blocked = self._reload_values(
             start_path=start_path,
             env=dict(os.environ),
             previous=previous,
@@ -2893,7 +3205,8 @@ class Settings:
         from deepagents_code.model_config import reset_env_resolution_log
 
         reset_env_resolution_log()
-        return self._format_reload_changes(previous, refreshed)
+        changes = self._format_reload_changes(previous, refreshed)
+        return [blocked, *changes] if blocked else changes
 
     @property
     def has_anthropic(self) -> bool:
@@ -3345,10 +3658,7 @@ def get_langsmith_project_name() -> str | None:
     langsmith_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
         "LANGCHAIN_API_KEY"
     )
-    langsmith_tracing = resolve_env_var("LANGSMITH_TRACING") or resolve_env_var(
-        "LANGCHAIN_TRACING_V2"
-    )
-    if not (langsmith_key and langsmith_tracing):
+    if not (langsmith_key and _tracing_enabled()):
         return None
 
     return (
@@ -3449,17 +3759,15 @@ def langsmith_key_shadowed_by_empty_override() -> LangsmithShadowResult:
 
 def is_langsmith_redaction_enabled() -> bool:
     """Return whether LangSmith secret redaction is enabled for agent traces."""
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("tracing.langsmith_redact")
     if option is None:
         return False
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def is_memory_auto_save_enabled() -> bool:
@@ -3469,17 +3777,15 @@ def is_memory_auto_save_enabled() -> bool:
     enabled. When disabled, memory is still loaded into context but the agent is
     told not to auto-save.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("memory.auto_save")
     if option is None:
         return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def is_yolo_switcher_enabled() -> bool:
@@ -3490,17 +3796,15 @@ def is_yolo_switcher_enabled() -> bool:
     Auto only (or Manual alone when Auto is ineligible). Sessions already in
     YOLO (for example via `--yolo`) can still leave it with Shift+Tab.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("startup.yolo_switcher")
     if option is None:
         return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def is_openai_prompt_cache_key_enabled() -> bool:
@@ -3512,31 +3816,37 @@ def is_openai_prompt_cache_key_enabled() -> bool:
     is still forwarded). This is the opt-out for OpenAI-compatible endpoints that
     reject unknown request fields.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("models.openai_prompt_cache_key")
     if option is None:
         return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None]:
     """Resolve the Auto classifier spec and any reason it was ignored.
 
-    Reads the `models.auto_classifier` option from env/`config.toml`. `None`
-    means the classifier inherits the main agent model, which is the historical
-    behavior and the default.
+    Reads the `models.auto_classifier` option from managed policy, then env,
+    then `config.toml`. `None` means the classifier inherits the main agent
+    model, which is the historical behavior and the default.
 
     A configured-but-unusable value (blank, or a non-string such as
-    `auto_classifier = 3`, which `resolve_scalar` drops to the default) silently
+    `auto_classifier = 3`, which coercion drops to the default) silently
     reverts authorization review to the main agent model — the agent grading its
     own actions. The caller gets a description so it can say so on a surface the
     user actually reads; a log line alone is not that surface.
+
+    A present-but-blank env var is an explicit "inherit" and outranks
+    `config.toml`, so it is detected before resolution rather than being skipped
+    as unset the way the resolver treats every other option's blank env
+    value. A managed value outranks that veto, so it is resolved first; a blank
+    managed value also forces inherit, credited to managed policy. `dcode
+    config` shares this order via `resolve_auto_classifier_model_with_source`,
+    so the two surfaces cannot disagree about which model grades gated actions.
 
     Returns:
         `(spec, problem)`. `spec` is a `provider:model` spec, or `None` when the
@@ -3544,16 +3854,70 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
             configured value was ignored, else `None`.
     """
     from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
+        blank_auto_classifier_env_name,
         get_option,
-        load_config_toml,
-        resolve_scalar,
     )
+    from deepagents_code.configuration.resolver import USER_RANK, get_config_resolver
+    from deepagents_code.configuration.types import Found, Invalid
 
     option = get_option("models.auto_classifier")
     if option is None:
         return None, None
-    toml_data = load_config_toml()
-    value, source = resolve_scalar(option, toml_data=toml_data)
+    from deepagents_code.configuration.service import managed_decided
+
+    managed_resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, managed_resolved)
+    managed_value = managed_resolved.value
+    managed_source = _ranked_source(managed_resolved)
+    if managed_decided(managed_source):
+        if isinstance(managed_value, str) and managed_value.strip():
+            return managed_value.strip(), None
+        # A blank managed entry is an explicit inherit; anything else blank or
+        # malformed reverts to the main agent model, credited to the file that
+        # declared it.
+        problem = (
+            f"Ignoring blank {managed_source} auto_classifier model; the Auto "
+            "approval classifier will review with the main agent model."
+        )
+        logger.warning("%s", problem)
+        return None, problem
+
+    def resolve_user_tier() -> tuple[object, str]:
+        """Return the user value from the shared resolution generation.
+
+        The blank-env veto below names the user-level value it overrides, so
+        it needs the user tier alone rather than the selected env value. Reading
+        that result out of the shared resolution keeps the classifier on the
+        same user snapshot as every other manifest consumer.
+
+        Returns:
+            The user value and its compatibility source label, or the default
+                when the user tier did not supply a usable value.
+        """
+        user_result = managed_resolved.tier_health[USER_RANK]
+        if isinstance(user_result, Found):
+            return user_result.value, managed_resolved.provider_status[USER_RANK].name
+        return option.default, "default"
+
+    blank_env = blank_auto_classifier_env_name()
+    if blank_env is not None:
+        # Name the config.toml value being overridden: without it the warning
+        # sends the user to a config file that still shows their setting.
+        shadowed, shadowed_source = resolve_user_tier()
+        overridden = (
+            f" (overriding {shadowed_source} {shadowed!r})"
+            if isinstance(shadowed, str) and shadowed.strip()
+            else ""
+        )
+        problem = (
+            f"Ignoring blank env ({blank_env}) auto_classifier model{overridden}; "
+            "the Auto approval classifier will review with the main agent model."
+        )
+        logger.warning("%s", problem)
+        return None, problem
+    value, source = managed_resolved.value, managed_source
     if isinstance(value, str) and value.strip():
         return value.strip(), None
     if isinstance(value, str) and source != "default":
@@ -3563,27 +3927,22 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
         )
         logger.warning("%s", problem)
         return None, problem
-    # `resolve_scalar` coerces a wrong-typed TOML value to the option default, so
-    # a malformed entry is indistinguishable here from an absent one. Re-read the
-    # raw table to tell them apart rather than reverting in silence.
-    raw = _raw_toml_auto_classifier(toml_data)
-    if raw is not None and not isinstance(raw, str):
+    # TOML coercion drops a wrong-typed user value to the option default. The
+    # shared resolution retains that rejection in its user-tier result, so it
+    # can remain visible without reopening a potentially newer file generation.
+    user_result = managed_resolved.tier_health[USER_RANK]
+    if isinstance(user_result, Invalid):
+        # `reason` names the rejected value ("Ignoring
+        # [models].auto_classifier=42 in config.toml (expected str)"). Dropping
+        # it left the user told their setting is malformed with no indication
+        # of what they wrote, on a surface they actually read.
         problem = (
-            f"Ignoring malformed config.toml auto_classifier model {raw!r} "
-            "(expected a provider:model string); the Auto approval classifier "
-            "will review with the main agent model."
+            f"{user_result.reason}; expected a provider:model string. The Auto "
+            "approval classifier will review with the main agent model."
         )
         logger.warning("%s", problem)
         return None, problem
     return None, None
-
-
-def _raw_toml_auto_classifier(toml_data: Mapping[str, Any]) -> object | None:
-    """Return the raw `[models].auto_classifier` entry, or `None` if absent."""
-    models = toml_data.get("models")
-    if not isinstance(models, Mapping):
-        return None
-    return models.get("auto_classifier")
 
 
 def resolve_auto_classifier_model() -> str | None:
@@ -3604,10 +3963,11 @@ def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
         to disabled if the manifest entry is unavailable.
     """
     from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
         get_option,
-        load_config_toml,
-        resolve_scalar,
     )
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("goals.auto_accept_criteria")
     if option is None:
@@ -3617,8 +3977,9 @@ def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
             "ignored.",
         )
         return False, "default"
-    value, source = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value), source
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value), _ranked_source(resolved)
 
 
 def configure_langsmith_secret_redaction() -> bool:
@@ -4444,7 +4805,7 @@ def detect_provider(model_name: str) -> str | None:
     if model_lower.startswith("claude"):
         s = _get_settings()
         if not s.has_anthropic and s.has_vertex_ai:
-            return "google_vertexai"
+            return "google_anthropic_vertex"
         return "anthropic"
 
     if model_lower.startswith("gemini"):
@@ -4468,6 +4829,30 @@ def detect_provider(model_name: str) -> str | None:
     return None
 
 
+def _expand_allowed_entry(entry: str) -> list[str]:
+    """Resolve one `models.allowed` entry to the model specs it admits.
+
+    An exact `provider:model` entry yields itself. A `provider:*` wildcard
+    yields the provider's discovered model lineup (registry discovery merged
+    with the config's explicit list), read before allowlist filtering:
+    `get_available_models` applies this policy itself, so calling it here
+    would recurse.
+
+    Args:
+        entry: One entry from `ModelConfig.allowed_models`.
+
+    Returns:
+        Exact specs the entry contributes as default candidates, empty when a
+        wildcarded provider has no discovered or configured models.
+    """
+    if not entry.endswith(":*"):
+        return [entry]
+    provider = entry[:-2]
+    from deepagents_code.model_config import get_discovered_models
+
+    return [f"{provider}:{model}" for model in get_discovered_models(provider)]
+
+
 def _get_default_model_spec() -> str:
     """Get default model specification based on available credentials.
 
@@ -4475,7 +4860,13 @@ def _get_default_model_spec() -> str:
 
     1. `[models].default` in config file (user's intentional preference).
     2. `[models].recent` in config file (last `/model` switch).
-    3. Auto-detection based on available API credentials.
+    3. When `models.allowed` is active, the first entry in it whose provider
+       does not have a definitively missing credential. A `provider:*` entry
+       expands to the provider's discovered models rather than being a
+       selectable candidate itself. Steps 1 and 2 are skipped with a warning
+       when the stored value is outside the policy, and step 4 is never
+       reached -- a policy declares the whole candidate set.
+    4. Auto-detection based on available API credentials.
 
     Returns:
         Model specification in `provider:model` format.
@@ -4484,19 +4875,80 @@ def _get_default_model_spec() -> str:
         NoCredentialsConfiguredError: If no credentials are configured for any
             of the auto-detectable providers. Callers may catch this to defer
             startup and prompt for credentials interactively.
-    """
+        NoAllowedModelCredentialsError: If `models.allowed` is active and no
+            model in it has usable credentials. A `NoCredentialsConfiguredError`
+            subclass, but callers should report it rather than silently retry:
+            only a credential for an allowlisted provider can resolve it.
+        ModelNotAllowedError: If `models.allowed` is active but empty, so no
+            model can be resolved. Unlike the error above this is **not**
+            recoverable by adding credentials, so the deferred-start path must
+            not treat it as a prompt-for-credentials signal.
+    """  # noqa: DOC502 - `ModelNotAllowedError` propagates from `ModelConfig.policy_error`
     from deepagents_code.model_config import (
         ModelConfig,
+        ModelSpec,
+        NoAllowedModelCredentialsError,
         NoCredentialsConfiguredError,
+        ProviderAuthState,
         get_provider_auth_status,
     )
 
     config = ModelConfig.load()
-    if config.default_model:
-        return config.default_model
+    for label, candidate in (
+        ("default", config.default_model),
+        ("recent", config.recent_model),
+    ):
+        if candidate and config.is_model_allowed(candidate):
+            return candidate
+        if candidate:
+            logger.warning(
+                "Ignoring [models].%s=%r because it is outside models.allowed",
+                label,
+                candidate,
+            )
 
-    if config.recent_model:
-        return config.recent_model
+    if config.allowed_models is not None:
+        if not config.allowed_models:
+            # No spec to name -- the user asked for nothing in particular, so
+            # `policy_error(None)` reports the empty policy rather than
+            # inventing a placeholder spec the user never typed.
+            deny_all = config.policy_error(None)
+            if deny_all is not None:
+                raise deny_all
+        # A `provider:*` wildcard cannot be selected itself -- no model is
+        # named -- but every configured model it admits is a candidate in the
+        # provider's declaration order.
+        candidates = [
+            spec
+            for entry in config.allowed_models
+            for spec in _expand_allowed_entry(entry)
+        ]
+        for candidate in candidates:
+            parsed = ModelSpec.parse(candidate)
+            auth = get_provider_auth_status(parsed.provider)
+            # Only a definitively missing credential disqualifies a candidate.
+            # UNKNOWN covers remote no-auth providers (e.g., a LAN/hosted
+            # Ollama endpoint) that may not require auth at all; rejecting
+            # them here would block startup even though create_model()
+            # deliberately permits that state.
+            if auth.state is not ProviderAuthState.MISSING:
+                return candidate
+        if not candidates:
+            # Every entry is a wildcard for a provider with no discoverable
+            # models, so there is nothing to credential.
+            allowed = ", ".join(config.allowed_models)
+            msg = (
+                "No discoverable models match models.allowed "
+                f"({allowed}). Name an exact provider:model spec or configure "
+                "models for a wildcarded provider."
+            )
+            raise NoAllowedModelCredentialsError(msg)
+        allowed = ", ".join(candidates)
+        msg = (
+            "No credentials are configured for any model in models.allowed. "
+            f"Add credentials for one of: {allowed}."
+        )
+        raise NoAllowedModelCredentialsError(msg)
 
     # `is True` deliberately excludes `ProviderAuthState.UNKNOWN` (which maps
     # to `as_legacy_bool() -> None`). For the three explicit-credential
@@ -4600,10 +5052,7 @@ def _get_provider_kwargs(
     from deepagents_code.model_config import ModelConfig
 
     config = ModelConfig.load()
-    result: dict[str, Any] = config.get_kwargs(provider, model_name=model_name)
-    base_url = config.get_base_url(provider)
-    if base_url:
-        result["base_url"] = base_url
+    result = config.get_effective_kwargs(provider, model_name=model_name)
     from deepagents_code.model_config import (
         OPTIONAL_AUTH_ENV,
         PROVIDER_API_KEY_ENV,
@@ -4621,7 +5070,7 @@ def _get_provider_kwargs(
             )
     if api_key_env:
         api_key = resolve_env_var(api_key_env)
-        if api_key:
+        if api_key and provider != "google_anthropic_vertex":
             result["api_key"] = api_key
 
     # `langchain-ollama` has no `api_key` kwarg; hosted Ollama (Cloud or
@@ -4663,6 +5112,32 @@ def _get_provider_kwargs(
         result.setdefault(key, value)
 
     return result
+
+
+def _apply_google_anthropic_vertex_kwargs(
+    provider: str, kwargs: dict[str, Any]
+) -> None:
+    """Apply required Claude-on-Vertex project and location defaults.
+
+    Raises:
+        ModelConfigError: If no location is configured.
+    """
+    if provider != "google_anthropic_vertex":
+        return
+    settings = _get_settings()
+    if settings.google_cloud_project:
+        kwargs.setdefault("project", settings.google_cloud_project)
+    if settings.google_cloud_location:
+        kwargs.setdefault("location", settings.google_cloud_location)
+    if not kwargs.get("location"):
+        from deepagents_code.model_config import ModelConfigError
+
+        msg = (
+            "Google Cloud location is required for provider "
+            "'google_anthropic_vertex'. Set GOOGLE_CLOUD_LOCATION or "
+            "DEEPAGENTS_CODE_GOOGLE_CLOUD_LOCATION, or pass 'location' in model params."
+        )
+        raise ModelConfigError(msg)
 
 
 def _compose_openai_reasoning_effort(
@@ -4805,6 +5280,7 @@ def _create_model_via_init(
         package_map = {
             "anthropic": "langchain-anthropic",
             "openai": "langchain-openai",
+            "google_anthropic_vertex": "langchain-google-vertexai",
             "google_genai": "langchain-google-genai",
             "google_vertexai": "langchain-google-vertexai",
             "nvidia": "langchain-nvidia-ai-endpoints",
@@ -4986,6 +5462,10 @@ def create_model(
     Raises:
         ModelConfigError: If provider cannot be determined from the model name
             or required provider package is not installed.
+        ModelNotAllowedError: If the resolved spec is outside `models.allowed`.
+            A `ModelConfigError` subclass, so a bare `except ModelConfigError`
+            swallows a policy denial -- handlers that fall back to another
+            model must re-raise it (see `configurable_model._apply_overrides`).
         MissingCredentialsError: If no credentials are configured for the
             resolved provider.
 
@@ -4994,7 +5474,7 @@ def create_model(
         >>> model = create_model("openai:gpt-5.5")
         >>> model = create_model("gpt-5.5")  # Auto-detects openai
         >>> model = create_model()  # Uses environment defaults
-    """
+    """  # noqa: DOC502 - `ModelNotAllowedError` propagates from `require_model_allowed`
     from deepagents_code.model_config import (
         IMPLICIT_AUTH_PROVIDERS,
         ModelConfig,
@@ -5041,6 +5521,23 @@ def create_model(
         # Bare model name — auto-detect provider or let init_chat_model infer
         model_name = model_spec
         provider = inferred_provider or ""
+
+    if provider == "google_vertexai" and model_name.lower().startswith("claude-"):
+        msg = (
+            f"Claude model '{model_name}' uses the Anthropic Messages API on "
+            "Vertex AI. Use "
+            f"'google_anthropic_vertex:{model_name}' instead of "
+            f"'google_vertexai:{model_name}'."
+        )
+        raise ModelConfigError(msg)
+
+    resolved_spec = f"{provider}:{model_name}" if provider else model_spec
+    # The authoritative policy gate, and its position is load-bearing: it runs
+    # after provider inference (so a bare name is matched in canonical form)
+    # but before credential bridging, provider profiles, and provider imports.
+    # A blocked spec must not copy stored keys onto env vars or run a provider
+    # `pre_init` hook. `test_rejects_before_credential_side_effects` pins this.
+    config.require_model_allowed(resolved_spec)
 
     # Stored API keys (added via `/auth`) take effect by being copied onto
     # the env var name LangChain reads. Apply before the credential check so
@@ -5139,6 +5636,8 @@ def create_model(
     # the `extra_kwargs` merge so it wins over a `max_retries` in `--model-params`.
     if cli_max_retries is not None:
         kwargs[_resolve_retry_param_name(provider)] = cli_max_retries
+
+    _apply_google_anthropic_vertex_kwargs(provider, kwargs)
 
     # Check if this provider uses a custom BaseChatModel class
     class_path = config.get_class_path(provider) if provider else None

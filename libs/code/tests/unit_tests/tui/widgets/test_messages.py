@@ -1627,6 +1627,30 @@ class TestToolCallMessageAppearance:
             event.stop.assert_called_once()
             assert app.msg._expanded is True
 
+    async def test_emptied_output_drops_the_actionable_hover(self) -> None:
+        """Losing the output must release the hover border, not just the click.
+
+        `_update_output_display` bails out early when `_output` is empty, so the
+        row would otherwise keep the class its expandable output added and
+        advertise a click that `on_click` now refuses.
+        """
+        output = "\n".join(f"line {index}" for index in range(30))
+        app = _tool_msg_app("read_file", {"file_path": "example.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+            assert app.msg.has_class("-row-actionable")
+
+            app.msg.set_error("")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_not_called()
+
     async def test_ascii_hover_requires_actionable_row(self) -> None:
         """ASCII borders brighten only when clicking the row has an effect."""
         app = _AsciiToolMsgApp("execute", {"command": "echo hi"})

@@ -3715,6 +3715,11 @@ class ToolCallMessage(Vertical):
             or not self._full_row
             or not self._hint_widget
         ):
+            # Syncs like every other exit: emptying `_output` drops the row's
+            # output action, and without this the row keeps a hover border over
+            # a click that no longer does anything. Reached pre-mount too, where
+            # `on_mount` syncs again afterwards, so the duplicate is harmless.
+            self._sync_row_actionability()
             return
 
         output_stripped = self._output.strip()

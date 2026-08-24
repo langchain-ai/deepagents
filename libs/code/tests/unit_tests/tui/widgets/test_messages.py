@@ -1017,6 +1017,9 @@ class TestToolCallMessageDuration:
             content = status._Static__content  # ty: ignore
             assert isinstance(content, Content)
             assert content.plain == "Took 4.9s"
+            assert app.msg._preview_row is not None
+            children = list(app.msg.children)
+            assert children.index(status) > children.index(app.msg._preview_row)
 
     async def test_execute_shows_fractional_seconds(self) -> None:
         """Sub-minute `execute` runs report tenths — `elapsed` is a float.
@@ -1577,6 +1580,13 @@ class TestToolCallMessageAppearance:
         async with app.run_test():
             assert app.msg.styles.padding.left == 0
             assert app.msg.styles.padding.right == 1
+
+    async def test_output_prefix_aligns_with_tool_name(self) -> None:
+        """The output prefix starts beneath the tool name after its marker."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test():
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_row.styles.margin.left == 2
 
     async def test_short_execute_output_has_no_actionable_hover(self) -> None:
         """Fully visible shell output must not advertise a dead row action."""

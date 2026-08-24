@@ -1417,9 +1417,9 @@ class AssistantMessage(Vertical):
         Args:
             content: Initial markdown content
             local_only: `True` when the content came from the client rather
-                than the agent — currently only non-incognito `!` shell
-                output, which borrows this widget for its markdown rendering
-                and streaming. Callers that ask "did the agent do anything in
+                than the agent — currently `!` and `!!` shell output, both of
+                which borrow this widget for its markdown rendering and
+                streaming. Callers that ask "did the agent do anything in
                 this thread" must not count such a message.
             **kwargs: Additional arguments passed to parent
         """
@@ -1674,6 +1674,7 @@ class ToolCallMessage(Vertical):
         layout: horizontal;
         height: auto;
         width: 1fr;
+        margin-left: 2;
     }
 
     /* Fixed gutter holds the output glyph so soft-wrapped content lines stay
@@ -2220,6 +2221,8 @@ class ToolCallMessage(Vertical):
         self._status_widget.update(
             Content.styled(f"Took {format_duration(duration)}", "dim")
         )
+        if self._hint_widget is not None:
+            self.move_child(self._status_widget, after=self._hint_widget)
         self._status_widget.display = True
 
     def _show_success_status(self) -> None:

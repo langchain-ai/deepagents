@@ -277,6 +277,16 @@ def _history_retention_days() -> int:
 def _delete_expired_archive(candidate: Path, archive_dir: Path, cutoff: float) -> bool:
     """Delete one expired regular markdown archive.
 
+    The expiry check and `unlink` are serialized against a concurrent archive
+    refresh: the summarization middleware refreshes an archive by path
+    (read-append-rewrite), and on POSIX an `unlink` racing that rewrite would
+    orphan the open descriptor and silently drop the newly written history.
+    Opening the candidate and re-checking expiry with `fstat` on the live
+    descriptor immediately before `unlink` closes that window: a rewrite that
+    already refreshed the mtime is observed and the archive is kept, and a
+    rewrite that starts after the `fstat` still lands in the inode the writer
+    has open.
+
     Args:
         candidate: Direct child of the archive directory to inspect.
         archive_dir: Directory that candidates must remain inside.
@@ -288,10 +298,13 @@ def _delete_expired_archive(candidate: Path, archive_dir: Path, cutoff: float) -
     if candidate.parent != archive_dir or candidate.suffix != ".md":
         return False
     try:
-        info = candidate.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_mtime >= cutoff:
-            return False
-        candidate.unlink()
+        with candidate.open("rb") as archive_file:
+            info = os.fstat(archive_file.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_mtime >= cutoff:
+                return False
+            candidate.unlink()
+    except FileNotFoundError:
+        return False
     except OSError:
         logger.warning(
             "Failed to sweep offloaded history archive %s", candidate, exc_info=True

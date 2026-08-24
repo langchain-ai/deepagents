@@ -2185,6 +2185,42 @@ class TestSweepOffloadedHistory:
         assert sweep_offloaded_history() == 0
         assert archive.exists()
 
+    def test_archive_refreshed_between_iterdir_and_unlink_is_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An archive rewritten after the sweep lists it must not be deleted.
+
+        Simulates a second `dcode` process refreshing an expired archive after
+        this process's `iterdir()` has already enumerated it: the pre-unlink
+        `fstat` observes the refreshed mtime and keeps the file, so the rewrite
+        is not orphaned by a stale expiry decision.
+        """
+        archive_dir = self._setup(tmp_path, monkeypatch)
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 31 * 86_400
+        os.utime(archive, (old_time, old_time))
+
+        real_fstat = os.fstat
+        refreshed = False
+
+        def fstat_with_refresh(fd: int) -> os.stat_result:
+            nonlocal refreshed
+            if not refreshed:
+                refreshed = True
+                # The racing writer rewrites the archive before the sweep's
+                # fstat lands, making it fresh again.
+                archive.write_text("refreshed")
+                fresh_time = time.time()
+                os.utime(archive, (fresh_time, fresh_time))
+            return real_fstat(fd)
+
+        monkeypatch.setattr(os, "fstat", fstat_with_refresh)
+
+        assert sweep_offloaded_history() == 0
+        assert archive.exists()
+        assert archive.read_text() == "refreshed"
+
 
 class TestArtifactsRoot:
     """Cover the real-filesystem artifacts root for offloaded tool results."""

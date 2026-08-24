@@ -48,6 +48,18 @@ deliberate so neither side imports the other, and
 `test_remote_client.test_client_and_server_protocol_versions_agree` pins the two
 together. Bump both, or that test fails.
 """
+_OFFLOADABLE_THREAD_STATUSES = frozenset({"idle", "error"})
+"""Thread statuses that hold no in-flight work, so offload may proceed.
+
+`error` is included deliberately. A run that raises anything other than an
+interrupt or rollback leaves the thread row on `error` until the *next* run
+completes, and `RemoteAgent.aensure_thread` uses `if_exists="do_nothing"`, so
+it does not clear it. Excluding `error` would refuse `/offload` for the whole
+window after a failed turn -- exactly when a user reaches for it to recover
+from a context overflow. Quiescence is checked separately against the
+checkpoint's `next`/`tasks`/`interrupts`, which still catches an errored run
+that left a pending node.
+"""
 _thread_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 type _OperationKey = tuple[str, str]
 type _OperationOutcome = Literal["cancelled", "finished"]
@@ -390,8 +402,8 @@ async def _require_idle_thread(client: Any, thread_id: str) -> None:  # noqa: AN
         thread_id: Thread being compacted.
 
     Raises:
-        _OffloadConflictError: If the thread is not idle, or is not registered
-            on the server at all.
+        _OffloadConflictError: If the thread has work in flight, or is not
+            registered on the server at all.
     """
     from langgraph_sdk.errors import NotFoundError
 
@@ -408,7 +420,7 @@ async def _require_idle_thread(client: Any, thread_id: str) -> None:  # noqa: AN
             "before offloading."
         )
         raise _OffloadConflictError(msg) from exc
-    if thread.get("status") != "idle":
+    if thread.get("status") not in _OFFLOADABLE_THREAD_STATUSES:
         msg = "Cannot offload while the thread has an active or interrupted run."
         raise _OffloadConflictError(msg)
 

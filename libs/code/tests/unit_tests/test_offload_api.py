@@ -592,11 +592,14 @@ class TestExecuteOffload:
         operation.execute.return_value.archive.write.assert_not_awaited()
         prepare.assert_not_called()
 
-    async def test_busy_thread_is_rejected_before_operation(self) -> None:
+    @pytest.mark.parametrize("status", ["busy", "interrupted"])
+    async def test_thread_with_work_in_flight_is_rejected_before_operation(
+        self, status: str
+    ) -> None:
         from deepagents_code import offload_api
 
         threads = SimpleNamespace(
-            get=AsyncMock(return_value={"status": "busy"}),
+            get=AsyncMock(return_value={"status": status}),
             get_state=AsyncMock(),
             update_state=AsyncMock(),
         )
@@ -619,6 +622,43 @@ class TestExecuteOffload:
 
         threads.get_state.assert_not_awaited()
         runtime.assert_not_awaited()
+
+    async def test_errored_thread_is_still_offloadable(self) -> None:
+        """A failed turn must not lock the user out of `/offload`.
+
+        A run that raises leaves the thread row on `error` until the next run
+        completes, which is exactly when a user reaches for `/offload` to
+        recover. Reaching the state read proves the status gate let it past;
+        in-flight work is caught separately by the `next`/`tasks`/`interrupts`
+        check against the checkpoint.
+        """
+        from deepagents_code import offload_api
+
+        class _ReachedStateReadError(Exception):
+            """Sentinel proving control passed the thread-status gate."""
+
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "error"}),
+            get_state=AsyncMock(side_effect=_ReachedStateReadError),
+            update_state=AsyncMock(),
+        )
+        with (
+            patch.object(
+                offload_api,
+                "get_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+            patch.object(offload_api, "get_server_runtime", new=AsyncMock()),
+            pytest.raises(_ReachedStateReadError),
+        ):
+            await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+            )
+
+        threads.update_state.assert_not_awaited()
 
     @staticmethod
     @contextlib.contextmanager

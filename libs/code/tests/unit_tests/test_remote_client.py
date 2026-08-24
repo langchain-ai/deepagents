@@ -1448,3 +1448,46 @@ class TestServerOffload:
 
         assert f"exceeded {_OFFLOAD_MAX_RESUME_ROUNDS} hook rounds" in caplog.text
         assert "hook-0" in caplog.text
+
+    async def test_round_limit_does_not_fulfill_an_extra_hook(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The final round reads a result; it must not answer another hook.
+
+        The loop runs `_OFFLOAD_MAX_RESUME_ROUNDS + 1` times because the extra
+        iteration exists to POST the last fulfillment and read the reply. Drop
+        the guarding `break` and it fulfills one hook too many while still
+        reporting the lower number, so assert the count, not just the message.
+        """
+        from deepagents_code.client.remote_client import _OFFLOAD_MAX_RESUME_ROUNDS
+
+        agent = RemoteAgent("http://localhost:1234")
+        counter = itertools.count()
+
+        async def _always_interrupt(  # noqa: RUF029  # must be awaitable
+            *_args: object, **_kwargs: object
+        ) -> dict[str, object]:
+            return {
+                "status": "interrupt",
+                "request": {
+                    "type": "hook_invocation",
+                    "request": {"invocation_id": f"hook-{next(counter)}"},
+                },
+            }
+
+        http = SimpleNamespace(post=_always_interrupt)
+        graph = _offload_graph(http)
+        fulfill = AsyncMock(return_value={})
+
+        with (
+            patch.object(agent, "_get_graph", return_value=graph),
+            caplog.at_level(logging.WARNING),
+            pytest.raises(RuntimeError, match="hook rounds"),
+        ):
+            await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={},
+                fulfill_hook=fulfill,
+            )
+
+        assert fulfill.await_count == _OFFLOAD_MAX_RESUME_ROUNDS

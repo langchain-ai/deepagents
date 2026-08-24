@@ -1352,6 +1352,37 @@ class TestOffloadOperation:
         assert execution.result["status"] == "compacted"
         assert execution.result["messages_offloaded"] == 2
 
+    async def test_a_hook_interrupt_propagates_instead_of_failing(self) -> None:
+        """A hook request must reach the client, not become a `failed` result.
+
+        Two independent mechanisms protect this: the `BaseException` base, which
+        the compaction chain's broad `except Exception` handlers cannot catch,
+        and the explicit re-raise in `execute`. Either alone is sufficient, so
+        this asserts the outcome rather than a mechanism -- losing *both* turns
+        every interrupt into "Compaction failed:
+        HookTransportInterruptError", silently breaking `/offload` for hook
+        users only. Verified by mutating both. The boundary test mocks the whole
+        operation, so it cannot cover this.
+        """
+        from uuid import uuid4
+
+        from deepagents_code.hooks.server_middleware import (
+            HookTransportInterruptError,
+        )
+
+        middleware, compaction, _hooks = self._middleware()
+        request = SimpleNamespace(invocation_id=uuid4())
+        compaction._aplan_forced_compaction_update = AsyncMock(
+            side_effect=HookTransportInterruptError(cast("Any", request))
+        )
+
+        with pytest.raises(HookTransportInterruptError) as raised:
+            await middleware.execute(
+                {"messages": _make_dict_messages(4)}, self._runtime()
+            )
+
+        assert raised.value.request is request
+
     async def test_reoffload_reports_the_absolute_cutoff_delta(self) -> None:
         """Counts are deltas against the prior event, not absolute cutoffs.
 

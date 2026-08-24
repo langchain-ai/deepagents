@@ -40,15 +40,6 @@ many distinct invocations means either genuinely many hooks or an unstable
 invocation-id derivation server-side.
 """
 
-_OFFLOAD_PROTOCOL_VERSION = 2
-"""Offload operation protocol version this client speaks.
-
-Must equal `offload_api._OFFLOAD_API_VERSION`; the duplication is deliberate,
-because importing the server module here would pull the whole server runtime
-(Starlette, graph construction) into every client process. A unit test pins the
-two together.
-"""
-
 _OFFLOAD_RESULT_INT_FIELDS = (
     "messages_offloaded",
     "messages_kept",

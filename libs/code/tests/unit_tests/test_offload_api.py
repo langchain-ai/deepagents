@@ -1249,19 +1249,6 @@ class TestOffloadRoute:
             path_params={"thread_id": "thread-1", "operation_id": operation_id}
         )
 
-    async def test_capability_reports_the_pinned_version(self) -> None:
-        import json
-
-        from deepagents_code import offload_api
-
-        response = offload_api.capability(SimpleNamespace())  # ty: ignore[invalid-argument-type]
-
-        assert response.status_code == 200
-        assert json.loads(bytes(response.body)) == {
-            "offload": True,
-            "version": offload_api._OFFLOAD_API_VERSION,
-        }
-
     async def test_malformed_request_is_422(self) -> None:
         import json
 

@@ -622,10 +622,6 @@ async def test_offload_route_respects_configured_auth(
                 authenticated.status_code,
                 authenticated.text,
             )
-            capability = await http.get("/dcode/offload", headers=headers)
-            assert capability.status_code == 200
-            assert capability.json()["offload"] is True
-
             # A malformed context fails at the boundary with a field-naming
             # 422, not a 500 from deep in model resolution.
             malformed = await http.post(

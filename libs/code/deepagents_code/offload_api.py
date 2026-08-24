@@ -44,14 +44,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_OFFLOAD_API_VERSION = 2
-"""Protocol version this route speaks.
-
-Must equal `client.remote_client._OFFLOAD_PROTOCOL_VERSION`; the duplication is
-deliberate so neither side imports the other, and
-`test_remote_client.test_client_and_server_protocol_versions_agree` pins the two
-together. Bump both, or that test fails.
-"""
 _WRITABLE_STATE_CHANNELS = frozenset(OffloadStateUpdate.__annotations__)
 """Checkpoint channels a server-owned offload may write.
 
@@ -768,22 +760,6 @@ async def _execute_offload(
         return {"status": "complete", "result": execution.result}
 
 
-def capability(_request: Request) -> JSONResponse:
-    """Report the dcode server-operation protocol version.
-
-    Answers `{"offload": true, "version": <int>}` for protocol diagnostics and
-    client/server version pinning.
-
-    Deliberately cheap: it does not resolve the server runtime, so a probe never
-    pays for building the agent. An unbuildable runtime surfaces as a 503 from
-    the operation itself.
-
-    Returns:
-        JSON capability response.
-    """
-    return JSONResponse({"offload": True, "version": _OFFLOAD_API_VERSION})
-
-
 async def offload(request: Request) -> JSONResponse:
     """Handle one thread offload or hook-resume round.
 
@@ -896,7 +872,6 @@ async def cancel_offload(request: Request) -> JSONResponse:
 
 app = Starlette(
     routes=[
-        Route("/dcode/offload", capability, methods=["GET"]),
         Route(
             "/dcode/threads/{thread_id:str}/offload",
             offload,

@@ -1103,14 +1103,6 @@ class TestAgentErrorType:
         assert agent_error_type(ValueError("boom")) == "ValueError"
 
 
-def test_client_and_server_protocol_versions_agree() -> None:
-    """The duplicated version constant must not drift from the server's."""
-    from deepagents_code.client.remote_client import _OFFLOAD_PROTOCOL_VERSION
-    from deepagents_code.offload_api import _OFFLOAD_API_VERSION
-
-    assert _OFFLOAD_PROTOCOL_VERSION == _OFFLOAD_API_VERSION
-
-
 def _offload_graph(http: SimpleNamespace) -> SimpleNamespace:
     """Build a graph stub that also satisfies `aensure_thread`.
 

@@ -5025,6 +5025,14 @@ class DeepAgentsApp(App):
 
         self.run_worker(self._init_session_state, exclusive=True, group="session-init")
 
+        from deepagents_code.offload import sweep_offloaded_history
+
+        self.run_worker(
+            asyncio.to_thread(sweep_offloaded_history),
+            exclusive=True,
+            group="startup-history-sweep",
+        )
+
         # Server startup (model creation + server process)
         if self._server_kwargs is not None and not self._server_startup_deferred:
             self.run_worker(
@@ -5795,6 +5803,7 @@ class DeepAgentsApp(App):
 
             from deepagents_code.model_config import (
                 ModelConfigError,
+                ModelNotAllowedError,
                 save_recent_model,
                 touch_recent_model,
             )
@@ -5810,7 +5819,11 @@ class DeepAgentsApp(App):
             result.apply_to_settings()
             resolved_spec = f"{result.provider}:{result.model_name}"
             await self._restore_effort_override(resolved_spec)
-            save_recent_model(resolved_spec)
+            # Best-effort persistence. `resolved_spec` came out of `create_model`, so
+            # it already passed the policy gate; a refusal here means the config changed
+            # mid-session, which must not take down a session that is already running.
+            with suppress(ModelNotAllowedError):
+                save_recent_model(resolved_spec)
             touch_recent_model(resolved_spec)
             self._model_kwargs = None  # consumed
 
@@ -23076,11 +23089,18 @@ class DeepAgentsApp(App):
             from deepagents_code.config import _get_default_model_spec
             from deepagents_code.model_config import (
                 ModelConfigError,
+                NoAllowedModelCredentialsError,
                 NoCredentialsConfiguredError,
             )
 
             try:
                 model_spec = _get_default_model_spec()
+            except NoAllowedModelCredentialsError as exc:
+                # Credentials exist but no allowed model can use them. Unlike
+                # the bare case below this is not "nothing to retry" -- it is
+                # actionable, and silence after closing `/auth` reads as a hang.
+                await self._mount_message(ErrorMessage(str(exc)))
+                return False
             except NoCredentialsConfiguredError:
                 # No usable default to fall back to — nothing to retry.
                 return False
@@ -28530,7 +28550,7 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(f"Switched to {display}{params_suffix}"),
                 )
-            elif not await asyncio.to_thread(save_recent_model, display):
+            elif not await asyncio.to_thread(save_recent_model, resolved_spec):
                 await self._mount_message(
                     ErrorMessage(
                         "Model switched for this session, but could not save "
@@ -28546,7 +28566,9 @@ class DeepAgentsApp(App):
                 # `display` may be a bare model name when provider
                 # auto-detection fails; use the post-resolution spec so
                 # touch_recent_model always gets a valid "provider:model"
-                # string. Silent on failure — the debug log captures it when
+                # string -- and so it is matched against `models.allowed` in
+                # the same canonical form `create_model` just approved.
+                # Silent on failure — the debug log captures it when
                 # debug logging is enabled.
                 await asyncio.to_thread(touch_recent_model, resolved_spec)
             logger.info(
@@ -28662,11 +28684,18 @@ class DeepAgentsApp(App):
         from deepagents_code.config import _get_default_model_spec
         from deepagents_code.model_config import (
             ModelConfigError,
+            NoAllowedModelCredentialsError,
             NoCredentialsConfiguredError,
         )
 
         try:
             model_spec = _get_default_model_spec()
+        except NoAllowedModelCredentialsError as exc:
+            # The credential the user just added is valid but unlocks nothing
+            # `models.allowed` permits. Returning silently here would make
+            # `/auth` look broken, so name the models that would work.
+            await self._mount_message(ErrorMessage(str(exc)))
+            return False
         except NoCredentialsConfiguredError:
             return False
         except ModelConfigError as exc:
@@ -28696,7 +28725,15 @@ class DeepAgentsApp(App):
             if provider:
                 model_spec = f"{provider}:{model_spec}"
 
-        if await asyncio.to_thread(save_default_model, model_spec):
+        from deepagents_code.model_config import ModelNotAllowedError
+
+        try:
+            saved = await asyncio.to_thread(save_default_model, model_spec)
+        except ModelNotAllowedError as exc:
+            # Policy, not permissions -- render the reason the user can act on.
+            await self._mount_message(ErrorMessage(str(exc)))
+            return
+        if saved:
             await self._mount_message(AppMessage(f"Default model set to {model_spec}"))
         else:
             await self._mount_message(

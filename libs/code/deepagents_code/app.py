@@ -4043,7 +4043,7 @@ class DeepAgentsApp(App):
         """
 
         self._resuming = self._connecting and self._resume_thread_intent is not None
-        """True while the initial connect is resuming a thread (`-r`).
+        """True while the initial connect is resolving a `-r` resume intent.
 
         Lets the status bar label the spinner "Resuming" instead of the generic
         "Connecting" during `-r` startup. Only meaningful while `_connecting` is
@@ -4052,7 +4052,27 @@ class DeepAgentsApp(App):
 
         Set once at init and never re-armed, since `_resume_thread_intent` is
         consumed on the first connect — so unlike `_reconnecting` it needs no
-        caller-side reset discipline.
+        caller-side reset discipline. `on_deep_agents_app_server_ready` relies
+        on that: it latches this flag into `_restoring_resumed_history`, which
+        would otherwise re-arm on every mid-session reconnect.
+        """
+
+        self._restoring_resumed_history = False
+        """True after connect while initial resumed history is being restored.
+
+        Keeps the "Resuming" spinner up after `_connecting` clears, so the label
+        tracks transcript restoration rather than server readiness.
+
+        Armed only in `on_deep_agents_app_server_ready`, by latching `_resuming`
+        before `_sync_status_connection` consumes it. Cleared in
+        `on_deep_agents_app_server_start_failed` and in both `finally` blocks of
+        `_run_session_start_sequence`. `_sync_status_connection` only reads it,
+        so every clear must call that method to repaint; use
+        `_clear_resume_indicator` rather than clearing the flag directly.
+
+        Only armed when the initial connect started a background server: with a
+        pre-built agent or `--defer-server-start` there is no `ServerReady`, so
+        `-r` shows no restore progress.
         """
 
         self._server_startup_error: str | None = None
@@ -5104,9 +5124,7 @@ class DeepAgentsApp(App):
         # non-connecting path (pre-built agent) also honors `--startup-cmd` and
         # serializes startup against user input.
         if not self._connecting and not self._server_startup_deferred:
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._run_session_start_sequence()),
-            )
+            self.call_after_refresh(self._spawn_session_start_sequence)
 
     def _notify_hook_feedback(
         self,
@@ -5144,7 +5162,8 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Failed to create session state")
             self.notify(
-                "Session initialization failed. Some features may be unavailable.",
+                "Session initialization failed. Hooks and transcript recording "
+                "are disabled for this session. Restart to retry.",
                 severity="error",
                 timeout=10,
             )
@@ -5889,6 +5908,10 @@ class DeepAgentsApp(App):
 
     def on_deep_agents_app_server_ready(self, event: ServerReady) -> None:
         """Handle successful background server startup."""
+        # Latch before `_connecting` clears: the `_sync_status_connection` below
+        # drops `_resuming` as soon as it sees `_connecting` false. Safe on
+        # reconnects only because `_resuming` is never re-armed after init.
+        self._restoring_resumed_history = self._resuming
         self._connecting = False
         self._reconnecting = False
         self._connection_ready_event.set()
@@ -5992,9 +6015,7 @@ class DeepAgentsApp(App):
         # user-typed messages. Sequenced through a single task so the
         # startup command always resolves before the agent sees any user
         # input.
-        self.call_after_refresh(
-            lambda: asyncio.create_task(self._run_session_start_sequence()),
-        )
+        self.call_after_refresh(self._spawn_session_start_sequence)
 
         # Drain deferred actions (e.g. model/thread switch queued during connection)
         # if the agent is not actively running. Wrapped in a helper so that
@@ -6026,6 +6047,8 @@ class DeepAgentsApp(App):
 
         self._connecting = False
         self._reconnecting = False
+        self._resuming = False
+        self._restoring_resumed_history = False
         self._connection_ready_event.set()
 
         # A failed startup settles the connection just as `ServerReady` does.
@@ -7975,12 +7998,17 @@ class DeepAgentsApp(App):
             self._status_bar.set_status_message(message)
 
     def _sync_status_connection(self) -> None:
-        """Mirror the current connection state onto the bottom status bar.
+        """Mirror connection and resume progress onto the bottom status bar.
 
         The app-level welcome banner keeps rendering its regular footer while
-        the status bar is the single owner for connection progress. State is
-        derived from `_connecting`/`_reconnecting` so callers only have to flip
-        those flags before calling.
+        the status bar is the single owner for connection progress.
+
+        State is derived from `_connecting`/`_reconnecting`/`_resuming` and
+        `_restoring_resumed_history`, so callers only have to flip those flags
+        before calling. Not a pure read: once `_connecting` is clear this also
+        consumes `_resuming` and `_defer_connection_status_display` and cancels
+        the reveal timer, so it must not be reordered ahead of
+        `on_deep_agents_app_server_ready`'s latch of `_resuming`.
         """
         if self._status_bar is None:
             return
@@ -7997,7 +8025,8 @@ class DeepAgentsApp(App):
             self._defer_connection_status_display = False
             self._resuming = False
             self._cancel_connection_status_reveal_timer()
-            self._status_bar.set_connection("")
+            state = "resuming" if self._restoring_resumed_history else ""
+            self._status_bar.set_connection(state)
         elif self._defer_connection_status_display:
             self._status_bar.set_connection("")
             self._schedule_connection_status_reveal_timer()
@@ -8007,6 +8036,22 @@ class DeepAgentsApp(App):
             self._status_bar.set_connection("resuming")
         else:
             self._status_bar.set_connection("connecting")
+
+    def _clear_resume_indicator(self) -> None:
+        """Drop the "Resuming" label once restoration is over.
+
+        Every clear of `_restoring_resumed_history` must repaint, since
+        `_sync_status_connection` only reads the flag. The repaint is guarded:
+        callers clear from `finally` blocks, where a raise here would replace
+        the exception already propagating (`CancelledError` included).
+        """
+        if not self._restoring_resumed_history:
+            return
+        self._restoring_resumed_history = False
+        try:
+            self._sync_status_connection()
+        except Exception:
+            logger.exception("Failed to clear resume indicator")
 
     def _schedule_connection_status_reveal_timer(self) -> None:
         """Schedule the one-shot timer that reveals deferred connection state."""
@@ -8849,6 +8894,11 @@ class DeepAgentsApp(App):
             return 0
 
         old_scroll_y = chat.scroll_y
+        keep_at_bottom = (
+            above
+            and self._history_prefetch_active
+            and chat.scroll_y >= chat.max_scroll_y
+        )
         rows = reversed(to_hydrate) if above else iter(to_hydrate)
         entries = [self._build_hydration_entry(data) for data in rows]
         if above:
@@ -8871,7 +8921,10 @@ class DeepAgentsApp(App):
         self._schedule_message_height_measurements(hydrated_ids)
         self._sync_transcript_spacers(messages_container)
         self._schedule_transcript_prune("below" if above else "above")
-        chat.scroll_y = old_scroll_y
+        if keep_at_bottom:
+            chat.scroll_end(animate=False)
+        else:
+            chat.scroll_y = old_scroll_y
         await self._regroup_completed_tools()
         return len(entries)
 
@@ -10128,6 +10181,35 @@ class DeepAgentsApp(App):
             )
         )
 
+    def _spawn_session_start_sequence(self) -> None:
+        """Start the session-start sequence as a monitored task.
+
+        The sequence has no `except` of its own, so without a done callback a
+        failing `_init_session_state` (a malformed hook config, an unreadable
+        plugin file) would only reach asyncio's GC-time "never retrieved"
+        warning on the `asyncio` logger, which the debug file handler doesn't
+        capture. The user would see a settled status bar over an empty
+        transcript and nothing else.
+        """
+        task = asyncio.create_task(self._run_session_start_sequence())
+        task.add_done_callback(_log_task_exception)
+        task.add_done_callback(self._report_session_start_failure)
+
+    def _report_session_start_failure(self, task: asyncio.Task[None]) -> None:
+        """Tell the user when the session-start sequence died."""
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is None:
+            return
+        self.call_later(
+            self._mount_message,
+            ErrorMessage(
+                f"Session startup failed: {error}. The thread was not "
+                "restored. Restart to try again."
+            ),
+        )
+
     async def _run_session_start_sequence(self) -> None:
         """Load history, run `--startup-cmd`, then dispatch initial work.
 
@@ -10159,15 +10241,23 @@ class DeepAgentsApp(App):
             self._schedule_session_start_after_launch_init(launch_init_task)
             return
 
-        if self._session_state is None:
-            # Initialize inline rather than waiting on the session-init worker:
-            # under Textual's worker scheduling an in-flight worker may not
-            # progress while this coroutine is blocked on it.
-            await self._init_session_state()
-
         self._startup_sequence_running = True
         initial_submitted = False
         try:
+            if self._session_state is None:
+                # Initialize inline rather than waiting on the session-init worker:
+                # under Textual's worker scheduling an in-flight worker may not
+                # progress while this coroutine is blocked on it.
+                #
+                # Must stay inside the `try` so the `finally` clears the resume
+                # indicator when init fails. Side effect of being inside it:
+                # `_init_session_state`'s trailing `_auto_accept_pending_goal_rubric`
+                # self-suppresses on `_startup_sequence_running`. Harmless here —
+                # only `_load_thread_history` or a live turn can leave a pending
+                # goal, and neither has run yet — and the skip branch above still
+                # runs the auto-accept on server respawns.
+                await self._init_session_state()
+
             from deepagents_code.hooks.models.domain import SessionStartCause
 
             start_cause = (
@@ -10179,9 +10269,17 @@ class DeepAgentsApp(App):
                 self._resume_thread_intent is not None
                 or not self._has_initial_submission()
             )
-            if should_load_history:
-                await self._load_thread_history(resolve_pending_goal=False)
-            elif self._has_initial_submission():
+            try:
+                if should_load_history:
+                    await self._load_thread_history(resolve_pending_goal=False)
+            finally:
+                # History restoration ends with `_load_thread_history`; clear
+                # here so a slow `--startup-cmd` or resume compaction doesn't
+                # keep the status bar showing "Resuming" after the transcript
+                # is already restored. Also fires when `should_load_history` is
+                # false, since nothing is being restored on that path either.
+                self._clear_resume_indicator()
+            if not should_load_history and self._has_initial_submission():
                 try:
                     await self._adopt_resumed_model_if_needed(
                         thread_id=self._lc_thread_id
@@ -10224,6 +10322,9 @@ class DeepAgentsApp(App):
                 initial_submitted = True
         finally:
             self._startup_sequence_running = False
+            # Normally cleared right after history loading; this covers setup
+            # that fails before reaching it.
+            self._clear_resume_indicator()
 
         # Drain after the sequence completes. When an initial submission was
         # dispatched it owns the session, so skip queued-input processing — but
@@ -10279,8 +10380,7 @@ class DeepAgentsApp(App):
             self._session_start_waiting_for_launch_init = False
             if self._exit:
                 return
-            task = asyncio.create_task(self._run_session_start_sequence())
-            task.add_done_callback(_log_task_exception)
+            self._spawn_session_start_sequence()
 
         launch_init_task.add_done_callback(_resume_when_launch_done)
 
@@ -18639,6 +18739,33 @@ class DeepAgentsApp(App):
             return dict(state.values)
         return {}
 
+    @staticmethod
+    def _prepare_thread_history_messages(
+        messages: list[Any],
+    ) -> tuple[list[MessageData], tuple[BaseMessage, ...]]:
+        """Deserialize and project checkpoint messages for a resumed thread.
+
+        Blocking and CPU-bound over the whole history; callers must offload it
+        with `asyncio.to_thread` rather than run it on the event loop.
+
+        Returns:
+            Render data and validated messages for hook transcript projection.
+        """
+        # RemoteGraph.aget_state returns values as raw JSON dicts; convert to
+        # LangChain message objects so `_convert_messages_to_data` works.
+        if any(isinstance(message, dict) for message in messages):
+            from langchain_core.messages.utils import convert_to_messages
+
+            messages = convert_to_messages(messages)
+
+        from langchain_core.messages import BaseMessage
+
+        data = DeepAgentsApp._convert_messages_to_data(messages)
+        transcript_messages = tuple(
+            message for message in messages if isinstance(message, BaseMessage)
+        )
+        return data, transcript_messages
+
     async def _fetch_thread_history_data(self, thread_id: str) -> _ThreadHistoryPayload:
         """Fetch and convert stored messages for a thread.
 
@@ -18672,19 +18799,11 @@ class DeepAgentsApp(App):
         if not messages:
             return payload
 
-        # RemoteGraph.aget_state returns values as raw JSON dicts; convert to
-        # LangChain message objects so _convert_messages_to_data works.
-        if any(isinstance(m, dict) for m in messages):
-            from langchain_core.messages.utils import convert_to_messages
-
-            messages = convert_to_messages(messages)
-
-        # Offload conversion so large histories don't block the UI loop.
-        data = await asyncio.to_thread(self._convert_messages_to_data, messages)
-        from langchain_core.messages import BaseMessage
-
-        transcript_messages = tuple(
-            message for message in messages if isinstance(message, BaseMessage)
+        # Offload deserialization and conversion so large histories don't block
+        # the UI loop.
+        data, transcript_messages = await asyncio.to_thread(
+            self._prepare_thread_history_messages,
+            messages,
         )
         return replace(
             payload,
@@ -18962,6 +19081,10 @@ class DeepAgentsApp(App):
                 thread.
             resolve_pending_goal: Whether to review or auto-accept a restored
                 proposal before returning.
+
+        Raises:
+            asyncio.CancelledError: If the restore is cancelled mid-flight. Told
+                to the user, then re-raised so cancellation still propagates.
         """
         history_thread_id = thread_id or self._lc_thread_id
         if not history_thread_id:
@@ -19002,10 +19125,17 @@ class DeepAgentsApp(App):
                 if size_error is not None
                 else None
             )
-            self._hooks.record_messages(
-                payload.transcript_messages,
-                thread_id=history_thread_id,
-            )
+            # Offload so projecting a long transcript into the hook store
+            # doesn't block the UI loop. The emptiness check only avoids
+            # spawning a worker for a no-op; `HooksManager.record_messages`
+            # already short-circuits on empty input, so don't "simplify" this
+            # by dropping the guard and keeping the thread hop.
+            if payload.transcript_messages:
+                await asyncio.to_thread(
+                    self._hooks.record_messages,
+                    payload.transcript_messages,
+                    thread_id=history_thread_id,
+                )
 
             # Adopt the resumed thread's model (session-only) so the session
             # continues on the model it was last using, not the global default.
@@ -19160,12 +19290,31 @@ class DeepAgentsApp(App):
                 chat.scroll_end(animate=False)
             self.call_after_refresh(self._start_history_prefetch)
 
+        except asyncio.CancelledError:
+            # The offloaded conversion and hook projection are await points, so
+            # a cancel here can land mid-restore. `except Exception` below
+            # doesn't catch this, and the caller has no handler either, so say
+            # something before propagating.
+            logger.info("History restore cancelled for %s", history_thread_id)
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "History restore was interrupted, so this transcript "
+                        "may be incomplete. The thread itself is intact."
+                    ),
+                )
+            raise
         except Exception as e:  # Resilient history loading
             logger.exception(
                 "Failed to load thread history for %s",
                 history_thread_id,
             )
-            await self._mount_message(AppMessage(f"Could not load history: {e}"))
+            await self._mount_message(
+                ErrorMessage(
+                    f"Could not restore this thread's transcript: {e}. The "
+                    "thread itself is intact — new messages are still saved."
+                ),
+            )
         finally:
             if size_warning is not None:
                 try:

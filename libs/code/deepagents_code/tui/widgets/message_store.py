@@ -647,7 +647,7 @@ class MessageStore:
             hydration starts.
     """
 
-    INITIAL_WINDOW_SIZE: int = 100
+    INITIAL_WINDOW_SIZE: int = 30
     WINDOW_SIZE: int = 800
     HARD_WINDOW_SIZE: int = 900
     HYDRATE_BUFFER: int = 8

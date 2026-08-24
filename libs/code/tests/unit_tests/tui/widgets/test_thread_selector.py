@@ -3,6 +3,7 @@
 import asyncio
 import sqlite3
 from collections.abc import Coroutine
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
@@ -23,6 +24,7 @@ from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.sessions import ThreadInfo
 from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
+from deepagents_code.tui.widgets.message_store import MessageData
 from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
     ContainedSelectOverlay,
@@ -4062,6 +4064,21 @@ class TestFetchThreadHistoryData:
         assert payload.messages == []
         assert payload.context_tokens == 0
 
+    @staticmethod
+    def _skip_conversion(converted: list[MessageData]) -> AbstractContextManager[Any]:
+        """Stub message preparation so metadata assertions run on their own.
+
+        Patches the prepare function rather than `asyncio.to_thread`: `app.py`
+        offloads hook transcript recording through `to_thread` too, so a
+        module-wide stub would silently disable unrelated work and hand back a
+        false pass.
+        """
+        return patch.object(
+            DeepAgentsApp,
+            "_prepare_thread_history_messages",
+            staticmethod(lambda _messages: (converted, ())),
+        )
+
     async def test_offloads_conversion_to_thread(self) -> None:
         """Message conversion should be offloaded via `asyncio.to_thread`."""
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
@@ -4077,15 +4094,18 @@ class TestFetchThreadHistoryData:
         with patch(
             "deepagents_code.app.asyncio.to_thread",
             new_callable=AsyncMock,
-            return_value=converted,
+            return_value=(converted, ()),
         ) as to_thread_mock:
             payload = await app._fetch_thread_history_data("tid-1")
 
         assert payload.messages == converted
-        to_thread_mock.assert_awaited_once()
-        await_args = to_thread_mock.await_args
-        assert await_args is not None
-        assert await_args.args[1] == raw_messages
+        # Assert against the class attribute: `_prepare_thread_history_messages`
+        # is a staticmethod, so this holds whether the call site spells it
+        # `self.` or `DeepAgentsApp.`.
+        to_thread_mock.assert_awaited_once_with(
+            DeepAgentsApp._prepare_thread_history_messages,
+            raw_messages,
+        )
 
     async def test_extracts_nonzero_context_tokens(self) -> None:
         """Persisted _context_tokens should propagate to the payload."""
@@ -4099,11 +4119,7 @@ class TestFetchThreadHistoryData:
         app._agent.aget_state = AsyncMock(return_value=state)
         converted = [MessageData(type=MessageType.USER, content="hello")]
 
-        with patch(
-            "deepagents_code.app.asyncio.to_thread",
-            new_callable=AsyncMock,
-            return_value=converted,
-        ):
+        with self._skip_conversion(converted):
             payload = await app._fetch_thread_history_data("tid-1")
 
         assert payload.context_tokens == 12000
@@ -4123,11 +4139,7 @@ class TestFetchThreadHistoryData:
         app._agent.aget_state = AsyncMock(return_value=state)
         converted = [MessageData(type=MessageType.USER, content="hello")]
 
-        with patch(
-            "deepagents_code.app.asyncio.to_thread",
-            new_callable=AsyncMock,
-            return_value=converted,
-        ):
+        with self._skip_conversion(converted):
             payload = await app._fetch_thread_history_data("tid-1")
 
         assert payload.model_spec == "anthropic:claude-sonnet-4-5"
@@ -4144,11 +4156,7 @@ class TestFetchThreadHistoryData:
         app._agent.aget_state = AsyncMock(return_value=state)
         converted = [MessageData(type=MessageType.USER, content="hello")]
 
-        with patch(
-            "deepagents_code.app.asyncio.to_thread",
-            new_callable=AsyncMock,
-            return_value=converted,
-        ):
+        with self._skip_conversion(converted):
             payload = await app._fetch_thread_history_data("tid-1")
 
         assert payload.model_spec == ""
@@ -4169,11 +4177,7 @@ class TestFetchThreadHistoryData:
         app._agent.aget_state = AsyncMock(return_value=state)
         converted = [MessageData(type=MessageType.USER, content="hello")]
 
-        with patch(
-            "deepagents_code.app.asyncio.to_thread",
-            new_callable=AsyncMock,
-            return_value=converted,
-        ):
+        with self._skip_conversion(converted):
             payload = await app._fetch_thread_history_data("tid-1")
 
         assert payload.cache_state is not None
@@ -4194,11 +4198,7 @@ class TestFetchThreadHistoryData:
         app._agent.aget_state = AsyncMock(return_value=state)
         converted = [MessageData(type=MessageType.USER, content="hello")]
 
-        with patch(
-            "deepagents_code.app.asyncio.to_thread",
-            new_callable=AsyncMock,
-            return_value=converted,
-        ):
+        with self._skip_conversion(converted):
             payload = await app._fetch_thread_history_data("tid-1")
 
         assert payload.context_tokens == 0

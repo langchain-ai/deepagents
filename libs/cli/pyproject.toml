@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.2.2"
-description = "Deployment tooling for Deep Agents - bundle, run, and ship agents to LangGraph Platform."
+version = "0.3.0"
+description = "DEPRECATED: Deployment tooling for Deep Agents. Use Managed Deep Agents (`uv tool install managed-deepagents`, `mda`) instead: https://docs.langchain.com/langsmith/python/managed-deep-agents-overview"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 keywords = ["agents", "ai", "cli", "deploy", "llm", "langgraph", "langchain", "deep-agent"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 7 - Inactive",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
@@ -178,6 +178,8 @@ timeout = 30  # Default timeout for all tests (can be overridden per-test)
 filterwarnings = [
     # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
     "error",
+    # deepagents-cli is deprecated; the package warns at import time on purpose.
+    "default:deepagents-cli is deprecated:DeprecationWarning",
 ]
 
 addopts = "--strict-markers --strict-config --durations=5"

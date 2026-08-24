@@ -591,11 +591,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _help_text(self) -> str:
         """Build the footer help text.
 
-        Curated/onboarding mode omits the Ctrl+S, Ctrl+R, and Ctrl+N hints.
-        Escape stays bound but is left off the hint line — modal dismissal via
-        Escape is conventional, and advertising it would only lengthen an
-        already-wrapping line. Shift+Tab is likewise bound (`action_move_up`,
-        routed by `_SupportsReverseNav`) but omitted: this modal binds Tab to
+        Curated/onboarding mode omits the Ctrl+S, Ctrl+R, Ctrl+N, and Escape
+        hints. Standard mode advertises Escape as `Esc close`. Shift+Tab is
+        likewise bound (`action_move_up`, routed by `_SupportsReverseNav`) but
+        omitted: this modal binds Tab to
         autocomplete, so the shared "Tab/Shift+Tab navigate" phrasing from
         `tui.key_hints` would misdescribe Tab here. In standard mode the full
         line exceeds the modal width, so the help `Static` is sized to grow
@@ -626,7 +625,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             names_hint = "Ctrl+N names" if self._show_specs else "Ctrl+N IDs"
             if self._default_scope is not None:
                 parts.append(f"Ctrl+S {self._default_scope.hint}")
-            parts.extend(("Ctrl+R recommended", names_hint))
+            parts.extend(("Ctrl+R recommended", names_hint, "Esc close"))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 

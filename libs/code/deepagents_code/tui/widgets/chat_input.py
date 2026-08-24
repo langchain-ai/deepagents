@@ -59,7 +59,6 @@ from deepagents_code.tui.widgets.autocomplete import (
 )
 from deepagents_code.tui.widgets.history import HistoryManager
 from deepagents_code.tui.widgets.prompt_search import (
-    PROMPT_SEARCH_MAX_ROWS,
     PROMPT_SEARCH_PAGE_SIZE,
     PROMPT_SEARCH_PANEL_ROWS,
     PromptSearchInput,
@@ -3789,10 +3788,11 @@ class ChatInput(Vertical):
         self._prompt_search_index = max(
             0, min(self._prompt_search_index, len(self._prompt_search_filtered) - 1)
         )
-        titles = [
-            prompt_title(prompt)
-            for prompt in self._prompt_search_filtered[:PROMPT_SEARCH_MAX_ROWS]
-        ]
+        # Render every filtered prompt, not just the first visible page: the
+        # results container scrolls (CSS max-height), and rows that do not
+        # exist cannot be scrolled into view — which previously made arrow/Tab
+        # moves past row 5 invisible and left scrolling with nothing to do.
+        titles = [prompt_title(prompt) for prompt in self._prompt_search_filtered]
         empty: str | None
         if self._prompt_search_filtered:
             empty = None

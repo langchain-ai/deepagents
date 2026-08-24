@@ -7636,3 +7636,46 @@ class TestPromptSearchPanel:
             await pilot.pause()
 
             assert isinstance(app.focused, PromptSearchInput)
+
+    async def test_selection_past_first_page_stays_mounted_and_visible(
+        self, tmp_path
+    ) -> None:
+        """Regression: rows beyond the first page must exist to be shown.
+
+        The panel windows the DOM around the selection, so navigating past the
+        first page (arrows or a Tab page) must keep the selected row mounted
+        and scrolled into view rather than pointing at a row that was never
+        rendered.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, [f"prompt {i}" for i in range(30)])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            panel = chat._prompt_search
+            assert panel is not None
+
+            # Arrow past the first page of 5 rows.
+            for _ in range(12):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 12
+            mounted = {option.index for option in panel._options}
+            assert chat._prompt_search_index in mounted
+            selected = [
+                o for o in panel._options if o.index == chat._prompt_search_index
+            ]
+            assert selected[0]._is_selected
+
+            # Enter inserts the exact windowed prompt.
+            await pilot.press("enter")
+            await pilot.pause()
+            assert chat._text_area is not None
+            assert chat._text_area.text == "prompt 17"  # newest-first: 29-12

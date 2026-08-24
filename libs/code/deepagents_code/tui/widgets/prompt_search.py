@@ -35,6 +35,16 @@ PROMPT_SEARCH_HINT = (
 PROMPT_SEARCH_PAGE_SIZE = PROMPT_SEARCH_MAX_ROWS
 """Rows Tab/Shift+Tab jump through the filtered list."""
 
+PROMPT_SEARCH_WINDOW = 50
+"""Most rows rendered in the DOM at once, windowed around the selection.
+
+Mounting one `PromptSearchOption` per filtered prompt costs real time at the
+100-entry history cap and throws most of them away above the 5-row viewport, so
+the panel renders a sliding window instead. Navigation re-windows via
+`update_selection`, so any reachable row is mounted before it can be selected;
+unmounted rows are simply never the selection target.
+"""
+
 PROMPT_SEARCH_PANEL_ROWS = 1 + PROMPT_SEARCH_MAX_ROWS + 1
 """Rows the panel reports at its tallest: query, results, hint.
 
@@ -47,6 +57,19 @@ def prompt_title(prompt: str) -> str:
     """Return a prompt's first non-empty line for a one-row summary."""
     nonempty = [line.strip() for line in prompt.splitlines() if line.strip()]
     return (nonempty[0] if nonempty else prompt.strip()) or "(empty prompt)"
+
+
+def _window_bounds(total: int, selected_index: int) -> tuple[int, int]:
+    """Return the [start, stop) window of rows to render around a selection."""
+    if total <= PROMPT_SEARCH_WINDOW:
+        return 0, total
+    # Keep the selection comfortably inside the window so single-step moves
+    # stay mounted; the bias toward newer rows matches newest-first scanning.
+    start = max(
+        0,
+        min(selected_index - PROMPT_SEARCH_WINDOW // 5, total - PROMPT_SEARCH_WINDOW),
+    )
+    return start, start + PROMPT_SEARCH_WINDOW
 
 
 def filter_prompts(prompts: tuple[str, ...], query: str) -> list[str]:
@@ -259,7 +282,8 @@ class PromptSearchPanel(Vertical):
 
         Args:
             query: Current filter text, rendered on the query line.
-            titles: Row titles to display (already capped by the caller).
+            titles: All filtered row titles; the panel renders a window of
+                them around `selected_index`.
             selected_index: Index of the selected row.
             empty: Empty-state message to show instead of rows, if any.
         """
@@ -289,12 +313,15 @@ class PromptSearchPanel(Vertical):
         titles = self._pending_titles
         selected_index = self._pending_selected
 
+        start, stop = _window_bounds(len(titles), selected_index)
+        window = titles[start:stop]
+
         existing = len(self._options)
-        needed = len(titles)
+        needed = len(window)
 
         for i in range(min(existing, needed)):
             self._options[i].set_content(
-                titles[i], i, is_selected=(i == selected_index)
+                window[i], start + i, is_selected=(start + i == selected_index)
             )
 
         try:
@@ -306,9 +333,9 @@ class PromptSearchPanel(Vertical):
             if needed > existing:
                 new_widgets = [
                     PromptSearchOption(
-                        title=titles[idx],
-                        index=idx,
-                        is_selected=(idx == selected_index),
+                        title=window[idx],
+                        index=start + idx,
+                        is_selected=(start + idx == selected_index),
                     )
                     for idx in range(existing, needed)
                 ]
@@ -332,20 +359,41 @@ class PromptSearchPanel(Vertical):
             )
         self.show(len(self._options) if not self._pending_empty else 1)
 
-        if 0 <= selected_index < len(self._options):
-            self._options[selected_index].scroll_visible(animate=False)
+        if start <= selected_index < start + len(self._options):
+            self._options[selected_index - start].scroll_visible(animate=False)
 
     def update_selection(self, selected_index: int) -> None:
-        """Update which row is selected without rebuilding the list."""
+        """Update which row is selected, re-windowing the DOM when needed.
+
+        Rows are windowed around the selection, so a move beyond the mounted
+        range (a Tab page, or arrows past the window edge) rebuilds the window
+        instead of just re-styling a row.
+        """
         self._pending_selected = selected_index
         if self._selected_index == selected_index:
             return
-        if 0 <= self._selected_index < len(self._options):
-            self._options[self._selected_index].set_selected(is_selected=False)
+        start, _stop = _window_bounds(len(self._pending_titles), selected_index)
+        if (
+            not self._options
+            or not (start <= selected_index < start + len(self._options))
+            or self._options[0].index != start
+        ):
+            # Selection left the mounted window (or the window is stale); a
+            # rebuild is the only way to show it. `_rebuild_options` applies
+            # the selection as it mounts, so nothing else is needed here.
+            self._selected_index = selected_index
+            self._rebuild_generation += 1
+            gen = self._rebuild_generation
+            self.call_next(lambda: self._rebuild_options(gen))
+            return
+        old_local = self._selected_index - self._options[0].index
+        if 0 <= old_local < len(self._options):
+            self._options[old_local].set_selected(is_selected=False)
         self._selected_index = selected_index
-        if 0 <= selected_index < len(self._options):
-            self._options[selected_index].set_selected(is_selected=True)
-            self._options[selected_index].scroll_visible(animate=False)
+        new_local = selected_index - self._options[0].index
+        if 0 <= new_local < len(self._options):
+            self._options[new_local].set_selected(is_selected=True)
+            self._options[new_local].scroll_visible(animate=False)
 
     def on_prompt_search_option_clicked(
         self, event: PromptSearchOption.Clicked

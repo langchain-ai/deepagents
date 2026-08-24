@@ -2922,6 +2922,41 @@ def test_saving_a_shadowed_ui_preference_says_policy_still_wins(
         model_config.clear_caches()
 
 
+def test_saving_past_a_malformed_ui_policy_says_it_was_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected managed entry is reported to whoever is at the keyboard.
+
+    The administrator who wrote it is not here and never sees the log line, so
+    the toast is the only signal their policy is inert. The `decided` sibling
+    above was covered and this branch was not, which is how the missing
+    diagnostics call on this path went unnoticed once already.
+    """
+    from deepagents_code import app, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[ui]\nshow_scrollbar = "yes"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        result = app._save_show_scrollbar_result(visible=False)
+        assert result.ok is True
+        assert result.message == (
+            "Preference saved. A managed policy for this option was rejected "
+            "as malformed and is not being applied."
+        )
+        assert result.severity == "warning"
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
 def _reload_previous() -> dict[str, object]:
     """Return a `previous` mapping shaped like the reloadable settings."""
     from deepagents_code.config import _RELOADABLE_FIELDS

@@ -41733,3 +41733,103 @@ class TestManagedVerdict:
         from deepagents_code.app import _managed_verdict
 
         assert _managed_verdict("not.a.real.option") == (False, False)
+
+
+class _NotifyRecorder:
+    """Minimal stand-in for the app surface the goal-preference save uses."""
+
+    def __init__(self) -> None:
+        self.notes: list[tuple[str, str]] = []
+
+    def notify(
+        self,
+        message: str,
+        *,
+        severity: str = "information",
+        markup: bool = True,
+    ) -> None:
+        """Record a toast instead of rendering it."""
+        del markup
+        self.notes.append((message, severity))
+
+
+class TestGoalAutoAcceptPreferenceReportsPolicy:
+    """The goal-criteria save must reach the probe, not just own one.
+
+    `TestManagedVerdict` exercises the helper in isolation, so deleting the
+    whole probe from this caller left the suite green -- on the setting that
+    decides whether Auto applies generated goal criteria without review.
+    """
+
+    async def test_effective_policy_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A valid managed entry tells the user their choice is inert."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text("[goals]\nauto_accept_criteria = false\n", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        recorder = _NotifyRecorder()
+        try:
+            await DeepAgentsApp._save_goal_auto_accept_preference(
+                # Only `self.notify` is used, so a recorder is enough.
+                cast("DeepAgentsApp", recorder),
+                enabled=True,
+            )
+        finally:
+            service.invalidate_config_sources()
+
+        assert recorder.notes == [
+            ("Preference saved, but managed config remains effective.", "warning")
+        ]
+
+    async def test_malformed_policy_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A rejected managed entry is not allowed to vanish."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            '[goals]\nauto_accept_criteria = "sometimes"\n', encoding="utf-8"
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        recorder = _NotifyRecorder()
+        try:
+            await DeepAgentsApp._save_goal_auto_accept_preference(
+                # Only `self.notify` is used, so a recorder is enough.
+                cast("DeepAgentsApp", recorder),
+                enabled=True,
+            )
+        finally:
+            service.invalidate_config_sources()
+
+        assert recorder.notes == [
+            (
+                (
+                    "Preference saved. A managed policy for this option was "
+                    "rejected as malformed and is not being applied."
+                ),
+                "warning",
+            )
+        ]
+
+    async def test_no_policy_stays_quiet(self) -> None:
+        """The common case must not grow a spurious toast."""
+        from deepagents_code.app import DeepAgentsApp
+
+        recorder = _NotifyRecorder()
+        await DeepAgentsApp._save_goal_auto_accept_preference(
+            # Only `self.notify` is used, so a recorder is enough.
+            cast("DeepAgentsApp", recorder),
+            enabled=True,
+        )
+
+        assert recorder.notes == []

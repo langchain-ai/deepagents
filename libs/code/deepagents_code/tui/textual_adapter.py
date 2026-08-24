@@ -3816,8 +3816,8 @@ def _report_tokens(
     """Refresh the token-count UI display.
 
     Persistence into graph state is owned by `ResumeStateMiddleware.after_model`
-    (normal turns), `_handle_offload` (offload turns), and the interrupt-cleanup
-    `aupdate_state` write (partial turns) — never this helper.
+    (normal turns), the server-side offload route (offload turns), and the
+    interrupt-cleanup `aupdate_state` write (partial turns) — never this helper.
 
     Args:
         adapter: UI adapter with token callbacks.

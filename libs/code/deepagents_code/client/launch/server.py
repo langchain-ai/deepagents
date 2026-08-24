@@ -40,6 +40,10 @@ never a typed-in address — so it deliberately avoids binding the well-known
 `langgraph dev` projects alongside `deepagents-code` without a port collision.
 """
 
+_DCODE_GRAPH_REF = "deepagents_code.server_graph:make_graph"
+"""Built-in graph reference. Also gates registration of the offload HTTP app:
+a custom `graph_ref` gets no `http` block and does not support `/offload`."""
+
 _HEALTH_POLL_INTERVAL_LOCAL = 0.1
 
 _HEALTH_POLL_INTERVAL_REMOTE = 0.3
@@ -161,20 +165,35 @@ def _extract_startup_error_marker(output: str) -> str | None:
 def generate_langgraph_json(
     output_dir: str | Path,
     *,
-    graph_ref: str = "deepagents_code.server_graph:make_graph",
+    graph_ref: str = _DCODE_GRAPH_REF,
     env_file: str | None = None,
     checkpointer_path: str | None = None,
+    auth_path: str | None = None,
 ) -> Path:
     """Generate a `langgraph.json` config file for `langgraph dev`.
+
+    Registers the interactive `agent` graph and dcode's custom HTTP operations,
+    which opt into LangGraph's route-auth layer (`enable_custom_route_auth`) so a
+    deployment that configures auth gates them. Production runs `noop` auth and
+    relies on the loopback bind, so that gate is inert there -- see
+    `auth_path` below and THREAT_MODEL.md TB10. `/offload` is served by that
+    backend boundary rather than exposed as another client-addressable graph.
 
     Args:
         output_dir: Directory to write the config file.
         graph_ref: Python "module:attribute" reference to the graph, where the
             attribute is a graph factory (e.g. `make_graph`) or a graph object.
+            Custom graphs omit the built-in offload service, so `/offload` is
+            unsupported when one is supplied.
         env_file: Optional path to an env file.
         checkpointer_path: Import path to an async context manager that yields a
             `BaseCheckpointSaver`. When set, the server persists checkpoint data
             to disk instead of in-memory.
+        auth_path: Import path to a LangGraph `Auth` instance, emitted as the
+            config's `auth.path`. Production servers run with
+            `LANGGRAPH_AUTH_TYPE=noop` and no auth backend; this exists so
+            tests can prove `enable_custom_route_auth` gates the operation
+            routes when a deployment *does* configure one.
 
     Returns:
         Path to the generated config file.
@@ -183,6 +202,13 @@ def generate_langgraph_json(
         "dependencies": ["."],
         "graphs": {"agent": graph_ref},
     }
+    if graph_ref == _DCODE_GRAPH_REF:
+        config["http"] = {
+            "app": "deepagents_code.offload_api:app",
+            "enable_custom_route_auth": True,
+        }
+    if auth_path:
+        config["auth"] = {"path": auth_path}
     if env_file:
         config["env"] = env_file
     if checkpointer_path:

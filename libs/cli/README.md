@@ -1,17 +1,25 @@
-# Deep Agents CLI — Deployment Tooling
+# Deep Agents CLI — Deployment Tooling (Deprecated)
 
 [![PyPI - Version](https://img.shields.io/pypi/v/deepagents-cli?label=%20)](https://pypi.org/project/deepagents-cli/#history)
 [![PyPI - License](https://img.shields.io/pypi/l/deepagents-cli)](https://opensource.org/licenses/MIT)
 [![PyPI - Downloads](https://img.shields.io/pepy/dt/deepagents-cli)](https://pypistats.org/packages/deepagents-cli)
 [![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain_oss.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain_oss)
 
-> [!IMPORTANT]
-> **The interactive coding agent moved.** As of `deepagents-cli==0.1.0`, this package contains only the deployment subcommands (`init`, `deploy`, `agents`, `mcp-servers`). The interactive REPL — previously launched via `deepagents` — now ships as [`deepagents-code`](https://docs.langchain.com/deepagents-code) (`dcode`).
+> [!WARNING]
+> **`deepagents-cli` is deprecated and no longer maintained. This is the final release.** It is superseded by the [`managed-deepagents`](https://pypi.org/project/managed-deepagents/) package and its `mda` CLI, which build, deploy, and run agents from a project directory with no local CLI infrastructure. See the [Managed Deep Agents overview](https://docs.langchain.com/langsmith/python/managed-deep-agents-overview).
+>
+> **What to do:** install the `mda` CLI and re-scaffold your project:
 >
 > ```bash
-> curl -LsSf https://langch.in/dcode | bash
-> dcode
+> uv tool install managed-deepagents
+> mda init my-agent
+> cd my-agent
+> mda deploy
 > ```
+>
+> The `mda` CLI covers everything `deepagents init` / `deploy` / `agents` / `mcp-servers` did — project scaffolding, deployment, agent management, and MCP servers — against the Managed Deep Agents platform. See the [quickstart](https://docs.langchain.com/langsmith/python/managed-deep-agents-quickstart) and [CLI reference](https://docs.langchain.com/langsmith/python/managed-deep-agents-cli).
+>
+> The interactive coding agent (`dcode`) already lives in [`deepagents-code`](https://docs.langchain.com/deepagents-code) and is unaffected by this deprecation.
 
 ## Install
 

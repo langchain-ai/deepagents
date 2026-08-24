@@ -122,6 +122,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server(
         provider="anthropic",
         model_name="claude-sonnet-4-6",
         apply_to_settings=MagicMock(),
+        model_retries=5,
     )
     server = object()
     mcp_loop = None
@@ -255,6 +256,7 @@ def test_acp_mode_auto_forwards_classifier_and_store() -> None:
         provider="openai",
         model_name="gpt-5.5",
         apply_to_settings=MagicMock(),
+        model_retries=5,
     )
     server = object()
     auto_server = MagicMock(return_value=server)
@@ -309,6 +311,7 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
         provider="anthropic",
         model_name="claude-sonnet-4-6",
         apply_to_settings=MagicMock(),
+        model_retries=5,
     )
     server = object()
     run_agent = AsyncMock(return_value=None)
@@ -364,6 +367,7 @@ def test_acp_mode_forwards_allow_fs_tools() -> None:
         provider="anthropic",
         model_name="claude-sonnet-4-6",
         apply_to_settings=MagicMock(),
+        model_retries=5,
     )
     server = object()
     run_agent = AsyncMock(return_value=None)
@@ -410,6 +414,7 @@ def test_acp_mode_forwards_none_allow_fs_tools_by_default() -> None:
         provider="anthropic",
         model_name="claude-sonnet-4-6",
         apply_to_settings=MagicMock(),
+        model_retries=5,
     )
     run_agent = AsyncMock(return_value=None)
     resolve_mcp_tools = AsyncMock(return_value=([], None, []))
@@ -456,6 +461,7 @@ def test_acp_mode_forwards_recursion_limit() -> None:
         provider="anthropic",
         model_name="claude-sonnet-4-6",
         apply_to_settings=MagicMock(),
+        model_retries=5,
     )
     run_agent = AsyncMock(return_value=None)
     resolve_mcp_tools = AsyncMock(return_value=([], None, []))

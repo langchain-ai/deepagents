@@ -10,6 +10,17 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from langchain_core.exceptions import (
+    ContextOverflowError,
+    ModelAPIError,
+    ModelAuthenticationError,
+    ModelConnectionError,
+    ModelInvalidRequestError,
+    ModelPermissionDeniedError,
+    ModelRateLimitError,
+    ModelTimeoutError,
+)
+from langgraph.errors import GraphBubbleUp
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -19,7 +30,9 @@ if TYPE_CHECKING:
 
 from deepagents_code import model_config
 from deepagents_code.config import (
+    ASCII_GLYPHS,
     DEFAULT_MODEL_RETRIES,
+    UNICODE_GLYPHS,
     _resolve_config_retry_count,
     resolve_model_retries,
 )
@@ -151,6 +164,40 @@ def test_resolve_config_retry_count_direct() -> None:
 @pytest.mark.parametrize(
     "exc",
     [
+        ModelRateLimitError("x"),
+        ModelAPIError("x"),
+        ModelConnectionError("x"),
+        ModelTimeoutError("x"),
+    ],
+)
+def test_predicate_uses_retryable_model_taxonomy(exc: Exception) -> None:
+    assert _is_retryable_model_error(exc) is True
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ModelAuthenticationError("x"),
+        ModelPermissionDeniedError("x"),
+        ModelInvalidRequestError("x"),
+        ContextOverflowError("x"),
+    ],
+)
+def test_predicate_uses_non_retryable_model_taxonomy(exc: Exception) -> None:
+    assert _is_retryable_model_error(exc) is False
+
+
+class _RetryableTransportModelError(httpx.ReadError, ModelInvalidRequestError):
+    """Model taxonomy must win over broader transport inheritance."""
+
+
+def test_model_taxonomy_takes_precedence_over_legacy_fallback() -> None:
+    assert _is_retryable_model_error(_RetryableTransportModelError("x")) is False
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
         httpx.ReadError("x"),
         httpx.ConnectError("x"),
         httpx.RemoteProtocolError("x"),
@@ -245,6 +292,16 @@ def test_non_retryable_raises_immediately() -> None:
     assert calls["n"] == 1
 
 
+def test_graph_bubble_up_is_never_handled() -> None:
+    mw = CodeModelRetryMiddleware(max_retries=5)
+
+    def handler(_req_arg: object) -> str:
+        raise GraphBubbleUp
+
+    with pytest.raises(GraphBubbleUp):
+        mw.wrap_model_call(_req(), _handler(handler))
+
+
 def test_zero_retries_calls_handler_once() -> None:
     mw = CodeModelRetryMiddleware(max_retries=0)
     assert mw.max_retries == 0
@@ -296,8 +353,14 @@ async def test_async_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None
     assert calls["n"] == 2
 
 
-def test_status_helpers() -> None:
-    assert format_retry_status(1, 5) == "model connection dropped, retrying 1/5\u2026"
+@pytest.mark.parametrize("ellipsis", [UNICODE_GLYPHS.ellipsis, ASCII_GLYPHS.ellipsis])
+def test_status_helpers(ellipsis: str) -> None:
+    with patch("deepagents_code.model_retry.get_glyphs") as get_glyphs:
+        get_glyphs.return_value.ellipsis = ellipsis
+        assert (
+            format_retry_status(1, 5)
+            == f"model connection dropped, retrying 1/5{ellipsis}"
+        )
     event = build_retry_event(2, 5)
     assert event["type"] == "model_retry"
     assert event["attempt"] == 2

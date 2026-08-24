@@ -221,6 +221,7 @@ ENFORCED_MANAGED_KEYS = (
     "interpreter.enable_interpreter",
     "interpreter.ptc",
     "interpreter.ptc_acknowledge_unsafe",
+    "models.allowed",
     "models.auto_classifier",
     "runtime.recursion_limit",
     "sandboxes.default",
@@ -291,9 +292,17 @@ def managed_policy_violations(
     """Return managed settings whose declaration cannot be safely applied.
 
     A key is a violation when an enforced managed policy declaration cannot be
-    applied, or when a known managed section has a non-table value. The shape
-    cases matter because "wrong shape" is not "absent": merging such a value
-    can erase a user subtree before a reader falls back to a default.
+    applied, when a known managed section has a non-table value, or when a
+    managed `[models]` default, recent, or auto-classifier value contradicts a
+    managed `models.allowed` list. The shape cases matter because "wrong shape"
+    is not "absent": merging such a value can erase a user subtree before a
+    reader falls back to a default.
+
+    That last case is the only one that reports a key which is not itself in
+    `ENFORCED_MANAGED_KEYS` (`models.default`, `models.recent`): the value is
+    individually valid and merely inconsistent with the administrator's own
+    ceiling, which would otherwise start a session whose pinned model the same
+    policy forbids.
 
     Required rather than defaulted to the process snapshot: `managed_health`
     pairs this with the health of the *same* snapshot, and a default that
@@ -343,6 +352,39 @@ def managed_policy_violations(
             # the bounded resolver when the agent is built, so an out-of-range
             # managed value would otherwise be assigned verbatim.
             violations.append(key)
+
+    allowed_option = get_option("models.allowed")
+    if (
+        allowed_option is not None
+        and managed_declaration(managed_data, allowed_option.toml_keys or ())
+        == "declared"
+    ):
+        allowed_resolved = resolve_managed_option(
+            "models.allowed", managed_data, status=status
+        )
+        allowed_result = (
+            allowed_resolved.tier_health.get(MANAGED_RANK)
+            if allowed_resolved is not None
+            else None
+        )
+        if isinstance(allowed_result, Found) and isinstance(
+            allowed_result.value, tuple
+        ):
+            allowed_models = {
+                entry for entry in allowed_result.value if isinstance(entry, str)
+            }
+            models = managed_data.get("models")
+            if isinstance(models, dict):
+                for field in ("default", "recent", "auto_classifier"):
+                    candidate = models.get(field)
+                    if not isinstance(candidate, str) or not candidate.strip():
+                        continue
+                    normalized = candidate.strip()
+                    provider, separator, _model = normalized.partition(":")
+                    if normalized not in allowed_models and (
+                        not separator or f"{provider}:*" not in allowed_models
+                    ):
+                        violations.append(f"models.{field}")
     return tuple(sorted(set(violations)))
 
 

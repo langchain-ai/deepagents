@@ -128,8 +128,81 @@ URL is used everywhere a user is sent to read about provider setup.
 """
 
 
+MANAGED_CONFIG_SOURCE = "managed config"
+"""Resolver provenance label for a value managed policy decided.
+
+Mirrors `configuration.service.MANAGED_SOURCE`, which this module cannot
+import at module scope without pulling the configuration service onto the
+import path of every `model_config` consumer. `test_model_config` asserts the
+two stay equal, so a rename on either side fails loudly instead of silently
+degrading `ModelNotAllowedError` to generic wording.
+"""
+
+
 class ModelConfigError(Exception):
     """Raised when model configuration or creation fails."""
+
+
+class ModelNotAllowedError(ModelConfigError):
+    """Raised when a model is outside the effective `models.allowed` policy."""
+
+    def __init__(
+        self,
+        *,
+        model_spec: str | None,
+        source: str | None,
+        allowed_models: tuple[str, ...],
+        context: str | None = None,
+    ) -> None:
+        """Initialize an actionable policy error.
+
+        Args:
+            context: Where the offending spec was declared (e.g. a subagent name
+                and file path), prefixed to the message. Without it a rejection
+                inside a loop over many declaration files names only the model,
+                leaving the user to bisect by hand.
+            model_spec: The spec that was rejected, as the user supplied it (so
+                a bare model name is echoed back unqualified). Pass `None` when
+                no specific model was requested -- an empty allowlist blocking
+                default resolution -- so the message does not invent a spec the
+                user never typed.
+            source: Human-readable label for the configuration layer that
+                supplied the policy, as produced by the manifest resolver (e.g.
+                `'config.toml'`). `MANAGED_CONFIG_SOURCE` is compared literally
+                to select administrator wording; `None` yields generic wording.
+            allowed_models: The specs the policy permits. An empty tuple is a
+                deny-all policy and selects a distinct message.
+        """
+        if source == MANAGED_CONFIG_SOURCE:
+            policy = "the administrator-managed models.allowed policy"
+        elif source:
+            policy = f"models.allowed from {source}"
+        else:
+            policy = "the active models.allowed policy"
+        if model_spec is None:
+            message = f"No model can be used because {policy} allows no models."
+        elif not allowed_models:
+            message = (
+                f"Model {model_spec!r} is blocked because {policy} allows no models."
+            )
+        elif ModelSpec.try_parse(model_spec.strip()) is None:
+            message = (
+                f"Model {model_spec!r} cannot be matched against {policy}; "
+                "use a fully qualified provider:model spec."
+            )
+        else:
+            allowed = ", ".join(allowed_models)
+            message = (
+                f"Model {model_spec!r} is not included in {policy}. "
+                f"Allowed models: {allowed}."
+            )
+        if context:
+            message = f"{context}: {message}"
+        super().__init__(message)
+        self.model_spec = model_spec
+        self.source = source
+        self.allowed_models = allowed_models
+        self.context = context
 
 
 class NoCredentialsConfiguredError(ModelConfigError):
@@ -141,6 +214,18 @@ class NoCredentialsConfiguredError(ModelConfigError):
     start path in the TUI and CLI) `isinstance`-check this type to recover by
     launching the TUI with model creation deferred, rather than string-matching
     the formatted message.
+    """
+
+
+class NoAllowedModelCredentialsError(NoCredentialsConfiguredError):
+    """Raised when `models.allowed` is active but none of its models can auth.
+
+    A `NoCredentialsConfiguredError` so existing deferred-start recovery keeps
+    working, but distinguishable because the recovery differs: adding *any*
+    credential fixes the base case, while here only a credential for a provider
+    named in the allowlist helps. Handlers that would otherwise silently retry
+    surface this message instead, so `/auth` never accepts a key and then
+    appears to do nothing.
     """
 
 
@@ -405,6 +490,126 @@ class ModelSpec:
     def __str__(self) -> str:
         """Return the model spec as a string in `provider:model` format."""
         return f"{self.provider}:{self.model}"
+
+
+def parse_model_allowlist(value: object) -> tuple[str, ...]:
+    """Parse an ordered model allowlist of exact specs and provider wildcards.
+
+    Args:
+        value: Raw TOML value to validate.
+
+    Returns:
+        Canonical entries in declaration order with duplicates removed. Each is
+        either an exact `provider:model` spec or a `provider:*` wildcard
+        permitting every model from that provider.
+
+    Raises:
+        TypeError: If the value is not a list.
+        ValueError: If an entry is not an exact `provider:model` string or
+            `provider:*` wildcard, or is a bare Bedrock model ID (see below).
+    """
+    from deepagents_code.config import _is_bedrock_model_id
+
+    if not isinstance(value, list):
+        msg = "expected a list of provider:model strings"
+        raise TypeError(msg)
+
+    allowed: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            msg = "every entry must be a non-empty provider:model string"
+            raise ValueError(msg)
+        normalized = entry.strip()
+        if _is_bedrock_model_id(normalized.lower()):
+            # A bare Bedrock ID such as `anthropic.claude-3-5-sonnet-v2:0`
+            # splits at its *version* colon, yielding a nonsense provider that
+            # no spec can ever match -- `create_model` normalizes the same
+            # input to `bedrock:<id>`. Left accepted, the allowlist would
+            # silently become deny-all, so demand the explicit prefix.
+            msg = (
+                f"invalid model spec {entry!r}; bare Bedrock model IDs must be "
+                f"written as 'bedrock:{normalized}'"
+            )
+            raise ValueError(msg)
+        if normalized.endswith(":*"):
+            provider = normalized[:-2].strip()
+            # Validate the prefix as a one-character model spec rather than
+            # accepting any non-empty string, so `o penai:*` and `:*` reject
+            # here instead of matching nothing (or everything) later. The
+            # `strip()` round-trip mirrors the exact-spec check below, which
+            # treats internal whitespace as noncanonical.
+            if (
+                not provider
+                or provider != provider.strip()
+                or any(ch.isspace() for ch in provider)
+                or ModelSpec.try_parse(f"{provider}:_") is None
+            ):
+                msg = (
+                    f"invalid model spec {entry!r}; a wildcard must name a "
+                    f"provider as 'provider:*'"
+                )
+                raise ValueError(msg)
+            canonical = f"{provider}:*"
+            if canonical not in seen:
+                seen.add(canonical)
+                allowed.append(canonical)
+            continue
+        if "*" in normalized:
+            msg = (
+                f"invalid model spec {entry!r}; '*' is only supported as a "
+                f"whole-provider wildcard ('provider:*')"
+            )
+            raise ValueError(msg)
+        parsed = ModelSpec.try_parse(normalized)
+        if (
+            parsed is None
+            or parsed.provider != parsed.provider.strip()
+            or parsed.model != parsed.model.strip()
+        ):
+            msg = f"invalid model spec {entry!r}; expected provider:model"
+            raise ValueError(msg)
+        canonical = str(parsed)
+        if canonical not in seen:
+            seen.add(canonical)
+            allowed.append(canonical)
+    return tuple(allowed)
+
+
+def _malformed_allowlist_source(
+    sources: object,
+    user_data: Mapping[str, Any],
+    config_path: Path,
+) -> str | None:
+    """Describe where a declared-but-unusable `models.allowed` came from.
+
+    Called only when the manifest resolver produced no tuple. A declaration
+    that survives to here failed `parse_model_allowlist`, so the caller turns
+    it into a deny-all policy instead of letting it vanish into "unrestricted".
+
+    Args:
+        sources: The loaded configuration sources (duck-typed to avoid a
+            circular import of the configuration service).
+        user_data: The user layer's TOML table, already emptied when the file
+            is unreadable.
+        config_path: Path the user layer was read from, for the label.
+
+    Returns:
+        A provenance label naming the layer and the defect, or `None` when
+            `models.allowed` was never declared and the policy is genuinely
+            absent.
+    """
+    managed_data = getattr(getattr(sources, "managed", None), "data", None)
+    for data, label in (
+        (managed_data, MANAGED_CONFIG_SOURCE),
+        (user_data, str(config_path)),
+    ):
+        if not isinstance(data, dict):
+            continue
+        models = data.get("models")
+        if isinstance(models, dict) and models.get("allowed") is not None:
+            return f"{label} ([models].allowed is malformed)"
+    return None
 
 
 class ModelProfileEntry(TypedDict):
@@ -1206,6 +1411,25 @@ def get_available_models() -> dict[str, list[str]]:
     if _available_models_cache is not None:
         return _available_models_cache
 
+    available = _discover_available_models(apply_allowlist=True)
+    _available_models_cache = available
+    return available
+
+
+def _discover_available_models(*, apply_allowlist: bool) -> dict[str, list[str]]:
+    """Discover the model lineup before any allowlist filtering.
+
+    This is the `get_available_models` body with the policy filter factored
+    out so allowlist machinery can expand `provider:*` wildcards against the
+    discovered lineup without recursing back into its own filter.
+
+    Args:
+        apply_allowlist: Filter each provider's models through the active
+            `models.allowed` policy. Only allowlist internals pass `False`.
+
+    Returns:
+        Dictionary mapping provider names to lists of model identifiers.
+    """
     available: dict[str, list[str]] = {}
     config = ModelConfig.load()
 
@@ -1363,8 +1587,37 @@ def get_available_models() -> dict[str, list[str]]:
                     reordered[CODEX_PROVIDER] = codex_models
             available = reordered
 
-    _available_models_cache = available
+    if apply_allowlist and config.allowed_models is not None:
+        available = {
+            provider: [
+                model
+                for model in models
+                if config.is_model_allowed(f"{provider}:{model}")
+            ]
+            for provider, models in available.items()
+        }
+        available = {
+            provider: models for provider, models in available.items() if models
+        }
+
     return available
+
+
+def get_discovered_models(provider_name: str) -> list[str]:
+    """Get the discovered lineup for one provider, unfiltered by policy.
+
+    `get_available_models()` applies `models.allowed` itself, so allowlist
+    machinery expanding a `provider:*` wildcard cannot call it without
+    recursing. This reads the same discovery result with the filter off.
+
+    Args:
+        provider_name: The provider whose models to list.
+
+    Returns:
+        Model identifiers discovery knows about, empty when the provider
+            declares none and none were discovered.
+    """
+    return _discover_available_models(apply_allowlist=False).get(provider_name, [])
 
 
 def _build_entry(
@@ -2776,7 +3029,7 @@ def _resolve_model_file_option(
     sources: ConfigSources,
     *,
     user_data: Mapping[str, Any],
-) -> object | None:
+) -> tuple[object | None, str | None]:
     """Resolve one stored model option without admitting the env tier.
 
     `ModelConfig` describes persisted choices. In particular its
@@ -2784,7 +3037,8 @@ def _resolve_model_file_option(
     environment override, so this reader constructs only the two file tiers.
 
     Returns:
-        The ranked file value, or `None` when both tiers abstain.
+        The ranked file value and its source, or `(None, None)` when both tiers
+        abstain.
     """
     from deepagents_code.configuration.providers import ranked_toml_value
     from deepagents_code.configuration.resolver import (
@@ -2818,7 +3072,10 @@ def _resolve_model_file_option(
         ),
         strategy=option.merge_strategy.value,
     )
-    return None if resolved is None else resolved.value
+    if resolved is None:
+        return None, None
+    source = " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
+    return resolved.value, source
 
 
 @dataclass(frozen=True)
@@ -2856,10 +3113,54 @@ class ModelConfig:
     differ from the classifier Auto actually reviews with.
     """
 
+    allowed_models: tuple[str, ...] | None = None
+    """Ordered model specs and provider wildcards the policy permits.
+
+    Three states, and the difference between the last two matters:
+
+    - `None` -- no policy is active; every model is allowed.
+    - `()` -- a policy is active and permits **nothing**. Model construction
+      and default resolution both fail closed.
+    - non-empty -- only these entries are permitted, in preference order
+      (`_get_default_model_spec` walks the tuple in declaration order). An
+      entry is either an exact `provider:model` spec or a `provider:*`
+      wildcard permitting every model from that provider; a wildcard is never
+      selected as a default itself, but models it admits remain candidates.
+
+    Test `is None`, never truthiness: `if not config.allowed_models` conflates
+    "unrestricted" with "deny all" and inverts the policy.
+    """
+
+    allowed_models_source: str | None = None
+    """Configuration layer that supplied `allowed_models`.
+
+    A resolver provenance label such as `MANAGED_CONFIG_SOURCE` or
+    `'config.toml'`. Compared literally against `MANAGED_CONFIG_SOURCE` to
+    select administrator wording in errors and in the model selector, so it
+    tracks that constant rather than being free-form. `None` exactly when
+    `allowed_models` is `None`.
+    """
+
     def __post_init__(self) -> None:
-        """Freeze the providers dict into a read-only proxy."""
+        """Freeze the providers dict into a read-only proxy.
+
+        Raises:
+            ValueError: If `allowed_models` and `allowed_models_source` disagree
+                about whether a policy is active.
+        """
         if not isinstance(self.providers, MappingProxyType):
             object.__setattr__(self, "providers", MappingProxyType(self.providers))
+        # The pair varies together: every consumer reads the source only to
+        # describe an active policy. Guarding here mirrors
+        # `ProviderAuthStatus.__post_init__` and makes an incoherent policy
+        # unconstructible rather than silently mis-attributed.
+        if (self.allowed_models is None) != (self.allowed_models_source is None):
+            msg = (
+                "allowed_models and allowed_models_source must both be set or "
+                f"both be None (got {self.allowed_models!r} from "
+                f"{self.allowed_models_source!r})"
+            )
+            raise ValueError(msg)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> ModelConfig:
@@ -2948,6 +3249,39 @@ class ModelConfig:
             if sources.managed.data
             else str(config_path)
         )
+
+        allowed_models: tuple[str, ...] | None = None
+        allowed_models_source: str | None = None
+        allowed_option = get_option("models.allowed")
+        if allowed_option is None:
+            msg = "models.allowed is missing from the config manifest"
+            raise RuntimeError(msg)
+        allowed_value, allowed_source = _resolve_model_file_option(
+            allowed_option,
+            sources,
+            user_data=user_data,
+        )
+        if isinstance(allowed_value, tuple):
+            allowed_models = cast("tuple[str, ...]", allowed_value)
+            allowed_models_source = allowed_source
+        elif (
+            declared := _malformed_allowlist_source(sources, user_data, config_path)
+        ) is not None:
+            # `models.allowed` has no manifest default, so an unparseable list
+            # resolves to `None` -- which means *unrestricted*. Failing open on
+            # a security control because of a typo is the wrong default, so a
+            # declaration that produced no usable value becomes deny-all. The
+            # managed layer additionally refuses to start
+            # (`ENFORCED_MANAGED_KEYS`); this covers the user layer, where the
+            # only other signal is a log line nobody reads.
+            logger.error(
+                "Ignoring malformed [models].allowed from %s; blocking all "
+                "models until it is fixed or removed",
+                declared,
+            )
+            allowed_models = ()
+            allowed_models_source = declared
+
         try:
             models_section = cast(
                 "Any", _resolve_models_section(sources, user_data=user_data)
@@ -2972,7 +3306,7 @@ class ModelConfig:
                     cast("ConfigOption", option),
                     sources,
                     user_data=user_data,
-                )
+                )[0]
                 for key, option in options.items()
             }
 
@@ -3019,6 +3353,8 @@ class ModelConfig:
                     path=config_path,
                     source_label=source_label,
                 ),
+                allowed_models=allowed_models,
+                allowed_models_source=allowed_models_source,
             )
         except (AttributeError, TypeError) as e:
             # Syntactically valid TOML can still have the wrong shape (e.g. a
@@ -3136,6 +3472,121 @@ class ModelConfig:
                         name,
                         key,
                     )
+
+    def is_model_allowed(self, model_spec: str) -> bool:
+        """Return whether an exact model spec is allowed by active policy.
+
+        A spec is permitted when it appears in `allowed_models` verbatim or a
+        `provider:*` wildcard entry names its provider.
+        """
+        if self.allowed_models is None:
+            return True
+        parsed = ModelSpec.try_parse(model_spec.strip())
+        return parsed is not None and (
+            str(parsed) in self.allowed_models
+            or f"{parsed.provider}:*" in self.allowed_models
+        )
+
+    def canonical_model_spec(self, model_spec: str) -> str | None:
+        """Resolve a user-typed spec to the form the policy gate matches on.
+
+        Mirrors `create_model`'s provider resolution, including the custom
+        provider, Bedrock, and leading-colon branches, so a preflight check
+        agrees with the authoritative gate instead of rejecting a bare name
+        that `create_model` would infer a provider for and allow.
+
+        Args:
+            model_spec: A spec as the user typed it, bare name included.
+
+        Returns:
+            The canonical `provider:model` string, or `None` when no provider
+                can be established -- which policy treats as unmatchable.
+        """
+        from deepagents_code.config import detect_provider
+
+        normalized = model_spec.strip()
+        if not normalized:
+            return None
+        inferred = detect_provider(normalized)
+        parsed = ModelSpec.try_parse(normalized)
+        if parsed and parsed.provider in self.providers:
+            provider, model_name = parsed.provider, parsed.model
+        elif inferred == "bedrock":
+            provider, model_name = inferred, normalized
+        elif parsed:
+            provider, model_name = parsed.provider, parsed.model
+        elif ":" in normalized:
+            _, _, after = normalized.partition(":")
+            if not after:
+                return None
+            model_name = after
+            provider = detect_provider(model_name) or ""
+        else:
+            model_name = normalized
+            provider = inferred or ""
+        return f"{provider}:{model_name}" if provider else None
+
+    def policy_error(
+        self,
+        model_spec: str | None,
+        *,
+        context: str | None = None,
+        canonicalize: bool = False,
+    ) -> ModelNotAllowedError | None:
+        """Build the policy error blocking a spec, or `None` when it is allowed.
+
+        The one place that turns this config's policy fields into an error, so
+        callers that need the *message* without raising (a launch advisory, a
+        selector footer) cannot drift from callers that raise.
+
+        Args:
+            model_spec: The spec to check, or `None` to ask for the error that
+                describes a deny-all policy blocking default resolution.
+            context: Where the spec was declared, prefixed to the message.
+            canonicalize: Infer a provider for a bare name before matching, the
+                way `create_model` does. Set this on preflight checks against
+                text a user typed; leave it off where the caller already holds a
+                canonical spec, so resolution stays off hot paths such as the
+                recent-models cache.
+
+        Returns:
+            The error to raise or render, or `None` when no policy blocks this.
+        """
+        if self.allowed_models is None:
+            return None
+        if model_spec is not None:
+            candidate = model_spec
+            if canonicalize:
+                # Fall back to the raw text when no provider can be inferred:
+                # it stays unmatchable, and the message then advises a fully
+                # qualified spec, which is the actionable advice.
+                candidate = self.canonical_model_spec(model_spec) or model_spec
+            if self.is_model_allowed(candidate):
+                return None
+        # The message quotes what the user supplied, not the canonical form, so
+        # it echoes back the text they can see in front of them.
+        return ModelNotAllowedError(
+            model_spec=model_spec,
+            source=self.allowed_models_source,
+            allowed_models=self.allowed_models,
+            context=context,
+        )
+
+    def require_model_allowed(
+        self, model_spec: str, *, context: str | None = None
+    ) -> None:
+        """Raise when an exact model spec is outside active policy.
+
+        Args:
+            model_spec: The spec to check.
+            context: Where the spec was declared, prefixed to the message.
+
+        Raises:
+            ModelNotAllowedError: If `model_spec` is not in the active allowlist.
+        """  # noqa: DOC502 - propagates from `policy_error`
+        error = self.policy_error(model_spec, context=context)
+        if error is not None:
+            raise error
 
     def is_provider_enabled(self, provider_name: str) -> bool:
         """Check whether a provider should appear in the model switcher.
@@ -3515,9 +3966,7 @@ def save_goal_auto_accept_criteria(
 def _save_model_field(
     field: str, model_spec: str, config_path: Path | None = None
 ) -> bool:
-    """Read-modify-write a `[models].<field>` key in the config file.
-
-    Thin wrapper around `_save_toml_field` for the `[models]` section.
+    """Enforce `models.allowed`, then read-modify-write a `[models].<field>` key.
 
     Args:
         field: Key name under the `[models]` table (e.g., `'default'` or `'recent'`).
@@ -3528,7 +3977,17 @@ def _save_model_field(
 
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
-    """
+
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy. Distinct from the `False` return so callers
+            do not report a policy refusal as a filesystem problem; best-effort
+            callers that genuinely cannot act on it suppress it explicitly.
+    """  # noqa: DOC502 - propagates from `_save_model_field`
+    # `load(config_path)` skips the managed layer, so an explicit path checks
+    # only the user allowlist. Every production caller passes `None`; keep it
+    # that way or this refusal stops enforcing administrator policy.
+    ModelConfig.load(config_path).require_model_allowed(model_spec)
     return _save_toml_field("models", field, model_spec, config_path)
 
 
@@ -3547,9 +4006,13 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
 
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy.
+
     Note:
         This function does not preserve comments in the config file.
-    """
+    """  # noqa: DOC502 - propagates from `_save_model_field`
     return _save_model_field("default", model_spec, config_path)
 
 
@@ -3573,9 +4036,13 @@ def save_auto_classifier_model(
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
 
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy.
+
     Note:
         This function does not preserve comments in the config file.
-    """
+    """  # noqa: DOC502 - propagates from `_save_model_field`
     return _save_model_field("auto_classifier", model_spec, config_path)
 
 
@@ -5891,9 +6358,13 @@ def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
 
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy.
+
     Note:
         This function does not preserve comments in the config file.
-    """
+    """  # noqa: DOC502 - propagates from `_save_model_field`
     return _save_model_field("recent", model_spec, config_path)
 
 
@@ -5921,7 +6392,9 @@ def load_recent_models(state_dir: Path | None = None) -> list[str]:
 
     Returns:
         Ordered list of recent `provider:model` specs, most recent first.
-            Capped at `RECENT_MODELS_LIMIT` and de-duplicated.
+            Capped at `RECENT_MODELS_LIMIT` and de-duplicated. Entries outside
+            `models.allowed` are dropped, so the result can be shorter than the
+            file -- or empty despite a populated cache.
     """
     path = _recent_models_path(state_dir)
     if not path.exists():
@@ -5934,10 +6407,16 @@ def load_recent_models(state_dir: Path | None = None) -> list[str]:
     raw = data.get("models") if isinstance(data, dict) else None
     if not isinstance(raw, list):
         return []
+    config = ModelConfig.load()
     seen: set[str] = set()
     out: list[str] = []
     for entry in raw:
-        if not isinstance(entry, str) or ":" not in entry or entry in seen:
+        if (
+            not isinstance(entry, str)
+            or ":" not in entry
+            or entry in seen
+            or not config.is_model_allowed(entry)
+        ):
             continue
         seen.add(entry)
         out.append(entry)
@@ -5954,14 +6433,24 @@ def touch_recent_model(model_spec: str, state_dir: Path | None = None) -> bool:
     error so callers can degrade silently — recents are a nice-to-have, not
     a correctness requirement.
 
+    A spec outside `models.allowed` also returns `False`. That refusal is
+    deliberately silent here: the MRU is a derived cache, and the visible
+    consequence (the spec not appearing under Recent) is already explained by
+    the selector's policy empty state.
+
     Args:
         model_spec: The `provider:model` string just selected.
         state_dir: Override for the state directory (test hook).
 
     Returns:
-        `True` on success, `False` on I/O error or invalid spec.
+        `True` on success, `False` on I/O error, an invalid spec, or a spec
+            outside `models.allowed`.
     """
-    if not model_spec or ":" not in model_spec:
+    if (
+        not model_spec
+        or ":" not in model_spec
+        or not ModelConfig.load().is_model_allowed(model_spec)
+    ):
         return False
     existing = load_recent_models(state_dir)
     deduped = [entry for entry in existing if entry != model_spec]

@@ -16,8 +16,14 @@ import time
 from typing import TYPE_CHECKING
 
 from langchain.agents.middleware import ModelRetryMiddleware
+from langchain_core.exceptions import ModelError
+from langgraph.errors import GraphBubbleUp
 
-from deepagents_code.config import DEFAULT_MODEL_RETRIES, MODEL_RETRIES_ATTR
+from deepagents_code.config import (
+    DEFAULT_MODEL_RETRIES,
+    MODEL_RETRIES_ATTR,
+    get_glyphs,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -128,11 +134,11 @@ def _is_transient_sdk_error(exc: Exception) -> bool:
 def _is_retryable_model_error(exc: Exception) -> bool:
     """Return whether a model-node exception is a transient error worth retrying.
 
-    Retries transient transport/timeout faults and provider status errors that
-    indicate an overloaded or momentarily unavailable backend (408, 429, 5xx).
-    Deterministic client errors (auth, permission, bad request, validation,
-    context length) and dcode model-setup/config errors are never retried, so an
-    exhausted retry surfaces the original, actionable failure.
+    LangChain's standard `ModelError.is_retryable` classification is authoritative.
+    For integrations that do not yet emit standard model errors, falls back to
+    transient transport/timeout faults and provider status errors that indicate an
+    overloaded or momentarily unavailable backend (408, 429, 5xx). Deterministic
+    client errors and dcode model-setup/config errors are never retried.
 
     Args:
         exc: The exception raised by the model call.
@@ -140,6 +146,9 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     Returns:
         `True` when the error is transient and should be retried.
     """
+    if isinstance(exc, ModelError):
+        return exc.is_retryable
+
     # Optional dependency: httpx ships with the HTTP-based providers but keep the
     # import lazy so classification never forces it at startup.
     httpx_transient: tuple[type[BaseException], ...] = ()
@@ -181,7 +190,10 @@ def format_retry_status(attempt: int, max_retries: int) -> str:
     Returns:
         A short status line, e.g. ``"model connection dropped, retrying 1/5..."``.
     """
-    return f"model connection dropped, retrying {attempt}/{max_retries}\u2026"
+    return (
+        f"model connection dropped, retrying {attempt}/{max_retries}"
+        f"{get_glyphs().ellipsis}"
+    )
 
 
 def build_retry_event(attempt: int, max_retries: int) -> dict[str, object]:
@@ -303,6 +315,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             The successful `ModelResponse`.
 
         Raises:
+            GraphBubbleUp: Propagates LangGraph control-flow exceptions immediately.
             RuntimeError: If the retry loop exits without returning (unreachable
                 in practice). Exhausted or non-transient errors are re-raised by
                 the inherited `on_failure="error"` handling.
@@ -311,6 +324,8 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         for attempt in range(max_retries + 1):
             try:
                 return handler(request)
+            except GraphBubbleUp:
+                raise
             except Exception as exc:  # noqa: BLE001  # classified by _is_retryable_model_error
                 if not _is_retryable_model_error(exc) or attempt >= max_retries:
                     return self._handle_failure(exc, attempt + 1)
@@ -336,6 +351,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             The successful `ModelResponse`.
 
         Raises:
+            GraphBubbleUp: Propagates LangGraph control-flow exceptions immediately.
             RuntimeError: If the retry loop exits without returning (unreachable
                 in practice). Exhausted or non-transient errors are re-raised by
                 the inherited `on_failure="error"` handling.
@@ -346,6 +362,8 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         for attempt in range(max_retries + 1):
             try:
                 return await handler(request)
+            except GraphBubbleUp:
+                raise
             except Exception as exc:  # noqa: BLE001  # classified by _is_retryable_model_error
                 if not _is_retryable_model_error(exc) or attempt >= max_retries:
                     return self._handle_failure(exc, attempt + 1)

@@ -1342,6 +1342,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "cohere": ("langchain_cohere", "cohere"),
     "deepseek": ("langchain_deepseek", "deepseek"),
     "fireworks": ("langchain_fireworks", "fireworks"),
+    "google_anthropic_vertex": ("langchain_google_vertexai", "vertex"),
     "google_genai": ("langchain_google_genai", "google-genai"),
     "google_vertexai": ("langchain_google_vertexai", "vertex"),
     "groq": ("langchain_groq", "groq"),
@@ -1468,12 +1469,8 @@ def _credential_options() -> tuple[ConfigOption, ...]:
     from deepagents_code.model_config import PROVIDER_API_KEY_ENV
 
     options: list[ConfigOption] = []
-    seen: set[str] = set()
     sources = {**PROVIDER_API_KEY_ENV, **_EXTRA_CREDENTIAL_ENV}
     for name, env_var in sorted(sources.items()):
-        if env_var in seen:
-            continue
-        seen.add(env_var)
         redacted = _is_secret_env(env_var)
         summary = (
             f"Credential for the {name} provider."
@@ -1502,6 +1499,15 @@ def _credential_options() -> tuple[ConfigOption, ...]:
 # drift test asserts every `DEEPAGENTS_CODE_*` constant in `_env_vars` appears
 # here (or in `NON_OPTION_ENV_VARS`).
 _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
+    # --- Credentials ----------------------------------------------------
+    ConfigOption(
+        key="credentials.google_cloud_location",
+        group="Credentials",
+        summary="Google Cloud region for Anthropic models on Vertex AI.",
+        kind=OptionKind.NON_EMPTY_STR,
+        env_var="GOOGLE_CLOUD_LOCATION",
+        settings_field="google_cloud_location",
+    ),
     # --- Display / UI ---------------------------------------------------
     ConfigOption(
         key="display.charset",

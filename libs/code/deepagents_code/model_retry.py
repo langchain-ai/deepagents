@@ -61,8 +61,8 @@ _MAX_DELAY_SECONDS = 10.0
 _JITTER_FRACTION = 0.1
 """Multiplicative jitter of +-10%, matching Codex's 0.9..1.1 range."""
 
-_RETRYABLE_STATUS_CODES = frozenset({408, 429})
-"""Non-5xx HTTP status codes worth retrying (request timeout, rate limit)."""
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
+"""Non-5xx statuses worth retrying (timeout, provider lock conflict, rate limit)."""
 
 _TRANSIENT_SDK_EXC_NAMES = frozenset(
     {
@@ -225,8 +225,9 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     LangChain's standard `ModelError.is_retryable` classification is authoritative.
     For integrations that do not yet emit standard model errors, falls back to
     transient transport/timeout faults and provider status errors that indicate an
-    overloaded or momentarily unavailable backend (408, 429, 5xx). Deterministic
-    client errors and dcode model-setup/config errors are never retried.
+    overloaded or momentarily unavailable backend (408, lock-timeout 409, 429,
+    5xx). Deterministic client errors and dcode model-setup/config errors are
+    never retried.
 
     Args:
         exc: The exception raised by the model call.
@@ -253,8 +254,8 @@ def _is_retryable_model_error(exc: Exception) -> bool:
         return True
 
     # A status-bearing provider error is decided solely by its code: retry only
-    # 408/429/5xx, and never fall through to broader heuristics for a 4xx that
-    # would otherwise be misclassified as a bare connection error.
+    # 408/409/429/5xx, and never fall through to broader heuristics for a 4xx
+    # that would otherwise be misclassified as a bare connection error.
     status = _extract_status_code(exc)
     if status is not None:
         return status in _RETRYABLE_STATUS_CODES or (

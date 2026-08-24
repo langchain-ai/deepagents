@@ -246,6 +246,7 @@ def test_model_taxonomy_takes_precedence_over_legacy_fallback() -> None:
         httpx.ReadTimeout("x"),
         httpx.PoolTimeout("x"),
         _StatusError(408),
+        _StatusError(409),
         _StatusError(429),
         _StatusError(500),
         _StatusError(503),

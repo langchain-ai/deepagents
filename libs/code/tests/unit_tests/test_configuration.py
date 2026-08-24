@@ -242,6 +242,8 @@ def test_remote_toml_provider_loads_policy_without_environment_proxy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The source is fetched directly and parsed without proxy inheritance."""
+    from urllib.request import ProxyHandler
+
     from deepagents_code.configuration import providers
 
     captured: dict[str, object] = {}
@@ -256,7 +258,7 @@ def test_remote_toml_provider_loads_policy_without_environment_proxy(
         captured["handlers"] = handlers
         return Opener()
 
-    monkeypatch.setattr(providers, "build_opener", build)
+    monkeypatch.setattr("urllib.request.build_opener", build)
     provider = RemoteTomlProvider(
         "managed config",
         "https://config.example.com/policy.toml",
@@ -269,7 +271,7 @@ def test_remote_toml_provider_loads_policy_without_environment_proxy(
     assert captured["timeout"] == providers.REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS
     handlers = captured["handlers"]
     assert isinstance(handlers, tuple)
-    assert isinstance(handlers[0], providers.ProxyHandler)
+    assert isinstance(handlers[0], ProxyHandler)
     assert vars(handlers[0])["proxies"] == {}
 
 
@@ -314,7 +316,7 @@ def test_remote_toml_provider_reports_safe_fetch_failure(
             assert timeout > 0
             raise failure
 
-    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
     snapshot = RemoteTomlProvider(
         "managed config",
         "https://config.example.com/policy.toml",
@@ -338,7 +340,7 @@ def test_remote_toml_provider_times_out_when_deadline_passes_during_open(
             assert timeout > 0
             return _RemoteResponse(b'[startup]\nmode = "manual"\n')
 
-    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
     monotonic_values = iter([0.0, providers.REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS])
     monkeypatch.setattr(providers.time, "monotonic", lambda: next(monotonic_values))
     snapshot = RemoteTomlProvider(
@@ -363,7 +365,7 @@ def test_remote_toml_provider_rejects_late_empty_response(
             assert timeout > 0
             return _RemoteResponse(b"")
 
-    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
     monotonic_values = iter([0.0, 0.0, 0.0, 5.0])
     monkeypatch.setattr(providers.time, "monotonic", lambda: next(monotonic_values))
     snapshot = RemoteTomlProvider(
@@ -390,7 +392,7 @@ def test_remote_toml_provider_bounds_reads_by_remaining_deadline(
             assert timeout == providers.REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS
             return response
 
-    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
     monotonic_values = iter([10.0, 12.0, 13.0, 14.0, 14.5, 14.75])
     monkeypatch.setattr(providers.time, "monotonic", lambda: next(monotonic_values))
     snapshot = RemoteTomlProvider(
@@ -426,7 +428,7 @@ def test_remote_toml_provider_rejects_incomplete_response(
             assert timeout > 0
             return response
 
-    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
     snapshot = RemoteTomlProvider(
         "managed config",
         "https://config.example.com/policy.toml",
@@ -472,7 +474,7 @@ def test_remote_toml_provider_rejects_invalid_response(
             assert timeout > 0
             return response
 
-    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
     snapshot = RemoteTomlProvider(
         "managed config",
         "https://config.example.com/policy.toml",

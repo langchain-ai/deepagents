@@ -6,16 +6,7 @@ import os
 import time
 import tomllib
 from dataclasses import dataclass, field, replace
-from http.client import IncompleteRead
 from typing import TYPE_CHECKING, Any, assert_never, cast, override
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
-from urllib.request import (
-    HTTPRedirectHandler,
-    ProxyHandler,
-    Request,
-    build_opener,
-)
 
 from deepagents_code._env_vars import classify_env_bool
 
@@ -33,6 +24,12 @@ if TYPE_CHECKING:
 
         def settimeout(self, value: float | None) -> None:
             """Set the maximum wait for the next socket operation."""
+
+    class _RemoteOpener(Protocol):
+        """Minimal opener surface used by the remote provider."""
+
+        def open(self, request: object, *, timeout: float) -> HTTPResponse:
+            """Open one HTTP response."""
 
 
 from deepagents_code.configuration.resolver import (
@@ -528,17 +525,23 @@ def ranked_default_value(
     return RankedProviderValue(rank, True, status, Found(value))
 
 
-class _RejectRedirects(HTTPRedirectHandler):
-    """Reject redirects so the configured host remains the only destination."""
+def _build_remote_opener() -> _RemoteOpener:
+    """Build a direct opener only when a remote descriptor is active.
 
-    @override
-    def redirect_request(self, *_args: object, **_kwargs: object) -> Request | None:
-        """Decline every redirect response.
+    Returns:
+        An opener that bypasses environment proxies and rejects redirects.
+    """
+    from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
-        Returns:
-            Always `None`, which prevents `urllib` from following the redirect.
-        """
-        return None
+    class _RejectRedirects(HTTPRedirectHandler):
+        @override
+        def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    return cast(
+        "_RemoteOpener",
+        build_opener(ProxyHandler({}), _RejectRedirects()),
+    )
 
 
 def _remote_status(
@@ -564,6 +567,8 @@ def _validate_remote_url(source: str) -> str:
     Raises:
         ValueError: If the URL could redirect trust or leak credentials.
     """
+    from urllib.parse import urlsplit
+
     parsed = urlsplit(source)
     if any(char <= " " or char == "\x7f" for char in source):
         # urllib raises `http.client.InvalidURL` (an `HTTPException`, not a
@@ -696,6 +701,8 @@ def _read_limited_response(
         msg = "remote source response exceeds the size limit"
         raise ValueError(msg)
     if declared_length is not None and len(payload) < declared_length:
+        from http.client import IncompleteRead
+
         raise IncompleteRead(payload, declared_length - len(payload))
     return payload
 
@@ -751,6 +758,10 @@ class RemoteTomlProvider:
         Returns:
             The parsed policy or a safe provider failure status.
         """
+        from http.client import IncompleteRead
+        from urllib.error import HTTPError, URLError
+        from urllib.request import Request
+
         try:
             source = _validate_remote_url(self.source)
         except ValueError as exc:
@@ -764,7 +775,7 @@ class RemoteTomlProvider:
             source,
             headers={"Accept": "application/toml"},
         )
-        opener = build_opener(ProxyHandler({}), _RejectRedirects())
+        opener = _build_remote_opener()
         deadline = time.monotonic() + REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS
         try:
             with opener.open(

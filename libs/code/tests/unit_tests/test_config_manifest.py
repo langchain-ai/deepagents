@@ -923,7 +923,11 @@ def test_provider_package_name_differs_from_extra() -> None:
     `provider_package_name` feeds a `pypi.org/project/...` link, so confusing
     it with `provider_install_extra` would link an unrelated real project.
     """
+    assert provider_install_extra("google_anthropic_vertex") == "vertex"
     assert provider_install_extra("google_vertexai") == "vertex"
+    assert (
+        provider_package_name("google_anthropic_vertex") == "langchain-google-vertexai"
+    )
     assert provider_package_name("google_vertexai") == "langchain-google-vertexai"
 
 
@@ -974,11 +978,18 @@ def test_api_key_credentials_are_secret() -> None:
         )
 
 
-def test_google_cloud_project_is_not_secret() -> None:
-    """The Vertex project identifier is not secret material and shows its value."""
-    opt = get_option("credentials.google_vertexai")
+@pytest.mark.parametrize(
+    ("key", "env_var"),
+    [
+        ("credentials.google_cloud_location", "GOOGLE_CLOUD_LOCATION"),
+        ("credentials.google_anthropic_vertex", "GOOGLE_CLOUD_PROJECT"),
+    ],
+)
+def test_google_cloud_configuration_is_not_secret(key: str, env_var: str) -> None:
+    """Google Cloud project and location identifiers are visible configuration."""
+    opt = get_option(key)
     assert opt is not None
-    assert opt.env_var == "GOOGLE_CLOUD_PROJECT"
+    assert opt.env_var == env_var
     assert opt.redacted is False
 
 

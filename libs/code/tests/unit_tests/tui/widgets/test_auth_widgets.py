@@ -212,11 +212,15 @@ class TestAuthPromptScreen:
         """Only providers with no self-serve key page may skip `PROVIDER_API_KEY_URLS`.
 
         `azure_openai` keys live on a per-resource page (special-cased in the
-        instructions) and `google_vertexai` uses application-default
+        instructions), while both Vertex providers use application-default
         credentials rather than an API-key page. Any other omission is an
         oversight that should fail here rather than ship a generic docs link.
         """
-        no_self_serve_key_page = {"azure_openai", "google_vertexai"}
+        no_self_serve_key_page = {
+            "azure_openai",
+            "google_anthropic_vertex",
+            "google_vertexai",
+        }
         missing = set(model_config.PROVIDER_API_KEY_ENV) - set(PROVIDER_API_KEY_URLS)
         assert missing == no_self_serve_key_page
 

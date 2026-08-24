@@ -427,8 +427,13 @@ class PromptSearchPanel(Vertical):
             return
 
         if self._pending_empty is not None:
+            # `Content` keeps the message literal. `_pending_empty` can be
+            # `ChatInput.prompt_history_error()`, which interpolates the history
+            # file path, and `Static` markup-parses a bare `str`: a path segment
+            # shaped like a tag is swallowed, and one shaped like a closing tag
+            # raises `MarkupError`. The modal wraps the same message this way.
             self._empty_widget = Static(
-                self._pending_empty, classes="prompt-search-empty"
+                Content(self._pending_empty), classes="prompt-search-empty"
             )
             await self._results.mount(self._empty_widget)
         self.show(len(self._options) if not self._pending_empty else 1)

@@ -8173,3 +8173,46 @@ class TestPromptSearchPanel:
             assert messages
             assert "Could not read prompt history" in messages[0]
             assert "No prompts yet" not in messages[0]
+
+    async def test_unreadable_history_path_is_not_markup_parsed(
+        self, tmp_path: Path
+    ) -> None:
+        """The empty-state message interpolates a path, so it must stay literal.
+
+        `Static` markup-parses a bare `str`, so a directory named like a
+        Textual tag is swallowed from the message. (A closing-tag shape goes
+        further and raises `MarkupError`, taking the rebuild down its
+        recovery path.)
+        """
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        # A directory in place of the file is an OSError on read, and the
+        # bracketed segment lands in the interpolated message.
+        history_dir = tmp_path / "proj [v2]"
+        history_dir.mkdir()
+        history_file = history_dir / "history.jsonl"
+        history_file.mkdir()
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = history_file
+            chat._history._entries = []
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            assert chat._prompt_search_active is True
+            results = panel.query_one("#prompt-search-results")
+            messages = [
+                str(child.render())
+                for child in results.children
+                if isinstance(child, Static)
+                and not isinstance(child, PromptSearchOption)
+            ]
+            assert messages
+            # Every literal segment survives rather than being read as markup.
+            assert "proj [v2]" in messages[0]

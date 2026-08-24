@@ -1189,7 +1189,7 @@ class TestOffloadOperation:
         from deepagents_code.offload_middleware import OffloadOperation
 
         compaction = MagicMock()
-        compaction.arun_forced_compaction_update = AsyncMock()
+        compaction._aplan_forced_compaction_update = AsyncMock()
         compaction._summarization._apply_event_to_messages.side_effect = (
             lambda messages, _event: messages
         )
@@ -1208,14 +1208,21 @@ class TestOffloadOperation:
         )
         return OffloadOperation(compaction, hooks), compaction, hooks
 
+    @staticmethod
+    def _plan(update: dict[str, object]) -> SimpleNamespace:
+        """Build the narrow compaction-plan shape consumed by the operation."""
+        return SimpleNamespace(update=lambda _path: update, archive=MagicMock())
+
     async def test_compacts_checkpoint_state_without_message_input(self) -> None:
         event = _summary_event(2)
         middleware, compaction, _hooks = self._middleware()
-        compaction.arun_forced_compaction_update = AsyncMock(
-            return_value={
-                "_summarization_event": event,
-                "_summarization_session_id": "archive-1",
-            }
+        compaction._aplan_forced_compaction_update = AsyncMock(
+            return_value=self._plan(
+                {
+                    "_summarization_event": event,
+                    "_summarization_session_id": "archive-1",
+                }
+            )
         )
         state = {
             "messages": _make_dict_messages(4),
@@ -1223,8 +1230,8 @@ class TestOffloadOperation:
 
         execution = await middleware.execute(state, self._runtime())
 
-        compaction.arun_forced_compaction_update.assert_awaited_once()
-        await_args = compaction.arun_forced_compaction_update.await_args
+        compaction._aplan_forced_compaction_update.assert_awaited_once()
+        await_args = compaction._aplan_forced_compaction_update.await_args
         assert await_args is not None
         state_arg = await_args.args[0]
         assert state_arg is state
@@ -1241,11 +1248,13 @@ class TestOffloadOperation:
         offloaded and 1 kept. Reporting `new_cutoff` directly would say 5.
         """
         middleware, compaction, _hooks = self._middleware()
-        compaction.arun_forced_compaction_update = AsyncMock(
-            return_value={
-                "_summarization_event": _summary_event(5),
-                "_summarization_session_id": "archive-1",
-            }
+        compaction._aplan_forced_compaction_update = AsyncMock(
+            return_value=self._plan(
+                {
+                    "_summarization_event": _summary_event(5),
+                    "_summarization_session_id": "archive-1",
+                }
+            )
         )
         state = {
             "messages": _make_dict_messages(6),
@@ -1261,7 +1270,7 @@ class TestOffloadOperation:
     async def test_non_compacted_counts_never_go_negative(self) -> None:
         """A stale cutoff beyond the message count must not report a negative."""
         middleware, compaction, _hooks = self._middleware()
-        compaction.arun_forced_compaction_update = AsyncMock(return_value=None)
+        compaction._aplan_forced_compaction_update = AsyncMock(return_value=None)
         state = {
             "messages": _make_dict_messages(2),
             "_summarization_event": _summary_event(9),
@@ -1290,7 +1299,7 @@ class TestOffloadOperation:
 
         assert execution.result["status"] == "denied"
         assert execution.result["error"] == "policy"
-        compaction.arun_forced_compaction_update.assert_not_awaited()
+        compaction._aplan_forced_compaction_update.assert_not_awaited()
 
     async def test_hook_denial_without_a_reason_still_stops_compaction(self) -> None:
         """A denial carrying no reason must not read as an allow."""
@@ -1302,7 +1311,7 @@ class TestOffloadOperation:
         )
 
         assert execution.result["status"] == "denied"
-        compaction.arun_forced_compaction_update.assert_not_awaited()
+        compaction._aplan_forced_compaction_update.assert_not_awaited()
 
     async def test_a_missing_hook_channel_refuses_instead_of_allowing(self) -> None:
         """A hook decision that cannot be read must not be treated as an allow.
@@ -1320,13 +1329,13 @@ class TestOffloadOperation:
 
         assert execution.result["status"] == "failed"
         assert "hook decision" in (execution.result["error"] or "")
-        compaction.arun_forced_compaction_update.assert_not_awaited()
+        compaction._aplan_forced_compaction_update.assert_not_awaited()
         assert "messages" not in execution.update
         hooks.aafter_model.assert_awaited_once()
 
     async def test_failure_returns_result_without_rewriting_messages(self) -> None:
         middleware, compaction, _hooks = self._middleware()
-        compaction.arun_forced_compaction_update = AsyncMock(
+        compaction._aplan_forced_compaction_update = AsyncMock(
             side_effect=OSError("archive unavailable")
         )
 

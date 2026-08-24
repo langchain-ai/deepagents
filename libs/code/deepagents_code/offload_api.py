@@ -23,14 +23,16 @@ from deepagents_code.hooks.server_middleware import (
     HookTransportInterruptError,
     operation_hook_responses,
 )
-from deepagents_code.offload_middleware import unchanged_offload_result
+from deepagents_code.offload_middleware import _archive_lock, unchanged_offload_result
 from deepagents_code.server_graph import get_server_runtime
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from starlette.requests import Request
 
+    from deepagents_code.cost_tracking import PreparedOperationCost
     from deepagents_code.offload_middleware import (
+        OffloadExecution,
         OffloadResponse,
         _OffloadState,
     )
@@ -407,6 +409,126 @@ async def _write_landed(
         return True
 
 
+async def _commit_state_update(
+    client: Any,  # noqa: ANN401  # untyped LangGraph SDK client
+    thread_id: str,
+    checkpoint_id: str,
+    update: dict[str, Any],
+    prepared: PreparedOperationCost,
+) -> None:
+    """Persist the summary reservation and settle its claimed model cost.
+
+    Raises:
+        _OffloadIndeterminateError: If the write failed after the thread
+            advanced and its outcome cannot be determined.
+    """
+    try:
+        await client.threads.update_state(thread_id, update)
+    except BaseException as exc:
+        if await _write_landed(client, thread_id, checkpoint_id):
+            logger.exception(
+                "Offload state write for thread %s failed after the thread "
+                "advanced; keeping %d cost record(s) claimed",
+                thread_id,
+                len(prepared.records),
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            msg = (
+                "Offload compacted the conversation but could not confirm "
+                "the state write. Run /context to check whether the "
+                "conversation was compacted before offloading again."
+            )
+            raise _OffloadIndeterminateError(msg) from None
+        logger.warning(
+            "Offload state write for thread %s failed with no thread advance; "
+            "restoring %d cost record(s)",
+            thread_id,
+            len(prepared.records),
+        )
+        prepared.rollback()
+        raise
+
+
+async def _archive_path_landed(
+    client: Any,  # noqa: ANN401  # untyped LangGraph SDK client
+    thread_id: str,
+    path: str,
+) -> bool | None:
+    """Check whether the follow-up checkpoint links the completed archive.
+
+    Returns:
+        `True` when linked, `False` when confirmed absent, or `None` when the
+            checkpoint could not be read.
+    """
+    try:
+        current = await client.threads.get_state(thread_id)
+    except BaseException:
+        logger.exception(
+            "Could not verify archive-path update for thread %s", thread_id
+        )
+        return None
+    values = current.get("values")
+    event = values.get("_summarization_event") if isinstance(values, Mapping) else None
+    return isinstance(event, Mapping) and event.get("file_path") == path
+
+
+async def _commit_deferred_archive(
+    client: Any,  # noqa: ANN401  # untyped LangGraph SDK client
+    thread_id: str,
+    checkpoint_id: str,
+    execution: OffloadExecution,
+    update: dict[str, Any],
+    prepared: PreparedOperationCost,
+) -> None:
+    """Reserve summary state, then append and link its archive transactionally.
+
+    Raises:
+        _OffloadIndeterminateError: If the archive was written but its
+            checkpoint link cannot be read back.
+    """
+    archive = execution.archive
+    if archive is None:
+        await _commit_state_update(client, thread_id, checkpoint_id, update, prepared)
+        return
+    async with _archive_lock(archive.session_id):
+        await _commit_state_update(client, thread_id, checkpoint_id, update, prepared)
+        try:
+            append = await archive.write()
+        except Exception:
+            logger.exception(
+                "/offload reserved its summary but the archive append failed"
+            )
+            return
+        if append is None:
+            logger.error("/offload reserved its summary but the archive append failed")
+            return
+        event = archive.update(append.path)["_summarization_event"]
+        try:
+            await client.threads.update_state(
+                thread_id, {"_summarization_event": event}
+            )
+        except BaseException as exc:
+            landed = await _archive_path_landed(client, thread_id, append.path)
+            if landed is True:
+                execution.result["archive_path"] = append.path
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                return
+            if landed is False:
+                await append.rollback()
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                logger.exception(
+                    "Archive link failed for thread %s; restored prior archive",
+                    thread_id,
+                )
+                return
+            msg = "Offload wrote its archive but could not confirm the archive link."
+            raise _OffloadIndeterminateError(msg) from None
+        execution.result["archive_path"] = append.path
+
+
 async def _execute_offload(
     thread_id: str,
     *,
@@ -430,8 +552,6 @@ async def _execute_offload(
         _OffloadConflictError: If the thread is active or changes before commit.
         _OffloadUnavailableError: If the server runtime cannot be built, so no
             operation can run.
-        _OffloadIndeterminateError: If the state write failed but the thread
-            advanced anyway, so the outcome cannot be determined.
         RuntimeError: If the operation attempts to write conversation messages.
     """
     if not thread_id:
@@ -540,58 +660,14 @@ async def _execute_offload(
             # spend from the thread's lifetime total (the drain is destructive).
             prepared.rollback()
             return {"status": "complete", "result": execution.result}
-        try:
-            # Apply the state-only delta to the latest checkpoint. The
-            # thread API rejects in-flight runs itself; pinning this write
-            # to `before` would instead branch from a stale checkpoint if
-            # a run completed in the narrow window after our final check,
-            # potentially hiding its newly appended messages.
-            #
-            # `as_node` is left unpinned, unlike every other write in dcode.
-            # LangGraph then infers the node from `checkpoint["versions_seen"]`,
-            # which raises `InvalidUpdateError("Ambiguous update, specify
-            # as_node")` if the last superstep left two nodes at the same
-            # version -- and it would raise *after* the summarizer has been
-            # billed. Today's middleware layout resolves unambiguously (the real
-            # server integration test exercises it), so this is an unguarded
-            # dependency on that layout rather than a known bug.
-            await client.threads.update_state(
-                thread_id,
-                update,
-            )
-        except BaseException as exc:
-            # The write may have applied server-side before the failure reached
-            # us (response decode, timeout, cancellation). Restoring the cost
-            # records in that case would let the next drain price this same
-            # spend a second time, so only roll back once the thread is known
-            # not to have advanced.
-            if await _write_landed(client, thread_id, checkpoint_id):
-                logger.exception(
-                    "Offload state write for thread %s failed, but the thread "
-                    "advanced past checkpoint %s; keeping %d cost record(s) "
-                    "claimed to avoid double-charging",
-                    thread_id,
-                    checkpoint_id,
-                    len(prepared.records),
-                )
-                if isinstance(exc, asyncio.CancelledError):
-                    # Cost records stay claimed either way, but suppressing a
-                    # cancellation would leave the task never observing it.
-                    raise
-                msg = (
-                    "Offload compacted the conversation but could not confirm "
-                    "the state write. Run /context to check whether the "
-                    "conversation was compacted before offloading again."
-                )
-                raise _OffloadIndeterminateError(msg) from None
-            logger.warning(
-                "Offload state write for thread %s failed with no thread "
-                "advance; restoring %d cost record(s)",
-                thread_id,
-                len(prepared.records),
-            )
-            prepared.rollback()
-            raise
+        await _commit_deferred_archive(
+            client,
+            thread_id,
+            checkpoint_id,
+            execution,
+            update,
+            prepared,
+        )
         return {"status": "complete", "result": execution.result}
 
 

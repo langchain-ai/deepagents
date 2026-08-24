@@ -118,7 +118,17 @@ class TestCLICompactionMiddleware:
     @staticmethod
     def _summarization() -> MagicMock:
         summarization = MagicMock()
-        summarization._backend = object()
+        backend = MagicMock()
+        backend.adownload_files = AsyncMock(
+            return_value=[
+                FileDownloadResponse(
+                    path="/conversation_history/thread.md",
+                    error="file_not_found",
+                )
+            ]
+        )
+        summarization._backend = backend
+        summarization._get_history_path.return_value = "/conversation_history/thread.md"
         summarization._apply_event_to_messages.side_effect = lambda messages, _event: (
             messages
         )
@@ -245,6 +255,23 @@ class TestCLICompactionMiddleware:
         write_backend = summarization._aoffload_to_backend.await_args.args[0]
         assert isinstance(write_backend, _ArchiveReadGuard)
         assert write_backend._backend is summarization._backend
+
+    async def test_operation_plan_defers_archive_until_checkpoint_reservation(
+        self,
+    ) -> None:
+        """Planning may spend on a summary but cannot mutate archive storage."""
+        summarization = self._summarization()
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+
+        plan = await middleware._aplan_forced_compaction_update(
+            {"messages": [HumanMessage("one"), HumanMessage("two")]}, runtime
+        )
+
+        assert plan is not None
+        assert plan.update(None)["_summarization_event"]["file_path"] is None
+        summarization._aoffload_to_backend.assert_not_awaited()
 
     async def test_operation_path_returns_an_absolute_cutoff(self) -> None:
         """The committed event must carry the absolute cutoff, not the relative one.

@@ -9,6 +9,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
+from weakref import WeakValueDictionary
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
 from deepagents.middleware.summarization import (
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
         ModelResponse,
     )
     from langchain.chat_models import BaseChatModel
+    from langchain_core.messages import AnyMessage
     from langgraph.runtime import Runtime
 
     from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
@@ -122,6 +124,125 @@ class OffloadExecution(NamedTuple):
 
     update: OffloadStateUpdate
     result: OffloadResult
+    archive: _PendingArchive | None = None
+
+
+_archive_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+def _archive_lock(session_id: str) -> asyncio.Lock:
+    """Return the process-local lock serializing one archive's read/write cycle."""
+    lock = _archive_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _archive_locks[session_id] = lock
+    return lock
+
+
+class _PendingArchive(NamedTuple):
+    """Archive append deferred until the checkpoint summary is reserved."""
+
+    summarization: SummarizationMiddleware
+    backend: BackendProtocol
+    messages: list[AnyMessage]
+    session_id: str
+    summary: str
+    state_cutoff: int
+
+    def update(self, file_path: str | None) -> dict[str, Any]:
+        """Build the summary update with the archive's settled path.
+
+        Returns:
+            State update containing the summary, cutoff, and archive path.
+        """
+        return CLICompactionMiddleware._forced_compaction_update(
+            self.summarization,
+            self.summary,
+            file_path,
+            self.state_cutoff,
+            self.session_id,
+        )
+
+    async def _previous_content(self, path: str) -> tuple[bool, str]:
+        """Read the archive snapshot needed to undo an uncommitted append.
+
+        Returns:
+            Whether the archive existed and its prior UTF-8 content.
+
+        Raises:
+            RuntimeError: If the backend cannot return the archive snapshot.
+        """
+        responses = await self.backend.adownload_files([path])
+        if not responses:
+            msg = f"archive backend returned no response for {path}"
+            raise RuntimeError(msg)
+        response = responses[0]
+        if response.error == FILE_NOT_FOUND:
+            return False, ""
+        if response.error is not None:
+            msg = f"archive read failed for {path}: {response.error}"
+            raise RuntimeError(msg)
+        content = response.content or b""
+        return True, content.decode("utf-8")
+
+    async def write(self) -> _ArchiveAppend | None:
+        """Append staged messages and retain enough state for rollback.
+
+        Returns:
+            The reversible append, or `None` when the SDK could not write it.
+        """
+        path = self.summarization._get_history_path(self.session_id)
+        existed, previous = await self._previous_content(path)
+        guard = cast("BackendProtocol", _ArchiveReadGuard(self.backend))
+        written_path = await self.summarization._aoffload_to_backend(
+            guard, self.messages, self.session_id
+        )
+        append = _ArchiveAppend(self.backend, path, existed, previous)
+        if written_path is None:
+            await append.rollback()
+            return None
+        return append
+
+
+class _ArchiveAppend(NamedTuple):
+    """Completed archive append that can be restored until checkpointed."""
+
+    backend: BackendProtocol
+    path: str
+    existed: bool
+    previous: str
+
+    async def rollback(self) -> None:
+        """Restore the exact archive snapshot from before the append.
+
+        Raises:
+            RuntimeError: If the backend cannot restore the snapshot.
+        """
+        result = (
+            await self.backend.awrite(self.path, self.previous)
+            if self.existed
+            else await self.backend.adelete(self.path)
+        )
+        if result.error is not None:
+            msg = f"archive rollback failed for {self.path}: {result.error}"
+            raise RuntimeError(msg)
+
+
+class _ForcedCompactionPlan(NamedTuple):
+    """Checkpoint update plus its not-yet-written archive append."""
+
+    summarization: SummarizationMiddleware
+    summary: str
+    state_cutoff: int
+    archive: _PendingArchive
+
+    def update(self, file_path: str | None) -> dict[str, Any]:
+        """Build the summary update with the archive's settled path.
+
+        Returns:
+            State update containing the summary, cutoff, and archive path.
+        """
+        return self.archive.update(file_path)
 
 
 def unchanged_offload_result(
@@ -482,8 +603,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     """Add hook-aware automatic and server-owned compaction for dcode.
 
     The SDK tool's normal, model-initiated behavior remains unchanged.
-    `arun_forced_compaction_update` is the state-only entry point used by the
-    server-owned `/offload` operation.
+    `_aplan_forced_compaction_update` is the state-only planning entry point
+    used by the server-owned `/offload` operation.
     """
 
     @property
@@ -595,6 +716,20 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         except _AutoCompactionBlockedError as blocked:
             raise blocked.overflow from None
 
+    async def _awrap_with_archive_lock(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse | ExtendedModelResponse:
+        """Serialize an automatic archive append with other compactions.
+
+        Returns:
+            The wrapped model response.
+        """
+        session_id = self._summarization._get_session_id(request.state)
+        async with _archive_lock(session_id):
+            return await self._summarization.awrap_model_call(request, handler)
+
     async def awrap_model_call(  # ty: ignore[invalid-method-override]  # delegates auto summarizer
         self,
         request: ModelRequest,
@@ -610,7 +745,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         if prepared is not None:
             if not self._pre_auto_compact(prepared):
                 return await call_model(prepared)
-            return await self._summarization.awrap_model_call(request, call_model)
+            return await self._awrap_with_archive_lock(request, call_model)
 
         overflow_gated = False
 
@@ -625,9 +760,19 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 raise
 
         try:
-            return await self._summarization.awrap_model_call(request, gated_handler)
+            return await self._awrap_with_archive_lock(request, gated_handler)
         except _AutoCompactionBlockedError as blocked:
             raise blocked.overflow from None
+
+    async def _arun_compact(self, runtime: ToolRuntime[Any, Any]) -> Command:
+        """Serialize a model-initiated archive append with other compactions.
+
+        Returns:
+            The compact tool's state command.
+        """
+        session_id = self._summarization._get_session_id(runtime.state)
+        async with _archive_lock(session_id):
+            return await super()._arun_compact(runtime)
 
     def _create_compact_tool(self) -> StructuredTool:
         """Create the CLI variant of `compact_conversation`.
@@ -653,14 +798,6 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             func=sync_compact,
             coroutine=async_compact,
         )
-
-    def _guarded_backend(self) -> BackendProtocol:
-        """Wrap the configured backend with fail-closed archive append behavior.
-
-        Returns:
-            A backend adapter that refuses writes after raised archive reads.
-        """
-        return cast("BackendProtocol", _ArchiveReadGuard(self._summarization._backend))
 
     def _summarization_for_runtime(
         self, runtime: _HasRunContext
@@ -719,29 +856,27 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         # This is a forward-looking constraint on the *constructor argument*,
         # not a bug being fixed: the previous code also passed the real
         # composite backend here and only swapped `_backend` for the guard
-        # afterwards, so the prefix was correct then too. The offload call sites
-        # apply the guard separately when writing (see `_guarded_backend`).
+        # afterwards, so the prefix was correct then too. `_PendingArchive`
+        # applies the guard separately when writing.
         return create_summarization_middleware(model, self._summarization._backend)
 
-    async def arun_forced_compaction_update(
+    async def _aplan_forced_compaction_update(
         self, state: _OffloadState, runtime: _HasRunContext
-    ) -> dict[str, Any] | None:
-        """Run forced compaction as a server operation without a tool message.
+    ) -> _ForcedCompactionPlan | None:
+        """Summarize forced-compaction history without writing its archive.
 
         Unlike the tool paths, this raises on failure instead of returning a
         `ToolMessage`: the server operation has no tool node to carry one, so it
         converts the exception into a client-visible error. Any summarizer,
-        backend, or archive failure therefore propagates out of this method
-        rather than being folded into the return value.
+        or planning failure therefore propagates out of this method rather than
+        being folded into the return value.
 
         Args:
             state: Checkpointed conversation and prior summarization event.
             runtime: Run context carrier used to select the summarizer model.
 
         Returns:
-            The state update, or `None` when nothing can be compacted -- either
-                nothing is old enough to summarize, or the absolute cutoff would
-                not advance past the prior event.
+            The checkpoint/archive plan, or `None` when nothing can be compacted.
 
         Raises:
             ValueError: If called directly with no messages. The owning server
@@ -776,10 +911,38 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         to_summarize, _ = summarization._partition_messages(effective, cutoff)
         summary = await summarization._acreate_summary(to_summarize)
         session_id = summarization._get_session_id(state)
-        file_path = await summarization._aoffload_to_backend(
-            self._guarded_backend(), to_summarize, session_id
+        archive = _PendingArchive(
+            summarization,
+            self._summarization._backend,
+            to_summarize,
+            session_id,
+            summary,
+            state_cutoff,
         )
-        if file_path is None:
+        return _ForcedCompactionPlan(summarization, summary, state_cutoff, archive)
+
+    async def arun_forced_compaction_update(
+        self, state: _OffloadState, runtime: _HasRunContext
+    ) -> dict[str, Any] | None:
+        """Run forced compaction and persist its archive immediately.
+
+        The HTTP operation uses `_aplan_forced_compaction_update` directly so
+        it can reserve the checkpoint before this side effect. Direct callers
+        retain the historical all-in-one behavior.
+
+        Returns:
+            The completed state update, or `None` when nothing can be compacted.
+        """
+        plan = await self._aplan_forced_compaction_update(state, runtime)
+        if plan is None:
+            return None
+        try:
+            async with _archive_lock(plan.archive.session_id):
+                append = await plan.archive.write()
+        except Exception:
+            logger.exception("/offload archive append failed")
+            append = None
+        if append is None:
             # `_aoffload_to_backend` catches every write failure and returns
             # `None`, which also swallows `_ArchiveReadGuard`'s deliberate
             # "refusing to overwrite existing history" `RuntimeError`. Its own
@@ -794,11 +957,9 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             logger.error(
                 "/offload compacted %d messages but the archive write failed; "
                 "those messages are not recoverable from storage",
-                len(to_summarize),
+                len(plan.archive.messages),
             )
-        return self._forced_compaction_update(
-            summarization, summary, file_path, state_cutoff, session_id
-        )
+        return plan.update(append.path if append is not None else None)
 
     @staticmethod
     def _forced_compaction_update(
@@ -1071,7 +1232,7 @@ class OffloadOperation:
             return OffloadExecution({}, result)
 
         try:
-            update = await self._compaction.arun_forced_compaction_update(
+            plan = await self._compaction._aplan_forced_compaction_update(
                 state, runtime
             )
         except HookTransportInterruptError:
@@ -1086,7 +1247,7 @@ class OffloadOperation:
             )
             return OffloadExecution({}, result)
 
-        if not update:
+        if plan is None:
             result = self._result(
                 "noop",
                 messages=max(0, len(messages) - _event_cutoff(event)),
@@ -1094,6 +1255,7 @@ class OffloadOperation:
             )
             return OffloadExecution({}, result)
 
+        update = plan.update(None)
         new_event = update["_summarization_event"]
         new_cutoff = _event_cutoff(new_event)
         prior_cutoff = _event_cutoff(event)
@@ -1122,4 +1284,5 @@ class OffloadOperation:
                 "_summarization_session_id": update["_summarization_session_id"],
             },
             result,
+            plan.archive,
         )

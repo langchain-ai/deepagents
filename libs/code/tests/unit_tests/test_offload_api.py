@@ -10,10 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_code.offload_middleware import OffloadExecution
+from deepagents_code.offload_middleware import OffloadExecution, OffloadResult
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from deepagents_code.offload_middleware import _PendingArchive
 
 
 @pytest.fixture(autouse=True)
@@ -193,7 +195,9 @@ def _thread_state(checkpoint_id: str = "checkpoint-1") -> dict[str, object]:
     }
 
 
-def _result() -> dict[str, object]:
+def _result(
+    archive_path: str | None = "/conversation_history/thread-1.md",
+) -> OffloadResult:
     """Build a complete operation result."""
     return {
         "status": "compacted",
@@ -201,7 +205,7 @@ def _result() -> dict[str, object]:
         "messages_kept": 1,
         "tokens_before": 20,
         "tokens_after": 10,
-        "archive_path": "/conversation_history/thread-1.md",
+        "archive_path": archive_path,
         "archive_ephemeral": False,
         "error": None,
     }
@@ -241,19 +245,40 @@ class TestExecuteOffload:
         from deepagents_code import offload_api
 
         before = _thread_state()
+        calls: list[str] = []
+
+        async def update_state(  # noqa: RUF029  # AsyncMock side effect contract
+            *_args: object, **_kwargs: object
+        ) -> None:
+            calls.append("checkpoint")
+
+        append = SimpleNamespace(
+            path="/conversation_history/thread-1.md", rollback=AsyncMock()
+        )
+        archive = SimpleNamespace(
+            session_id="archive-1",
+            write=AsyncMock(side_effect=lambda: calls.append("archive") or append),
+            update=lambda path: {
+                "_summarization_event": {"cutoff_index": 1, "file_path": path}
+            },
+        )
         threads = SimpleNamespace(
             get=AsyncMock(return_value={"status": "idle"}),
             get_state=AsyncMock(side_effect=[before, before]),
-            update_state=AsyncMock(),
+            update_state=AsyncMock(side_effect=update_state),
         )
         operation = SimpleNamespace(
             execute=AsyncMock(
                 return_value=OffloadExecution(
                     {
-                        "_summarization_event": {"cutoff_index": 1},
+                        "_summarization_event": {
+                            "cutoff_index": 1,
+                            "file_path": None,
+                        },
                         "_summarization_session_id": "archive-1",
                     },
-                    _result(),  # ty: ignore[invalid-argument-type]
+                    _result(archive_path=None),
+                    cast("_PendingArchive", archive),
                 )
             )
         )
@@ -295,18 +320,93 @@ class TestExecuteOffload:
             "base_url": "https://trusted.example/v1",
             "temperature": 0.1,
         }
-        threads.update_state.assert_awaited_once()
-        args = threads.update_state.await_args
+        assert threads.update_state.await_count == 2
+        args = threads.update_state.await_args_list[0]
         assert args.args[:2] == (
             "thread-1",
             {
-                "_summarization_event": {"cutoff_index": 1},
+                "_summarization_event": {
+                    "cutoff_index": 1,
+                    "file_path": None,
+                },
                 "_summarization_session_id": "archive-1",
                 "_session_cost_usd": 0.25,
             },
         )
         assert "messages" not in args.args[1]
         assert "checkpoint" not in args.kwargs
+        assert threads.update_state.await_args_list[1].args == (
+            "thread-1",
+            {
+                "_summarization_event": {
+                    "cutoff_index": 1,
+                    "file_path": "/conversation_history/thread-1.md",
+                }
+            },
+        )
+        assert calls == ["checkpoint", "archive", "checkpoint"]
+        prepared.rollback.assert_not_called()
+
+    async def test_failed_archive_link_restores_the_append(self) -> None:
+        """A failed follow-up checkpoint cannot leave duplicate history."""
+        from deepagents_code import offload_api
+
+        before = _thread_state()
+        unlinked = _thread_state("reserved")
+        unlinked_values = cast("dict[str, object]", unlinked["values"])
+        unlinked_values["_summarization_event"] = {
+            "cutoff_index": 1,
+            "file_path": None,
+        }
+        append = SimpleNamespace(
+            path="/conversation_history/thread-1.md", rollback=AsyncMock()
+        )
+        archive = SimpleNamespace(
+            session_id="archive-1",
+            write=AsyncMock(return_value=append),
+            update=lambda path: {
+                "_summarization_event": {"cutoff_index": 1, "file_path": path}
+            },
+        )
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(side_effect=[before, before, unlinked]),
+            update_state=AsyncMock(
+                side_effect=[None, RuntimeError("archive link unavailable")]
+            ),
+        )
+        operation = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=OffloadExecution(
+                    {
+                        "_summarization_event": {
+                            "cutoff_index": 1,
+                            "file_path": None,
+                        },
+                        "_summarization_session_id": "archive-1",
+                    },
+                    _result(archive_path=None),
+                    cast("_PendingArchive", archive),
+                )
+            )
+        )
+        prepared = SimpleNamespace(
+            update={"_session_cost_usd": 0.25},
+            rollback=MagicMock(),
+            records=[],
+        )
+
+        with self._patched(offload_api, threads, operation, prepared):
+            response = await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+            )
+
+        assert response["status"] == "complete"
+        assert response["result"]["archive_path"] is None
+        append.rollback.assert_awaited_once()
         prepared.rollback.assert_not_called()
 
     async def test_request_transport_cannot_replace_checkpointed_model(self) -> None:
@@ -397,6 +497,10 @@ class TestExecuteOffload:
                 return_value=OffloadExecution(
                     {"_summarization_event": {"cutoff_index": 1}},
                     _result(),  # ty: ignore[invalid-argument-type]
+                    cast(
+                        "_PendingArchive",
+                        SimpleNamespace(session_id="archive-1", write=AsyncMock()),
+                    ),
                 )
             )
         )
@@ -427,6 +531,7 @@ class TestExecuteOffload:
             )
 
         threads.update_state.assert_not_awaited()
+        operation.execute.return_value.archive.write.assert_not_awaited()
         prepare.assert_not_called()
 
     async def test_busy_thread_is_rejected_before_operation(self) -> None:

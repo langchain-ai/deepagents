@@ -10172,9 +10172,10 @@ class DeepAgentsApp(App):
         """Execute the `--startup-cmd` and render its output in the transcript.
 
         Uses the same worker-backed subprocess path as the interactive shell
-        prefix, with an app-style header (since the user did not type the
-        command). Startup command output is local setup output and is not
-        buffered into model context. Non-zero exit is already rendered as an
+        prefix, with an app-style header *and* app-style output (since the
+        user did not type the command) — hence `output_as_app_message=True`.
+        Startup command output is local setup output and is not buffered into
+        model context. Non-zero exit is already rendered as an
         error by `_run_shell_task` but does not abort the session.
 
         Raises:
@@ -11738,7 +11739,10 @@ class DeepAgentsApp(App):
 
         Args:
             command: The shell command to execute.
-            incognito: Whether the command/output should remain local-only.
+            incognito: Whether to keep the command/output out of model context
+                (`!!`). Transcript rendering is identical to `!`; only the
+                displayed prefix and the buffering in `_run_shell_task`
+                differ.
         """
         prefix = "!!" if incognito else "!"
         await self._mount_message(UserMessage(f"{prefix}{command}"))
@@ -11767,12 +11771,28 @@ class DeepAgentsApp(App):
 
         Args:
             command: The shell command to execute.
-            incognito: Whether the command/output should remain local-only.
-            output_as_app_message: Render output as app status instead of shell output.
+            incognito: Whether to keep the command/output out of model context
+                (`!!`). This is the *only* thing it controls here — rendering
+                is identical either way.
+            output_as_app_message: Render output as an `AppMessage` status note
+                instead of a local-only `AssistantMessage`. Exists for
+                `--startup-cmd`, whose output is setup noise the user did not
+                type; it governs only the success-output branch, not the
+                timeout, nonzero-exit, or no-output messages. Requires
+                `incognito` — app-style output would otherwise read as local
+                setup noise while still being buffered for the model.
 
         Raises:
             CancelledError: If the command is interrupted by the user.
+            ValueError: If `output_as_app_message` is set without `incognito`.
         """
+        if output_as_app_message and not incognito:
+            msg = (
+                "output_as_app_message requires incognito=True; refusing to "
+                "buffer app-rendered shell output for the model"
+            )
+            raise ValueError(msg)
+
         refresh_started = False
         try:
             proc = await asyncio.create_subprocess_shell(

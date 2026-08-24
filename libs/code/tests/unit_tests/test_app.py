@@ -17925,6 +17925,21 @@ class TestShellCommandInterrupt:
             rendered = app.query(AssistantMessage)
             assert any(w._content == "```text\nhi\n```" for w in rendered)
 
+    async def test_app_message_output_requires_incognito(self) -> None:
+        """App-rendered output must not be buffered for the model."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with pytest.raises(ValueError, match="requires incognito"):
+                await app._run_shell_task(
+                    "echo hi",
+                    incognito=False,
+                    output_as_app_message=True,
+                )
+
+            assert app._pending_shell_messages == []
+
     async def test_shell_output_skips_write_when_mount_is_skipped(self) -> None:
         """A torn-down screen must not trigger a write on an unmounted widget."""
         app = DeepAgentsApp()

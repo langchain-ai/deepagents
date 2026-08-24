@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from deepagents_code.plugins.models import PluginInstance
 
 ENTRY_POINT_GROUP = "dcode.extensions"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,11 +82,15 @@ def _entry_source(entry: Path, scope: SourceScope) -> SourceInfo | None:
 
 def _resolve_explicit(path: Path, scope: SourceScope) -> DiscoveryResult:
     expanded = path.expanduser()
-    if expanded.is_dir():
-        sources, errors = _scan(expanded, scope)
-        return DiscoveryResult(tuple(sources), tuple(errors))
-    if expanded.is_file() and expanded.suffix == ".py":
-        return DiscoveryResult((_source(expanded, scope),))
+    try:
+        if expanded.is_dir():
+            sources, errors = _scan(expanded, scope)
+            return DiscoveryResult(tuple(sources), tuple(errors))
+        if expanded.is_file() and expanded.suffix == ".py":
+            return DiscoveryResult((_source(expanded, scope),))
+    except (OSError, RuntimeError):
+        logger.debug("Could not inspect extension path %s", path, exc_info=True)
+        return DiscoveryResult(errors=("Could not inspect an extension path",))
     msg = f"Extension path must be an existing Python file or directory: {path}"
     return DiscoveryResult(errors=(msg,))
 

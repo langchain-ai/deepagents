@@ -146,3 +146,27 @@ def test_plugin_python_extension_requires_version(tmp_path: Path) -> None:
     assert manifest is not None
     assert not manifest.python_extensions
     assert any("require a non-empty plugin version" in warning for warning in warnings)
+
+
+def test_unreadable_plugin_extension_path_is_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable Python extension declaration does not abort plugin loading."""
+    path = tmp_path / "extension.py"
+    path.touch()
+    _write_manifest(tmp_path, version="1.2.3")
+    is_file = Path.is_file
+
+    def guarded(self: Path) -> bool:
+        if self == path:
+            msg = "unreadable"
+            raise OSError(msg)
+        return is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", guarded)
+
+    manifest, _, warnings = load_manifest(tmp_path)
+
+    assert manifest is not None
+    assert not manifest.python_extensions
+    assert any("could not inspect declared path" in warning for warning in warnings)

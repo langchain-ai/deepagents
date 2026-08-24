@@ -74,6 +74,32 @@ def test_invalid_explicit_path_is_isolated(
     assert "missing.py" in result.errors[0]
 
 
+def test_unreadable_explicit_path_is_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A filesystem error inspecting one explicit path remains non-fatal."""
+    valid = _extension(tmp_path / "user", "valid.py")
+    unreadable = tmp_path / "unreadable.py"
+    monkeypatch.setattr(
+        "deepagents_code.extensions.discovery.user_extensions_dir",
+        lambda: valid.parent,
+    )
+    is_dir = Path.is_dir
+
+    def guarded(self: Path) -> bool:
+        if self == unreadable:
+            msg = "unreadable"
+            raise OSError(msg)
+        return is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", guarded)
+
+    result = discover_extensions(cli_paths=(unreadable,))
+
+    assert [source.path for source in result.sources] == [valid.resolve()]
+    assert result.errors == ("Could not inspect an extension path",)
+
+
 def test_unreadable_directory_entry_is_isolated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

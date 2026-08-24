@@ -205,7 +205,17 @@ def _python_extensions(
     )
     entries: list[Path] = []
     for path in paths:
-        if path.suffix != ".py" or not path.is_file():
+        try:
+            is_file = path.is_file()
+        except (OSError, RuntimeError):
+            logger.debug(
+                "Could not inspect Python extension path %s", path, exc_info=True
+            )
+            warnings.append(
+                f"ignoring {_PYTHON_EXTENSIONS_FIELD}: could not inspect declared path"
+            )
+            continue
+        if path.suffix != ".py" or not is_file:
             warnings.append(
                 f"ignoring {_PYTHON_EXTENSIONS_FIELD}: "
                 f"{path} must be an existing Python file"

@@ -15233,7 +15233,15 @@ class DeepAgentsApp(App):
                 )
                 await self._mount_message(AppMessage(fail_msg))
         elif cmd == "/prompts":
-            self.action_open_prompt_clipboard()
+            # Unlike Ctrl+R, the command cannot silently no-op. `/prompts`
+            # carries `BypassTier.IMMEDIATE_UI`, so it runs while the agent is
+            # busy -- exactly when an approval is on screen and the clipboard
+            # is blocked. A bare return there reads as a broken command.
+            reason = self._prompt_clipboard_block_reason()
+            if reason is not None:
+                await self._mount_message(AppMessage(reason))
+            else:
+                self.action_open_prompt_clipboard()
         elif cmd == "/editor":
             await self.action_open_editor()
         elif cmd in {"/offload", "/compact"}:
@@ -21700,15 +21708,33 @@ class DeepAgentsApp(App):
         finally:
             restore_focus()
 
+    def _prompt_clipboard_block_reason(self) -> str | None:
+        """Return why the prompt clipboard cannot open, or `None` if it can.
+
+        The reason is user-facing: `/prompts` echoes it so the command never
+        appears to do nothing. `Ctrl+R` discards it, because `check_action`
+        steps the binding aside and the key belongs to whatever is blocking.
+        """
+        if self._chat_input is None:
+            return "The prompt clipboard needs the composer, which is not ready yet."
+        if isinstance(self.screen, ModalScreen):
+            return "Close the open dialog before opening the prompt clipboard."
+        if self._pending_approval_widget is not None:
+            return "Answer the pending approval before opening the prompt clipboard."
+        if self._pending_ask_user_widget is not None:
+            return "Answer the pending question before opening the prompt clipboard."
+        if self._pending_goal_review_widget is not None:
+            return "Finish the goal review before opening the prompt clipboard."
+        return None
+
     def _prompt_clipboard_blocked(self) -> bool:
-        """Return whether another input surface currently owns keyboard input."""
-        return (
-            self._chat_input is None
-            or isinstance(self.screen, ModalScreen)
-            or self._pending_approval_widget is not None
-            or self._pending_ask_user_widget is not None
-            or self._pending_goal_review_widget is not None
-        )
+        """Return whether the prompt clipboard cannot open right now.
+
+        True when the composer does not exist, or when another input surface
+        (a modal, an approval, an ask-user prompt, a goal review) owns the
+        keyboard.
+        """
+        return self._prompt_clipboard_block_reason() is not None
 
     def _inline_prompt_search_active(self) -> bool:
         """Return whether the composer's inline prompt search panel is open."""
@@ -21730,7 +21756,16 @@ class DeepAgentsApp(App):
             return
 
         tier = chat_input.open_prompt_search()
-        if tier in {"inline", "noop"}:
+        if tier == "inline":
+            return
+        if tier == "noop":
+            # The composer is mounted but its text area or search panel is not.
+            # Nothing opens; log it rather than leaving a bare silent return,
+            # since this only happens when the widget tree is malformed.
+            logger.warning(
+                "Prompt search unavailable: composer is missing its text area "
+                "or search panel"
+            )
             return
 
         # Escalating from the inline panel carries the typed query into the

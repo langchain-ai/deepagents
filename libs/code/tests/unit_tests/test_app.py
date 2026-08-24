@@ -40917,7 +40917,53 @@ class TestPromptClipboard:
 
     async def test_prompts_command_opens_without_awaiting_modal(self) -> None:
         app = DeepAgentsApp()
-        with patch.object(app, "action_open_prompt_clipboard") as open_clipboard:
+        with (
+            patch.object(app, "action_open_prompt_clipboard") as open_clipboard,
+            patch.object(app, "_prompt_clipboard_block_reason", return_value=None),
+        ):
             await app._handle_command("/prompts")
 
         open_clipboard.assert_called_once_with()
+
+    async def test_prompts_command_explains_why_it_cannot_open(self) -> None:
+        """A blocked `/prompts` must say so instead of doing nothing.
+
+        `/prompts` carries `BypassTier.IMMEDIATE_UI`, so it runs while the
+        agent is busy -- exactly when an approval owns the screen and the
+        clipboard is blocked. A bare return there reads as a broken command.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_approval_widget = MagicMock()
+
+            with (
+                patch.object(app, "action_open_prompt_clipboard") as open_clipboard,
+                patch.object(app, "_mount_message", new=AsyncMock()) as mount,
+            ):
+                await app._handle_command("/prompts")
+
+            open_clipboard.assert_not_called()
+            mount.assert_awaited_once()
+            assert mount.await_args is not None
+            message = mount.await_args.args[0]
+            assert "approval" in str(message.render()).lower()
+
+    async def test_prompts_command_reports_each_blocking_surface(self) -> None:
+        """Every blocked branch names the surface that is in the way."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            for attribute, expected in (
+                ("_pending_approval_widget", "approval"),
+                ("_pending_ask_user_widget", "question"),
+                ("_pending_goal_review_widget", "goal review"),
+            ):
+                setattr(app, attribute, MagicMock())
+                reason = app._prompt_clipboard_block_reason()
+                assert reason is not None
+                assert expected in reason.lower()
+                setattr(app, attribute, None)
+
+            assert app._prompt_clipboard_block_reason() is None

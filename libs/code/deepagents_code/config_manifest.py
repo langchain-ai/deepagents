@@ -39,7 +39,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum, StrEnum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from typing_extensions import TypeIs
 
@@ -1277,11 +1277,21 @@ def resolve_startup_mode_with_source(
         managed_toml_data=managed_data,
     )
     _emit_ranked_diagnostics(option, resolved)
-    # STARTUP_MODE_DELEGATE coercion yields a `str` on every tier.
-    # Unguarded by design: `startup.mode` declares a `str` default and both
-    # coercers reject anything outside `VALID_STARTUP_MODES`, so no non-`str`
-    # can reach here. A predicate would assert what the manifest guarantees.
-    value, source = cast("str", resolved.value), _ranked_source(resolved)
+    # `STARTUP_MODE_DELEGATE` coercion yields a `str` on every tier, so this
+    # guard should never fire. It replaces a `cast`, which fails in the wrong
+    # direction: a non-`str` that slipped past coercion would propagate typed
+    # as `str` into the display path, while a guard falls back the way the
+    # sibling readers do (`is_cursor_style`, `is_valid_recursion_limit`).
+    source = _ranked_source(resolved)
+    if not isinstance(resolved.value, str):
+        logger.warning(
+            "Ignoring non-string startup.mode %r from %s; using %r",
+            resolved.value,
+            source,
+            "manual",
+        )
+        return "manual", "default"
+    value = resolved.value
     if source != "default":
         return value, source
 

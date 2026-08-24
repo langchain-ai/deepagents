@@ -1054,6 +1054,27 @@ def test_load_trusted_cache_endpoints_reads_config_from_disk(
     assert load_trusted_cache_endpoints() == frozenset({"smith.langchain.com"})
 
 
+def test_load_trusted_cache_endpoints_sees_edits_between_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Trust edits apply on the next custom-endpoint turn without `/reload`."""
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path)
+    config_path.write_text(
+        '[warnings]\ntrusted_cache_endpoints = ["old.example.com"]\n',
+        encoding="utf-8",
+    )
+    assert load_trusted_cache_endpoints() == frozenset({"old.example.com"})
+
+    config_path.write_text(
+        '[warnings]\ntrusted_cache_endpoints = ["new.example.com"]\n',
+        encoding="utf-8",
+    )
+
+    assert load_trusted_cache_endpoints() == frozenset({"new.example.com"})
+
+
 def test_load_trusted_cache_endpoints_prefers_managed_configuration(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

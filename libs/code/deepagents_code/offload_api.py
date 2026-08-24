@@ -303,6 +303,39 @@ def _hydrate_state(values: object) -> _OffloadState:
     return cast("_OffloadState", state)
 
 
+def _checkpoint_model_context(
+    context: dict[str, Any], state: Mapping[str, object]
+) -> dict[str, Any]:
+    """Replace request model selection with server-checkpointed values.
+
+    The client still supplies hook and profile context, but it cannot choose
+    the model's outbound transport for this server-owned operation. Successful
+    agent turns checkpoint the resolved model spec and the runtime overrides
+    they actually used, so those values preserve trusted launch/model-switch
+    settings such as a private `base_url` without accepting an arbitrary
+    offload request's endpoint override.
+
+    Args:
+        context: Validated request context.
+        state: Server-read checkpoint values for the target thread.
+
+    Returns:
+        Context using checkpointed model settings, or no model override when
+            the thread predates model checkpointing so the startup summarizer
+            is reused.
+    """
+    trusted = dict(context)
+    trusted.pop("model", None)
+    trusted.pop("model_params", None)
+    model = state.get("_model_spec")
+    params = state.get("_model_params")
+    if isinstance(model, str) and model:
+        trusted["model"] = model
+        if isinstance(params, dict):
+            trusted["model_params"] = dict(params)
+    return trusted
+
+
 async def _require_idle_thread(client: Any, thread_id: str) -> None:  # noqa: ANN401
     """Reject offload while LangGraph reports an active thread.
 
@@ -425,6 +458,7 @@ async def _execute_offload(
             }
 
         checkpoint_id = _checkpoint_id(before)
+        context = _checkpoint_model_context(context, state)
         context["thread_id"] = thread_id
         namespace = f"dcode_offload:{operation_id}"
         info = ExecutionInfo(

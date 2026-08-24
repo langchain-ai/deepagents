@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -175,6 +175,11 @@ def _thread_state(checkpoint_id: str = "checkpoint-1") -> dict[str, object]:
                 }
             ],
             "_session_cost_usd": 1.0,
+            "_model_spec": "provider:checkpointed-model",
+            "_model_params": {
+                "base_url": "https://trusted.example/v1",
+                "temperature": 0.1,
+            },
         },
         "next": [],
         "tasks": [],
@@ -285,6 +290,11 @@ class TestExecuteOffload:
         assert state["messages"][0].id == "message-1"
         runtime = operation.execute.await_args.args[1]
         assert runtime.context["thread_id"] == "thread-1"
+        assert runtime.context["model"] == "provider:checkpointed-model"
+        assert runtime.context["model_params"] == {
+            "base_url": "https://trusted.example/v1",
+            "temperature": 0.1,
+        }
         threads.update_state.assert_awaited_once()
         args = threads.update_state.await_args
         assert args.args[:2] == (
@@ -298,6 +308,79 @@ class TestExecuteOffload:
         assert "messages" not in args.args[1]
         assert "checkpoint" not in args.kwargs
         prepared.rollback.assert_not_called()
+
+    async def test_request_transport_cannot_replace_checkpointed_model(self) -> None:
+        """Offload uses the model settings from the target thread checkpoint."""
+        from deepagents_code import offload_api
+
+        before = _thread_state()
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(side_effect=[before, before]),
+            update_state=AsyncMock(),
+        )
+        operation = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=OffloadExecution(
+                    {},
+                    _result(),  # ty: ignore[invalid-argument-type]
+                )
+            )
+        )
+        prepared = SimpleNamespace(update={}, rollback=MagicMock())
+
+        with self._patched(offload_api, threads, operation, prepared):
+            await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={
+                    "model": "attacker:model",
+                    "model_params": {"base_url": "https://attacker.example"},
+                },
+                hook_responses={},
+            )
+
+        runtime = operation.execute.await_args.args[1]
+        assert runtime.context["model"] == "provider:checkpointed-model"
+        assert runtime.context["model_params"]["base_url"] == (
+            "https://trusted.example/v1"
+        )
+
+    async def test_legacy_thread_reuses_startup_summarizer(self) -> None:
+        """A thread without model metadata ignores request model selection."""
+        from deepagents_code import offload_api
+
+        before = _thread_state()
+        values = cast("dict[str, object]", before["values"])
+        assert isinstance(values, dict)
+        values.pop("_model_spec")
+        values.pop("_model_params")
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(side_effect=[before, before]),
+            update_state=AsyncMock(),
+        )
+        operation = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=OffloadExecution(
+                    {},
+                    _result(),  # ty: ignore[invalid-argument-type]
+                )
+            )
+        )
+        prepared = SimpleNamespace(update={}, rollback=MagicMock())
+
+        with self._patched(offload_api, threads, operation, prepared):
+            await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={"model": "request:model", "model_params": {"x": 1}},
+                hook_responses={},
+            )
+
+        runtime = operation.execute.await_args.args[1]
+        assert "model" not in runtime.context
+        assert "model_params" not in runtime.context
 
     async def test_checkpoint_change_fails_without_state_commit(self) -> None:
         from deepagents_code import offload_api

@@ -4774,7 +4774,14 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
-            if getattr(args, "yolo", False):
+            # Raw flags are not authoritative here: an explicit `--yolo` or
+            # `--auto-approve` outranks the lower tiers, but managed
+            # `startup.mode` still revokes them, so every approval decision in
+            # this branch reads the resolved mode rather than `args`.
+            from deepagents_code.approval_mode import ApprovalMode
+
+            approval_mode = _resolve_approval_mode(args)
+            if approval_mode is ApprovalMode.YOLO:
                 from deepagents_code.approval_mode import has_yolo_acknowledgement
 
                 if not has_yolo_acknowledgement():
@@ -4783,8 +4790,8 @@ def cli_main() -> None:
                         "using it in ACP mode.\n"
                     )
                     sys.exit(2)
-            if getattr(args, "auto_classifier_model", None) is not None and not getattr(
-                args, "auto_approve", False
+            if getattr(args, "auto_classifier_model", None) is not None and (
+                approval_mode is ApprovalMode.MANUAL
             ):
                 sys.stderr.write(
                     "Error: --auto-classifier-model requires --auto-approve "
@@ -4829,8 +4836,8 @@ def cli_main() -> None:
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
                     allow_fs_tools=allow_fs_tools,
                     recursion_limit=_resolved_recursion_limit(args),
-                    auto=getattr(args, "auto_approve", False),
-                    yolo=getattr(args, "yolo", False),
+                    auto=approval_mode is ApprovalMode.AUTO,
+                    yolo=approval_mode is ApprovalMode.YOLO,
                     auto_classifier_model=getattr(args, "auto_classifier_model", None),
                 )
             )

@@ -1716,6 +1716,69 @@ def test_managed_auto_mode_does_not_set_the_interactive_only_flag(
         model_config.clear_caches()
 
 
+def test_managed_startup_mode_masks_a_cli_approval_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed mode revokes `--yolo`, which the ACP launch once kept.
+
+    Regression: `_apply_managed_runtime_policy` revoked the raw approval flags
+    managed `startup.mode` masked, but `_apply_managed_runtime_exceptions` does
+    not, and the ACP branch read the raw flags — `dcode --acp --yolo` launched
+    with approvals disabled despite managed `startup.mode = "manual"`. The
+    branch now resolves the mode instead, so the managed tier masks the
+    non-durable CLI value.
+    """
+    from deepagents_code import main, model_config
+    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    args = _managed_policy_args()
+    try:
+        assert main._resolve_approval_mode(args) is ApprovalMode.MANUAL
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
+def test_cli_approval_flag_outranks_user_startup_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unmanaged `--yolo` still masks a user-configured mode.
+
+    The CLI tier is the non-durable one: it masks the durable user tier, and
+    only a managed tier masks it. An administrator's empty `managed.toml`
+    installs the tier but declares no mode, so it changes nothing.
+    """
+    from deepagents_code import main, model_config
+    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    args = _managed_policy_args()
+    try:
+        assert main._resolve_approval_mode(args) is ApprovalMode.YOLO
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
 def test_managed_sandbox_default_does_not_force_a_sandbox(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

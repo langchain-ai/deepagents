@@ -23266,15 +23266,15 @@ class DeepAgentsApp(App):
             priority `shift+tab -> page_newer` binding wins and the key does not
             fall through to `Screen.focus_previous`. Note this keys on the
             action, and `toggle_auto_approve` is also bound to `ctrl+t`, so
-            that binding is stepped aside under either screen.
+            that binding is stepped aside under either screen. The composer's
+            inline prompt search gets the same step-aside so shift+tab pages
+            its results, but only while the query input holds focus: an
+            approval that arrives mid-search must keep the chord.
         - `quit_or_interrupt` (`ctrl+c`): the prompt clipboard owns this chord for
             copying the selected prompt rather than the focused search text.
         - `interrupt` (`escape`): while the prompt-search query has focus,
             escape belongs to its abandon-search binding, not the global
             interrupt cascade. A newly focused inline approval keeps priority.
-        - `toggle_auto_approve` (`shift+tab`): while the inline prompt search
-            is open, shift+tab pages its results (the same step-aside the
-            prompt clipboard modal and debug console already get).
         - `approval_reject_with_reason` (`tab`): unlike the other approval keys
             this one must be `priority=True` to beat `Screen`'s
             `tab -> app.focus_next`, which means it would otherwise swallow
@@ -23302,11 +23302,19 @@ class DeepAgentsApp(App):
                 PromptClipboardScreen,
             )
             from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+            from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
 
             if isinstance(self.screen, (DebugConsoleScreen, PromptClipboardScreen)):
                 return False
             # The inline prompt search pages its results with shift+tab.
-            if self._inline_prompt_search_active():
+            # Gate on focus, not just on the panel being open. An inline
+            # approval that arrives mid-search takes focus, and its menu needs
+            # shift+tab/ctrl+t to keep toggling auto-approve; stepping aside on
+            # panel state alone also drops shift+tab through to
+            # `Screen.focus_previous`, moving focus off the pending approval.
+            if self._inline_prompt_search_active() and isinstance(
+                self.focused, PromptSearchInput
+            ):
                 return False
         # The prompt-search query owns escape only while it has focus. An inline
         # approval that arrived after search opened must keep the global binding

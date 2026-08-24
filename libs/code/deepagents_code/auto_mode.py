@@ -2930,7 +2930,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         except BaseException:
             # `aafter_model` emits the completion for every batch that reaches
             # final routing. A batch that dies here never gets there, so the
-            # client would hold its reviewed rows paused until the turn ends.
+            # client would hold the review spinner and this batch's tracking
+            # entry until the turn ends. Approve nothing: these calls will not
+            # run, and the client's teardown settles their rows.
             self._emit_review_event(
                 request.runtime,
                 event="review_completed",
@@ -2948,7 +2950,21 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         tool_call_ids: Sequence[str],
         approved_tool_call_ids: Sequence[str] = (),
     ) -> None:
-        """Emit opaque classifier lifecycle metadata on a best-effort basis."""
+        """Emit opaque classifier lifecycle metadata on a best-effort basis.
+
+        Deliberately not routed through `_emit_event_once`. That ledger exists to
+        stop an interrupt replay from rendering a duplicate transcript line. A
+        replayed lifecycle event renders nothing: the client matches it against
+        its own completed-batch guard and drops it.
+
+        Args:
+            runtime: Graph runtime carrying the custom-stream writer.
+            event: Lifecycle phase to emit.
+            batch_id: Opaque identifier shared by this batch's two events.
+            tool_call_ids: Calls the review covers.
+            approved_tool_call_ids: Calls the client may resume. Ignored for
+                `review_started`, which carries no approval list.
+        """
         payload: dict[str, object] = {
             "event": event,
             "batch_id": batch_id,
@@ -3482,6 +3498,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 "_auto_decision_plan": None,
             }
         if proposal_mode is ApprovalMode.YOLO or current_mode is ApprovalMode.YOLO:
+            # Unlike the branches above, YOLO runs every call a hook did not
+            # deny, so resume all but those rather than the hook-allowed set.
             self._emit_routed_review_event(
                 runtime,
                 batch_id=batch_id,

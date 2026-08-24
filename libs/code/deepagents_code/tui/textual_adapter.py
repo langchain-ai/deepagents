@@ -763,7 +763,10 @@ class TextualUIAdapter:
         """Reviewed tool IDs keyed by active Auto classifier batch."""
 
         self._completed_auto_reviews: dict[str, None] = {}
-        """Recently completed batches used to reject late lifecycle events."""
+        """Recently completed batches used to reject late lifecycle events.
+
+        An insertion-ordered mapping, not a set: the cap evicts oldest-first.
+        """
 
         # Token display callbacks (set by the app after construction)
         self._on_tokens_update: _TokensUpdateCallback | None = None
@@ -797,7 +800,11 @@ class TextualUIAdapter:
         """Called only after the agent stream reaches a clean end."""
 
     def _reset_auto_mode_review_tracking(self) -> None:
-        """Start each graph turn with no in-flight batch and no replay guard.
+        """Start each user turn with no in-flight batch and no replay guard.
+
+        This runs once per turn, not per `astream` iteration. An interrupt
+        resume re-runs the producer's routing node and replays its completion,
+        so the replay guard has to outlive a single iteration.
 
         Rows paused by a batch that never completed are left alone: their own
         `ToolMessage` still resolves them, and this runs before the new turn has
@@ -860,7 +867,10 @@ class TextualUIAdapter:
             )
 
     async def _complete_auto_mode_review(self, event: _AutoModeReviewEvent) -> None:
-        """Resume the rows this batch may still run, then restore the spinner.
+        """Resume the rows this batch may still run, then release the spinner.
+
+        Releasing means back to `Thinking`, or staying on the review status
+        while another batch is still active. There is no saved prior value.
 
         Anything other than an exact match between the start's tool IDs and the
         completion's means the two sides disagree, so the approval list cannot be
@@ -1299,11 +1309,12 @@ def _parse_auto_mode_review_event(
     event = _validated_auto_mode_review_event(data, phase=phase)
     if event is not None:
         return event
-    # `auto_mode` builds this payload by hand. This function re-derives its exact
-    # key set. Producer drift is therefore rejected rather than degraded. Past
-    # the phase check the payload is meant to be a lifecycle event, so a
-    # rejection is a defect, not a foreign event. This warning is the only
-    # signal that the two sides disagree.
+    # `auto_mode` builds this payload by hand, and
+    # `_validated_auto_mode_review_event` re-derives its exact key set. Producer
+    # drift is therefore rejected rather than degraded. Past the phase check the
+    # payload is meant to be a lifecycle event, so a rejection is a defect, not
+    # a foreign event, and this warning is the only signal that the payload
+    # shapes have diverged.
     batch_id = data.get("batch_id")
     logger.warning(
         "Rejected malformed Auto review event: event=%s batch_id=%s keys=%s",

@@ -1507,6 +1507,7 @@ def _load_cursor_style_preference() -> CursorStyle:
         CURSOR_STYLE_DEFAULT,
         _emit_ranked_diagnostics,
         get_option,
+        is_cursor_style,
     )
     from deepagents_code.configuration.resolver import get_config_resolver
 
@@ -1518,7 +1519,15 @@ def _load_cursor_style_preference() -> CursorStyle:
         return CURSOR_STYLE_DEFAULT
     resolved = get_config_resolver().get(option)
     _emit_ranked_diagnostics(option, resolved)
-    return cast("CursorStyle", resolved.value)
+    if is_cursor_style(resolved.value):
+        return resolved.value
+    # The docstring promises this fallback; nothing upstream enforced it.
+    logger.warning(
+        "Ignoring invalid display.cursor_style %r; using %r",
+        resolved.value,
+        CURSOR_STYLE_DEFAULT,
+    )
+    return CURSOR_STYLE_DEFAULT
 
 
 def _load_terminal_progress_preference() -> bool:

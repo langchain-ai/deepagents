@@ -2835,6 +2835,8 @@ class Settings:
             raise RuntimeError(msg)
         shell_resolved = resolved_config[shell_option.key]
         _emit_ranked_diagnostics(shell_option, shell_resolved)
+        # `parse_shell_allow_list_items` is the only producer for this
+        # option on every tier, and it yields `list[str] | None`.
         shell_allow_list = cast("list[str] | None", shell_resolved.value)
 
         # Parse extra skill containment roots from managed policy, the env

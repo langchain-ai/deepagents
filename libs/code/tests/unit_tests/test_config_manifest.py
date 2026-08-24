@@ -4225,3 +4225,25 @@ def test_empty_redacted_table_reads_as_unset() -> None:
     assert option.redacted is True
     assert _display_value(option, is_set=True, value={}) == "(unset)"
     assert _display_value(option, is_set=True, value={"a": {}}) == "configured"
+
+
+def test_invalid_cursor_style_falls_back_to_the_default() -> None:
+    """An unrecognized `display.cursor_style` must not reach Textual.
+
+    `OptionKind.CURSOR_STYLE_DELEGATE` constrains the option's default to
+    `str`, not to a `CursorStyle` member, so the reader's docstring promise --
+    "falling back to `block` when unset or invalid" -- was an unchecked `cast`
+    rather than a fallback.
+    """
+    from deepagents_code.config_manifest import (
+        CURSOR_STYLE_DEFAULT,
+        VALID_CURSOR_STYLES,
+        is_cursor_style,
+    )
+
+    assert not is_cursor_style("not-a-cursor")
+    assert not is_cursor_style(None)
+    assert not is_cursor_style(3)
+    assert CURSOR_STYLE_DEFAULT in VALID_CURSOR_STYLES
+    for style in VALID_CURSOR_STYLES:
+        assert is_cursor_style(style)

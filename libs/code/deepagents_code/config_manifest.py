@@ -41,6 +41,8 @@ from enum import Enum, StrEnum
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
+from typing_extensions import TypeIs
+
 from deepagents_code import _env_vars
 
 if TYPE_CHECKING:
@@ -878,7 +880,17 @@ def load_bool_display_preference(
     return resolved
 
 
-def _is_valid_auto_classifier_timeout(value: object) -> bool:
+def is_cursor_style(value: object) -> TypeIs[CursorStyle]:
+    """Return whether `value` is one of the accepted cursor styles.
+
+    `OptionKind.CURSOR_STYLE_DELEGATE` constrains the option's default to
+    `str`, not to a `CursorStyle` member, so a reader that trusts the kind is
+    asserting more than the manifest checks.
+    """
+    return value in VALID_CURSOR_STYLES
+
+
+def _is_valid_auto_classifier_timeout(value: object) -> TypeIs[float]:
     """Return whether `value` is an accepted Auto classifier timeout.
 
     Expects the `float` that `OptionKind.FLOAT` resolution produces on every
@@ -925,7 +937,7 @@ def resolve_auto_classifier_timeout_with_source(
     _emit_ranked_diagnostics(option, resolved)
     value, source = resolved.value, _ranked_source(resolved)
     if _is_valid_auto_classifier_timeout(value):
-        return cast("float", value), source
+        return value, source
 
     from deepagents_code.configuration.service import managed_decided
 
@@ -1161,6 +1173,9 @@ def resolve_startup_mode_with_source(
     )
     _emit_ranked_diagnostics(option, resolved)
     # STARTUP_MODE_DELEGATE coercion yields a `str` on every tier.
+    # Unguarded by design: `startup.mode` declares a `str` default and both
+    # coercers reject anything outside `VALID_STARTUP_MODES`, so no non-`str`
+    # can reach here. A predicate would assert what the manifest guarantees.
     value, source = cast("str", resolved.value), _ranked_source(resolved)
     if source != "default":
         return value, source
@@ -1208,8 +1223,13 @@ def option_accepts_toml(
     return _coerce_toml(option, value, source=source) is not _INVALID
 
 
-def is_valid_recursion_limit(value: object) -> bool:
-    """Return whether `value` is an accepted main-agent `recursion_limit`."""
+def is_valid_recursion_limit(value: object) -> TypeIs[int]:
+    """Return whether `value` is an accepted main-agent `recursion_limit`.
+
+    Narrows so callers need no `cast`. `bool` is rejected at runtime but is a
+    subclass of `int`, so the negative branch is not narrowed for it -- no
+    caller inspects that branch's type.
+    """
     return (
         isinstance(value, int)
         and not isinstance(value, bool)
@@ -1258,7 +1278,7 @@ def resolve_recursion_limit(
     _emit_ranked_diagnostics(option, resolved)
     value, source = resolved.value, _ranked_source(resolved)
     if is_valid_recursion_limit(value):
-        return cast("int", value)
+        return value
 
     from deepagents_code.configuration.service import managed_decided
 

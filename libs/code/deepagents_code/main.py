@@ -4391,9 +4391,10 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
     if found:
         # Only *revoke*: `_resolve_approval_mode` ends at
         # `coerce_approval_mode(load_startup_mode())`, which already reads
-        # merged managed policy, so the positive value needs no flag. Setting
-        # the flags positively would also make every headless launch warn about
-        # and ignore a flag the user never passed.
+        # merged managed policy, so the positive value needs no flag. The
+        # headless warning keys off `explicit_approval_flag`, captured before
+        # this runs, so a positive value set here would not warn — but it would
+        # still misreport a user-supplied flag to every other reader of `args`.
         if startup_mode != "auto":
             args.auto_approve = False
         if startup_mode != "yolo":
@@ -4776,18 +4777,60 @@ def cli_main() -> None:
 
             warn_if_editable_deps_stale()
 
-        # Handled here, before mode dispatch and any heavy session setup:
-        # `apply_stdin_pipe` has finalized `non_interactive_message` (the same
-        # predicate that selects the headless branch below), so this reliably
-        # clears interactive approval flags on both the `-n` and piped-stdin
-        # paths while leaving interactive launches untouched.
+        # Checked *before* the approval-flag warning below, so a run that
+        # exits here does not first print a warning about `--auto-approve`
+        # being ignored — the exit is the outcome, and the warning would only
+        # add noise. Both flags are final by now: `args.sandbox` comes from
+        # `parse_args` and `apply_stdin_pipe` has settled
+        # `non_interactive_message`.
+        #
+        # Auto approval mode (and therefore its classifier) requires the
+        # interactive TUI *and* no sandbox — `agent.create_cli_agent` disables
+        # Auto for either. Accepting the flag in those runs would silently do
+        # nothing to a setting that governs action authorization.
+        if getattr(args, "auto_classifier_model", None) is not None and (
+            args.non_interactive_message or args.sandbox not in {"none", None}
+        ):
+            from rich.console import Console as _Console
+
+            unavailable_because = (
+                "a sandbox is in use"
+                if not args.non_interactive_message
+                else "it runs headlessly"
+            )
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --auto-classifier-model is only "
+                "supported in the interactive TUI, where Auto approval mode "
+                f"runs; {unavailable_because}.\n"
+                "  dcode --auto-classifier-model anthropic:claude-haiku-4-5"
+            )
+            sys.exit(2)
+
+        # Cleared here, before mode dispatch reads the flags and before any
+        # session output could bury the warning: `apply_stdin_pipe` has
+        # finalized `non_interactive_message` (the same predicate that selects
+        # the headless branch below), so this reliably clears the flags on both
+        # the `-n` and piped-stdin paths while leaving interactive launches
+        # untouched. `explicit_approval_flag` was captured at parse time, so
+        # only a flag the user actually typed warns.
         if explicit_approval_flag is not None and args.non_interactive_message:
             from rich.console import Console as _Console
 
+            # `soft_wrap` keeps the message on one line. Rich otherwise hard
+            # wraps at width 80 off a TTY, and the break moves with the flag
+            # name — leaving no substring a CI job can grep for both spellings.
+            # With the pre-existing `sys.exit(2)` gone, this text is the only
+            # signal that the requested mode was dropped.
             _Console(stderr=True).print(
                 f"[bold yellow]Warning:[/bold yellow] {explicit_approval_flag} has "
                 "no effect in headless mode; ignoring it. Shell access is "
-                "governed by --shell-allow-list, and MCP routing is fail-closed."
+                "governed by --shell-allow-list, and MCP routing is fail-closed.",
+                soft_wrap=True,
+            )
+            logger.warning(
+                "%s ignored in headless mode; approval is derived from "
+                "--shell-allow-list.",
+                explicit_approval_flag,
             )
             args.auto_approve = False
             args.yolo = False
@@ -4907,28 +4950,6 @@ def cli_main() -> None:
                 "--rubric-max-iterations require "
                 "--non-interactive (-n) or piped stdin\n"
                 "  dcode -n 'implement X' --rubric 'tests pass'"
-            )
-            sys.exit(2)
-
-        # Auto approval mode (and therefore its classifier) requires the
-        # interactive TUI *and* no sandbox — `agent.create_cli_agent` disables
-        # Auto for either. Accepting the flag in those runs would silently do
-        # nothing to a setting that governs action authorization.
-        if getattr(args, "auto_classifier_model", None) is not None and (
-            args.non_interactive_message or args.sandbox not in {"none", None}
-        ):
-            from rich.console import Console as _Console
-
-            unavailable_because = (
-                "a sandbox is in use"
-                if not args.non_interactive_message
-                else "it runs headlessly"
-            )
-            _Console(stderr=True).print(
-                "[bold red]Error:[/bold red] --auto-classifier-model is only "
-                "supported in the interactive TUI, where Auto approval mode "
-                f"runs; {unavailable_because}.\n"
-                "  dcode --auto-classifier-model anthropic:claude-haiku-4-5"
             )
             sys.exit(2)
 

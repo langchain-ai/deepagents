@@ -8174,6 +8174,169 @@ class TestPromptSearchPanel:
             assert "Could not read prompt history" in messages[0]
             assert "No prompts yet" not in messages[0]
 
+    async def test_text_area_keys_do_not_edit_the_frozen_draft(
+        self, tmp_path: Path
+    ) -> None:
+        """The text area must not accept edits while the panel is open.
+
+        `open_prompt_search` focuses the query input and `ChatTextArea.on_focus`
+        bounces focus back, so this branch is defensive: it only runs if a key
+        reaches the text area anyway. Driving `_on_key` directly is what
+        exercises it. Without the branch the TextArea defaults apply and
+        printable characters insert into the frozen draft behind the panel.
+        """
+        from textual import events
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("draft text")
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            # Printable keys belong to the focused query input, so the panel
+            # handler declines them -- and the text area must decline them too
+            # rather than falling back to its own insertion.
+            for key, character in (("z", "z"), ("space", " ")):
+                event = events.Key(key, character)
+                await text_area._on_key(event)
+                await pilot.pause()
+                assert event._no_default_action
+                assert event._stop_propagation
+
+            assert text_area.text == "draft text"
+            assert app.submitted == []
+            assert chat._prompt_search_active is True
+
+    async def test_text_area_navigation_keys_reach_the_panel(
+        self, tmp_path: Path
+    ) -> None:
+        """Keys the panel owns are routed on even from the text area."""
+        from textual import events
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+            text_area = chat._text_area
+            assert text_area is not None
+            await text_area._on_key(events.Key("down", None))
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 1
+            assert text_area.text == ""
+
+    async def test_panel_reports_its_rendered_height(self, tmp_path: Path) -> None:
+        """`RowsChanged` drives the composer's height reservation.
+
+        `ChatInputBox` subtracts the reported rows from its budget, so an
+        over-report shrinks the draft and an under-report lets the panel
+        overflow the composer border.
+        """
+        from deepagents_code.tui.widgets.prompt_search import (
+            PROMPT_SEARCH_MAX_HINT_ROWS,
+            PROMPT_SEARCH_PANEL_ROWS,
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt", "second prompt"])
+            await pilot.pause()
+
+            box = chat.query_one(ChatInputBox)
+            assert box._prompt_search_rows == 0
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            # One query row, one row per result, plus the measured hint.
+            assert box._prompt_search_rows == 1 + 2 + panel._hint_rows()
+            assert 0 < box._prompt_search_rows <= PROMPT_SEARCH_PANEL_ROWS
+            # A wide terminal wraps the hint to fewer than the pre-layout
+            # maximum, so `on_resize` corrected the initial reservation down.
+            assert panel._hint_rows() < PROMPT_SEARCH_MAX_HINT_ROWS
+
+            chat._close_prompt_search(restore_draft=True)
+            await pilot.pause()
+            assert box._prompt_search_rows == 0
+
+    async def test_panel_renders_inside_the_composer_border(
+        self, tmp_path: Path
+    ) -> None:
+        """The reserved rows must actually keep the panel inside the box."""
+        app = _RecordingApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, [f"prompt {index}" for index in range(20)])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            box = chat.query_one(ChatInputBox)
+            assert panel.region.height > 0
+            assert panel.region.y >= box.region.y
+            assert panel.region.bottom <= box.region.bottom
+
+            # The hint is the last thing in the panel, so a short reservation
+            # clips its final row rather than the results.
+            hint = panel._hint_static
+            assert hint is not None
+            assert hint.region.bottom <= panel.region.bottom
+
+    async def test_narrow_terminal_reserves_the_wrapped_hint(
+        self, tmp_path: Path
+    ) -> None:
+        """A wrapped hint claims more rows, and the panel still fits."""
+        app = _RecordingApp()
+        async with app.run_test(size=(40, 24)) as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            box = chat.query_one(ChatInputBox)
+            hint = panel._hint_static
+            assert hint is not None
+
+            # Narrow enough that the hint wraps past one row.
+            assert panel._hint_rows() > 1
+            assert box._prompt_search_rows == 1 + 1 + panel._hint_rows()
+            assert panel.region.bottom <= box.region.bottom
+            assert hint.region.bottom <= panel.region.bottom
+
     async def test_rebuild_failure_ends_the_session(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

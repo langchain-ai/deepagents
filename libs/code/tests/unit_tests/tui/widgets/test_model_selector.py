@@ -288,6 +288,7 @@ class TestModelSelectorChrome:
             assert "Tab/Shift+Tab navigate" not in str(help_text.content)
             assert "Tab autocomplete" in str(help_text.content)
             assert "Esc skip setup" not in str(help_text.content)
+            assert "Esc close" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
 
     async def test_curated_selector_help_hides_default_hint(self) -> None:
@@ -329,8 +330,8 @@ class TestModelSelectorChrome:
         assert max_height.cells is not None
         assert max_height.cells <= 16
 
-    async def test_standard_selector_help_hides_cancel_hint(self) -> None:
-        """The regular /model selector should not leave a trailing separator."""
+    async def test_standard_selector_help_shows_close_hint(self) -> None:
+        """The regular `/model` selector should advertise Escape dismissal."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
@@ -343,7 +344,7 @@ class TestModelSelectorChrome:
             # Standard mode still advertises the default-setting shortcut that
             # curated/onboarding mode hides.
             assert "Ctrl+S set default" in str(help_text.content)
-            assert "Esc cancel" not in str(help_text.content)
+            assert "Esc close" in str(help_text.content)
 
     async def test_standard_selector_help_wraps_to_two_rows(self) -> None:
         """The standard footer is wider than the modal, so it must wrap.

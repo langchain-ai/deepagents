@@ -140,6 +140,31 @@ _REJECT_REASON_PREFIX = "User rejected the tool call with reason: "
 """Synthetic framing prepended to a user-typed HITL rejection reason."""
 
 
+def _format_model_retry_status(event: dict[object, object]) -> str:
+    """Build retry spinner text from validated numeric event fields.
+
+    Args:
+        event: Untrusted custom-stream payload.
+
+    Returns:
+        A fixed retry status, or a fixed fallback for malformed payloads.
+    """
+    attempt = event.get("attempt")
+    max_retries = event.get("max_retries")
+    valid_ints = (
+        isinstance(attempt, int)
+        and not isinstance(attempt, bool)
+        and isinstance(max_retries, int)
+        and not isinstance(max_retries, bool)
+    )
+    if not valid_ints or not 1 <= attempt <= max_retries:
+        return "Reconnecting"
+    return (
+        f"model connection dropped, retrying {attempt}/{max_retries}"
+        f"{get_glyphs().ellipsis}"
+    )
+
+
 def _permission_tool_calls(
     interrupt_id: str,
     action_requests: Sequence[ActionRequest],
@@ -1833,9 +1858,7 @@ async def execute_task_textual(
 
                     if isinstance(data, dict) and data.get("type") == "model_retry":
                         if is_main_agent and adapter._set_spinner is not None:
-                            await adapter._set_spinner(
-                                str(data.get("message", "Reconnecting"))
-                            )
+                            await adapter._set_spinner(_format_model_retry_status(data))
                         continue
 
                     auto_review_event = _parse_auto_mode_review_event(

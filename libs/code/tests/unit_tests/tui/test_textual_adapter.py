@@ -2624,6 +2624,44 @@ class _FailingApprovalStoreAgent(_SequencedAgent):
 class TestExecuteTaskTextualStreamCompletion:
     """Report only clean stream endings to the app."""
 
+    async def test_retry_event_ignores_untrusted_status_markup(self) -> None:
+        """Retry spinner text is rebuilt instead of parsing event-provided markup."""
+        statuses: list[str | None] = []
+
+        async def set_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+        )
+        event = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 5,
+            "message": "[/tmp/x]",
+        }
+
+        with patch(
+            "deepagents_code.tui.textual_adapter.get_glyphs",
+            return_value=ASCII_GLYPHS,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent([((), "custom", event)]),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert (
+            f"model connection dropped, retrying 1/5{ASCII_GLYPHS.ellipsis}" in statuses
+        )
+        assert all("[/tmp/x]" not in status for status in statuses if status)
+
     async def test_hook_stop_after_clean_stream_calls_completion_callback(self) -> None:
         mount_message = AsyncMock()
         adapter = TextualUIAdapter(

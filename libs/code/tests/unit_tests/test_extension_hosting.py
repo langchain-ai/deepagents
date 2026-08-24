@@ -21,6 +21,11 @@ from deepagents_code.extensions.registry import (
 from deepagents_code.offload import _ArtifactsStorage
 
 
+@pytest.fixture(autouse=True)
+def _experimental(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPAGENTS_CODE_EXPERIMENTAL", "1")
+
+
 @tool("existing")
 def _existing() -> str:
     """Represent an existing dcode tool."""
@@ -37,6 +42,38 @@ class _Middleware(AgentMiddleware):
     """Represent extension middleware."""
 
     name = "extension-middleware"
+
+
+def test_agent_ignores_registry_outside_experimental_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Direct callers cannot bypass the process-wide experimental gate."""
+    monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL")
+    registry = ExtensionRegistry()
+    registry.add_tool(_replacement, SourceInfo(tmp_path / "extension.py"))
+    graph = Mock()
+    graph.with_config.return_value = graph
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    model.profile = {"max_input_tokens": 200000}
+
+    with patch("deepagents_code.agent.create_deep_agent", return_value=graph) as create:
+        create_cli_agent(
+            model,
+            "test",
+            tools=[_existing],
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test",
+            cwd=tmp_path,
+            extension_registry=registry,
+        )
+
+    assert create.call_args.kwargs["tools"] == [_existing]
+    assert all(
+        item.name != "__deepagents_extension_runtime__"
+        for item in create.call_args.kwargs["middleware"]
+    )
 
 
 def test_extension_units_override_tools_and_add_backend_routes(
@@ -138,6 +175,18 @@ def test_provenance_endpoint_is_loopback_only() -> None:
 
     assert _extensions(local).status_code == 200
     assert _extensions(remote).status_code == 404
+
+
+def test_provenance_endpoint_is_hidden_without_experimental_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even loopback clients cannot inspect the disabled experiment."""
+    from deepagents_code.server_lifespan import _extensions
+
+    monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL")
+    local = Request({"type": "http", "client": ("127.0.0.1", 1234)})
+
+    assert _extensions(local).status_code == 404
 
 
 def test_builtin_http_app_hosts_extension_metadata() -> None:

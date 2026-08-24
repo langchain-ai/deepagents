@@ -2577,10 +2577,11 @@ def create_cli_agent(
             a prebuilt `BaseChatModel` came from a path that already checked.
     """  # noqa: DOC502 - propagates from `ModelConfig.require_model_allowed`
     tools = list(tools or [])
-    if extension_registry is None:
-        from deepagents_code.extensions.registry import ExtensionRegistry
+    if extension_registry is not None:
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-        extension_registry = ExtensionRegistry()
+        if not is_env_truthy(EXPERIMENTAL):
+            extension_registry = None
     mcp_tools = tuple(mcp_tools or ())
     if auto_mode_enabled and sandbox is not None:
         logger.warning(
@@ -3063,19 +3064,25 @@ def create_cli_agent(
             f"{artifacts_root.rstrip('/')}/",
             f"/{str(conversation_history_root).lstrip('/').rstrip('/')}/",
         }
-    from deepagents_code.extensions.hosting import (
-        bind_runtime_host_policy,
-        validate_backend_route,
-    )
-
     extension_routes: dict[str, BackendProtocol] = {}
-    for route in extension_registry.backend_routes:
-        validate_backend_route(
-            route,
+    if extension_registry is not None:
+        from deepagents_code.extensions.hosting import (
+            bind_runtime_host_policy,
+            validate_backend_route,
+        )
+
+        for route in extension_registry.backend_routes:
+            validate_backend_route(
+                route,
+                protected_extension_routes,
+                sandbox_active=sandbox is not None,
+            )
+            extension_routes[route.name] = route.unit
+        bind_runtime_host_policy(
+            extension_registry,
             protected_extension_routes,
             sandbox_active=sandbox is not None,
         )
-        extension_routes[route.name] = route.unit
     if artifacts_root is None:
         composite_backend = CompositeBackend(
             default=backend,
@@ -3087,12 +3094,6 @@ def create_cli_agent(
             routes={**extension_routes, **artifact_routes},
             artifacts_root=artifacts_root,
         )
-    bind_runtime_host_policy(
-        extension_registry,
-        protected_extension_routes,
-        sandbox_active=sandbox is not None,
-    )
-
     compaction_middleware = _create_cli_compaction_middleware(
         model,
         composite_backend,
@@ -3357,29 +3358,31 @@ def create_cli_agent(
     effective_recursion_limit = (
         recursion_limit if recursion_limit is not None else resolve_recursion_limit()
     )
-    extension_tools = extension_registry.tool_units()
-    extension_tool_names = {registered.name for registered in extension_tools}
-    tools = [
-        item
-        for item in tools
-        if (getattr(item, "name", None) or getattr(item, "__name__", None))
-        not in extension_tool_names
-    ]
-    tools.extend(registered.unit for registered in extension_tools)
-    extension_middleware_names = {
-        registered.name for registered in extension_registry.middleware
-    }
-    agent_middleware = [
-        item
-        for item in agent_middleware
-        if getattr(item, "name", type(item).__name__) not in extension_middleware_names
-    ]
-    agent_middleware.extend(
-        registered.unit for registered in extension_registry.middleware
-    )
-    from deepagents_code.extensions.hosting import ExtensionRuntimeMiddleware
+    if extension_registry is not None:
+        extension_tools = extension_registry.tool_units()
+        extension_tool_names = {registered.name for registered in extension_tools}
+        tools = [
+            item
+            for item in tools
+            if (getattr(item, "name", None) or getattr(item, "__name__", None))
+            not in extension_tool_names
+        ]
+        tools.extend(registered.unit for registered in extension_tools)
+        extension_middleware_names = {
+            registered.name for registered in extension_registry.middleware
+        }
+        agent_middleware = [
+            item
+            for item in agent_middleware
+            if getattr(item, "name", type(item).__name__)
+            not in extension_middleware_names
+        ]
+        agent_middleware.extend(
+            registered.unit for registered in extension_registry.middleware
+        )
+        from deepagents_code.extensions.hosting import ExtensionRuntimeMiddleware
 
-    agent_middleware.append(ExtensionRuntimeMiddleware(extension_registry))
+        agent_middleware.append(ExtensionRuntimeMiddleware(extension_registry))
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,

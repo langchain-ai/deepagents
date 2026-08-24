@@ -22,13 +22,20 @@ async def _lifespan(_: Starlette) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        from deepagents_code.extensions.runtime import shutdown_server_extensions
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-        await shutdown_server_extensions()
+        if is_env_truthy(EXPERIMENTAL):
+            from deepagents_code.extensions.runtime import shutdown_server_extensions
+
+            await shutdown_server_extensions()
 
 
 def _extensions(request: Request) -> JSONResponse:
     """Return extension provenance only to a loopback client."""
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if not is_env_truthy(EXPERIMENTAL):
+        return JSONResponse({"detail": "Not found"}, status_code=404)
     host = request.client.host if request.client is not None else ""
     try:
         loopback = ip_address(host).is_loopback

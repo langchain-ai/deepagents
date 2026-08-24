@@ -346,7 +346,7 @@ async def _make_graphs() -> ServerRuntime:
             sys.exit(1)
 
     def _create_cli_graphs_sync(
-        extension_registry: ExtensionRegistry,
+        extension_registry: ExtensionRegistry | None,
     ) -> ServerRuntime:
         async_subagents = load_async_subagents() or None
         auto_mode_enabled = config.interactive and sandbox_backend is None
@@ -411,43 +411,52 @@ async def _make_graphs() -> ServerRuntime:
             offload=offload,
         )
 
-    from deepagents_code.extensions import load_extensions
-    from deepagents_code.extensions.runtime import (
-        HEADLESS_MODE,
-        INTERACTIVE_MODE,
-        bind_server_extensions,
-        shutdown_server_extensions,
-    )
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-    extension_cwd = (
-        project_context.user_cwd
-        if project_context is not None
-        else Path(config.cwd)
-        if config.cwd is not None
-        else None
-    )
-    extension_project_root = (
-        project_context.project_root or project_context.user_cwd
-        if project_context is not None
-        else None
-    )
-    extension_result = await load_extensions(
-        cwd=extension_cwd,
-        mode=INTERACTIVE_MODE if config.interactive else HEADLESS_MODE,
-        project_root=extension_project_root,
-        project_trust_granted=config.trust_project_extensions,
-        cli_paths=tuple(Path(path) for path in config.extension_paths),
-    )
-    for message in extension_result.errors:
-        logger.warning("Extension not loaded: %s", message)
-    bind_server_extensions(extension_result.registry, errors=extension_result.errors)
+    extension_registry = None
+    if is_env_truthy(EXPERIMENTAL):
+        from deepagents_code.extensions import load_extensions
+        from deepagents_code.extensions.runtime import (
+            HEADLESS_MODE,
+            INTERACTIVE_MODE,
+            bind_server_extensions,
+        )
+
+        extension_result = await load_extensions(
+            cwd=(
+                project_context.user_cwd
+                if project_context is not None
+                else Path(config.cwd)
+                if config.cwd is not None
+                else None
+            ),
+            mode=INTERACTIVE_MODE if config.interactive else HEADLESS_MODE,
+            project_root=(
+                project_context.project_root or project_context.user_cwd
+                if project_context is not None
+                else None
+            ),
+            project_trust_granted=config.trust_project_extensions,
+            cli_paths=tuple(Path(path) for path in config.extension_paths),
+        )
+        for message in extension_result.errors:
+            logger.warning("Extension not loaded: %s", message)
+        if extension_result.active:
+            extension_registry = extension_result.registry
+            bind_server_extensions(
+                extension_registry,
+                errors=extension_result.errors,
+            )
     try:
         return await asyncio.to_thread(
             _create_cli_graphs_sync,
-            extension_result.registry,
+            extension_registry,
         )
     except BaseException:
-        await shutdown_server_extensions()
+        if extension_registry is not None:
+            from deepagents_code.extensions.runtime import shutdown_server_extensions
+
+            await shutdown_server_extensions()
         raise
 
 

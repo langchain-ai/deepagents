@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from deepagents_code.app import _PluginFingerprint
+    from deepagents_code.configuration.types import TomlSnapshot
     from deepagents_code.plugins.models import PluginInstance
     from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
     from deepagents_code.tui.modals.plugin_manager.models import PluginManagerResult
@@ -179,6 +180,27 @@ class TestReloadFromEnvironment:
 
         assert not any(change.startswith("extra_skills_dirs:") for change in changes)
         assert settings.extra_skills_dirs == [skills_dir]
+
+    def test_reload_reads_managed_policy_once(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """One reload must use one managed-policy file generation."""
+        from deepagents_code.configuration import service
+
+        settings = Settings.from_environment(start_path=tmp_path)
+        original_load = service._load_managed
+        loads = 0
+
+        def counted_load(path: Path | None = None) -> TomlSnapshot:
+            nonlocal loads
+            loads += 1
+            return original_load(path)
+
+        monkeypatch.setattr(service, "_load_managed", counted_load)
+
+        settings.reload_from_environment(start_path=tmp_path)
+
+        assert loads == 1
 
     def test_preserves_model_state(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

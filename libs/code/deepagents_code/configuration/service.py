@@ -667,14 +667,17 @@ def invalidate_config_sources() -> None:
     reset_config_resolver()
 
 
-def require_healthy_managed_config(*, refresh: bool = False) -> None:
-    """Fail startup when present managed policy cannot be parsed or enforced.
+def get_healthy_managed_snapshot(*, refresh: bool = False) -> TomlSnapshot:
+    """Return managed policy only when it can be enforced.
 
     A file that parses is not necessarily enforceable: a privilege-affecting
     key can carry a value the manifest rejects, or a known section can be a
     scalar instead of a table. Both can otherwise resolve in the user's favor
     or erase a user subtree, so they stop the launch here rather than at each
     consumer.
+
+    Returns:
+        The exact managed snapshot that passed validation.
 
     Raises:
         ManagedConfigError: If managed policy is present but unusable.
@@ -688,6 +691,12 @@ def require_healthy_managed_config(*, refresh: bool = False) -> None:
     violations = managed_policy_violations(snapshot.data, status=status)
     if violations:
         raise ManagedPolicyError(status, violations)
+    return snapshot
+
+
+def require_healthy_managed_config(*, refresh: bool = False) -> None:
+    """Fail startup when present managed policy cannot be parsed or enforced."""
+    get_healthy_managed_snapshot(refresh=refresh)
 
 
 def _managed_resolver(snapshot: TomlSnapshot) -> ConfigResolver:

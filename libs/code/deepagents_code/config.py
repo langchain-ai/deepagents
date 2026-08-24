@@ -2911,8 +2911,8 @@ class Settings:
         )
         from deepagents_code.configuration.service import (
             ManagedConfigError,
+            get_healthy_managed_snapshot,
             managed_decided,
-            require_healthy_managed_config,
         )
 
         # Refresh in place rather than invalidating first: dropping the cached
@@ -2925,7 +2925,7 @@ class Settings:
         # replaces the snapshot that every other reader in the process observes
         # before the user has accepted anything.
         try:
-            require_healthy_managed_config(refresh=refresh_managed)
+            managed_snapshot = get_healthy_managed_snapshot(refresh=refresh_managed)
         except ManagedConfigError as exc:
             logger.error("Keeping previous settings: %s", exc)  # noqa: TRY400
             # Report the block to the caller. Returning only `previous` reads
@@ -2947,12 +2947,13 @@ class Settings:
 
         # A real `/reload` exists to pick up file edits made since the shared
         # resolver's snapshot was taken, so this method and later
-        # `get_config_resolver()` readers observe the same generation.
-        # `refresh_managed=True` already reloads every provider on a cache hit
-        # and builds a fresh resolver on a miss, so calling `reload()` again
-        # here would re-read the managed file a second time and re-run
-        # `managed_policy_violations` with it.
-        resolver = get_config_resolver(refresh_managed=refresh_managed)
+        # `get_config_resolver()` readers observe the same generation. Seed the
+        # resolver with the snapshot just validated above; asking it to refresh
+        # managed policy again would let one reload observe multiple files.
+        resolver = get_config_resolver(
+            refresh_managed=refresh_managed,
+            managed_snapshot=managed_snapshot,
+        )
 
         try:
             shell_allow_list = parse_shell_allow_list(env.get(SHELL_ALLOW_LIST))
@@ -2977,7 +2978,6 @@ class Settings:
                 # policy the process is enforcing. The skills read below needs
                 # no fresh user tier: it only accepts managed-decided values.
                 from deepagents_code.configuration.providers import TomlFileProvider
-                from deepagents_code.configuration.service import get_managed_snapshot
                 from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
                 user_candidate = TomlFileProvider(
@@ -2985,7 +2985,7 @@ class Settings:
                 ).load()
                 shell_resolver = (
                     resolver_from_snapshots(
-                        get_managed_snapshot(),
+                        managed_snapshot,
                         user_candidate,
                     )
                     if user_candidate.status.usable

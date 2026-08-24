@@ -233,9 +233,35 @@ class ConfigResolver:
 
     def reload(self) -> None:
         """Propagate a source refresh to every provider."""
+        self.reload_with_replacements({})
+
+    def reload_with_replacements(
+        self,
+        replacements: Mapping[int, ConfigProvider],
+    ) -> None:
+        """Refresh providers after installing already-refreshed replacements.
+
+        Args:
+            replacements: Providers already bound to the desired generation,
+                keyed by the rank they replace. Replacements are installed but
+                not reloaded.
+
+        Raises:
+            ValueError: If a replacement rank is not in this resolver.
+        """
         with self._lock:
+            ranks = {provider.rank for provider in self._providers}
+            unknown = replacements.keys() - ranks
+            if unknown:
+                msg = f"cannot replace unknown provider ranks: {sorted(unknown)}"
+                raise ValueError(msg)
+            self._providers = tuple(
+                replacements.get(provider.rank, provider)
+                for provider in self._providers
+            )
             for provider in self._providers:
-                provider.reload()
+                if provider.rank not in replacements:
+                    provider.reload()
 
     def provider_statuses(self) -> Mapping[int, ProviderStatus]:
         """Return immutable provider health keyed by precedence rank."""
@@ -333,11 +359,17 @@ def _reload_enforceable_managed_snapshot() -> TomlSnapshot:
     return candidate
 
 
-def get_config_resolver(*, refresh_managed: bool = False) -> ConfigResolver:
+def get_config_resolver(
+    *,
+    refresh_managed: bool = False,
+    managed_snapshot: TomlSnapshot | None = None,
+) -> ConfigResolver:
     """Return the shared process resolver for the active config paths.
 
     Args:
         refresh_managed: Re-read all providers on an existing matching resolver.
+        managed_snapshot: Already refreshed and validated managed snapshot. Passing
+            it keeps a reload on one managed-file generation.
 
     Returns:
         Resolver shared by consumers of the active managed and user paths.
@@ -346,7 +378,11 @@ def get_config_resolver(*, refresh_managed: bool = False) -> ConfigResolver:
     from deepagents_code.configuration.service import get_managed_snapshot
     from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
-    managed = get_managed_snapshot(refresh=refresh_managed)
+    managed = (
+        get_managed_snapshot(refresh=refresh_managed)
+        if managed_snapshot is None
+        else managed_snapshot
+    )
     key = (DEFAULT_CONFIG_PATH, managed.status.path)
     with _resolver_cache_lock:
         entry = _resolver_cache.entry
@@ -363,7 +399,18 @@ def get_config_resolver(*, refresh_managed: bool = False) -> ConfigResolver:
             return resolver
         resolver = entry[1]
         if refresh_managed:
-            resolver.reload()
+            resolver.reload_with_replacements(
+                {
+                    MANAGED_RANK: TomlFileProvider(
+                        managed.status.name,
+                        managed.status.path,
+                        MANAGED_RANK,
+                        True,
+                        managed,
+                        _reload_enforceable_managed_snapshot,
+                    )
+                }
+            )
         return resolver
 
 

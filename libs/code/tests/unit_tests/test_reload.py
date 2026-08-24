@@ -142,6 +142,29 @@ class TestReloadFromEnvironment:
         assert any(change.startswith("shell_allow_list:") for change in changes)
         assert settings.shell_allow_list is None
 
+    def test_preview_reload_sees_extra_skill_roots_toml_edit(
+        self, tmp_path: Path
+    ) -> None:
+        """A preview and accepted reload use the same fresh skill roots."""
+        from deepagents_code import model_config
+
+        skills_dir = tmp_path / "external-skills"
+        skills_dir.mkdir()
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.extra_skills_dirs is None
+
+        config_path.write_text(
+            f'[skills]\nextra_allowed_dirs = ["{skills_dir}"]\n',
+            encoding="utf-8",
+        )
+        preview = settings.preview_reload_from_environment(start_path=tmp_path)
+        applied = settings.reload_from_environment(start_path=tmp_path)
+
+        assert any(change.startswith("extra_skills_dirs:") for change in preview)
+        assert preview == applied
+        assert settings.extra_skills_dirs == [skills_dir]
+
     def test_preview_reload_retains_shell_allow_list_on_corrupt_toml(
         self, tmp_path: Path
     ) -> None:

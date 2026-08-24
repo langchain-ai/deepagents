@@ -2989,41 +2989,34 @@ class Settings:
             )
             shell_allow_list = previous["shell_allow_list"]
 
+        candidate_resolver = resolver
+        if not refresh_managed:
+            # The shared resolver's cached user snapshot may predate the edit
+            # being previewed. Read the user file fresh when possible, but fall
+            # back to the retained snapshot when that read is unusable, matching
+            # the real reload. Keep the current managed snapshot because a
+            # preview must not refresh policy the process is enforcing.
+            from deepagents_code.configuration.providers import TomlFileProvider
+            from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+            user_candidate = TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load()
+            if user_candidate.status.usable:
+                candidate_resolver = resolver_from_snapshots(
+                    managed=managed_snapshot,
+                    user=user_candidate,
+                )
+                user_notice = None
+            else:
+                # The preview's own read failed, so report that rather than
+                # the shared resolver's status: the file on disk right now is
+                # what the user would be accepting.
+                detail = (
+                    user_candidate.status.detail or user_candidate.status.health.value
+                )
+                user_notice = f"Kept previous config.toml: {detail}"
+
         shell_option = get_option("shell.allow_list")
         if shell_option is not None:
-            if refresh_managed:
-                shell_resolver = resolver
-            else:
-                # The shared resolver's cached user snapshot may predate the
-                # edit being previewed, which would show no allow-list change
-                # while the real reload applies it. Read the user file fresh
-                # when possible, but fall back to the retained snapshot when
-                # that read is unusable, matching the real reload. Keep the
-                # current managed snapshot because a preview must not refresh
-                # policy the process is enforcing. The skills read below needs
-                # no fresh user tier: it only accepts managed-decided values.
-                from deepagents_code.configuration.providers import TomlFileProvider
-                from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-                user_candidate = TomlFileProvider(
-                    "config.toml", DEFAULT_CONFIG_PATH
-                ).load()
-                if user_candidate.status.usable:
-                    shell_resolver = resolver_from_snapshots(
-                        managed=managed_snapshot,
-                        user=user_candidate,
-                    )
-                    user_notice = None
-                else:
-                    # The preview's own read failed, so report that rather than
-                    # the shared resolver's status: the file on disk right now
-                    # is what the user would be accepting.
-                    shell_resolver = resolver
-                    detail = (
-                        user_candidate.status.detail
-                        or user_candidate.status.health.value
-                    )
-                    user_notice = f"Kept previous config.toml: {detail}"
             # Accepting an *env*-tier hit would defeat the `env` argument this
             # method exists to honor: the resolver's env provider reads
             # `os.environ` directly, so a preview of a `.env` edit reported the
@@ -3031,7 +3024,7 @@ class Settings:
             # Managed policy and the user's file are file-backed and safe to
             # take from here; the env tier stays with the `env`-derived value
             # computed above.
-            shell_resolved = shell_resolver.get(shell_option)
+            shell_resolved = candidate_resolver.get(shell_option)
             _emit_ranked_diagnostics(shell_option, shell_resolved)
             shell_source = _ranked_source(shell_resolved)
             if managed_decided(shell_source) or shell_source == "config.toml":
@@ -3052,7 +3045,7 @@ class Settings:
             resolved_skills: list[Path] | None = None
             skills_managed = False
             if skills_option is not None:
-                skills_resolved = resolver.get(skills_option)
+                skills_resolved = candidate_resolver.get(skills_option)
                 _emit_ranked_diagnostics(skills_option, skills_resolved)
                 if managed_decided(_ranked_source(skills_resolved)):
                     skills_managed = True

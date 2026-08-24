@@ -290,6 +290,7 @@ class TestExecuteOffload:
             update={"_session_cost_usd": 0.25},
             rollback=MagicMock(),
             commit=MagicMock(),
+            delta_usd=0.25,
         )
 
         with (
@@ -400,6 +401,7 @@ class TestExecuteOffload:
             update={"_session_cost_usd": 0.25},
             rollback=MagicMock(),
             commit=MagicMock(),
+            delta_usd=0.25,
             records=[],
         )
 
@@ -438,6 +440,7 @@ class TestExecuteOffload:
             update={"_session_cost_usd": 0.25},
             rollback=MagicMock(),
             commit=MagicMock(),
+            delta_usd=0.25,
         )
         settlement_started = asyncio.Event()
         finish_settlement = asyncio.Event()
@@ -792,6 +795,7 @@ class TestExecuteOffload:
             update={"_session_cost_usd": 0.25},
             rollback=MagicMock(),
             commit=MagicMock(),
+            delta_usd=0.25,
             records=[],
         )
 
@@ -837,6 +841,7 @@ class TestExecuteOffload:
             update={"_session_cost_usd": 0.25},
             rollback=MagicMock(),
             commit=MagicMock(),
+            delta_usd=0.25,
             records=[],
         )
 
@@ -854,6 +859,62 @@ class TestExecuteOffload:
             )
 
         prepared.rollback.assert_not_called()
+
+    async def test_unreadable_thread_does_not_claim_the_thread_advanced(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unreadable readback must not be logged as an observed advance.
+
+        Both outcomes keep the records claimed, but only `advanced` has evidence
+        the write landed. Reporting a thread advance that was never observed
+        would tell anyone auditing a missing charge that the spend was
+        accounted for.
+        """
+        import logging
+
+        from deepagents_code import offload_api
+
+        before = _thread_state()
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(
+                side_effect=[before, before, RuntimeError("thread store offline")]
+            ),
+            update_state=AsyncMock(side_effect=RuntimeError("connection reset")),
+        )
+        operation = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=OffloadExecution(
+                    {"_summarization_event": {"cutoff_index": 1}},
+                    _result(),  # ty: ignore[invalid-argument-type]
+                )
+            )
+        )
+        prepared = SimpleNamespace(
+            update={"_session_cost_usd": 0.25},
+            rollback=MagicMock(),
+            commit=MagicMock(),
+            delta_usd=0.25,
+            records=[],
+        )
+
+        with (
+            self._patched(offload_api, threads, operation, prepared),
+            caplog.at_level(logging.ERROR),
+            pytest.raises(offload_api._OffloadIndeterminateError),
+        ):
+            await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+            )
+
+        assert "could not be read back" in caplog.text
+        assert "may be lost from the thread total" in caplog.text
+        assert "advanced past checkpoint" not in caplog.text
+        prepared.rollback.assert_not_called()
+        prepared.commit.assert_called_once()
 
     async def test_cancelled_probe_still_settles_the_cost_records(self) -> None:
         """A cancel inside the write-landed probe must not skip settlement.
@@ -885,6 +946,7 @@ class TestExecuteOffload:
             update={"_session_cost_usd": 0.25},
             rollback=MagicMock(),
             commit=MagicMock(),
+            delta_usd=0.25,
             records=[],
         )
 
@@ -932,6 +994,7 @@ class TestExecuteOffload:
             update={"_session_cost_usd": 0.25},
             rollback=MagicMock(),
             commit=MagicMock(),
+            delta_usd=0.25,
             records=[],
         )
 
@@ -1070,6 +1133,7 @@ class TestExecuteOffload:
             update={"_session_cost_usd": 0.25},
             rollback=MagicMock(),
             commit=MagicMock(),
+            delta_usd=0.25,
             records=[],
         )
 

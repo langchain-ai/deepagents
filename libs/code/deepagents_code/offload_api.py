@@ -431,14 +431,18 @@ async def _write_landed(
     client: Any,  # noqa: ANN401  # untyped LangGraph SDK client
     thread_id: str,
     checkpoint_id: str,
-) -> bool:
-    """Report whether the thread advanced past the checkpoint we read.
+) -> Literal["advanced", "unchanged", "unreadable"]:
+    """Classify a failed `update_state` against the checkpoint we read.
 
-    Used only to disambiguate a failed `update_state`: a new checkpoint means
-    the write most likely applied despite the error. A concurrent run could
-    also have advanced the thread, so this is a bias, not a proof -- it biases
-    toward keeping cost records claimed (understating spend at worst) over
-    restoring them (which would double-charge).
+    A new checkpoint means the write most likely applied despite the error. A
+    concurrent run could also have advanced the thread, so this is a bias, not a
+    proof -- it biases toward keeping cost records claimed (understating spend at
+    worst) over restoring them (which would double-charge).
+
+    `unreadable` is reported separately from `advanced` so the caller can say
+    which one happened. Both keep the records claimed, but only `advanced` has
+    evidence the write landed; conflating them would log a thread advance that
+    was never observed.
 
     Args:
         client: In-process LangGraph SDK client.
@@ -446,11 +450,11 @@ async def _write_landed(
         checkpoint_id: Checkpoint the operation read and validated against.
 
     Returns:
-        `True` if the thread's checkpoint changed or could not be read.
+        `advanced` if the checkpoint changed, `unchanged` if it did not, or
+            `unreadable` if the thread could not be read back.
     """
     try:
         current = await client.threads.get_state(thread_id)
-        return _checkpoint_id(current) != checkpoint_id
     except BaseException:
         # `BaseException`, not `Exception`: this runs inside the caller's
         # settlement handler, so an escape here -- a `CancelledError` from a
@@ -464,7 +468,8 @@ async def _write_landed(
             "Could not read thread %s back to classify a failed offload write",
             thread_id,
         )
-        return True
+        return "unreadable"
+    return "advanced" if _checkpoint_id(current) != checkpoint_id else "unchanged"
 
 
 async def _commit_state_update(
@@ -483,13 +488,30 @@ async def _commit_state_update(
     try:
         await client.threads.update_state(thread_id, update)
     except BaseException as exc:
-        if await _write_landed(client, thread_id, checkpoint_id):
-            logger.exception(
-                "Offload state write for thread %s failed after the thread "
-                "advanced; keeping %d cost record(s) claimed",
-                thread_id,
-                len(prepared.records),
-            )
+        outcome = await _write_landed(client, thread_id, checkpoint_id)
+        if outcome != "unchanged":
+            if outcome == "advanced":
+                logger.exception(
+                    "Offload state write for thread %s failed after the thread "
+                    "advanced past checkpoint %s; keeping %d cost record(s) "
+                    "claimed",
+                    thread_id,
+                    checkpoint_id,
+                    len(prepared.records),
+                )
+            else:
+                # Distinct from `advanced`: no thread advance was observed, so
+                # the write may never have landed. Naming the amount makes an
+                # otherwise undetectable loss auditable.
+                logger.exception(
+                    "Offload state write for thread %s failed and the thread "
+                    "could not be read back; keeping %d cost record(s) claimed "
+                    "to avoid double-charging, so $%.6f may be lost from the "
+                    "thread total",
+                    thread_id,
+                    len(prepared.records),
+                    prepared.delta_usd,
+                )
             # Deliberately settled rather than rolled back: the delta is
             # treated as persisted, so restoring the records would double-charge
             # the next drain.

@@ -57,12 +57,20 @@ class PromptClipboardScreen(ModalScreen[str | None]):
 
     CSS_PATH = "prompt_clipboard.tcss"
 
-    def __init__(self, prompts: tuple[str, ...]) -> None:
-        """Initialize the modal with a newest-first prompt snapshot."""
+    def __init__(self, prompts: tuple[str, ...], initial_query: str = "") -> None:
+        """Initialize the modal with a newest-first prompt snapshot.
+
+        Args:
+            prompts: Unique prompts, newest first.
+            initial_query: Filter text to seed the search input with, used when
+                escalating from the inline search panel so the typed query
+                carries over.
+        """
         super().__init__()
         self._prompts = prompts
         self._filtered = list(prompts)
         self._filter_value = ""
+        self._initial_query = initial_query
         self._selected_index = 0
         self._rows: list[_PromptRow] = []
 
@@ -90,8 +98,15 @@ class PromptClipboardScreen(ModalScreen[str | None]):
 
     async def on_mount(self) -> None:
         """Render the initial rows and focus search."""
+        if self._initial_query:
+            search = self.query_one("#prompt-filter", Input)
+            search.value = self._initial_query
+            self._apply_filter(self._initial_query)
         await self._render_rows()
-        self.query_one("#prompt-filter", Input).focus()
+        search = self.query_one("#prompt-filter", Input)
+        search.focus()
+        if self._initial_query:
+            search.cursor_position = len(self._initial_query)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Filter prompts using the current search value."""

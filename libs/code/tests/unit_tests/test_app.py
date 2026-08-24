@@ -40599,6 +40599,10 @@ class TestPromptClipboard:
             text_area.insert("hello world")
             text_area.move_cursor((0, len("hello ")))
 
+            # First Ctrl+R opens the inline panel; a second escalates to the
+            # full modal.
+            await pilot.press("ctrl+r")
+            await pilot.pause()
             await pilot.press("ctrl+r")
             await pilot.pause()
             assert isinstance(app.screen, PromptClipboardScreen)
@@ -40648,6 +40652,8 @@ class TestPromptClipboard:
                 chat_input, "recent_prompts", lambda: ("copy this prompt",)
             )
 
+            await pilot.press("ctrl+r")
+            await pilot.pause()
             await pilot.press("ctrl+r")
             await pilot.pause()
             screen = cast("PromptClipboardScreen", app.screen)
@@ -40711,6 +40717,8 @@ class TestPromptClipboard:
                 chat_input, "recent_prompts", lambda: ("newest", "older")
             )
 
+            await pilot.press("ctrl+r")
+            await pilot.pause()
             await pilot.press("ctrl+r")
             await pilot.pause()
             screen = cast("PromptClipboardScreen", app.screen)

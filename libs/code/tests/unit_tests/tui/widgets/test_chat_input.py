@@ -7413,3 +7413,190 @@ class TestPasteCollapseIntegration:
             await pilot.pause()
 
             assert 1 in chat._pasted_contents
+
+
+class TestPromptSearchPanel:
+    """Inline prompt history search (first Ctrl+R tier)."""
+
+    def _seed_history(self, chat: ChatInput, prompts: list[str]) -> None:
+        for prompt in prompts:
+            chat._history.add(prompt)
+
+    async def test_ctrl_r_opens_inline_panel_above_input(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchPanel
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt", "second prompt"])
+            await pilot.pause()
+
+            tier = chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert tier == "inline"
+            panel = app.query_one(PromptSearchPanel)
+            assert panel.styles.display == "block"
+            assert chat._prompt_search_active is True
+            # Draft is untouched while searching
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+
+    async def test_second_ctrl_r_escalates_to_modal(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt"])
+            await pilot.pause()
+
+            assert chat.open_prompt_search() == "inline"
+            await pilot.pause()
+            assert chat.open_prompt_search() == "modal"
+            query = chat.escalate_prompt_search()
+            await pilot.pause()
+
+            assert query == ""
+            assert chat._prompt_search_active is False
+
+    async def test_typing_filters_results(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchPanel
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["fix the bug", "add feature", "fix tests"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            for char in "fix":
+                await pilot.press(char)
+            await pilot.pause()
+            await pilot.pause()
+
+            # newest-first order, both "fix" prompts retained
+            assert chat._prompt_search_filtered == ["fix tests", "fix the bug"]
+            panel = app.query_one(PromptSearchPanel)
+            assert panel.styles.display == "block"
+
+    async def test_enter_inserts_selected_prompt(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["older prompt", "newest prompt"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            # newest-first: index 0 is "newest prompt"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat._text_area is not None
+            assert chat._text_area.text == "newest prompt"
+
+    async def test_escape_restores_draft(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["some prompt"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("my draft")
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            # Type a query (does not touch the draft)
+            await pilot.press("x")
+            await pilot.pause()
+            assert chat._text_area.text == "my draft"
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat._text_area.text == "my draft"
+
+    async def test_typing_does_not_enter_textarea(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            await pilot.press("h")
+            await pilot.pause()
+
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+            assert chat._prompt_search_query == "h"
+
+    async def test_arrow_navigation_moves_selection(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["one", "two", "three"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 0
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._prompt_search_index == 1
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+    async def test_backspace_on_empty_query_cancels(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("draft")
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat._text_area.text == "draft"
+
+    async def test_completion_active_routes_to_modal(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            # Simulate an active completion popup
+            chat._current_suggestions = [("/help", "Show help")]
+            assert chat.open_prompt_search() == "modal"

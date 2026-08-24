@@ -21711,9 +21711,30 @@ class DeepAgentsApp(App):
         )
 
     def action_open_prompt_clipboard(self) -> None:
-        """Open searchable local prompt history without blocking the message pump."""
+        """Open prompt history: inline panel first, full modal on a second press.
+
+        The first Ctrl+R opens the composer's inline search panel; pressing
+        Ctrl+R again while that panel is open escalates to the full
+        `PromptClipboardScreen`. The modal opens directly when the inline tier
+        is unavailable (autocomplete open or composer missing), so the chord
+        never dead-ends.
+        """
         if self._prompt_clipboard_blocked():
             return
+        chat_input = self._chat_input
+        if chat_input is None:
+            return
+
+        tier = chat_input.open_prompt_search()
+        if tier in {"inline", "noop"}:
+            return
+
+        # Escalating from the inline panel carries the typed query into the
+        # modal's filter and leaves the draft as the user had it.
+        self._open_prompt_clipboard_modal(chat_input.escalate_prompt_search())
+
+    def _open_prompt_clipboard_modal(self, initial_query: str = "") -> None:
+        """Open the full searchable prompt history modal."""
         chat_input = self._chat_input
         if chat_input is None:
             return
@@ -21732,7 +21753,9 @@ class DeepAgentsApp(App):
             self.call_after_refresh(apply_result)
 
         self.push_screen(
-            PromptClipboardScreen(chat_input.recent_prompts()),
+            PromptClipboardScreen(
+                chat_input.recent_prompts(), initial_query=initial_query
+            ),
             handle_result,
         )
 
@@ -23210,8 +23233,11 @@ class DeepAgentsApp(App):
         reverts to the active screen's own handling. Depending on the screen that
         is either a competing screen binding or default key handling:
 
-        - `open_prompt_clipboard` (`ctrl+r`): every modal and inline prompt keeps
+        - `open_prompt_clipboard` (`ctrl+r`): modals and inline prompts keep
             ownership of the chord, including selectors with their own Ctrl+R.
+            The one deliberate pass-through is the composer's inline prompt
+            search panel: it is not a screen, so the key reaches the app
+            action, which lets a second Ctrl+R escalate to the full modal.
         - `open_notifications` (`ctrl+n`): `ModelSelectorScreen` has its own
             priority `ctrl+n -> toggle_names` binding that then wins.
         - `toggle_auto_approve` (`shift+tab`): `DebugConsoleScreen` has no

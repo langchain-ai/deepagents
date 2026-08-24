@@ -210,6 +210,94 @@ def test_no_hand_rolled_ui_config_readers() -> None:
     )
 
 
+# Readers that resolve an option but deliberately emit no ranked diagnostics.
+# Each reports source health through its own channel: `dcode config` prints
+# provenance per option, `dcode doctor` reports file health, and the managed
+# validators inspect a candidate generation that is not yet in force. All five
+# went through the non-emitting `resolve_ranked_scalar` before it was retired.
+_SILENT_RESOLVER_READERS = frozenset(
+    {
+        # The shared resolution primitive, not a reader: it returns the
+        # `ResolvedValue` and each caller emits against it.
+        "config_manifest.py:_resolve_option",
+        "client/commands/config.py:_option_provenance",
+        "configuration/service.py:resolve_managed_option",
+        "integrations/sandbox_config.py:load",
+        "theme.py:_load_user_themes",
+        "update_check.py:_resolve_update_setting",
+    }
+)
+
+
+def test_resolver_reads_emit_ranked_diagnostics() -> None:
+    """A function that resolves an option must also report what was rejected.
+
+    `resolve_scalar` emitted diagnostics itself, so no caller could forget
+    them. Retiring it turned that guarantee into a two-line convention repeated
+    at every reader, and the convention was dropped once already
+    (`_save_ui_bool_result`, fixed in f6c6c8196): a malformed managed entry
+    stopped being reported anywhere, removing the only signal an administrator
+    has that their policy is inert.
+
+    The failure is invisible at runtime -- the value falls back to the default
+    and nothing is logged -- so it needs a structural guard rather than a
+    behavioral one. Readers that report health through another channel are
+    listed in `_SILENT_RESOLVER_READERS`; adding to that set should be a
+    deliberate act with a reason.
+    """
+    import ast
+    from pathlib import Path
+
+    from deepagents_code import config_manifest
+
+    package_root = Path(config_manifest.__file__).parent
+    silent: set[str] = set()
+    for source in sorted(package_root.rglob("*.py")):
+        text = source.read_text(encoding="utf-8")
+        if "get_config_resolver" not in text and "resolver_from_snapshots" not in text:
+            continue
+        for function in ast.walk(ast.parse(text)):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            builds_resolver = any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in {"get_config_resolver", "resolver_from_snapshots"}
+                for node in ast.walk(function)
+            )
+            # `.get(option)` on the resolver, whether chained onto the
+            # constructor or reached through a local binding.
+            reads_option = any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                for node in ast.walk(function)
+            )
+            if not (builds_resolver and reads_option):
+                continue
+            # A *call*, not the name: these readers import the helper inside
+            # the function, so a substring check passes even after the call
+            # itself is deleted.
+            emits = any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_emit_ranked_diagnostics"
+                for node in ast.walk(function)
+            )
+            if emits:
+                continue
+            relative = source.relative_to(package_root).as_posix()
+            silent.add(f"{relative}:{function.name}")
+
+    assert silent == _SILENT_RESOLVER_READERS, (
+        "Resolver readers that emit no diagnostics: "
+        f"{sorted(silent - _SILENT_RESOLVER_READERS)}. Call "
+        "`_emit_ranked_diagnostics(option, resolved)` after resolving, or add "
+        "the reader to `_SILENT_RESOLVER_READERS` with the channel it reports "
+        "health through instead."
+    )
+
+
 # Six `app.py` display toggles plus `display.show_usage_stats` in
 # `_session_stats.py`. The `app.py` wrapper forwards variables, not literals,
 # so it is deliberately not counted. Exact, not a floor — see the test.

@@ -1093,39 +1093,25 @@ def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":
 
 
 def _resolved_recursion_limit(args: argparse.Namespace) -> int | None:
-    """Return the explicit `--recursion-limit`, or `None` to defer resolution.
+    """Defer recursion-limit resolution to the agent-build resolver.
 
     `None` lets the agent-build path call `resolve_recursion_limit()` itself,
     which reads the shared resolver — CLI provider included since
-    `_install_cli_provider` ran at startup — and applies the same env/TOML/
-    managed/default chain. Pre-resolving here would flatten that tri-state:
-    callers like `create_cli_agent` treat `None` as "not set" and would
-    otherwise receive the typed default (2000) indistinguishable from an
-    explicit override.
+    `_install_cli_provider` ran at startup — and applies the same managed/env/
+    TOML/default chain. Forwarding the raw flag here would bypass that chain:
+    `create_cli_agent` uses any non-`None` argument directly, so an explicit
+    `--recursion-limit` would win over a managed `runtime.recursion_limit`
+    even though managed policy structurally masks CLI values.
 
-    An explicit-but-invalid flag value (below the floor or above the ceiling)
-    is discarded with a warning so the lower tiers still apply, matching the
-    resolver's fall-through rule for bad env and TOML values.
+    Range-checking likewise belongs to the resolver: argparse constrains the
+    flag to positive ints, and `resolve_recursion_limit` discards an
+    out-of-range winner with a warning so lower tiers still apply.
+
+    Returns:
+        Always `None`.
     """
-    raw = getattr(args, "recursion_limit", None)
-    if raw is None:
-        return None
-    from deepagents_code.config_manifest import (
-        RECURSION_LIMIT_CEILING,
-        RECURSION_LIMIT_FLOOR,
-        is_valid_recursion_limit,
-    )
-
-    if not is_valid_recursion_limit(raw):
-        logger.warning(
-            "Ignoring --recursion-limit=%r (expected int in [%d, %d]); "
-            "falling through to the next config source",
-            raw,
-            RECURSION_LIMIT_FLOOR,
-            RECURSION_LIMIT_CEILING,
-        )
-        return None
-    return raw
+    _ = args
+    return None
 
 
 def _resolve_auto_approve(args: argparse.Namespace) -> bool:

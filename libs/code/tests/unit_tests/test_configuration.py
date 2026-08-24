@@ -3417,11 +3417,17 @@ def test_managed_shell_allow_list_masks_the_cli_grant(
     assert args.shell_allow_list == "all"
 
 
-def test_managed_recursion_limit_is_range_checked_before_it_wins(
+def test_managed_recursion_limit_masks_the_cli_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A valid managed limit is applied; the resolver alone never bounds it."""
+    """A managed limit wins even when `--recursion-limit` is explicit.
+
+    Regression: `_resolved_recursion_limit` forwarded the raw flag, and
+    `create_cli_agent` uses any non-`None` argument directly, so the managed
+    value was never consulted. Deferring with `None` lets agent-build
+    resolution apply the full managed → CLI → env → TOML → default chain.
+    """
     from deepagents_code import main
     from deepagents_code.config_manifest import resolve_recursion_limit
     from deepagents_code.configuration import service
@@ -3433,19 +3439,49 @@ def test_managed_recursion_limit_is_range_checked_before_it_wins(
     args = _managed_policy_args()
     try:
         main._resolver_for_args(args)
-        # No CLI flag: main defers, and the managed value wins at build time.
+        # No CLI flag: the managed value wins at build time.
         assert main._resolved_recursion_limit(args) is None
         assert resolve_recursion_limit() == 500
-        # A valid user flag stays in force only below managed policy: the
-        # launcher forwards the explicit value, but agent-build resolution
-        # (resolver-backed) still applies the managed 500.
+        # An explicit flag defers too: the resolver sees it through the
+        # installed CLI provider, and the managed tier masks it.
         args.recursion_limit = 75
-        assert main._resolved_recursion_limit(args) == 75
-        # An out-of-range flag is discarded so lower tiers still apply.
-        args.recursion_limit = 3
         assert main._resolved_recursion_limit(args) is None
+        assert resolve_recursion_limit() == 500
     finally:
         service.invalidate_config_sources()
+
+
+def test_cli_recursion_limit_outranks_user_toml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unmanaged `--recursion-limit` still masks the user config.
+
+    The launcher always defers, so the flag reaches the runtime through the
+    installed CLI provider rather than a forwarded value; only the managed
+    tier masks it.
+    """
+    from deepagents_code import main, model_config
+    from deepagents_code.config_manifest import resolve_recursion_limit
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("[runtime]\nrecursion_limit = 42\n", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    args = _managed_policy_args()
+    args.recursion_limit = 75
+    try:
+        main._resolver_for_args(args)
+        assert main._resolved_recursion_limit(args) is None
+        assert resolve_recursion_limit() == 75
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
 
 
 @pytest.mark.parametrize(

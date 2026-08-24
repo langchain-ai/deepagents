@@ -8,12 +8,18 @@ import sys
 import threading
 from types import ModuleType, SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
+
+
+@pytest.fixture(autouse=True)
+def _disable_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep user extension code out of server graph unit tests."""
+    monkeypatch.setenv("DEEPAGENTS_CODE_EXTENSIONS", "0")
 
 
 def _import_fresh_server_graph() -> ModuleType:
@@ -404,6 +410,7 @@ class TestServerGraph:
             rubric_grader_tools=[fetch_tool, web_tool, mcp_tool],
             model_retries=5,
             cli_max_retries=3,
+            extension_registry=ANY,
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:

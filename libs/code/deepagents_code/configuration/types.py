@@ -51,6 +51,15 @@ class ProviderStatus:
     path: Path | None
     health: ProviderHealth
     detail: str | None = None
+    remote_source: str | None = None
+    """Validated URL this status came from, when `path` is only a trust anchor.
+
+    A remote managed policy reports the *local* descriptor file as its `path`,
+    because that is the file an operator can edit. Without this field an error
+    renders as "repair or remove" that file, which is not broken -- and
+    removing it drops all policy. Set only after `_validate_remote_url`
+    accepts the URL, so a rejected source is never echoed back.
+    """
 
     @property
     def usable(self) -> bool:

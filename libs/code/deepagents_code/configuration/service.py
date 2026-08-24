@@ -528,6 +528,18 @@ class ManagedConfigError(RuntimeError):
                     f"Managed config location could not be determined{detail}. "
                     "Ask your administrator to verify the managed-config path."
                 )
+            elif status.remote_source is not None:
+                # Same reasoning one step out: the local file is a trust anchor
+                # holding a URL, so it is not what needs repairing, and
+                # removing it would drop policy entirely. Name the URL that
+                # failed -- `_validate_remote_url` has already guaranteed it
+                # carries no credentials, query string, or fragment.
+                message = (
+                    f"Managed config at {path} points to "
+                    f"{status.remote_source}, which is "
+                    f"{status.health.value}{detail}. Ask your administrator to "
+                    "verify that the managed-config source is reachable."
+                )
             else:
                 message = (
                     f"Managed config at {path} is {status.health.value}{detail}. "

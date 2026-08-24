@@ -654,6 +654,70 @@ def test_remote_descriptor_source_is_the_url_fetched(
     assert service.get_managed_snapshot().data == {"startup": {"mode": "manual"}}
 
 
+def test_remote_failure_names_the_url_not_the_trust_anchor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A remote outage blames the URL, never "repair or remove" the anchor.
+
+    The local file holds only the source, so it is not broken, and removing it
+    would drop all policy. The URL is safe to print: validation has already
+    rejected credentials, query strings, and fragments.
+    """
+    from deepagents_code.configuration import providers, service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+
+    failure = URLError("dns failed")
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            raise failure
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    service.invalidate_config_sources()
+
+    with pytest.raises(ManagedConfigError) as caught:
+        require_healthy_managed_config(refresh=True)
+
+    message = str(caught.value)
+    assert "https://config.example.com/policy.toml" in message
+    assert "managed-config source is reachable" in message
+    assert "repair or remove" not in message
+    assert "dns failed" not in message
+
+
+def test_rejected_remote_url_is_never_echoed_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source rejected by validation stays out of operator-visible text.
+
+    `remote_source` is set only after `_validate_remote_url` accepts the URL,
+    so a descriptor carrying a query token cannot leak it through the error.
+    """
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/p.toml?t=secret"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+    invalidate_config_sources()
+
+    with pytest.raises(ManagedConfigError) as caught:
+        require_healthy_managed_config(refresh=True)
+
+    message = str(caught.value)
+    assert "secret" not in message
+    assert "query string" in message
+
+
 def test_failed_remote_reload_keeps_previous_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

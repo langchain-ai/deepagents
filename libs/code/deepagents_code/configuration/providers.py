@@ -549,13 +549,18 @@ def _remote_status(
     path: Path | None,
     health: ProviderHealth,
     detail: str,
+    source: str | None = None,
 ) -> TomlSnapshot:
     """Build an empty snapshot with safe remote-source diagnostics.
+
+    `source` is the validated URL, or `None` before validation accepted one --
+    a rejected source may carry the very query token the detail strings are
+    written to keep out of operator-visible text.
 
     Returns:
         An unhealthy snapshot carrying no policy data.
     """
-    return TomlSnapshot({}, ProviderStatus(name, path, health, detail))
+    return TomlSnapshot({}, ProviderStatus(name, path, health, detail, source))
 
 
 def _validate_remote_url(source: str) -> str:
@@ -712,6 +717,7 @@ def _parse_remote_toml(
     *,
     name: str,
     path: Path | None,
+    source: str,
 ) -> TomlSnapshot:
     """Parse one remote policy body into a managed snapshot.
 
@@ -726,6 +732,7 @@ def _parse_remote_toml(
             path,
             ProviderHealth.CORRUPT,
             "remote source is not UTF-8",
+            source,
         )
     except tomllib.TOMLDecodeError:
         return _remote_status(
@@ -733,6 +740,7 @@ def _parse_remote_toml(
             path,
             ProviderHealth.CORRUPT,
             "remote source contains invalid TOML",
+            source,
         )
     if "managed_config" in data:
         return _remote_status(
@@ -740,8 +748,12 @@ def _parse_remote_toml(
             path,
             ProviderHealth.CORRUPT,
             "remote policy must not declare [managed_config]",
+            source,
         )
-    return TomlSnapshot(data, ProviderStatus(name, path, ProviderHealth.OK))
+    return TomlSnapshot(
+        data,
+        ProviderStatus(name, path, ProviderHealth.OK, None, source),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -795,6 +807,7 @@ class RemoteTomlProvider:
                 self.path,
                 ProviderHealth.UNREADABLE,
                 detail,
+                source,
             )
         except TimeoutError:
             return _remote_status(
@@ -802,6 +815,7 @@ class RemoteTomlProvider:
                 self.path,
                 ProviderHealth.UNREADABLE,
                 "remote source timed out",
+                source,
             )
         except (HTTPException, URLError, OSError):
             # `http.client.HTTPException` derives from `Exception`, not
@@ -815,6 +829,7 @@ class RemoteTomlProvider:
                 self.path,
                 ProviderHealth.UNREADABLE,
                 "remote source could not be read",
+                source,
             )
         except ValueError as exc:
             return _remote_status(
@@ -822,8 +837,14 @@ class RemoteTomlProvider:
                 self.path,
                 ProviderHealth.CORRUPT,
                 str(exc),
+                source,
             )
-        return _parse_remote_toml(payload, name=self.name, path=self.path)
+        return _parse_remote_toml(
+            payload,
+            name=self.name,
+            path=self.path,
+            source=source,
+        )
 
 
 @dataclass(slots=True)

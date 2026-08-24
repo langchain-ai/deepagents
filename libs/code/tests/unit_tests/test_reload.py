@@ -3156,6 +3156,44 @@ class TestConfigGenerationAdvancesOnlyOnReload:
         )
 
 
+class TestClearCachesDropsEveryConfigView:
+    """`clear_caches` must drop every module cache holding `config.toml`.
+
+    `[threads]` is cached separately from the `[models]` snapshot, and its read
+    path deliberately has no invalidator -- so `clear_caches` is the only thing
+    standing between a `/reload` and a value frozen for the process lifetime.
+    The four in-app thread writers invalidate it themselves, which is why
+    dropping it here regressed only hand edits and left the suite green.
+    """
+
+    def test_reload_picks_up_a_hand_edited_thread_setting(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A `[threads]` hand edit takes effect once caches are cleared."""
+        from deepagents_code.model_config import clear_caches, load_thread_config
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[threads]\nsort_order = "created_at"\n', encoding="utf-8"
+        )
+        # Populates `_thread_config_cache`; only `load_thread_config` reads it.
+        assert load_thread_config().sort_order == "created_at"
+
+        config_path.write_text(
+            '[threads]\nsort_order = "updated_at"\n', encoding="utf-8"
+        )
+        assert load_thread_config().sort_order == "created_at", (
+            "a hand edit must not change a value mid-session"
+        )
+
+        clear_caches()
+
+        assert load_thread_config().sort_order == "updated_at", (
+            "`clear_caches` must invalidate the thread config cache"
+        )
+
+
 class TestDiagnosticDedupIsPerGeneration:
     """A repeated `/reload` of a still-broken file must keep reporting it.
 

@@ -1034,6 +1034,11 @@ def clear_caches() -> None:
     _ollama_model_profiles_cache.clear()
     _profiles_cache = None
     _profiles_override_cache = None
+    # The thread config cache holds `[threads]` from the same file. Its read
+    # path deliberately has no invalidator (see `load_thread_config`), so
+    # `/reload` is the only thing that picks up a hand edit -- dropping this
+    # call left one cache serving the pre-reload file for the process lifetime.
+    invalidate_thread_config_cache()
 
 
 def _invalidate_config_caches(config_path: Path) -> None:

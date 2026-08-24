@@ -496,6 +496,53 @@ def test_rejected_managed_reload_keeps_last_enforceable_snapshot(
         service.invalidate_config_sources()
 
 
+def test_real_manifest_options_merge_across_tiers() -> None:
+    """Managed policy must compose with the user tier, not replace it.
+
+    `MergeStrategy` is declared per option in the manifest, and the other merge
+    tests use synthetic providers -- so nothing else pins the wiring for a real
+    option. A `UNION` deny-list flipped to `REPLACE` would silently drop every
+    user entry the moment an administrator denies one server, and a
+    `DEEP_MERGE` table flipped the same way would drop the user's sibling
+    columns. Both read as "policy applied" rather than as data loss.
+    """
+    managed = TomlSnapshot(
+        {
+            "startup": {"mode": "manual"},
+            "mcp": {"disabled_servers": ["alpha"]},
+            "threads": {"columns": {"title": {"width": 10}}},
+        },
+        ProviderStatus("managed config", None, ProviderHealth.OK),
+    )
+    user = TomlSnapshot(
+        {
+            "startup": {"mode": "auto"},
+            "mcp": {"disabled_servers": ["beta"]},
+            "threads": {"columns": {"summary": {"width": 30}}},
+        },
+        ProviderStatus("config.toml", None, ProviderHealth.OK),
+    )
+    resolved = resolver_from_snapshots(managed, user).resolve_all()
+
+    # A REPLACE scalar is the control: the stronger rank wins outright.
+    startup = resolved["startup.mode"]
+    assert startup.value == "manual"
+    assert startup.ranks == (MANAGED_RANK,)
+
+    # A deny-list union keeps every tier's contribution rather than letting the
+    # stronger rank replace the weaker one.
+    disabled = resolved["mcp.disabled_servers"]
+    assert set(disabled.ranks) == {MANAGED_RANK, USER_RANK}
+    assert isinstance(disabled.value, list)
+    assert set(disabled.value) == {"alpha", "beta"}
+
+    # A deep merge composes sibling leaves from both tiers.
+    columns = resolved["threads.columns"]
+    assert set(columns.ranks) == {MANAGED_RANK, USER_RANK}
+    assert isinstance(columns.value, dict)
+    assert set(columns.value) == {"title", "summary"}
+
+
 def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> None:
     """Building `Settings` must not drag the theme registry onto the hot path.
 

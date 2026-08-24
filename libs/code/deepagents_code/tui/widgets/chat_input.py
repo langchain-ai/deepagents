@@ -636,6 +636,12 @@ class ChatTextArea(PasteBurstTextArea):
         self._line_cache.clear()
         self.refresh()
 
+    def on_focus(self) -> None:
+        """Keep an open prompt search focused when the composer is clicked."""
+        owner = self._chat_input_owner
+        if owner is not None and owner._prompt_search_active:
+            owner.focus_input()
+
     def _render_line(self, y: int) -> Strip:
         """Render a line, keeping shell token colors visible on the cursor line.
 

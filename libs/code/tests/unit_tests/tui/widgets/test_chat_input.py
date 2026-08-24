@@ -7760,6 +7760,32 @@ class TestPromptSearchPanel:
 
             assert isinstance(app.focused, PromptSearchInput)
 
+    async def test_clicking_composer_keeps_query_focus(self, tmp_path: Path) -> None:
+        """Clicking the frozen draft must not strand prompt-search keys."""
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            assert chat._text_area is not None
+            await pilot.click(chat._text_area)
+            await pilot.pause()
+
+            assert isinstance(app.focused, PromptSearchInput)
+            await pilot.press("h")
+            await pilot.pause()
+            assert chat._prompt_search_query == "h"
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert chat._prompt_search_active is False
+
     async def test_selection_past_first_page_stays_mounted_and_visible(
         self, tmp_path
     ) -> None:

@@ -8724,6 +8724,11 @@ class DeepAgentsApp(App):
             return 0
 
         old_scroll_y = chat.scroll_y
+        keep_at_bottom = (
+            above
+            and self._history_prefetch_active
+            and chat.scroll_y >= chat.max_scroll_y
+        )
         rows = reversed(to_hydrate) if above else iter(to_hydrate)
         entries = [self._build_hydration_entry(data) for data in rows]
         if above:
@@ -8746,7 +8751,10 @@ class DeepAgentsApp(App):
         self._schedule_message_height_measurements(hydrated_ids)
         self._sync_transcript_spacers(messages_container)
         self._schedule_transcript_prune("below" if above else "above")
-        chat.scroll_y = old_scroll_y
+        if keep_at_bottom:
+            chat.scroll_end(animate=False)
+        else:
+            chat.scroll_y = old_scroll_y
         await self._regroup_completed_tools()
         return len(entries)
 

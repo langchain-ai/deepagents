@@ -36471,7 +36471,7 @@ class TestResumeScrollPosition:
                     content=f"message {index}",
                     id=f"resume-message-{index}",
                 )
-                for index in range(20)
+                for index in range(50)
             ],
             context_tokens=0,
             model_spec="",
@@ -36491,13 +36491,21 @@ class TestResumeScrollPosition:
             chat = app.query_one("#chat", _ChatScroll)
             for _ in range(20):
                 await pilot.pause()
-                if chat.max_scroll_y > 0 and chat.scroll_y == chat.max_scroll_y:
+                if (
+                    app._message_store.visible_count == 51
+                    and not app._history_prefetch_active
+                    and chat.max_scroll_y > 0
+                    and chat.scroll_y == chat.max_scroll_y
+                ):
                     break
 
+            assert app._message_store.visible_count == 51
+            assert not app._history_prefetch_active
             assert chat.max_scroll_y > 0
             assert chat.scroll_y == chat.max_scroll_y
-            # Resume reaches the bottom via a one-shot scroll, not bottom-follow
-            # (see `DeepAgentsApp.on_mount`).
+            # Resume reaches the bottom via refresh-deferred scrolls during the
+            # initial tail load and prefetch, not bottom-follow (see
+            # `DeepAgentsApp.on_mount`).
             assert not chat.is_anchored
 
 

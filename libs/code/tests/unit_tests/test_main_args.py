@@ -253,13 +253,162 @@ class TestYoloAcknowledgement:
         assert console.print.called
 
 
-class TestAutoApproveHeadlessValidation:
-    """Tests that headless mode rejects the interactive approval flag."""
+class TestHeadlessApprovalFlagHandling:
+    """Headless handling of the approval flags, which is deliberately split.
 
-    def test_rejects_explicit_non_interactive_mode(
+    `--auto-approve`/`--yolo` are ignored with a warning, because the same
+    command line is commonly reused interactive and headless. Its dependent
+    `--auto-classifier-model` still exits 2 — it has no interactive-reuse case,
+    so a silent no-op there would only hide a typo. Both dispositions live here.
+    """
+
+    @pytest.mark.parametrize(
+        ("argv", "piped_stdin", "flag", "managed_toml"),
+        [
+            (
+                ["deepagents", "-y", "-n", "do the thing"],
+                None,
+                "--auto-approve",
+                None,
+            ),
+            (
+                ["deepagents", "--auto-approve"],
+                "do the thing",
+                "--auto-approve",
+                None,
+            ),
+            (["deepagents", "--yolo", "-n", "task"], None, "--yolo", None),
+            (
+                ["deepagents", "--auto-approve", "-n", "task"],
+                None,
+                "--auto-approve",
+                '[startup]\nmode = "manual"\n',
+            ),
+            (
+                ["deepagents", "--yolo", "-n", "task"],
+                None,
+                "--yolo",
+                '[startup]\nmode = "manual"\n',
+            ),
+        ],
+        ids=[
+            "explicit-headless",
+            "piped-stdin",
+            "yolo",
+            "managed-manual-auto-approve",
+            "managed-manual-yolo",
+        ],
+    )
+    def test_headless_mode_ignores_interactive_approval_flag_with_warning(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        argv: list[str],
+        piped_stdin: str | None,
+        flag: str,
+        managed_toml: str | None,
+    ) -> None:
+        """The run must complete (exit 0), not abort as it did before.
+
+        `_resolve_interpreter_enabled` is patched as a probe, snapshotting the
+        flags *during* the call, so the assertion pins that they are cleared
+        before mode dispatch rather than merely by the time `cli_main` returns
+        (`call_args` holds a live reference to the mutated namespace, so a
+        post-dispatch clear would still look green).
+
+        The managed-policy cases cover the flag the user typed surviving
+        `_apply_managed_runtime_policy` revoking it: the warning keys off a
+        parse-time capture, so it must still fire.
+        """
+        from deepagents_code.main import cli_main
+
+        if managed_toml is not None:
+            from deepagents_code.configuration import service
+            from unit_tests.conftest import redirect_managed_config
+
+            managed = tmp_path / "managed.toml"
+            managed.write_text(managed_toml, encoding="utf-8")
+            redirect_managed_config(monkeypatch, managed)
+            service.invalidate_config_sources()
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = piped_stdin is None
+        mock_stdin.read.return_value = piped_stdin
+        seen: dict[str, object] = {}
+        resolve_interpreter = MagicMock(
+            side_effect=lambda ns: (
+                seen.update(auto_approve=ns.auto_approve, yolo=ns.yolo) or False
+            )
+        )
+        # Scoped to `/dev/tty`: a blanket `os.open` failure also disables the
+        # fail-closed guard in `_prepare_debug_file`, which then floods the
+        # stderr this test asserts on (reachable whenever DEEPAGENTS_CODE_DEBUG
+        # is set, e.g. from a developer's ~/.deepagents/.env).
+        real_open = os.open
+        no_tty = OSError("No controlling terminal")
+
+        def _open_no_tty(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            if os.fsdecode(path) == "/dev/tty":
+                raise no_tty
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("os.open", side_effect=_open_no_tty),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled",
+                resolve_interpreter,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        raw = capsys.readouterr().err
+        # Asserted on the *raw* stream, not whitespace-normalized: with the
+        # pre-existing `sys.exit(2)` gone this line is the only signal a CI job
+        # has, so it must stay greppable. Rich hard wraps at width 80 off a TTY
+        # and the break moves with the flag name, so a normalized assertion
+        # would hide a regression in the `soft_wrap` that prevents it.
+        warning = next(
+            (line for line in raw.splitlines() if "has no effect" in line), None
+        )
+        assert warning is not None, raw
+        assert (
+            warning == f"Warning: {flag} has no effect in headless mode; ignoring it. "
+            "Shell access is governed by --shell-allow-list, and MCP routing "
+            "is fail-closed."
+        )
+        assert seen == {"auto_approve": False, "yolo": False}
+
+    def test_classifier_rejection_precedes_the_approval_flag_warning(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """`-n` must reject `--auto-approve` instead of silently ignoring it."""
+        """A fatal classifier rejection must not be preceded by the warning.
+
+        `-y --auto-classifier-model X -n ...` used to print "--auto-approve has
+        no effect" and *then* exit 2 about the classifier flag — two verdicts
+        for one command line. The classifier guard now runs first, so the exit
+        is the only thing the user sees.
+        """
         from deepagents_code.main import cli_main
 
         mock_stdin = MagicMock()
@@ -268,7 +417,14 @@ class TestAutoApproveHeadlessValidation:
             patch.object(
                 sys,
                 "argv",
-                ["deepagents", "--auto-approve", "-n", "do the thing"],
+                [
+                    "deepagents",
+                    "-y",
+                    "--auto-classifier-model",
+                    "anthropic:claude-haiku-4-5",
+                    "-n",
+                    "task",
+                ],
             ),
             patch.object(sys, "stdin", mock_stdin),
             pytest.raises(SystemExit) as exc_info,
@@ -277,45 +433,8 @@ class TestAutoApproveHeadlessValidation:
 
         assert exc_info.value.code == 2
         stderr = capsys.readouterr().err
-        assert "--auto-approve is only supported in interactive mode" in stderr
-        assert "--shell-allow-list" in stderr
-
-    def test_rejects_piped_stdin_mode(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Piped stdin must reject the flag after selecting headless mode."""
-        from deepagents_code.main import cli_main
-
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = False
-        mock_stdin.read.return_value = "do the thing"
-        with (
-            patch.object(sys, "argv", ["deepagents", "--auto-approve"]),
-            patch.object(sys, "stdin", mock_stdin),
-            patch("os.open", side_effect=OSError("No controlling terminal")),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            cli_main()
-
-        assert exc_info.value.code == 2
-        stderr = capsys.readouterr().err
-        assert "--auto-approve is only supported in interactive mode" in stderr
-        assert "--shell-allow-list" in stderr
-
-    def test_rejects_yolo_in_non_interactive_mode(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from deepagents_code.main import cli_main
-
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
-        with (
-            patch.object(sys, "argv", ["deepagents", "--yolo", "-n", "task"]),
-            patch.object(sys, "stdin", mock_stdin),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            cli_main()
-
-        assert exc_info.value.code == 2
-        assert "--yolo is only supported in interactive mode" in capsys.readouterr().err
+        assert "--auto-classifier-model is only supported" in stderr
+        assert "has no effect in headless mode" not in stderr
 
     def test_rejects_auto_classifier_model_with_sandbox(
         self, capsys: pytest.CaptureFixture[str]
@@ -323,8 +442,7 @@ class TestAutoApproveHeadlessValidation:
         """Auto is disabled under a sandbox, so its classifier flag is a no-op.
 
         `create_cli_agent` turns Auto off for a sandboxed run, so accepting the
-        flag would silently ignore a setting that governs action authorization —
-        the same reason the headless form is rejected.
+        flag would silently ignore a setting that governs action authorization.
         """
         from deepagents_code.main import cli_main
 
@@ -415,11 +533,12 @@ class TestAutoApproveHeadlessValidation:
     def test_accepts_auto_approve_in_interactive_mode(self) -> None:
         """`--auto-approve` must still be honored on an interactive launch.
 
-        The guard rejects only when `args.non_interactive_message` is also set.
-        Without that conjunct it would wrongly reject `dcode -m ... -y`; this
-        pins the interactive path so a dropped conjunct fails loudly instead of
-        silently breaking the flag's primary use. Also asserts the resolved
-        value flows through to the TUI (`auto_approve=True`).
+        The guard clears the approval flags only when
+        `args.non_interactive_message` is also set. Without that conjunct it
+        would wrongly ignore `dcode -m ... -y`; this pins the interactive path
+        so a dropped conjunct fails loudly instead of silently breaking the
+        flag's primary use. Also asserts the resolved value flows through to
+        the TUI (`auto_approve=True`).
         """
         from deepagents_code.main import cli_main
 

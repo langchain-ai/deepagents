@@ -635,6 +635,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "cohere": "COHERE_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
+    "google_anthropic_vertex": "GOOGLE_CLOUD_PROJECT",
     "google_genai": "GOOGLE_API_KEY",
     "google_vertexai": "GOOGLE_CLOUD_PROJECT",
     "groq": "GROQ_API_KEY",
@@ -727,6 +728,7 @@ RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "bedrock": "max_retries",
     "deepseek": "max_retries",
     "fireworks": "max_retries",
+    "google_anthropic_vertex": "max_retries",
     "google_genai": "max_retries",
     "google_vertexai": "max_retries",
     "groq": "max_retries",
@@ -853,7 +855,9 @@ def _canonical_base_url_env(provider: str) -> str | None:
     return names[0] if names else None
 
 
-IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
+IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset(
+    {"google_anthropic_vertex", "google_vertexai"}
+)
 """Providers that support ambient auth outside app env-var checks.
 
 These providers can authenticate without the env var listed in

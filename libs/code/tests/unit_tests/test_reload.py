@@ -930,6 +930,17 @@ class TestReloadFromEnvironment:
 
         assert settings.openai_api_key == "sk-override"
 
+    def test_google_cloud_location_uses_prefixed_var(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Google Cloud location follows the standard prefixed-env precedence."""
+        monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        monkeypatch.setenv("DEEPAGENTS_CODE_GOOGLE_CLOUD_LOCATION", "us-east5")
+
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        assert settings.google_cloud_location == "us-east5"
+
     def test_preview_dotenv_shell_beats_project(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

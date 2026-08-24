@@ -105,6 +105,7 @@ tell a broken remote install from models with no published rates.
 _PROVIDER_ALIASES: dict[str, str] = {
     "azure_openai": "azure",
     "bedrock": "aws",
+    "google_anthropic_vertex": "google",
     "google_genai": "google",
     "google_vertexai": "google",
     "mistralai": "mistral",

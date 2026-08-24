@@ -164,7 +164,7 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "cohere": "Cohere",
     "deepseek": "DeepSeek",
     "fireworks": "Fireworks",
-    "google_anthropic_vertex": "Google Vertex AI (Claude)",
+    "google_anthropic_vertex": "Google Vertex AI (Anthropic)",
     "google_genai": "Google Gemini",
     "google_vertexai": "Google Vertex AI",
     "groq": "Groq",

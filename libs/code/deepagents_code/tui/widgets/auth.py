@@ -881,18 +881,15 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             if self._env_var:
                 key_meta = Static(
                     Content.assemble(
-                        "Alternatively, environment variables can be used in place "
-                        "of the key stored above. Set ",
+                        "Environment variables: ",
                         (f"DEEPAGENTS_CODE_{self._env_var}", TStyle(bold=True)),
-                        " for a dcode-only key; it has the highest priority. Set ",
+                        " (dcode only, highest priority) or ",
                         (self._env_var, TStyle(bold=True)),
-                        " to share a key with other provider SDK tools; it is used "
-                        "only when no scoped or stored key exists. After setting one "
-                        "in a .env file, press ",
+                        " (shared, lowest priority). Put either in the project .env "
+                        "or ~/.deepagents/.env; press ",
                         ("Ctrl+R", TStyle(bold=True)),
-                        " to reload without restarting. A variable exported in a "
-                        "separate shell after launch is invisible to this process; "
-                        "it needs a full relaunch. ",
+                        " in this dialog to reload. New shell exports require "
+                        "restarting dcode. ",
                         (
                             "Configuration docs",
                             self._link_style(CONFIGURATION_DOCS_URL),

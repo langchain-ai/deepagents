@@ -1799,30 +1799,21 @@ api_key_url = "javascript:alert(1)"
             assert glyphs.warning not in title_text
             assert glyphs.checkmark not in title_text
 
-    async def test_helper_text_describes_precedence(self) -> None:
-        """Helper text names both env vars and their order vs the stored key.
-
-        A stored key sits between the plain var (which it beats) and the
-        `DEEPAGENTS_CODE_`-prefixed var (which beats it). The meta line must
-        convey that ordering, not imply the three are interchangeable.
-        """
+    async def test_helper_text_describes_precedence_and_reload_location(self) -> None:
+        """Helper text names env precedence, dotenv paths, and the reload scope."""
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_prompt("openai", "OPENAI_API_KEY")
             await pilot.pause()
             meta = app.screen.query_one("#auth-prompt-key-meta", Static)
             text = str(meta.content)
-            assert "dcode stores" not in text
-            assert (
-                "Alternatively, environment variables can be used in place "
-                "of the key stored above." in text
-            )
             assert "DEEPAGENTS_CODE_OPENAI_API_KEY" in text
-            assert "dcode-only key" in text
-            assert "highest priority" in text
+            assert "dcode only, highest priority" in text
             assert "OPENAI_API_KEY" in text
-            assert "share a key with other provider SDK tools" in text
-            assert "used only when no scoped or stored key exists" in text
+            assert "shared, lowest priority" in text
+            assert "project .env or ~/.deepagents/.env" in text
+            assert "Ctrl+R in this dialog to reload" in text
+            assert "New shell exports require restarting dcode" in text
             assert "Configuration docs" in text
 
     async def test_base_url_hint_names_endpoint_var(

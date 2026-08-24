@@ -1353,6 +1353,7 @@ if TYPE_CHECKING:
     from rich.console import Console
 
     from deepagents_code._git import RepositoryMetadata
+    from deepagents_code.model_config import ModelConfig
 
     # Static type stubs for lazy module attributes resolved by __getattr__.
     # At runtime these are created on first access by _get_settings() /
@@ -4797,6 +4798,31 @@ def detect_provider(model_name: str) -> str | None:
     return None
 
 
+def _expand_allowed_entry(config: ModelConfig, entry: str) -> list[str]:
+    """Resolve one `models.allowed` entry to the model specs it admits.
+
+    An exact `provider:model` entry yields itself. A `provider:*` wildcard
+    yields the provider's configured model list, the source available before
+    allowlist filtering: registry discovery (`get_available_models`) applies
+    this policy itself, so calling it here would recurse.
+
+    Args:
+        config: The loaded model configuration.
+        entry: One entry from `config.allowed_models`.
+
+    Returns:
+        Exact specs the entry contributes as default candidates, empty when a
+        wildcarded provider declares no models.
+    """
+    if not entry.endswith(":*"):
+        return [entry]
+    provider = entry[:-2]
+    provider_config = config.providers.get(provider)
+    if not provider_config:
+        return []
+    return [f"{provider}:{model}" for model in provider_config.get("models", [])]
+
+
 def _get_default_model_spec() -> str:
     """Get default model specification based on available credentials.
 
@@ -4805,9 +4831,11 @@ def _get_default_model_spec() -> str:
     1. `[models].default` in config file (user's intentional preference).
     2. `[models].recent` in config file (last `/model` switch).
     3. When `models.allowed` is active, the first entry in it whose provider
-       does not have a definitively missing credential. Steps 1 and 2 are
-       skipped with a warning when the stored value is outside the policy, and
-       step 4 is never reached -- a policy declares the whole candidate set.
+       does not have a definitively missing credential. A `provider:*` entry
+       expands to the provider's configured models rather than being a
+       selectable candidate itself. Steps 1 and 2 are skipped with a warning
+       when the stored value is outside the policy, and step 4 is never
+       reached -- a policy declares the whole candidate set.
     4. Auto-detection based on available API credentials.
 
     Returns:
@@ -4857,7 +4885,15 @@ def _get_default_model_spec() -> str:
             deny_all = config.policy_error(None)
             if deny_all is not None:
                 raise deny_all
-        for candidate in config.allowed_models:
+        # A `provider:*` wildcard cannot be selected itself -- no model is
+        # named -- but every configured model it admits is a candidate in the
+        # provider's declaration order.
+        candidates = [
+            spec
+            for entry in config.allowed_models
+            for spec in _expand_allowed_entry(config, entry)
+        ]
+        for candidate in candidates:
             parsed = ModelSpec.parse(candidate)
             auth = get_provider_auth_status(parsed.provider)
             # Only a definitively missing credential disqualifies a candidate.
@@ -4867,7 +4903,17 @@ def _get_default_model_spec() -> str:
             # deliberately permits that state.
             if auth.state is not ProviderAuthState.MISSING:
                 return candidate
-        allowed = ", ".join(config.allowed_models)
+        if not candidates:
+            # Every entry is a wildcard for a provider with no discoverable
+            # models, so there is nothing to credential.
+            allowed = ", ".join(config.allowed_models)
+            msg = (
+                "No discoverable models match models.allowed "
+                f"({allowed}). Name an exact provider:model spec or configure "
+                "models for a wildcarded provider."
+            )
+            raise NoAllowedModelCredentialsError(msg)
+        allowed = ", ".join(candidates)
         msg = (
             "No credentials are configured for any model in models.allowed. "
             f"Add credentials for one of: {allowed}."

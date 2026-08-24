@@ -34,6 +34,7 @@ from deepagents_code.model_config import (
     ModelNotAllowedError,
     ModelProfileEntry,
     ModelSpec,
+    NoAllowedModelCredentialsError,
     ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
@@ -438,6 +439,56 @@ class TestModelAllowlist:
         error = config.policy_error("mystery-model", canonicalize=True)
         assert error is not None
         assert "fully qualified provider:model" in str(error)
+
+    def test_parser_accepts_provider_wildcard(self) -> None:
+        """`provider:*` round-trips and deduplicates like an exact entry."""
+        assert parse_model_allowlist(
+            ["openai:*", "anthropic:claude-opus-5", "openai:*"]
+        ) == ("openai:*", "anthropic:claude-opus-5")
+
+    @pytest.mark.parametrize(
+        "entry",
+        ["*", ":*", "gpt-*", "openai:gpt-*", "openai:*:extra", "o penai:*"],
+    )
+    def test_parser_rejects_misplaced_wildcards(self, entry: str) -> None:
+        """Only a whole-provider `provider:*` suffix is a valid wildcard.
+
+        A bare `*` or a `*` inside the model part would either match
+        everything or silently match nothing, so the parser demands the
+        explicit provider-scoped form.
+        """
+        with pytest.raises(ValueError, match=r"wildcard|provider:\*"):
+            parse_model_allowlist([entry])
+
+    def test_wildcard_allows_any_model_from_its_provider(self) -> None:
+        """A `provider:*` entry admits models the exact list never named."""
+        config = ModelConfig(
+            allowed_models=("openai:*", "anthropic:claude-opus-5"),
+            allowed_models_source="config.toml",
+        )
+        assert config.is_model_allowed("openai:gpt-5.6-terra") is True
+        assert config.is_model_allowed("openai:anything-else") is True
+        assert config.is_model_allowed("anthropic:claude-opus-5") is True
+        assert config.is_model_allowed("anthropic:claude-sonnet-4-5") is False
+        assert config.is_model_allowed("ollama:qwen3:4b") is False
+
+    def test_wildcard_does_not_match_another_providers_spec(self) -> None:
+        """Wildcard scoping is by exact provider prefix, not substring."""
+        config = ModelConfig(
+            allowed_models=("openai:*",),
+            allowed_models_source="config.toml",
+        )
+        assert config.is_model_allowed("openai_codex:gpt-5.6-terra") is False
+
+    def test_wildcard_policy_error_still_lists_entries(self) -> None:
+        """The rejection message renders the wildcard entry verbatim."""
+        config = ModelConfig(
+            allowed_models=("openai:*",),
+            allowed_models_source="config.toml",
+        )
+        error = config.policy_error("anthropic:claude-opus-5")
+        assert error is not None
+        assert "openai:*" in str(error)
 
     def test_canonicalize_handles_custom_providers_bedrock_and_leading_colon(
         self,
@@ -6537,6 +6588,68 @@ recent = "openai:gpt-5.2"
             result = _get_default_model_spec()
 
         assert result == "ollama:qwen3:4b"
+
+    def test_allowlist_wildcard_falls_back_to_configured_models(
+        self, tmp_path: Path
+    ) -> None:
+        """A `provider:*` entry expands to the provider's configured models.
+
+        The wildcard itself names no model, so default resolution picks the
+        first credentialed model the provider declares rather than selecting
+        the wildcard literally.
+        """
+        from deepagents_code.config import _get_default_model_spec
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nallowed = ["my_gateway:*"]\n\n'
+            "[models.providers.my_gateway]\n"
+            'base_url = "https://gateway.example.com/v1"\n'
+            'api_key_env = "MY_GATEWAY_API_KEY"\n'
+            'models = ["model-a", "model-b"]\n'
+        )
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"MY_GATEWAY_API_KEY": "test-key"}, clear=True),
+        ):
+            result = _get_default_model_spec()
+
+        assert result == "my_gateway:model-a"
+
+    def test_wildcard_keeps_a_providers_whole_available_lineup(self) -> None:
+        """`provider:*` covers every model the provider offers, not just named ones.
+
+        `get_available_models` filters each provider's lineup through
+        `is_model_allowed`, so a wildcarded provider keeps all of its models
+        in the selector where an exact list would prune the unlisted ones.
+        """
+        clear_caches()
+        config = ModelConfig(
+            allowed_models=("my_gateway:*",),
+            allowed_models_source="config.toml",
+            providers={"my_gateway": ProviderConfig(models=["model-a", "model-b"])},
+        )
+        with patch.object(ModelConfig, "load", return_value=config):
+            available = get_available_models()
+        assert available.get("my_gateway") == ["model-a", "model-b"]
+        clear_caches()
+
+    def test_allowlist_wildcard_without_models_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """A wildcard for a provider with no discoverable models selects nothing."""
+        from deepagents_code.config import _get_default_model_spec
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\nallowed = ["openai:*"]\n')
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+            pytest.raises(NoAllowedModelCredentialsError, match="No discoverable"),
+        ):
+            _get_default_model_spec()
 
     def test_env_used_when_neither_set(self, tmp_path):
         """Falls back to env var auto-detection when neither default nor recent set."""

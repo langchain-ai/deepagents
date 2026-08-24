@@ -179,7 +179,7 @@ class OptionKind(Enum):
     """A string stripped of surrounding whitespace; blank values are unset."""
 
     MODEL_LIST_DELEGATE = "model_list"
-    """Validates an ordered list of exact `provider:model` specifications."""
+    """Validates a list of `provider:model` specs and `provider:*` wildcards."""
 
     LOG_LEVEL_DELEGATE = "log_level"
     """Validates log levels and resolves the default from debug mode."""
@@ -1736,8 +1736,8 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         key="models.allowed",
         group="Models",
         summary=(
-            "Exact model specs ('provider:model') dcode may use; "
-            "unset allows all, empty list allows none."
+            "Model specs ('provider:model', or 'provider:*' for a whole "
+            "provider) dcode may use; unset allows all, empty list allows none."
         ),
         kind=OptionKind.MODEL_LIST_DELEGATE,
         toml_keys=("models", "allowed"),

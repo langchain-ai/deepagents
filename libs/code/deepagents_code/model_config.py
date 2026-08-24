@@ -493,18 +493,20 @@ class ModelSpec:
 
 
 def parse_model_allowlist(value: object) -> tuple[str, ...]:
-    """Parse an ordered exact-model allowlist.
+    """Parse an ordered model allowlist of exact specs and provider wildcards.
 
     Args:
         value: Raw TOML value to validate.
 
     Returns:
-        Canonical model specs in declaration order with duplicates removed.
+        Canonical entries in declaration order with duplicates removed. Each is
+        either an exact `provider:model` spec or a `provider:*` wildcard
+        permitting every model from that provider.
 
     Raises:
         TypeError: If the value is not a list.
-        ValueError: If an entry is not an exact `provider:model` string, or is a
-            bare Bedrock model ID (see below).
+        ValueError: If an entry is not an exact `provider:model` string or
+            `provider:*` wildcard, or is a bare Bedrock model ID (see below).
     """
     from deepagents_code.config import _is_bedrock_model_id
 
@@ -528,6 +530,35 @@ def parse_model_allowlist(value: object) -> tuple[str, ...]:
             msg = (
                 f"invalid model spec {entry!r}; bare Bedrock model IDs must be "
                 f"written as 'bedrock:{normalized}'"
+            )
+            raise ValueError(msg)
+        if normalized.endswith(":*"):
+            provider = normalized[:-2].strip()
+            # Validate the prefix as a one-character model spec rather than
+            # accepting any non-empty string, so `o penai:*` and `:*` reject
+            # here instead of matching nothing (or everything) later. The
+            # `strip()` round-trip mirrors the exact-spec check below, which
+            # treats internal whitespace as noncanonical.
+            if (
+                not provider
+                or provider != provider.strip()
+                or any(ch.isspace() for ch in provider)
+                or ModelSpec.try_parse(f"{provider}:_") is None
+            ):
+                msg = (
+                    f"invalid model spec {entry!r}; a wildcard must name a "
+                    f"provider as 'provider:*'"
+                )
+                raise ValueError(msg)
+            canonical = f"{provider}:*"
+            if canonical not in seen:
+                seen.add(canonical)
+                allowed.append(canonical)
+            continue
+        if "*" in normalized:
+            msg = (
+                f"invalid model spec {entry!r}; '*' is only supported as a "
+                f"whole-provider wildcard ('provider:*')"
             )
             raise ValueError(msg)
         parsed = ModelSpec.try_parse(normalized)
@@ -3024,15 +3055,18 @@ class ModelConfig:
     """
 
     allowed_models: tuple[str, ...] | None = None
-    """Ordered exact model specs the policy permits.
+    """Ordered model specs and provider wildcards the policy permits.
 
     Three states, and the difference between the last two matters:
 
     - `None` -- no policy is active; every model is allowed.
     - `()` -- a policy is active and permits **nothing**. Model construction
       and default resolution both fail closed.
-    - non-empty -- only these exact specs are permitted, in preference order
-      (`_get_default_model_spec` walks the tuple in declaration order).
+    - non-empty -- only these entries are permitted, in preference order
+      (`_get_default_model_spec` walks the tuple in declaration order). An
+      entry is either an exact `provider:model` spec or a `provider:*`
+      wildcard permitting every model from that provider; a wildcard is never
+      selected as a default itself, but models it admits remain candidates.
 
     Test `is None`, never truthiness: `if not config.allowed_models` conflates
     "unrestricted" with "deny all" and inverts the policy.
@@ -3381,11 +3415,18 @@ class ModelConfig:
                     )
 
     def is_model_allowed(self, model_spec: str) -> bool:
-        """Return whether an exact model spec is allowed by active policy."""
+        """Return whether an exact model spec is allowed by active policy.
+
+        A spec is permitted when it appears in `allowed_models` verbatim or a
+        `provider:*` wildcard entry names its provider.
+        """
         if self.allowed_models is None:
             return True
         parsed = ModelSpec.try_parse(model_spec.strip())
-        return parsed is not None and str(parsed) in self.allowed_models
+        return parsed is not None and (
+            str(parsed) in self.allowed_models
+            or f"{parsed.provider}:*" in self.allowed_models
+        )
 
     def canonical_model_spec(self, model_spec: str) -> str | None:
         """Resolve a user-typed spec to the form the policy gate matches on.

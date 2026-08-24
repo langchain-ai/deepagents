@@ -27,7 +27,7 @@ from deepagents_code.configuration.service import (
 )
 from deepagents_code.configuration.types import ProviderHealth
 from deepagents_code.configuration.writer import update_user_config
-from unit_tests.conftest import redirect_managed_config
+from unit_tests.conftest import redirect_managed_config, resolve_option_for_test
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -39,33 +39,14 @@ def _resolve(
     toml_data: Mapping[str, Any],
     managed_toml_data: Mapping[str, Any] | None = None,
 ) -> tuple[Any, str]:
-    """Resolve `option` through the ranked engine with a `(value, source)` pair.
+    """Resolve `option` through production code as `(value, source)`.
 
-    Test-local stand-in for the retired `resolve_scalar` wrapper: builds an
-    ad-hoc resolver from the supplied tables (managed defaults to the process
-    snapshot, which tests redirect through `redirect_managed_config`) and
-    renders the source through the same compatibility label.
+    Thin alias for the shared `resolve_option_for_test`; see it for why these
+    resolutions must not be rebuilt in the test suite.
     """
-    from deepagents_code.config_manifest import load_managed_config_toml
-    from deepagents_code.configuration.resolver import resolver_from_snapshots
-    from deepagents_code.configuration.types import (
-        ProviderStatus,
-        TomlSnapshot,
+    return resolve_option_for_test(
+        option, toml_data=toml_data, managed_toml_data=managed_toml_data
     )
-
-    managed = (
-        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
-    )
-    resolved = resolver_from_snapshots(
-        managed=TomlSnapshot(
-            managed, ProviderStatus("managed config", None, ProviderHealth.OK)
-        ),
-        user=TomlSnapshot(
-            toml_data, ProviderStatus("config.toml", None, ProviderHealth.OK)
-        ),
-    ).get(option)
-    _emit_ranked_diagnostics(option, resolved)
-    return resolved.value, _ranked_source(resolved)
 
 
 @pytest.mark.parametrize(

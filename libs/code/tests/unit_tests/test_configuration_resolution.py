@@ -34,32 +34,23 @@ from deepagents_code.configuration.types import (
     ProviderStatus,
     TomlSnapshot,
 )
+from unit_tests.conftest import resolve_option_for_test
 
 
 def _resolve(
     option: ConfigOption,
     *,
     toml_data: Mapping[str, Any],
-    managed_toml_data: Mapping[str, Any],
+    managed_toml_data: Mapping[str, Any] | None = None,
 ) -> tuple[Any, str]:
-    """Resolve `option` through the ranked engine with a `(value, source)` pair.
+    """Resolve `option` through production code as `(value, source)`.
 
-    Test-local stand-in for the retired `resolve_scalar` wrapper: builds an
-    ad-hoc resolver from the supplied snapshot generation and renders the
-    source through the same compatibility label.
+    Thin alias for the shared `resolve_option_for_test`; see it for why these
+    resolutions must not be rebuilt in the test suite.
     """
-    resolved = resolver_from_snapshots(
-        managed=TomlSnapshot(
-            managed_toml_data,
-            ProviderStatus("managed config", None, ProviderHealth.OK),
-        ),
-        user=TomlSnapshot(
-            toml_data,
-            ProviderStatus("config.toml", None, ProviderHealth.OK),
-        ),
-    ).get(option)
-    _emit_ranked_diagnostics(option, resolved)
-    return resolved.value, _ranked_source(resolved)
+    return resolve_option_for_test(
+        option, toml_data=toml_data, managed_toml_data=managed_toml_data
+    )
 
 
 _MANAGED_PATH = Path("/managed/managed_config.toml")

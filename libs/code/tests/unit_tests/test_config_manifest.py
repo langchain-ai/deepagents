@@ -42,8 +42,10 @@ from deepagents_code.config_manifest import (
     provider_package_name,
 )
 from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
+from unit_tests.conftest import resolve_option_for_test
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` to avoid accidental
@@ -56,37 +58,17 @@ pytestmark = pytest.mark.self_managed_update_check
 def _resolve_manifest_option(
     option: ConfigOption,
     *,
-    toml_data: dict[str, Any],
-    managed_toml_data: dict[str, Any] | None = None,
+    toml_data: Mapping[str, Any],
+    managed_toml_data: Mapping[str, Any] | None = None,
 ) -> tuple[Any, str]:
-    """Resolve `option` through the ranked engine with a `(value, source)` pair.
+    """Resolve `option` through production code as `(value, source)`.
 
-    Test-local stand-in for the retired `resolve_scalar` wrapper: builds an
-    ad-hoc resolver from the supplied tables (managed defaults to the process
-    snapshot, which `_isolate_managed_config` points at an absent file) and
-    renders the source through the same compatibility label.
+    Thin alias for the shared `resolve_option_for_test`; see it for why these
+    resolutions must not be rebuilt in the test suite.
     """
-    from deepagents_code.config_manifest import load_managed_config_toml
-    from deepagents_code.configuration.resolver import resolver_from_snapshots
-    from deepagents_code.configuration.types import (
-        ProviderHealth,
-        ProviderStatus,
-        TomlSnapshot,
+    return resolve_option_for_test(
+        option, toml_data=toml_data, managed_toml_data=managed_toml_data
     )
-
-    managed = (
-        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
-    )
-    resolved = resolver_from_snapshots(
-        managed=TomlSnapshot(
-            managed, ProviderStatus("managed config", None, ProviderHealth.OK)
-        ),
-        user=TomlSnapshot(
-            toml_data, ProviderStatus("config.toml", None, ProviderHealth.OK)
-        ),
-    ).get(option)
-    _emit_ranked_diagnostics(option, resolved)
-    return resolved.value, _ranked_source(resolved)
 
 
 def _declared_deepagents_env_vars() -> set[str]:

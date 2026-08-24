@@ -72,7 +72,8 @@ async def _cancel_server_offload(
     """
     response = await asyncio.wait_for(
         graph.client.http.post(
-            f"/dcode/threads/{thread_id}/offload/{operation_id}/cancel"
+            f"/dcode/threads/{thread_id}/offload/{operation_id}/cancel",
+            json={},
         ),
         timeout=_OFFLOAD_CANCEL_WAIT_SECONDS,
     )

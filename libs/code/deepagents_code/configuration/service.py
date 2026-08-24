@@ -371,10 +371,7 @@ def resolve_managed_option(
             managed_data,
             status or ProviderStatus("managed config", None, ProviderHealth.OK),
         ),
-        user=TomlSnapshot(
-            {},
-            ProviderStatus("config.toml", None, ProviderHealth.OK),
-        ),
+        user=TomlSnapshot.declaring_nothing("config.toml"),
     ).get(option)
 
 
@@ -716,11 +713,10 @@ def _managed_resolver(snapshot: TomlSnapshot) -> ConfigResolver:
     """
     from deepagents_code.configuration.resolver import resolver_from_snapshots
 
-    user = TomlSnapshot(
-        {},
-        ProviderStatus("config.toml", None, ProviderHealth.MISSING),
+    return resolver_from_snapshots(
+        managed=snapshot,
+        user=TomlSnapshot.absent("config.toml"),
     )
-    return resolver_from_snapshots(managed=snapshot, user=user)
 
 
 def managed_config_status(*, refresh: bool = False) -> ProviderStatus:

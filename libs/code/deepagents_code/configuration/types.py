@@ -1,9 +1,13 @@
 """Typed configuration-provider results and health metadata."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,3 +100,61 @@ class TomlSnapshot:
                 "empty table is what every reader reads as 'nothing declared'"
             )
             raise ValueError(msg)
+
+    @classmethod
+    def from_table(cls, name: str, data: dict[str, Any]) -> TomlSnapshot:
+        """Build a readable snapshot around an already-parsed table.
+
+        For a caller that holds the parsed data and no health metadata of its
+        own. A caller that has real health passes both halves directly.
+
+        Args:
+            name: Human-readable source label.
+            data: Parsed TOML table.
+
+        Returns:
+            An `OK` snapshot carrying `data`.
+        """
+        return cls(data, ProviderStatus(name, None, ProviderHealth.OK))
+
+    @classmethod
+    def declaring_nothing(cls, name: str) -> TomlSnapshot:
+        """Build a readable snapshot for a source that declares nothing.
+
+        `ProviderStatus.usable` gates whether a source takes part in
+        resolution, so the difference between this and `absent` or
+        `unknown_origin` is a real decision. Naming it keeps that decision from
+        being made by copy-paste: three of the call sites this replaced picked
+        three different healths for a literally empty user table.
+
+        Args:
+            name: Human-readable source label.
+
+        Returns:
+            An `OK` snapshot carrying no data.
+        """
+        return cls({}, ProviderStatus(name, None, ProviderHealth.OK))
+
+    @classmethod
+    def absent(cls, name: str) -> TomlSnapshot:
+        """Build a snapshot for a source that is not there at all.
+
+        Args:
+            name: Human-readable source label.
+
+        Returns:
+            A `MISSING` snapshot carrying no data.
+        """
+        return cls({}, ProviderStatus(name, None, ProviderHealth.MISSING))
+
+    @classmethod
+    def unknown_origin(cls, name: str) -> TomlSnapshot:
+        """Build a snapshot for a source whose state could not be determined.
+
+        Args:
+            name: Human-readable source label.
+
+        Returns:
+            An `INDETERMINATE` snapshot carrying no data.
+        """
+        return cls({}, ProviderStatus(name, None, ProviderHealth.INDETERMINATE))

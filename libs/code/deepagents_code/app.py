@@ -1712,8 +1712,6 @@ def _managed_verdict(option_key: str) -> tuple[bool, bool]:
     )
     from deepagents_code.configuration.types import (
         Invalid,
-        ProviderHealth,
-        ProviderStatus,
         TomlSnapshot,
     )
 
@@ -1723,7 +1721,7 @@ def _managed_verdict(option_key: str) -> tuple[bool, bool]:
 
     resolved = resolver_from_snapshots(
         managed=get_managed_snapshot(),
-        user=TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.OK)),
+        user=TomlSnapshot.declaring_nothing("config.toml"),
     ).get(option)
     _emit_ranked_diagnostics(option, resolved)
     rejected = isinstance(resolved.tier_health.get(MANAGED_RANK), Invalid)

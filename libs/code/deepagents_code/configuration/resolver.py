@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
+    from pathlib import Path
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.provider import ConfigProvider
@@ -378,25 +379,38 @@ def resolver_from_snapshots(
     return ConfigResolver(
         (
             TomlFileProvider(
-                managed.status.name,
-                managed_path,
-                MANAGED_RANK,
-                True,
-                managed,
-                managed_loader,
+                name=managed.status.name,
+                path=managed_path,
+                rank=MANAGED_RANK,
+                durable=True,
+                snapshot=managed,
+                loader=managed_loader,
             ),
             EnvProvider(),
             TomlFileProvider(
-                user.status.name,
-                user_path,
-                USER_RANK,
-                True,
-                user,
-                user_loader,
+                name=user.status.name,
+                path=user_path,
+                rank=USER_RANK,
+                durable=True,
+                snapshot=user,
+                loader=user_loader,
             ),
             DefaultProvider(),
         )
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolverKey:
+    """The pair of file paths a shared resolver is built for.
+
+    Named rather than a bare `tuple[object, ...]`: a key built with different
+    arity or field order compares unequal, silently rebuilds the resolver, and
+    loses the single-generation guarantee with no error anywhere.
+    """
+
+    user_path: Path
+    managed_path: Path | None
 
 
 @dataclass(slots=True)
@@ -408,7 +422,7 @@ class _ResolverCache:
     read a stale generation or rebuild one that already exists.
     """
 
-    entry: tuple[tuple[object, ...], ConfigResolver] | None = None
+    entry: tuple[_ResolverKey, ConfigResolver] | None = None
 
 
 _resolver_cache_lock = threading.RLock()
@@ -466,11 +480,13 @@ def get_config_resolver(
         if managed_snapshot is None
         else managed_snapshot
     )
-    key = (DEFAULT_CONFIG_PATH, managed.status.path)
+    key = _ResolverKey(DEFAULT_CONFIG_PATH, managed.status.path)
     with _resolver_cache_lock:
         entry = _resolver_cache.entry
         if entry is None or entry[0] != key:
-            user_provider = TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH)
+            user_provider = TomlFileProvider(
+                name="config.toml", path=DEFAULT_CONFIG_PATH
+            )
             user = user_provider.load()
             resolver = resolver_from_snapshots(
                 managed=managed,
@@ -506,12 +522,12 @@ def get_config_resolver(
         resolver.reload_with_replacements(
             {
                 MANAGED_RANK: TomlFileProvider(
-                    managed.status.name,
-                    managed.status.path,
-                    MANAGED_RANK,
-                    True,
-                    managed,
-                    _reload_enforceable_managed_snapshot,
+                    name=managed.status.name,
+                    path=managed.status.path,
+                    rank=MANAGED_RANK,
+                    durable=True,
+                    snapshot=managed,
+                    loader=_reload_enforceable_managed_snapshot,
                 )
             }
         )

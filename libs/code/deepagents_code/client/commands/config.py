@@ -263,8 +263,6 @@ def _resolve(
     )
     from deepagents_code.configuration.resolver import resolver_from_snapshots
     from deepagents_code.configuration.types import (
-        ProviderHealth,
-        ProviderStatus,
         TomlSnapshot,
     )
     from deepagents_code.model_config import ProviderAuthSource
@@ -324,14 +322,8 @@ def _resolve(
     # against those exact tables, so this builds an ad-hoc resolver from the
     # supplied snapshots rather than reading the shared process cache.
     resolved = resolver_from_snapshots(
-        managed=TomlSnapshot(
-            managed_toml_data,
-            ProviderStatus("managed config", None, ProviderHealth.OK),
-        ),
-        user=TomlSnapshot(
-            toml_data,
-            ProviderStatus("config.toml", None, ProviderHealth.OK),
-        ),
+        managed=TomlSnapshot.from_table("managed config", managed_toml_data),
+        user=TomlSnapshot.from_table("config.toml", toml_data),
     ).get(option)
     _emit_ranked_diagnostics(option, resolved)
     source = _ranked_source(resolved)
@@ -497,8 +489,6 @@ def _option_provenance(
     from deepagents_code.config_manifest import OptionKind
     from deepagents_code.configuration.resolver import resolver_from_snapshots
     from deepagents_code.configuration.types import (
-        ProviderHealth,
-        ProviderStatus,
         TomlSnapshot,
     )
 
@@ -512,14 +502,8 @@ def _option_provenance(
     # reported, so it resolves against the caller's snapshots rather than the
     # shared process cache.
     resolved = resolver_from_snapshots(
-        managed=TomlSnapshot(
-            managed_toml_data or {},
-            ProviderStatus("managed config", None, ProviderHealth.OK),
-        ),
-        user=TomlSnapshot(
-            toml_data or {},
-            ProviderStatus("config.toml", None, ProviderHealth.OK),
-        ),
+        managed=TomlSnapshot.from_table("managed config", managed_toml_data or {}),
+        user=TomlSnapshot.from_table("config.toml", toml_data or {}),
     ).get(option)
     ranks_by_path: dict[tuple[str, ...], list[int]] = {}
     for rank, paths in resolved.provenance.items():

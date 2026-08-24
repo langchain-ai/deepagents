@@ -523,20 +523,19 @@ def _managed_config_diagnostic() -> DiagnosticItem:
         managed_snapshot_health,
     )
     from deepagents_code.configuration.types import (
-        ProviderHealth,
-        ProviderStatus,
         TomlSnapshot,
     )
 
     snapshot = get_managed_snapshot(refresh=True)
-    user = TomlSnapshot(
-        {},
-        ProviderStatus("config.toml", None, ProviderHealth.MISSING),
-    )
+    user = TomlSnapshot.absent("config.toml")
     status = resolver_from_snapshots(managed=snapshot, user=user).provider_statuses()[
         MANAGED_RANK
     ]
-    health = managed_snapshot_health(TomlSnapshot(snapshot.data, status))
+    # `status` round-trips from a provider seeded with this same snapshot, so
+    # re-wrapping it was a no-op that read as meaningful -- and the one place
+    # `TomlSnapshot.__post_init__` could raise inside the command whose job is
+    # to survive a broken config.
+    health = managed_snapshot_health(snapshot)
     path = status.path or "(unknown)"
     suffix = status.health.value.lower()
     detail = f" - {status.detail}" if status.detail else ""

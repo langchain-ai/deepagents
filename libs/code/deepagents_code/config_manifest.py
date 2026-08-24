@@ -639,8 +639,6 @@ def _resolve_option(
         resolver_from_snapshots,
     )
     from deepagents_code.configuration.types import (
-        ProviderHealth,
-        ProviderStatus,
         TomlSnapshot,
     )
 
@@ -657,14 +655,8 @@ def _resolve_option(
     )
     user_data = load_config_toml() if toml_data is None else toml_data
     resolver = resolver_from_snapshots(
-        managed=TomlSnapshot(
-            managed_data,
-            ProviderStatus("managed config", None, ProviderHealth.OK),
-        ),
-        user=TomlSnapshot(
-            user_data,
-            ProviderStatus("config.toml", None, ProviderHealth.OK),
-        ),
+        managed=TomlSnapshot.from_table("managed config", managed_data),
+        user=TomlSnapshot.from_table("config.toml", user_data),
     )
     return resolver.get(option)
 
@@ -698,16 +690,11 @@ def _resolve_option_without_managed(
         resolver_from_snapshots,
     )
     from deepagents_code.configuration.types import (
-        ProviderHealth,
-        ProviderStatus,
         TomlSnapshot,
     )
 
     if toml_data is not None:
-        user = TomlSnapshot(
-            toml_data,
-            ProviderStatus("config.toml", None, ProviderHealth.OK),
-        )
+        user = TomlSnapshot.from_table("config.toml", toml_data)
     else:
         shared = get_config_resolver().toml_snapshot(USER_RANK)
         if shared is None:
@@ -722,18 +709,10 @@ def _resolve_option_without_managed(
                 option.key,
             )
         user = (
-            shared
-            if shared is not None
-            else TomlSnapshot(
-                {},
-                ProviderStatus("config.toml", None, ProviderHealth.INDETERMINATE),
-            )
+            shared if shared is not None else TomlSnapshot.unknown_origin("config.toml")
         )
     resolver = resolver_from_snapshots(
-        managed=TomlSnapshot(
-            {},
-            ProviderStatus("managed config", None, ProviderHealth.OK),
-        ),
+        managed=TomlSnapshot.declaring_nothing("managed config"),
         user=user,
     )
     return resolver.get(option)

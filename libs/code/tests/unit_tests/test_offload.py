@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import stat
 import tempfile
@@ -2554,12 +2555,106 @@ class TestOffloadHelpers:
         assert _effective_conversation(messages, "x") == messages
         assert _effective_conversation(messages, {"cutoff_index": 1}) == messages
         assert _effective_conversation(messages, {"summary_message": "S"}) == messages
+        assert (
+            _effective_conversation(
+                messages,
+                {"summary_message": "S", "cutoff_index": -1},
+            )
+            == messages
+        )
+
+    def test_offload_accounting_bounds_the_cutoff_like_the_window_does(self) -> None:
+        """The report and the window must read one cutoff the same way.
+
+        `/offload` computes `messages_offloaded` from the cutoff and its token
+        counts from `_effective_conversation`, which bounds-checks internally.
+        Called without `message_count`, an out-of-bounds cutoff is trusted by the
+        first and rejected by the second, so the user is told a large offload
+        happened next to roughly zero token savings, with nothing logged.
+        """
+        from deepagents_code.app import (
+            _effective_conversation,
+            _summarization_cutoff,
+        )
+
+        messages = ["m0", "m1"]
+        event = {"summary_message": "S", "cutoff_index": 99}
+
+        cutoff = _summarization_cutoff(event, message_count=len(messages))
+        window = _effective_conversation(messages, event)
+
+        # Both degrade: the cutoff to 0, the window to the full list. An
+        # unbounded read would give cutoff 99 against a 2-message window.
+        assert cutoff == 0
+        assert window == messages
+        assert max(0, len(messages) - cutoff) == len(messages)
+
+    def test_effective_conversation_logs_a_discarded_event(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Dropping the event drops the summary, so it must not be silent.
+
+        The middleware already logs this. The client is the side that reads
+        possibly-malformed remote snapshot dicts, so it meets a corrupt event
+        sooner, and the next request silently re-sends the whole untrimmed
+        history.
+        """
+        from deepagents_code.app import _effective_conversation
+
+        with caplog.at_level(
+            logging.WARNING, logger="deepagents_code.goal_state_notice"
+        ):
+            assert _effective_conversation(["m0", "m1"], {"cutoff_index": "x"}) == [
+                "m0",
+                "m1",
+            ]
+
+        assert "Discarding malformed `_summarization_event`" in caplog.text
+
+    def test_effective_conversation_does_not_log_without_an_event(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No event is the normal case, not a discard."""
+        from deepagents_code.app import _effective_conversation
+
+        with caplog.at_level(
+            logging.WARNING, logger="deepagents_code.goal_state_notice"
+        ):
+            _effective_conversation(["m0"], None)
+
+        assert "Discarding malformed" not in caplog.text
+
+    def test_malformed_event_log_bounds_a_huge_value(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-Mapping event is repr'd, so it must not spill into the log."""
+        from deepagents_code.goal_state_notice import (
+            log_malformed_summarization_event,
+        )
+
+        with caplog.at_level(
+            logging.WARNING, logger="deepagents_code.goal_state_notice"
+        ):
+            log_malformed_summarization_event(["x" * 5_000], 3)
+
+        assert "(truncated)" in caplog.text
+        assert len(caplog.text) < 1_000
 
     def test_effective_conversation_cutoff_past_end(self) -> None:
+        """An out-of-bounds cutoff deliberately diverges from the SDK.
+
+        `_apply_event_to_messages` reads a cutoff past the end as "everything
+        was summarized" and returns `[summary]`. A shorter list than the cutoff
+        means messages were removed after the summary was written, so the
+        survivors are live turns; returning `[summary]` would hide them from
+        the context sizing and dangling-tool-call checks that call this.
+        """
         from deepagents_code.app import _effective_conversation
 
         event = {"summary_message": "S", "cutoff_index": 9}
-        assert _effective_conversation(["m0"], event) == ["S"]
+        assert _effective_conversation(["m0"], event) == ["m0"]
+        # Not the SDK's reading, which would be `["S"]`.
+        assert _effective_conversation(["m0"], event) != ["S"]
 
     def test_message_text_handles_str_and_block_list(self) -> None:
         from deepagents_code.app import _message_text

@@ -508,22 +508,105 @@ def _path_status(label: str, path: object) -> DiagnosticItem:
     )
 
 
+def _managed_config_diagnostic() -> DiagnosticItem:
+    """Report managed TOML location, parse health, and policy enforceability.
+
+    Returns:
+        Managed config diagnostic row.
+    """
+    from deepagents_code.configuration.resolver import (
+        MANAGED_RANK,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_snapshot_health,
+    )
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
+
+    snapshot = get_managed_snapshot(refresh=True)
+    user = TomlSnapshot(
+        {},
+        ProviderStatus("config.toml", None, ProviderHealth.MISSING),
+    )
+    status = resolver_from_snapshots(snapshot, user).provider_statuses()[MANAGED_RANK]
+    health = managed_snapshot_health(TomlSnapshot(snapshot.data, status))
+    path = status.path or "(unknown)"
+    suffix = status.health.value.lower()
+    detail = f" - {status.detail}" if status.detail else ""
+    # Doctor exists to explain a failure, so it must carry the parse detail and
+    # say who can fix it. Without this a user who just saw exit 78 learns
+    # nothing new here.
+    hint = "" if status.usable else "; ask your administrator to repair or remove it"
+    # A file that parses is not necessarily enforceable, and both halves of
+    # exit 78 have to show up here: reporting only `usable` gives a green row
+    # to the `ManagedPolicyError` half. Status and violations are both derived
+    # from the single `snapshot` read above, so a refreshed status can never be
+    # paired with stale violations.
+    violations = health.violations
+    if violations:
+        detail += f" - rejects {', '.join(violations)}"
+        hint = "; ask your administrator to correct the value"
+    if health.rejections:
+        # Declared but ignored, which is not a launch failure and so not part of
+        # `ok`. It still has to appear somewhere: the only other announcement is
+        # a `logger.warning` that cannot reach stderr.
+        detail += f" - ignores {', '.join(health.rejections)}"
+    return DiagnosticItem(
+        "Managed config",
+        f"{path} ({suffix}){detail}{hint}",
+        ok=health.ok,
+    )
+
+
+def _user_config_diagnostic() -> DiagnosticItem:
+    """Report user TOML location and parse health.
+
+    `_path_status` answers only "is there a file there", so a `config.toml`
+    that exists and does not parse produced a green `exists` row - in the one
+    command a user runs when their settings are not taking effect. Resolution
+    treats an unparseable file as declaring nothing, which is exactly the state
+    the row has to distinguish.
+
+    Returns:
+        User config diagnostic row.
+    """
+    from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.types import ProviderHealth
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    status = TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load().status
+    suffix = {
+        ProviderHealth.OK: "exists",
+        ProviderHealth.MISSING: "not created",
+    }.get(status.health, status.health.value.lower())
+    detail = f" - {status.detail}" if status.detail else ""
+    hint = "" if status.usable else "; every option in it falls back to its default"
+    return DiagnosticItem(
+        "Config file",
+        f"{DEFAULT_CONFIG_PATH} ({suffix}){detail}{hint}",
+        ok=status.usable,
+    )
+
+
 def _collect_configuration() -> DiagnosticSection:
     """Collect on-disk configuration and data locations.
 
     Returns:
         The `Configuration` section.
     """
-    from deepagents_code.model_config import (
-        DEFAULT_CONFIG_DIR,
-        DEFAULT_CONFIG_PATH,
-    )
+    from deepagents_code.model_config import DEFAULT_CONFIG_DIR
 
     return DiagnosticSection(
         title="Configuration",
         items=[
             _path_status("Data directory", DEFAULT_CONFIG_DIR),
-            _path_status("Config file", DEFAULT_CONFIG_PATH),
+            _managed_config_diagnostic(),
+            _user_config_diagnostic(),
         ],
     )
 

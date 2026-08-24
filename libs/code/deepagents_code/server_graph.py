@@ -439,6 +439,11 @@ def _build_runtime_factory(
             async with lock:
                 if runtime is None:
                     try:
+                        from deepagents_code.configuration.service import (
+                            require_healthy_managed_config,
+                        )
+
+                        require_healthy_managed_config(refresh=True)
                         runtime = await (builder or _make_graphs)()
                     except Exception as exc:  # noqa: BLE001  # startup barrier
                         emit_startup_failure(exc)
@@ -466,6 +471,11 @@ def _build_graph_factory(
     get_runtime = _build_runtime_factory(builder)
 
     async def make_graph() -> Any:  # noqa: ANN401
+        """Create or return the cached agent graph for `langgraph dev`.
+
+        Returns:
+            Compiled LangGraph agent graph.
+        """
         return (await get_runtime()).agent
 
     return make_graph

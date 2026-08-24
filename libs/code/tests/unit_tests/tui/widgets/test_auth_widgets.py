@@ -82,6 +82,7 @@ class _AuthHostApp(App[None]):
         allow_empty_submit: bool = False,
         input_placeholder: str | None = None,
         submit_label: str | None = None,
+        show_cancel_hint: bool = True,
     ) -> None:
         """Push the prompt and capture the dismissal result."""
 
@@ -97,6 +98,7 @@ class _AuthHostApp(App[None]):
                 allow_empty_submit=allow_empty_submit,
                 input_placeholder=input_placeholder,
                 submit_label=submit_label,
+                show_cancel_hint=show_cancel_hint,
             ),
             handle,
         )
@@ -1155,6 +1157,7 @@ api_key_url = "javascript:alert(1)"
                 allow_empty_submit=True,
                 input_placeholder="Tavily API key (optional)",
                 submit_label="Enter save/skip",
+                show_cancel_hint=False,
             )
             await pilot.pause()
 
@@ -1167,10 +1170,21 @@ api_key_url = "javascript:alert(1)"
         assert key_input.password is True
         assert "Web search is optional" in copy
         assert "Enter save/skip" in str(help_text.content)
+        assert "Esc cancel" not in str(help_text.content)
         # Services (Tavily) omit the storage note entirely — the title and
         # reason already explain the key, so it would only be redundant copy.
         assert has_storage_note is False
         assert "stores the above key locally" not in copy
+
+    async def test_default_prompt_keeps_cancel_hint(self) -> None:
+        """Regular auth prompts continue to advertise Escape."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            help_text = app.screen.query_one(".auth-prompt-help", Static)
+
+        assert "Esc cancel" in str(help_text.content)
 
     async def test_optional_prompt_surfaces_save_failure_and_stays_open(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1977,7 +1991,7 @@ class TestAuthManagerScreen:
                 for i in range(options.option_count)
                 if options.get_option_at_index(i).id == "openai_codex"
             )
-            assert "OpenAI Codex (ChatGPT login)" in label
+            assert "OpenAI (Subscription login)" in label
 
     async def test_configured_provider_uses_display_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2039,10 +2053,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
         ):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
-        )
-        monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda _provider: True,
         )
@@ -2068,10 +2078,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
             "DEEPAGENTS_CODE_TAVILY_API_KEY",
         ):
             monkeypatch.delenv(var, raising=False)
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"anthropic": ["claude-opus-4-7"]},
-        )
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda _provider: True,
@@ -2110,10 +2116,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
         ):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
-        )
-        monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda provider: provider != "groq",
         )
@@ -2149,10 +2151,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
         ):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
-        )
-        monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda _provider: True,
         )
@@ -2178,6 +2176,55 @@ api_key_env = "MY_GATEWAY_API_KEY"
             after = current_ids()
         assert after.index("openai") < after.index("anthropic")
 
+    async def test_refresh_options_updates_footer_for_resorted_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rebuild rewrites the footer for whatever row the cursor now sits on.
+
+        `_refresh_options` preserves the highlighted *index*, and saving a key
+        re-floats its provider, so the provider under an unmoved cursor
+        changes. The footer has to follow the row rather than the index, or it
+        promises an action Enter will not perform. Asserted before any
+        `pilot.pause()` so the rebuild's own footer write is what satisfies
+        it, not the re-posted `OptionHighlighted` a frame later.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+            "LANGSMITH_API_KEY",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+            "TAVILY_API_KEY",
+            "DEEPAGENTS_CODE_TAVILY_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        # Only these two count as installed, so the manageable rows are
+        # `anthropic`, `openai`, and the two services — a short enough list
+        # that the alphabetical head is predictable.
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider in {"openai", "anthropic"},
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            # Nothing is configured yet, so rows are alphabetical and
+            # `anthropic` leads.
+            assert options.highlighted == 0
+            assert options.get_option_at_index(0).id == "anthropic"
+            assert "Enter add " in str(help_text.content)
+
+            auth_store.set_stored_key("openai", "k")
+            screen = cast("AuthManagerScreen", app.screen)
+            screen._refresh_options()
+            # Index 0 is now `openai`, which has a stored key to replace.
+            assert options.get_option_at_index(0).id == "openai"
+            assert "Enter replace/delete " in str(help_text.content)
+
     async def test_configured_group_preserves_alphabetical_order(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2199,15 +2246,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
             "DEEPAGENTS_CODE_MISTRAL_API_KEY",
         ):
             monkeypatch.delenv(var, raising=False)
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {
-                "openai": ["gpt-5.4"],
-                "anthropic": ["claude-opus-4-7"],
-                "cohere": ["command"],
-                "mistralai": ["mistral-large"],
-            },
-        )
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda _provider: True,
@@ -2244,10 +2282,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
             "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
         ):
             monkeypatch.delenv(var, raising=False)
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
-        )
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda _provider: True,
@@ -2343,34 +2377,27 @@ api_key_env = "MY_GATEWAY_API_KEY"
     ) -> None:
         """Installed providers show as live rows; uninstalled ones grey out.
 
-        When `openai` is "installed", `openai_codex` rides along — it shares
-        the same `langchain-openai` package, so the manager surfaces the
-        OAuth-backed twin alongside the API-key entry. With every known
-        package reported installed, no greyed install-on-select rows appear,
-        so the listing equals the installed set.
+        When `openai` is installed, `openai_codex` rides along because it shares
+        the same `langchain-openai` package. Every other known provider remains
+        a greyed install-on-select row below the live entries.
         """
-        # Pretend only `openai` and `anthropic` are installed.
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
-        )
-        # Report every known package installed so no greyed-out
-        # install-on-select rows are appended to the listing.
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
-            lambda _provider: True,
+            lambda provider: provider in {"openai", "anthropic"},
         )
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_manager()
             await pilot.pause()
-            options = app.screen.query_one("#auth-manager-options", OptionList)
+            screen = cast("AuthManagerScreen", app.screen)
+            options = screen.query_one("#auth-manager-options", OptionList)
             ids = {
                 options.get_option_at_index(i).id for i in range(options.option_count)
             }
+            live_ids = ids - set(screen._install_extras)
         # Non-model services (Tavily search, LangSmith tracing) are always
         # listed for key entry.
-        assert ids == {
+        assert live_ids == {
             "openai",
             "openai_codex",
             "anthropic",
@@ -2387,8 +2414,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
         would look up a credential env var the service doesn't have.
         """
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"]},
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
         )
         app = _AuthHostApp()
         async with app.run_test() as pilot:
@@ -2413,8 +2440,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
         """
         auth_store.set_stored_key("tavily", "k")
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"]},
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
         )
         app = _AuthHostApp()
         async with app.run_test() as pilot:
@@ -2438,8 +2465,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
         """
         auth_store.set_stored_key("groq", "k")
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"]},
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
         )
         app = _AuthHostApp()
         async with app.run_test() as pilot:
@@ -2461,10 +2488,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
         so `groq` is surfaced as a `[not installed]` install-on-select entry
         for discoverability rather than being hidden.
         """
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
-        )
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda provider: provider in {"openai", "anthropic"},
@@ -2493,10 +2516,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
         )
 
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"]},
-        )
-        monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda provider: provider == "openai",
         )
@@ -2515,10 +2534,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
     ) -> None:
         """Confirming the install records the extra and dismisses the manager."""
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"]},
-        )
-        monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda provider: provider == "openai",
         )
@@ -2534,40 +2549,34 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert screen.pending_install_extra == "groq"
         assert screen.pending_install_provider == "groq"
 
-    async def test_reopening_manager_highlights_initial_provider(
+    async def test_reopening_highlights_installed_provider_without_compatible_models(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Reopening after an install highlights the just-installed provider.
+        """An installed provider stays live even when its profiles are filtered out.
 
-        Simulates the post-install reopen: `groq` is now installed and listed,
-        and passing it as `initial_provider` lands the cursor on its row rather
-        than resetting to index 0.
+        Perplexity currently declares no tool-calling models, so model discovery
+        excludes it. The auth manager must use package availability instead and
+        highlight it when reopening after the extra install.
         """
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"], "groq": ["llama-3"]},
-        )
-        monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
-            lambda provider: provider in {"openai", "groq"},
+            lambda provider: provider in {"openai", "perplexity"},
         )
         app = _AuthHostApp()
         async with app.run_test() as pilot:
-            app.show_manager(initial_provider="groq")
+            app.show_manager(initial_provider="perplexity")
             await pilot.pause()
             screen = cast("AuthManagerScreen", app.screen)
             options = screen.query_one("#auth-manager-options", OptionList)
             assert options.highlighted is not None
-            assert options.get_option_at_index(options.highlighted).id == "groq"
+            selected = options.get_option_at_index(options.highlighted)
+            assert selected.id == "perplexity"
+            assert "not installed" not in str(selected.prompt)
 
     async def test_reopening_manager_ignores_unknown_initial_provider(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An initial provider absent from the list leaves the cursor at the top."""
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"]},
-        )
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda provider: provider == "openai",
@@ -2584,10 +2593,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Declining the install records nothing and keeps the user on the manager."""
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"]},
-        )
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda provider: provider == "openai",
@@ -2622,10 +2627,6 @@ enabled = false
         monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
         model_config.clear_caches()
         monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
-        )
-        monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda provider: provider in {"openai", "anthropic"},
         )
@@ -2651,10 +2652,6 @@ enabled = false
         so the provider must not appear as an install-on-select row pointing at
         a `None` extra.
         """
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"]},
-        )
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda provider: provider != "groq",
@@ -2690,14 +2687,97 @@ enabled = false
         # surfaces in the rendered span representation.
         assert "providers" in repr(copy.content) or "providers" in content
 
-    async def test_footer_lists_full_action_set(self) -> None:
-        """Footer mentions add/replace/delete (delete happens via the prompt)."""
+    async def test_footer_tracks_highlighted_action(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Footer names the action exposed by the highlighted provider row.
+
+        Pins all four non-codex branches of `_action_for_provider`: a stored
+        key offers replace/delete, an env-only key offers replace, a known
+        service with neither offers add, and an uninstalled provider offers
+        install. The `set_stored_key`/`setenv` split is what separates the
+        first two — scrubbing the env vars first keeps an ambient key from
+        turning `tavily` or `openai` into a false pass.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+            "TAVILY_API_KEY",
+            "DEEPAGENTS_CODE_TAVILY_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider in {"openai", "anthropic"},
+        )
+        auth_store.set_stored_key("openai", "stored-key")
+
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_manager()
             await pilot.pause()
-            help_text = app.screen.query_one(".auth-manager-help", Static)
-        assert "add/replace/delete" in str(help_text.content)
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            # Assert the mount-time footer before navigating, so deleting the
+            # highlight handler can't be masked by dict ordering below.
+            initial = str(help_text.content)
+            assert "Enter replace " in initial, initial
+            assert "Esc close" in initial, initial
+            assert "navigate" in initial, initial
+            expected_actions = {
+                "openai": "replace/delete",
+                "anthropic": "replace",
+                "tavily": "add",
+                "groq": "install",
+            }
+            for provider, action in expected_actions.items():
+                index = next(
+                    i
+                    for i in range(options.option_count)
+                    if options.get_option_at_index(i).id == provider
+                )
+                options.highlighted = index
+                assert options.highlighted == index
+                await pilot.pause()
+                assert f"Enter {action} " in str(help_text.content)
+
+    async def test_footer_uses_stored_snapshot_for_custom_providers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stored custom keys expose replace/delete regardless of auth status."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.managed_provider]
+class_path = "example.models:ManagedChat"
+models = ["managed-model"]
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
+        )
+        auth_store.set_stored_key("unknown_provider", "test-key")
+        auth_store.set_stored_key("managed_provider", "test-key")
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            for provider in ("unknown_provider", "managed_provider"):
+                index = next(
+                    i
+                    for i in range(options.option_count)
+                    if options.get_option_at_index(i).id == provider
+                )
+                options.highlighted = index
+                await pilot.pause()
+                assert "Enter replace/delete " in str(help_text.content)
 
     async def test_corrupt_store_surfaces_warning_banner(
         self, fake_state_dir: Path
@@ -2736,6 +2816,34 @@ class TestCodexAuthInManager:
                 options.get_option_at_index(i).id for i in range(options.option_count)
             }
         assert "openai_codex" in ids
+
+    async def test_disabled_codex_option_hidden(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disabled `openai_codex` provider stays out of the auth manager."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai_codex]
+enabled = false
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
+        )
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = {
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            }
+
+        assert "openai" in ids
+        assert "openai_codex" not in ids
 
     async def test_codex_badge_reflects_signed_out_state(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2797,6 +2905,9 @@ class TestCodexAuthInManager:
                     break
             assert target_index is not None
             options.highlighted = target_index
+            await pilot.pause()
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            assert "Enter sign in " in str(help_text.content)
             # We just need to observe that the screen is pushed *before* the
             # fake worker finishes; capture the screen class via the
             # `screen_stack` instead of asserting on `app.screen` (which the
@@ -2883,6 +2994,9 @@ class TestCodexAuthInManager:
                     break
             assert target_index is not None
             options.highlighted = target_index
+            await pilot.pause()
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            assert "Enter manage " in str(help_text.content)
             pushed: list[type] = []
             original = app.push_screen
 
@@ -2895,9 +3009,67 @@ class TestCodexAuthInManager:
             await pilot.pause()
         assert CodexSignedInScreen in pushed
 
+    async def test_codex_expired_token_shows_manage_and_pushes_signed_in(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An expired access token is still a session: manage, not sign in.
+
+        The row badges an expired token as `[chatgpt]` because the saved
+        refresh token renews it on use, so the footer has to agree — and
+        sign-out has to stay reachable, which only the signed-in overlay
+        offers.
+        """
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.model_config import clear_caches
+        from deepagents_code.tui.widgets.codex_auth import (
+            CodexAuthScreen,
+            CodexSignedInScreen,
+        )
+
+        path = tmp_path / "auth.json"
+        self._write_token(path, expired=True)
+        monkeypatch.setattr(codex_integration, "default_store_path", lambda: path)
+
+        async def _fake_run(  # noqa: RUF029  # async signature dictated by protocol
+            *_args: object, **_kwargs: object
+        ) -> codex_integration.CodexAuthStatus:
+            return codex_integration.CodexAuthStatus(logged_in=False, store_path=path)
+
+        monkeypatch.setattr(codex_integration, "run_browser_login", _fake_run)
+        clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            target_index = next(
+                i
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "openai_codex"
+            )
+            options.highlighted = target_index
+            await pilot.pause()
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            assert "Enter manage " in str(help_text.content)
+            pushed: list[type] = []
+            original = app.push_screen
+
+            def _capture(screen, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                pushed.append(type(screen))
+                return original(screen, *args, **kwargs)
+
+            monkeypatch.setattr(app, "push_screen", _capture)
+            await pilot.press("enter")
+            await pilot.pause()
+        assert CodexSignedInScreen in pushed
+        assert CodexAuthScreen not in pushed
+
     @staticmethod
-    def _write_token(path: Path) -> None:
-        """Plant a valid (unexpired) token bundle at `path` with 0600 perms."""
+    def _write_token(path: Path, *, expired: bool = False) -> None:
+        """Write a ChatGPT token bundle at `path` with 0600 permissions.
+
+        The token is unexpired unless `expired` is true.
+        """
         import json
         from datetime import datetime, timedelta
 
@@ -2907,7 +3079,9 @@ class TestCodexAuthInManager:
                 {
                     "access_token": "fake",
                     "refresh_token": "fake",
-                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "expires_at": (
+                        datetime.now(UTC) + timedelta(hours=-1 if expired else 1)
+                    ).isoformat(),
                     "account_id": "acct",
                     "plan_type": "plus",
                     "user_id": "u",
@@ -2921,7 +3095,12 @@ class TestCodexAuthInManager:
     async def test_signout_dispatch_deletes_token(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """`SIGN_OUT` from the overlay deletes the stored token on disk."""
+        """`SIGN_OUT` from the overlay deletes the token and re-labels the row.
+
+        The footer reads the status cached when the option list was built, so
+        signing out only re-labels the row if the dispatch invalidates that
+        cache — this fails if either `clear_caches` or the refresh is dropped.
+        """
         from deepagents_code.integrations import openai_codex as codex_integration
         from deepagents_code.model_config import clear_caches
         from deepagents_code.tui.widgets.codex_auth import CodexSignedInAction
@@ -2934,9 +3113,29 @@ class TestCodexAuthInManager:
         async with app.run_test() as pilot:
             app.show_manager()
             await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            options.highlighted = next(
+                i
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "openai_codex"
+            )
+            await pilot.pause()
+            assert "Enter manage " in str(help_text.content)
+
             manager = cast("AuthManagerScreen", app.screen)
             manager._on_codex_signed_in_closed(CodexSignedInAction.SIGN_OUT)
             await pilot.pause()
+            # Signing out drops the row out of the configured block, so the
+            # cursor's index now points at a different provider; re-find the
+            # ChatGPT row rather than assuming the cursor followed it.
+            options.highlighted = next(
+                i
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "openai_codex"
+            )
+            await pilot.pause()
+            assert "Enter sign in " in str(help_text.content)
         assert not path.exists()
 
     async def test_reauth_dispatch_pushes_oauth_screen(

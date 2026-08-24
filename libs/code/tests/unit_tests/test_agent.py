@@ -2997,6 +2997,21 @@ class TestEnableAskUser:
         middleware = self._capture_middleware(tmp_path, enable_ask_user=False)
         assert not any(isinstance(mw, AskUserMiddleware) for mw in middleware)
 
+    def test_no_tool_error_middleware(self, tmp_path: Path) -> None:
+        """The stack must not install `ToolErrorMiddleware` for `ask_user`.
+
+        Argument validation lives on the tool schema (pydantic), and `ToolNode`
+        already converts bad `ask_user` arguments to an error `ToolMessage`. A
+        `ToolErrorMiddleware` here would be dead weight — and, sitting outermost
+        in the stack, would risk reporting an internal `ValueError` (e.g.
+        `ServerHooksMiddleware`'s "client answered a different request") to the
+        model as its own bad tool input.
+        """
+        from langchain.agents.middleware import ToolErrorMiddleware
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        assert not any(isinstance(mw, ToolErrorMiddleware) for mw in middleware)
+
 
 class TestLoadAsyncSubagents:
     def test_returns_empty_when_no_file(self, tmp_path: Path) -> None:
@@ -3663,7 +3678,12 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 ShellAllowListMiddleware,
                 ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
-            assert subagents_by_name[name]["middleware"][-1]._emit_stop is False
+            hooks = next(
+                mw
+                for mw in subagents_by_name[name]["middleware"]
+                if isinstance(mw, ServerHooksMiddleware)
+            )
+            assert hooks._emit_stop is False
             # Nested spend is priced once by the main agent, so a subagent's
             # instance must not also write the shared cost channel.
             assert all(

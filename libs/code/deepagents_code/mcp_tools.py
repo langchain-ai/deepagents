@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 
 from deepagents_code import _env_vars
+from deepagents_code._paths import get_deepagents_home
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
@@ -1360,7 +1361,7 @@ def discover_mcp_configs(
     Returns:
         Existing config file paths, ordered from lowest to highest precedence.
     """
-    user_dir = Path.home() / ".deepagents"
+    user_dir = get_deepagents_home()
     project_root = _resolve_project_config_base(project_context)
 
     candidates = [
@@ -1390,7 +1391,7 @@ def classify_discovered_configs(
     Returns:
         Tuple of `(user_configs, project_configs)`.
     """
-    user_dir = Path.home() / ".deepagents"
+    user_dir = get_deepagents_home()
     user: list[Path] = []
     project: list[Path] = []
     for path in config_paths:

@@ -32,7 +32,7 @@ If the user does not know the ID, list recent threads first:
 python3 "$SKILL_DIR/scripts/inspect_sessions.py" --list 20
 ```
 
-Pass `--db PATH` only for a non-default session store. The default is `~/.deepagents/.state/sessions.db`; `DEEPAGENTS_SESSIONS_DB` can override it.
+Pass `--db PATH` only for a non-default session store. The default is `$DEEPAGENTS_HOME/.state/sessions.db`, falling back to `~/.deepagents/.state/sessions.db`; `DEEPAGENTS_SESSIONS_DB` can override it.
 
 ## Explain the result
 

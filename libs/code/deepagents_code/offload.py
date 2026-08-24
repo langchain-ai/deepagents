@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
+from deepagents_code._paths import get_deepagents_home
+
 logger = logging.getLogger(__name__)
 
 _FALLBACK_ARTIFACTS_ROOT = "/dcode-artifacts-fallback"
@@ -190,7 +192,7 @@ def _offload_fallback_root() -> Path:
     """
 
     def _prepare_user_dir() -> Path:
-        base = Path.home() / ".deepagents"
+        base = get_deepagents_home()
         # Ensure the shared config root exists and is usable, but leave its
         # permissions untouched -- hardening belongs on the archive subdir only.
         base.mkdir(parents=True, exist_ok=True)

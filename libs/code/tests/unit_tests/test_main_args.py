@@ -2307,6 +2307,16 @@ class TestRecentAgentIsValid:
 
         assert _recent_agent_is_valid("coder") is True
 
+    def test_uses_deepagents_home_override(self, tmp_path, monkeypatch) -> None:
+        """Agent validation follows `DEEPAGENTS_HOME`."""
+        from deepagents_code.main import _recent_agent_is_valid
+
+        configured = tmp_path / "custom-home"
+        (configured / "coder").mkdir(parents=True)
+        monkeypatch.setenv("DEEPAGENTS_HOME", str(configured))
+
+        assert _recent_agent_is_valid("coder") is True
+
     def test_returns_false_for_missing_dir(self, tmp_path, monkeypatch) -> None:
         """Missing dir → False, no exception."""
         from deepagents_code.main import _recent_agent_is_valid

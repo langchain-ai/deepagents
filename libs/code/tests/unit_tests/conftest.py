@@ -445,6 +445,7 @@ def _clear_behavior_override_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in (
         "DEEPAGENTS_CODE_CURSOR_STYLE",
         "DEEPAGENTS_CODE_EXPERIMENTAL",
+        "DEEPAGENTS_HOME",
         "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA",
         "DEEPAGENTS_CODE_MEMORY_AUTO_SAVE",
         "DEEPAGENTS_CODE_OPENAI_PROMPT_CACHE_KEY",

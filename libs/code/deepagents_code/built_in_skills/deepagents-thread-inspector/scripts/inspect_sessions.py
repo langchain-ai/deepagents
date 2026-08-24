@@ -105,7 +105,17 @@ def _default_db_path() -> Path:
     explicit = os.environ.get("DEEPAGENTS_SESSIONS_DB")
     if explicit:
         return Path(explicit).expanduser()
-    return Path.home() / ".deepagents" / ".state" / "sessions.db"
+    try:
+        from deepagents_code._paths import get_deepagents_home  # noqa: PLC2701
+    except ImportError:
+        configured = os.environ.get("DEEPAGENTS_HOME")
+        home = (
+            Path(configured).expanduser() if configured else Path.home() / ".deepagents"
+        )
+        home = home if home.is_absolute() else Path.cwd() / home
+    else:
+        home = get_deepagents_home()
+    return home / ".state" / "sessions.db"
 
 
 def _connect_read_only(path: Path) -> sqlite3.Connection:

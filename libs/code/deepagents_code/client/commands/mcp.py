@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -179,12 +180,12 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
             ui=CliOAuthInteraction(),
         )
     except PermissionError as exc:
-        # PermissionError typically means the user's home dir or the
-        # ~/.deepagents/.state/mcp-tokens/ tree isn't writable. Retrying
-        # without a hint sends users in circles.
+        from deepagents_code._paths import get_deepagents_home
+
+        token_store = get_deepagents_home() / ".state" / "mcp-tokens"
         print(  # noqa: T201
             f"Login failed: cannot write to the MCP tokens store ({exc}). "
-            f"Check permissions on ~/.deepagents/.state/mcp-tokens/ and "
+            f"Check permissions on {token_store} and "
             f"retry `dcode mcp login {selection.server_name}`.",
             file=sys.stderr,
         )
@@ -215,8 +216,7 @@ def run_mcp_config() -> int:
     Returns:
         Process exit code: always 0.
     """
-    from pathlib import Path
-
+    from deepagents_code._paths import get_deepagents_home
     from deepagents_code.mcp_tools import (
         _resolve_project_config_base,
         discover_mcp_configs,
@@ -224,12 +224,19 @@ def run_mcp_config() -> int:
     from deepagents_code.ui import console
 
     found = {str(p.resolve()) for p in discover_mcp_configs()}
-    user_dir = Path.home() / ".deepagents"
+    user_dir = get_deepagents_home()
     project_root = _resolve_project_config_base(None)
+
+    user_config = user_dir / ".mcp.json"
+    user_display = (
+        str(user_config)
+        if os.environ.get("DEEPAGENTS_HOME")
+        else "~/.deepagents/.mcp.json"
+    )
 
     rows: list[tuple[str, str, bool]] = []
     for display, label, resolved in (
-        ("~/.deepagents/.mcp.json", "user-level", user_dir / ".mcp.json"),
+        (user_display, "user-level", user_config),
         (
             "<project-root>/.deepagents/.mcp.json",
             "project subdir",

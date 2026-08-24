@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER, is_env_truthy
+from deepagents_code._paths import get_deepagents_home
 
 if TYPE_CHECKING:
     import zipfile
@@ -62,7 +63,7 @@ RIPGREP_ASSETS: dict[tuple[str, str], tuple[str, str]] = {
 }
 """`(sys.platform, normalized arch) -> (asset filename, sha256 hex)`."""
 
-BIN_DIR: Path = Path.home() / ".deepagents" / "bin"
+BIN_DIR: Path = get_deepagents_home() / "bin"
 """Directory holding managed binaries. Prepended to `PATH` on startup."""
 
 _DOWNLOAD_TIMEOUT_SECONDS = 120

@@ -34,14 +34,14 @@
 #   This script installs deepagents-code as a uv tool. To remove it:
 #     uv tool uninstall deepagents-code
 #   That removes the dcode/deepagents-code binary and its isolated venv.
-#   User config and data live separately in ~/.deepagents (config.toml,
-#   hooks.json, a global .env, and a .state/ dir holding sessions and saved
-#   credentials) and are NOT removed by the uninstall above. To also wipe them:
-#     rm -rf ~/.deepagents
+#   User config and data live separately in ${DEEPAGENTS_HOME:-~/.deepagents}
+#   (config.toml, hooks.json, a global .env, and a .state/ dir holding sessions
+#   and saved credentials) and are NOT removed by the uninstall above.
 #   Optionally clear uv's shared tool cache (~/.cache/uv on Linux,
 #   ~/Library/Caches/uv on macOS) — only if no other uv tools rely on it.
 #
 # Environment variables:
+#   DEEPAGENTS_HOME — user config and data directory (default: ~/.deepagents)
 #   DEEPAGENTS_CODE_EXTRAS — comma-separated pip extras, e.g. "ollama",
 #     "ollama,groq", or "daytona". Valid extras (see pyproject.toml for the
 #     authoritative list):
@@ -121,6 +121,7 @@ Target:
   VERSION           Install an exact version, e.g. 0.1.0rc1
 
 Environment variables:
+  DEEPAGENTS_HOME — user config and data directory (default: ~/.deepagents)
   DEEPAGENTS_CODE_EXTRAS — comma-separated pip extras, e.g. "ollama",
     "ollama,groq", or "daytona". Valid extras (see pyproject.toml for the
     authoritative list):
@@ -965,7 +966,7 @@ release_install_lock_reclaim_guard() {
 # user-writable, opening ~/.deepagents/install.lock would follow a symlink before
 # any post-open validation can run.
 acquire_install_lock() {
-  local lock_root="$HOME/.deepagents"
+  local lock_root="${DEEPAGENTS_HOME:-$HOME/.deepagents}"
   mkdir -p "$lock_root"
   fix_owner "$lock_root"
 
@@ -3412,7 +3413,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       echo ""
       log_info "Setting up ripgrep..."
       if "$DCODE_BIN" tools install; then
-        fix_owner "${HOME}/.deepagents/bin"
+        fix_owner "${DEEPAGENTS_HOME:-${HOME}/.deepagents}/bin"
       else
         ripgrep_managed_failed
       fi
@@ -3422,7 +3423,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       if ripgrep_setup_out=$(mktemp 2>/dev/null); then
         register_temp "$ripgrep_setup_out"
         if "$DCODE_BIN" tools install >"$ripgrep_setup_out" 2>&1; then
-          fix_owner "${HOME}/.deepagents/bin"
+          fix_owner "${DEEPAGENTS_HOME:-${HOME}/.deepagents}/bin"
         else
           echo ""
           cat "$ripgrep_setup_out" >&2 2>/dev/null || true

@@ -3767,6 +3767,37 @@ def test_install_lock_missing_dir_is_not_stale(tmp_path: Path) -> None:
     )
 
 
+def test_install_script_uses_deepagents_home_for_lock(tmp_path: Path) -> None:
+    """Installer serialization follows `DEEPAGENTS_HOME`."""
+    bin_dir, home, uv = _write_fake_tools(
+        tmp_path, installed_version="0.0.1", latest_version="0.1.0"
+    )
+    configured = tmp_path / "custom-home"
+    env = {
+        **_clean_environ(),
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_HOME": str(configured),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+    }
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert configured.is_dir()
+    assert not (home / ".deepagents").exists()
+
+
 def test_install_script_ignores_symlinked_legacy_lock_file(tmp_path: Path) -> None:
     """A symlinked legacy `install.lock` is not followed when flock is available.
 

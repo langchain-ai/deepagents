@@ -27,6 +27,17 @@ Run:
 dcode
 ```
 
+Set `DEEPAGENTS_HOME` to relocate all user-level configuration and persistent
+state from the default `~/.deepagents` directory:
+
+```bash
+export DEEPAGENTS_HOME="$HOME/.local/share/deepagents"
+dcode
+```
+
+Set this before starting dcode. Existing data is not migrated automatically; move
+it from `~/.deepagents` yourself if you want to keep using it from the new root.
+
 ## 🤔 What is this?
 
 The fastest way to start using Deep Agents. `deepagents-code` is a pre-built coding agent in your terminal — similar to Claude Code or Cursor — powered by any LLM that supports tool calling. One install command and you're up and running, no code required.

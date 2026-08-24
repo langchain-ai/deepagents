@@ -27,6 +27,7 @@ import tomli_w
 
 from deepagents_code import _env_vars, auth_store
 from deepagents_code._git import find_git_common_dir
+from deepagents_code._paths import get_deepagents_home
 from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
 
 if TYPE_CHECKING:
@@ -726,8 +727,8 @@ class ProviderConfig(TypedDict, total=False):
     """
 
 
-DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
-"""Directory for user-level Deep Agents configuration (`~/.deepagents`)."""
+DEFAULT_CONFIG_DIR = get_deepagents_home()
+"""User-level Deep Agents directory, optionally set by `DEEPAGENTS_HOME`."""
 
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
 """Path to the user's model configuration file (`~/.deepagents/config.toml`)."""

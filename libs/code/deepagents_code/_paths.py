@@ -1,22 +1,12 @@
-"""Filesystem-path classification shared by the diagnostic CLI commands.
-
-`dcode doctor` and `dcode config path` both probe whether config locations
-exist. `Path.exists()` can report `False` for `OSError` cases such as EACCES
-when a parent directory denies traversal, so a bare `.exists()` can hide the
-very permissions problem these commands should diagnose. `classify_path`
-centralizes the guard and reports an unreadable path as a distinct state instead
-of conflating it with "missing".
-"""
+"""Filesystem-path helpers shared across Deep Agents Code."""
 
 from __future__ import annotations
 
 import errno
 import logging
+import os
 from enum import StrEnum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -67,3 +57,10 @@ def classify_path(path: Path) -> PathState:
         return PathState.UNREADABLE
     else:
         return PathState.EXISTS
+
+
+def get_deepagents_home() -> Path:
+    """Return the absolute user-level Deep Agents directory."""
+    configured = os.environ.get("DEEPAGENTS_HOME")
+    path = Path(configured).expanduser() if configured else Path.home() / ".deepagents"
+    return path if path.is_absolute() else Path.cwd() / path

@@ -716,12 +716,14 @@ class TestMcpCommandDispatch:
         from deepagents_code.client.commands.mcp import run_mcp_config
 
         fake_home = pathlib.Path(str(tmp_path)) / "home"
+        configured = pathlib.Path(str(tmp_path)) / "custom-home"
         fake_project = pathlib.Path(str(tmp_path)) / "project"
-        (fake_home / ".deepagents").mkdir(parents=True)
-        (fake_home / ".deepagents" / ".mcp.json").write_text("{}")
+        configured.mkdir(parents=True)
+        (configured / ".mcp.json").write_text("{}")
         fake_project.mkdir()
 
         monkeypatch.setattr(pathlib.Path, "home", lambda: fake_home)
+        monkeypatch.setenv("DEEPAGENTS_HOME", str(configured))
         monkeypatch.chdir(fake_project)
         monkeypatch.setattr(
             "deepagents_code.project_utils.find_project_root",
@@ -732,9 +734,7 @@ class TestMcpCommandDispatch:
 
         assert exit_code == 0
         out = capsys.readouterr().out
-        user_line = next(
-            line for line in out.splitlines() if "~/.deepagents/.mcp.json" in line
-        )
+        assert str(configured) in out
         project_root_line = next(
             line
             for line in out.splitlines()
@@ -746,7 +746,7 @@ class TestMcpCommandDispatch:
             for line in out.splitlines()
             if "<project-root>/.deepagents/.mcp.json" in line
         )
-        assert "found" in user_line
+        assert "found" in out.split(str(configured), maxsplit=1)[0].splitlines()[-1]
         assert "missing" in project_root_line
         assert "missing" in project_subdir_line
 

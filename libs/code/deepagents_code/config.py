@@ -32,6 +32,7 @@ from deepagents_code._env_vars import (
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
+from deepagents_code._paths import get_deepagents_home
 from deepagents_code._version import __version__
 from deepagents_code.config_manifest import (
     INTERPRETER_ENABLE_DEFAULT,
@@ -312,9 +313,9 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     return None
 
 
-# Global user-level .env (~/.deepagents/.env); sentinel when Path.home() fails.
+# Global user-level .env; sentinel when the user directory cannot be resolved.
 try:
-    _GLOBAL_DOTENV_PATH = Path.home() / ".deepagents" / ".env"
+    _GLOBAL_DOTENV_PATH = get_deepagents_home() / ".env"
 except RuntimeError:
     _GLOBAL_DOTENV_PATH = Path("/nonexistent/.deepagents/.env")
 
@@ -3256,7 +3257,7 @@ class Settings:
         Returns:
             Path to `~/.deepagents`
         """
-        return Path.home() / ".deepagents"
+        return get_deepagents_home()
 
     @staticmethod
     def get_user_agent_md_path(agent_name: str) -> Path:
@@ -3270,7 +3271,7 @@ class Settings:
         Returns:
             Path to ~/.deepagents/{agent_name}/AGENTS.md
         """
-        return Path.home() / ".deepagents" / agent_name / "AGENTS.md"
+        return get_deepagents_home() / agent_name / "AGENTS.md"
 
     def get_project_agent_md_path(self) -> list[Path]:
         """Get project-level AGENTS.md paths.
@@ -3323,7 +3324,7 @@ class Settings:
                 "contain letters, numbers, hyphens, underscores, and spaces."
             )
             raise ValueError(msg)
-        return Path.home() / ".deepagents" / agent_name
+        return get_deepagents_home() / agent_name
 
     def ensure_agent_dir(self, agent_name: str) -> Path:
         """Ensure the global agent directory exists and return its path.

@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
 from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
+from deepagents_code._paths import get_deepagents_home
 from deepagents_code._version import __version__
 from deepagents_code.goal_state_limits import RUBRIC_CHAR_LIMIT, validate_rubric
 
@@ -1549,10 +1550,8 @@ def _recent_agent_is_valid(name: str) -> bool:
     `~/.deepagents` (symlink loops, EACCES) don't crash the launch — we
     treat them the same as "not valid" and fall back to the default.
     """
-    from pathlib import Path as _Path
-
     try:
-        return (_Path.home() / ".deepagents" / name).is_dir()
+        return (get_deepagents_home() / name).is_dir()
     except OSError:
         logger.warning(
             "Could not validate recent agent %r; falling back to default",

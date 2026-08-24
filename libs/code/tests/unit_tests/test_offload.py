@@ -735,6 +735,16 @@ class TestOffloadFallbackRoot:
         assert archive_dir.is_dir()
         assert stat.S_IMODE(archive_dir.stat().st_mode) == 0o700
 
+    def test_fallback_root_uses_deepagents_home_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Persistent history follows `DEEPAGENTS_HOME`."""
+        root = tmp_path / "custom-home"
+        monkeypatch.setenv("DEEPAGENTS_HOME", str(root))
+
+        assert _offload_fallback_root() == root
+        assert (root / "conversation_history").is_dir()
+
     def test_fallback_root_uses_temp_when_home_is_read_only(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

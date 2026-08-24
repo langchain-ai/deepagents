@@ -484,6 +484,36 @@ def test_default_db_path_prefers_env_override(
     assert inspector._default_db_path() == Path.home() / ".deepagents" / ".state" / (
         "sessions.db"
     )
+    monkeypatch.setenv("DEEPAGENTS_HOME", "~/custom-dcode")
+    assert inspector._default_db_path() == Path.home() / "custom-dcode" / ".state" / (
+        "sessions.db"
+    )
+
+
+def test_default_db_path_without_package(
+    inspector: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The standalone script resolves the root before re-execing into dcode."""
+    real_import = __import__
+
+    def import_module(
+        name: str,
+        globals_: dict[str, object] | None = None,
+        locals_: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> object:
+        if name == "deepagents_code._paths":
+            msg = "No module named 'deepagents_code'"
+            raise ModuleNotFoundError(msg)
+        return real_import(name, globals_, locals_, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", import_module)
+    monkeypatch.setenv("DEEPAGENTS_HOME", "~/custom-dcode")
+
+    assert inspector._default_db_path() == Path.home() / "custom-dcode" / ".state" / (
+        "sessions.db"
+    )
 
 
 def test_decode_metadata_warns_on_corrupt_json(inspector: ModuleType) -> None:

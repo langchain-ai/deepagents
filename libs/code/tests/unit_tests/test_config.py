@@ -723,6 +723,24 @@ class TestProjectAgentMdFinding:
         assert result[0].is_relative_to(link_root.resolve())
 
 
+class TestSettingsUserDeepagentsDir:
+    """Test user-level paths derived from `DEEPAGENTS_HOME`."""
+
+    def test_uses_deepagents_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Agent profiles and instructions use the configured root."""
+        configured = tmp_path / "custom-home"
+        monkeypatch.setenv("DEEPAGENTS_HOME", str(configured))
+        settings = Settings.__new__(Settings)
+
+        assert settings.user_deepagents_dir == configured
+        assert settings.get_agent_dir("coder") == configured / "coder"
+        assert settings.get_user_agent_md_path("coder") == (
+            configured / "coder" / "AGENTS.md"
+        )
+
+
 class TestSettingsGetProjectAgentMdPath:
     """Test Settings.get_project_agent_md_path() integration."""
 

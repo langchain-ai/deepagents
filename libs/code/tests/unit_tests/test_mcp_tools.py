@@ -686,6 +686,23 @@ class TestDiscoverMcpConfigs:
         assert len(paths) == 3
         assert any(str(p).endswith(".mcp.json") for p in paths)
 
+    def test_deepagents_home_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """User config discovery follows `DEEPAGENTS_HOME`."""
+        configured = tmp_path / "custom-home"
+        configured.mkdir()
+        user_config = configured / ".mcp.json"
+        user_config.write_text("{}")
+        monkeypatch.setenv("DEEPAGENTS_HOME", str(configured))
+        monkeypatch.setattr(
+            "deepagents_code.project_utils.find_project_root",
+            lambda: None,
+        )
+        monkeypatch.chdir(tmp_path)
+
+        assert discover_mcp_configs() == [user_config]
+
     def test_no_configs_returns_empty(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

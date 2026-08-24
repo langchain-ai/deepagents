@@ -40925,6 +40925,54 @@ class TestPromptClipboard:
 
         open_clipboard.assert_called_once_with()
 
+    async def test_modal_warns_when_history_is_unreadable_but_listable(
+        self, tmp_path: Path
+    ) -> None:
+        """The modal's `empty_message` cannot cover a non-empty degraded list.
+
+        `recent_prompts` falls back to this session's entries on a read
+        failure, so the modal usually opens with rows and its empty state --
+        the only place the error was reported -- never renders.
+        """
+        history_file = tmp_path / "history.jsonl"
+        history_file.mkdir()
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            chat_input._history.history_file = history_file
+            chat_input._history.add("this session only")
+
+            with patch.object(app, "notify") as notify:
+                app._open_prompt_clipboard_modal()
+                await pilot.pause()
+
+            notify.assert_called_once()
+            message = notify.call_args.args[0]
+            assert "Could not read prompt history" in message
+            assert "this session's prompts only" in message
+            assert notify.call_args.kwargs["severity"] == "warning"
+            assert notify.call_args.kwargs["markup"] is False
+
+    async def test_modal_stays_quiet_when_history_reads_cleanly(
+        self, tmp_path: Path
+    ) -> None:
+        """The healthy path opens the modal without a warning."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            chat_input._history.history_file = tmp_path / "history.jsonl"
+            chat_input._history.add("a prompt")
+
+            with patch.object(app, "notify") as notify:
+                app._open_prompt_clipboard_modal()
+                await pilot.pause()
+
+            notify.assert_not_called()
+
     async def test_prompts_command_explains_why_it_cannot_open(self) -> None:
         """A blocked `/prompts` must say so instead of doing nothing.
 

@@ -3760,6 +3760,7 @@ class ChatInput(Vertical):
         self._prompt_search_prompts = self.recent_prompts()
         self._prompt_search_query = ""
         self._prompt_search_index = 0
+        self._warn_if_history_unreadable()
         self._refresh_prompt_search_panel()
         # The query field is a real Input, so the blinking cursor lives in it
         # while the search is open rather than in the frozen draft above.
@@ -3844,6 +3845,25 @@ class ChatInput(Vertical):
             )
         self._prompt_search.update_state(
             self._prompt_search_query, titles, self._prompt_search_index, empty
+        )
+
+    def _warn_if_history_unreadable(self) -> None:
+        """Warn when the shown prompts are a degraded fallback.
+
+        The empty-state message already names an unreadable history file, but
+        only when there is nothing to list. `recent_prompts` falls back to this
+        session's entries on a read failure, so the usual outcome is a
+        *non-empty* list that looks like a complete history and is silently
+        truncated. Warn whenever the read failed and there is something to
+        show, since that is the case the empty state cannot cover.
+        """
+        error = self.prompt_history_error()
+        if error is None or not self._prompt_search_prompts:
+            return
+        self.app.notify(
+            f"{error}; showing this session's prompts only",
+            severity="warning",
+            markup=False,
         )
 
     def _prompt_search_insert_selected(self) -> None:

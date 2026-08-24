@@ -21800,11 +21800,22 @@ class DeepAgentsApp(App):
             self.call_after_refresh(apply_result)
 
         prompts = chat_input.recent_prompts()
+        history_error = chat_input.prompt_history_error()
+        if history_error is not None and prompts:
+            # `empty_message` only reaches the user when the list is empty, but
+            # `recent_prompts` falls back to this session's entries on a read
+            # failure -- so the common outcome is a non-empty list that looks
+            # complete and is silently truncated. Warn independently of count.
+            self.notify(
+                f"{history_error}; showing this session's prompts only",
+                severity="warning",
+                markup=False,
+            )
         self.push_screen(
             PromptClipboardScreen(
                 prompts,
                 initial_query=initial_query,
-                empty_message=chat_input.prompt_history_error(),
+                empty_message=history_error,
             ),
             handle_result,
         )

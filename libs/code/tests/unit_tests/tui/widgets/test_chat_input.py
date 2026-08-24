@@ -8174,6 +8174,60 @@ class TestPromptSearchPanel:
             assert "Could not read prompt history" in messages[0]
             assert "No prompts yet" not in messages[0]
 
+    async def test_unreadable_history_warns_when_the_list_is_not_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A degraded list looks complete, so the failure needs its own warning.
+
+        The empty-state message only reaches the user when there is nothing to
+        list, but `recent_prompts` falls back to this session's entries on a
+        read failure. The usual outcome is a non-empty, silently truncated list
+        that is indistinguishable from a healthy one.
+        """
+        history_file = tmp_path / "history.jsonl"
+        history_file.mkdir()
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = history_file
+            # Session entries survive the failed read, so the list is non-empty
+            # and the empty state never renders.
+            self._seed_history(chat, ["this session only"])
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_prompts
+            assert len(notifications) == 1
+            message, kwargs = notifications[0]
+            assert "Could not read prompt history" in message
+            assert "this session's prompts only" in message
+            assert kwargs["severity"] == "warning"
+            # The message interpolates the history path, so markup must be off.
+            assert kwargs["markup"] is False
+
+    async def test_readable_history_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The healthy path stays quiet."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["a prompt"])
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_prompts
+            assert notifications == []
+
     async def test_unreadable_history_path_is_not_markup_parsed(
         self, tmp_path: Path
     ) -> None:

@@ -688,12 +688,16 @@ class TestExecuteOffload:
         ):
             yield
 
-    async def test_messages_update_is_refused_and_cost_rolled_back(self) -> None:
-        """A `messages` write is rejected before it can reach the checkpoint.
+    @pytest.mark.parametrize("channel", ["messages", "todos"])
+    async def test_unpermitted_update_is_refused_and_cost_rolled_back(
+        self, channel: str
+    ) -> None:
+        """A channel outside `OffloadStateUpdate` cannot reach the checkpoint.
 
-        Unlike asserting on a mocked update that never contains `messages` (which
-        passes whether the guard exists or not), this drives an update that
-        actually carries the channel.
+        Unlike asserting on a mocked update that never contains the channel
+        (which passes whether the guard exists or not), this drives an update
+        that actually carries one. `todos` covers the allowlist itself: a
+        `messages`-only check would let every other channel through.
         """
         from deepagents_code import offload_api
 
@@ -709,7 +713,7 @@ class TestExecuteOffload:
                     # Deliberately violates `OffloadStateUpdate` -- that is the
                     # point of the test: the runtime guard is the backstop for
                     # `Any`-typed values the SDK hands back.
-                    {"messages": ["smuggled"]},  # ty: ignore[invalid-key,invalid-argument-type]
+                    {channel: ["smuggled"]},  # ty: ignore[invalid-key,invalid-argument-type]
                     _result(),  # ty: ignore[invalid-argument-type]
                 )
             )
@@ -718,7 +722,7 @@ class TestExecuteOffload:
 
         with (
             self._patched(offload_api, threads, operation, prepared),
-            pytest.raises(RuntimeError, match="may not write the messages channel"),
+            pytest.raises(RuntimeError, match=f"may not write .*{channel}"),
         ):
             await offload_api._execute_offload(
                 "thread-1",

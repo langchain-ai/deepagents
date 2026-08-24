@@ -24,7 +24,11 @@ from deepagents_code.hooks.server_middleware import (
     HookTransportInterruptError,
     operation_hook_responses,
 )
-from deepagents_code.offload_middleware import _archive_lock, unchanged_offload_result
+from deepagents_code.offload_middleware import (
+    OffloadStateUpdate,
+    _archive_lock,
+    unchanged_offload_result,
+)
 from deepagents_code.server_graph import get_server_runtime
 
 if TYPE_CHECKING:
@@ -47,6 +51,12 @@ Must equal `client.remote_client._OFFLOAD_PROTOCOL_VERSION`; the duplication is
 deliberate so neither side imports the other, and
 `test_remote_client.test_client_and_server_protocol_versions_agree` pins the two
 together. Bump both, or that test fails.
+"""
+_WRITABLE_STATE_CHANNELS = frozenset(OffloadStateUpdate.__annotations__)
+"""Checkpoint channels a server-owned offload may write.
+
+Derived from `OffloadStateUpdate` so the runtime guard and the type cannot
+drift: adding a channel to the type is the only way to permit writing it.
 """
 _OFFLOADABLE_THREAD_STATUSES = frozenset({"idle", "error"})
 """Thread statuses that hold no in-flight work, so offload may proceed.
@@ -718,13 +728,21 @@ async def _execute_offload(
 
         prepared = prepare_operation_cost(state, thread_id)
         update: dict[str, Any] = {**execution.update, **prepared.update}
-        if "messages" in update:
+        if forbidden := set(update) - _WRITABLE_STATE_CHANNELS:
             # A security boundary, not a defensive assertion: this route commits
             # to the latest checkpoint rather than the one it read, so a
             # `messages` write here would be unattributed to any run and could
             # clobber messages a concurrent run appended in that window. See
             # THREAT_MODEL.md (TB10/DF27) before relaxing this.
-            msg = "Server offload operations may not write the messages channel."
+            #
+            # Checked as an allowlist against `OffloadStateUpdate` rather than
+            # for `messages` alone, so the runtime guard enforces the same
+            # invariant the type states instead of a subset of it: a future
+            # merge that adds any other channel is refused here too.
+            msg = (
+                "Server offload operations may not write "
+                f"{sorted(forbidden)} to the checkpoint."
+            )
             prepared.rollback()
             raise RuntimeError(msg)
         if not update:

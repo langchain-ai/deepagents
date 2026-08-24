@@ -33,7 +33,7 @@ from deepagents_code.output import write_json
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.service import ManagedHealth
@@ -144,7 +144,7 @@ def setup_config_parser(
 # --- Resolution -------------------------------------------------------------
 
 
-def _load_managed_generation() -> tuple[Mapping[str, Any], ManagedHealth]:
+def _load_managed_generation() -> tuple[dict[str, Any], ManagedHealth]:
     """Load managed data and diagnostics from one provider snapshot.
 
     Returns:
@@ -222,10 +222,10 @@ def _load_stored_credentials() -> _StoredCredentialView:
 
 def _resolve(
     option: ConfigOption,
-    toml_data: Mapping[str, Any],
+    toml_data: dict[str, Any],
     *,
     stored: _StoredCredentialView | None = None,
-    managed_toml_data: Mapping[str, Any],
+    managed_toml_data: dict[str, Any],
 ) -> tuple[bool, str, object]:
     """Resolve an option for display, reporting what the runtime actually reads.
 
@@ -486,8 +486,8 @@ def _option_provenance(
     option: ConfigOption,
     *,
     source: str,
-    toml_data: Mapping[str, Any] | None,
-    managed_toml_data: Mapping[str, Any] | None,
+    toml_data: dict[str, Any] | None,
+    managed_toml_data: dict[str, Any] | None,
 ) -> dict[str, str]:
     """Build redaction-safe effective or per-leaf provenance for JSON output.
 
@@ -563,8 +563,8 @@ def _config_json_row(
     value: object,
     store_error: str | None,
     include_catalog: bool,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one `config --json` row, redacting secrets and flagging errors.
 

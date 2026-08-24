@@ -36,8 +36,8 @@ if TYPE_CHECKING:
 def _resolve(
     option: ConfigOption,
     *,
-    toml_data: Mapping[str, Any],
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any],
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[Any, str]:
     """Resolve `option` through production code as `(value, source)`.
 

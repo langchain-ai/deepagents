@@ -1,6 +1,5 @@
 """Typed configuration-provider results and health metadata."""
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -70,19 +69,23 @@ class TomlSnapshot:
     source declares nothing" from "this source could not be read".
     """
 
-    data: Mapping[str, Any]
+    data: dict[str, Any]
     status: ProviderStatus
 
     def __post_init__(self) -> None:
         """Reject a snapshot that carries data it could not have read.
 
-        Deliberately does not copy `data` behind a `MappingProxyType`, though
-        `ResolvedValue.__post_init__` does exactly that for its own mappings.
-        `data` is a raw TOML table, and the coercers test nested values with
-        `isinstance(value, dict)` to tell a table from a scalar; a
-        `mappingproxy` fails that test, so every option under a wrapped table
-        would fall back to its next source. The immutability this type promises
-        is a convention here, enforced by the providers that build it.
+        `data` is a `dict`, not a `Mapping`, and deliberately not copied
+        behind a `MappingProxyType` the way `ResolvedValue.__post_init__`
+        copies its own mappings. It is a raw TOML table, and the coercers test
+        nested values with `isinstance(value, dict)` to tell a table from a
+        scalar -- so any `Mapping` that is not a `dict` fails that test and
+        every option under it falls back to its next source, silently. The
+        narrower annotation makes a `mappingproxy` (or any other `Mapping`) a
+        type error at the call site rather than a fall-through at runtime.
+
+        The immutability this type promises is therefore a convention, kept by
+        the providers that build the snapshot and by callers handed one.
 
         Raises:
             ValueError: If an unhealthy snapshot carries a non-empty table.

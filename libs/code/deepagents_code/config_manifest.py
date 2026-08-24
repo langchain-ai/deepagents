@@ -507,11 +507,11 @@ def load_config_toml() -> dict[str, Any]:
         return {}
 
 
-def load_managed_config_toml(*, refresh: bool = False) -> Mapping[str, Any]:
+def load_managed_config_toml(*, refresh: bool = False) -> dict[str, Any]:
     """Load the fixed operating-system managed TOML source.
 
     Returns:
-        Parsed managed mapping, or an empty mapping when unavailable.
+        Parsed managed table, or an empty table when unavailable.
     """
     from deepagents_code.configuration.service import get_managed_snapshot
 
@@ -547,9 +547,7 @@ def _coerce_toml(
     return _INVALID
 
 
-def _resolve_theme(
-    toml_data: Mapping[str, Any], *, source: str
-) -> tuple[str, str] | None:
+def _resolve_theme(toml_data: dict[str, Any], *, source: str) -> tuple[str, str] | None:
     """Resolve a theme from one TOML layer.
 
     Returns:
@@ -579,8 +577,8 @@ def _resolve_theme(
 def _resolve_option(
     option: ConfigOption,
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> ResolvedValue[object]:
     """Resolve one option through the ranked durable-mask engine.
 
@@ -653,7 +651,7 @@ def _resolve_option(
 def _resolve_option_without_managed(
     option: ConfigOption,
     *,
-    toml_data: Mapping[str, Any] | None,
+    toml_data: dict[str, Any] | None,
 ) -> ResolvedValue[object]:
     """Re-resolve `option` with the managed tier declaring nothing.
 
@@ -793,8 +791,8 @@ def _emit_ranked_diagnostics(
 
 def resolve_read_project_dotenv(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
     global_dotenv: Mapping[str, str] | None = None,
 ) -> bool:
     """Resolve whether the project `.env` should be loaded into the process env.
@@ -978,8 +976,8 @@ def _is_valid_auto_classifier_timeout(value: object) -> TypeIs[float]:
 
 def resolve_auto_classifier_timeout_with_source(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[float, str]:
     """Resolve the Auto classifier decision-batch budget and its source.
 
@@ -1086,8 +1084,8 @@ def resolve_auto_classifier_timeout_with_source(
 
 def resolve_auto_classifier_timeout(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> float:
     """Resolve the wall-clock budget for one Auto classifier decision batch.
 
@@ -1149,8 +1147,8 @@ def blank_auto_classifier_env_name() -> str | None:
 
 def resolve_auto_classifier_model_with_source(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[str | None, str]:
     """Resolve the effective Auto classifier model spec and its source.
 
@@ -1206,8 +1204,8 @@ def resolve_auto_classifier_model_with_source(
 
 def resolve_startup_mode_with_source(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Resolve the effective startup approval mode and its source for display.
 
@@ -1320,8 +1318,8 @@ def is_valid_recursion_limit(value: object) -> TypeIs[int]:
 
 def resolve_recursion_limit(
     *,
-    toml_data: Mapping[str, Any] | None = None,
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> int:
     """Resolve the effective main-agent `recursion_limit`.
 

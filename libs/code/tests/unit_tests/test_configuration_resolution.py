@@ -40,8 +40,8 @@ from unit_tests.conftest import resolve_option_for_test
 def _resolve(
     option: ConfigOption,
     *,
-    toml_data: Mapping[str, Any],
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any],
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[Any, str]:
     """Resolve `option` through production code as `(value, source)`.
 
@@ -104,7 +104,7 @@ def _invalid_toml_value(option: ConfigOption) -> object:
     raise AssertionError(msg)
 
 
-def _snapshot(data: Mapping[str, Any], status: ProviderStatus) -> TomlSnapshot:
+def _snapshot(data: dict[str, Any], status: ProviderStatus) -> TomlSnapshot:
     """Build a typed snapshot from a literal mapping."""
     return TomlSnapshot(data, status)
 

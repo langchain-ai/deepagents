@@ -260,7 +260,7 @@ resolve, so a rename would turn enforcement into a silent no-op.
 
 
 def managed_declaration(
-    managed_data: Mapping[str, Any], toml_keys: tuple[str, ...]
+    managed_data: dict[str, Any], toml_keys: tuple[str, ...]
 ) -> Literal["declared", "shadowed"] | None:
     """Classify what managed policy says at one manifest path.
 
@@ -284,7 +284,7 @@ def managed_declaration(
 
 
 def managed_policy_violations(
-    managed_data: Mapping[str, Any],
+    managed_data: dict[str, Any],
     *,
     status: ProviderStatus | None = None,
 ) -> tuple[str, ...]:
@@ -348,7 +348,7 @@ def managed_policy_violations(
 
 def resolve_managed_option(
     key: str,
-    managed_data: Mapping[str, Any],
+    managed_data: dict[str, Any],
     *,
     status: ProviderStatus | None = None,
 ) -> ResolvedValue[object] | None:
@@ -378,7 +378,7 @@ def resolve_managed_option(
     ).get(option)
 
 
-def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:
+def managed_rejections(managed_data: dict[str, Any]) -> tuple[str, ...]:
     """Return manifest keys managed policy declares whose value was dropped.
 
     Not a launch failure: only `ENFORCED_MANAGED_KEYS` stops a launch, and every
@@ -427,7 +427,7 @@ def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def managed_section_shape_violations(
-    managed_data: Mapping[str, Any],
+    managed_data: dict[str, Any],
 ) -> tuple[str, ...]:
     """Return known managed sections declared as non-table values.
 

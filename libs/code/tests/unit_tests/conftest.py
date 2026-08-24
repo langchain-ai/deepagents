@@ -821,8 +821,8 @@ def _close_leaked_debug_handlers() -> None:
 def resolve_option_for_test(
     option: ConfigOption,
     *,
-    toml_data: Mapping[str, Any],
-    managed_toml_data: Mapping[str, Any] | None = None,
+    toml_data: dict[str, Any],
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[Any, str]:
     """Resolve `option` through production code, returning `(value, source)`.
 

@@ -234,6 +234,44 @@ class TestOffloadCommand:
             assert kwargs["config"] == {"configurable": {"thread_id": "test-thread"}}
             assert "messages" not in kwargs["context"]
 
+    async def test_context_carries_the_session_approval_mode(self) -> None:
+        """Hooks must see the session's real mode during `/offload`.
+
+        The server defaults a missing `approval_mode` to `manual`, so omitting
+        it would show a configured `PreCompact`/`PreToolUse` hook Manual even in
+        YOLO -- a different mode than the same hook sees on every interactive
+        turn.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        result = {
+            "status": "noop",
+            "messages_offloaded": 0,
+            "messages_kept": 1,
+            "tokens_before": 10,
+            "tokens_after": 10,
+            "archive_path": None,
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
+            app._approval_mode = ApprovalMode.YOLO
+            app._auto_approve = True
+            with patch.object(
+                app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+            ):
+                await app._handle_offload()
+
+            await_args = remote.aoffload.await_args
+            assert await_args is not None
+            context = await_args.kwargs["context"]
+            assert context["approval_mode"] == "yolo"
+            assert context["auto_approve"] is True
+
     async def test_failing_session_start_hook_does_not_erase_the_result(self) -> None:
         """A hook raising after a committed compaction must not hide the outcome.
 

@@ -16313,6 +16313,14 @@ class DeepAgentsApp(App):
                 profile_overrides=self._profile_override or {},
                 model_context_limit=settings.model_context_limit,
                 thread_id=self._lc_thread_id,
+                # The operation runs the agent's `PreCompact` and `PreToolUse`
+                # hooks, and the server defaults a missing mode to `manual`.
+                # Without these a configured hook would see Manual during
+                # `/offload` even in Auto-Accept or YOLO, so a hook that keys
+                # its decision on the mode behaves differently here than on
+                # every interactive turn.
+                approval_mode=self._approval_mode.value,
+                auto_approve=self._auto_approve,
             )
             self._hooks.apply_graph_context(context)
             result = await remote.aoffload(

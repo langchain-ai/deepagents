@@ -3267,3 +3267,37 @@ class TestDiagnosticDedupIsPerGeneration:
                 _emit_ranked_diagnostics(option, resolver.get(option))
 
         assert len(caplog.records) == 1
+
+    def test_rebuilding_the_resolver_re_arms_the_dedup(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A rebuilt resolver is a new generation and must report afresh.
+
+        The set was cleared on reload but not on the cache miss that builds a
+        fresh resolver, and the cache key includes the managed path -- so
+        installing or removing policy advanced the generation while the dedup
+        stayed alive from the one before it.
+
+        Asserted on the set rather than on log output: the rejection reasons
+        differ across a rebuild (the source paths change), so counting log
+        records passes either way and pins nothing. The key is moved by
+        repointing the user path, because the managed route to a rebuild runs
+        through `invalidate_config_sources`, which clears the set itself and
+        would mask what this test is for.
+        """
+        from deepagents_code import config_manifest, model_config
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        get_config_resolver()
+        config_manifest._warned_non_table_paths.add(("ranked provider", "stale"))
+
+        moved = tmp_path / "moved" / "config.toml"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("", encoding="utf-8")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", moved)
+
+        get_config_resolver()
+
+        assert config_manifest._warned_non_table_paths == set(), (
+            "a rebuilt generation must re-arm the source diagnostics"
+        )

@@ -275,9 +275,9 @@ class ConfigResolver:
         # string is identical, so the user gets no message during exactly the
         # edit-and-retry loop where they need one. A generation advance ends
         # the sweep the dedup exists for, so it is the right scope.
-        from deepagents_code.config_manifest import _warned_non_table_paths
+        from deepagents_code.config_manifest import reset_source_diagnostics
 
-        _warned_non_table_paths.clear()
+        reset_source_diagnostics()
 
     def provider_statuses(self) -> Mapping[int, ProviderStatus]:
         """Return immutable provider health keyed by precedence rank."""
@@ -453,6 +453,12 @@ def get_config_resolver(
                 user_loader=user_provider.load,
             )
             _resolver_cache.entry = (key, resolver)
+            # A rebuild is a generation advance too: the key changes when
+            # managed policy is installed or removed, and the dedup set would
+            # otherwise carry rejections from the generation just replaced.
+            from deepagents_code.config_manifest import reset_source_diagnostics
+
+            reset_source_diagnostics()
             return resolver
         resolver = entry[1]
         if not refresh_managed:
@@ -496,8 +502,11 @@ def reset_config_resolver() -> None:
     the key; one that exercises the resolver at an unchanged path would inherit
     stale state.
     """
+    from deepagents_code.config_manifest import reset_source_diagnostics
+
     with _resolver_cache_lock:
         _resolver_cache.entry = None
+    reset_source_diagnostics()
 
 
 def resolve_ranked[T](

@@ -523,9 +523,24 @@ _warned_non_table_paths: set[tuple[str, ...]] = set()
 
 Deduplicates the `shadowed` / `unusable` / `retained` diagnostics so one
 `dcode config` sweep over the whole manifest reports a bad file once rather
-than once per option. Cleared by `ConfigResolver.reload_with_replacements`:
-each generation gets to report its own problems, so a repeated `/reload` of a
-file the user is still repairing keeps telling them it is broken."""
+than once per option. Cleared by `reset_source_diagnostics` wherever a
+generation is replaced: each generation gets to report its own problems, so a
+repeated `/reload` of a file the user is still repairing keeps telling them it
+is broken."""
+
+
+def reset_source_diagnostics() -> None:
+    """Re-arm the source-level rejections for a new config generation.
+
+    Called by the resolver whenever it installs a new generation -- on a
+    reload, and on the cache miss that builds a fresh resolver when managed
+    policy is installed or removed. Missing the second path left the dedup set
+    alive across a generation the user was told nothing about.
+
+    Public because `configuration.resolver` is deliberately unaware of this
+    module; reaching in for the private set would make that claim false.
+    """
+    _warned_non_table_paths.clear()
 
 
 def _coerce_toml(

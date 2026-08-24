@@ -3958,13 +3958,17 @@ class ChatInput(Vertical):
     def on_prompt_search_panel_option_selected(
         self, event: PromptSearchPanel.OptionSelected
     ) -> None:
-        """Insert a clicked prompt row."""
+        """Select a clicked prompt row; Enter is still required to insert."""
         event.stop()
         if not self._prompt_search_active:
             return
-        if 0 <= event.index < len(self._prompt_search_filtered):
+        if (
+            0 <= event.index < len(self._prompt_search_filtered)
+            and event.index != self._prompt_search_index
+        ):
             self._prompt_search_index = event.index
-            self._prompt_search_insert_selected()
+            if self._prompt_search is not None:
+                self._prompt_search.update_selection(event.index)
 
     def discard_text(self) -> bool:
         """Clear the draft, keeping it restorable via undo (ctrl+z).

@@ -7519,6 +7519,74 @@ class TestPromptSearchPanel:
             assert chat._text_area is not None
             assert chat._text_area.text == "newest prompt"
 
+    async def test_hovering_marks_a_row_without_moving_the_selection(
+        self, tmp_path: Path
+    ) -> None:
+        """Hover is visual only: arrows still move from the selected row."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            assert len(panel._options) == 3
+
+            await pilot.hover(panel._options[2])
+            await pilot.pause()
+
+            # The hovered row is marked, but the selection stays put.
+            assert "prompt-search-hovered" in panel._options[2].classes
+            assert chat._prompt_search_index == 0
+            assert panel._options[0]._is_selected
+            assert not panel._options[2]._is_selected
+
+            # Keyboard navigation resumes from the selection, not the hover.
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._prompt_search_index == 1
+            assert chat._prompt_search_active is True
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+
+    async def test_clicking_a_row_selects_but_does_not_insert(
+        self, tmp_path: Path
+    ) -> None:
+        """Click moves the selection; only Enter inserts."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+
+            await pilot.click(panel._options[2])
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 2
+            assert panel._options[2]._is_selected
+            # Clicking alone must not close the panel or touch the draft.
+            assert chat._prompt_search_active is True
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert chat._text_area.text == "oldest"
+
     async def test_escape_restores_draft(self, tmp_path) -> None:
         app = _RecordingApp()
         async with app.run_test() as pilot:

@@ -19,7 +19,7 @@ from deepagents_code.tui.widgets.prompt_search import (
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
-    from textual.events import MouseMove
+    from textual.events import Click, MouseMove
 
 
 class _PromptRow(Static):
@@ -31,12 +31,14 @@ class _PromptRow(Static):
         self._index = index
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Highlight the row under the cursor without submitting it.
+        """Hover-mark the row under the cursor without moving the selection."""
+        event.stop()
+        screen = self.screen
+        if isinstance(screen, PromptClipboardScreen):
+            screen.hover_row(self._index)
 
-        Hover moves the highlight so a following Enter inserts what the user
-        is pointing at; the parent screen maps this row's index into the
-        filtered list.
-        """
+    def on_click(self, event: Click) -> None:
+        """Select the clicked row; Enter is still required to insert it."""
         event.stop()
         screen = self.screen
         if isinstance(screen, PromptClipboardScreen):
@@ -99,6 +101,7 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         self._empty_message = empty_message
         self._selected_index = 0
         self._rows: list[_PromptRow] = []
+        self._hovered_index: int | None = None
 
     @override
     def compose(self) -> ComposeResult:
@@ -182,6 +185,9 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         rows_list = self.query_one("#prompt-list", VerticalScroll)
         await rows_list.remove_children()
         self._rows = []
+        # The hovered row is unmounted below, so its mark dies with it; the
+        # next mouse movement re-marks whichever row the cursor is over.
+        self._hovered_index = None
         if not self._filtered:
             if self._prompts:
                 message = "No matching prompts."
@@ -208,11 +214,28 @@ class PromptClipboardScreen(ModalScreen[str | None]):
             return
         preview.update(Content(self._filtered[self._selected_index]))
 
-    def select_row(self, index: int) -> None:
-        """Highlight the row at `index`, as if navigated to by key.
+    def hover_row(self, index: int) -> None:
+        """Hover-mark the row at `index` without moving the selection.
 
-        Called by a row's mouse hover; Enter is still required to insert.
-        Ignores hovers that arrive while a filter edit is still queued, since
+        Hover is transient pointing, not a commitment: it must not disturb
+        `_selected_index`, or arrow keys would resume from wherever the mouse
+        last rested instead of from the row the user actually selected.
+        """
+        if len(self._rows) != len(self._filtered):
+            # A filter edit is still queued, so row indexes describe the old
+            # list; the hover is stale and the rebuild drops the mark anyway.
+            return
+        if self._hovered_index is not None and self._hovered_index < len(self._rows):
+            self._rows[self._hovered_index].remove_class("prompt-row-hovered")
+        self._hovered_index = index
+        if 0 <= index < len(self._rows):
+            self._rows[index].add_class("prompt-row-hovered")
+
+    def select_row(self, index: int) -> None:
+        """Move the selection to `index`, as if navigated to by key.
+
+        Called by a row's mouse click; Enter is still required to insert.
+        Ignores clicks that arrive while a filter edit is still queued, since
         the row indexes then describe a different list than `_filtered`.
         """
         self._sync_filter_value()
@@ -229,6 +252,14 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         self._rows[index].add_class("prompt-row-selected")
         self._update_preview()
 
+    def _apply_selection(self, index: int) -> None:
+        self._rows[self._selected_index].remove_class("prompt-row-selected")
+        self._selected_index = index
+        selected = self._rows[index]
+        selected.add_class("prompt-row-selected")
+        selected.scroll_visible(animate=False)
+        self._update_preview()
+
     async def _move(self, delta: int) -> None:
         if not self._filtered:
             self.app.bell()
@@ -240,17 +271,11 @@ class PromptClipboardScreen(ModalScreen[str | None]):
             # so settle the render before moving.
             await self._render_rows()
         previous = self._selected_index
-        self._selected_index = max(
-            0, min(self._selected_index + delta, len(self._filtered) - 1)
-        )
-        if previous == self._selected_index:
+        new_index = max(0, min(previous + delta, len(self._filtered) - 1))
+        if previous == new_index:
             self.app.bell()
             return
-        self._rows[previous].remove_class("prompt-row-selected")
-        selected = self._rows[self._selected_index]
-        selected.add_class("prompt-row-selected")
-        selected.scroll_visible(animate=False)
-        self._update_preview()
+        self._apply_selection(new_index)
 
     async def action_move_up(self) -> None:
         """Move selection toward newer prompts."""

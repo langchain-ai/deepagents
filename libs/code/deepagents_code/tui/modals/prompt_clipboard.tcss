@@ -72,6 +72,12 @@ PromptClipboardScreen .prompt-row-selected {
     color: $background;
 }
 
+PromptClipboardScreen .prompt-row-hovered {
+    /* Hover marks where the cursor is pointing without implying a selection
+       change, so it stays subtler than the selected row's solid primary. */
+    background: $surface-lighten-2;
+}
+
 PromptClipboardScreen .prompt-preview-label {
     height: auto;
     color: $text-muted;

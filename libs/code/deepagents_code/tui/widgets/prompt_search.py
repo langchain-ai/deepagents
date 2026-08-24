@@ -170,6 +170,13 @@ class PromptSearchOption(Static):
         background: $primary;
         color: $background;
     }
+
+    PromptSearchOption.prompt-search-hovered {
+        /* Hover marks where the cursor is pointing without implying a
+           selection change, so it stays subtler than the selected row's
+           solid primary. */
+        background: $surface-lighten-2;
+    }
     """
 
     class Clicked(Message):
@@ -177,6 +184,14 @@ class PromptSearchOption(Static):
 
         def __init__(self, index: int) -> None:
             """Initialize with the clicked row index."""
+            super().__init__()
+            self.index = index
+
+    class Hovered(Message):
+        """Message sent when the mouse moves over a prompt row."""
+
+        def __init__(self, index: int) -> None:
+            """Initialize with the hovered row index."""
             super().__init__()
             self.index = index
 
@@ -199,9 +214,17 @@ class PromptSearchOption(Static):
         self._is_selected = is_selected
         self.set_class(is_selected, "prompt-search-selected")
 
+    def set_hovered(self, *, is_hovered: bool) -> None:
+        """Toggle the hover styling."""
+        self.set_class(is_hovered, "prompt-search-hovered")
+
     def on_click(self) -> None:
         """Post the click up to `ChatInput`."""
         self.post_message(self.Clicked(self.index))
+
+    def on_mouse_move(self) -> None:
+        """Hover-mark the row under the cursor without moving the selection."""
+        self.post_message(self.Hovered(self.index))
 
 
 class PromptSearchPanel(Vertical):
@@ -270,6 +293,7 @@ class PromptSearchPanel(Vertical):
         self._rebuild_generation: int = 0
         self._reported_rows = 0
         self._result_rows = 0
+        self._hovered_index: int | None = None
 
     class RowsChanged(Message):
         """Message sent when the panel's rendered row count changes."""
@@ -342,6 +366,10 @@ class PromptSearchPanel(Vertical):
 
         titles = self._pending_titles
         selected_index = self._pending_selected
+        # Rows are restyled or remounted below, so any hover mark dies with
+        # this rebuild; the next mouse movement re-marks the row under the
+        # cursor.
+        self._hovered_index = None
 
         start, stop = _window_bounds(len(titles), selected_index)
         window = titles[start:stop]
@@ -452,6 +480,27 @@ class PromptSearchPanel(Vertical):
         """Forward row clicks as this panel's own message for `ChatInput`."""
         event.stop()
         self.post_message(self.OptionSelected(event.index))
+
+    def on_prompt_search_option_hovered(
+        self, event: PromptSearchOption.Hovered
+    ) -> None:
+        """Hover-mark the row under the cursor without moving the selection.
+
+        Hover is transient pointing, not a commitment: it stays inside the
+        panel instead of going to `ChatInput`, or arrow keys would resume from
+        wherever the mouse last rested instead of from the selected row.
+        """
+        event.stop()
+        if not self._options:
+            return
+        if self._hovered_index is not None:
+            old_local = self._hovered_index - self._options[0].index
+            if 0 <= old_local < len(self._options):
+                self._options[old_local].set_hovered(is_hovered=False)
+        self._hovered_index = event.index
+        new_local = event.index - self._options[0].index
+        if 0 <= new_local < len(self._options):
+            self._options[new_local].set_hovered(is_hovered=True)
 
     def _report_rows(self, rows: int) -> None:
         """Announce the rendered row count when it changes."""

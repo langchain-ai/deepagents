@@ -374,8 +374,8 @@ class TestPromptClipboardScreen:
             assert "Could not read prompt history" in message
             assert "No prompts yet" not in message
 
-    async def test_hovering_a_row_selects_but_does_not_submit(self) -> None:
-        """Hover moves the highlight; only Enter dismisses the modal."""
+    async def test_hovering_marks_a_row_without_moving_the_selection(self) -> None:
+        """Hover is visual only: arrows still move from the selected row."""
         app = _PromptClipboardApp()
         async with app.run_test() as pilot:
             screen = app.open(("newest", "middle", "oldest"))
@@ -383,6 +383,30 @@ class TestPromptClipboardScreen:
             await pilot.pause()
 
             await pilot.hover(screen._rows[2])
+            await pilot.pause()
+
+            # The hovered row is marked, but selection and preview stay put.
+            assert "prompt-row-hovered" in screen._rows[2].classes
+            assert screen._selected_index == 0
+            preview = screen.query_one("#prompt-preview", Static)
+            assert str(preview.content) == "newest"
+
+            # Keyboard navigation resumes from the selection, not the hover.
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._selected_index == 1
+            assert str(preview.content) == "middle"
+            assert app.results == []
+
+    async def test_clicking_a_row_selects_but_does_not_submit(self) -> None:
+        """Click moves the selection; only Enter dismisses the modal."""
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("newest", "middle", "oldest"))
+            await pilot.pause()
+            await pilot.pause()
+
+            await pilot.click(screen._rows[2])
             await pilot.pause()
 
             assert screen._selected_index == 2
@@ -396,17 +420,3 @@ class TestPromptClipboardScreen:
             await pilot.press("enter")
             await pilot.pause()
             assert app.results == ["oldest"]
-
-    async def test_hovering_the_selected_row_is_a_noop(self) -> None:
-        """Hovering the already-highlighted row must not error or re-render."""
-        app = _PromptClipboardApp()
-        async with app.run_test() as pilot:
-            screen = app.open(("only",))
-            await pilot.pause()
-            await pilot.pause()
-
-            await pilot.hover(screen._rows[0])
-            await pilot.pause()
-
-            assert screen._selected_index == 0
-            assert app.results == []

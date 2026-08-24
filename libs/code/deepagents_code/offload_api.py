@@ -490,6 +490,10 @@ async def _commit_state_update(
                 thread_id,
                 len(prepared.records),
             )
+            # Deliberately settled rather than rolled back: the delta is
+            # treated as persisted, so restoring the records would double-charge
+            # the next drain.
+            prepared.commit()
             if isinstance(exc, asyncio.CancelledError):
                 raise
             msg = (
@@ -506,6 +510,7 @@ async def _commit_state_update(
         )
         prepared.rollback()
         raise
+    prepared.commit()
 
 
 async def _archive_path_landed(

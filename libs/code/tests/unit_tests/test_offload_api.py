@@ -287,7 +287,9 @@ class TestExecuteOffload:
             )
         )
         prepared = SimpleNamespace(
-            update={"_session_cost_usd": 0.25}, rollback=MagicMock()
+            update={"_session_cost_usd": 0.25},
+            rollback=MagicMock(),
+            commit=MagicMock(),
         )
 
         with (
@@ -397,6 +399,7 @@ class TestExecuteOffload:
         prepared = SimpleNamespace(
             update={"_session_cost_usd": 0.25},
             rollback=MagicMock(),
+            commit=MagicMock(),
             records=[],
         )
 
@@ -432,7 +435,9 @@ class TestExecuteOffload:
             )
         )
         prepared = SimpleNamespace(
-            update={"_session_cost_usd": 0.25}, rollback=MagicMock()
+            update={"_session_cost_usd": 0.25},
+            rollback=MagicMock(),
+            commit=MagicMock(),
         )
         settlement_started = asyncio.Event()
         finish_settlement = asyncio.Event()
@@ -485,7 +490,7 @@ class TestExecuteOffload:
                 )
             )
         )
-        prepared = SimpleNamespace(update={}, rollback=MagicMock())
+        prepared = SimpleNamespace(update={}, rollback=MagicMock(), commit=MagicMock())
 
         with self._patched(offload_api, threads, operation, prepared):
             await offload_api._execute_offload(
@@ -526,7 +531,7 @@ class TestExecuteOffload:
                 )
             )
         )
-        prepared = SimpleNamespace(update={}, rollback=MagicMock())
+        prepared = SimpleNamespace(update={}, rollback=MagicMock(), commit=MagicMock())
 
         with self._patched(offload_api, threads, operation, prepared):
             await offload_api._execute_offload(
@@ -718,7 +723,7 @@ class TestExecuteOffload:
                 )
             )
         )
-        prepared = SimpleNamespace(update={}, rollback=MagicMock())
+        prepared = SimpleNamespace(update={}, rollback=MagicMock(), commit=MagicMock())
 
         with (
             self._patched(offload_api, threads, operation, prepared),
@@ -750,7 +755,7 @@ class TestExecuteOffload:
                 return_value=OffloadExecution({}, noop_result)  # ty: ignore[invalid-argument-type]
             )
         )
-        prepared = SimpleNamespace(update={}, rollback=MagicMock())
+        prepared = SimpleNamespace(update={}, rollback=MagicMock(), commit=MagicMock())
 
         with self._patched(offload_api, threads, operation, prepared):
             response = await offload_api._execute_offload(
@@ -784,7 +789,10 @@ class TestExecuteOffload:
             )
         )
         prepared = SimpleNamespace(
-            update={"_session_cost_usd": 0.25}, rollback=MagicMock(), records=[]
+            update={"_session_cost_usd": 0.25},
+            rollback=MagicMock(),
+            commit=MagicMock(),
+            records=[],
         )
 
         with (
@@ -826,7 +834,10 @@ class TestExecuteOffload:
             )
         )
         prepared = SimpleNamespace(
-            update={"_session_cost_usd": 0.25}, rollback=MagicMock(), records=[]
+            update={"_session_cost_usd": 0.25},
+            rollback=MagicMock(),
+            commit=MagicMock(),
+            records=[],
         )
 
         with (
@@ -871,7 +882,10 @@ class TestExecuteOffload:
             )
         )
         prepared = SimpleNamespace(
-            update={"_session_cost_usd": 0.25}, rollback=MagicMock(), records=[]
+            update={"_session_cost_usd": 0.25},
+            rollback=MagicMock(),
+            commit=MagicMock(),
+            records=[],
         )
 
         with (
@@ -915,7 +929,10 @@ class TestExecuteOffload:
             )
         )
         prepared = SimpleNamespace(
-            update={"_session_cost_usd": 0.25}, rollback=MagicMock(), records=[]
+            update={"_session_cost_usd": 0.25},
+            rollback=MagicMock(),
+            commit=MagicMock(),
+            records=[],
         )
 
         with (
@@ -996,7 +1013,9 @@ class TestExecuteOffload:
         operation = SimpleNamespace(
             execute=AsyncMock(side_effect=HookTransportInterruptError(request))  # ty: ignore[invalid-argument-type]
         )
-        prepared = SimpleNamespace(update={}, rollback=MagicMock(), records=[])
+        prepared = SimpleNamespace(
+            update={}, rollback=MagicMock(), commit=MagicMock(), records=[]
+        )
 
         with self._patched(offload_api, threads, operation, prepared):
             response = await offload_api._execute_offload(
@@ -1048,7 +1067,10 @@ class TestExecuteOffload:
         )
         operation = SimpleNamespace(execute=AsyncMock(side_effect=execute))
         prepared = SimpleNamespace(
-            update={"_session_cost_usd": 0.25}, rollback=MagicMock(), records=[]
+            update={"_session_cost_usd": 0.25},
+            rollback=MagicMock(),
+            commit=MagicMock(),
+            records=[],
         )
 
         replies: dict[str, object] = {"hook-1": {"decision": "allow"}}

@@ -2021,6 +2021,33 @@ class PreparedOperationCost:
                 self.delta_usd,
             )
 
+    def commit(self) -> None:
+        """Mark the prepared charge as persisted.
+
+        Records nothing: the delta reaches the thread through `update`, which
+        the caller writes to the checkpoint. This only settles the instance so
+        an abandoned prepare can be told apart from a completed one.
+        """
+        self._settled = True
+
+    def __del__(self) -> None:
+        """Warn when a prepare was abandoned without settling.
+
+        The drain is destructive, so an instance collected while unsettled has
+        silently deleted its spend from the thread's lifetime total. Committing
+        and rolling back are both observable; only the leak was not, which is
+        the one case the class docstring calls unrecoverable.
+        """
+        if not self._settled:
+            logger.warning(
+                "Operation cost prepare for thread %s was abandoned without "
+                "commit or rollback; $%.6f across %d record(s) is lost from the "
+                "thread total",
+                self.thread_id,
+                self.delta_usd,
+                len(self.records),
+            )
+
 
 def prepare_operation_cost(
     state: CostState,

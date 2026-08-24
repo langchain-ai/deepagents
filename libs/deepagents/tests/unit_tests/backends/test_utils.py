@@ -15,6 +15,7 @@ from deepagents.backends.utils import (
     _looks_like_regex,
     compile_grep_include_glob,
     compile_recursive_glob,
+    format_content_with_line_numbers,
     grep_matches_from_files,
     perform_string_replacement,
     regex_literal_hint,
@@ -671,3 +672,88 @@ class TestGrepMaxCount:
         assert result.matches is not None
         assert len(result.matches) == 3
         assert result.truncated is False
+
+
+# ---------------------------------------------------------------------------
+# One definition of "a line"
+# ---------------------------------------------------------------------------
+
+# `str.splitlines()` breaks on the full Unicode boundary set. `grep` and the
+# line-number gutter both index with `str.split("\n")`. Those two disagree for
+# any file containing one of the characters below, so `grep` would report a
+# symbol on line N while `read_file(offset=N-1)` returned a different line --
+# and labelled it N.
+UNICODE_NON_TERMINATORS = [
+    pytest.param("\v", id="vertical-tab"),
+    pytest.param("\f", id="form-feed"),
+    pytest.param("\x1c", id="file-separator"),
+    pytest.param("\x1d", id="group-separator"),
+    pytest.param("\x1e", id="record-separator"),
+    pytest.param("\x85", id="next-line"),
+    pytest.param("\u2028", id="line-separator"),
+    pytest.param("\u2029", id="paragraph-separator"),
+]
+
+
+class TestReadLineDefinitionMatchesGrep:
+    """`read` must count lines the way `grep` and the gutter renderer do."""
+
+    @staticmethod
+    def _file(content: str) -> FileData:
+        return FileData(content=content, encoding="utf-8")
+
+    @pytest.mark.parametrize("char", UNICODE_NON_TERMINATORS)
+    def test_unicode_boundary_is_not_a_line_terminator(self, char: str) -> None:
+        content = f"alpha\nbeta{char}gamma\ndelta\n"
+        result = slice_read_response(self._file(content), offset=0, limit=2000)
+        assert result.total_lines == 3
+        assert result.end_line == 3
+
+    @pytest.mark.parametrize("char", UNICODE_NON_TERMINATORS)
+    def test_grep_line_number_reads_back_the_same_line(self, char: str) -> None:
+        """The canonical agent loop: grep for a symbol, then read that line."""
+        content = f"alpha\nbeta{char}gamma\nTARGET\ndelta\n"
+        files = {"/f.txt": {"content": content, "modified_at": "2024-01-01T00:00:00Z"}}
+
+        matches = grep_matches_from_files(files, "TARGET", "/").matches
+        assert len(matches) == 1
+        line_number = matches[0]["line"]
+
+        window = slice_read_response(self._file(content), offset=line_number - 1, limit=1)
+        assert window.file_data is not None
+        assert "TARGET" in window.file_data["content"]
+        assert window.start_line == line_number
+
+    @pytest.mark.parametrize("char", UNICODE_NON_TERMINATORS)
+    def test_rendered_gutter_row_count_matches_metadata(self, char: str) -> None:
+        content = f"alpha\nbeta{char}gamma\ndelta\n"
+        result = slice_read_response(self._file(content), offset=0, limit=2000)
+        assert result.file_data is not None
+        assert result.start_line is not None
+        assert result.end_line is not None
+
+        rendered = format_content_with_line_numbers(result.file_data["content"], start_line=result.start_line)
+        rows = rendered.split("\n")
+        assert len(rows) == result.end_line - result.start_line + 1
+
+    def test_crlf_is_still_a_line_terminator(self) -> None:
+        result = slice_read_response(self._file("r1\r\nr2\r\nr3\r\n"), offset=0, limit=2000)
+        assert result.total_lines == 3
+
+    def test_bare_cr_is_still_a_line_terminator(self) -> None:
+        """Unchanged behaviour: universal newlines stay universal."""
+        result = slice_read_response(self._file("foo\rbar\r"), offset=0, limit=2000)
+        assert result.total_lines == 2
+
+    def test_form_feed_page_break_paginates_contiguously(self) -> None:
+        """Two sequential pages of a form-feed file must not skip or repeat."""
+        content = "one\ntwo\fthree\nfour\nfive\n"
+        page_one = slice_read_response(self._file(content), offset=0, limit=2)
+        assert page_one.next_offset is not None
+        page_two = slice_read_response(self._file(content), offset=page_one.next_offset, limit=2)
+
+        assert page_one.file_data is not None
+        assert page_two.file_data is not None
+        assert page_one.file_data["content"] == "one\ntwo\fthree\n"
+        assert page_two.file_data["content"] == "four\nfive\n"
+        assert page_two.start_line == page_one.end_line + 1

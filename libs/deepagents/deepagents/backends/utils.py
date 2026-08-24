@@ -425,6 +425,44 @@ def normalize_read_bounds(offset: int, limit: int) -> tuple[int, int]:
     return normalized_offset, normalized_limit
 
 
+_UNIVERSAL_NEWLINE_SPLIT_RE = re.compile(r"(?<=\n)|(?<=\r)(?!\n)")
+"""Zero-width split after every LF, and after every CR not part of a CRLF."""
+
+
+def split_lines_keepends(content: str) -> list[str]:
+    r"""Split `content` into lines on universal newlines, keeping terminators.
+
+    Breaks on `\n`, `\r\n` and bare `\r` only -- deliberately *not* on the
+    rest of the Unicode line-boundary set (`\v`, `\f`, `\x1c`, `\x1d`,
+    `\x1e`, `\x85`, `\u2028`, `\u2029`), which `str.splitlines()` also
+    breaks on.
+
+    That distinction is the whole point. `grep_matches_from_files` and
+    `format_content_with_line_numbers` both index lines with
+    `str.split("\n")`, so using `str.splitlines()` here gave `read_file` a
+    different definition of "line N" than grep and the rendered gutter. A file
+    carrying a form feed (the Emacs/GNU page separator, common in real source
+    trees) or `\u2028`/`\u2029` (routine in JavaScript and JSON) made the
+    canonical agent loop -- grep for a symbol, read the reported line -- return
+    a *different* line, labelled with the number that was asked for, with no
+    error anywhere.
+
+    Joining the result with `""` reproduces `content` exactly, so the file's
+    trailing-newline state still round-trips for `edit()`'s EOF detection.
+
+    Args:
+        content: Text to split.
+
+    Returns:
+        The lines of `content`, each retaining its terminator; the final line
+            has none when `content` does not end with one.
+    """
+    lines = _UNIVERSAL_NEWLINE_SPLIT_RE.split(content)
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def slice_read_response(
     file_data: FileData,
     offset: int,
@@ -471,13 +509,15 @@ def slice_read_response(
     if limit == 0:
         return ReadResult(file_data=_copy_file_data_with_content(file_data, ""), no_lines_requested=True)
 
-    # `splitlines(keepends=True)` retains each line's terminator, including
-    # the absence of one on the final line. Joining with `""` therefore
-    # round-trips the trailing-newline state of the file faithfully —
-    # required so `edit()` can report EOF-newline mismatches accurately. It
-    # also splits on CR / CRLF, so line indexing matches the LF-normalized
-    # form without first rewriting the whole (potentially huge) string.
-    lines = content.splitlines(keepends=True)
+    # `split_lines_keepends` retains each line's terminator, including the
+    # absence of one on the final line. Joining with `""` therefore round-trips
+    # the trailing-newline state of the file faithfully — required so `edit()`
+    # can report EOF-newline mismatches accurately. It splits on CR / CRLF too,
+    # so line indexing matches the LF-normalized form without first rewriting
+    # the whole (potentially huge) string, and — unlike `str.splitlines()` — it
+    # leaves the other Unicode line boundaries alone so that `read_file`,
+    # `grep` and the rendered gutter all agree on which line is line N.
+    lines = split_lines_keepends(content)
     start_idx = offset
     end_idx = min(start_idx + limit, len(lines))
     total_lines = len(lines)

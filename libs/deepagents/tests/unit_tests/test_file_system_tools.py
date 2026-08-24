@@ -587,3 +587,49 @@ def test_ls_with_invalid_path_returns_error_message() -> None:
 
     error_message = tool_messages[0].content
     assert error_message == "Error: Path traversal not allowed: ../../../etc"
+
+
+def test_grep_line_number_reads_back_the_same_line_across_a_form_feed() -> None:
+    """End-to-end: grep for a symbol, read the line it reported, get that line.
+
+    A form feed (the Emacs/GNU page separator) used to make `read_file` count
+    lines differently from `grep`, so the agent asked for the line grep named
+    and was handed the line before it -- rendered under the requested number.
+    """
+    source = "def alpha():\n    return 1\n\n\f\ndef beta():\n    SECRET = 1\n    return 2\n"
+
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "write_file", "args": {"file_path": "/mod.py", "content": source}, "id": "w", "type": "tool_call"}],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "grep",
+                            "args": {"pattern": "SECRET", "path": "/", "output_mode": "content"},
+                            "id": "g",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "read_file", "args": {"file_path": "/mod.py", "offset": 5, "limit": 1}, "id": "r", "type": "tool_call"}],
+                ),
+                AIMessage(content="Found it."),
+            ]
+        )
+    )
+
+    result = create_deep_agent(model=fake_model, backend=StateBackend()).invoke({"messages": [HumanMessage(content="find SECRET")]})
+    by_name = {m.name: str(m.content) for m in result["messages"] if isinstance(m, ToolMessage)}
+
+    # grep reports the 1-indexed line; SECRET is on LF line 6.
+    assert "6:" in by_name["grep"], by_name["grep"]
+    # read_file(offset=5) is that same line, and the gutter agrees.
+    assert "SECRET" in by_name["read_file"], by_name["read_file"]
+    assert by_name["read_file"].lstrip().startswith("6"), by_name["read_file"]

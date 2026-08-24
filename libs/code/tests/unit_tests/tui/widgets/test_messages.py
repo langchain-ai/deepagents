@@ -31,6 +31,7 @@ from deepagents_code.tool_display import (
 )
 from deepagents_code.tui.widgets.message_store import MessageData
 from deepagents_code.tui.widgets.messages import (
+    _TOOL_ROW_ACTION_CLASS,
     AppMessage,
     AssistantMessage,
     DiffMessage,
@@ -1650,6 +1651,188 @@ class TestToolCallMessageAppearance:
             event = MagicMock()
             app.msg.on_click(event)
             event.stop.assert_not_called()
+
+    async def test_hover_rule_targets_the_row_action_class(self) -> None:
+        """The CSS selector and the constant must not drift apart.
+
+        Renaming one without the other leaves hover permanently dead with the
+        whole suite green, since nothing else reads the selector.
+        """
+        assert (
+            f"ToolCallMessage.{_TOOL_ROW_ACTION_CLASS}:hover"
+            in ToolCallMessage.DEFAULT_CSS
+        )
+
+    async def test_long_execute_command_is_actionable_without_expandable_output(
+        self,
+    ) -> None:
+        """A truncated command carries the row action even when output is short.
+
+        Guards the `has_expandable_args` term of `has_row_action`: dropping it
+        leaves this row unclickable, because `on_click` returns before reaching
+        its args fallthrough.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        app = _tool_msg_app("execute", {"command": command})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("hi")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._args_expanded is True
+
+    async def test_multiline_js_eval_is_actionable_without_expandable_output(
+        self,
+    ) -> None:
+        """A short `js_eval` result still leaves its code block clickable."""
+        app = _tool_msg_app("js_eval", {"code": "const a = 1;\nreturn a;"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("1")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_long_task_description_is_actionable_without_other_expansions(
+        self,
+    ) -> None:
+        """A truncated `task` description alone earns the row action.
+
+        Guards the `has_expandable_task_desc` term: without it this row loses
+        both its hover border and its click.
+        """
+        app = _tool_msg_app("task", {"description": "d" * 300})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_expandable_args is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._task_desc_expanded is True
+
+    async def test_short_task_description_is_not_actionable(self) -> None:
+        """A `task` row with nothing truncated advertises no row action."""
+        app = _tool_msg_app("task", {"description": "short"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_pending_row_is_actionable_before_output_arrives(self) -> None:
+        """A long command is clickable while the tool is still running.
+
+        Covers the `on_mount` sync, the only path that classes a row whose
+        output has never been set.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        app = _tool_msg_app("execute", {"command": command})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_pending_short_row_is_not_actionable(self) -> None:
+        """A pending row with nothing to reveal stays inert."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_short_read_file_output_is_actionable(self) -> None:
+        """Collapse-by-default output is actionable regardless of its size.
+
+        The counter-example to "short output means no action": `read_file`
+        hides its whole body because the header already names the path, so a
+        five-character result still expands. Covers the
+        `_COLLAPSE_OUTPUT_BY_DEFAULT` return in `_update_output_display`, which
+        exits before the shared sync at the end.
+        """
+        app = _tool_msg_app("read_file", {"file_path": "example.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("x = 1")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    @pytest.mark.parametrize(
+        ("tool_name", "output"),
+        [("grep", "No matches found"), ("glob", "No files found")],
+    )
+    async def test_empty_search_result_is_not_actionable(
+        self, tool_name: str, output: str
+    ) -> None:
+        """A terminal no-result message renders inline, so nothing can expand."""
+        app = _tool_msg_app(tool_name, {"pattern": "zzz"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_short_error_row_is_force_expanded_without_row_action(self) -> None:
+        """A force-expanded short error offers no collapse to advertise."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error("boom")
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_row_action_class_survives_rehydration(self) -> None:
+        """A row rebuilt from stored data re-derives its action from its args.
+
+        The hydrated path never calls `set_success`, so the class comes solely
+        from the `on_mount` sync after `_restore_deferred_state`. Also pins that
+        the store keeps `tool_args`: without them the row loses its action.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        source = _tool_msg_app("execute", {"command": command})
+        async with source.run_test() as pilot:
+            await pilot.pause()
+            source.msg.set_success("hi")
+            await pilot.pause()
+            data = MessageData.from_widget(source.msg)
+
+        assert data is not None
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+
+        class _RestoredApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _RestoredApp().run_test() as pilot:
+            await pilot.pause()
+
+            assert restored.has_row_action is True
+            assert restored.has_class(_TOOL_ROW_ACTION_CLASS)
 
     async def test_ascii_hover_requires_actionable_row(self) -> None:
         """ASCII borders brighten only when clicking the row has an effect."""

@@ -1664,9 +1664,15 @@ def _managed_verdict(option_key: str) -> tuple[bool, bool]:
     """Probe whether managed policy still decides an option after a user write.
 
     Resolves the process managed snapshot against an empty user tier, so the
-    answer describes policy alone. `load_managed_config_toml()` defaults to
+    answer describes policy alone. `get_managed_snapshot()` defaults to
     `refresh=False`: the write just made cannot have changed managed policy,
     and re-reading it here would swap the snapshot every other reader observes.
+
+    The snapshot is passed whole, health included. Asserting `OK` over
+    `load_managed_config_toml()` -- which returns an empty table for an
+    unreadable file -- made a broken policy file indistinguishable from no
+    policy: the provider emitted no rejection, the managed tier read as
+    `Unset`, and the toast was a bare "Preference saved."
 
     Emitting the ranked diagnostics is the point, not a side effect. A
     malformed managed entry is reported nowhere else, and this write is the
@@ -1684,13 +1690,15 @@ def _managed_verdict(option_key: str) -> tuple[bool, bool]:
         _emit_ranked_diagnostics,
         _ranked_source,
         get_option,
-        load_managed_config_toml,
     )
     from deepagents_code.configuration.resolver import (
         MANAGED_RANK,
         resolver_from_snapshots,
     )
-    from deepagents_code.configuration.service import managed_decided
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_decided,
+    )
     from deepagents_code.configuration.types import (
         Invalid,
         ProviderHealth,
@@ -1703,10 +1711,7 @@ def _managed_verdict(option_key: str) -> tuple[bool, bool]:
         return False, False
 
     resolved = resolver_from_snapshots(
-        managed=TomlSnapshot(
-            load_managed_config_toml(),
-            ProviderStatus("managed config", None, ProviderHealth.OK),
-        ),
+        managed=get_managed_snapshot(),
         user=TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.OK)),
     ).get(option)
     _emit_ranked_diagnostics(option, resolved)

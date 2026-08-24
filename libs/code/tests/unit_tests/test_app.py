@@ -41734,6 +41734,39 @@ class TestManagedVerdict:
 
         assert _managed_verdict("not.a.real.option") == (False, False)
 
+    def test_an_unreadable_policy_file_is_reported(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A policy file that will not parse must not read as "no policy".
+
+        The probe used to assert `ProviderHealth.OK` over the empty table
+        `load_managed_config_toml` returns for an unreadable file, which
+        discarded the health that tells the two apart -- so the provider
+        emitted no rejection and the administrator got nothing at all.
+        """
+        import logging
+
+        from deepagents_code.app import _managed_verdict
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text("[goals\nauto_accept_criteria = ", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        try:
+            with caplog.at_level(logging.WARNING):
+                decided, rejected = _managed_verdict("goals.auto_accept_criteria")
+        finally:
+            service.invalidate_config_sources()
+
+        assert decided is False
+        assert rejected is False
+        assert caplog.text, "an unreadable policy file must be reported somewhere"
+
 
 class _NotifyRecorder:
     """Minimal stand-in for the app surface the goal-preference save uses."""

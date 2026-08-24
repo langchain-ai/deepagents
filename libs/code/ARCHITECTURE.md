@@ -41,11 +41,17 @@ Headless mode uses the same agent runtime as the interactive UI, but swaps the t
 
 Configuration is layered across user, project, session, and runtime scopes. That lets teams share project defaults while individual users keep their own credentials, preferences, skills, and local settings.
 
-Configuration files are read into a single process-wide generation, built on the first read and reused after that. Readers that resolve through the shared resolver all observe that one generation, so they cannot disagree about a setting. Editing `config.toml` while the app runs therefore has no effect on them until the generation advances, which happens in two places: an in-app write to the default config path (which refreshes the generation itself) and `/reload`. `/reload` re-reads every source and swaps the result in atomically -- a config that fails to parse leaves the previous generation in force rather than half-applying the new one.
+Configuration files are read into a single process-wide generation, built on the first read and reused after that. Readers that resolve through the shared resolver all observe that one generation. They cannot disagree about a setting.
 
-Two kinds of reader sit outside that generation by design. Callers that take their own snapshot -- `get_config_sources`, and the `dcode config` and `dcode doctor` commands -- deliberately inspect one file generation rather than process state, and report it next to its health. The environment tier is always live: `EnvProvider` reads `os.environ` at resolution time, because the process mutates it during dotenv bootstrap and on every cwd switch.
+An edit to `config.toml` while the app runs has no effect on those readers until the generation advances. This happens in two places: an in-app write to the default config path, which refreshes the generation itself, and `/reload`. Each source keeps its last usable snapshot, so a file that fails to parse leaves that tier unchanged instead of erasing it.
 
-This follows the convention every long-running Unix service uses: read once, change on an explicit signal. Watching files for edits is deliberately not done. A partially applied configuration is a worse failure than a stale one. Note that the exceptions above are per-caller and explicit -- a caller decides to snapshot a file itself -- rather than per-setting: no option is live for one reader and cached for another, which is what would make the effective configuration unpredictable per option.
+The app does not watch files for edits. A partly applied configuration is a worse failure than a stale one.
+
+Some readers sit outside the shared generation. Callers that take their own snapshot inspect one file generation instead of process state, and report it next to its health: `get_config_sources`, the `dcode config` command, and the `dcode doctor` command, which reads the managed file against an empty user tier. A few readers parse a file on each call, because the shared generation cannot serve them: `resolve_read_project_dotenv` runs before the project `.env` is layered into the environment, `resolve_startup_mode_with_source` needs the raw user table, and `update_check` reports the value next to the file health it just read. The reload preview also reads the user file fresh, because a dry run must show the edit under review.
+
+The environment tier is always live. `EnvProvider` reads `os.environ` at resolution time, because the process changes it during dotenv bootstrap and on each cwd switch.
+
+These exceptions are per caller, not per setting. A caller decides to snapshot a file itself. No option is intended to be live for one reader and cached for another, which would make the effective configuration unpredictable per option.
 
 The main extension points are:
 

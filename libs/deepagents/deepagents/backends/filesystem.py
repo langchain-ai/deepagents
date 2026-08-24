@@ -13,7 +13,7 @@ import threading
 import time
 from bisect import bisect_left, bisect_right
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from deepagents.backends.protocol import (
     ASYNC_GREP_TIMEOUT,
@@ -46,6 +46,7 @@ from deepagents.backends.utils import (
     compile_recursive_glob,
     perform_string_replacement,
     slice_read_response,
+    to_posix_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -202,7 +203,17 @@ class FilesystemBackend(BackendProtocol):
         """
         if self.virtual_mode:
             vpath = key if key.startswith("/") else "/" + key
-            if ".." in vpath or vpath.startswith("~"):
+            # Check `..` as a path *component*, not as a substring: a substring
+            # test rejects legitimate names like `report..final.md`, which
+            # `deepagents.backends.utils.validate_path` -- the gate every
+            # filesystem tool runs paths through -- deliberately allows. The
+            # two must agree, or the tool layer forwards a path the backend
+            # then refuses by raising.
+            #
+            # `~` is tested against the caller's key rather than `vpath`:
+            # `vpath` is always slash-prefixed, so `vpath.startswith("~")`
+            # could never be true.
+            if ".." in PurePosixPath(to_posix_path(vpath)).parts or key.startswith("~"):
                 msg = "Path traversal not allowed"
                 raise ValueError(msg)
             full = (self.cwd / vpath.lstrip("/")).resolve()

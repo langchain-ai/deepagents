@@ -2686,3 +2686,87 @@ class TestFilesystemDelete:
         assert result.error is not None
         assert "Error deleting" in result.error
         assert f.exists()
+
+
+# ---------------------------------------------------------------------------
+# Dotted filenames in virtual mode
+# ---------------------------------------------------------------------------
+
+
+class TestVirtualModeDottedFilenames:
+    """`..` inside a filename is not path traversal.
+
+    `deepagents.backends.utils.validate_path` -- the gate the filesystem tools
+    run every path through -- checks `..` component-wise precisely so that
+    legitimate names like `foo..bar.txt` are not rejected. `_resolve_path` used
+    a substring test, so it disagreed with that gate and raised `ValueError`
+    for names the tool layer had already accepted, taking down the agent run.
+    """
+
+    @staticmethod
+    def _backend(root: Path) -> FilesystemBackend:
+        return FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    def test_read_file_with_dots_in_name(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "report..final.md", "# Report\n")
+        result = self._backend(tmp_path).read("/report..final.md")
+        assert isinstance(result, ReadResult)
+        assert result.error is None
+        assert result.file_data is not None
+        assert "# Report" in result.file_data["content"]
+
+    def test_write_file_with_dots_in_name(self, tmp_path: Path) -> None:
+        result = self._backend(tmp_path).write("/data..bak", "payload\n")
+        assert isinstance(result, WriteResult)
+        assert result.error is None
+        assert (tmp_path / "data..bak").read_text() == "payload\n"
+
+    def test_edit_file_with_dots_in_name(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "v1..v2.diff", "before\n")
+        result = self._backend(tmp_path).edit("/v1..v2.diff", "before", "after")
+        assert isinstance(result, EditResult)
+        assert result.error is None
+        assert (tmp_path / "v1..v2.diff").read_text() == "after\n"
+
+    def test_delete_file_with_dots_in_name(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "stale..tmp", "x\n")
+        result = self._backend(tmp_path).delete("/stale..tmp")
+        assert isinstance(result, DeleteResult)
+        assert result.error is None
+        assert not (tmp_path / "stale..tmp").exists()
+
+    def test_ls_directory_with_dots_in_name(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "archive..old" / "note.txt", "x\n")
+        entries = self._backend(tmp_path).ls("/archive..old").entries
+        assert entries is not None
+        assert any(entry["path"] == "/archive..old/note.txt" for entry in entries)
+
+    def test_glob_under_directory_with_dots_in_name(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "archive..old" / "note.txt", "x\n")
+        result = self._backend(tmp_path).glob("*.txt", path="/archive..old")
+        assert result.error is None
+        assert any(info["path"] == "/archive..old/note.txt" for info in result.matches or [])
+
+    def test_grep_under_directory_with_dots_in_name(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "archive..old" / "note.txt", "needle\n")
+        result = self._backend(tmp_path).grep("needle", path="/archive..old")
+        assert result.error is None
+        assert any(match["path"] == "/archive..old/note.txt" for match in result.matches or [])
+
+    @pytest.mark.parametrize(
+        "traversal",
+        ["/../a.txt", "/dir/../../a.txt", "..", "/..", "../a.txt"],
+    )
+    def test_real_traversal_still_blocked(self, tmp_path: Path, traversal: str) -> None:
+        """A `..` path *component* is still refused."""
+        with pytest.raises(ValueError, match="traversal"):
+            self._backend(tmp_path).read(traversal)
+
+    def test_home_expansion_still_blocked(self, tmp_path: Path) -> None:
+        """A leading `~` is refused, matching `validate_path`.
+
+        The previous guard tested the already-slash-prefixed virtual path, so
+        it could never fire; the check has to look at the caller's key.
+        """
+        with pytest.raises(ValueError, match="traversal"):
+            self._backend(tmp_path).read("~/secret")

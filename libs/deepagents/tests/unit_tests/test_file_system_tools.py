@@ -8,6 +8,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
 from deepagents.graph import create_deep_agent
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -587,3 +588,43 @@ def test_ls_with_invalid_path_returns_error_message() -> None:
 
     error_message = tool_messages[0].content
     assert error_message == "Error: Path traversal not allowed: ../../../etc"
+
+
+def test_read_file_with_dots_in_name_does_not_crash_the_run(tmp_path) -> None:
+    """A filename containing `..` must not take down the agent run.
+
+    `validate_path` accepts `report..final.md` (its `..` check is
+    component-wise, by design), so the tool layer forwards the path to the
+    backend. `FilesystemBackend._resolve_path` used a substring check and
+    raised `ValueError`, which `read()` did not catch and the tool wrapper did
+    not guard -- so the exception escaped the tool and killed the graph run
+    instead of surfacing as a tool error.
+    """
+    (tmp_path / "report..final.md").write_text("# Report\nfinal version\n", encoding="utf-8")
+
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {"file_path": "/report..final.md"},
+                            "id": "call_read_dotted",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Read the report."),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(model=fake_model, backend=FilesystemBackend(root_dir=str(tmp_path)))
+    result = agent.invoke({"messages": [HumanMessage(content="Read the report")]})
+
+    tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].status == "success"
+    assert "final version" in str(tool_messages[0].content)

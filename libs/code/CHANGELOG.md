@@ -2,6 +2,29 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.61](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.60...deepagents-code==0.1.61) (2026-08-24)
+
+
+### Features
+
+* **code,evals:** inject goal/rubric context, dropping `get_goal`/`get_rubric` ([#5041](https://github.com/langchain-ai/deepagents/issues/5041)) ([2c80153](https://github.com/langchain-ai/deepagents/commit/2c801537885ea511c91fc880f6f8daa0a71342be))
+* **code:** add `google_anthropic_vertex` provider for Claude on Vertex AI ([#5760](https://github.com/langchain-ai/deepagents/issues/5760)) ([aa69916](https://github.com/langchain-ai/deepagents/commit/aa69916baf74c904a70a7497f78752d294df82ac))
+* **code:** enforce configured model allowlists ([#5649](https://github.com/langchain-ai/deepagents/issues/5649)) ([dd8b8ad](https://github.com/langchain-ai/deepagents/commit/dd8b8ad84aab54dfe1da4a277dfa9539a03e645c))
+* **code:** make `/offload` server-owned ([#5261](https://github.com/langchain-ai/deepagents/issues/5261)) ([b494f43](https://github.com/langchain-ai/deepagents/commit/b494f43437de3569c8c512d65f5f3accda8e0730))
+* **code:** prompt clipboard ([#5733](https://github.com/langchain-ai/deepagents/issues/5733)) ([c2f44ff](https://github.com/langchain-ai/deepagents/commit/c2f44ffd2759401a5ba31b5f7c41a12b441d6663))
+* **code:** show Auto approval review progress ([#5729](https://github.com/langchain-ai/deepagents/issues/5729)) ([8fe11f0](https://github.com/langchain-ai/deepagents/commit/8fe11f0c2566d95b0ca9af6db9ade7a4c58753e6))
+
+
+### Bug Fixes
+
+* **code:** clarify auth environment setup ([#5767](https://github.com/langchain-ai/deepagents/issues/5767)) ([a095af9](https://github.com/langchain-ai/deepagents/commit/a095af93cf3e8ef0c06d9958cfca52dfe9230fcb))
+* **code:** keep long thread resumes responsive ([#5772](https://github.com/langchain-ai/deepagents/issues/5772)) ([85e1e5b](https://github.com/langchain-ai/deepagents/commit/85e1e5b130b7501308e7e57d0be389f41f5b72df))
+* **code:** only highlight actionable tool rows ([#5769](https://github.com/langchain-ai/deepagents/issues/5769)) ([b78413c](https://github.com/langchain-ai/deepagents/commit/b78413c708afae7fba806ae81336007d5d4c0c58))
+* **code:** render first streamed text immediately ([#5761](https://github.com/langchain-ai/deepagents/issues/5761)) ([19de73d](https://github.com/langchain-ai/deepagents/commit/19de73de163d2ca907fa4d9a44f2e19af635aa39))
+* **code:** show incognito shell command widget ([#5768](https://github.com/langchain-ai/deepagents/issues/5768)) ([9bef676](https://github.com/langchain-ai/deepagents/commit/9bef676fe69a3b79c0702fda59b555d1ef6ad3bc))
+* **code:** sweep expired history archives at startup ([#5751](https://github.com/langchain-ai/deepagents/issues/5751)) ([d9dc96e](https://github.com/langchain-ai/deepagents/commit/d9dc96ed555c94f9973e9b49d4b12fd543038f8b))
+* **code:** warn and ignore `--auto-approve`/`--yolo` in headless mode ([#5750](https://github.com/langchain-ai/deepagents/issues/5750)) ([9223593](https://github.com/langchain-ai/deepagents/commit/922359307cb0e7728ab58613b29631500e9c5abc))
+
 ## [0.1.60](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.59...deepagents-code==0.1.60) (2026-08-23)
 
 ### Features

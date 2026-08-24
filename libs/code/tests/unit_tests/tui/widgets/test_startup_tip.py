@@ -142,6 +142,9 @@ class TestStartupTip:
         """The `/copy` command keeps a discoverability tip."""
         assert any("/copy" in tip for tip in _TIPS)
 
+    def test_prompt_clipboard_tip_registered(self) -> None:
+        assert any("Ctrl+R" in tip and "prompts" in tip for tip in _TIPS)
+
     def test_chat_input_resize_tip_registered(self) -> None:
         """The draggable chat input keeps a discoverability tip."""
         assert any("top border" in tip and "resize" in tip for tip in _TIPS)

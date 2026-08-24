@@ -2975,14 +2975,13 @@ class Settings:
         )
 
         # A real `/reload` exists to pick up file edits made since the shared
-        # resolver's snapshot was taken. Refreshing every provider here is what
-        # lets this method and later `get_config_resolver()` readers observe the
-        # same generation; a preview must not refresh, because re-reading
-        # replaces the process-wide snapshots before the user has accepted
-        # anything.
-        if refresh_managed:
-            get_config_resolver(refresh_managed=True).reload()
-        resolver = get_config_resolver()
+        # resolver's snapshot was taken, so this method and later
+        # `get_config_resolver()` readers observe the same generation.
+        # `refresh_managed=True` already reloads every provider on a cache hit
+        # and builds a fresh resolver on a miss, so calling `reload()` again
+        # here would re-read the managed file a second time and re-run
+        # `managed_policy_violations` with it.
+        resolver = get_config_resolver(refresh_managed=refresh_managed)
 
         try:
             shell_allow_list = parse_shell_allow_list(env.get(SHELL_ALLOW_LIST))

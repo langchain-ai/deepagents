@@ -4205,7 +4205,7 @@ class TestPackageMap:
     def test_workflow_working_dirs_match(self) -> None:
         """Paths must match too, not just package names.
 
-        A wrong-but-existing path (deepagents-code -> libs/cli) would otherwise
+        A wrong-but-existing path (deepagents-code -> libs/acp) would otherwise
         pass every other check while scoping the git log to the wrong package.
         """
         text = _release_yml_text()

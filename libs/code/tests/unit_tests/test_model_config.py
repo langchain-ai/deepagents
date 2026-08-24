@@ -5,7 +5,7 @@ import logging
 import sys
 import threading
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, suppress
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -8809,3 +8809,83 @@ class TestLoadStartupMode:
         config = tmp_path / "config.toml"
         config.write_text("this is not valid toml [[[\n")
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+
+class TestWritesReachTheSharedResolver:
+    """Every `model_config` writer must advance the shared config generation.
+
+    These writers edit `config.toml` directly instead of going through
+    `configuration.writer.update_user_config`, so they own the refresh
+    themselves. A writer that forgets it leaves the resolver serving the
+    pre-write generation for the life of the process: the file on disk is
+    correct, the UI reports "saved", and the setting never takes effect until
+    the user restarts or runs `/reload`.
+    """
+
+    @pytest.mark.parametrize(
+        ("save", "option_key", "expected"),
+        [
+            (
+                lambda: model_config.save_auto_classifier_model("openai:gpt-5.6-luna"),
+                "models.auto_classifier",
+                "openai:gpt-5.6-luna",
+            ),
+            (
+                lambda: model_config.save_thread_relative_time(enabled=False),
+                "threads.relative_time",
+                False,
+            ),
+            (
+                lambda: model_config.save_thread_sort_order("created_at"),
+                "threads.sort_order",
+                "created_at",
+            ),
+        ],
+        ids=["auto_classifier", "relative_time", "sort_order"],
+    )
+    def test_saved_value_is_visible_to_the_next_resolver_read(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        save: Callable[[], bool],
+        option_key: str,
+        expected: object,
+    ) -> None:
+        """A committed write is readable through the shared generation."""
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+
+        option = get_option(option_key)
+        assert option is not None
+        # Warm the resolver so the write has a stale generation to invalidate.
+        get_config_resolver().get(option)
+
+        assert save() is True
+
+        assert get_config_resolver().get(option).value == expected
+
+    def test_cleared_value_is_visible_to_the_next_resolver_read(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A clear is a write too -- the resolver must stop serving the old value."""
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL", raising=False)
+        model_config.clear_caches()
+
+        option = get_option("models.auto_classifier")
+        assert option is not None
+
+        assert model_config.save_auto_classifier_model("openai:gpt-5.6-luna") is True
+        assert get_config_resolver().get(option).value == "openai:gpt-5.6-luna"
+
+        assert model_config.clear_auto_classifier_model() is True
+
+        assert get_config_resolver().get(option).value is None

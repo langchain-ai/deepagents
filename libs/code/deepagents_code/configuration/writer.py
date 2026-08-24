@@ -63,7 +63,7 @@ def update_user_config(
     A committed write to the default path also refreshes the shared process
     resolver, so later reads see the new value. That refresh is best-effort and
     never turns a landed write into a reported failure; see
-    `_refresh_shared_resolver`.
+    `refresh_shared_resolver`.
 
     Args:
         mutate: Edit applied to the table parsed inside the write lock. It must
@@ -152,11 +152,11 @@ def update_user_config(
             # install without the writer dependency must report "could not
             # update <path>" like any other write failure.
             return WriteResult(False, False, f"could not update {config_path}: {exc}")
-    _refresh_shared_resolver(config_path)
+    refresh_shared_resolver(config_path)
     return WriteResult(True, True)
 
 
-def _refresh_shared_resolver(config_path: Path) -> None:
+def refresh_shared_resolver(config_path: Path) -> None:
     """Make a committed write visible to the shared process resolver.
 
     Only the default path is refreshed. `get_config_resolver` is keyed on

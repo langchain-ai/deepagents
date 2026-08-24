@@ -586,6 +586,17 @@ def _validate_remote_url(source: str) -> str:
 _READ_CHUNK_SIZE = 65536
 
 
+def _fail_if_expired(deadline: float) -> None:
+    """Raise once the fetch has run past its end-to-end time boundary.
+
+    Raises:
+        TimeoutError: If the current monotonic time is at or past *deadline*.
+    """
+    if time.monotonic() >= deadline:
+        msg = "remote source timed out"
+        raise TimeoutError(msg)
+
+
 def _read_limited_response(
     response: HTTPResponse,
     *,
@@ -698,6 +709,7 @@ class RemoteTomlProvider:
                 request,
                 timeout=REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS,
             ) as response:
+                _fail_if_expired(deadline)
                 payload = _read_limited_response(response, deadline=deadline)
         except HTTPError as exc:
             detail = (

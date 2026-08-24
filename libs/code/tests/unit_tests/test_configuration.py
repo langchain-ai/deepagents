@@ -307,6 +307,31 @@ def test_remote_toml_provider_reports_safe_fetch_failure(
     assert "dns failed" not in (snapshot.status.detail or "")
 
 
+def test_remote_toml_provider_times_out_when_deadline_passes_during_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connect that lands at the deadline fails instead of reading the body."""
+    from deepagents_code.configuration import providers
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            return _RemoteResponse(b'[startup]\nmode = "manual"\n')
+
+    monkeypatch.setattr(providers, "build_opener", lambda *_handlers: Opener())
+    monotonic_values = iter([0.0, providers.REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS])
+    monkeypatch.setattr(providers.time, "monotonic", lambda: next(monotonic_values))
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert "timed out" in (snapshot.status.detail or "")
+
+
 @pytest.mark.parametrize(
     ("response", "expected"),
     [

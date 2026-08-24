@@ -339,9 +339,12 @@ offering a way back to. `USER` alone is not enough: local-only flows
 (`/update`, `!shell`, most slash commands) mount a `UserMessage` widget
 without ever invoking the server.
 
-Membership in this set is necessary but not sufficient — non-incognito `!`
-shell output renders through `AssistantMessage`, so `_store_has_server_output`
-also excludes rows flagged `assistant_local_only`.
+Membership in this set is necessary but not sufficient — both `!` and `!!`
+shell output render through `AssistantMessage`, so `_store_has_server_output`
+also excludes rows flagged `assistant_local_only`. That flag is now the *only*
+thing keeping a shell-only thread from reading as agent work: `!!` output used
+to be an `APP` row, excluded by type, so dropping the flag check would no
+longer be a no-op.
 
 This is deliberately *stricter* than "has a resumable checkpoint row".
 Non-conversational commands (`/goal`, `/rubric set`) persist thread state
@@ -11839,8 +11842,9 @@ class DeepAgentsApp(App):
             if proc.returncode and proc.returncode != 0:
                 await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
-            # Non-incognito `!` only; `!!` stays local. Buffered, not written
-            # now — see `_buffer_shell_for_model_context` for the rationale.
+            # Non-incognito `!` only; `!!` output never reaches model context.
+            # Rendering is identical for both — this is the sole difference.
+            # Buffered, not written now — see `_buffer_shell_for_model_context`.
             if not incognito:
                 self._buffer_shell_for_model_context(command, output, proc.returncode)
 
@@ -18634,8 +18638,8 @@ class DeepAgentsApp(App):
 
         Feeds `_mount_previous_thread_hint`'s `had_agent_output` gate; see
         `_SERVER_OUTPUT_MESSAGE_TYPES` for why `USER` rows do not count.
-        `assistant_local_only` rows are excluded too: non-incognito `!` shell
-        output borrows `AssistantMessage` to render, so the row type alone
+        `assistant_local_only` rows are excluded too: both `!` and `!!` shell
+        output borrow `AssistantMessage` to render, so the row type alone
         would let a thread that only ran a shell command look like agent work.
 
         Callers must read this *before* `_clear_messages` empties the store —

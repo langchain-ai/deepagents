@@ -185,6 +185,168 @@ def test_managed_provider_failure_is_fail_closed(
         invalidate_config_sources()
 
 
+def test_managed_model_allowlist_replaces_user_list() -> None:
+    """Managed allowlists replace rather than union with user grants."""
+    from deepagents_code.config_manifest import get_option
+
+    option = get_option("models.allowed")
+    assert option is not None
+    value, source = _resolve(
+        option,
+        toml_data={"models": {"allowed": ["openai:gpt-5.6-terra"]}},
+        managed_toml_data={"models": {"allowed": ["anthropic:claude-sonnet-5"]}},
+    )
+
+    assert value == ("anthropic:claude-sonnet-5",)
+    assert source == "managed config"
+
+
+def test_explicit_model_config_path_excludes_managed_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit-path tooling reads remain isolated from machine policy."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    explicit = tmp_path / "isolated.toml"
+    explicit.write_text(
+        '[models]\nallowed = ["openai:isolated"]\n',
+        encoding="utf-8",
+    )
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models]\nallowed = ["anthropic:managed"]\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+    invalidate_config_sources()
+    try:
+        config = model_config.ModelConfig.load(explicit)
+        assert config.allowed_models == ("openai:isolated",)
+        assert config.allowed_models_source == "config.toml"
+    finally:
+        invalidate_config_sources()
+
+
+def test_malformed_managed_model_allowlist_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed administrator list blocks startup."""
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[models]\nallowed = ["openai:gpt", "broken"]\n')
+    redirect_managed_config(monkeypatch, managed)
+    invalidate_config_sources()
+    try:
+        with pytest.raises(ManagedConfigError, match=r"models\.allowed"):
+            require_healthy_managed_config(refresh=True)
+    finally:
+        invalidate_config_sources()
+
+
+def test_rejected_model_allowlist_reload_keeps_previous_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed reload cannot replace the last enforceable model ceiling."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models]\nallowed = ["anthropic:allowed"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        require_healthy_managed_config(refresh=True)
+        assert model_config.ModelConfig.load().allowed_models == ("anthropic:allowed",)
+
+        managed.write_text(
+            '[models]\nallowed = ["not-qualified"]\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(ManagedConfigError, match=r"models\.allowed"):
+            require_healthy_managed_config(refresh=True)
+
+        model_config.clear_caches()
+        assert model_config.ModelConfig.load().allowed_models == ("anthropic:allowed",)
+    finally:
+        invalidate_config_sources()
+        model_config.clear_caches()
+
+
+@pytest.mark.parametrize("field", ["default", "recent", "auto_classifier"])
+def test_managed_model_field_must_be_in_managed_model_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    """A contradictory managed `[models]` value is unenforceable policy.
+
+    Parametrized over all three fields the check covers. `auto_classifier` is
+    the one that matters most: it is itself an enforced managed key, so an
+    administrator pinning a classifier outside their own allowlist would
+    otherwise produce policy that contradicts itself.
+    """
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n'
+        f'{field} = "openai:gpt-5.6-terra"\n'
+    )
+    redirect_managed_config(monkeypatch, managed)
+    invalidate_config_sources()
+    try:
+        with pytest.raises(ManagedConfigError, match=rf"models\.{field}"):
+            require_healthy_managed_config(refresh=True)
+    finally:
+        invalidate_config_sources()
+
+
+def test_managed_allowlist_permits_consistent_model_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed policy consistent with its own ceiling starts normally."""
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n'
+        'default = "anthropic:claude-sonnet-5"\n'
+        'auto_classifier = "anthropic:claude-sonnet-5"\n'
+    )
+    redirect_managed_config(monkeypatch, managed)
+    invalidate_config_sources()
+    try:
+        require_healthy_managed_config(refresh=True)
+    finally:
+        invalidate_config_sources()
+
+
+def test_managed_allowlist_wildcard_permits_consistent_model_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed provider wildcard admits model fields from that provider."""
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models]\nallowed = ["anthropic:*"]\ndefault = "anthropic:claude-sonnet-5"\n'
+    )
+    redirect_managed_config(monkeypatch, managed)
+    invalidate_config_sources()
+    try:
+        require_healthy_managed_config(refresh=True)
+    finally:
+        invalidate_config_sources()
+
+
 def test_deep_merge_tracks_managed_leaf_provenance() -> None:
     """Ordinary tables merge per leaf while managed values win conflicts."""
     merged, provenance = merge_toml_tables(

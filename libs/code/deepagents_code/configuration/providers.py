@@ -758,7 +758,7 @@ class RemoteTomlProvider:
         Returns:
             The parsed policy or a safe provider failure status.
         """
-        from http.client import IncompleteRead
+        from http.client import HTTPException
         from urllib.error import HTTPError, URLError
         from urllib.request import Request
 
@@ -803,7 +803,13 @@ class RemoteTomlProvider:
                 ProviderHealth.UNREADABLE,
                 "remote source timed out",
             )
-        except (IncompleteRead, URLError, OSError):
+        except (HTTPException, URLError, OSError):
+            # `http.client.HTTPException` derives from `Exception`, not
+            # `OSError`, so every wire-level parse failure it covers --
+            # `IncompleteRead` from a truncated chunked body, `BadStatusLine`,
+            # `LineTooLong` -- escapes the other arms. Catching one subclass
+            # leaves the siblings to propagate as a traceback, which bypasses
+            # the `ManagedConfigError` exit path and crashes `doctor`.
             return _remote_status(
                 self.name,
                 self.path,

@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 from email.message import Message
-from http.client import IncompleteRead
+from http.client import BadStatusLine, IncompleteRead, LineTooLong
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -280,6 +280,11 @@ def test_remote_toml_provider_loads_policy_without_environment_proxy(
     [
         (TimeoutError(), "timed out"),
         (URLError("dns failed"), "could not be read"),
+        # `HTTPException` siblings are not `OSError`s, so each one escapes
+        # every other arm unless the base class is caught.
+        (BadStatusLine("garbage"), "could not be read"),
+        (LineTooLong("header line"), "could not be read"),
+        (IncompleteRead(b"partial", 8), "could not be read"),
         (
             HTTPError(
                 "https://config.example.com/policy.toml",

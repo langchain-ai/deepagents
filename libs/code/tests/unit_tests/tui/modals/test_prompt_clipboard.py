@@ -399,6 +399,37 @@ class TestPromptClipboardScreen:
             assert str(preview.content) == "middle"
             assert app.results == []
 
+    async def test_hovering_the_selected_row_keeps_its_highlight(self) -> None:
+        """Hover must not repaint the selected row.
+
+        A pseudo-class bumps the class slot of Textual's specificity tuple, so
+        an unqualified `.prompt-row:hover` outranks `.prompt-row-selected` and
+        strips the selection background while `color: $background` still
+        applies -- near-invisible text on light themes. The `:not()` qualifier
+        in the stylesheet is what prevents it.
+        """
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("newest", "middle", "oldest"))
+            await pilot.pause()
+            await pilot.pause()
+
+            selected = screen._rows[0]
+            unselected = screen._rows[1]
+            selected_background = selected.styles.background
+
+            await pilot.hover(selected)
+            await pilot.pause()
+
+            assert selected.mouse_hover
+            assert selected.styles.background == selected_background
+
+            # The same hover on an unselected row does repaint it, so the
+            # assertion above is not passing merely because :hover is inert.
+            await pilot.hover(unselected)
+            await pilot.pause()
+            assert unselected.styles.background != selected_background
+
     async def test_clicking_a_row_selects_but_does_not_submit(self) -> None:
         """Click moves the selection; only Enter dismisses the modal."""
         app = _PromptClipboardApp()

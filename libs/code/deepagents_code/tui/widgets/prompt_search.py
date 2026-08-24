@@ -178,6 +178,21 @@ class PromptSearchOption(Static):
            primary. */
         background: $surface-lighten-2;
     }
+
+    PromptSearchOption.prompt-search-selected:hover {
+        /* Restating the selected colors here is load-bearing, not redundant.
+
+           A pseudo-class bumps the class slot of Textual's specificity tuple,
+           so the plain `PromptSearchOption:hover` above ties the selected rule
+           at (0, 1, 1) and wins on source order. Without this rule, pointing
+           at the selected row strips its $primary background while
+           `color: $background` still applies -- near-invisible text on light
+           themes. Adding the class alongside :hover scores (0, 2, 1), which
+           wins outright. Textual has no :not(), so exclusion is not an
+           option here. */
+        background: $primary;
+        color: $background;
+    }
     """
 
     class Clicked(Message):

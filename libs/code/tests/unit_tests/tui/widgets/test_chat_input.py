@@ -7556,6 +7556,46 @@ class TestPromptSearchPanel:
             assert chat._text_area is not None
             assert chat._text_area.text == ""
 
+    async def test_hovering_the_selected_row_keeps_its_highlight(
+        self, tmp_path: Path
+    ) -> None:
+        """Hover must not repaint the selected row.
+
+        A pseudo-class bumps the class slot of Textual's specificity tuple, so
+        an unqualified `PromptSearchOption:hover` ties the selected rule and
+        wins on source order, stripping the selection background while
+        `color: $background` still applies. The `:not()` qualifier in the
+        stylesheet is what prevents it.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            selected = panel._options[0]
+            unselected = panel._options[1]
+            selected_background = selected.styles.background
+
+            await pilot.hover(selected)
+            await pilot.pause()
+
+            assert selected.mouse_hover
+            assert selected.styles.background == selected_background
+
+            # The same hover on an unselected row does repaint it, so the
+            # assertion above is not passing merely because :hover is inert.
+            await pilot.hover(unselected)
+            await pilot.pause()
+            assert unselected.styles.background != selected_background
+
     async def test_clicking_a_row_selects_but_does_not_insert(
         self, tmp_path: Path
     ) -> None:

@@ -79,6 +79,21 @@ PromptClipboardScreen .prompt-row:hover {
     background: $surface-lighten-2;
 }
 
+PromptClipboardScreen .prompt-row.prompt-row-selected:hover {
+    /* Restating the selected colors here is load-bearing, not redundant.
+
+       A pseudo-class bumps the class slot of Textual's specificity tuple, so
+       the plain `.prompt-row:hover` above scores (0, 2, 1) and outranks
+       `.prompt-row-selected` at (0, 1, 1). Without this rule, pointing at the
+       selected row strips its $primary background while `color: $background`
+       still applies -- near-invisible text on light themes, on the one row the
+       user is most likely to point at. Doubling the class and keeping :hover
+       scores (0, 3, 1), which wins outright rather than by source order.
+       Textual has no :not(), so exclusion is not an option here. */
+    background: $primary;
+    color: $background;
+}
+
 PromptClipboardScreen .prompt-preview-label {
     height: auto;
     color: $text-muted;

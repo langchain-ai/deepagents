@@ -359,6 +359,30 @@ class TestInterpreterSuppressedBySandbox:
 
 
 class TestServerConfigEdgeCases:
+    def test_extension_paths_round_trip(self, tmp_path: Path) -> None:
+        """One-run extension paths survive the isolated server boundary."""
+        original = ServerConfig(extension_paths=(str(tmp_path / "extension.py"),))
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.extension_paths == original.extension_paths
+
+    def test_trust_project_extensions_round_trips(self) -> None:
+        """Project extension trust must reach the isolated server process."""
+        original = ServerConfig(trust_project_extensions=True)
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.trust_project_extensions is True
+
     def test_trust_project_mcp_false_round_trips(self) -> None:
         """False must survive round-trip (not collapse to None)."""
         original = ServerConfig(trust_project_mcp=False)

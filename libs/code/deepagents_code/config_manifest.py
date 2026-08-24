@@ -167,7 +167,7 @@ class OptionKind(Enum):
     `BOOL_MODE_DEFAULT`, `BOOL_PRESENCE`, `INT`, `NON_NEGATIVE_INT`, `FLOAT`,
     `STR`, and `NON_EMPTY_STR`) are coerced by the source providers;
     `option_accepts_toml` is the public seam over that same coercion.
-    `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
+    `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`, `EXTENSION_TRUST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
     bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
     resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
@@ -205,6 +205,9 @@ class OptionKind(Enum):
 
     MODEL_LIST_DELEGATE = "model_list"
     """Validates a list of `provider:model` specs and `provider:*` wildcards."""
+
+    EXTENSION_TRUST_DELEGATE = "extension_trust"
+    """Validates the `ask`, `always`, and `never` extension trust policies."""
 
     LOG_LEVEL_DELEGATE = "log_level"
     """Validates log levels and resolves the default from debug mode."""
@@ -249,6 +252,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.STR: "str",
     OptionKind.NON_EMPTY_STR: "non-empty str",
     OptionKind.MODEL_LIST_DELEGATE: "list[provider:model]",
+    OptionKind.EXTENSION_TRUST_DELEGATE: "str",
     OptionKind.LOG_LEVEL_DELEGATE: "str",
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
@@ -2519,6 +2523,39 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         summary="Override the default Unix-socket path for the event listener.",
         kind=OptionKind.STR,
         env_var=_env_vars.EXTERNAL_EVENT_SOCKET_PATH,
+    ),
+    # --- Extensions -----------------------------------------------------
+    ConfigOption(
+        key="extensions.enabled",
+        group="Extensions",
+        summary="Enable loading Python extensions.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.EXTENSIONS,
+        toml_keys=("extensions", "enabled"),
+    ),
+    ConfigOption(
+        key="extensions.trust",
+        group="Extensions",
+        summary="Default project extension trust policy.",
+        kind=OptionKind.EXTENSION_TRUST_DELEGATE,
+        default="ask",
+        env_var=_env_vars.EXTENSIONS_TRUST,
+        toml_keys=("extensions", "trust"),
+    ),
+    ConfigOption(
+        key="extensions.extra_files",
+        group="Extensions",
+        summary="Additional user-authorized Python extension files.",
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("extensions", "extra_files"),
+    ),
+    ConfigOption(
+        key="extensions.extra_dirs",
+        group="Extensions",
+        summary="Additional user-authorized Python extension directories.",
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("extensions", "extra_dirs"),
     ),
     # --- Goals ----------------------------------------------------------
     ConfigOption(

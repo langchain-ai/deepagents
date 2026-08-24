@@ -3229,6 +3229,24 @@ class TestInitialPromptFromMessages:
 
         assert result == "real prompt"
 
+    def test_skips_rendered_goal_context_with_objective_and_criteria(self) -> None:
+        """Detailed model context must not leak into a thread title."""
+        from deepagents_code.goal_state_notice import build_goal_state_notice
+
+        notice = build_goal_state_notice(
+            {
+                "_goal_objective": "Keep the SSO migration confidential",
+                "_goal_status": "active",
+                "_goal_rubric": "Do not expose the customer rollout list",
+            }
+        )
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [notice, {"role": "user", "content": "continue the migration"}]
+        )
+
+        assert result == "continue the migration"
+
     def test_unknown_source_can_be_the_initial_prompt(self) -> None:
         from langchain_core.messages import HumanMessage
 

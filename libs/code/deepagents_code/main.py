@@ -43,6 +43,7 @@ warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarnin
 
 from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
 from deepagents_code._version import __version__
+from deepagents_code.goal_state_limits import RUBRIC_CHAR_LIMIT, validate_rubric
 
 logger = logging.getLogger(__name__)
 
@@ -1261,8 +1262,10 @@ def _resolve_rubric_text(rubric: str | None) -> str | None:
         The resolved rubric text, or `None` when the flag was not supplied.
 
     Raises:
-        ValueError: If the rubric is empty, or a referenced file is missing,
-            unreadable, or empty.
+        ValueError: If the rubric is empty, exceeds `RUBRIC_CHAR_LIMIT`, or a
+            referenced file is missing, unreadable, or empty. The size case is
+            a `GoalStateSizeError`, whose message names the limit and the
+            excess.
     """
     if rubric is None:
         return None
@@ -1285,12 +1288,28 @@ def _resolve_rubric_text(rubric: str | None) -> str | None:
         if not text.strip():
             msg = f"Rubric file {path!r} is empty."
             raise ValueError(msg)
-        return text.strip()
+        resolved = text.strip()
+        validate_rubric(resolved)
+        return resolved
 
     if not rubric.strip():
         msg = "--rubric must not be empty."
         raise ValueError(msg)
-    return rubric.strip()
+    resolved = rubric.strip()
+    validate_rubric(resolved)
+    return resolved
+
+
+# The standalone `validate_rubric` above is sufficient here, unlike `/rubric next`,
+# which additionally runs the combined notice check via `_next_rubric_size_error`.
+# That check exists because an in-session one-shot rubric is embedded in the notice
+# beside an actionable goal's objective and status note, and the pair can exceed
+# `GOAL_NOTICE_TEXT_CHAR_LIMIT` even when each fits alone. `--rubric` cannot reach
+# that state: it requires `-n`, and `run_non_interactive` takes no resume or
+# thread-id argument, so it always starts a fresh thread with no checkpointed goal.
+# `--goal` is rejected alongside `--rubric` and is interactive-only, so no goal
+# objective can be set on this path either. Add the combined check here if the
+# non-interactive path ever gains thread resumption.
 
 
 def _warn_if_interpreter_tools_without_interpreter(
@@ -2261,6 +2280,7 @@ def parse_args() -> argparse.Namespace:
         help="Acceptance criteria the agent self-evaluates against, looping "
         "until satisfied. Accepts literal text or '@path' to read a file "
         "(relative to the current working directory; '~' supported). "
+        f"Limited to {RUBRIC_CHAR_LIMIT:,} characters. "
         "Requires -n or piped stdin.",
     )
     parser.add_argument(

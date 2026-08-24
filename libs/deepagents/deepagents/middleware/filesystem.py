@@ -1885,7 +1885,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Empty files get a uniform warning regardless of encoding/type, so
             # check before routing to avoid a degenerate empty content block for
             # binary reads.
-            empty_msg = check_empty_content(content)
+            # Backends disagree about how an empty file arrives here. Most
+            # return empty content and let `check_empty_content` label it, but
+            # `FilesystemBackend` and the sandbox read script bake
+            # `EMPTY_CONTENT_WARNING` into `file_data["content"]` instead.
+            # Without the second arm that string looks like ordinary text, so
+            # it falls through to the gutter renderer and the model is told
+            # line 1 of the file reads "System reminder: File exists but has
+            # empty contents".
+            empty_msg = check_empty_content(content) or (EMPTY_CONTENT_WARNING if content == EMPTY_CONTENT_WARNING else None)
             if empty_msg:
                 # Empty content has two causes that must not be conflated: a
                 # zero-line window, where the file was never inspected, and a

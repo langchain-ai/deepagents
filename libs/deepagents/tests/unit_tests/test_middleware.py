@@ -1,5 +1,6 @@
 import mimetypes
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from pydantic import ValidationError
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     BackendProtocol,
     ExecuteResponse,
@@ -3708,3 +3710,47 @@ class TestBuiltinTruncationTools:
 
         with pytest.raises(ValueError, match="max_execute_timeout must be positive"):
             FilesystemMiddleware(max_execute_timeout=-1)
+
+
+class TestEmptyFileReminderIsNotRenderedAsContent:
+    """The empty-file reminder must not arrive wearing a line-number gutter.
+
+    `FilesystemBackend.read` (and the sandbox read script) report an empty file
+    by putting `EMPTY_CONTENT_WARNING` *into* `file_data["content"]` rather than
+    returning empty content. The middleware's `check_empty_content` then sees a
+    non-empty string, skips the empty-file branch, and line-numbers the
+    reminder -- so the model is told the file's line 1 reads "System reminder:
+    File exists but has empty contents".
+
+    Backends that return genuinely empty content already produce the clean
+    reminder, and `TestReadFileEmptyContent` pins that as the contract.
+    """
+
+    @staticmethod
+    def _read(tmp_path: Path, name: str, body: str) -> ToolMessage:
+        (tmp_path / name).write_text(body, encoding="utf-8")
+        middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=str(tmp_path)))
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": f"/{name}", "offset": 0, "limit": 100})
+        assert isinstance(result, ToolMessage)
+        return result
+
+    def test_empty_file_reports_the_bare_reminder(self, tmp_path: Path) -> None:
+        result = self._read(tmp_path, "empty.txt", "")
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    def test_whitespace_only_file_reports_the_bare_reminder(self, tmp_path: Path) -> None:
+        result = self._read(tmp_path, "blank.txt", "   \n  \n")
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    def test_reminder_is_not_given_a_line_number_gutter(self, tmp_path: Path) -> None:
+        result = self._read(tmp_path, "empty.txt", "")
+        assert not str(result.content).startswith("1 ")
+        assert "1  System reminder" not in str(result.content)
+
+    def test_file_with_real_content_is_unaffected(self, tmp_path: Path) -> None:
+        result = self._read(tmp_path, "notes.txt", "alpha\nbeta\n")
+        assert result.status == "success"
+        assert str(result.content).startswith("1  alpha")

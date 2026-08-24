@@ -1672,6 +1672,7 @@ def _save_ui_bool_result(
         )
 
     from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
         _ranked_source,
         get_option,
         load_managed_config_toml,
@@ -1697,6 +1698,11 @@ def _save_ui_bool_result(
             ),
             TomlSnapshot({}, ProviderStatus("config.toml", None, ProviderHealth.OK)),
         ).get(option)
+        # A malformed managed entry is the one signal an administrator has that
+        # their policy is not being applied, and this write is the moment the
+        # user is told policy still wins. Reporting the rejection is what makes
+        # that message actionable.
+        _emit_ranked_diagnostics(option, resolved)
         if managed_decided(_ranked_source(resolved)):
             return _ConfigWriteResult(
                 True,

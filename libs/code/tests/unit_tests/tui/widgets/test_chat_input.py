@@ -2001,6 +2001,32 @@ class TestSetValueAtEnd:
             assert text_area.cursor_location == (1, len("second"))
 
 
+class TestInsertAtCursor:
+    """Tests for undoable prompt insertion without submission."""
+
+    async def test_inserts_multiline_text_at_cursor_and_is_undoable(self) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+            text_area.insert("before after")
+            text_area.move_cursor((0, len("before ")))
+
+            assert chat_input.insert_at_cursor("saved\nprompt") is True
+            await pilot.pause()
+
+            assert chat_input.value == "before saved\npromptafter"
+            assert app.submitted == []
+
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == "before after"
+
+    def test_returns_false_before_text_area_is_mounted(self) -> None:
+        assert ChatInput().insert_at_cursor("saved prompt") is False
+
+
 class TestRefocusClickSuppression:
     """Clicks that re-focus the terminal window should not move the cursor."""
 
@@ -5118,6 +5144,20 @@ class TestChatInputTypingBubble:
 
             assert app.chat_input_typing_count == 2
 
+    async def test_prompt_search_typing_bubbles_to_chat_input(self) -> None:
+        """Editing the prompt-search query should count as typing activity."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            chat_input.open_prompt_search()
+            await pilot.pause()
+
+            before = app.chat_input_typing_count
+            await pilot.press("y")
+            await pilot.pause()
+
+            assert app.chat_input_typing_count == before + 1
+
 
 class TestArgumentHints:
     """Test inline argument-hint ghost text for slash commands."""
@@ -7387,3 +7427,1288 @@ class TestPasteCollapseIntegration:
             await pilot.pause()
 
             assert 1 in chat._pasted_contents
+
+
+class TestPromptSearchPanel:
+    """Inline prompt history search (first Ctrl+R tier)."""
+
+    def _seed_history(self, chat: ChatInput, prompts: list[str]) -> None:
+        for prompt in prompts:
+            chat._history.add(prompt)
+
+    async def test_ctrl_r_opens_inline_panel_above_input(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import (
+            PromptSearchInput,
+            PromptSearchPanel,
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt", "second prompt"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("second")
+            await pilot.pause()
+
+            tier = chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert tier == "inline"
+            panel = app.query_one(PromptSearchPanel)
+            assert panel.styles.display == "block"
+            assert chat._prompt_search_active is True
+            assert app.query_one(PromptSearchInput).value == "second"
+            assert chat._prompt_search_filtered == ["second prompt"]
+            # Seeding the filter does not consume or change the draft.
+            assert chat._text_area.text == "second"
+
+    async def test_second_ctrl_r_escalates_to_modal(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt"])
+            await pilot.pause()
+
+            assert chat.open_prompt_search() == "inline"
+            await pilot.pause()
+            assert chat.open_prompt_search() == "modal"
+            query = chat.escalate_prompt_search()
+            await pilot.pause()
+
+            assert query == ""
+            assert chat._prompt_search_active is False
+
+    async def test_typing_filters_results(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchPanel
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["fix the bug", "add feature", "fix tests"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            for char in "fix":
+                await pilot.press(char)
+            await pilot.pause()
+            await pilot.pause()
+
+            # newest-first order, both "fix" prompts retained
+            assert chat._prompt_search_filtered == ["fix tests", "fix the bug"]
+            panel = app.query_one(PromptSearchPanel)
+            assert panel.styles.display == "block"
+
+    async def test_enter_inserts_selected_prompt(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["older prompt", "newest prompt"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            # newest-first: index 0 is "newest prompt"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat._text_area is not None
+            assert chat._text_area.text == "newest prompt"
+
+    async def test_hovering_a_row_does_not_move_the_selection(
+        self, tmp_path: Path
+    ) -> None:
+        """Hover is visual only (:hover CSS): arrows move from the selection."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            assert len(panel._options) == 3
+
+            await pilot.hover(panel._options[2])
+            await pilot.pause()
+
+            # Textual tracks the hovered widget for :hover styling; the
+            # selection stays put.
+            assert panel._options[2].mouse_hover
+            assert chat._prompt_search_index == 0
+            assert panel._options[0].is_selected
+            assert not panel._options[2].is_selected
+
+            # Keyboard navigation resumes from the selection, not the hover.
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._prompt_search_index == 1
+            assert chat._prompt_search_active is True
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+
+    async def test_hovering_the_selected_row_keeps_its_highlight(
+        self, tmp_path: Path
+    ) -> None:
+        """Hover must not repaint the selected row.
+
+        A pseudo-class bumps the class slot of Textual's specificity tuple, so
+        an unqualified `PromptSearchOption:hover` ties the selected rule and
+        wins on source order, stripping the selection background while
+        `color: $background` still applies. The `:not()` qualifier in the
+        stylesheet is what prevents it.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            selected = panel._options[0]
+            unselected = panel._options[1]
+            selected_background = selected.styles.background
+
+            await pilot.hover(selected)
+            await pilot.pause()
+
+            assert selected.mouse_hover
+            assert selected.styles.background == selected_background
+
+            # The same hover on an unselected row does repaint it, so the
+            # assertion above is not passing merely because :hover is inert.
+            await pilot.hover(unselected)
+            await pilot.pause()
+            assert unselected.styles.background != selected_background
+
+    async def test_clicking_a_row_selects_but_does_not_insert(
+        self, tmp_path: Path
+    ) -> None:
+        """Click moves the selection; only Enter inserts."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+
+            await pilot.click(panel._options[2])
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 2
+            assert panel._options[2].is_selected
+            # Clicking alone must not close the panel or touch the draft.
+            assert chat._prompt_search_active is True
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert chat._text_area.text == "oldest"
+
+    async def test_escape_restores_draft(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["some prompt"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("my draft")
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            # Type a query (does not touch the draft)
+            await pilot.press("x")
+            await pilot.pause()
+            assert chat._text_area.text == "my draft"
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat._text_area.text == "my draft"
+
+    async def test_escape_preserves_concurrently_updated_draft(self, tmp_path) -> None:
+        """Cancel should not replace a draft changed outside prompt search."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["some prompt"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("original draft")
+            chat.open_prompt_search()
+            await pilot.pause()
+
+            chat.value = "external editor result"
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat.value == "external editor result"
+
+    async def test_typing_does_not_enter_textarea(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            await pilot.press("h")
+            await pilot.pause()
+
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+            assert chat._prompt_search_query == "h"
+
+    async def test_arrow_navigation_moves_selection(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["one", "two", "three"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 0
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._prompt_search_index == 1
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+    async def test_backspace_on_empty_query_cancels(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+            assert chat._text_area is not None
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat._text_area.text == ""
+
+    async def test_completion_active_routes_to_modal(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("hello")
+            await pilot.pause()
+
+            # Simulate an active completion popup
+            chat._current_suggestions = [("/help", "Show help")]
+            assert chat.open_prompt_search() == "modal"
+            assert chat.escalate_prompt_search() == "hello"
+
+    async def test_tab_pages_through_results(self, tmp_path) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, [f"prompt {i}" for i in range(12)])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert chat._prompt_search_index == 5
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+    async def test_focus_moves_to_query_input(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+
+            assert isinstance(app.focused, PromptSearchInput)
+
+    async def test_focus_input_restores_query_focus(self, tmp_path) -> None:
+        """App-level focus restoration should keep an active search usable."""
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.focus()
+            chat.focus_input()
+            await pilot.pause()
+
+            assert isinstance(app.focused, PromptSearchInput)
+
+    async def test_clicking_composer_keeps_query_focus(self, tmp_path: Path) -> None:
+        """Clicking the frozen draft must not strand prompt-search keys."""
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            assert chat._text_area is not None
+            await pilot.click(chat._text_area)
+            await pilot.pause()
+
+            assert isinstance(app.focused, PromptSearchInput)
+            await pilot.press("h")
+            await pilot.pause()
+            assert chat._prompt_search_query == "h"
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert chat._prompt_search_active is False
+
+    async def test_single_step_moves_inside_the_window_do_not_rebuild(
+        self, tmp_path: Path
+    ) -> None:
+        """Moving within the mounted window re-styles two rows, not all of them.
+
+        `_window_bounds` shifts the ideal start on every single-step move once
+        the list outgrows `PROMPT_SEARCH_WINDOW`, so rebuilding whenever the
+        ideal start differed put every keystroke on the expensive path -- a
+        full `set_content` over all 50 mounted rows instead of two
+        `set_class` calls.
+        """
+        from deepagents_code.tui.widgets.prompt_search import (
+            PROMPT_SEARCH_REWINDOW_MARGIN,
+            PROMPT_SEARCH_WINDOW,
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            # Comfortably longer than the window, so windowing is in play.
+            self._seed_history(
+                chat, [f"prompt {index}" for index in range(PROMPT_SEARCH_WINDOW * 2)]
+            )
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            panel = chat._prompt_search
+            assert panel is not None
+            assert len(panel._options) == PROMPT_SEARCH_WINDOW
+
+            generation_before = panel._rebuild_generation
+            mounted_before = list(panel._options)
+
+            # Step to just inside the re-window margin: every one of these
+            # moves stays on the cheap path.
+            steps = PROMPT_SEARCH_WINDOW - PROMPT_SEARCH_REWINDOW_MARGIN - 2
+            for _ in range(steps):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_index == steps
+            assert panel._rebuild_generation == generation_before
+            # The same widget objects, re-styled rather than re-mounted.
+            assert panel._options == mounted_before
+            assert panel._options[steps].is_selected
+
+            # Crossing into the margin re-centers the window.
+            for _ in range(3):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert panel._rebuild_generation > generation_before
+            assert panel._options[0].index > 0
+
+    async def test_selection_past_first_page_stays_mounted_and_visible(
+        self, tmp_path
+    ) -> None:
+        """Regression: rows beyond the first page must exist to be shown.
+
+        The panel windows the DOM around the selection, so navigating past the
+        first page (arrows or a Tab page) must keep the selected row mounted
+        and scrolled into view rather than pointing at a row that was never
+        rendered.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, [f"prompt {i}" for i in range(30)])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            panel = chat._prompt_search
+            assert panel is not None
+
+            # Arrow past the first page of 5 rows.
+            for _ in range(12):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 12
+            mounted = {option.index for option in panel._options}
+            assert chat._prompt_search_index in mounted
+            selected = [
+                o for o in panel._options if o.index == chat._prompt_search_index
+            ]
+            assert selected[0].is_selected
+
+            # Enter inserts the exact windowed prompt.
+            await pilot.press("enter")
+            await pilot.pause()
+            assert chat._text_area is not None
+            assert chat._text_area.text == "prompt 17"  # newest-first: 29-12
+
+    async def test_no_match_empty_state_is_a_single_row(self, tmp_path) -> None:
+        """Repeated no-match keystrokes must not stack empty-state rows.
+
+        The empty-state message is one tracked widget replaced per rebuild;
+        previously each rebuild mounted a fresh `Static` without removing the
+        last, so every no-match keystroke added another "No matching prompts."
+        row to the list.
+        """
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello world"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            for char in "zzzz":
+                await pilot.press(char)
+                await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            results = panel.query_one("#prompt-search-results")
+            empty_rows = [
+                child
+                for child in results.children
+                if isinstance(child, Static)
+                and not isinstance(child, PromptSearchOption)
+            ]
+            assert len(empty_rows) == 1
+            assert "No matching prompts." in str(empty_rows[0].content)
+
+    async def test_empty_state_does_not_survive_hide_and_reopen(self, tmp_path) -> None:
+        """A hidden empty state must not linger beside reopened matches.
+
+        `hide()` only sets `display: none`; it does not tear down children.
+        Dropping the `_empty_widget` reference on hide orphaned the mounted
+        empty-state row, so cancelling a no-match search and reopening with
+        matches left a stale "No matching prompts." row beside the options,
+        and repeated cycles accumulated one orphan per hide.
+        """
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello world"])
+            await pilot.pause()
+
+            def empty_rows() -> list[Static]:
+                panel = chat._prompt_search
+                assert panel is not None
+                results = panel.query_one("#prompt-search-results")
+                return [
+                    child
+                    for child in results.children
+                    if isinstance(child, Static)
+                    and not isinstance(child, PromptSearchOption)
+                ]
+
+            # Open with a no-match query, then cancel the search.
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("z")
+            await pilot.pause()
+            await pilot.pause()
+            assert len(empty_rows()) == 1
+            await pilot.press("escape")
+            await pilot.pause()
+
+            # Reopen: the full unfiltered history matches, so no empty state.
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert empty_rows() == []
+            panel = chat._prompt_search
+            assert panel is not None
+            assert len(panel._options) == 1
+
+    async def test_empty_state_reopens_cleanly_after_each_hide(self, tmp_path) -> None:
+        """Empty -> hide cycles must not accumulate orphaned empty rows."""
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello world"])
+            await pilot.pause()
+
+            for _ in range(3):
+                chat.open_prompt_search()
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.press("z")
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            results = panel.query_one("#prompt-search-results")
+            empty_rows = [
+                child
+                for child in results.children
+                if isinstance(child, Static)
+                and not isinstance(child, PromptSearchOption)
+            ]
+            # Exactly one: `<= 1` also passes when the row vanishes entirely,
+            # which is the other half of the bug this locks in.
+            assert len(empty_rows) == 1
+
+    async def test_selection_beyond_the_render_window_inserts_that_prompt(
+        self, tmp_path: Path
+    ) -> None:
+        """Rows past `PROMPT_SEARCH_WINDOW` must keep index and title aligned.
+
+        Below the window size the panel mounts every row and absolute indices
+        are trivially correct. Past it the window slides, so `PromptSearchOption
+        .index` is an offset into the filtered list; an off-by-one there inserts
+        a different prompt than the highlighted row shows.
+        """
+        from deepagents_code.tui.widgets.prompt_search import PROMPT_SEARCH_WINDOW
+
+        total = PROMPT_SEARCH_WINDOW + 30
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, [f"prompt {i}" for i in range(total)])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            panel = chat._prompt_search
+            assert panel is not None
+            assert len(chat._prompt_search_filtered) == total
+
+            target = PROMPT_SEARCH_WINDOW + 10
+            for _ in range(target):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_index == target
+            expected = chat._prompt_search_filtered[target]
+            mounted = {option.index: option for option in panel._options}
+            assert target in mounted
+            assert mounted[target].is_selected
+            # The row's rendered title must describe the prompt at that index.
+            assert str(mounted[target].render()).strip() == expected
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert chat._text_area is not None
+            assert chat._text_area.text == expected
+            # Newest-first, so index N is the (total - 1 - N)th prompt added.
+            assert expected == f"prompt {total - 1 - target}"
+
+    async def test_escape_keeps_the_undo_history(self, tmp_path: Path) -> None:
+        """Cancelling the search must not clear the composer's edit history.
+
+        `TextArea.text` aliases `load_text`, which clears the undo history, so
+        restoring an unchanged draft by assignment silently cost the user their
+        undo stack.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["some old prompt"])
+            await pilot.pause()
+
+            assert chat._text_area is not None
+            for char in "draft":
+                await pilot.press(char)
+            await pilot.pause()
+            assert chat._text_area.text == "draft"
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert chat._text_area.text == "draft"
+            await pilot.press("ctrl+z")
+            await pilot.pause()
+            assert chat._text_area.text != "draft"
+
+    async def test_backspace_with_a_query_does_not_leave_the_input_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """Keys the search ignores must not reach the composer's own routing.
+
+        Backspace with a non-empty query belongs to the query input. It used to
+        fall through to the mode-exit branch, which dropped shell mode behind
+        the open panel and swallowed the deletion.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["find something"])
+            await pilot.pause()
+
+            await pilot.press("!")
+            await pilot.pause()
+            assert chat.mode == "shell"
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("f")
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.mode == "shell"
+            assert chat._prompt_search_active is True
+            assert chat._prompt_search_query == ""
+
+    async def test_enter_with_no_matches_inserts_nothing(self, tmp_path: Path) -> None:
+        """Enter on an empty result set must bell, not raise or insert."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["hello world"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            for char in "zzz":
+                await pilot.press(char)
+                await pilot.pause()
+            await pilot.pause()
+            assert chat._prompt_search_filtered == []
+
+            await pilot.press("down")
+            await pilot.press("up")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert chat._text_area is not None
+            assert chat._text_area.text == ""
+
+    async def test_unreadable_history_is_not_reported_as_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """An unreadable history file must not claim the user has no prompts."""
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        # A directory in place of the file is an OSError on read, the same path
+        # permissions and encoding failures take.
+        history_file = tmp_path / "history.jsonl"
+        history_file.mkdir()
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = history_file
+            # Nothing cached in memory, so the read failure is the only reason
+            # the list comes back empty.
+            chat._history._entries = []
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            results = panel.query_one("#prompt-search-results")
+            messages = [
+                str(child.render())
+                for child in results.children
+                if isinstance(child, Static)
+                and not isinstance(child, PromptSearchOption)
+            ]
+            assert messages
+            assert "Could not read prompt history" in messages[0]
+            assert "No prompts yet" not in messages[0]
+
+    async def test_text_area_keys_do_not_edit_the_frozen_draft(
+        self, tmp_path: Path
+    ) -> None:
+        """The text area must not accept edits while the panel is open.
+
+        `open_prompt_search` focuses the query input and `ChatTextArea.on_focus`
+        bounces focus back, so this branch is defensive: it only runs if a key
+        reaches the text area anyway. Driving `_on_key` directly is what
+        exercises it. Without the branch the TextArea defaults apply and
+        printable characters insert into the frozen draft behind the panel.
+        """
+        from textual import events
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("draft text")
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            # Printable keys belong to the focused query input, so the panel
+            # handler declines them -- and the text area must decline them too
+            # rather than falling back to its own insertion.
+            for key, character in (("z", "z"), ("space", " ")):
+                event = events.Key(key, character)
+                await text_area._on_key(event)
+                await pilot.pause()
+                assert event._no_default_action
+                assert event._stop_propagation
+
+            assert text_area.text == "draft text"
+            assert app.submitted == []
+            assert chat._prompt_search_active is True
+
+    async def test_text_area_navigation_keys_reach_the_panel(
+        self, tmp_path: Path
+    ) -> None:
+        """Keys the panel owns are routed on even from the text area."""
+        from textual import events
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            assert chat._prompt_search_index == 0
+
+            text_area = chat._text_area
+            assert text_area is not None
+            await text_area._on_key(events.Key("down", None))
+            await pilot.pause()
+
+            assert chat._prompt_search_index == 1
+            assert text_area.text == ""
+
+    async def test_hovering_moves_the_highlight_between_panel_rows(
+        self, tmp_path: Path
+    ) -> None:
+        """Moving the pointer must unmark the row it left."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["oldest", "middle", "newest"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            await pilot.hover(panel._options[1])
+            await pilot.pause()
+            assert panel._options[1].mouse_hover
+
+            await pilot.hover(panel._options[2])
+            await pilot.pause()
+
+            # Exactly one row is hovered, so no stale highlight is left behind.
+            assert panel._options[2].mouse_hover
+            assert not panel._options[1].mouse_hover
+            assert chat._prompt_search_index == 0
+
+    async def test_focus_query_reports_whether_focus_moved(
+        self, tmp_path: Path
+    ) -> None:
+        """`focus_query` keeps the panel's composition private to it."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["a prompt"])
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            assert panel.focus_query() is True
+            await pilot.pause()
+            assert app.focused is panel._query_input
+
+            # Before `on_mount` there is nothing to focus, and the caller is
+            # told rather than left believing focus moved.
+            query_input = panel._query_input
+            panel._query_input = None
+            try:
+                assert panel.focus_query() is False
+            finally:
+                panel._query_input = query_input
+
+    async def test_panel_reports_its_rendered_height(self, tmp_path: Path) -> None:
+        """`RowsChanged` drives the composer's height reservation.
+
+        `ChatInputBox` subtracts the reported rows from its budget, so an
+        over-report shrinks the draft and an under-report lets the panel
+        overflow the composer border.
+        """
+        from deepagents_code.tui.widgets.prompt_search import (
+            PROMPT_SEARCH_MAX_HINT_ROWS,
+            PROMPT_SEARCH_PANEL_ROWS,
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt", "second prompt"])
+            await pilot.pause()
+
+            box = chat.query_one(ChatInputBox)
+            assert box._prompt_search_rows == 0
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            # One query row, one row per result, plus the measured hint.
+            assert box._prompt_search_rows == 1 + 2 + panel._hint_rows()
+            assert 0 < box._prompt_search_rows <= PROMPT_SEARCH_PANEL_ROWS
+            # A wide terminal wraps the hint to fewer than the pre-layout
+            # maximum, so `on_resize` corrected the initial reservation down.
+            assert panel._hint_rows() < PROMPT_SEARCH_MAX_HINT_ROWS
+
+            chat._close_prompt_search(restore_draft=True)
+            await pilot.pause()
+            assert box._prompt_search_rows == 0
+
+    async def test_panel_renders_inside_the_composer_border(
+        self, tmp_path: Path
+    ) -> None:
+        """The reserved rows must actually keep the panel inside the box."""
+        app = _RecordingApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, [f"prompt {index}" for index in range(20)])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            box = chat.query_one(ChatInputBox)
+            assert panel.region.height > 0
+            assert panel.region.y >= box.region.y
+            assert panel.region.bottom <= box.region.bottom
+
+            # The hint is the last thing in the panel, so a short reservation
+            # clips its final row rather than the results.
+            hint = panel._hint_static
+            assert hint is not None
+            assert hint.region.bottom <= panel.region.bottom
+
+    async def test_narrow_terminal_reserves_the_wrapped_hint(
+        self, tmp_path: Path
+    ) -> None:
+        """A wrapped hint claims more rows, and the panel still fits."""
+        app = _RecordingApp()
+        async with app.run_test(size=(40, 24)) as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt"])
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            box = chat.query_one(ChatInputBox)
+            hint = panel._hint_static
+            assert hint is not None
+
+            # Narrow enough that the hint wraps past one row.
+            assert panel._hint_rows() > 1
+            assert box._prompt_search_rows == 1 + 1 + panel._hint_rows()
+            assert panel.region.bottom <= box.region.bottom
+            assert hint.region.bottom <= panel.region.bottom
+
+    async def test_rebuild_failure_ends_the_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed rebuild must abandon the search, not just hide the panel.
+
+        Hiding alone leaves `_prompt_search_active` true, so the composer keeps
+        swallowing every key into an invisible panel.
+        """
+        from unittest.mock import AsyncMock
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt", "second prompt"])
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            panel = chat._prompt_search
+            assert panel is not None
+            results = panel.query_one("#prompt-search-results")
+            monkeypatch.setattr(
+                results, "mount", AsyncMock(side_effect=RuntimeError("boom"))
+            )
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_active is False
+            assert panel.styles.display == "none"
+            assert panel._options == []
+            assert [message for message, _ in notifications] == [
+                "Prompt search could not be displayed"
+            ]
+
+            # The composer takes typed keys again rather than routing them into
+            # an invisible panel.
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.focus()
+            await pilot.pause()
+            await pilot.press("x")
+            await pilot.pause()
+            assert text_area.text == "x"
+
+    async def test_abandon_recovery_survives_a_detached_panel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recovery must not raise in turn.
+
+        `hide`, `post_message`, and `notify` all reach for `self.app`, and
+        detachment is a plausible cause of the failure being recovered from. A
+        second exception would escape the `call_next` callback that runs
+        `_rebuild_options` and panic the app during error recovery, masking the
+        original failure.
+        """
+        from unittest.mock import MagicMock
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["first prompt"])
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+
+            # Stand in for a detached widget: every app-touching step raises.
+            hide = MagicMock(side_effect=RuntimeError("no app"))
+            post_message = MagicMock(side_effect=RuntimeError("no app"))
+            notify = MagicMock(side_effect=RuntimeError("no app"))
+            monkeypatch.setattr(panel, "hide", hide)
+            monkeypatch.setattr(panel, "post_message", post_message)
+            monkeypatch.setattr(panel, "notify", notify)
+
+            panel._abandon_quietly()
+
+            # Every step was attempted even though each earlier one failed:
+            # ending the session matters more than any single step succeeding.
+            hide.assert_called_once()
+            post_message.assert_called_once()
+            notify.assert_called_once()
+
+            # Restore before the app shuts down: a still-raising `post_message`
+            # would break teardown rather than the code under test.
+            monkeypatch.undo()
+
+    async def test_unwritable_history_warns_once_per_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Prompts that cannot be saved are lost at exit, so say so -- once.
+
+        A failed append keeps the entry in memory, so up-arrow and the prompt
+        clipboard keep working and nothing on screen suggests a problem.
+        """
+        # A regular file in place of the parent directory makes the append's
+        # mkdir/open raise OSError.
+        blocker = tmp_path / "blocker"
+        blocker.touch()
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = blocker / "history.jsonl"
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            # Drive a real submission so the wiring in `_submit` is covered,
+            # not just the helper.
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("first prompt")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == ["first prompt"]
+            assert len(notifications) == 1
+            message, kwargs = notifications[0]
+            assert "Could not save prompt history" in message
+            assert "lost when it ends" in message
+            assert kwargs["severity"] == "warning"
+            # The message interpolates the history path, so markup must be off.
+            assert kwargs["markup"] is False
+
+            # Still broken, but the user has already been told.
+            text_area.insert("second prompt")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 2
+            assert len(notifications) == 1
+
+    async def test_writable_history_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The healthy path stays quiet."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("a prompt")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == ["a prompt"]
+            assert notifications == []
+
+    async def test_unreadable_history_warns_when_the_list_is_not_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A degraded list looks complete, so the failure needs its own warning.
+
+        The empty-state message only reaches the user when there is nothing to
+        list, but `recent_prompts` falls back to this session's entries on a
+        read failure. The usual outcome is a non-empty, silently truncated list
+        that is indistinguishable from a healthy one.
+        """
+        history_file = tmp_path / "history.jsonl"
+        history_file.mkdir()
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = history_file
+            # Session entries survive the failed read, so the list is non-empty
+            # and the empty state never renders.
+            self._seed_history(chat, ["this session only"])
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_prompts
+            assert len(notifications) == 1
+            message, kwargs = notifications[0]
+            assert "Could not read prompt history" in message
+            assert "this session's prompts only" in message
+            assert kwargs["severity"] == "warning"
+            # The message interpolates the history path, so markup must be off.
+            assert kwargs["markup"] is False
+
+    async def test_readable_history_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The healthy path stays quiet."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["a prompt"])
+            await pilot.pause()
+            notifications = _capture_notifications(monkeypatch, app)
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_prompts
+            assert notifications == []
+
+    async def test_unreadable_history_path_is_not_markup_parsed(
+        self, tmp_path: Path
+    ) -> None:
+        """The empty-state message interpolates a path, so it must stay literal.
+
+        `Static` markup-parses a bare `str`, so a directory named like a
+        Textual tag is swallowed from the message. (A closing-tag shape goes
+        further and raises `MarkupError`, taking the rebuild down its
+        recovery path.)
+        """
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchOption
+
+        # A directory in place of the file is an OSError on read, and the
+        # bracketed segment lands in the interpolated message.
+        history_dir = tmp_path / "proj [v2]"
+        history_dir.mkdir()
+        history_file = history_dir / "history.jsonl"
+        history_file.mkdir()
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = history_file
+            chat._history._entries = []
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+
+            panel = chat._prompt_search
+            assert panel is not None
+            assert chat._prompt_search_active is True
+            results = panel.query_one("#prompt-search-results")
+            messages = [
+                str(child.render())
+                for child in results.children
+                if isinstance(child, Static)
+                and not isinstance(child, PromptSearchOption)
+            ]
+            assert messages
+            # Every literal segment survives rather than being read as markup.
+            assert "proj [v2]" in messages[0]

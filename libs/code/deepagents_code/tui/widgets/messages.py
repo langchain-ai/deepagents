@@ -1377,11 +1377,12 @@ class AssistantMessage(Vertical):
     update) re-yields the stale value and wrapped fenced-code bodies vanish.
     A full re-parse rebuilds every fence with correct internal state.
 
-    Streamed tokens are coalesced in `_pending_append` and flushed to the
-    `MarkdownStream` on a throttled timer (`_STREAM_FLUSH_INTERVAL`). Writing
-    every token immediately forced a markdown re-parse per chunk on the UI
-    event loop, which starved keyboard input while the model streamed.
-    Batching the writes keeps the event loop free so typing stays responsive.
+    The first streamed fragment is written immediately so the response appears
+    without waiting for `_STREAM_FLUSH_INTERVAL`. Later tokens are coalesced in
+    `_pending_append` and flushed to the `MarkdownStream` on a throttled timer.
+    Writing every token immediately forced a markdown re-parse per chunk on the
+    UI event loop, which starved keyboard input while the model streamed;
+    batching subsequent writes keeps typing responsive.
     """
 
     _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
@@ -1493,11 +1494,11 @@ class AssistantMessage(Vertical):
         return self._stream
 
     async def append_content(self, text: str) -> None:
-        """Append streamed content, coalescing writes onto a throttled timer.
+        """Append streamed content, then coalesce later writes on a timer.
 
-        Tokens are buffered in `_pending_append` and written to the
-        `MarkdownStream` at most once per `_STREAM_FLUSH_INTERVAL` so the UI
-        event loop stays free to process keypresses while the model streams.
+        The first fragment is written immediately. Later fragments are buffered
+        and written at most once per `_STREAM_FLUSH_INTERVAL` so the UI event
+        loop stays free to process keypresses while the model streams.
 
         Args:
             text: Text to append
@@ -1507,6 +1508,7 @@ class AssistantMessage(Vertical):
         self._content_parts.append(text)
         self._pending_append += text
         if self._flush_timer is None:
+            await self._flush_pending_append()
             self._flush_timer = self.set_interval(
                 self._STREAM_FLUSH_INTERVAL, self._flush_pending_append
             )
@@ -1670,6 +1672,7 @@ class ToolCallMessage(Vertical):
         layout: horizontal;
         height: auto;
         width: 1fr;
+        margin-left: 2;
     }
 
     /* Fixed gutter holds the output glyph so soft-wrapped content lines stay
@@ -2215,6 +2218,8 @@ class ToolCallMessage(Vertical):
         self._status_widget.update(
             Content.styled(f"Took {format_duration(duration)}", "dim")
         )
+        if self._hint_widget is not None:
+            self.move_child(self._status_widget, after=self._hint_widget)
         self._status_widget.display = True
 
     def _show_success_status(self) -> None:

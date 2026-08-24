@@ -3089,6 +3089,13 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
+        Binding(
+            "ctrl+r",
+            "open_prompt_clipboard",
+            "Prompt Clipboard",
+            show=False,
+            priority=True,
+        ),
         # `check_action` steps this binding aside (returns `False`) while a
         # `ModelSelectorScreen` is active so the selector's own priority
         # `ctrl+n` (toggle_names) wins; keep the action name in sync there.
@@ -15348,6 +15355,8 @@ class DeepAgentsApp(App):
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
                 f"  Ctrl+X          {editor_help}\n"
+                "  Ctrl+R          Search and reuse submitted prompts\n"
+                "                  (press again for the full-screen view)\n"
                 "  Ctrl+N          Review pending notifications\n"
                 "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
@@ -15493,6 +15502,16 @@ class DeepAgentsApp(App):
                     else "Failed to copy latest assistant message to clipboard."
                 )
                 await self._mount_message(AppMessage(fail_msg))
+        elif cmd == "/prompts":
+            # Unlike Ctrl+R, the command cannot silently no-op. `/prompts`
+            # carries `BypassTier.IMMEDIATE_UI`, so it runs while the agent is
+            # busy -- exactly when an approval is on screen and the clipboard
+            # is blocked. A bare return there reads as a broken command.
+            reason = self._prompt_clipboard_block_reason()
+            if reason is not None:
+                await self._mount_message(AppMessage(reason))
+            else:
+                self.action_open_prompt_clipboard()
         elif cmd == "/editor":
             await self.action_open_editor()
         elif cmd in {"/offload", "/compact"}:
@@ -22099,6 +22118,120 @@ class DeepAgentsApp(App):
         finally:
             restore_focus()
 
+    def _prompt_clipboard_block_reason(self) -> str | None:
+        """Return why the prompt clipboard cannot open, or `None` if it can.
+
+        The reason is user-facing: `/prompts` echoes it so the command never
+        appears to do nothing. `Ctrl+R` discards it, because `check_action`
+        steps the binding aside and the key belongs to whatever is blocking.
+        """
+        if self._chat_input is None:
+            return "The prompt clipboard needs the composer, which is not ready yet."
+        if isinstance(self.screen, ModalScreen):
+            return "Close the open dialog before opening the prompt clipboard."
+        if self._pending_approval_widget is not None:
+            return "Answer the pending approval before opening the prompt clipboard."
+        if self._pending_ask_user_widget is not None:
+            return "Answer the pending question before opening the prompt clipboard."
+        if self._pending_goal_review_widget is not None:
+            return "Finish the goal review before opening the prompt clipboard."
+        return None
+
+    def _prompt_clipboard_blocked(self) -> bool:
+        """Return whether the prompt clipboard cannot open right now.
+
+        True when the composer does not exist, or when another input surface
+        (a modal, an approval, an ask-user prompt, a goal review) owns the
+        keyboard.
+        """
+        return self._prompt_clipboard_block_reason() is not None
+
+    def _inline_prompt_search_active(self) -> bool:
+        """Return whether the composer's inline prompt search panel is open."""
+        chat_input = self._chat_input
+        return chat_input is not None and chat_input._prompt_search_active
+
+    def action_open_prompt_clipboard(self) -> None:
+        """Open prompt history: inline panel first, full modal on a second press.
+
+        The first Ctrl+R opens the composer's inline search panel; pressing
+        Ctrl+R again while that panel is open escalates to the full
+        `PromptClipboardScreen`. The modal also opens directly when autocomplete
+        owns the inline rows.
+        """
+        if self._prompt_clipboard_blocked():
+            return
+        chat_input = self._chat_input
+        if chat_input is None:
+            return
+
+        tier = chat_input.open_prompt_search()
+        if tier == "inline":
+            return
+        if tier == "noop":
+            # The composer is mounted but its text area or search panel is not.
+            # Nothing opens; log it rather than leaving a bare silent return,
+            # since this only happens when the widget tree is malformed.
+            logger.warning(
+                "Prompt search unavailable: composer is missing its text area "
+                "or search panel"
+            )
+            return
+
+        # Escalating from the inline panel carries its query into the modal's
+        # filter and leaves the draft as the user had it. The autocomplete
+        # case reaches "modal" without a panel ever opening, so the current
+        # chat input becomes the modal query directly.
+        self._open_prompt_clipboard_modal(chat_input.escalate_prompt_search())
+
+    def _open_prompt_clipboard_modal(self, initial_query: str = "") -> None:
+        """Open the full searchable prompt history modal."""
+        chat_input = self._chat_input
+        if chat_input is None:
+            return
+
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        def handle_result(result: str | None) -> None:
+            def apply_result() -> None:
+                current_input = self._chat_input
+                if current_input is None:
+                    if result is not None:
+                        self.notify(
+                            "Could not insert the prompt: the composer is gone",
+                            severity="warning",
+                        )
+                    return
+                if result is not None and not current_input.insert_at_cursor(result):
+                    self.notify(
+                        "Could not insert the prompt: the composer is unavailable",
+                        severity="warning",
+                    )
+                current_input.focus_input()
+
+            self.call_after_refresh(apply_result)
+
+        prompts = chat_input.recent_prompts()
+        history_error = chat_input.prompt_history_error()
+        if history_error is not None and prompts:
+            # `empty_message` only reaches the user when the list is empty, but
+            # `recent_prompts` falls back to this session's entries on a read
+            # failure -- so the common outcome is a non-empty list that looks
+            # complete and is silently truncated. Warn independently of count.
+            self.notify(
+                f"{history_error}; showing this session's prompts only",
+                severity="warning",
+                markup=False,
+            )
+        self.push_screen(
+            PromptClipboardScreen(
+                prompts,
+                initial_query=initial_query,
+                empty_message=history_error,
+            ),
+            handle_result,
+        )
+
     async def action_open_editor(self) -> None:
         """Open the focused editable surface in $VISUAL/$EDITOR."""
         goal_editor = self._focused_goal_review_editor()
@@ -23543,6 +23676,11 @@ class DeepAgentsApp(App):
         reverts to the active screen's own handling. Depending on the screen that
         is either a competing screen binding or default key handling:
 
+        - `open_prompt_clipboard` (`ctrl+r`): modals and inline prompts keep
+            ownership of the chord, including selectors with their own Ctrl+R.
+            The one deliberate pass-through is the composer's inline prompt
+            search panel: it is not a screen, so the key reaches the app
+            action, which lets a second Ctrl+R escalate to the full modal.
         - `open_notifications` (`ctrl+n`): `ModelSelectorScreen` has its own
             priority `ctrl+n -> toggle_names` binding that then wins.
         - `toggle_auto_approve` (`shift+tab`): `DebugConsoleScreen` has no
@@ -23552,10 +23690,19 @@ class DeepAgentsApp(App):
             cursor-style modals via `_SupportsReverseNav` and otherwise no-ops
             under a `ModalScreen` that lacks dedicated `shift+tab` handling
             (as `DebugConsoleScreen` does), so the key would be silently
-            swallowed. Note this keys on the action, and `toggle_auto_approve`
-            is also bound to `ctrl+t`, so that (harmless, already a no-op
-            under modals) binding is stepped aside too while the console is
-            open.
+            swallowed. `PromptClipboardScreen` also steps aside so its own
+            priority `shift+tab -> page_newer` binding wins and the key does not
+            fall through to `Screen.focus_previous`. Note this keys on the
+            action, and `toggle_auto_approve` is also bound to `ctrl+t`, so
+            that binding is stepped aside under either screen. The composer's
+            inline prompt search gets the same step-aside so shift+tab pages
+            its results, but only while the query input holds focus: an
+            approval that arrives mid-search must keep the chord.
+        - `quit_or_interrupt` (`ctrl+c`): the prompt clipboard owns this chord for
+            copying the selected prompt rather than the focused search text.
+        - `interrupt` (`escape`): while the prompt-search query has focus,
+            escape belongs to its abandon-search binding, not the global
+            interrupt cascade. A newly focused inline approval keeps priority.
         - `approval_reject_with_reason` (`tab`): unlike the other approval keys
             this one must be `priority=True` to beat `Screen`'s
             `tab -> app.focus_next`, which means it would otherwise swallow
@@ -23571,15 +23718,46 @@ class DeepAgentsApp(App):
                 active screen or default key handling take the key); `True` to
                 leave it enabled.
         """
+        if action == "open_prompt_clipboard":
+            return not self._prompt_clipboard_blocked()
         if action == "open_notifications":
             from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
             if isinstance(self.screen, ModelSelectorScreen):
                 return False
         if action == "toggle_auto_approve":
+            from deepagents_code.tui.modals.prompt_clipboard import (
+                PromptClipboardScreen,
+            )
             from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+            from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
 
-            if isinstance(self.screen, DebugConsoleScreen):
+            if isinstance(self.screen, (DebugConsoleScreen, PromptClipboardScreen)):
+                return False
+            # The inline prompt search pages its results with shift+tab.
+            # Gate on focus, not just on the panel being open. An inline
+            # approval that arrives mid-search takes focus, and its menu needs
+            # shift+tab/ctrl+t to keep toggling auto-approve; stepping aside on
+            # panel state alone also drops shift+tab through to
+            # `Screen.focus_previous`, moving focus off the pending approval.
+            if self._inline_prompt_search_active() and isinstance(
+                self.focused, PromptSearchInput
+            ):
+                return False
+        # The prompt-search query owns escape only while it has focus. An inline
+        # approval that arrived after search opened must keep the global binding
+        # enabled so `action_interrupt` can reject it.
+        if action == "interrupt" and self._inline_prompt_search_active():
+            from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+            if isinstance(self.focused, PromptSearchInput):
+                return False
+        if action == "quit_or_interrupt":
+            from deepagents_code.tui.modals.prompt_clipboard import (
+                PromptClipboardScreen,
+            )
+
+            if isinstance(self.screen, PromptClipboardScreen):
                 return False
         if action == "approval_reject_with_reason":
             return self._pending_approval_widget is not None and (

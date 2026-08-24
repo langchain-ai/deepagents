@@ -1140,6 +1140,39 @@ class TestFormatTokenCount:
         assert format_token_count(2_500_000) == "2.5M"
 
 
+class TestEventCutoff:
+    """`_event_cutoff` feeds the offloaded/kept counts, so it must not guess.
+
+    A wrong cutoff shifts `messages_offloaded`/`messages_kept` and the
+    already-compacted short circuit, so every malformed shape has to read as
+    zero rather than as a plausible index.
+    """
+
+    @pytest.mark.parametrize(
+        ("event", "expected"),
+        [
+            ({"cutoff_index": 3}, 3),
+            ({"cutoff_index": 0}, 0),
+            (None, 0),
+            ("not-a-dict", 0),
+            ({}, 0),
+            ({"cutoff_index": None}, 0),
+            ({"cutoff_index": "3"}, 0),
+            ({"cutoff_index": 3.5}, 0),
+            # `bool` is an `int` subclass, so an unguarded isinstance check
+            # would read this as cutoff 1.
+            ({"cutoff_index": True}, 0),
+            ({"cutoff_index": False}, 0),
+        ],
+    )
+    def test_only_a_real_int_cutoff_is_honoured(
+        self, event: object, expected: int
+    ) -> None:
+        from deepagents_code.offload_middleware import _event_cutoff
+
+        assert _event_cutoff(event) == expected
+
+
 class TestOffloadHelpers:
     """Pure helpers for effective-conversation reconstruction."""
 

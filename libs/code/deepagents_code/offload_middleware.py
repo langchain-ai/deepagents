@@ -363,7 +363,11 @@ def _event_cutoff(event: object) -> int:
     """
     if isinstance(event, dict):
         cutoff = event.get("cutoff_index")
-        if isinstance(cutoff, int):
+        # `bool` is excluded explicitly: it passes `isinstance(_, int)`, so a
+        # malformed `cutoff_index: true` would otherwise read as cutoff 1 and
+        # silently shift the offloaded/kept counts by one message. The HTTP
+        # boundary rejects bools for `model_context_limit` for the same reason.
+        if isinstance(cutoff, int) and not isinstance(cutoff, bool):
             return cutoff
     return 0
 

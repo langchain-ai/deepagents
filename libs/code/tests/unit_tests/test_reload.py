@@ -2945,3 +2945,55 @@ class TestReloadPluginsViaReload:
             await app._run_reload()
 
             assert [message.text for message in app._pending_messages] == ["follow up"]
+
+
+class TestConfigGenerationAdvancesOnlyOnReload:
+    """Config files are read once into one generation; `/reload` advances it.
+
+    The whole point of a single process-wide generation is that no two readers
+    disagree, which means a hand edit is deliberately inert until an explicit
+    reload. Both halves need pinning: without the first assertion a future
+    change could reintroduce per-call file reads and nothing would notice;
+    without the second, `/reload` could stop refreshing the shared resolver and
+    every reader would be frozen for the life of the process.
+    """
+
+    def test_hand_edit_is_inert_until_reload(self, tmp_path: Path) -> None:
+        """A settings edit takes effect on `/reload`, not before."""
+        from deepagents_code.config import is_memory_auto_save_enabled
+
+        # `_isolate_state_dir` redirects `DEFAULT_CONFIG_PATH` here, and the
+        # path is stable across this test — so the resolver cache key does not
+        # change and staleness is genuinely observable.
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[memory]\nauto_save = true\n", encoding="utf-8")
+
+        settings = Settings.from_environment()
+        assert is_memory_auto_save_enabled() is True
+
+        config_path.write_text("[memory]\nauto_save = false\n", encoding="utf-8")
+        assert is_memory_auto_save_enabled() is True, (
+            "a hand edit must not change a value mid-session"
+        )
+
+        settings.reload_from_environment()
+        assert is_memory_auto_save_enabled() is False, (
+            "`/reload` must advance the shared generation"
+        )
+
+    def test_preview_does_not_advance_the_generation(self, tmp_path: Path) -> None:
+        """A dry run must not swap the config every other reader observes."""
+        from deepagents_code.config import is_memory_auto_save_enabled
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[memory]\nauto_save = true\n", encoding="utf-8")
+
+        settings = Settings.from_environment()
+        assert is_memory_auto_save_enabled() is True
+
+        config_path.write_text("[memory]\nauto_save = false\n", encoding="utf-8")
+        settings.preview_reload_from_environment()
+
+        assert is_memory_auto_save_enabled() is True, (
+            "a preview must leave the in-force generation untouched"
+        )

@@ -109,18 +109,18 @@ def test_show_diff_line_numbers_defaults_enabled(
     assert _load_show_diff_line_numbers() is True
 
 
-def test_show_diff_line_numbers_reads_app_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_show_diff_line_numbers_reads_app_config(tmp_path: Path) -> None:
     """`[ui].show_diff_line_numbers` can disable the diff gutter."""
-    from deepagents_code import config_manifest
     from deepagents_code.app import _load_show_diff_line_numbers
 
-    monkeypatch.setattr(
-        config_manifest,
-        "load_config_toml",
-        lambda: {"ui": {"show_diff_line_numbers": False}},
+    # Written to the real file rather than stubbing a loader: display
+    # preferences resolve through the shared process generation, so the user
+    # tier is the `DEFAULT_CONFIG_PATH` that `_isolate_state_dir` redirects
+    # under `tmp_path`.
+    (tmp_path / "config.toml").write_text(
+        "[ui]\nshow_diff_line_numbers = false\n", encoding="utf-8"
     )
+
     assert _load_show_diff_line_numbers() is False
 
 

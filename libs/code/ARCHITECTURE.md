@@ -41,6 +41,10 @@ Headless mode uses the same agent runtime as the interactive UI, but swaps the t
 
 Configuration is layered across user, project, session, and runtime scopes. That lets teams share project defaults while individual users keep their own credentials, preferences, skills, and local settings.
 
+Configuration files are read once, at startup, into a single process-wide generation. Every reader resolves against that same generation, so no two parts of the process can disagree about a setting. Editing `config.toml` while the app runs therefore has no effect until the generation advances, which happens in exactly two places: an in-app write (toggling a preference refreshes the generation itself) and `/reload`. `/reload` re-reads every source and swaps the result in atomically -- a config that fails to parse leaves the previous generation in force rather than half-applying the new one.
+
+This follows the convention every long-running Unix service uses: read at start, change on an explicit signal. Watching files for edits is deliberately not done. A partially applied configuration is a worse failure than a stale one, and per-setting exceptions -- some live, some cached -- would make the effective configuration unpredictable per option.
+
 The main extension points are:
 
 - **Skills and subagents** for reusable agent workflows

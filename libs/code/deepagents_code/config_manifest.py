@@ -568,53 +568,65 @@ def _resolve_theme(
 def _resolve_option(
     option: ConfigOption,
     *,
-    toml_data: Mapping[str, Any],
+    toml_data: Mapping[str, Any] | None = None,
     managed_toml_data: Mapping[str, Any] | None = None,
 ) -> ResolvedValue[object]:
     """Resolve one option through the ranked durable-mask engine.
 
-    Shared by the manifest's remaining bespoke readers: the bounded resolvers
-    and the display-preference loader. These readers deliberately resolve
-    against a freshly parsed generation -- their own `load_config_toml()` call,
-    or a table the caller supplies -- rather than the shared process snapshot
-    behind `get_config_resolver()`. Use that shared resolver instead unless a
-    reader needs the file as it is on disk right now.
+    Shared by the manifest's bespoke readers: the bounded resolvers and the
+    display-preference loader.
 
-    Each table pairs with a default `OK` status, matching the health these
-    readers historically reported. `TomlSnapshot` rejects a non-`OK` status
-    carrying a non-empty table, because an unhealthy source is one every reader
-    must treat as declaring nothing; callers with real health metadata pass
-    both halves to `resolver_from_snapshots` directly.
+    With no caller-supplied tables this resolves through the shared process
+    resolver, so every reader in the process observes one generation of the
+    config files and `/reload` is the single point at which that generation
+    advances. Pass explicit tables only to inspect a specific generation --
+    a candidate being validated, or the one snapshot a CLI invocation reads.
+
+    A supplied table pairs with a default `OK` status, matching the health
+    these readers historically reported. `TomlSnapshot` rejects a non-`OK`
+    status carrying a non-empty table, because an unhealthy source is one every
+    reader must treat as declaring nothing; callers with real health metadata
+    pass both halves to `resolver_from_snapshots` directly.
 
     Emits no diagnostics. Pair the result with `_emit_ranked_diagnostics` so a
     provider rejection before the effective value is still reported.
 
     Args:
         option: Manifest option to resolve.
-        toml_data: Parsed user `config.toml` mapping.
+        toml_data: Parsed user `config.toml` mapping. Omit to read the shared
+            process generation.
         managed_toml_data: Parsed managed mapping, or the process snapshot when
             omitted.
 
     Returns:
         A rank-keyed `ResolvedValue`.
     """
-    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.resolver import (
+        get_config_resolver,
+        resolver_from_snapshots,
+    )
     from deepagents_code.configuration.types import (
         ProviderHealth,
         ProviderStatus,
         TomlSnapshot,
     )
 
+    if toml_data is None and managed_toml_data is None:
+        return get_config_resolver().get(option)
+
+    # Reached only when a caller supplied at least one table: the other half is
+    # parsed here so both tiers still describe a single generation.
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
+    user_data = load_config_toml() if toml_data is None else toml_data
     resolver = resolver_from_snapshots(
         TomlSnapshot(
             managed_data,
             ProviderStatus("managed config", None, ProviderHealth.OK),
         ),
         TomlSnapshot(
-            toml_data,
+            user_data,
             ProviderStatus("config.toml", None, ProviderHealth.OK),
         ),
     )
@@ -746,6 +758,12 @@ def resolve_read_project_dotenv(
     # resolve them (and TOML, which we discard here in favor of the global
     # file) through the standard engine, then layer the global dotenv between
     # the env and TOML to match the option's env-over-file precedence.
+    #
+    # Parsed here rather than taken from the shared resolver: this runs during
+    # dotenv bootstrap, before the project `.env` has been layered into
+    # `os.environ`. Seeding the shared generation from here would capture an
+    # env tier that later readers do not see. Cadence is moot either way --
+    # the answer is consumed once, at startup.
     data = load_config_toml() if toml_data is None else toml_data
     resolved = _resolve_option(
         option, toml_data=data, managed_toml_data=managed_toml_data
@@ -837,7 +855,7 @@ def load_bool_display_preference(
     # Works on the ranked result rather than a plain `(value, source)` pair,
     # because the rejection reasons `on_rejected` needs live on the tier
     # health that pair discards.
-    ranked = _resolve_option(option, toml_data=load_config_toml())
+    ranked = _resolve_option(option)
     _emit_ranked_diagnostics(option, ranked)
     resolved = bool(ranked.value)
     # Keep the source: a display option turned off by managed policy is
@@ -893,18 +911,15 @@ def resolve_auto_classifier_timeout_with_source(
             an out-of-range layer is discarded in favor of the next one, so the
             returned source never credits a rejected layer.
     """
-    data = load_config_toml() if toml_data is None else toml_data
+    data = toml_data
     option = get_option("models.auto_classifier_timeout")
     if option is None:
         return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
 
-    managed_data = (
-        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
-    )
     resolved = _resolve_option(
         option,
         toml_data=data,
-        managed_toml_data=managed_data,
+        managed_toml_data=managed_toml_data,
     )
     _emit_ranked_diagnostics(option, resolved)
     value, source = resolved.value, _ranked_source(resolved)
@@ -956,7 +971,7 @@ def resolve_auto_classifier_timeout_with_source(
         try:
             return resolve_auto_classifier_timeout_with_source(
                 toml_data=data,
-                managed_toml_data=managed_data,
+                managed_toml_data=managed_toml_data,
             )
         finally:
             os.environ[env_name] = previous
@@ -1059,18 +1074,15 @@ def resolve_auto_classifier_model_with_source(
             including the env var whose blank value forced the inherit, so the
             source never points at a value the runtime ignored.
     """
-    data = load_config_toml() if toml_data is None else toml_data
+    data = toml_data
     option = get_option("models.auto_classifier")
     if option is None:
         return None, "default"
 
-    managed_data = (
-        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
-    )
     resolved = _resolve_option(
         option,
         toml_data=data,
-        managed_toml_data=managed_data,
+        managed_toml_data=managed_toml_data,
     )
     _emit_ranked_diagnostics(option, resolved)
     value, source = resolved.value, _ranked_source(resolved)
@@ -1129,6 +1141,10 @@ def resolve_startup_mode_with_source(
     """
     from deepagents_code.model_config import is_recent_startup_mode_restorable
 
+    # Keeps its own parse: the fall-through below inspects the raw user table
+    # directly, which the shared resolver does not expose. The only production
+    # caller (`dcode config`) passes an explicit generation anyway, so this
+    # never reads the file on a live path.
     data = load_config_toml() if toml_data is None else toml_data
     option = get_option("startup.mode")
     if option is None:
@@ -1228,18 +1244,15 @@ def resolve_recursion_limit(
         The resolved recursion limit, guaranteed within
             `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
     """
-    data = load_config_toml() if toml_data is None else toml_data
+    data = toml_data
     option = get_option("runtime.recursion_limit")
     if option is None:
         return RECURSION_LIMIT_DEFAULT
 
-    managed_data = (
-        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
-    )
     resolved = _resolve_option(
         option,
         toml_data=data,
-        managed_toml_data=managed_data,
+        managed_toml_data=managed_toml_data,
     )
     _emit_ranked_diagnostics(option, resolved)
     value, source = resolved.value, _ranked_source(resolved)
@@ -1278,7 +1291,7 @@ def resolve_recursion_limit(
         try:
             return resolve_recursion_limit(
                 toml_data=data,
-                managed_toml_data=managed_data,
+                managed_toml_data=managed_toml_data,
             )
         finally:
             if previous is not None:

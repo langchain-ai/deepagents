@@ -544,6 +544,60 @@ def test_real_manifest_options_merge_across_tiers() -> None:
     assert set(columns.value) == {"title", "summary"}
 
 
+def test_toml_snapshot_returns_the_generation_in_force() -> None:
+    """The accessor exists so a caller can share this resolver's generation.
+
+    Previously reached only indirectly, through
+    `_resolve_option_without_managed`.
+    """
+    managed = TomlSnapshot.from_table("managed config", {"startup": {"mode": "manual"}})
+    user = TomlSnapshot.from_table("config.toml", {"startup": {"mode": "auto"}})
+    resolver = resolver_from_snapshots(managed=managed, user=user)
+
+    assert resolver.toml_snapshot(MANAGED_RANK) == managed
+    assert resolver.toml_snapshot(USER_RANK) == user
+    # Environment and default providers carry no file snapshot.
+    assert resolver.toml_snapshot(ENVIRONMENT_RANK) is None
+    assert resolver.toml_snapshot(DEFAULT_RANK) is None
+
+
+def test_healthy_managed_snapshot_refuses_unenforceable_policy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Policy that parses but cannot be enforced must stop the launch.
+
+    Covered only through `_reload_values` before this; the function is the
+    startup gate, so its own contract deserves a direct test.
+    """
+    from deepagents_code.configuration import service
+    from unit_tests.conftest import redirect_managed_config
+
+    managed_path = tmp_path / "managed.toml"
+    redirect_managed_config(monkeypatch, managed_path)
+
+    managed_path.write_text("[shell]\nallow_list = []\n", encoding="utf-8")
+    service.invalidate_config_sources()
+    try:
+        assert service.get_healthy_managed_snapshot().data == {
+            "shell": {"allow_list": []}
+        }
+
+        # A known section as a scalar can erase a user subtree, so it is
+        # rejected rather than resolved in the user's favor.
+        managed_path.write_text("shell = 5\n", encoding="utf-8")
+        service.invalidate_config_sources()
+        with pytest.raises(service.ManagedPolicyError):
+            service.get_healthy_managed_snapshot()
+
+        # A file that does not parse at all is a different failure.
+        managed_path.write_text("[shell\n", encoding="utf-8")
+        service.invalidate_config_sources()
+        with pytest.raises(service.ManagedConfigError):
+            service.get_healthy_managed_snapshot()
+    finally:
+        service.invalidate_config_sources()
+
+
 def test_reload_with_replacements_rejects_an_unknown_rank(tmp_path: Path) -> None:
     """A replacement for a rank this resolver does not have is a mistake."""
     managed_path = tmp_path / "managed.toml"

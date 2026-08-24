@@ -5554,6 +5554,7 @@ max_tokens = 1024
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Claude on Vertex resolves to `ChatAnthropicVertex` with env config."""
+        pytest.importorskip("langchain_google_vertexai")
         import anthropic
 
         import deepagents_code.config as config_module

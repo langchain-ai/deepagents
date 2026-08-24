@@ -1515,7 +1515,7 @@ api_key_url = "javascript:alert(1)"
                 app.screen.query_one("#auth-prompt-key-meta", Static).content
             )
         assert "Ctrl+R" in key_meta
-        assert "New shell exports require restarting dcode" in key_meta
+        assert "New shell exports require restarting the app" in key_meta
 
     async def test_ctrl_d_opens_confirm_then_deletes(self) -> None:
         """Ctrl+D opens the confirmation modal; Enter completes the delete."""
@@ -1813,7 +1813,7 @@ api_key_url = "javascript:alert(1)"
             assert "shared, lowest priority" in text
             assert "project .env or ~/.deepagents/.env" in text
             assert "Ctrl+R in this dialog to reload" in text
-            assert "New shell exports require restarting dcode" in text
+            assert "New shell exports require restarting the app" in text
             assert "Configuration docs" in text
 
     async def test_base_url_hint_names_endpoint_var(

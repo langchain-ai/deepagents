@@ -18,7 +18,7 @@ from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -2834,10 +2834,24 @@ class Settings:
         project_root = find_project_root(start_path)
 
         from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            get_config_options,
             get_option,
-            load_config_toml,
-            resolve_scalar,
         )
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        # Resolve only the options this constructor reads. `resolve_all()`
+        # would also resolve `display.theme`, whose `THEME_DELEGATE` coercion
+        # reaches the theme registry and imports Textual (~470ms) — see
+        # `libs/code/AGENTS.md` on the startup hot path. Four CLI entry points
+        # in `skills/commands.py` build `Settings` without ever drawing a UI.
+        wanted = tuple(
+            option
+            for option in get_config_options()
+            if option.key in {"shell.allow_list", "skills.extra_allowed_dirs"}
+            or (option.group == "Interpreter" and option.settings_field is not None)
+        )
+        resolved_config = get_config_resolver().resolve_options(wanted)
 
         # No `is None` fallback for either enforced key below. The manifest is a
         # module-level constant, so a missing option is a programming error, not
@@ -2850,14 +2864,13 @@ class Settings:
         if shell_option is None:
             msg = "manifest is missing shell.allow_list; refusing to resolve it alone"
             raise RuntimeError(msg)
-        shell_allow_list, _ = resolve_scalar(
-            shell_option,
-            toml_data=load_config_toml(),
-        )
+        shell_resolved = resolved_config[shell_option.key]
+        _emit_ranked_diagnostics(shell_option, shell_resolved)
+        shell_allow_list = cast("list[str] | None", shell_resolved.value)
 
-        # Parse extra skill containment roots from env var or config.toml.
-        # These extend the path allowlist for load_skill_content but do not
-        # add new skill discovery locations.
+        # Parse extra skill containment roots from managed policy, the env
+        # var, or config.toml. These extend the path allowlist for
+        # load_skill_content but do not add new skill discovery locations.
         skills_option = get_option("skills.extra_allowed_dirs")
         if skills_option is None:
             msg = (
@@ -2865,14 +2878,21 @@ class Settings:
                 "resolve it alone"
             )
             raise RuntimeError(msg)
-        extra_skills_dirs, _ = resolve_scalar(
-            skills_option,
-            toml_data=load_config_toml(),
-        )
+        skills_resolved = resolved_config[skills_option.key]
+        _emit_ranked_diagnostics(skills_option, skills_resolved)
+        extra_skills_dirs = cast("list[Path] | None", skills_resolved.value)
 
-        from deepagents_code.config_manifest import resolve_interpreter_kwargs
-
-        interpreter_kwargs = resolve_interpreter_kwargs()
+        # Only the Interpreter group is manifest-resolved here. Credentials,
+        # the shell allow-list, and the LangSmith project keep their dedicated
+        # loaders above: their empty-string-to-`None` and reload semantics do
+        # not fit the generic resolver.
+        interpreter_kwargs: dict[str, Any] = {}
+        for option in get_config_options():
+            if option.group != "Interpreter" or option.settings_field is None:
+                continue
+            resolved = resolved_config[option.key]
+            _emit_ranked_diagnostics(option, resolved)
+            interpreter_kwargs[option.settings_field] = resolved.value
 
         return cls(
             openai_api_key=openai_key,
@@ -2965,9 +2985,16 @@ class Settings:
         if shell_option is not None:
             # Read the user layer too, not just managed. `shell.allow_list`
             # gained `toml_keys`, and `Settings.from_environment` resolves it
-            # through `load_config_toml()`; passing `toml_data={}` here reset a
-            # user's `[shell].allow_list` to `None` on every `/reload` and
-            # accepted cwd switch, and reported a change that never happened.
+            # through the shared resolver's user tier; passing `toml_data={}`
+            # here reset a user's `[shell].allow_list` to `None` on every
+            # `/reload` and accepted cwd switch, and reported a change that
+            # never happened.
+            #
+            # This method deliberately stays on `load_config_toml()` rather
+            # than the shared resolver: `get_config_resolver` caches its user
+            # snapshot for the process, and `/reload` exists to pick up an edit
+            # made since then. Unifying the two read paths would silently make
+            # `/reload` a no-op for file changes.
             #
             # Accepting an *env*-tier hit would defeat the `env` argument this
             # method exists to honor: `resolve_scalar` reads `os.environ`

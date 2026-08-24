@@ -36,6 +36,7 @@ SpinnerStatus = (
         "Offloading",
         "Loading thread",
         "Drafting acceptance criteria",
+        "Reviewing approval request",
     ]
     | None
 )

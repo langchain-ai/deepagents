@@ -729,6 +729,45 @@ class TestStartupSequence:
             assert app._status_bar is not None
             assert app._status_bar.connection_state == ""
 
+    async def test_resuming_status_clears_before_startup_command(self) -> None:
+        """Resume progress should clear once history loads, not after startup cmd."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            resume_thread="thread-123",
+            startup_cmd="echo hi",
+        )
+        app._connecting = False
+        app._restoring_resumed_history = True
+        history_loaded = asyncio.Event()
+        release_startup = asyncio.Event()
+        startup_ran = asyncio.Event()
+
+        async def load_history(**_kwargs: object) -> None:  # noqa: RUF029
+            history_loaded.set()
+
+        async def run_startup(_command: str) -> None:
+            startup_ran.set()
+            await release_startup.wait()
+
+        app._load_thread_history = load_history  # ty: ignore
+        app._run_startup_command = run_startup  # ty: ignore
+
+        async with app.run_test():
+            app._sync_status_connection()
+            task = asyncio.create_task(app._run_session_start_sequence())
+            await asyncio.wait_for(startup_ran.wait(), timeout=5)
+            # The startup command is still running, but history restoration has
+            # finished, so the Resuming indicator must already be gone.
+            assert history_loaded.is_set()
+            assert app._restoring_resumed_history is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+
+            release_startup.set()
+            await task
+            assert app._restoring_resumed_history is False
+
     async def test_resumed_history_loads_before_startup_command(self) -> None:
         """Resumed threads should mount prior history before startup output."""
         app = DeepAgentsApp(

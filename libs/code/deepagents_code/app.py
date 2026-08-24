@@ -10054,9 +10054,18 @@ class DeepAgentsApp(App):
                 self._resume_thread_intent is not None
                 or not self._has_initial_submission()
             )
-            if should_load_history:
-                await self._load_thread_history(resolve_pending_goal=False)
-            elif self._has_initial_submission():
+            try:
+                if should_load_history:
+                    await self._load_thread_history(resolve_pending_goal=False)
+            finally:
+                # History restoration ends with `_load_thread_history`; clear
+                # here so a slow `--startup-cmd` or resume compaction doesn't
+                # keep the status bar showing "Resuming" after the transcript
+                # is already restored.
+                if self._restoring_resumed_history:
+                    self._restoring_resumed_history = False
+                    self._sync_status_connection()
+            if not should_load_history and self._has_initial_submission():
                 try:
                     await self._adopt_resumed_model_if_needed(
                         thread_id=self._lc_thread_id
@@ -10099,6 +10108,8 @@ class DeepAgentsApp(App):
                 initial_submitted = True
         finally:
             self._startup_sequence_running = False
+            # Normally cleared right after history loading; this covers setup
+            # that fails before reaching it.
             if self._restoring_resumed_history:
                 self._restoring_resumed_history = False
                 self._sync_status_connection()

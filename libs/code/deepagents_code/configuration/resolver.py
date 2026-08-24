@@ -263,6 +263,17 @@ class ConfigResolver:
                 if provider.rank not in replacements:
                     provider.reload()
 
+        # The source-level diagnostics (`shadowed`, `unusable`, `retained`) are
+        # deduplicated so one `dcode config` sweep over ~200 options does not
+        # print the same rejection 200 times. Scoping that to the process made
+        # the second `/reload` of a still-broken file silent -- the reason
+        # string is identical, so the user gets no message during exactly the
+        # edit-and-retry loop where they need one. A generation advance ends
+        # the sweep the dedup exists for, so it is the right scope.
+        from deepagents_code.config_manifest import _warned_non_table_paths
+
+        _warned_non_table_paths.clear()
+
     def provider_statuses(self) -> Mapping[int, ProviderStatus]:
         """Return immutable provider health keyed by precedence rank."""
         with self._lock:

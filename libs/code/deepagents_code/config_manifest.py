@@ -519,6 +519,13 @@ def load_managed_config_toml(*, refresh: bool = False) -> Mapping[str, Any]:
 
 
 _warned_non_table_paths: set[tuple[str, ...]] = set()
+"""Source-level rejections already logged for the current config generation.
+
+Deduplicates the `shadowed` / `unusable` / `retained` diagnostics so one
+`dcode config` sweep over the whole manifest reports a bad file once rather
+than once per option. Cleared by `ConfigResolver.reload_with_replacements`:
+each generation gets to report its own problems, so a repeated `/reload` of a
+file the user is still repairing keeps telling them it is broken."""
 
 
 def _coerce_toml(

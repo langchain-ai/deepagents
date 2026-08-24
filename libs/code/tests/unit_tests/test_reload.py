@@ -3120,3 +3120,78 @@ class TestConfigGenerationAdvancesOnlyOnReload:
         assert is_memory_auto_save_enabled() is True, (
             "a preview must leave the in-force generation untouched"
         )
+
+
+class TestDiagnosticDedupIsPerGeneration:
+    """A repeated `/reload` of a still-broken file must keep reporting it.
+
+    The dedup exists so one `dcode config` sweep over the whole manifest
+    reports a bad file once instead of once per option. Scoped to the process
+    it also silenced the second `/reload` -- the reason string is identical --
+    which is the edit-and-retry loop where the user most needs the message.
+    """
+
+    def test_reload_lets_the_same_rejection_be_reported_again(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The same corrupt file warns once per generation, not once ever."""
+        import logging
+
+        from deepagents_code import model_config
+        from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            get_option,
+        )
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        option = get_option("shell.allow_list")
+        assert option is not None
+        resolver = get_config_resolver()
+        resolver.get(option)
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+
+        def reload_and_count() -> int:
+            resolver.reload()
+            with caplog.at_level(
+                logging.WARNING, logger="deepagents_code.config_manifest"
+            ):
+                caplog.clear()
+                _emit_ranked_diagnostics(option, resolver.get(option))
+            return len(caplog.records)
+
+        assert reload_and_count() == 1
+        # Second attempt, same failure, same reason string.
+        assert reload_and_count() == 1
+
+    def test_one_generation_still_reports_a_bad_file_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Within a generation the sweep stays deduplicated."""
+        import logging
+
+        from deepagents_code import model_config
+        from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            get_option,
+        )
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        option = get_option("shell.allow_list")
+        assert option is not None
+        resolver = get_config_resolver()
+        resolver.get(option)
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+        resolver.reload()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+            caplog.clear()
+            for _ in range(5):
+                _emit_ranked_diagnostics(option, resolver.get(option))
+
+        assert len(caplog.records) == 1

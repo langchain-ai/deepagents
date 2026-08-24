@@ -8892,6 +8892,39 @@ class TestWritesReachTheSharedResolver:
 
         assert get_config_resolver().get(option).value is None
 
+    def test_a_failed_refresh_does_not_escape_a_committed_write(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The bytes are on disk, so the writer must still report success.
+
+        `refresh_shared_resolver` caught only `OSError`, but a reload also
+        raises `ValueError` from the snapshot invariants and `RuntimeError`
+        from a provider with no snapshot. Those escaped a `-> bool` writer into
+        UI code after the write had already landed.
+        """
+        import logging
+
+        from deepagents_code.configuration import resolver as resolver_module
+
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+
+        def explode(_self: object) -> None:
+            msg = "synthetic reload failure"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(resolver_module.ConfigResolver, "reload", explode)
+
+        with caplog.at_level(logging.WARNING):
+            assert model_config.save_thread_sort_order("created_at") is True
+
+        assert "created_at" in config_path.read_text(encoding="utf-8")
+        assert "could not refresh the shared config resolver" in caplog.text
+
     def test_every_config_writer_invalidates_the_shared_generation(self) -> None:
         """No `model_config` writer may skip the refresh.
 

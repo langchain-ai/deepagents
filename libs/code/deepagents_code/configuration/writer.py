@@ -169,6 +169,14 @@ def refresh_shared_resolver(config_path: Path) -> None:
     replaced into place; reporting a stale in-process view as a failed write
     sends the user to retry or hand-edit a file that is already correct.
 
+    Every failure, not just `OSError`: a reload can also raise `ValueError`
+    from the snapshot and resolved-value invariants, or `RuntimeError` from a
+    provider that produced no snapshot. Callers such as
+    `model_config._save_toml_field` invoke this from the success branch of
+    their own write and return `bool`, so anything escaping here surfaces as a
+    crash after the bytes are already on disk -- the exact outcome the
+    paragraph above says must not happen.
+
     Args:
         config_path: Path the caller just wrote.
     """
@@ -180,7 +188,7 @@ def refresh_shared_resolver(config_path: Path) -> None:
 
     try:
         get_config_resolver().reload()
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001  # Write committed; see docstring
         logger.warning(
             "Wrote %s but could not refresh the shared config resolver: %s. "
             "This process keeps serving the previous values until it restarts.",

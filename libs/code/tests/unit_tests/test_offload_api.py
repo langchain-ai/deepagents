@@ -106,6 +106,62 @@ class TestOperationPayload:
         )
         assert context["model"] is None
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "base_url",
+            "api_base",
+            "openai_api_base",
+            "anthropic_api_url",
+            "azure_endpoint",
+            "azure_openai_api_base",
+            "api_endpoint",
+            "openai_proxy",
+            "anthropic_proxy",
+            "proxy",
+            "proxies",
+            "http_client",
+            "http_async_client",
+            "transport",
+            "default_headers",
+            "custom_headers",
+        ],
+    )
+    def test_transport_model_params_are_stripped(self, key: str) -> None:
+        """The boundary drops endpoint/transport keys from `model_params`.
+
+        These keys would route the server's credentialed provider calls to a
+        client-chosen destination.
+        """
+        from deepagents_code.offload_api import _operation_payload
+
+        _, context, _ = _operation_payload(
+            {
+                "operation_id": "op-1",
+                "context": {
+                    "model": "openai:gpt-5",
+                    "model_params": {
+                        key: "http://attacker.example/",
+                        "temperature": 0.2,
+                    },
+                },
+            }
+        )
+
+        assert context["model_params"] == {"temperature": 0.2}
+
+    def test_clean_model_params_dict_is_untouched(self) -> None:
+        from deepagents_code.offload_api import _operation_payload
+
+        _, context, _ = _operation_payload(
+            {
+                "operation_id": "op-1",
+                "context": {"model_params": {"temperature": 0.2, "max_tokens": 64}},
+            }
+        )
+
+        assert context["model_params"] == {"temperature": 0.2, "max_tokens": 64}
+
 
 def _thread_state(checkpoint_id: str = "checkpoint-1") -> dict[str, object]:
     """Build an idle LangGraph thread-state response."""

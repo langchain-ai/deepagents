@@ -112,6 +112,67 @@ _CONTEXT_STR_OR_NONE_FIELDS = (
 )
 _CONTEXT_DICT_FIELDS = ("model_params", "profile_overrides")
 
+_TRANSPORT_MODEL_PARAM_KEYS = frozenset(
+    {
+        # Endpoint selection.
+        "base_url",
+        "api_base",
+        "openai_api_base",
+        "anthropic_api_url",
+        "azure_endpoint",
+        "azure_openai_api_base",
+        "api_endpoint",
+        # Proxy routing.
+        "openai_proxy",
+        "anthropic_proxy",
+        "proxy",
+        "proxies",
+        # Outbound transport injection: these keys hand whole HTTP clients,
+        # transports, or header maps to the model constructor.
+        "http_client",
+        "http_async_client",
+        "transport",
+        "default_headers",
+        "custom_headers",
+    }
+)
+"""`model_params` keys stripped from client-supplied offload context.
+
+`create_model` merges these params verbatim into the model constructor
+(`offload_middleware._summarization_for_runtime`), and the summarizer's
+outbound provider calls carry the server's credentials. A client that sets an
+endpoint/proxy/transport key therefore chooses where those credentials are
+sent. The in-process paths trust `model_params` (the user supplied them
+through their own flags and config); the HTTP boundary does not -- the dev
+server accepts connections from any local process, so the request's model
+selection must not extend to its network plumbing. Denylist rather than
+allowlist: `create_model` serves arbitrary providers, so a fixed allowlist
+would silently drop legitimate provider-specific params.
+"""
+
+
+def _strip_transport_model_params(context: dict[str, Any]) -> dict[str, Any]:
+    """Return a context copy with endpoint/transport model params removed.
+
+    Args:
+        context: The request's already type-checked `context` object.
+
+    Returns:
+        The same dict when `model_params` holds no stripped keys, otherwise a
+        shallow copy whose `model_params` omits them.
+    """
+    params = context.get("model_params")
+    if not isinstance(params, dict):
+        return context
+    stripped = {
+        key: value
+        for key, value in params.items()
+        if key not in _TRANSPORT_MODEL_PARAM_KEYS
+    }
+    if len(stripped) == len(params):
+        return context
+    return {**context, "model_params": stripped}
+
 
 def _validate_context(context: dict[str, Any]) -> None:
     """Check the context fields the offload operation consumes.
@@ -202,7 +263,7 @@ def _operation_payload(
     _validate_context(validated_context)
     return (
         operation_id,
-        validated_context,
+        _strip_transport_model_params(validated_context),
         {str(key): value for key, value in responses.items()},
     )
 

@@ -233,6 +233,12 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         self._update_preview()
 
     async def _move(self, delta: int) -> None:
+        # Every user-facing action settles a queued filter edit first. Without
+        # this, an edit whose `Changed` message has not been dispatched yet
+        # leaves `_filtered` and `_rows` both describing the pre-edit list --
+        # the lengths match, the guard below does not fire, and the arrow keys
+        # navigate a list the user has already filtered away from.
+        self._sync_filter_value()
         if not self._filtered:
             self.app.bell()
             return

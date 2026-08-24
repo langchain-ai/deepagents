@@ -303,6 +303,41 @@ class TestPromptClipboardScreen:
             assert len(rows) == 1
             assert "No matching prompts." in str(rows[0].render())
 
+    async def test_moving_consumes_a_queued_filter_edit(self) -> None:
+        """Arrow keys must settle a queued filter edit before navigating.
+
+        When an edit is queued but neither `_filtered` nor `_rows` has been
+        updated yet, their lengths still match, so the desync guard in `_move`
+        does not fire. Without an explicit resync the selection walks the list
+        the user has already filtered away from -- the same class of bug
+        `action_select` and `action_copy` resync to avoid.
+        """
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("alpha one", "alpha two", "beta"))
+            await pilot.pause()
+            await pilot.pause()
+            assert list(screen._filtered) == ["alpha one", "alpha two", "beta"]
+
+            # Type into the widget without letting `Input.Changed` dispatch:
+            # `_filtered` and `_rows` still both describe the unfiltered list.
+            screen.query_one("#prompt-filter", Input).value = "beta"
+            assert len(screen._rows) == len(screen._filtered)
+
+            await screen.action_move_down()
+
+            # Asserted before pumping the queue: once `Input.Changed` is
+            # dispatched the filter lands anyway, so only the state the move
+            # itself left behind distinguishes a resync from a stale walk.
+            # Without the resync the selection has stepped to "alpha two",
+            # a prompt the query no longer matches.
+            assert list(screen._filtered) == ["beta"]
+            assert screen._selected_index == 0
+
+            await pilot.pause()
+            preview = screen.query_one("#prompt-preview", Static)
+            assert str(preview.content) == "beta"
+
     async def test_moving_after_a_queued_filter_edit_does_not_raise(self) -> None:
         """Ctrl+C leaves the modal open, so its re-filter must not desync rows.
 

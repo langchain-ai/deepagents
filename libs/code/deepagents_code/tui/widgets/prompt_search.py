@@ -68,6 +68,16 @@ unmounted rows are simply never the selection target.
 PROMPT_SEARCH_MAX_HINT_ROWS = 3
 """Hint rows the panel is willing to render; it wraps on narrow windows."""
 
+PROMPT_SEARCH_REWINDOW_MARGIN = 5
+"""How close to a mounted edge the selection gets before the window re-centers.
+
+`update_selection` re-styles two rows when the selection stays comfortably
+inside the mounted window, and rebuilds all of it otherwise. Rebuilding
+whenever the *ideal* start moved would rebuild on every single-step move once
+the list outgrows `PROMPT_SEARCH_WINDOW`, which is the common case. This margin
+keeps that on the cheap path until the selection nears an edge.
+"""
+
 PROMPT_SEARCH_PANEL_ROWS = 1 + PROMPT_SEARCH_MAX_ROWS + PROMPT_SEARCH_MAX_HINT_ROWS
 """Rows the panel reports at its tallest: query, results, and wrapped hint.
 
@@ -519,14 +529,34 @@ class PromptSearchPanel(Vertical):
         if self._selected_index == selected_index:
             return
         start, _stop = _window_bounds(len(self._pending_titles), selected_index)
-        if (
-            not self._options
-            or not (start <= selected_index < start + len(self._options))
-            or self._options[0].index != start
-        ):
-            # Selection left the mounted window (or the window is stale); a
-            # rebuild is the only way to show it. `_rebuild_options` applies
-            # the selection as it mounts, so nothing else is needed here.
+        if not self._options:
+            needs_rebuild = True
+        else:
+            mounted_start = self._options[0].index
+            mounted_stop = mounted_start + len(self._options)
+            needs_rebuild = (
+                # The selection is not mounted, so only a rebuild can show it.
+                not (mounted_start <= selected_index < mounted_stop)
+                # The window outruns the current list: it is stale after a
+                # shrink and its indexes no longer address real prompts.
+                or mounted_stop > len(self._pending_titles)
+                # The selection is close enough to an edge that the next move
+                # would leave the window, and re-centering would actually move
+                # it. Comparing against `start` alone would rebuild on every
+                # single-step move once the list is longer than the window,
+                # restyling all mounted rows per keystroke instead of two.
+                or (
+                    min(
+                        selected_index - mounted_start,
+                        mounted_stop - 1 - selected_index,
+                    )
+                    < PROMPT_SEARCH_REWINDOW_MARGIN
+                    and start != mounted_start
+                )
+            )
+        if needs_rebuild:
+            # `_rebuild_options` applies the selection as it mounts, so nothing
+            # else is needed here.
             self._selected_index = selected_index
             self._rebuild_generation += 1
             gen = self._rebuild_generation

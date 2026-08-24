@@ -7826,6 +7826,65 @@ class TestPromptSearchPanel:
             await pilot.pause()
             assert chat._prompt_search_active is False
 
+    async def test_single_step_moves_inside_the_window_do_not_rebuild(
+        self, tmp_path: Path
+    ) -> None:
+        """Moving within the mounted window re-styles two rows, not all of them.
+
+        `_window_bounds` shifts the ideal start on every single-step move once
+        the list outgrows `PROMPT_SEARCH_WINDOW`, so rebuilding whenever the
+        ideal start differed put every keystroke on the expensive path -- a
+        full `set_content` over all 50 mounted rows instead of two
+        `set_class` calls.
+        """
+        from deepagents_code.tui.widgets.prompt_search import (
+            PROMPT_SEARCH_REWINDOW_MARGIN,
+            PROMPT_SEARCH_WINDOW,
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            # Comfortably longer than the window, so windowing is in play.
+            self._seed_history(
+                chat, [f"prompt {index}" for index in range(PROMPT_SEARCH_WINDOW * 2)]
+            )
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            panel = chat._prompt_search
+            assert panel is not None
+            assert len(panel._options) == PROMPT_SEARCH_WINDOW
+
+            generation_before = panel._rebuild_generation
+            mounted_before = list(panel._options)
+
+            # Step to just inside the re-window margin: every one of these
+            # moves stays on the cheap path.
+            steps = PROMPT_SEARCH_WINDOW - PROMPT_SEARCH_REWINDOW_MARGIN - 2
+            for _ in range(steps):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat._prompt_search_index == steps
+            assert panel._rebuild_generation == generation_before
+            # The same widget objects, re-styled rather than re-mounted.
+            assert panel._options == mounted_before
+            assert panel._options[steps].is_selected
+
+            # Crossing into the margin re-centers the window.
+            for _ in range(3):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert panel._rebuild_generation > generation_before
+            assert panel._options[0].index > 0
+
     async def test_selection_past_first_page_stays_mounted_and_visible(
         self, tmp_path
     ) -> None:

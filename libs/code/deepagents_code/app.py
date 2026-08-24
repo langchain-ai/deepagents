@@ -1113,6 +1113,7 @@ if TYPE_CHECKING:
     from deepagents_code.cold_cache import ColdCacheReason, ColdCacheWarning
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
+    from deepagents_code.configuration.types import ProviderStatus
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
     from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
@@ -1282,6 +1283,35 @@ def _load_terminal_default() -> str | None:
     return _resolve_terminal_mapping(ui)
 
 
+def _managed_source_health_note(
+    status: ProviderStatus,
+    diagnostics: Sequence[str],
+) -> str | None:
+    """Describe a managed source rejected during the latest reload.
+
+    Args:
+        status: Current health of the managed provider's file.
+        diagnostics: Rejections attached to the resolved managed tier.
+
+    Returns:
+        A user-facing warning clause, or `None` when the source is healthy.
+    """
+    if status.usable:
+        return None
+    detail = status.health.value
+    if status.detail:
+        detail = f"{detail}: {status.detail}"
+
+    from deepagents_code.configuration.providers import RETAINED_SOURCE_SUFFIX
+
+    if any(RETAINED_SOURCE_SUFFIX in reason for reason in diagnostics):
+        return (
+            "the current managed config file was rejected as unreadable "
+            f"({detail}); the last readable version remains effective."
+        )
+    return f"A managed config file is present but unreadable: {detail}."
+
+
 def _managed_theme_note() -> str | None:
     """Describe managed theme policy for a preference-write toast.
 
@@ -1290,22 +1320,33 @@ def _managed_theme_note() -> str | None:
     running terminal), so a per-option probe would report policy as effective
     when it is not.
 
-    What they share with `_managed_verdict` is the health problem. Both read
-    `load_managed_config_toml()`, which returns an empty table for a file it
-    could not read -- so an unreadable policy file was indistinguishable from
-    no policy at all, and the administrator got no signal from either.
+    Reads the shared resolver generation because a failed managed reload keeps
+    the last enforceable snapshot while recording the rejected file only on
+    that provider's health and diagnostics.
 
     Returns:
         A clause for the toast, or `None` when no policy affects the theme.
     """
-    from deepagents_code.config_manifest import _resolve_theme
-    from deepagents_code.configuration.service import get_managed_snapshot
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import (
+        MANAGED_RANK,
+        get_config_resolver,
+    )
+    from deepagents_code.configuration.types import Found
 
-    snapshot = get_managed_snapshot()
-    if not snapshot.status.usable:
-        detail = snapshot.status.detail or snapshot.status.health.value
-        return f"A managed config file is present but unreadable: {detail}."
-    if _resolve_theme(snapshot.data, source="managed config") is not None:
+    option = get_option("display.theme")
+    if option is None:
+        return None
+    resolver = get_config_resolver()
+    resolved = resolver.get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    note = _managed_source_health_note(
+        resolver.provider_statuses()[MANAGED_RANK],
+        resolved.tier_diagnostics.get(MANAGED_RANK, ()),
+    )
+    if note is not None:
+        return note
+    if isinstance(resolved.tier_health.get(MANAGED_RANK), Found):
         return "managed config remains effective."
     return None
 
@@ -1672,21 +1713,13 @@ def save_terminal_theme_mapping(term_program: str, name: str) -> bool:
     return _save_terminal_theme_mapping_result(term_program, name).ok
 
 
-def _managed_verdict(option_key: str) -> tuple[bool, bool]:
+def _managed_verdict(option_key: str) -> tuple[bool, bool, str | None]:
     """Probe whether managed policy still decides an option after a user write.
 
-    Resolves the process managed snapshot against an empty user tier, so the
-    answer describes policy alone. `get_managed_snapshot()` defaults to
-    `refresh=False`, which reads what the process is enforcing. The write that
-    preceded this call has already refreshed that snapshot through
-    `refresh_shared_resolver`, so re-reading here would only risk a second,
-    different generation inside one user action.
-
-    The snapshot is passed whole, health included. Asserting `OK` over
-    `load_managed_config_toml()` -- which returns an empty table for an
-    unreadable file -- made a broken policy file indistinguishable from no
-    policy: the provider emitted no rejection, the managed tier read as
-    `Unset`, and the toast was a bare "Preference saved."
+    Reads the shared resolver generation refreshed by the preceding write. A
+    failed managed reload retains the last enforceable snapshot, so the
+    provider's current health and retained-source diagnostics must accompany
+    the resolved value to distinguish retained policy from a healthy file.
 
     Emitting the ranked diagnostics is the point, not a side effect. A
     malformed managed entry is reported nowhere else, and this write is the
@@ -1696,39 +1729,33 @@ def _managed_verdict(option_key: str) -> tuple[bool, bool]:
         option_key: Manifest key just written by the user.
 
     Returns:
-        `(decided, rejected)` -- whether managed policy supplies the effective
-        value, and whether a managed entry for this option was present but
-        unusable. Both are `False` for an unknown option.
+        `(decided, rejected, health_note)` -- whether managed policy supplies
+        the effective value, whether its entry was malformed, and any failure
+        from reloading the managed source. The booleans are `False` and the
+        note is `None` for an unknown option.
     """
     from deepagents_code.config_manifest import (
         _emit_ranked_diagnostics,
         _ranked_source,
         get_option,
     )
-    from deepagents_code.configuration.resolver import (
-        MANAGED_RANK,
-        resolver_from_snapshots,
-    )
-    from deepagents_code.configuration.service import (
-        get_managed_snapshot,
-        managed_decided,
-    )
-    from deepagents_code.configuration.types import (
-        Invalid,
-        TomlSnapshot,
-    )
+    from deepagents_code.configuration.resolver import MANAGED_RANK, get_config_resolver
+    from deepagents_code.configuration.service import managed_decided
+    from deepagents_code.configuration.types import Invalid
 
     option = get_option(option_key)
     if option is None:
-        return False, False
+        return False, False, None
 
-    resolved = resolver_from_snapshots(
-        managed=get_managed_snapshot(),
-        user=TomlSnapshot.declaring_nothing("config.toml"),
-    ).get(option)
+    resolver = get_config_resolver()
+    resolved = resolver.get(option)
     _emit_ranked_diagnostics(option, resolved)
     rejected = isinstance(resolved.tier_health.get(MANAGED_RANK), Invalid)
-    return managed_decided(_ranked_source(resolved)), rejected
+    note = _managed_source_health_note(
+        resolver.provider_statuses()[MANAGED_RANK],
+        resolved.tier_diagnostics.get(MANAGED_RANK, ()),
+    )
+    return managed_decided(_ranked_source(resolved)), rejected, note
 
 
 def _save_ui_bool_result(
@@ -1766,7 +1793,13 @@ def _save_ui_bool_result(
             "error",
         )
 
-    decided, rejected = _managed_verdict(option_key)
+    decided, rejected, health_note = _managed_verdict(option_key)
+    if health_note is not None:
+        return _ConfigWriteResult(
+            True,
+            f"Preference saved, but {health_note}",
+            "warning",
+        )
     if decided:
         return _ConfigWriteResult(
             True,
@@ -10452,10 +10485,16 @@ class DeepAgentsApp(App):
         # the probe the user is told their choice took effect while policy
         # quietly keeps the opposite, on the setting that decides whether Auto
         # applies generated goal criteria without review.
-        decided, rejected = await asyncio.to_thread(
+        decided, rejected, health_note = await asyncio.to_thread(
             _managed_verdict, "goals.auto_accept_criteria"
         )
-        if decided:
+        if health_note is not None:
+            self.notify(
+                f"Preference saved, but {health_note}",
+                severity="warning",
+                markup=False,
+            )
+        elif decided:
             self.notify(
                 "Preference saved, but managed config remains effective.",
                 severity="warning",

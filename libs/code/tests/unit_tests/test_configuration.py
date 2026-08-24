@@ -2922,6 +2922,38 @@ def test_saving_a_shadowed_ui_preference_says_policy_still_wins(
         model_config.clear_caches()
 
 
+def test_saving_after_a_rejected_managed_reload_reports_retained_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed refresh must not inherit the retained snapshot's healthy status."""
+    from deepagents_code import app, model_config
+    from deepagents_code.configuration import resolver as resolver_module, service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("[ui]\nshow_scrollbar = true\n", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        resolver_module.get_config_resolver()
+        managed.write_text("[ui\n", encoding="utf-8")
+
+        result = app._save_show_scrollbar_result(visible=False)
+
+        assert result.ok is True
+        assert result.message is not None
+        assert "current managed config file was rejected" in result.message
+        assert "last readable version remains effective" in result.message
+        assert result.severity == "warning"
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
 def test_saving_a_theme_reports_unreadable_managed_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2949,6 +2981,38 @@ def test_saving_a_theme_reports_unreadable_managed_policy(
         assert result.ok is True
         assert result.message is not None
         assert "unreadable" in result.message
+        assert result.severity == "warning"
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
+def test_saving_a_theme_after_a_rejected_reload_reports_retained_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Theme writes must consult shared provider health after a failed reload."""
+    from deepagents_code import app, model_config
+    from deepagents_code.configuration import resolver as resolver_module, service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[ui]\ntheme = "langchain"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        resolver_module.get_config_resolver()
+        managed.write_text("[ui\n", encoding="utf-8")
+
+        result = app._save_theme_preference_result("langchain")
+
+        assert result.ok is True
+        assert result.message is not None
+        assert "current managed config file was rejected" in result.message
+        assert "last readable version remains effective" in result.message
         assert result.severity == "warning"
     finally:
         service.invalidate_config_sources()

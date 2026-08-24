@@ -41938,10 +41938,11 @@ class TestManagedVerdict:
         redirect_managed_config(monkeypatch, managed)
         service.invalidate_config_sources()
 
-        decided, rejected = _managed_verdict("goals.auto_accept_criteria")
+        decided, rejected, health_note = _managed_verdict("goals.auto_accept_criteria")
 
         assert decided is True
         assert rejected is False
+        assert health_note is None
 
     def test_reports_a_malformed_managed_entry(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -41963,22 +41964,23 @@ class TestManagedVerdict:
         redirect_managed_config(monkeypatch, managed)
         service.invalidate_config_sources()
 
-        decided, rejected = _managed_verdict("goals.auto_accept_criteria")
+        decided, rejected, health_note = _managed_verdict("goals.auto_accept_criteria")
 
         assert decided is False
         assert rejected is True
+        assert health_note is None
 
     def test_reports_nothing_when_no_policy_is_installed(self) -> None:
         """The common case stays quiet."""
         from deepagents_code.app import _managed_verdict
 
-        assert _managed_verdict("goals.auto_accept_criteria") == (False, False)
+        assert _managed_verdict("goals.auto_accept_criteria") == (False, False, None)
 
     def test_unknown_option_is_not_a_verdict(self) -> None:
         """An unregistered key cannot be decided or rejected."""
         from deepagents_code.app import _managed_verdict
 
-        assert _managed_verdict("not.a.real.option") == (False, False)
+        assert _managed_verdict("not.a.real.option") == (False, False, None)
 
     def test_an_unreadable_policy_file_is_reported(
         self,
@@ -42005,12 +42007,15 @@ class TestManagedVerdict:
         service.invalidate_config_sources()
         try:
             with caplog.at_level(logging.WARNING):
-                decided, rejected = _managed_verdict("goals.auto_accept_criteria")
+                decided, rejected, health_note = _managed_verdict(
+                    "goals.auto_accept_criteria"
+                )
         finally:
             service.invalidate_config_sources()
 
         assert decided is False
         assert rejected is False
+        assert health_note is not None
         assert caplog.text, "an unreadable policy file must be reported somewhere"
 
 
@@ -42099,6 +42104,36 @@ class TestGoalAutoAcceptPreferenceReportsPolicy:
                 "warning",
             )
         ]
+
+    async def test_rejected_reload_reports_retained_policy(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The goal write must use current provider health, not cached metadata."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.configuration import resolver as resolver_module, service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text("[goals]\nauto_accept_criteria = false\n", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        resolver_module.get_config_resolver()
+        managed.write_text("[goals\n", encoding="utf-8")
+        recorder = _NotifyRecorder()
+        try:
+            await DeepAgentsApp._save_goal_auto_accept_preference(
+                # Only `self.notify` is used, so a recorder is enough.
+                cast("DeepAgentsApp", recorder),
+                enabled=True,
+            )
+        finally:
+            service.invalidate_config_sources()
+
+        assert len(recorder.notes) == 1
+        message, severity = recorder.notes[0]
+        assert "current managed config file was rejected" in message
+        assert "last readable version remains effective" in message
+        assert severity == "warning"
 
     async def test_no_policy_stays_quiet(self) -> None:
         """The common case must not grow a spurious toast."""

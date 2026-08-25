@@ -1366,10 +1366,15 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         with SAVED so the caller retries the original operation; otherwise
         refresh the modal in place and toast the outcome.
         """
+        from deepagents_code import config as config_module
         from deepagents_code.config import settings
 
         try:
-            await asyncio.to_thread(settings.reload_from_environment)
+            changes = await asyncio.to_thread(settings.reload_from_environment)
+            blocked = config_module.managed_reload_block(changes)
+            if blocked is not None:
+                self.app.notify(blocked, severity="error", markup=False)
+                return
             clear_caches()
         except (OSError, ValueError) as exc:
             logger.warning("Failed to reload configuration from auth prompt: %s", exc)

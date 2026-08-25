@@ -1131,7 +1131,8 @@ def _resolve_interpreter_enabled(
         raise RuntimeError(msg)
     resolved = _resolver_for_args(args).get(option)
     _emit_ranked_diagnostics(option, resolved)
-    remote_sandbox = bool(args.sandbox) and args.sandbox != "none"
+    sandbox = getattr(args, "sandbox", None)
+    remote_sandbox = bool(sandbox) and sandbox != "none"
     deciding_rank = next(
         (rank for rank in resolved.ranks if rank in {MANAGED_RANK, CLI_RANK}), None
     )
@@ -1140,7 +1141,7 @@ def _resolve_interpreter_enabled(
         if enabled and remote_sandbox:
             if not strict:
                 return False
-            _exit_interpreter_conflicts_with_sandbox(args.sandbox, deciding_rank)
+            _exit_interpreter_conflicts_with_sandbox(sandbox, deciding_rank)
         return enabled
     if remote_sandbox:
         return False

@@ -997,6 +997,29 @@ class TestManagedBinDirFallback:
             assert managed_tools._resolve_install_bin_dir() == profile
         assert profile.is_dir()
 
+    def test_falls_back_when_existing_dir_is_unwritable(self, tmp_path: Path) -> None:
+        """A pre-existing root-owned dir passes `mkdir(exist_ok=True)` but must
+        not be selected — the fallback must be tried instead.
+        """  # noqa: D205
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        profile = tmp_path / "profile"
+        original_probe = managed_tools._probe_writable
+
+        def fake_probe(directory: Path) -> None:
+            if directory == shared:
+                msg = "Permission denied"
+                raise OSError(msg)
+            original_probe(directory)
+
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            patch.object(managed_tools, "_probe_writable", side_effect=fake_probe),
+        ):
+            assert managed_tools._resolve_install_bin_dir() == profile
+        assert profile.is_dir()
+
     def test_raises_when_no_location_is_usable(self, tmp_path: Path) -> None:
         first = tmp_path / "a"
         second = tmp_path / "b"

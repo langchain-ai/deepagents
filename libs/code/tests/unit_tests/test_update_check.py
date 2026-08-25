@@ -6621,6 +6621,31 @@ class TestUpdateLockLocationFallback:
             assert update_check._resolve_update_lock_file() == profile
         assert profile.parent.is_dir()
 
+    def test_falls_back_when_existing_lock_dir_is_unwritable(
+        self, tmp_path: Path
+    ) -> None:
+        """A pre-existing unwritable lock dir passes `mkdir(exist_ok=True)` but
+        must not be selected — the fallback must be tried instead.
+        """  # noqa: D205
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        profile = tmp_path / "profile" / "update.lock"
+        original_probe = update_check._probe_writable
+
+        def fake_probe(directory: Path) -> None:
+            if directory == shared:
+                msg = "Permission denied"
+                raise OSError(msg)
+            original_probe(directory)
+
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", shared / "update.lock"),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+            patch.object(update_check, "_probe_writable", side_effect=fake_probe),
+        ):
+            assert update_check._resolve_update_lock_file() == profile
+        assert profile.parent.is_dir()
+
     def test_returns_none_only_when_neither_is_usable(self, tmp_path: Path) -> None:
         first = tmp_path / "a"
         second = tmp_path / "b"

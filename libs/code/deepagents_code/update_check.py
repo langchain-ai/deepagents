@@ -2273,16 +2273,31 @@ release on a different one.
 """
 
 
+def _probe_writable(directory: Path) -> None:
+    """Raise `OSError` when *directory* cannot be written to.
+
+    `mkdir(exist_ok=True)` only proves the directory exists; it succeeds on a
+    pre-existing root-owned directory. Writing a probe file proves the process
+    can actually create files there.
+    """
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    probe = directory / f".deepagents-probe-{os.getpid()}"
+    try:
+        probe.touch(exist_ok=False)
+    finally:
+        probe.unlink(missing_ok=True)
+
+
 def _resolve_update_lock_file() -> Path | None:
     """Return the first usable lock path, preferring installation scope.
 
     Returns:
-        The lock file whose parent directory could be created, or `None` when
-        neither could be — the only case that legitimately fails open.
+        The lock file whose parent directory is writable, or `None` when
+        neither is — the only case that legitimately fails open.
     """
     for candidate in (UPDATE_LOCK_FILE, FALLBACK_UPDATE_LOCK_FILE):
         try:
-            candidate.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _probe_writable(candidate.parent)
         except OSError:
             logger.info(
                 "Update lock directory %s is unusable; trying the next location",

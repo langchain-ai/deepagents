@@ -445,6 +445,21 @@ def _extract_zip_validated(zf: zipfile.ZipFile, extract_root: Path) -> None:
     zf.extractall(extract_root)  # noqa: S202  # validated above
 
 
+def _probe_writable(directory: Path) -> None:
+    """Raise `OSError` when *directory* cannot be written to.
+
+    `mkdir(exist_ok=True)` only proves the directory exists; it succeeds on a
+    pre-existing root-owned directory. Writing a probe file proves the process
+    can actually create files there.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    probe = directory / f".deepagents-probe-{os.getpid()}"
+    try:
+        probe.touch(exist_ok=False)
+    finally:
+        probe.unlink(missing_ok=True)
+
+
 def _resolve_install_bin_dir() -> Path:
     """Return the first managed bin dir that can be created.
 
@@ -458,7 +473,7 @@ def _resolve_install_bin_dir() -> Path:
     last_error: OSError | None = None
     for directory in managed_bin_dirs():
         try:
-            directory.mkdir(parents=True, exist_ok=True)
+            _probe_writable(directory)
         except OSError as exc:
             last_error = exc
             logger.info(

@@ -266,6 +266,8 @@ class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = ResumeState
 
     def after_model(  # noqa: PLR6301  # AgentMiddleware hook must be an instance method.

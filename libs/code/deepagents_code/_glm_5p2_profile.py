@@ -158,6 +158,7 @@ class _GlmTerminalStallRecovery(AgentMiddleware):
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     @staticmethod
     def _is_terminal_stall(response: ModelResponse) -> bool:

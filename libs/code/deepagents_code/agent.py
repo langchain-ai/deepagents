@@ -795,6 +795,7 @@ class ShellAllowListMiddleware(AgentMiddleware):
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(self, allow_list: list[str]) -> None:
         """Initialize with the shell allow-list to validate commands against.
@@ -2005,6 +2006,7 @@ class AsyncApprovalHITLMiddleware(HumanInTheLoopMiddleware[Any, Any, Any]):
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     # Report the stock middleware name so the SDK dedups us into the single HITL
     # slot rather than appending a second stock HITL alongside us. This pairs

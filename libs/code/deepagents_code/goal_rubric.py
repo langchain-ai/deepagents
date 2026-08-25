@@ -378,6 +378,7 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     @override
     def wrap_model_call(
@@ -460,6 +461,7 @@ class _CriteriaContextBudgetMiddleware(AgentMiddleware[GoalCriteriaAgentState, N
     """Bound tool-result text accumulated by one nested context operation."""
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(self, *, label: str = "Criteria context") -> None:
         """Initialize bounded per-operation context counters.
@@ -546,6 +548,7 @@ class _ContextToolCallBudgetMiddleware(AgentMiddleware[Any, Any]):
     """Bound selected context-tool calls independently for each nested operation."""
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(self, tool_names: set[str], *, limit: int) -> None:
         """Initialize a per-operation call budget for the selected tools.
@@ -625,6 +628,7 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
     """Bound repository inspection calls and read/result sizes."""
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(self, backend: BackendProtocol, *, root: str = "/") -> None:
         """Initialize a per-operation repository tool budget.
@@ -780,6 +784,7 @@ class _WebSearchBudgetMiddleware(AgentMiddleware[GoalCriteriaAgentState, None]):
     """Limit web searches independently for each nested context operation."""
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(self) -> None:
         """Initialize bounded per-operation search counters."""
@@ -1336,6 +1341,8 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
     """Run goal-criteria requests entirely inside the main server graph."""
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = GoalCriteriaState
 
     def __init__(

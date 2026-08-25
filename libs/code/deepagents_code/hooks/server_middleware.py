@@ -294,6 +294,8 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
     """Emit server-owned lifecycle events over the hook interrupt transport."""
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = ServerHooksState
 
     def __init__(

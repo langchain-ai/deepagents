@@ -105,6 +105,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(self, guarded_paths: Iterable[str | Path]) -> None:
         """Initialize the guard with the memory files to protect.

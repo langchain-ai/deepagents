@@ -702,6 +702,8 @@ class LocalContextMiddleware(AgentMiddleware):
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = LocalContextState
 
     def __init__(

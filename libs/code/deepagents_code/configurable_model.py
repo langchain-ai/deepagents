@@ -828,6 +828,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(
         self,

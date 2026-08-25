@@ -2226,6 +2226,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = CostState
 
     def __init__(self, *, nested: bool = False) -> None:

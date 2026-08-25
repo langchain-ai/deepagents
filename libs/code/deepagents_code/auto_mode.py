@@ -1948,6 +1948,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
     """Apply deterministic policy, classifier review, and HITL fallback."""
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = AutoModeState
 
     @property
@@ -3651,6 +3653,7 @@ class HeadlessMCPGuardMiddleware(HumanInTheLoopMiddleware[AgentState[Any], Any, 
     """Reject dynamically gated MCP calls when no approval UI exists."""
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(self, tool_names: set[str]) -> None:
         """Initialize the guard.

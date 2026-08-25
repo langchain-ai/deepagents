@@ -13,8 +13,9 @@ or LangChain. See `AGENTS.md` § Startup performance.
 from __future__ import annotations
 
 import functools
+import sys
 
-__all__ = ["reserved_agent_dir_names"]
+__all__ = ["is_reserved_agent_dir_name", "reserved_agent_dir_names"]
 
 
 @functools.lru_cache(maxsize=1)
@@ -55,3 +56,54 @@ def reserved_agent_dir_names() -> frozenset[str]:
             CONVERSATION_HISTORY_DIRNAME,
         },
     )
+
+
+def _normalized_for_fs(name: str) -> str:
+    """Reduce `name` to the spelling the platform's filesystem compares on.
+
+    Reserved-name guards run against a string the user typed, but the
+    filesystem decides which directory that string resolves onto. The default
+    macOS and Windows filesystems are case-insensitive, so `Plugins` opens the
+    same directory as the reserved `plugins/`; Windows additionally strips
+    trailing dots and spaces, so `plugins ` aliases it there too. Comparing
+    the raw string would let those spellings bypass the guard and stamp agent
+    state into an app-owned directory. (`plugins.` never reaches this guard:
+    the agent-name character allowlist rejects `.` first.)
+
+    `str.casefold` (rather than `lower`) matches the full Unicode case
+    folding the filesystems apply. The trailing dot/space strip applies only
+    on Windows, where the filesystem performs it; on POSIX `plugins ` is a
+    genuinely different directory from `plugins/`, so folding it there would
+    reject a harmless name.
+
+    Returns:
+        The normalized name.
+    """
+    normalized = name.casefold()
+    if sys.platform == "win32":
+        normalized = normalized.rstrip(". ")
+    return normalized
+
+
+@functools.lru_cache(maxsize=1)
+def _reserved_names_folded() -> frozenset[str]:
+    """Return the reserved names reduced by `_normalized_for_fs`.
+
+    Returns:
+        The normalized reserved directory names.
+    """
+    return frozenset(_normalized_for_fs(name) for name in reserved_agent_dir_names())
+
+
+def is_reserved_agent_dir_name(name: str) -> bool:
+    """Report whether `name` resolves onto an app-owned profile directory.
+
+    Use this instead of `name in reserved_agent_dir_names()` wherever the
+    input is a user-supplied agent name: the membership test is exact-string
+    and misses case and trailing-dot aliases that the filesystem itself would
+    resolve onto the reserved directory.
+
+    Returns:
+        `True` when `name` names an app-owned directory.
+    """
+    return _normalized_for_fs(name) in _reserved_names_folded()

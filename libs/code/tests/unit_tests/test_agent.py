@@ -4813,6 +4813,22 @@ class TestGetAvailableAgentNames:
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["agent"]
 
+    def test_ignores_case_aliased_reserved_dirs(self, tmp_path: Path) -> None:
+        """A case-aliased reserved dir never surfaces as an agent.
+
+        `iterdir()` returns the on-disk spelling, which an exact-string guard
+        misses when it differs only by case (e.g. after `dcode -a Plugins`
+        created the entry on a case-insensitive filesystem).
+        """
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        _seed_agent(agents_dir, "agent")
+        _seed_agent(agents_dir, "Plugins")
+        _seed_agent(agents_dir, "BIN")
+
+        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
+
     def test_reserved_agent_dir_names_includes_app_dirs(self) -> None:
         """The reserved-name set is sourced from each owning module."""
         assert reserved_agent_dir_names() == frozenset(

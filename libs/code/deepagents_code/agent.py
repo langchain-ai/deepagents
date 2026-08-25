@@ -74,7 +74,7 @@ from deepagents_code._repository_bounds import (
     REPOSITORY_TOOL_NAMES,
     RepositoryBounds,
 )
-from deepagents_code._reserved_names import reserved_agent_dir_names
+from deepagents_code._reserved_names import is_reserved_agent_dir_name
 from deepagents_code.approval_mode import (
     ApprovalMode,
     aread_approval_mode_from_store,
@@ -1165,7 +1165,7 @@ def _is_agent_dir_entry(entry: Path) -> bool:
     `OSError` from `is_dir`/`is_symlink`/`is_file` propagates so callers can
     log with the failing entry's name as context.
     """
-    if entry.name.startswith(".") or entry.name in reserved_agent_dir_names():
+    if entry.name.startswith(".") or is_reserved_agent_dir_name(entry.name):
         return False
     if entry.is_symlink() or not entry.is_dir():
         return False

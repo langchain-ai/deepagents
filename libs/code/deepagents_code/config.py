@@ -3366,12 +3366,14 @@ class Settings:
         # Agent profiles live directly under the profile root, so an agent
         # named after an app-owned directory would resolve onto app state. The
         # picker already hides these names; reject them on the write path too
-        # rather than letting `dcode -a plugins` stamp a marker into it.
+        # rather than letting `dcode -a plugins` stamp a marker into it. The
+        # comparison is filesystem-aware so a case or trailing-dot alias that
+        # resolves onto the reserved directory is rejected as well.
         # Imported from `_reserved_names`, not `agent`: this runs on the CLI
         # startup path and `agent` pulls in LangChain at module level.
-        from deepagents_code._reserved_names import reserved_agent_dir_names
+        from deepagents_code._reserved_names import is_reserved_agent_dir_name
 
-        if agent_name in reserved_agent_dir_names():
+        if is_reserved_agent_dir_name(agent_name):
             msg = (
                 f"Invalid agent name: {agent_name!r} is reserved for dcode's own state."
             )

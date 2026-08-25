@@ -863,10 +863,13 @@ def _reject_reserved_agent_arg(name: str) -> None:
         Exits the process with status 2 (argparse's usage-error status) when
         `name` is reserved.
     """
-    from deepagents_code._reserved_names import reserved_agent_dir_names
+    from deepagents_code._reserved_names import (
+        is_reserved_agent_dir_name,
+        reserved_agent_dir_names,
+    )
 
     reserved = reserved_agent_dir_names()
-    if name not in reserved:
+    if not is_reserved_agent_dir_name(name):
         return
     from deepagents_code.config import console
 
@@ -1583,13 +1586,14 @@ def _recent_agent_is_valid(name: str) -> bool:
     profile root (symlink loops, EACCES) don't crash the launch — we
     treat them the same as "not valid" and fall back to the default.
     """
-    from deepagents_code._reserved_names import reserved_agent_dir_names
+    from deepagents_code._reserved_names import is_reserved_agent_dir_name
 
-    if name in reserved_agent_dir_names():
+    if is_reserved_agent_dir_name(name):
         # `bin/` and `plugins/` are real directories under the profile root, so
         # the `is_dir()` check below would accept them and the launch would
         # then fail in `get_agent_dir`. A stale entry must fall back, never
-        # break every launch.
+        # break every launch. The filesystem-aware check also catches a
+        # differently cased stale entry such as `Plugins`.
         logger.warning(
             "Stored agent %r names an app-owned directory; falling back to default",
             name,

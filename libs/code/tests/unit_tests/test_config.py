@@ -7830,6 +7830,57 @@ class TestReservedAgentNames:
 
         assert settings.get_agent_dir("coder").name == "coder"
 
+    @pytest.mark.parametrize(
+        "name", ["BIN", "Plugins", "CONVERSATION_HISTORY", "pLuGiNs"]
+    )
+    def test_case_aliases_are_rejected(self, name: str) -> None:
+        """Case-insensitive filesystems resolve these onto the reserved dir.
+
+        On the default macOS/Windows filesystems `Plugins` is the same
+        directory as `plugins/`, so an exact-string guard would let the name
+        through and stamp agent state into app-owned directories.
+        """
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="reserved"):
+            settings.get_agent_dir(name)
+
+    def test_windows_trailing_space_alias_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reject a Windows trailing-space alias of a reserved name.
+
+        `"plugins "` passes the character allowlist (whitespace is allowed)
+        but Windows strips the trailing space and resolves it onto `plugins/`.
+        The strip is Windows filesystem semantics, so the guard only applies
+        it there; on POSIX `plugins ` is a genuinely different directory.
+        """
+        monkeypatch.setattr(sys, "platform", "win32")
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="reserved"):
+            settings.get_agent_dir("plugins ")
+
+    def test_trailing_dot_never_reaches_the_reserved_check(self) -> None:
+        """The character allowlist already rejects `.` on every platform.
+
+        A trailing-dot alias such as `plugins.` is refused as an invalid name
+        before the reserved-name comparison runs.
+        """
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="Invalid agent name"):
+            settings.get_agent_dir("plugins.")
+
+    def test_trailing_space_is_allowed_off_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On POSIX a trailing space names a different, non-reserved directory."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        settings = Settings.__new__(Settings)
+
+        assert settings.get_agent_dir("plugins ").name == "plugins "
+
     @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
     def test_the_agents_md_accessor_rejects_them_too(self, name: str) -> None:
         """The marker write goes through this accessor, not `get_agent_dir`.

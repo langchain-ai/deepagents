@@ -2270,6 +2270,21 @@ class TestResolveAgentArg:
         ):
             assert _resolve_agent_arg(self._args()) == DEFAULT_AGENT_NAME
 
+    @pytest.mark.parametrize("name", ["plugins", "Plugins", "BIN"])
+    def test_rejects_reserved_agent_arg(self, name: str) -> None:
+        """`-a` naming app state exits 2, including case-aliased spellings.
+
+        The exact-string check once let `Plugins` through on the
+        case-insensitive default macOS/Windows filesystems, where it resolves
+        onto the reserved `plugins/` directory.
+        """
+        from deepagents_code.main import _resolve_agent_arg
+
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_agent_arg(self._args(agent=name))
+
+        assert exc_info.value.code == 2
+
     def test_falls_back_when_both_default_and_recent_stale(self) -> None:
         """Both keys point at deleted dirs → final fallback to DEFAULT_AGENT_NAME.
 
@@ -2343,6 +2358,18 @@ class TestRecentAgentIsValid:
 
         with patch("pathlib.Path.is_dir", side_effect=PermissionError("denied")):
             assert _recent_agent_is_valid("coder") is False
+
+    @pytest.mark.parametrize("name", ["plugins", "Plugins", "PLUGINS"])
+    def test_reserved_names_fall_back(self, name: str) -> None:
+        """A stored reserved name is invalid even in a case-aliased spelling.
+
+        `plugins/` exists under the profile root, so `is_dir()` would accept
+        `Plugins` on a case-insensitive filesystem and the launch would then
+        fail in `get_agent_dir`; the stale entry must fall back instead.
+        """
+        from deepagents_code.main import _recent_agent_is_valid
+
+        assert _recent_agent_is_valid(name) is False
 
 
 class TestUpdateSubcommand:

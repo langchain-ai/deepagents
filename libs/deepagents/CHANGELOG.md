@@ -2,6 +2,18 @@
 
 # Deep Agents Changelog
 
+## [0.7.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.8...deepagents==0.7.9) (2026-08-25)
+
+### Features
+
+- Disabled tracing inputs on middleware. ([#5377](https://github.com/langchain-ai/deepagents/issues/5377))
+
+### Bug fixes
+
+- Exclude tools from execution when `excluded_tools` is set in harness profiles. ([#5809](https://github.com/langchain-ai/deepagents/issues/5809))
+- Enforce full criterion coverage in `RubricMiddleware`. ([#5234](https://github.com/langchain-ai/deepagents/issues/5234))
+- Clarified zero execute-timeout semantics. ([#5752](https://github.com/langchain-ai/deepagents/issues/5752))
+
 ## [0.7.8](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.7...deepagents==0.7.8) (2026-08-20)
 
 ### Bug Fixes

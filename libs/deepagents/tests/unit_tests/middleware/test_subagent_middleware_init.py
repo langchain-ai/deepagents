@@ -22,6 +22,7 @@ from deepagents.graph import create_deep_agent
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
+    _FORK_TASK_PREAMBLE,
     _PARENT_SYSTEM_MESSAGE_KEY,
     GENERAL_PURPOSE_SUBAGENT,
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
@@ -636,7 +637,11 @@ class TestSubagentMiddlewareInit:
 
         task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
 
-        assert captured["messages"] == [summary, after_cutoff, HumanMessage(content="new task")]
+        assert captured["messages"] == [
+            summary,
+            after_cutoff,
+            HumanMessage(content=_FORK_TASK_PREAMBLE + "new task"),
+        ]
         assert "_summarization_event" not in captured
 
     def test_compiled_fork_does_not_receive_parent_prompt_state(self) -> None:

@@ -887,3 +887,65 @@ class TestDoctorHelp:
         assert "dcode config get <key>" in output
         assert "dcode --version" in output
         assert "dcode -v" in output
+
+
+class TestFallbackLocationReporting:
+    """`doctor` must not call an unusable primary location healthy.
+
+    `classify_path` answers "is it there". A present but root-owned managed-bin
+    directory is exactly the condition `FALLBACK_BIN_DIR` exists for, and
+    reporting it as `exists` sends the user looking somewhere else.
+    """
+
+    def test_an_unwritable_existing_directory_is_flagged(self, tmp_path: Path) -> None:
+        from deepagents_code.doctor import _writable_path_status
+
+        directory = tmp_path / "managed-bin"
+        directory.mkdir()
+
+        with patch("os.access", return_value=False):
+            item = _writable_path_status("Managed binaries", directory)
+
+        assert item.ok is False
+        assert "not writable" in item.value
+
+    def test_a_writable_existing_directory_is_healthy(self, tmp_path: Path) -> None:
+        from deepagents_code.doctor import _writable_path_status
+
+        directory = tmp_path / "managed-bin"
+        directory.mkdir()
+
+        item = _writable_path_status("Managed binaries", directory)
+
+        assert item.ok is True
+
+    def test_a_missing_directory_is_not_a_permission_problem(
+        self, tmp_path: Path
+    ) -> None:
+        """Lazily created directories must not be reported as unwritable."""
+        from deepagents_code.doctor import _writable_path_status
+
+        item = _writable_path_status("Managed binaries", tmp_path / "absent")
+
+        assert item.ok is True
+        assert "not created" in item.value
+
+    def test_the_active_ripgrep_location_is_named(self, tmp_path: Path) -> None:
+        """Two rows and no statement of which one wins is the reported gap."""
+        from deepagents_code import managed_tools
+        from deepagents_code.doctor import _fallback_location_items
+
+        profile_bin = tmp_path / "profile" / "bin"
+        profile_bin.mkdir(parents=True)
+        rg_name = managed_tools.managed_rg_filename()
+        (profile_bin / rg_name).write_text("")
+
+        with (
+            patch.object(managed_tools, "BIN_DIR", tmp_path / "shared"),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile_bin),
+        ):
+            items = _fallback_location_items()
+
+        active = [item for item in items if item.label == "Managed ripgrep"]
+        assert active, "doctor must name the binary actually in use"
+        assert str(profile_bin / rg_name) == active[0].value

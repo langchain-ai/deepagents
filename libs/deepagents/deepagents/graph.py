@@ -43,7 +43,6 @@ from deepagents._version import _lc_version
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
-from deepagents.middleware._model_profile import _ModelProfileMiddleware
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
@@ -209,8 +208,8 @@ def _apply_custom_middleware(
 
     - If its `.name` matches a name still present in `base`: replace in-place,
       preserving stack order.
-    - Otherwise: a brand-new entry lands after the last `core_names` member (so it
-      precedes the profile/prompt-caching/memory tail), or at the end when
+    - Otherwise: a brand-new entry lands before `FilesystemMiddleware` so request
+      overrides apply before model-dependent filtering, or at the end when
       `core_names` is unset.
     """
     if not custom:
@@ -228,12 +227,31 @@ def _apply_custom_middleware(
         if m.name in replacements:
             result[i] = replacements[m.name]
     if to_append and core_names is not None:
-        # Land new middleware after the last core entry, ahead of the tail.
-        pos = max((i for i, m in enumerate(result) if m.name in core_names), default=len(result) - 1) + 1
-        result[pos:pos] = to_append
+        position = next(
+            (i for i, entry in enumerate(result) if isinstance(entry, FilesystemMiddleware)),
+            len(result),
+        )
+        result[position:position] = to_append
     else:
         result.extend(to_append)
     return result
+
+
+def _move_middleware_before_filesystem(
+    middleware: list[AgentMiddleware[Any, Any, Any]],
+    names: set[str],
+) -> list[AgentMiddleware[Any, Any, Any]]:
+    """Move selected middleware before the filesystem model-call hook."""
+    if not names:
+        return middleware
+    moved = [entry for entry in middleware if entry.name in names]
+    remaining = [entry for entry in middleware if entry.name not in names]
+    position = next(
+        (i for i, entry in enumerate(remaining) if isinstance(entry, FilesystemMiddleware)),
+        len(remaining),
+    )
+    remaining[position:position] = moved
+    return remaining
 
 
 _REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
@@ -391,7 +409,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 when `langchain-fireworks` is installed (no-ops for non-Fireworks models)
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
-            - Active-model profile filtering
 
             After assembly, any entries in the profile's
             `excluded_middleware` are filtered from the final stack. Class
@@ -677,7 +694,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
-            # Core names captured before the tail so new spec middleware splices in ahead of it.
+            # Core names are captured so spec middleware can replace core slots.
             _subagent_core_names = {m.name for m in subagent_middleware}
             # Harness-profile middleware for this subagent's model
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
@@ -708,6 +725,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
             )
+            subagent_middleware = _move_middleware_before_filesystem(
+                subagent_middleware,
+                {entry.name for entry in spec.get("middleware", [])},
+            )
             _verify_excluded_middleware_coverage(
                 _subagent_profile,
                 _subagent_matched_classes,
@@ -717,7 +738,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             )
             if _subagent_profile.excluded_tools:
                 subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
-            subagent_middleware.append(_ModelProfileMiddleware())
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
             subagent_interrupt_on = _merge_fs_interrupt_on(
@@ -787,7 +807,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Tool exclusion runs after all tool-injecting middleware.
         if _profile.excluded_tools:
             gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-        gp_middleware.append(_ModelProfileMiddleware())
 
         general_purpose_spec: SubAgent = {
             **GENERAL_PURPOSE_SUBAGENT,
@@ -852,8 +871,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Currently this supports agents deployed via LangSmith deployments.
         deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
-    # Names of the core stack, captured before the tail is appended so new user
-    # middleware can splice in ahead of the profile/prompt-caching/memory tail.
+    # Names of the core stack, captured before the tail is appended so user
+    # middleware can replace core slots without duplicating them.
     _main_core_names = {m.name for m in deepagent_middleware}
     # Harness-profile middleware goes between core middleware and memory so
     # that memory updates (which change the system prompt) don't invalidate the
@@ -889,11 +908,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
+    deepagent_middleware = _move_middleware_before_filesystem(
+        deepagent_middleware,
+        {entry.name for entry in middleware or []},
+    )
     # Tool exclusion runs after custom middleware so custom wrappers cannot
     # restore excluded tool names.
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    deepagent_middleware.append(_ModelProfileMiddleware())
     state_schemas = [state_schema] if state_schema is not None else []
     state_schemas.extend(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None)
     private_state_keys = private_state_field_names(*state_schemas)

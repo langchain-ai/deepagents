@@ -1325,6 +1325,12 @@ Ordered from lowest to highest precedence. Each entry is `(path, label)`
 suitable for rendering in help screens and error messages. The runtime
 discovery in `discover_mcp_config_sources` builds the same paths from the
 immutable profile snapshot and `_resolve_project_config_base()`.
+
+The two kinds of entry are not interchangeable. The user-level path is already
+resolved and abbreviated for display, evaluated once at import. The two project
+entries are templates that still carry a `<project-root>` placeholder, because
+the project root is not known until a command runs. A renderer must not
+substitute into the first or assume the other two are real paths.
 """
 
 
@@ -1416,9 +1422,9 @@ def _append_discovered_config(
 
     Only project candidates can collide, because `discover_mcp_config_sources`
     probes the single user candidate first and `found` is therefore empty when
-    it arrives. Making that explicit keeps the "never drops a config" claim
-    true by construction: the collision branch below has no user-scope arm, so
-    a user candidate reaching it would fall through and be dropped.
+    it arrives. The collision branch below has no user-scope arm. A user candidate that
+    reached it would fall through and be dropped, so reject that ordering
+    instead.
 
     Raises:
         AssertionError: If a user candidate arrives after another entry, which
@@ -1448,6 +1454,20 @@ def _append_discovered_config(
         if identity is MCPConfigIdentity.SAME:
             # One file: move it to this discovery position so a profile
             # collision cannot give an earlier path higher precedence.
+            if existing.scope is not candidate.scope:
+                # The user config and a project config are one file, so its
+                # servers stop being user-trusted and start asking for project
+                # approval. The user did not change anything to cause that, so
+                # say which collision did.
+                logger.warning(
+                    "MCP config %s is both the user profile config and a "
+                    "project config, so it now loads at project scope. Its "
+                    "servers require project trust approval. Set "
+                    "DEEPAGENTS_HOME to a directory outside %s to keep them "
+                    "user-trusted.",
+                    existing.path,
+                    candidate.project_root,
+                )
             found.pop(index)
             found.append(candidate)
             return

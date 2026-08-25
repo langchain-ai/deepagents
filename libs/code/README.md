@@ -37,7 +37,9 @@ dcode
 
 Set it in your shell before you start dcode. It accepts an absolute path or a
 leading `~/`. Other relative paths and `~user` forms are rejected, as are the
-filesystem root, your home directory itself, and any existing non-directory.
+filesystem root, your home directory itself, any existing non-directory, a
+symlink whose target does not exist, and a directory that exists but cannot be
+read.
 
 No dotenv file can change it. That includes `$DEEPAGENTS_HOME/.env`, because
 the variable selects the profile that owns that file. Reloads and

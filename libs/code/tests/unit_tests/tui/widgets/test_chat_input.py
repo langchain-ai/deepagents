@@ -7753,26 +7753,23 @@ class TestPromptSearchPanel:
             assert chat.open_prompt_search() == "modal"
             assert chat.escalate_prompt_search() == "hello"
 
-    async def test_tab_pages_through_results(self, tmp_path) -> None:
+    async def test_tab_inserts_selected_prompt(self, tmp_path) -> None:
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             chat._history.history_file = tmp_path / "history.jsonl"
-            self._seed_history(chat, [f"prompt {i}" for i in range(12)])
+            self._seed_history(chat, ["oldest", "newest"])
             await pilot.pause()
 
             chat.open_prompt_search()
             await pilot.pause()
             await pilot.pause()
-            assert chat._prompt_search_index == 0
-
+            await pilot.press("down")
             await pilot.press("tab")
             await pilot.pause()
-            assert chat._prompt_search_index == 5
 
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert chat._prompt_search_index == 0
+            assert chat._prompt_search_active is False
+            assert chat.value == "oldest"
 
     async def test_focus_moves_to_query_input(self, tmp_path) -> None:
         from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
@@ -7900,9 +7897,8 @@ class TestPromptSearchPanel:
         """Regression: rows beyond the first page must exist to be shown.
 
         The panel windows the DOM around the selection, so navigating past the
-        first page (arrows or a Tab page) must keep the selected row mounted
-        and scrolled into view rather than pointing at a row that was never
-        rendered.
+        first page with arrows must keep the selected row mounted and scrolled
+        into view rather than pointing at a row that was never rendered.
         """
         app = _RecordingApp()
         async with app.run_test() as pilot:

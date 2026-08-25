@@ -1077,27 +1077,30 @@ release_install_lock_reclaim_guard() {
 # `uv tool dir` is authoritative; the remaining branches are guesses. A guess
 # that misses — uv configured through `uv.toml`, a non-default `--tool-dir`, or
 # uv not yet on PATH at the first lock acquisition — yields a *different* lock
-# root, so concurrent `curl | bash` runs would not serialize. Sets
-# `INSTALL_LOCK_ROOT_GUESSED` so `acquire_install_lock` can say so once.
+# root, so concurrent `curl | bash` runs would not serialize.
+#
+# Prints "<root><TAB><guessed>". The flag is returned rather than assigned to a
+# global because the only caller substitutes this function, and a subshell
+# assignment would be discarded — leaving the warning permanently unreachable.
 resolve_installation_root() {
   local tool_dir=""
-  INSTALL_LOCK_ROOT_GUESSED=false
+  local guessed=false
   if [ -n "${UV_BIN:-}" ]; then
     tool_dir="$("$UV_BIN" tool dir 2>/dev/null || true)"
   fi
   if [ -z "$tool_dir" ] && [ -n "${UV_TOOL_DIR_ENV:-}" ]; then
     tool_dir="$UV_TOOL_DIR_ENV"
-    INSTALL_LOCK_ROOT_GUESSED=true
+    guessed=true
   fi
   if [ -z "$tool_dir" ]; then
     tool_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/uv/tools"
-    INSTALL_LOCK_ROOT_GUESSED=true
+    guessed=true
   fi
   case "$tool_dir" in
     /*) ;;
     *) tool_dir="$(pwd -P)/${tool_dir}" ;;
   esac
-  normalize_absolute_path "${tool_dir}/deepagents-code"
+  printf '%s\t%s' "$(normalize_absolute_path "${tool_dir}/deepagents-code")" "$guessed"
 }
 
 # Serialize concurrent installs (racing `curl | bash` runs corrupting a shared
@@ -1111,7 +1114,15 @@ acquire_install_lock() {
   local installation_parent
   local installation_name
   local lock_root
-  installation_root="$(resolve_installation_root)"
+  local resolution
+  local guessed
+  # Keep this a command substitution: `set -e` must still abort if resolution
+  # fails. A stub that prints only the root yields no tab, which reads as
+  # "not guessed" below.
+  resolution="$(resolve_installation_root)"
+  installation_root="${resolution%%$'\t'*}"
+  guessed="${resolution#*$'\t'}"
+  [ "$guessed" != "$resolution" ] || guessed=false
   installation_parent="${installation_root%/*}"
   installation_name="${installation_root##*/}"
   lock_root="${installation_parent}/.${installation_name}.deepagents-code-locks"
@@ -1120,7 +1131,7 @@ acquire_install_lock() {
     log_error "Remove it or choose a different uv tool directory, then retry."
     exit 1
   fi
-  if [ "${INSTALL_LOCK_ROOT_GUESSED:-false}" = true ]; then
+  if [ "${guessed:-false}" = true ]; then
     log_warn "Could not ask uv for its tool directory; guessing the installer lock root."
     log_warn "  Concurrent installs may not serialize. Lock root: ${lock_root}"
   fi

@@ -3905,6 +3905,71 @@ def test_install_script_does_not_redirect_to_legacy_lock_file() -> None:
     assert '>"$HOME/.deepagents/install.lock"' not in script
 
 
+class TestInstallLockRootGuessWarning:
+    """The guess warning must be reachable.
+
+    `resolve_installation_root` is substituted by its caller, so a flag it
+    assigns to a global dies in the subshell and the warning can never print.
+    Concurrent installs then fail to serialize with no diagnostic at all.
+    """
+
+    def _run(self, tmp_path: Path, *, uv_bin: str) -> subprocess.CompletedProcess[str]:
+        script = tmp_path / "lock_guess_harness.sh"
+        script.write_text(
+            "set -euo pipefail\n"
+            f"HOME={str(tmp_path)!r}\n"
+            # `resolve_installation_root` falls back to XDG_DATA_HOME. Pin it
+            # inside tmp_path: inheriting the real one would create — and hold
+            # — a lock in the developer's actual uv tool directory, blocking
+            # every later test that acquires the install lock.
+            f"XDG_DATA_HOME={str(tmp_path / 'xdg')!r}\n"
+            f"UV_BIN={uv_bin!r}\n"
+            "UV_TOOL_DIR_ENV=''\n"
+            "INSTALL_LOCK_KIND=''\n"
+            "INSTALL_LOCK_DIR=''\n"
+            "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
+            "fix_file_owner() { return 0; }\n"
+            "wait_for_install_lock_reclaim_guard() { return 0; }\n"
+            "log_warn() { printf 'WARN %s\\n' \"$*\"; }\n"
+            "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
+            f"{_extract_shell_function('normalize_absolute_path')}\n"
+            f"{_extract_shell_function('resolve_installation_root')}\n"
+            f"{_extract_shell_function('install_lock_identity')}\n"
+            f"{_extract_shell_function('install_lock_is_stale')}\n"
+            f"{_extract_shell_function('acquire_install_lock')}\n"
+            "acquire_install_lock\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            ["bash", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_warns_when_the_lock_root_is_a_guess(self, tmp_path: Path) -> None:
+        """With uv unavailable the root is a guess and the user is told."""
+        result = self._run(tmp_path, uv_bin="")
+
+        assert result.returncode == 0, result.stderr
+        assert "guessing the installer lock root" in result.stdout
+        assert "may not serialize" in result.stdout
+
+    def test_stays_quiet_when_uv_answers(self, tmp_path: Path) -> None:
+        """An authoritative `uv tool dir` answer must not warn."""
+        uv_bin = tmp_path / "uv"
+        uv_bin.write_text(
+            f'#!/usr/bin/env bash\nprintf "%s" {str(tmp_path / "tools")!r}\n',
+            encoding="utf-8",
+        )
+        uv_bin.chmod(0o755)
+
+        result = self._run(tmp_path, uv_bin=str(uv_bin))
+
+        assert result.returncode == 0, result.stderr
+        assert "guessing the installer lock root" not in result.stdout
+
+
 def test_install_script_reclaim_skips_new_lock_after_stale_check(
     tmp_path: Path,
 ) -> None:

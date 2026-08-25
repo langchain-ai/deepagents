@@ -1515,9 +1515,16 @@ class TestReloadInputResponsiveness:
             await app._restart_respawn_task
 
             restart.assert_awaited_once()
-            assert [message.text for message in app._pending_messages] == [
-                "keep this prompt"
-            ]
+            if restarted:
+                assert [message.text for message in app._pending_messages] == [
+                    "keep this prompt"
+                ]
+            else:
+                # A non-respawn outcome has no `ServerReady` to drain the
+                # queue, so the restart returns queued prompts to the input.
+                assert list(app._pending_messages) == []
+                assert app._chat_input is not None
+                assert "keep this prompt" in app._chat_input.value
 
     @pytest.mark.parametrize("restart_raises", [False, True])
     @pytest.mark.timeout(15)

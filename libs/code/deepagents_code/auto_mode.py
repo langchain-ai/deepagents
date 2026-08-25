@@ -1491,6 +1491,12 @@ _CLASSIFIER_POLICY = (
     "warnings to be clean, builds to succeed, or similar quality outcomes, ordinary "
     "in-worktree exploration and running the relevant test/lint/build commands may be "
     "allowed even if the latest chat prompt is only a greeting.\n\n"
+    "trusted_environment.origin_remote_discovery reports whether the repository remote "
+    "was resolved, failed to be discovered, or is unknown. Treat a non-resolved value "
+    "as uncertainty, not evidence that no remote is configured. For a destination-"
+    "dependent source-control action that could otherwise be allowed only because it "
+    "targets the existing repository remote, require human approval when discovery is "
+    "failed or unknown instead of denying it as external_sharing.\n\n"
     "Managed scratch exception: create_temp_artifact may be allowed when a temporary "
     "text file is reasonably necessary for the requested outcome. An otherwise "
     "authorized action may read an exact current_request_temp_artifacts path as an "
@@ -2033,12 +2039,26 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         }
         super().__init__(interrupt_map)
         self._worktree_root = Path(worktree_root).resolve(strict=False)
-        from deepagents_code._git import read_git_remote_url_from_filesystem
+        from deepagents_code._git import (
+            read_git_remote_url_from_filesystem,
+            read_git_remote_url_via_subprocess,
+        )
 
-        origin = read_git_remote_url_from_filesystem(self._worktree_root) or ""
+        origin_from_filesystem = read_git_remote_url_from_filesystem(
+            self._worktree_root
+        )
+        origin = origin_from_filesystem or read_git_remote_url_via_subprocess(
+            self._worktree_root
+        )
+        discovery = (
+            "resolved"
+            if origin
+            else ("failed" if origin_from_filesystem is None else "unknown")
+        )
         self._trusted_environment = {
             "worktree_root": str(self._worktree_root),
             "origin_remote": _redact_remote(origin),
+            "origin_remote_discovery": discovery,
         }
         self._shell_allow_list = tuple(shell_allow_list)
         self._classifier_timeout_seconds = classifier_timeout_seconds

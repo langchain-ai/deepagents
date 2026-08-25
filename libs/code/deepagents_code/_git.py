@@ -560,27 +560,37 @@ def read_git_remote_url_from_filesystem(path: str | Path) -> str | None:
     if git_dir is None:
         return ""
 
-    try:
-        raw = (git_dir / "config").read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    except OSError:
-        logger.debug("Failed to read git config in %s", git_dir, exc_info=True)
-        return None
+    config_paths = [git_dir / "config.worktree"]
+    config_path = git_dir / "config"
+    if config_path.is_file():
+        config_paths.append(config_path)
+    else:
+        common_dir = find_git_common_dir(path)
+        if common_dir is not None:
+            config_paths.append(common_dir / "config")
 
-    in_origin = False
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            # Section header, e.g. [remote "origin"]. Match case-insensitively
-            # on the remote name to mirror git's own behavior.
-            in_origin = stripped.replace(" ", "").lower() == '[remote"origin"]'
+    for config_path in config_paths:
+        try:
+            raw = config_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
             continue
-        if in_origin and stripped.lower().startswith("url"):
-            _, _, value = stripped.partition("=")
-            url = value.strip()
-            if url:
-                return url
+        except OSError:
+            logger.debug("Failed to read git config in %s", config_path, exc_info=True)
+            continue
+
+        in_origin = False
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                # Section header, e.g. [remote "origin"]. Match case-insensitively
+                # on the remote name to mirror git's own behavior.
+                in_origin = stripped.replace(" ", "").lower() == '[remote"origin"]'
+                continue
+            if in_origin and stripped.lower().startswith("url"):
+                _, _, value = stripped.partition("=")
+                url = value.strip()
+                if url:
+                    return url
     return None
 
 

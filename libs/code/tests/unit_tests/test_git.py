@@ -624,6 +624,39 @@ class TestReadGitRemoteUrlFromFilesystem:
         self._write_config(tmp_path, "[core]\n\tbare = false\n")
         assert read_git_remote_url_from_filesystem(tmp_path) is None
 
+    def test_reads_origin_url_from_linked_worktree(self, tmp_path: Path) -> None:
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        _init_git_repo(main)
+        _run_git(
+            main,
+            "config",
+            "remote.origin.url",
+            "https://github.com/org/repo.git",
+        )
+        _add_git_worktree(main, worktree, "worktree")
+
+        assert (
+            read_git_remote_url_from_filesystem(worktree)
+            == "https://github.com/org/repo.git"
+        )
+
+    def test_worktree_config_overrides_main_origin(self, tmp_path: Path) -> None:
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        _init_git_repo(main)
+        _run_git(main, "config", "remote.origin.url", "https://example.com/main.git")
+        _add_git_worktree(main, worktree, "worktree")
+        git_dir = _parse_git_dir_pointer(worktree / ".git")
+        assert git_dir is not None
+        (git_dir / "config.worktree").write_text(
+            '[remote "origin"]\n\turl = https://example.com/worktree.git\n'
+        )
+
+        assert read_git_remote_url_from_filesystem(worktree) == (
+            "https://example.com/worktree.git"
+        )
+
     def test_not_in_repo_returns_empty(self, tmp_path: Path) -> None:
         assert read_git_remote_url_from_filesystem(tmp_path) == ""
 

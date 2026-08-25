@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -323,6 +324,71 @@ def _middleware(
         trusted_ask_user_tool=trusted_ask_user_tool,
         trusted_compaction_tool=trusted_compaction_tool,
     )
+
+
+def _run_git(root: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _init_repository(root: Path) -> None:
+    root.mkdir()
+    _run_git(root, "init")
+    _run_git(root, "config", "user.email", "test@example.com")
+    _run_git(root, "config", "user.name", "Test")
+    (root / "tracked.txt").write_text("initial\n")
+    _run_git(root, "add", "tracked.txt")
+    _run_git(root, "commit", "-m", "initial")
+
+
+def test_middleware_discovers_origin_from_linked_worktree(tmp_path: Path) -> None:
+    main = tmp_path / "main"
+    worktree = tmp_path / "worktree"
+    _init_repository(main)
+    _run_git(main, "config", "remote.origin.url", "https://example.com/repo.git")
+    _run_git(main, "worktree", "add", "-b", "worktree", str(worktree), "HEAD")
+
+    middleware = _middleware(worktree)
+
+    assert middleware._trusted_environment["origin_remote"] == (
+        "https://example.com/repo.git"
+    )
+    assert middleware._trusted_environment["origin_remote_discovery"] == "resolved"
+
+
+def test_middleware_marks_missing_origin_as_failed_discovery(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    _init_repository(repository)
+
+    middleware = _middleware(repository)
+
+    assert middleware._trusted_environment["origin_remote"] == ""
+    assert middleware._trusted_environment["origin_remote_discovery"] == "failed"
+
+
+def test_middleware_falls_back_to_subprocess_remote(tmp_path: Path) -> None:
+    with (
+        patch(
+            "deepagents_code._git.read_git_remote_url_from_filesystem",
+            return_value=None,
+        ),
+        patch(
+            "deepagents_code._git.read_git_remote_url_via_subprocess",
+            return_value="https://example.com/repo.git",
+        ) as read_remote,
+    ):
+        middleware = _middleware(tmp_path)
+
+    assert middleware._trusted_environment["origin_remote"] == (
+        "https://example.com/repo.git"
+    )
+    assert middleware._trusted_environment["origin_remote_discovery"] == "resolved"
+    read_remote.assert_called_once_with(tmp_path.resolve())
 
 
 def test_replaces_stock_hitl_middleware_by_name(tmp_path: Path) -> None:

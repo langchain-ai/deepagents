@@ -38544,6 +38544,53 @@ class TestResumeThreadCwdSwitch:
         assert Path.cwd() == current
         assert app._cwd == str(current)
 
+    async def test_switch_process_cwd_aborts_on_blocked_managed_policy_refresh(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A retained old-project policy must prevent the cwd from changing."""
+        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX, settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        app._chat_input = None
+        app._status_bar = None
+        mount = AsyncMock()
+        monkeypatch.setattr(app, "_mount_message", mount)
+        blocked = (
+            f"{MANAGED_RELOAD_BLOCKED_PREFIX}remote managed config could not "
+            "be refreshed"
+        )
+        reloads: list[Path | None] = []
+
+        def reload_from_environment(*, start_path: Path | None = None) -> list[str]:
+            reloads.append(start_path)
+            return [blocked] if start_path == target else []
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+
+        with (
+            patch("deepagents_code.model_config.clear_caches"),
+            pytest.raises(RuntimeError, match="could not be refreshed"),
+        ):
+            await app._switch_process_cwd(target)
+
+        assert reloads == [target, current]
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+        mounted = mount.await_args_list[0].args[0]
+        assert isinstance(mounted, ErrorMessage)
+        assert blocked in str(mounted._content)
+
     async def test_switch_process_cwd_restores_settings_on_chdir_failure(
         self,
         tmp_path: Path,

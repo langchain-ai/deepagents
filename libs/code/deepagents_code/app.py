@@ -27257,7 +27257,11 @@ class DeepAgentsApp(App):
             logger.debug("Screen stack empty during cwd sync", exc_info=True)
 
     async def _refresh_project_context_for_cwd_switch(self, cwd: Path) -> None:
-        """Serialize a project-scoped settings refresh for a cwd change."""
+        """Serialize a project-scoped settings refresh for a cwd change.
+
+        Raises:
+            RuntimeError: If managed policy blocks the project refresh.
+        """
         from deepagents_code import config as config_module
         from deepagents_code.config import settings
         from deepagents_code.model_config import clear_caches
@@ -27274,7 +27278,9 @@ class DeepAgentsApp(App):
         blocked = config_module.managed_reload_block(changes)
         if blocked is not None:
             await self._mount_message(ErrorMessage(blocked))
-        elif changes:
+            msg = blocked
+            raise RuntimeError(msg)
+        if changes:
             logger.debug("Refreshed project context for cwd switch: %s", changes)
 
     def _schedule_skill_discovery_after_cwd_switch(self) -> None:

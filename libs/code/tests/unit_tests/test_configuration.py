@@ -3489,6 +3489,37 @@ def test_masked_cli_flag_warns_the_user(
     assert "managed config takes precedence" in err
 
 
+def test_rejected_cli_value_warns_the_user(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A flag value the provider refused must say so on stderr.
+
+    Regression: the rejection reason went only to `logger.warning`, and the
+    always-on buffer handler on the package logger means that reaches no
+    stream at all. `dcode --interpreter-tools 'x,all' config` therefore exited
+    0 and reported the option as `default` -- actively confirming the wrong
+    hypothesis for a user debugging why their flag did nothing.
+    """
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.providers import TomlSnapshot
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+
+    option = get_option("interpreter.ptc")
+    assert option is not None
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot.from_table("managed config", {}),
+        user=TomlSnapshot.from_table("config.toml", {}),
+        cli_provider=CliProvider({"interpreter_tools": "x,all"}),
+    )
+    resolved = resolver.get(option)
+    _emit_ranked_diagnostics(option, resolved)
+
+    err = capsys.readouterr().err
+    assert "Warning:" in err
+    assert "--interpreter-tools" in err
+
+
 def test_unmasked_cli_flag_is_silent(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

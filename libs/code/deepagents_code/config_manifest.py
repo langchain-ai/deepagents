@@ -765,20 +765,57 @@ def _warn_cli_flag_masked(
 ) -> None:
     """Tell the user a flag they passed lost to a stronger config tier.
 
-    Written to stderr rather than logged: with no handler configured,
-    `logging.lastResort` would emit the same text to the same stream, and this
-    needs to reach a user who has not enabled debug logging. Deduped per
-    config generation because `dcode config` resolves the whole manifest in
-    one pass.
+    Written to stderr rather than logged. `deepagents_code/__init__.py`
+    installs an always-on buffer handler on the package logger, so
+    `logging.lastResort` never fires and a `logger.warning` reaches nothing but
+    that buffer. Deduped per config generation because `dcode config` resolves
+    the whole manifest in one pass.
 
     Args:
         option: Manifest option whose CLI tier was masked.
         resolved: Rank-keyed resolution carrying the masked and winning tiers.
     """
-    flag = option.cli.display_flags if option.cli else option.cli_flag or option.key
+    flag = _cli_display_flags(option)
     winner = resolved.provider_status[min(resolved.ranks)].name
+    _print_cli_warning(
+        ("masked cli flag", f"{flag}|{winner}"),
+        f"{flag} was ignored: {winner} takes precedence. "
+        "Ask your administrator if this is unexpected.",
+    )
 
-    warning_key = ("masked cli flag", f"{flag}|{winner}")
+
+def _cli_display_flags(option: ConfigOption) -> str:
+    """Return the flag spelling to show the user for this option.
+
+    Returns:
+        Every flag that sets the option, or the key when none is bound.
+    """
+    return option.cli.display_flags if option.cli else option.cli_flag or option.key
+
+
+def _warn_cli_value_rejected(option: ConfigOption, reason: str) -> None:
+    """Tell the user the value they passed on a flag was rejected.
+
+    A rejected CLI value falls through to the next tier, so without this the
+    flag silently does nothing: `dcode --interpreter-tools 'x,all' config`
+    exits 0 and reports the option as coming from `default`, which actively
+    confirms the wrong hypothesis for anyone debugging the flag.
+
+    Args:
+        option: Manifest option whose CLI tier was rejected.
+        reason: The provider's rejection text.
+    """
+    flag = _cli_display_flags(option)
+    _print_cli_warning(("rejected cli value", f"{flag}|{reason}"), reason)
+
+
+def _print_cli_warning(warning_key: tuple[str, str], message: str) -> None:
+    """Print one CLI-tier warning to stderr, at most once per generation.
+
+    Args:
+        warning_key: Dedup key stored in `_warned_non_table_paths`.
+        message: Warning body, rendered after a `Warning:` prefix.
+    """
     if warning_key in _warned_non_table_paths:
         return
     _warned_non_table_paths.add(warning_key)
@@ -788,8 +825,7 @@ def _warn_cli_flag_masked(
     # `soft_wrap` keeps the message greppable on one line off a TTY, matching
     # the headless approval-flag warning in `main`.
     Console(stderr=True).print(
-        f"[bold yellow]Warning:[/bold yellow] {flag} was ignored: {winner} "
-        "takes precedence. Ask your administrator if this is unexpected.",
+        f"[bold yellow]Warning:[/bold yellow] {message}",
         soft_wrap=True,
     )
 
@@ -849,6 +885,11 @@ def _emit_ranked_diagnostics(
     cli_result = resolved.tier_health.get(CLI_RANK)
     if CLI_RANK in resolved.masked_ranks and isinstance(cli_result, Found):
         _warn_cli_flag_masked(option, resolved)
+    # A value the user typed that the provider refused. `emit` below logs the
+    # same reason, but only into the buffer handler, so the flag would
+    # otherwise fall through to the next tier in silence.
+    elif isinstance(cli_result, Invalid):
+        _warn_cli_value_rejected(option, cli_result.reason)
 
     accumulating = option.merge_strategy is not MergeStrategy.REPLACE
     for rank in sorted(resolved.tier_health):

@@ -5012,8 +5012,9 @@ def cli_main() -> None:
             # name — leaving no substring a CI job can grep for both spellings.
             # With the pre-existing `sys.exit(2)` gone, this text is the only
             # signal that the requested mode was dropped. Deliberately not also
-            # logged: with no handler configured, `logging.lastResort` would
-            # emit a WARNING to the same stderr and double the message.
+            # logged: the always-on buffer handler installed on the package
+            # logger in `__init__` swallows a `logger.warning` entirely, so a
+            # log call would add nothing a user could see.
             _Console(stderr=True).print(
                 f"[bold yellow]Warning:[/bold yellow] {explicit_approval_flag} has "
                 "no effect in headless mode; ignoring it. Shell access is "

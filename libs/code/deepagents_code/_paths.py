@@ -23,14 +23,21 @@ import sys
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from deepagents_code._home_error import DeepAgentsHomeError
+
+if TYPE_CHECKING:
+    from collections.abc import MutableMapping
 
 logger = logging.getLogger(__name__)
 
 _MISSING_ERRNOS = {errno.ENOENT, errno.ENOTDIR}
 
 __all__ = [
+    "DEEPAGENTS_HOME_ENV",
+    "DEFAULT_PROFILE_DIR_NAME",
+    "DEFAULT_PROFILE_MARKER_ENV",
     "PATHS",
     "DeepAgentsHomeError",
     "DeepAgentsPathSnapshot",
@@ -42,6 +49,28 @@ __all__ = [
     "get_deepagents_home",
     "project_paths",
 ]
+
+DEEPAGENTS_HOME_ENV = "DEEPAGENTS_HOME"
+"""Name of the variable that selects the user profile and trust root."""
+
+DEFAULT_PROFILE_MARKER_ENV = "DEEPAGENTS_HOME_IS_DEFAULT"
+"""Internal marker that records "the profile was defaulted, not configured".
+
+`DEEPAGENTS_HOME` is re-exported for every descendant process, so a child
+cannot tell a defaulted profile from one the user selected by simply reading
+the variable. Without this marker every child concludes the profile was
+configured: the server subprocess renders absolute paths (leaking the OS
+username into the system prompt) and a post-upgrade re-exec announces a profile
+the user never set.
+
+Set by the parent only, never by a user. It is a display hint, never a trust
+input: `_honors_default_marker` re-derives the default location and ignores the
+marker unless the resolved root matches, so a forged value cannot change which
+directory is used.
+"""
+
+DEFAULT_PROFILE_DIR_NAME = ".deepagents"
+"""Directory under the home directory used when no profile is configured."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +167,7 @@ class DeepAgentsPathSnapshot:
             return str(path)
         # `Path("~/.deepagents") / Path(".")` is `~/.deepagents`, so the
         # profile root itself needs no special case.
-        return str(Path("~/.deepagents") / relative)
+        return str(Path("~") / DEFAULT_PROFILE_DIR_NAME / relative)
 
 
 def project_paths(root: Path) -> ProjectPaths:
@@ -357,7 +386,7 @@ def _resolve_profile_root_unchecked(
     """
     if not configured:
         home = _resolve_launch_home(launch_home)
-        return home / ".deepagents", True, home
+        return home / DEFAULT_PROFILE_DIR_NAME, True, home
     if configured.startswith("~/"):
         home = _resolve_launch_home(launch_home)
         return _normalize_absolute(home / configured[2:]), False, home
@@ -424,15 +453,49 @@ def _installation_paths() -> InstallationPaths:
     )
 
 
+def _honors_default_marker(root: Path, home: Path | None) -> bool:
+    """Report whether `root` really is this user's default profile location.
+
+    The parent process re-exports `DEEPAGENTS_HOME` unconditionally, so a child
+    needs the marker to recover "defaulted" from "configured". Trusting the
+    marker alone would let a forged value relabel any profile, so re-derive the
+    default location and honor the marker only when the two agree. The marker
+    can then change how a path is displayed but never which path is used.
+
+    Args:
+        root: The already-resolved profile root.
+        home: The launch home when resolution produced one.
+
+    Returns:
+        `True` when `root` is the default profile directory for the launch home.
+    """
+    resolved_home = home if home is not None else _best_effort_home()
+    if resolved_home is None:
+        return False
+    return root == resolved_home / DEFAULT_PROFILE_DIR_NAME
+
+
 def _capture_paths(
-    configured: str | None, *, launch_home: Path | None = None
+    configured: str | None,
+    *,
+    launch_home: Path | None = None,
+    default_marker: bool = False,
 ) -> DeepAgentsPathSnapshot:
     """Construct a snapshot; exposed privately for deterministic unit tests.
+
+    Args:
+        configured: Raw `DEEPAGENTS_HOME` value, or `None`/empty when unset.
+        launch_home: Explicit launch home, for tests that must not read `$HOME`.
+        default_marker: Whether the parent process recorded that it defaulted
+            the profile. Only honored when the resolved root matches the
+            default location; see `_honors_default_marker`.
 
     Returns:
         An immutable path snapshot.
     """
     profile_root, uses_default, home = _resolve_profile_root(configured, launch_home)
+    if not uses_default and default_marker:
+        uses_default = _honors_default_marker(profile_root, home)
     return DeepAgentsPathSnapshot(
         profile=_profile_paths(profile_root),
         installation=_installation_paths(),
@@ -441,13 +504,35 @@ def _capture_paths(
     )
 
 
-PATHS = _capture_paths(os.environ.get("DEEPAGENTS_HOME"))
+PATHS = _capture_paths(
+    os.environ.get(DEEPAGENTS_HOME_ENV),
+    default_marker=os.environ.get(DEFAULT_PROFILE_MARKER_ENV) == "1",
+)
 """Process-wide path snapshot captured before any dotenv loader can run."""
+
+
+def export_profile_env(env: MutableMapping[str, str]) -> None:
+    """Pin the resolved profile selection into a child environment.
+
+    Writes both the resolved root and the defaulted/configured marker, so a
+    child reconstructs the same snapshot the parent captured. Always assigns
+    both keys — a stale inherited marker must be cleared rather than left to
+    describe a profile it no longer applies to.
+
+    Args:
+        env: Environment mapping to update in place.
+    """
+    env[DEEPAGENTS_HOME_ENV] = str(PATHS.profile.root)
+    if PATHS.uses_default_profile:
+        env[DEFAULT_PROFILE_MARKER_ENV] = "1"
+    else:
+        env.pop(DEFAULT_PROFILE_MARKER_ENV, None)
+
 
 # Normalize the inherited value for every descendant process. Callers that
 # build an explicit child environment should still assign from `PATHS` so a
 # later accidental `os.environ` mutation cannot create client/server split-brain.
-os.environ["DEEPAGENTS_HOME"] = str(PATHS.profile.root)
+export_profile_env(os.environ)
 
 
 def get_deepagents_home() -> Path:

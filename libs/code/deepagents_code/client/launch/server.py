@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import quote
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
-from deepagents_code._paths import PATHS
+from deepagents_code._paths import export_profile_env
 from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
 
 if TYPE_CHECKING:
@@ -375,7 +375,7 @@ def _build_server_env() -> dict[str, str]:
         Environment dict for `subprocess.Popen`.
     """
     env = os.environ.copy()
-    env["DEEPAGENTS_HOME"] = str(PATHS.profile.root)
+    export_profile_env(env)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"
 
@@ -404,10 +404,10 @@ def _server_env_with_overrides(
     """Assemble the server environment, then re-pin the profile selection.
 
     `persist_env` validates its keys against `SERVER_ENV_PREFIX`, but
-    `update_env` accepts any key. The final assignment therefore is not
-    redundant: without it an `update_env("DEEPAGENTS_HOME"=...)` caller could
-    point the server at a different profile than the client, splitting the
-    trust root across the two processes.
+    `update_env` accepts any key. The final call therefore is not redundant:
+    without it an `update_env("DEEPAGENTS_HOME"=...)` caller could point the
+    server at a different profile than the client, splitting the trust root
+    across the two processes.
 
     Returns:
         The child environment for the server subprocess.
@@ -416,7 +416,7 @@ def _server_env_with_overrides(
     env.update(persistent)
     env.update(scoped)
     # Profile selection is immutable and is not a restart override.
-    env["DEEPAGENTS_HOME"] = str(PATHS.profile.root)
+    export_profile_env(env)
     return env
 
 

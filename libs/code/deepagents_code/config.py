@@ -122,6 +122,7 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "CDPATH",
         "COMSPEC",
         "DEEPAGENTS_HOME",
+        "DEEPAGENTS_HOME_IS_DEFAULT",
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
         "ENV",

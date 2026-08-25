@@ -172,11 +172,109 @@ def _subprocess_env(*, home: Path, configured: str | None) -> dict[str, str]:
     """Return a synthetic launch environment without reading secret files."""
     env = os.environ.copy()
     env["HOME"] = str(home)
+    env.pop("DEEPAGENTS_HOME_IS_DEFAULT", None)
     if configured is None:
         env.pop("DEEPAGENTS_HOME", None)
     else:
         env["DEEPAGENTS_HOME"] = configured
     return env
+
+
+class TestDefaultProfileMarkerSurvivesChildProcesses:
+    """`uses_default_profile` must not be destroyed at a process boundary.
+
+    The parent re-exports `DEEPAGENTS_HOME` for every descendant, so without a
+    separate marker a child re-derives the value through the absolute-path
+    branch and concludes the profile was configured. That renders absolute
+    paths in the server's system prompt (leaking the OS username) and makes a
+    post-upgrade re-exec announce a profile the user never set.
+    """
+
+    _CHILD = (
+        "from deepagents_code._paths import PATHS; "
+        "print(PATHS.uses_default_profile, PATHS.display(PATHS.profile.config_file))"
+    )
+
+    def _run(self, env: dict[str, str]) -> str:
+        code = f"""
+import subprocess, sys
+from deepagents_code._paths import PATHS
+print(PATHS.uses_default_profile, PATHS.display(PATHS.profile.config_file))
+proc = subprocess.run([sys.executable, "-c", {self._CHILD!r}],
+                      check=True, capture_output=True, text=True)
+print(proc.stdout.strip())
+"""
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout
+
+    def test_default_profile_stays_default_in_a_child(self, tmp_path: Path) -> None:
+        """A defaulted profile still abbreviates to `~` one process down."""
+        out = self._run(_subprocess_env(home=tmp_path, configured=None))
+
+        parent, child = out.strip().splitlines()
+        assert parent == child
+        assert child == "True ~/.deepagents/config.toml"
+
+    def test_configured_profile_stays_configured_in_a_child(
+        self, tmp_path: Path
+    ) -> None:
+        """A configured profile keeps rendering literally, marker never set."""
+        configured = tmp_path / "profile"
+        out = self._run(_subprocess_env(home=tmp_path, configured=str(configured)))
+
+        parent, child = out.strip().splitlines()
+        assert parent == child
+        assert child == f"False {configured / 'config.toml'}"
+
+    def test_marker_cannot_relabel_a_configured_profile(self, tmp_path: Path) -> None:
+        """A forged marker is ignored: it is a display hint, not a trust input."""
+        configured = tmp_path / "profile"
+        env = _subprocess_env(home=tmp_path, configured=str(configured))
+        env["DEEPAGENTS_HOME_IS_DEFAULT"] = "1"
+
+        out = self._run(env)
+
+        parent, _child = out.strip().splitlines()
+        assert parent == f"False {configured / 'config.toml'}"
+
+    def test_stale_marker_is_cleared_for_descendants(self, tmp_path: Path) -> None:
+        """An inherited marker that no longer applies is removed, not passed on."""
+        env = _subprocess_env(home=tmp_path, configured=str(tmp_path / "profile"))
+        env["DEEPAGENTS_HOME_IS_DEFAULT"] = "1"
+        code = (
+            "import os; import deepagents_code._paths; "
+            "print(os.environ.get('DEEPAGENTS_HOME_IS_DEFAULT'))"
+        )
+
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == "None"
+
+    def test_explicit_default_location_is_honored_via_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """The marker is honored when the root really is the default location."""
+        env = _subprocess_env(home=tmp_path, configured=str(tmp_path / ".deepagents"))
+        env["DEEPAGENTS_HOME_IS_DEFAULT"] = "1"
+
+        out = self._run(env)
+
+        parent, child = out.strip().splitlines()
+        assert parent == child == "True ~/.deepagents/config.toml"
 
 
 class TestLaunchSnapshotSubprocess:

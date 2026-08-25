@@ -601,6 +601,36 @@ def test_wrap_model_call_replaces_superseded_oversized_notice() -> None:
     assert len(messages[-1].content) < 2_000
 
 
+def test_wrap_model_call_preserves_latest_authoritative_oversized_notice() -> None:
+    """The only current notice remains visible until a successor is appended."""
+    state: dict[str, object] = {"rubric": "current"}
+    superseded = build_goal_state_notice(
+        {"rubric": "old"}, event_id="superseded-oversized"
+    )
+    authoritative = build_goal_state_notice(state, event_id="authoritative-oversized")
+    oversized_content = (
+        "notice\n<acceptance_criteria>"
+        f"{'x' * (RUBRIC_CHAR_LIMIT + 1)}"
+        "</acceptance_criteria>"
+    )
+    superseded.content = oversized_content
+    authoritative.content = oversized_content
+    request = _fake_request(None, state=state, messages=[superseded, authoritative])
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    messages = captured["request"].messages
+    assert "oversized superseded goal/rubric state notice was omitted" in (
+        messages[0].content
+    )
+    assert messages[1] is authoritative
+    assert messages[1].content == oversized_content
+
+
 def test_wrap_model_call_preserves_bounded_stale_notice() -> None:
     """Schema-invalid history remains byte-stable while it fits the budget."""
     state: dict[str, object] = {"rubric": "current"}

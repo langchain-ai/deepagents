@@ -485,13 +485,15 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             # retains the canonical goal state.
             cutoff=len(request.messages) if malformed_event else (cutoff or 0),
         )
+        latest = latest_goal_state_notice(request.messages)
+        preserved_index = latest[0] if notice is None and latest is not None else None
         messages = [
             (
                 superseded_goal_state_placeholder(message)
-                if is_oversized_goal_state_message(message)
+                if index != preserved_index and is_oversized_goal_state_message(message)
                 else message
             )
-            for message in request.messages
+            for index, message in enumerate(request.messages)
         ]
         if notice is not None:
             messages.append(notice)

@@ -21,6 +21,7 @@ from deepagents_code.config import (
     CLI_MAX_RETRIES_KEY,
     LANGSMITH_EU_ENDPOINT,
     LANGSMITH_US_ENDPOINT,
+    MODEL_RETRIES_ATTR,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
     LangSmithApiError,
@@ -1770,6 +1771,40 @@ class TestCreateModelMaxRetries:
         assert kwargs["max_retries"] == 0
         # The internal carrier must never reach the constructor.
         assert CLI_MAX_RETRIES_KEY not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_budget_is_stamped_on_the_model_for_the_middleware(
+        self, mock_init: Mock
+    ) -> None:
+        """The middleware reads the model attribute, not the `ModelResult` field.
+
+        `CodeModelRetryMiddleware._request_max_retries` looks up
+        `MODEL_RETRIES_ATTR` on `request.model`, so asserting only on
+        `result.model_retries` would leave the real handoff unverified.
+        """
+        mock_init.return_value = Mock()
+        result = create_model(
+            "anthropic:claude-sonnet-4-5", extra_kwargs={CLI_MAX_RETRIES_KEY: 4}
+        )
+        assert getattr(result.model, MODEL_RETRIES_ATTR) == 4
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_slotted_model_does_not_break_construction(self, mock_init: Mock) -> None:
+        """A model rejecting attribute writes still yields a usable result.
+
+        Retry metadata is advisory; the middleware falls back to its startup
+        budget. A custom provider class using `__slots__` must not turn that
+        into a failed model construction.
+        """
+
+        class _Slotted:
+            __slots__ = ()
+
+        mock_init.return_value = _Slotted()
+        result = create_model(
+            "anthropic:claude-sonnet-4-5", extra_kwargs={CLI_MAX_RETRIES_KEY: 4}
+        )
+        assert result.model_retries == 4
 
     @patch("langchain.chat_models.init_chat_model")
     def test_sdk_retries_are_disabled_despite_model_params(

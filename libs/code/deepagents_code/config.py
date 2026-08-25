@@ -2578,9 +2578,6 @@ middleware and the config resolver never drift.
 MODEL_RETRIES_ATTR = "_deepagents_model_retries"
 """Private model attribute carrying its resolved request-time retry budget."""
 
-MODEL_RETRY_OVERRIDE_ATTR = "_deepagents_model_retry_override"
-"""Private model attribute carrying an explicit CLI retry override, if any."""
-
 
 def _resolve_model_retries_from_section(
     section: dict[str, Any] | None,
@@ -5803,12 +5800,19 @@ def create_model(
     # Runtime `/model` switches replace `request.model`, so the downstream retry
     # middleware can read the matching budget without mutating shared middleware
     # state or forwarding an internal key to a provider API.
-    object.__setattr__(  # noqa: PLC2801  # Pydantic models reject unknown fields through normal setattr
-        model, MODEL_RETRIES_ATTR, model_retries
-    )
-    object.__setattr__(  # noqa: PLC2801  # Pydantic models reject unknown fields through normal setattr
-        model, MODEL_RETRY_OVERRIDE_ATTR, cli_max_retries
-    )
+    try:
+        object.__setattr__(  # noqa: PLC2801  # Pydantic models reject unknown fields through normal setattr
+            model, MODEL_RETRIES_ATTR, model_retries
+        )
+    except AttributeError:
+        # A custom provider class using `__slots__` rejects the write. The
+        # metadata is advisory, so the middleware falls back to its startup
+        # budget rather than failing an otherwise usable model.
+        logger.warning(
+            "Could not attach the retry budget to %r; the model-node middleware "
+            "will use its startup budget instead",
+            model_name,
+        )
 
     # Extract context limit and modality support from model profile
     context_limit: int | None = None

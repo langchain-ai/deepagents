@@ -37,6 +37,7 @@ from deepagents_code import model_config
 from deepagents_code.config import (
     ASCII_GLYPHS,
     DEFAULT_MODEL_RETRIES,
+    MODEL_RETRIES_ATTR,
     UNICODE_GLYPHS,
     _resolve_config_retry_count,
     resolve_model_retries,
@@ -47,6 +48,9 @@ from deepagents_code.model_retry import (
     build_retry_event,
     format_retry_status,
 )
+
+_UNSET = object()
+"""Sentinel for "no retry budget stamped on the model" in `_req`."""
 
 _READ_ERROR = httpx.ReadError("connection dropped")
 _CONNECT_ERROR = httpx.ConnectError("connection refused")
@@ -117,11 +121,29 @@ def _write_config(tmp_path: Path, text: str) -> Path:
     return p
 
 
-def _req(events: list[dict[str, object]] | None = None) -> ModelRequest:
+def _req(
+    events: list[dict[str, object]] | None = None,
+    *,
+    model_retries: object = _UNSET,
+) -> ModelRequest:
+    """Build a stub model request.
+
+    Args:
+        events: Collector for `model_retry` stream events, or `None` for no writer.
+        model_retries: Value to stamp on `request.model` under
+            `MODEL_RETRIES_ATTR`. Left off entirely when unset, so the
+            middleware falls back to its startup budget.
+
+    Returns:
+        A stub standing in for a `ModelRequest`.
+    """
     writer = (lambda event: events.append(event)) if events is not None else None
+    model = SimpleNamespace()
+    if model_retries is not _UNSET:
+        setattr(model, MODEL_RETRIES_ATTR, model_retries)
     return cast(
         "ModelRequest",
-        SimpleNamespace(runtime=SimpleNamespace(stream_writer=writer)),
+        SimpleNamespace(runtime=SimpleNamespace(stream_writer=writer), model=model),
     )
 
 
@@ -375,6 +397,138 @@ def test_retry_scoped_to_model_node(monkeypatch: pytest.MonkeyPatch) -> None:
     assert mw.wrap_model_call(_req(), _handler(handler)) == "OK"
     assert model_calls["n"] == 2
     assert tool_calls == []
+
+
+# --- per-request retry budget carried on the model ---
+
+
+def test_model_budget_overrides_startup_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A budget stamped on `request.model` wins over the constructor value."""
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def handler(_req_arg: object) -> str:
+        calls["n"] += 1
+        raise _READ_ERROR
+
+    mw = CodeModelRetryMiddleware(max_retries=5)
+    with pytest.raises(httpx.ReadError):
+        mw.wrap_model_call(_req(model_retries=1), _handler(handler))
+    # One retry, not the constructor's five.
+    assert calls["n"] == 2
+
+
+def test_zero_startup_budget_still_retries_runtime_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `/model` switch to a provider with a non-zero budget still retries.
+
+    This is why `create_cli_agent` keeps the middleware installed when the
+    startup budget is zero.
+    """
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    events: list[dict[str, object]] = []
+    calls = {"n": 0}
+
+    def handler(_req_arg: object) -> str:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _READ_ERROR
+        return "OK"
+
+    mw = CodeModelRetryMiddleware(max_retries=0)
+    assert mw.wrap_model_call(_req(events, model_retries=3), _handler(handler)) == "OK"
+    assert calls["n"] == 3
+    assert "retrying 1/3" in str(events[0]["message"])
+
+
+def test_model_budget_zero_disables_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A zero budget on the model overrides a non-zero startup fallback."""
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def handler(_req_arg: object) -> str:
+        calls["n"] += 1
+        raise _READ_ERROR
+
+    mw = CodeModelRetryMiddleware(max_retries=5)
+    with pytest.raises(httpx.ReadError):
+        mw.wrap_model_call(_req(model_retries=0), _handler(handler))
+    assert calls["n"] == 1
+
+
+@pytest.mark.parametrize(
+    "stamped",
+    [
+        pytest.param(True, id="bool-true"),
+        pytest.param(-1, id="negative"),
+        pytest.param("3", id="string"),
+        pytest.param(None, id="none"),
+    ],
+)
+def test_invalid_model_budget_falls_back(
+    monkeypatch: pytest.MonkeyPatch, stamped: object
+) -> None:
+    """A malformed stamp is ignored in favor of the startup fallback.
+
+    `True` is the sharp case: `isinstance(True, int)` holds, so without the
+    explicit bool guard it would be read as a budget of one.
+    """
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def handler(_req_arg: object) -> str:
+        calls["n"] += 1
+        raise _READ_ERROR
+
+    mw = CodeModelRetryMiddleware(max_retries=2)
+    with pytest.raises(httpx.ReadError):
+        mw.wrap_model_call(_req(model_retries=stamped), _handler(handler))
+    assert calls["n"] == 3
+
+
+def test_request_without_model_uses_startup_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request carrying no model at all falls back rather than raising."""
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def handler(_req_arg: object) -> str:
+        calls["n"] += 1
+        raise _READ_ERROR
+
+    mw = CodeModelRetryMiddleware(max_retries=1)
+    request = cast(
+        "ModelRequest",
+        SimpleNamespace(runtime=SimpleNamespace(stream_writer=None)),
+    )
+    with pytest.raises(httpx.ReadError):
+        mw.wrap_model_call(request, _handler(handler))
+    assert calls["n"] == 2
+
+
+async def test_async_model_budget_overrides_startup_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The async path reads the same per-request budget."""
+
+    async def _no_sleep(*_a: object, **_k: object) -> None:  # noqa: RUF029  # async stub replacing asyncio.sleep
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    calls = {"n": 0}
+
+    async def handler(_req_arg: object) -> str:  # noqa: RUF029  # awaited by middleware; no internal await needed
+        calls["n"] += 1
+        raise _READ_ERROR
+
+    mw = CodeModelRetryMiddleware(max_retries=5)
+    with pytest.raises(httpx.ReadError):
+        await mw.awrap_model_call(_req(model_retries=1), _async_handler(handler))
+    assert calls["n"] == 2
 
 
 async def test_async_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:

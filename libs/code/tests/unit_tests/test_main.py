@@ -5391,11 +5391,16 @@ class TestSelectProjectServersToPersist:
         )
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
-    def test_refresh_picker_action_follows_abort(
+    def test_refresh_picker_defaults_to_refresh(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Moving down once from the safe default selects environment refresh."""
+        """With a refresh option, a bare Enter repairs the environment.
+
+        "Abort launch" keeps the leading row, but the highlight starts on
+        "Refresh environment now" — fixing the environment is the action the
+        prompt steers toward, and aborting is one keystroke away.
+        """
         from rich.console import Console
 
         from deepagents_code.main import (
@@ -5420,17 +5425,11 @@ class TestSelectProjectServersToPersist:
                         exit=lambda *, result: holder.update(value=result)
                     )
                 )
-                move_down = next(
-                    binding.handler
-                    for binding in bindings
-                    if binding.handler.__name__ == "_down"
-                )
                 confirm = next(
                     binding.handler
                     for binding in bindings
                     if binding.handler.__name__ == "_confirm"
                 )
-                move_down(event)
                 confirm(event)
                 return holder["value"]
 
@@ -5457,6 +5456,62 @@ class TestSelectProjectServersToPersist:
         assert rendered.index("Continue this session only") < rendered.index(
             "Continue and hide until versions change"
         )
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_refresh_picker_abort_launch_is_one_move_up(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Moving up once from the refresh default selects "Abort launch"."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _run_trust_action_picker,
+            _TrustAction,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _TrustAction:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, _TrustAction] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                move_up = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_up"
+                )
+                confirm = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_confirm"
+                )
+                move_up(event)
+                confirm(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        result = _run_trust_action_picker(
+            Console(stderr=True),
+            remember_label="Continue and hide until versions change",
+            allow_label="Continue this session only",
+            deny_label="Abort launch",
+            refresh_label="Refresh environment now",
+            deny_first=True,
+        )
+
+        assert result is _TrustAction.DENY
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_abort_on_deny_maps_picker_deny_to_cancelled(
@@ -6318,11 +6373,15 @@ class TestSelectProjectMcpTrustAction:
 
         assert result is _TrustAction[expected_name]
 
-    @pytest.mark.parametrize("token", ["u", "update", "f", "refresh"])
+    @pytest.mark.parametrize("token", ["", "u", "update", "f", "refresh"])
     def test_text_fallback_refresh_tokens(
         self, token: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The dependency-floor fallback accepts update and refresh spellings."""
+        """The dependency-floor fallback accepts update and refresh spellings.
+
+        An empty answer (a bare Enter) also refreshes: refresh is the default
+        in this prompt shape, matching the inline picker's initial highlight.
+        """
         from rich.console import Console
 
         from deepagents_code.main import (
@@ -6341,6 +6400,30 @@ class TestSelectProjectMcpTrustAction:
         )
 
         assert result is _TrustAction.REFRESH
+
+    @pytest.mark.parametrize("token", ["n", "no"])
+    def test_text_fallback_refresh_prompt_refuse_tokens(
+        self, token: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refusing the dependency-floor prompt stays an explicit choice."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _select_trust_action,
+            _TrustAction,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": token)
+
+        result = _select_trust_action(
+            Console(stderr=True), refresh_label="Refresh environment now"
+        )
+
+        assert result is _TrustAction.DENY
 
 
 class TestCheckMcpProjectTrustDedupe:

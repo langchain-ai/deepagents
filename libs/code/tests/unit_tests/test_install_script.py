@@ -7154,6 +7154,41 @@ def test_install_script_rejects_degenerate_deepagents_home(
     assert not uv_args.exists()
 
 
+@pytest.mark.parametrize(
+    ("target", "expected_message"),
+    [("home", "home directory itself"), ("root", "filesystem root")],
+)
+def test_install_script_rejects_symlinked_deepagents_home_alias(
+    tmp_path: Path, target: str, expected_message: str
+) -> None:
+    """Installer validation uses directory identity, matching app startup."""
+    home = tmp_path / "home"
+    link = tmp_path / "profile-link"
+    destination = home if target == "home" else Path("/")
+    link.symlink_to(destination, target_is_directory=True)
+
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(link)})
+
+    assert proc.returncode == 1
+    assert expected_message in proc.stderr
+    assert not uv_args.exists()
+
+
+def test_install_script_rejects_case_alias_of_home(tmp_path: Path) -> None:
+    """A differently cased home spelling is rejected where names ignore case."""
+    home = tmp_path / "home"
+    home.mkdir()
+    variant = tmp_path / "HOME"
+    if not variant.exists():
+        pytest.skip("case-sensitive filesystem")
+
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(variant)})
+
+    assert proc.returncode == 1
+    assert "home directory itself" in proc.stderr
+    assert not uv_args.exists()
+
+
 def test_install_script_rejects_non_directory_deepagents_home(tmp_path: Path) -> None:
     """An existing regular file cannot hold a profile."""
     blocker = tmp_path / "blocker"

@@ -447,6 +447,10 @@ if [ "$OS" = "macos" ] && { [ -z "${HOME:-}" ] || [ "$(id -u)" -eq 0 ]; }; then
   export HOME
 fi
 
+paths_are_same_file() {
+  [ "$1" = "$2" ] || [ "$1" -ef "$2" ]
+}
+
 # Normalize a POSIX absolute path lexically without requiring it to exist.
 # This mirrors `_paths._normalize_absolute` (i.e. `os.path.normpath`): repeated
 # separators and `.` / `..` components are collapsed, but no symlink or
@@ -519,14 +523,12 @@ normalize_deepagents_home() {
   # Same degenerate-root rejections as `_paths._reject_degenerate_root`, so the
   # installer fails here rather than provisioning a profile the app refuses to
   # launch from.
-  case "$DEEPAGENTS_HOME" in
-    /|//)
-      log_error "Invalid DEEPAGENTS_HOME '${raw}': the filesystem root cannot be a profile. Use a dedicated directory."
-      exit 1
-      ;;
-  esac
+  if paths_are_same_file "$DEEPAGENTS_HOME" "/"; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': the filesystem root cannot be a profile. Use a dedicated directory."
+    exit 1
+  fi
   normalized_home="$(normalize_absolute_path "$HOME" 2>/dev/null || printf '%s' "$HOME")"
-  if [ "$DEEPAGENTS_HOME" = "$normalized_home" ]; then
+  if paths_are_same_file "$DEEPAGENTS_HOME" "$normalized_home"; then
     log_error "Invalid DEEPAGENTS_HOME '${raw}': the home directory itself cannot be a profile, because its '.env' would be loaded as trusted configuration. Use a subdirectory such as '~/.deepagents'."
     exit 1
   fi
@@ -2548,10 +2550,6 @@ dir_in_original_path() {
     *":$check_dir:"*) return 0 ;;
     *) return 1 ;;
   esac
-}
-
-paths_are_same_file() {
-  [ "$1" = "$2" ] || [ "$1" -ef "$2" ]
 }
 
 # Try to symlink the dcode binary into a directory already in PATH. Tries

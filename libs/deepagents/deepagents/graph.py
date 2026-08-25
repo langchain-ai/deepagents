@@ -334,9 +334,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             (filesystem tools, `execute`, and `task`).
 
             Passing tools here is additive — it never removes a built-in.
-            To drop a built-in tool, register a
+            To stop offering a built-in tool to the model, register a
             [`HarnessProfile`][deepagents.HarnessProfile] with
-            `excluded_tools`.
+            `excluded_tools`. To remove one entirely, pass your own
+            [`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware]
+            with `tools=[...]`.
         system_prompt: Caller-authored system instructions (`USER`) placed
             first in the system prompt sent to the model.
 

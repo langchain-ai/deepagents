@@ -126,3 +126,24 @@ def test_cli_provider_reads_any_mapping_not_just_dict() -> None:
     assert CliProvider(argparse.Namespace(recursion_limit=42)).get(
         option
     ).result == Found(42)
+
+
+def test_cli_spec_rejects_malformed_companion_flags() -> None:
+    with pytest.raises(ValueError, match="long option"):
+        CliSpec("--auto-approve", companion_flags=("-y",))
+    with pytest.raises(ValueError, match="long option"):
+        CliSpec("--auto-approve", companion_flags=("--",))
+
+
+def test_startup_mode_names_both_approval_flags() -> None:
+    """`--yolo` sets `startup.mode` too, so user-facing text must say so.
+
+    Only `--auto-approve` carries the argparse destination the provider reads.
+    Rendering `cli.flag` alone told a user who typed `--yolo` that a flag they
+    never passed had been ignored.
+    """
+    option = get_option("startup.mode")
+    assert option is not None
+    assert option.cli is not None
+    assert option.cli.companion_flags == ("--yolo",)
+    assert option.cli.display_flags == "--auto-approve/--yolo"

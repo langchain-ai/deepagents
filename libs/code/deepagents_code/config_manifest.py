@@ -281,19 +281,34 @@ class CliSpec:
     dest: str | None = None
     """Argparse destination, derived mechanically from `flag` when omitted."""
 
+    companion_flags: tuple[str, ...] = ()
+    """Other flags that set this option, for options driven by more than one.
+
+    `startup.mode` is set by both `--auto-approve` and `--yolo`, which argparse
+    keeps mutually exclusive. Only `flag` carries the argparse destination the
+    provider reads; the companions exist so user-facing text can name every
+    spelling instead of guessing the one the user actually typed.
+    """
+
     def __post_init__(self) -> None:
         """Reject malformed flags and destinations at manifest construction.
 
         Raises:
-            ValueError: If `flag` is not a non-empty long option, or `dest` is
-                supplied but blank.
+            ValueError: If `flag` or any companion is not a non-empty long
+                option, or `dest` is supplied but blank.
         """
-        if not self.flag.removeprefix("--") or not self.flag.startswith("--"):
-            msg = f"CLI flag must be a long option starting with '--': {self.flag!r}"
-            raise ValueError(msg)
+        for flag in (self.flag, *self.companion_flags):
+            if not flag.startswith("--") or not flag.removeprefix("--"):
+                msg = f"CLI flag must be a long option starting with '--': {flag!r}"
+                raise ValueError(msg)
         if self.dest is not None and not self.dest:
             msg = f"CLI destination for {self.flag} must not be empty"
             raise ValueError(msg)
+
+    @property
+    def display_flags(self) -> str:
+        """Every spelling that sets this option, joined for user-facing text."""
+        return "/".join((self.flag, *self.companion_flags))
 
     @property
     def dest_name(self) -> str:
@@ -745,6 +760,40 @@ def _ranked_source(resolved: ResolvedValue[object]) -> str:
     return " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
 
 
+def _warn_cli_flag_masked(
+    option: ConfigOption, resolved: ResolvedValue[object]
+) -> None:
+    """Tell the user a flag they passed lost to a stronger config tier.
+
+    Written to stderr rather than logged: with no handler configured,
+    `logging.lastResort` would emit the same text to the same stream, and this
+    needs to reach a user who has not enabled debug logging. Deduped per
+    config generation because `dcode config` resolves the whole manifest in
+    one pass.
+
+    Args:
+        option: Manifest option whose CLI tier was masked.
+        resolved: Rank-keyed resolution carrying the masked and winning tiers.
+    """
+    flag = option.cli.display_flags if option.cli else option.cli_flag or option.key
+    winner = resolved.provider_status[min(resolved.ranks)].name
+
+    warning_key = ("masked cli flag", f"{flag}|{winner}")
+    if warning_key in _warned_non_table_paths:
+        return
+    _warned_non_table_paths.add(warning_key)
+
+    from rich.console import Console
+
+    # `soft_wrap` keeps the message greppable on one line off a TTY, matching
+    # the headless approval-flag warning in `main`.
+    Console(stderr=True).print(
+        f"[bold yellow]Warning:[/bold yellow] {flag} was ignored: {winner} "
+        "takes precedence. Ask your administrator if this is unexpected.",
+        soft_wrap=True,
+    )
+
+
 def _emit_ranked_diagnostics(
     option: ConfigOption, resolved: ResolvedValue[object]
 ) -> None:
@@ -773,7 +822,7 @@ def _emit_ranked_diagnostics(
         SHADOWED_TABLE_SUFFIX,
         UNUSABLE_SOURCE_SUFFIX,
     )
-    from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
+    from deepagents_code.configuration.resolver import CLI_RANK, ENVIRONMENT_RANK
     from deepagents_code.configuration.types import Found, Invalid
 
     once_per_generation = (
@@ -790,6 +839,16 @@ def _emit_ranked_diagnostics(
                 return
             _warned_non_table_paths.add(warning_key)
         logger.warning("%s", reason)
+
+    # A flag the user actually typed, outranked by a stronger tier. The loop
+    # below cannot report this: for a REPLACE option it breaks at the first
+    # `Found`, which is the winning tier, so it never reaches the masked CLI
+    # entry. Without this the whole event is silent -- `--yolo` under a
+    # managed `manual` starts in Manual, prints nothing and exits 0, and the
+    # user blames the flag rather than their administrator's policy.
+    cli_result = resolved.tier_health.get(CLI_RANK)
+    if CLI_RANK in resolved.masked_ranks and isinstance(cli_result, Found):
+        _warn_cli_flag_masked(option, resolved)
 
     accumulating = option.merge_strategy is not MergeStrategy.REPLACE
     for rank in sorted(resolved.tier_health):
@@ -2445,7 +2504,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="manual",
         toml_keys=("startup", "mode"),
         cli_flag="--auto-approve",
-        cli=CliSpec("--auto-approve"),
+        cli=CliSpec("--auto-approve", companion_flags=("--yolo",)),
     ),
     ConfigOption(
         key="startup.read_project_dotenv",

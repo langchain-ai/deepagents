@@ -3459,6 +3459,53 @@ def test_managed_shell_allow_list_masks_the_cli_grant(
     assert args.shell_allow_list == "all"
 
 
+def test_masked_cli_flag_warns_the_user(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A flag beaten by managed policy must say so on stderr.
+
+    Regression: `masked_ranks` was computed and never read, so `--yolo` under
+    a managed `manual` started in Manual, printed nothing and exited 0. The
+    resolution loop cannot report it -- for a REPLACE option it breaks at the
+    winning tier and never reaches the masked CLI entry.
+    """
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    try:
+        assert main._resolve_approval_mode(args).value == "manual"
+    finally:
+        service.invalidate_config_sources()
+
+    err = capsys.readouterr().err
+    assert "--auto-approve/--yolo" in err
+    assert "managed config takes precedence" in err
+
+
+def test_unmasked_cli_flag_is_silent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A flag that wins must not warn."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    try:
+        assert main._resolve_approval_mode(args).value == "yolo"
+    finally:
+        service.invalidate_config_sources()
+
+    assert "was ignored" not in capsys.readouterr().err
+
+
 def test_managed_recursion_limit_masks_the_cli_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

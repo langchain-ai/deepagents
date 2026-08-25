@@ -34500,6 +34500,127 @@ class TestRestartCommand:
             assert typed == "hi"
 
     @pytest.mark.timeout(15)
+    async def test_second_restart_is_refused_during_the_config_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One restart at a time, across the whole detached continuation.
+
+        The refresh can now spend the full remote-fetch timeout, so this window
+        did not exist before: the pre-respawn guards used to run synchronously
+        on the message pump. Without the gate both continuations would mutate
+        `_connecting`/`_reconnecting` and respawn the same subprocess.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            reload_started = threading.Event()
+            release_reload = threading.Event()
+            reloads = 0
+
+            def slow_reload() -> list[str]:
+                nonlocal reloads
+                reloads += 1
+                reload_started.set()
+                assert release_reload.wait(timeout=5)
+                return []
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", slow_reload)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            restart = AsyncMock(return_value=False)
+            monkeypatch.setattr(app, "_restart_server_manual", restart)
+
+            await app._handle_command("/restart")
+            assert await asyncio.to_thread(reload_started.wait, 5)
+            first = app._restart_respawn_task
+            assert first is not None
+
+            await app._handle_command("/restart")
+            assert app._restart_respawn_task is first
+            assert any(
+                "A server restart is already in progress" in str(message._content)
+                for message in app.query(AppMessage)
+            )
+
+            release_reload.set()
+            await first
+            assert reloads == 1
+            restart.assert_awaited_once()
+
+    @pytest.mark.timeout(15)
+    async def test_detached_restart_reports_an_unexpected_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raise in the detached continuation must reach the user.
+
+        Before the restart was detached these escaped into the awaiting command
+        handler. Now only `_log_task_exception` would see them, leaving a wedged
+        UI and no message.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def boom(*, preserve_queue: bool = False) -> None:
+                del preserve_queue
+                await asyncio.sleep(0)
+                msg = "restart exploded"
+                raise RuntimeError(msg)
+
+            monkeypatch.setattr(app, "_run_restart_command", boom)
+
+            task = app._schedule_restart_command()
+            await task
+
+            assert any(
+                "Restart failed: RuntimeError: restart exploded"
+                in str(message._content)
+                for message in app.query(ErrorMessage)
+            )
+
+    async def test_restart_reports_a_blocked_managed_policy_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A policy fetch failure must not read as a clean restart.
+
+        `_reload_values` catches `ManagedConfigError` and reports it as the
+        first change entry, so dropping the return value would mount "Restart
+        complete." while the process kept the previous policy generation.
+        """
+        from deepagents_code.config import (
+            MANAGED_RELOAD_BLOCKED_PREFIX,
+            settings,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            blocked = (
+                f"{MANAGED_RELOAD_BLOCKED_PREFIX}Managed config at /L/managed.toml "
+                "points to https://config.example.com/policy.toml, which is "
+                "UNREADABLE: remote source timed out."
+            )
+            monkeypatch.setattr(
+                settings,
+                "reload_from_environment",
+                lambda: [blocked],
+            )
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+
+            assert await app._reload_configuration_for_restart() is True
+            assert any(
+                blocked in str(message._content) for message in app.query(ErrorMessage)
+            )
+
+    @pytest.mark.timeout(15)
     async def test_prompt_queues_during_restart_config_refresh(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -38172,6 +38293,50 @@ class TestResumeThreadCwdSwitch:
         # Target refresh, then the rollback refresh for the previous cwd.
         assert reloads == [target, current]
         assert Path.cwd() == current
+        assert app._cwd == str(current)
+
+    async def test_switch_process_cwd_resyncs_ui_when_rollback_is_cancelled(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cancellation mid-rollback still leaves cwd and `_cwd` in agreement.
+
+        The rollback context refresh is awaited, and `CancelledError` is a
+        `BaseException`, so it escapes `suppress(Exception)`. Re-syncing the UI
+        first is what keeps the divergence
+        `_restore_cwd_after_failed_thread_switch` cannot detect from happening.
+        """
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        app._chat_input = None
+        app._status_bar = None
+
+        refreshes: list[Path] = []
+
+        async def refresh(cwd: Path) -> None:
+            refreshes.append(cwd)
+            await asyncio.sleep(0)
+            if len(refreshes) > 1:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(app, "_refresh_project_context_for_cwd_switch", refresh)
+
+        def boom(_cwd: object) -> None:
+            msg = "cannot chdir"
+            raise OSError(msg)
+
+        with (
+            patch("os.chdir", boom),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await app._switch_process_cwd(target)
+
+        assert refreshes == [target, current]
         assert app._cwd == str(current)
 
     # --- _cwd_paths_equal (pure staticmethod) ---

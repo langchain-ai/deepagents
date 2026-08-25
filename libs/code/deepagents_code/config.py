@@ -47,7 +47,7 @@ from deepagents_code.config_manifest import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterator, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -2638,6 +2638,30 @@ def _parse_extra_skills_dirs(
     return None
 
 
+MANAGED_RELOAD_BLOCKED_PREFIX = "Kept previous settings: "
+"""Lead-in of the notice a reload returns when managed policy blocked it.
+
+`reload_from_environment` reports the block as the first entry of its change
+list, so a caller that only counts changes reads "policy could not be
+refreshed" as "nothing changed". Use `managed_reload_block` to recover it
+instead of matching this text at each call site.
+"""
+
+
+def managed_reload_block(changes: Sequence[str]) -> str | None:
+    """Return the managed-policy block notice a reload reported, if any.
+
+    Args:
+        changes: The list `reload_from_environment` or `preview_reload` returned.
+
+    Returns:
+        The notice, or `None` when managed policy did not block the reload.
+    """
+    if changes and changes[0].startswith(MANAGED_RELOAD_BLOCKED_PREFIX):
+        return changes[0]
+    return None
+
+
 _RELOADABLE_FIELDS = (
     "openai_api_key",
     "anthropic_api_key",
@@ -2974,7 +2998,7 @@ class Settings:
             # Report the block to the caller. Returning only `previous` reads
             # as "nothing changed", so the user would be told the reload
             # succeeded while their environment edits were discarded.
-            return dict(previous), f"Kept previous settings: {exc}"
+            return dict(previous), f"{MANAGED_RELOAD_BLOCKED_PREFIX}{exc}"
 
         from deepagents_code.config_manifest import (
             _emit_ranked_diagnostics,

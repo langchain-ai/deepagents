@@ -94,7 +94,9 @@ class ExtensionRegistry:
         self.backend_routes: list[RegisteredUnit[BackendProtocol]] = []
         self.shutdown_hooks: list[RegisteredUnit[Callable[[], Any]]] = []
         self._lock = threading.RLock()
-        self._listeners: list[Callable[[str, RegisteredUnit[Any]], None]] = []
+        self._registration_listeners: list[
+            Callable[[str, RegisteredUnit[Any]], None]
+        ] = []
         self._restart_required = False
 
     @property
@@ -124,10 +126,17 @@ class ExtensionRegistry:
             del self.backend_routes[snapshot.backend_routes :]
             del self.shutdown_hooks[snapshot.shutdown_hooks :]
 
-    def subscribe(self, listener: Callable[[str, RegisteredUnit[Any]], None]) -> None:
-        """Observe successful registrations made after host construction."""
+    def subscribe_to_registrations(
+        self, listener: Callable[[str, RegisteredUnit[Any]], None]
+    ) -> None:
+        """Observe registrations and allow the callback to reject them.
+
+        Args:
+            listener: Called with the registration kind and registered unit. Raising
+                rolls back that registration.
+        """
         with self._lock:
-            self._listeners.append(listener)
+            self._registration_listeners.append(listener)
 
     def find_tool(self, name: str) -> RegisteredUnit[BaseTool] | None:
         """Return the current extension tool named `name`."""
@@ -173,7 +182,7 @@ class ExtensionRegistry:
                 return
             registered = RegisteredUnit(name, unit, source)
             items.append(registered)
-            listeners = tuple(self._listeners)
+            listeners = tuple(self._registration_listeners)
         try:
             for listener in listeners:
                 listener(kind, registered)
@@ -209,7 +218,7 @@ class ExtensionRegistry:
         registered = RegisteredUnit(source.label, hook, source)
         with self._lock:
             self.shutdown_hooks.append(registered)
-            listeners = tuple(self._listeners)
+            listeners = tuple(self._registration_listeners)
         try:
             for listener in listeners:
                 listener("shutdown", registered)

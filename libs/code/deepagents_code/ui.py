@@ -80,9 +80,12 @@ def shell_allow_list_arg(value: str) -> str:
         argparse.ArgumentTypeError: If the allow-list is malformed.
     """
     try:
-        parse_shell_allow_list(value)
+        parsed = parse_shell_allow_list(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
+    if parsed is None:
+        msg = "must contain at least one non-empty command"
+        raise argparse.ArgumentTypeError(msg)
     return value
 
 

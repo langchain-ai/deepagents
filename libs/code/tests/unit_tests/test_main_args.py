@@ -72,6 +72,22 @@ def test_malformed_shell_allow_list_is_a_visible_cli_error(
     assert "Cannot combine 'all' with other commands" in error
 
 
+@pytest.mark.parametrize("value", ["", "   ", ",", " , , "])
+def test_empty_shell_allow_list_is_a_visible_cli_error(
+    value: str,
+    mock_argv: MockArgvType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An explicit allow-list must contain at least one command."""
+    with mock_argv("--shell-allow-list", value), pytest.raises(SystemExit) as exc:
+        parse_args()
+
+    assert exc.value.code == 2
+    error = capsys.readouterr().err
+    assert "--shell-allow-list" in error
+    assert "must contain at least one non-empty command" in error
+
+
 def test_parse_args_does_not_prepend_managed_bin(
     monkeypatch: pytest.MonkeyPatch, mock_argv: MockArgvType
 ) -> None:

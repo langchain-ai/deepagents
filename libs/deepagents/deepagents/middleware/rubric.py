@@ -624,7 +624,8 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
 
         Args:
             state: Agent state at natural stop (no further tool calls).
-            runtime: Agent runtime; used for the stream writer.
+            runtime: Agent runtime; used for streaming and to forward its static
+                context to the nested grader.
 
         Returns:
             State update dict. May include `jump_to='model'` (with an
@@ -840,9 +841,9 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     ) -> GraderResponse:
         """Grade the transcript, retrying once if the response is unusable.
 
-        Subclasses that need to wrap a single grader call (e.g. to retry a
-        transport failure) should override `_invoke_grader` rather than this
-        method, so the coverage retry below still applies.
+        This method owns the coverage retry. Subclasses that need to wrap a
+        single grader call should override `_invoke_grader`, forward its
+        `correction` and `context` arguments, and leave this method unchanged.
         """
         graded = self._invoke_grader(state, iteration, context=context)
         correction = self._usability_correction(state, graded)
@@ -898,7 +899,15 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         *,
         context: object | None = None,
     ) -> GraderResponse:
-        """Run one grader call. A retry re-enters here with `correction` set."""
+        """Run one grader call while preserving nested graph inputs.
+
+        This is the per-call extension point beneath `_grade`'s coverage retry.
+        Overrides should forward `correction` and `context` when delegating here.
+        The context is LangGraph's static runtime context, passed through so a
+        nested grader using a context schema receives the same run dependencies.
+        Grader input must continue through `_grader_input`, which delegates to
+        `_build_grader_payload` for delimiter sanitization.
+        """
         grader = self._ensure_grader()
         metadata = self._grader_trace_metadata()
         self._record_grader_trace_metadata(metadata)

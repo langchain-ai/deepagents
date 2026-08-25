@@ -1717,13 +1717,13 @@ class TestRevisionPrompt:
         assert "could not verify" not in prompt
 
 
-class TestSubclassSeams:
-    """Extension points relied on by subclasses such as dcode's grader.
+class TestGraderExtensionContract:
+    """Contract for composing grader extensions with coverage verification.
 
-    A subclass that wraps a single grader call must override `_invoke_grader`
-    rather than `_grade`, so these pin the seam that makes that possible: the
-    `context` hand-off, the `_grader_input` override point, `GraphBubbleUp`
-    passing through, and `unverified` reaching stream consumers.
+    A subclass that wraps a single grader call overrides `_invoke_grader`
+    rather than `_grade`. These tests pin that composition together with the
+    runtime-context hand-off, `_grader_input` customization, `GraphBubbleUp`
+    propagation, and `unverified` stream metadata.
     """
 
     def _state(self, **overrides: Any) -> dict[str, Any]:
@@ -1799,12 +1799,11 @@ class TestSubclassSeams:
         assert captured["payload"]["operation_id"] == "op-1"
         assert "messages" in captured["payload"]
 
-    def test_invoke_grader_override_still_gets_the_coverage_retry(
+    def test_per_call_wrapper_composes_with_coverage_retry(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The retry lives in `_grade`, so wrapping `_invoke_grader` keeps it."""
-        calls: list[str | None] = []
+        calls: list[tuple[str | None, object | None]] = []
         short = GraderResponse(result="satisfied", explanation="ok", criteria=[{"name": "a", "passed": True}])
 
         class _Wrapped(RubricMiddleware):
@@ -1816,15 +1815,25 @@ class TestSubclassSeams:
                 *,
                 context: object | None = None,
             ) -> GraderResponse:
-                calls.append(correction)
+                calls.append((correction, context))
                 return short
 
         mw = _Wrapped(model=_STUB_MODEL)
         monkeypatch.setattr(mw, "_grader", self._grader({}))
+        sentinel = object()
 
-        mw.after_agent(self._state(_rubric_criteria=["a", "b"]), _runtime())
+        mw.after_agent(
+            self._state(_rubric_criteria=["a", "b"]),
+            _runtime(context=sentinel),
+        )
 
-        assert calls == [None, "A previous attempt returned 1 criteria; the rubric has exactly 2."]
+        assert calls == [
+            (None, sentinel),
+            (
+                "A previous attempt returned 1 criteria; the rubric has exactly 2.",
+                sentinel,
+            ),
+        ]
 
     def test_graph_bubble_up_is_not_recorded_as_grader_error(
         self,

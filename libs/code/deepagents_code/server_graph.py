@@ -415,12 +415,8 @@ async def _make_graphs() -> ServerRuntime:
 
     extension_registry = None
     if is_env_truthy(EXPERIMENTAL):
-        from deepagents_code.extensions import load_extensions
-        from deepagents_code.extensions.runtime import (
-            HEADLESS_MODE,
-            INTERACTIVE_MODE,
-            bind_server_extensions,
-        )
+        from deepagents_code.extensions import ExtensionMode, load_extensions
+        from deepagents_code.extensions.runtime import bind_server_extensions
 
         extension_result = await load_extensions(
             cwd=(
@@ -430,7 +426,11 @@ async def _make_graphs() -> ServerRuntime:
                 if config.cwd is not None
                 else None
             ),
-            mode=INTERACTIVE_MODE if config.interactive else HEADLESS_MODE,
+            mode=(
+                ExtensionMode.INTERACTIVE
+                if config.interactive
+                else ExtensionMode.HEADLESS
+            ),
             project_root=(
                 project_context.project_root or project_context.user_cwd
                 if project_context is not None

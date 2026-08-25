@@ -72,19 +72,23 @@ source = "https://config.example.com/dcode/managed_config.toml"
 In remote mode, the fixed file is only a trust anchor. It must contain exactly
 that table and string key. The downloaded document is then the complete managed
 policy. Remote policy cannot declare `[managed_config]` at all. The URL must use
-HTTPS. It cannot contain credentials, a query string, or a fragment.
+HTTPS. It cannot contain credentials, a query string, a fragment, or whitespace
+and control characters.
 
 `dcode` connects directly with the system TLS trust store, ignores environment
-proxy settings, and refuses redirects. It gives each connect and read operation
-five seconds, and it abandons the fetch when the five-second budget is spent.
-It rejects a response larger than 1 MiB.
+proxy settings, and refuses redirects. One five-second budget covers the whole
+fetch: the connection, the TLS handshake, the headers, and the body. `dcode`
+abandons the fetch when that budget is spent. It rejects a response larger
+than 1 MiB.
 
 `dcode` also accepts only a complete policy document. The response must have
-status 200. Its framing must show that the body arrived whole: a
-`Content-Length` that matches the bytes read, or chunked encoding. A document
-with no keys is a failed publish, not an administrator who enforces nothing.
-Truncated TOML often still parses, so a partial document would otherwise
-enforce a policy with entries silently missing.
+status 200. Its media type must be a TOML or plain-text type, and the body
+must not be compressed. Its framing must show that the body arrived whole: one
+`Content-Length` that matches the bytes read, or chunked encoding. A response
+that sends both, or that repeats `Content-Length` with different values, is
+rejected. A document with no keys is a failed publish, not an administrator who
+enforces nothing. Truncated TOML often still parses, so a partial document
+would otherwise enforce a policy with entries silently missing.
 
 `SSL_CERT_FILE` and `SSL_CERT_DIR` still select the trust store. A local user
 who controls the environment of the `dcode` process can therefore substitute

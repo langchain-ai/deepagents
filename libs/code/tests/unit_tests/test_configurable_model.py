@@ -27,6 +27,7 @@ from deepagents_code.configurable_model import (
     _is_anthropic_model,
     _is_fireworks_model,
     _is_openai_model,
+    _model_spec_from_model,
     _ResolvedModelRequest,
 )
 
@@ -112,6 +113,20 @@ _mw = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
 
 class TestCheckpointPersistence:
     """Tests for private resume-state checkpoint updates."""
+
+    def test_startup_custom_provider_uses_configured_spec(self) -> None:
+        """Custom classes must checkpoint their configured provider alias."""
+        from deepagents_code.config import settings
+
+        model = _make_model("fake")
+        model._get_ls_params.return_value = {
+            "ls_provider": "deterministicintegrationchatmodel"
+        }
+        with (
+            patch.object(settings, "model_provider", "itest"),
+            patch.object(settings, "model_name", "fake"),
+        ):
+            assert _model_spec_from_model(model) == "itest:fake"
 
     def test_records_request_start_only_after_success(self) -> None:
         middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
@@ -653,6 +668,52 @@ class TestModelSwap:
         assert _checkpoint_update(result) == {
             "_model_spec": "anthropic:claude-sonnet-4-6",
         }
+
+    def test_model_policy_error_does_not_fall_back_to_original(self) -> None:
+        """A blocked runtime switch propagates instead of using the old model."""
+        from deepagents_code.model_config import ModelNotAllowedError
+
+        original = _make_model("claude-sonnet-4-6")
+        request = _make_request(
+            original,
+            context=CLIContext(model="openai:blocked"),
+        )
+        denial = ModelNotAllowedError(
+            model_spec="openai:blocked",
+            source="managed config",
+            allowed_models=("anthropic:allowed",),
+        )
+
+        with (
+            patch(_PATCH_CREATE, side_effect=denial),
+            pytest.raises(ModelNotAllowedError, match="administrator-managed"),
+        ):
+            _mw.wrap_model_call(request, lambda _request: _make_response())
+
+    async def test_async_model_policy_error_does_not_fall_back(self) -> None:
+        """The asynchronous runtime-switch path propagates policy denials."""
+        from deepagents_code.model_config import ModelNotAllowedError
+
+        original = _make_model("claude-sonnet-4-6")
+        request = _make_request(
+            original,
+            context=CLIContext(model="openai:blocked"),
+        )
+        denial = ModelNotAllowedError(
+            model_spec="openai:blocked",
+            source="config.toml",
+            allowed_models=("anthropic:allowed",),
+        )
+
+        async def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            await asyncio.sleep(0)
+            return _make_response()
+
+        with (
+            patch(_PATCH_CREATE, side_effect=denial),
+            pytest.raises(ModelNotAllowedError, match=r"config\.toml"),
+        ):
+            await _mw.awrap_model_call(request, handler)
 
     def test_failed_override_records_original_as_cache_identity(self) -> None:
         """The cache model spec tracks the model that served the call."""

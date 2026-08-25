@@ -1802,7 +1802,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     This middleware never compacts automatically. Compaction only occurs when
     `compact_conversation` is called as a normal tool call (by the model or by
-    an explicit user action, e.g. as implemented in the deepagents-cli).
+    an explicit user action, e.g. as implemented in the deepagents-code CLI).
 
     To avoid compacting too early, compact tool execution is gated by
     `_is_eligible_for_compaction`, which requires reported usage to reach about

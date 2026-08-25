@@ -91,6 +91,58 @@ class TestDebugConsoleScreen:
             assert "openai:gpt-test" in text
             assert "/tmp/[brackets]/work" in text
 
+    async def test_wrapped_snapshot_values_align_to_value_column(self) -> None:
+        fields = [
+            SnapshotField(
+                "MCP servers",
+                "notion (ok), slack (ok), langsmith (ok), onepassword (ok)",
+            ),
+            SnapshotField(
+                "Debug log",
+                "/tmp/deepagents_debug/a/very/long/path/to/the/log/file.log",
+            ),
+        ]
+        app = _Harness()
+        async with app.run_test(size=(50, 40)) as pilot:
+            screen = DebugConsoleScreen(fields)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            view = screen.query_one(".debug-console-snapshot", Static)
+            lines = _widget_text(view).splitlines()
+
+        indent = max(len(field.label) for field in fields) + 2
+        mcp_row = next(
+            index for index, line in enumerate(lines) if "MCP servers" in line
+        )
+        log_row = next(index for index, line in enumerate(lines) if "Debug log" in line)
+        assert log_row > mcp_row + 1
+        assert len(lines) > log_row + 1
+        for line in (*lines[mcp_row + 1 : log_row], *lines[log_row + 1 :]):
+            assert line[:indent] == " " * indent
+            assert line[indent:].strip()
+
+    async def test_cramped_value_column_wraps_snapshot_rows_flat(self) -> None:
+        fields = [SnapshotField("Approval mode", "auto-edit")]
+        app = _Harness()
+        async with app.run_test(size=(30, 40)) as pilot:
+            screen = DebugConsoleScreen(fields)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            view = screen.query_one(".debug-console-snapshot", Static)
+            lines = _widget_text(view).splitlines()
+            content_width = view.content_size.width
+
+        indent = len("Approval mode") + 2
+        # The label fits, but the remaining seven cells are too narrow for a
+        # useful hanging value column and would make the snapshot very tall.
+        assert content_width - indent == 7
+        assert len(lines) > 1
+        for line in lines:
+            assert line[:indent] != " " * indent
+        assert any("auto" in line for line in lines[1:])
+
     def test_footer_omits_click_to_copy_hint(self) -> None:
         footer = str(DebugConsoleScreen._render_help())
 

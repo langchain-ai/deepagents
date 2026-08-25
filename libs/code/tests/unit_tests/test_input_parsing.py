@@ -435,8 +435,7 @@ def test_dropped_payload_paths_resolves_quoted_payload(
     """Quoted and bracketed drops resolve, since terminals wrap paths that way.
 
     The shape guard strips leading `<`, `'`, and `"` for exactly this reason;
-    without that strip every quoted drop would look like typed text. A quoted
-    path is also the designed burst shape — see `PASTE_BURST_START_CHARS`.
+    without that strip every quoted drop would look like typed text.
     """
     img = tmp_path / "shot.png"
     img.write_bytes(b"img")

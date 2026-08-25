@@ -97,6 +97,12 @@ from deepagents_code.cold_cache import (
     RewarmEstimate,
 )
 from deepagents_code.event_bus import ExternalEvent
+from deepagents_code.goal_state_limits import (
+    GOAL_APPLICATION_CHAR_LIMIT,
+    GOAL_OBJECTIVE_CHAR_LIMIT,
+    GOAL_STATUS_NOTE_CHAR_LIMIT,
+    RUBRIC_CHAR_LIMIT,
+)
 from deepagents_code.goal_state_notice import (
     GOAL_CONTROL_MESSAGE_SOURCE,
     goal_state_notice_info,
@@ -135,6 +141,7 @@ from deepagents_code.tui.widgets.messages import (
     UserMessage,
 )
 from deepagents_code.tui.widgets.startup_tip import StartupTip
+from deepagents_code.tui.widgets.status import _PICKER_ACTIONS
 
 
 def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
@@ -227,6 +234,20 @@ async def test_context_prefers_checkpoint_total_after_offload(
     assert screen_type.call_args.kwargs["context_tokens"] == 1_000
     push_screen.call_args.args[1](None)
     focus.assert_called_once_with()
+
+
+async def test_tokens_prompts_for_first_message_when_usage_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    mount_message = AsyncMock()
+    monkeypatch.setattr(app, "_mount_message", mount_message)
+
+    await app._handle_command("/tokens")
+
+    message = mount_message.await_args_list[-1].args[0]
+    assert isinstance(message, AppMessage)
+    assert str(message._content) == "No token usage yet - send a message to get started"
 
 
 class TestWhatsNewMessage:
@@ -562,6 +583,34 @@ class TestInitialPromptOnMount:
         assert "/model" in str(messages[0].content)
         assert "credentials" in str(messages[0].content)
 
+    async def test_post_paint_init_schedules_history_sweep(self) -> None:
+        """Startup runs the archive sweep as an exclusive background worker."""
+        app = DeepAgentsApp(defer_server_start=True)
+        scheduled: list[tuple[str | None, bool | None]] = []
+
+        def fake_run_worker(work: object, *args: object, **kwargs: object) -> MagicMock:
+            del args
+            group = kwargs.get("group")
+            exclusive = kwargs.get("exclusive")
+            scheduled.append(
+                (
+                    group if isinstance(group, str) else None,
+                    exclusive if isinstance(exclusive, bool) else None,
+                )
+            )
+            if inspect.iscoroutine(work):
+                work.close()
+            return MagicMock()
+
+        app.run_worker = fake_run_worker  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        with patch(
+            "deepagents_code.update_check.is_update_check_enabled", return_value=False
+        ):
+            await app._post_paint_init()
+
+        assert ("startup-history-sweep", True) in scheduled
+
 
 class TestStartupSequence:
     """Tests for post-connect startup sequencing."""
@@ -655,6 +704,97 @@ class TestStartupSequence:
         accept_goal.assert_awaited_once()
         drain_deferred.assert_awaited_once()
         process_next.assert_awaited_once()
+
+    async def test_resuming_status_clears_after_history_restoration(self) -> None:
+        """Resume progress should remain visible until history loading finishes."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            resume_thread="thread-123",
+        )
+        app._connecting = False
+        app._restoring_resumed_history = True
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def load_history(**_kwargs: object) -> None:
+            started.set()
+            await release.wait()
+
+        app._load_thread_history = load_history  # ty: ignore
+        async with app.run_test():
+            app._sync_status_connection()
+            task = asyncio.create_task(app._run_session_start_sequence())
+            await started.wait()
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "resuming"
+            assert app._restoring_resumed_history is True
+
+            release.set()
+            await task
+            assert app._restoring_resumed_history is False
+            assert app._status_bar.connection_state == ""
+
+    async def test_resuming_status_clears_when_session_init_fails(self) -> None:
+        """Resume progress should clear when startup aborts before history loading."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            resume_thread="thread-123",
+        )
+        app._connecting = False
+        app._restoring_resumed_history = True
+        app._session_state = None
+        app._init_session_state = AsyncMock(side_effect=RuntimeError("failed"))  # ty: ignore
+
+        async with app.run_test():
+            app._sync_status_connection()
+            with pytest.raises(RuntimeError, match="failed"):
+                await app._run_session_start_sequence()
+
+            assert app._startup_sequence_running is False
+            assert app._restoring_resumed_history is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+
+    async def test_resuming_status_clears_before_startup_command(self) -> None:
+        """Resume progress should clear once history loads, not after startup cmd."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            resume_thread="thread-123",
+            startup_cmd="echo hi",
+        )
+        app._connecting = False
+        app._restoring_resumed_history = True
+        history_loaded = asyncio.Event()
+        release_startup = asyncio.Event()
+        startup_ran = asyncio.Event()
+
+        async def load_history(**_kwargs: object) -> None:  # noqa: RUF029
+            history_loaded.set()
+
+        async def run_startup(_command: str) -> None:
+            startup_ran.set()
+            await release_startup.wait()
+
+        app._load_thread_history = load_history  # ty: ignore
+        app._run_startup_command = run_startup  # ty: ignore
+
+        async with app.run_test():
+            app._sync_status_connection()
+            task = asyncio.create_task(app._run_session_start_sequence())
+            await asyncio.wait_for(startup_ran.wait(), timeout=5)
+            # The startup command is still running, but history restoration has
+            # finished, so the Resuming indicator must already be gone.
+            assert history_loaded.is_set()
+            assert app._restoring_resumed_history is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+
+            release_startup.set()
+            await task
+            assert app._restoring_resumed_history is False
 
     async def test_resumed_history_loads_before_startup_command(self) -> None:
         """Resumed threads should mount prior history before startup output."""
@@ -2136,6 +2276,7 @@ class TestStartupSequence:
         assert prompt._allow_empty_submit is True
         assert prompt._input_placeholder == "Tavily API key (optional)"
         assert prompt._submit_label == "Enter save/skip"
+        assert prompt._show_cancel_hint is False
         assert "Web search is optional" in (prompt._reason or "")
         apply_credentials.assert_called_once_with()
 
@@ -2538,6 +2679,63 @@ class TestStartupSequence:
             "later with /model. Sandboxes and other integrations install "
             "anytime with /install."
         )
+
+
+class TestStatusBarPickerActions:
+    """Tests for status-bar actions that open existing picker flows."""
+
+    @pytest.mark.parametrize("action", sorted(_PICKER_ACTIONS.values()))
+    def test_action_names_resolve_on_the_app(self, action: str) -> None:
+        """Every status-bar picker action should name a real app method.
+
+        Textual only logs when an action name is missing, so a rename would turn
+        Ctrl+click into a silent no-op without this guard.
+        """
+        assert action.startswith("app.")
+        method = getattr(DeepAgentsApp, f"action_{action.removeprefix('app.')}", None)
+        assert callable(method)
+
+    async def test_model_action_uses_the_guarded_command_flow(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The model click action should reuse the `/model` command path.
+
+        Going through `_submit_input` is what applies the exiting and
+        thread-switch guards, so a direct `_show_model_selector` call regresses.
+        """
+        app = DeepAgentsApp()
+        submit_input = AsyncMock()
+        show_selector = AsyncMock()
+        monkeypatch.setattr(app, "_submit_input", submit_input)
+        monkeypatch.setattr(app, "_show_model_selector", show_selector)
+
+        await app.action_open_model_selector()
+
+        submit_input.assert_awaited_once_with("/model", "command")
+        show_selector.assert_not_awaited()
+
+    async def test_effort_action_uses_queued_command_flow(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The effort click action should preserve `/effort` queue ordering."""
+        app = DeepAgentsApp()
+        submit_input = AsyncMock()
+        monkeypatch.setattr(app, "_submit_input", submit_input)
+
+        await app.action_open_effort_selector()
+
+        submit_input.assert_awaited_once_with("/effort", "command")
+
+    async def test_picker_commands_keep_their_bypass_tiers(self) -> None:
+        """The two picker commands should keep the tiers their actions rely on.
+
+        `/model` must stay `IMMEDIATE_UI` so a click opens it while the agent is
+        busy; `/effort` must stay `QUEUED` to preserve queue ordering.
+        """
+        from deepagents_code.command_registry import IMMEDIATE_UI, QUEUE_BOUND
+
+        assert "/model" in IMMEDIATE_UI
+        assert "/effort" in QUEUE_BOUND
 
 
 class TestStartupFocus:
@@ -4174,6 +4372,168 @@ class TestModalScreenShiftTabHandling:
             assert after_tab is not None
             assert options.highlighted < after_tab
             assert app._auto_approve is False
+
+    async def test_tab_round_trips_in_the_effort_selector(self) -> None:
+        """Tab and Shift+Tab both move the effort cursor, as the footer says.
+
+        `EffortSelectorScreen` names its action `action_cursor_up`, so it does
+        not match `_SupportsReverseNav` and reaches the explicit `isinstance`
+        tuple in `action_toggle_auto_approve` instead. Dropping it from that
+        tuple sends Shift+Tab to the `ModalScreen` catch-all, which swallows it
+        silently while the footer still advertises it.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = EffortSelectorScreen(
+                model_spec="anthropic:claude-sonnet-4-5",
+                efforts=("low", "medium", "high"),
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            options = screen.query_one("#effort-options", OptionList)
+            assert options.highlighted == 0
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert options.highlighted == 1
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert options.highlighted == 0
+
+            # Wraps backward off the first row rather than sticking.
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert options.highlighted == 2
+
+            # The key must be consumed by the modal, never reach the toggle.
+            assert app._approval_mode is ApprovalMode.MANUAL
+
+    async def test_tab_round_trips_in_the_goal_preference_prompt(self) -> None:
+        """Tab and Shift+Tab both move the launch-preference cursor.
+
+        Same `action_cursor_up` routing as the effort selector above.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = LaunchGoalCriteriaPreferenceScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            options = screen.query_one(OptionList)
+            assert options.highlighted == 0
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert options.highlighted == 1
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert options.highlighted == 0
+
+            assert app._approval_mode is ApprovalMode.MANUAL
+
+    async def test_tab_round_trips_in_the_theme_selector(self) -> None:
+        """Tab and Shift+Tab both move the theme cursor, as the footer says."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+            options = screen.query_one(OptionList)
+            start = options.highlighted
+            assert start is not None
+
+            await pilot.press("tab")
+            await pilot.pause()
+            after_tab = options.highlighted
+            assert after_tab == start + 1
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert options.highlighted == start
+
+            assert app._approval_mode is ApprovalMode.MANUAL
+
+    async def test_tab_round_trips_in_the_agent_selector(self) -> None:
+        """Tab and Shift+Tab both move the agent cursor, as the footer says."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = AgentSelectorScreen(
+                current_agent="general",
+                agent_names=["general", "research", "review"],
+                default_agent=None,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            options = screen.query_one(OptionList)
+            assert options.highlighted == 0
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert options.highlighted == 1
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert options.highlighted == 0
+
+            assert app._approval_mode is ApprovalMode.MANUAL
+
+    async def test_tab_round_trips_focus_in_notification_settings(self) -> None:
+        """Tab and Shift+Tab step focus between the notification toggles.
+
+        This screen is the odd one out: `action_toggle_auto_approve` routes it
+        to `focus_previous()` rather than a cursor action, because its rows are
+        focusable `Checkbox` widgets. The footer advertises the same
+        "Tab/Shift+Tab navigate" copy, so the traversal has to work both ways.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = NotificationCenterScreen([], suppressed=set())
+            app.push_screen(screen)
+            await pilot.pause()
+            # Open the inline settings section so its checkboxes take focus.
+            await pilot.press("enter")
+            await pilot.pause()
+            first = screen.focused
+            assert first is not None
+
+            await pilot.press("tab")
+            await pilot.pause()
+            second = screen.focused
+            assert second is not None
+            assert second is not first
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen.focused is first
+
+            assert app._approval_mode is ApprovalMode.MANUAL
 
 
 class TestModalScreenCtrlCHandling:
@@ -7475,6 +7835,7 @@ class TestClearCommand:
 
             with (
                 patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch.object(app, "_thread_links_configured", return_value=True),
                 patch.object(app, "_schedule_thread_message_link") as schedule,
             ):
                 await app._handle_command("/clear")
@@ -7527,6 +7888,7 @@ class TestClearCommand:
                     "deepagents_code.sessions.get_thread_agent",
                     AsyncMock(return_value="agent"),
                 ),
+                patch.object(app, "_thread_links_configured", return_value=True),
                 patch.object(app, "_schedule_thread_message_link") as schedule,
             ):
                 await app._handle_command("/clear")
@@ -7550,6 +7912,43 @@ class TestClearCommand:
                 "suffix": " (Resume with /threads -r)",
             }
 
+    async def test_clear_hides_thread_ids_without_tracing(self) -> None:
+        """Unlinked thread notices should stay concise."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+            app._message_store.append(
+                MessageData(type=MessageType.ASSISTANT, content="existing response")
+            )
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="agent"),
+                ),
+                patch.object(app, "_thread_links_configured", return_value=False),
+                patch.object(app, "_schedule_thread_message_link") as schedule,
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            assert "Started new thread" in contents
+            assert "Resume previous thread with /threads -r" in contents
+            assert not any(
+                "old-thread" in text or "new-thread" in text for text in contents
+            )
+            schedule.assert_not_called()
+
     async def test_clear_omits_previous_thread_without_checkpoint(self) -> None:
         """/clear should not advertise a thread that cannot be resumed."""
         app = DeepAgentsApp(thread_id="old-thread")
@@ -7564,6 +7963,7 @@ class TestClearCommand:
                     "deepagents_code.sessions.thread_exists",
                     AsyncMock(return_value=False),
                 ),
+                patch.object(app, "_thread_links_configured", return_value=True),
                 patch.object(app, "_schedule_thread_message_link") as schedule,
             ):
                 await app._handle_command("/clear")
@@ -7652,6 +8052,13 @@ class TestCopyCommand:
             MessageData(type=MessageType.ASSISTANT, content="   ")
         )
         app._message_store.append(MessageData(type=MessageType.APP, content="status"))
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="```text\nlocal shell output\n```",
+                assistant_local_only=True,
+            )
+        )
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -8091,7 +8498,9 @@ class TestWarnDiscardedGoalChannels:
         assert payload.pending_goal_kind is None
         assert payload.pending_goal_request_id is None
 
-    def test_legacy_pending_proposal_without_metadata_is_preserved(self) -> None:
+    async def test_legacy_pending_proposal_without_metadata_is_preserved(
+        self,
+    ) -> None:
         """Legacy proposals may omit kind and request ID without being discarded."""
         payload = DeepAgentsApp._goal_rubric_payload_from_state(
             {
@@ -8104,7 +8513,7 @@ class TestWarnDiscardedGoalChannels:
         )
         app = DeepAgentsApp()
 
-        app._restore_goal_rubric_state(payload)
+        await app._restore_goal_rubric_state(payload)
 
         assert app._pending_goal_objective == "ship login"
         assert app._pending_goal_rubric == "- tests pass"
@@ -8339,6 +8748,9 @@ class TestGoalCommand:
             message = send.await_args.args[0]
             kwargs = send.await_args.kwargs["message_kwargs"]
             assert "ship login" in message
+            # As in the accept path: with the save failed and no notice coming,
+            # this message is the model's only source for the criteria.
+            assert "- tests pass" in message
             assert "get_goal" not in message
             assert kwargs["additional_kwargs"]["lc_source"] == (
                 GOAL_CONTROL_MESSAGE_SOURCE
@@ -8709,6 +9121,10 @@ class TestGoalCommand:
                     new=AsyncMock(return_value=True),
                 ),
                 patch.object(app, "_continue_goal_work", handle),
+                patch(
+                    "deepagents_code.approval_mode.has_auto_mode_notice",
+                    return_value=True,
+                ),
             ):
                 await pilot.press("r")
                 await pilot.pause()
@@ -8868,6 +9284,10 @@ class TestGoalCommand:
                     new=AsyncMock(return_value=True),
                 ),
                 patch.object(app, "_continue_goal_work", handle),
+                patch(
+                    "deepagents_code.approval_mode.has_auto_mode_notice",
+                    return_value=True,
+                ),
             ):
                 await pilot.press("shift+tab")
                 for _ in range(20):
@@ -8925,6 +9345,10 @@ class TestGoalCommand:
                     new=AsyncMock(return_value=True),
                 ),
                 patch.object(app, "_handle_user_message", handle),
+                patch(
+                    "deepagents_code.approval_mode.has_auto_mode_notice",
+                    return_value=True,
+                ),
             ):
                 await app._on_auto_approve_enabled()
                 for _ in range(20):
@@ -10773,7 +11197,7 @@ class TestGoalCommand:
                 pending_goal_rubric="- draft criteria",
             )
 
-            app._restore_goal_rubric_state(payload)
+            await app._restore_goal_rubric_state(payload)
 
             assert app._active_goal == "add refresh tokens"
             assert app._goal_status == "blocked"
@@ -10785,6 +11209,195 @@ class TestGoalCommand:
             assert app._status_bar.rubric_label == _rubric_status_label(
                 "warning", "Goal blocked"
             )
+
+    async def test_restore_unrecognized_goal_status_normalizes_to_resumable_paused(
+        self,
+    ) -> None:
+        """A corrupt or forward-version status must not leave the goal stuck.
+
+        `coerce_goal_status` drops an unknown status to `None`, while the
+        model-visible notice projects the same value as `paused`. Restoring
+        `None` directly would strand the goal: the notice withholds it from the
+        model, but `_resume_goal` requires exactly `"paused"` to continue.
+        Restore must normalize to the same recoverable `paused` the notice
+        shows and persist it so the checkpoint itself becomes resumable.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(aupdate_state=AsyncMock())
+            app._lc_thread_id = "thread-1"
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status=None,
+                goal_status_recorded=True,
+                goal_rubric="- tests pass",
+            )
+
+            await app._restore_goal_rubric_state(payload)
+
+            assert app._active_goal == "ship it"
+            assert app._goal_status == "paused"
+            # The normalized status is written back so the next resume does
+            # not re-derive it.
+            update = app._agent.aupdate_state.await_args
+            assert update is not None
+            assert update.args[1]["_goal_status"] == "paused"
+
+            await app._resume_goal()
+
+            assert app._goal_status == "active"
+
+    async def test_restore_legacy_goal_without_status_stays_active(self) -> None:
+        """A checkpoint with no `_goal_status` channel is legacy, not corrupt.
+
+        Goals predate the status channel, so a persisted objective with the
+        channel absent ran as `active` — the notice projects the same absence
+        as `active`. Restore must preserve that instead of normalizing it to
+        `paused`, and must not write a status the checkpoint never recorded.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(aupdate_state=AsyncMock())
+            app._lc_thread_id = "thread-1"
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status=None,
+                goal_rubric="- tests pass",
+            )
+
+            await app._restore_goal_rubric_state(payload)
+
+            assert app._active_goal == "ship it"
+            assert app._goal_status is None
+            app._agent.aupdate_state.assert_not_awaited()
+
+    async def test_load_oversized_legacy_goal_surfaces_recovery(self) -> None:
+        """Resuming old unsafe state stays usable and explains how to recover."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status="active",
+                goal_rubric="x" * (RUBRIC_CHAR_LIMIT + 1),
+            )
+
+            await app._load_thread_history(
+                thread_id="thread-1",
+                preloaded_payload=payload,
+            )
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "goal work and grading are disabled" in errors
+            assert "maximum is 12,000" in errors
+
+    async def test_oversized_legacy_goal_warns_with_history_present(self) -> None:
+        """The warning survives the branch every real resume actually takes.
+
+        A thread carrying oversized goal state also carries conversation
+        history, so the empty-history early return is the one path that never
+        runs in practice. `_restore_goal_rubric_state` has already made the
+        oversized goal live by this point, and every later turn ships a degraded
+        notice, so losing the warning here leaves the user with a silently
+        non-functional goal and no explanation.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        MessageType.USER,
+                        "do the thing",
+                        id="history-before-oversized-goal",
+                    )
+                ],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status="active",
+                goal_rubric="x" * (RUBRIC_CHAR_LIMIT + 1),
+            )
+
+            await app._load_thread_history(
+                thread_id="thread-1",
+                preloaded_payload=payload,
+            )
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "goal work and grading are disabled" in errors
+            assert "maximum is 12,000" in errors
+
+    async def test_oversized_legacy_goal_warns_when_transcript_render_fails(
+        self,
+    ) -> None:
+        """A failed transcript render cannot swallow the recovery warning.
+
+        `_restore_goal_rubric_state` runs before the render, so the oversized
+        goal is already live when the failure happens. Reporting only
+        "Could not load history" would leave the goal silently disabled.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        MessageType.USER,
+                        "do the thing",
+                        id="history-before-render-failure",
+                    )
+                ],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status="active",
+                goal_rubric="x" * (RUBRIC_CHAR_LIMIT + 1),
+            )
+            # Patched after the size check and before the transcript render, and
+            # unused by `_mount_message`, so the warning path stays intact.
+            with patch.object(
+                app,
+                "_reset_thread_usage",
+                side_effect=RuntimeError("history load exploded"),
+            ):
+                await app._load_thread_history(
+                    thread_id="thread-1",
+                    preloaded_payload=payload,
+                )
+
+            messages = "\n".join(
+                str(w._content)
+                for w in (*app.query(ErrorMessage), *app.query(AppMessage))
+            )
+            assert "Could not restore this thread's transcript" in messages
+            assert "goal work and grading are disabled" in messages
+
+    async def test_oversized_paused_legacy_goal_cannot_resume(self) -> None:
+        """A paused old goal is rejected before becoming model-actionable."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship it"
+            app._goal_status = "paused"
+            app._active_rubric = "x" * (RUBRIC_CHAR_LIMIT + 1)
+
+            await app._resume_goal()
+
+            assert app._goal_status == "paused"
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "too large to resume safely" in errors
 
     async def test_load_thread_history_remounts_pending_goal_review(self) -> None:
         """Resumed pending goal proposals should be actionable in the prompt."""
@@ -10842,7 +11455,7 @@ class TestGoalCommand:
                 sticky_rubric_recorded=True,
             )
 
-            app._restore_goal_rubric_state(payload)
+            await app._restore_goal_rubric_state(payload)
 
             assert app._active_rubric == "- sticky"
             assert app._status_bar is not None
@@ -10857,7 +11470,7 @@ class TestGoalCommand:
             await pilot.pause()
             payload = _ThreadHistoryPayload([], 0, "", rubric="- legacy")
 
-            app._restore_goal_rubric_state(payload)
+            await app._restore_goal_rubric_state(payload)
 
             assert app._active_rubric == "- legacy"
             assert app._status_bar is not None
@@ -11447,7 +12060,7 @@ class TestGoalCommand:
                 rubric_grading_run_id="grade-stale",
             )
 
-            app._restore_goal_rubric_state(payload)
+            await app._restore_goal_rubric_state(payload)
 
             assert app._active_goal == "add refresh tokens"
             assert app._goal_status == "active"
@@ -11500,8 +12113,16 @@ class TestGoalCommand:
             assert "completion was not recorded" not in rendered
             assert "grading failed" not in rendered
 
-    async def test_sync_goal_rubric_state_drops_unknown_status(self) -> None:
-        """An unrecognized persisted goal status normalizes to None."""
+    async def test_sync_goal_rubric_state_normalizes_unknown_status_to_paused(
+        self,
+    ) -> None:
+        """An unrecognized persisted goal status restores as resumable `paused`.
+
+        Normalizing to `None` would strand the goal: the model-visible notice
+        already projects the same value as `paused`, while `_resume_goal`
+        requires exactly `"paused"`. Restore must converge on the notice's
+        recoverable value so the goal is not stuck until it is cleared.
+        """
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -11519,11 +12140,13 @@ class TestGoalCommand:
             with patch.object(app, "_get_thread_state_values", fetch):
                 await app._sync_goal_rubric_state_from_thread()
 
-            assert app._goal_status is None
+            assert app._goal_status == "paused"
             assert app._active_goal == "add refresh tokens"
 
-    async def test_sync_goal_rubric_state_drops_non_str_status(self) -> None:
-        """A non-string persisted goal status normalizes to None."""
+    async def test_sync_goal_rubric_state_normalizes_non_str_status_to_paused(
+        self,
+    ) -> None:
+        """A non-string persisted goal status restores as resumable `paused`."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -11541,7 +12164,62 @@ class TestGoalCommand:
             with patch.object(app, "_get_thread_state_values", fetch):
                 await app._sync_goal_rubric_state_from_thread()
 
+            assert app._goal_status == "paused"
+
+    async def test_sync_goal_rubric_state_keeps_missing_status_active(self) -> None:
+        """A checkpoint with no `_goal_status` channel is legacy, not corrupt.
+
+        The channel predates status persistence, so its absence means the goal
+        ran as `active` — matching what the notice projects. Sync must leave
+        the restored goal working instead of pausing it.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_rubric": "- tests pass",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
             assert app._goal_status is None
+            assert app._active_goal == "add refresh tokens"
+
+    async def test_sync_goal_rubric_state_normalizes_explicit_null_status_to_paused(
+        self,
+    ) -> None:
+        """An explicit `_goal_status: null` is recorded-but-unrecognized.
+
+        Unlike a missing channel (legacy), a present `null` went through
+        `coerce_goal_status` and failed, so restore normalizes it to the same
+        recoverable `paused` as any other unrecognized persisted value.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": None,
+                    "_goal_rubric": "- tests pass",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
+            assert app._goal_status == "paused"
+            assert app._active_goal == "add refresh tokens"
 
     async def test_sync_goal_rubric_state_notifies_on_corruption(self) -> None:
         """A discarded malformed channel surfaces a user-facing corruption notice.
@@ -11892,6 +12570,55 @@ class TestGoalCommand:
             assert app._active_goal == "existing goal"
             assert app._active_rubric == "- existing rubric"
 
+    @pytest.mark.parametrize("size_error", [True, False])
+    async def test_goal_proposal_worker_error_keeps_a_size_limit_message(
+        self, size_error: bool
+    ) -> None:
+        """A limit the user can act on must survive the worker-error net.
+
+        `_propose_goal_rubric` handles its own errors and normally ends in
+        SUCCESS, so this branch only runs when something already went wrong —
+        which is when an unhelpful "failed unexpectedly" costs the most. Only the
+        turn-handler twin of this branch was covered.
+        """
+        from textual.worker import WorkerState
+
+        from deepagents_code.goal_state_limits import GoalStateSizeError
+
+        error: Exception = (
+            GoalStateSizeError(
+                label="Goal objective and criteria combined",
+                actual=12_500,
+                limit=12_000,
+            )
+            if size_error
+            else RuntimeError("boom")
+        )
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            worker = SimpleNamespace(
+                group="",
+                error=error,
+                state=WorkerState.ERROR,
+            )
+            app._goal_proposal_worker = worker  # ty: ignore[invalid-assignment]
+
+            app.on_worker_state_changed(
+                SimpleNamespace(worker=worker, state=WorkerState.ERROR),  # ty: ignore[invalid-argument-type]
+            )
+            await pilot.pause()
+
+            rendered = " ".join(str(w._content) for w in app.query(ErrorMessage))
+            if size_error:
+                assert "Remove at least 500 characters" in rendered
+                assert "shorten the objective" in rendered
+                assert "failed unexpectedly" not in rendered
+            else:
+                assert "Drafting acceptance criteria failed unexpectedly" in rendered
+            # The worker handle is released either way, so a retry is possible.
+            assert app._goal_proposal_worker is None
+
     async def test_goal_accept_warns_when_persist_fails(self) -> None:
         """A failed write warns and continues without replaying the user turn."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -11943,6 +12670,12 @@ class TestGoalCommand:
             message = send.await_args.args[0]
             kwargs = send.await_args.kwargs["message_kwargs"]
             assert "add refresh tokens" in message
+            # The criteria must ride along, not just the objective. The save
+            # failed, so no goal-state notice will be written for this thread and
+            # the read tools are gone — criteria omitted here are unobtainable
+            # through any other channel, and the model would work toward a goal it
+            # cannot grade itself against.
+            assert "- tests pass" in message
             assert "get_goal" not in message
             assert kwargs["additional_kwargs"]["lc_source"] == (
                 GOAL_CONTROL_MESSAGE_SOURCE
@@ -12035,6 +12768,44 @@ class TestGoalCommand:
             assert "/goal max-iterations <N|clear>" in rendered
             assert "draft a checklist for it" in rendered
 
+    async def test_oversized_goal_is_rejected_before_generation(self) -> None:
+        """An oversized objective never opens policy review or starts a worker."""
+        app = DeepAgentsApp(agent=MagicMock())
+        objective = "x" * (GOAL_OBJECTIVE_CHAR_LIMIT + 1)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_start_goal_proposal") as start:
+                await app._handle_command(f"/goal {objective}")
+                await pilot.pause()
+
+            start.assert_not_called()
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 8,000" in errors
+
+    async def test_oversized_amendment_base_is_rejected_before_generation(
+        self,
+    ) -> None:
+        """Amending oversized saved state is refused before spending tokens.
+
+        `/goal amend` re-submits the current objective and criteria as the base
+        for a new proposal, so saved state that already exceeds the combined
+        budget would otherwise reach the criteria agent and fail only after
+        generation. This is also the path the rejection-retry loop re-enters.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship it"
+            app._active_rubric = "x" * (GOAL_APPLICATION_CHAR_LIMIT + 1)
+
+            with patch.object(app, "_run_goal_criteria_request") as run:
+                await app._propose_goal_amendment(feedback="tighten it")
+                await pilot.pause()
+
+            run.assert_not_called()
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 12,000" in errors
+
     async def test_accept_goal_rubric_without_pending_reports_nothing(self) -> None:
         """Accepting with no pending objective must not set a half-formed goal."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -12065,6 +12836,20 @@ class TestGoalCommand:
                 str(w._content) == "Cannot accept empty goal criteria."
                 for w in app.query(AppMessage)
             )
+
+    async def test_accept_goal_rubric_rejects_oversized_combination(self) -> None:
+        """Defense-in-depth validation prevents an invalid proposal write."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "goal"
+
+            accepted = await app._accept_goal_rubric("x" * GOAL_APPLICATION_CHAR_LIMIT)
+
+            assert accepted is False
+            assert app._active_goal is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "combined" in errors
 
     async def test_finish_goal_review_exception_surfaces_error(self) -> None:
         """An unexpected failure mid-review should surface a recovery message."""
@@ -12116,6 +12901,111 @@ class TestGoalCommand:
 
 class TestRubricCommand:
     """Tests for interactive rubric state and turn plumbing."""
+
+    @pytest.mark.parametrize("subcommand", ["set", "next"])
+    async def test_oversized_inline_rubric_preserves_current_state(
+        self,
+        subcommand: str,
+    ) -> None:
+        """Inline rubric entry points reject before mutating valid state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric set keep this")
+            oversized = "x" * (RUBRIC_CHAR_LIMIT + 1)
+
+            await app._handle_command(f"/rubric {subcommand} {oversized}")
+            await pilot.pause()
+
+            assert app._active_rubric == "keep this"
+            assert app._next_rubric is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 12,000" in errors
+
+    async def test_next_rubric_rejected_when_goal_notice_budget_exceeded(self) -> None:
+        """`/rubric next` must fit the combined notice budget with an active goal."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "g" * GOAL_OBJECTIVE_CHAR_LIMIT
+            app._goal_status = "active"
+            app._goal_status_note = "n" * GOAL_STATUS_NOTE_CHAR_LIMIT
+            criteria = "x" * (RUBRIC_CHAR_LIMIT - 1)
+
+            await app._handle_command(f"/rubric next {criteria}")
+            await pilot.pause()
+
+            assert app._next_rubric is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "cannot be applied to the next turn" in errors
+            assert "maximum is 12,000" in errors
+            assert "Rubric set for next turn." not in "\n".join(
+                str(w._content) for w in app.query(AppMessage)
+            )
+
+    async def test_next_rubric_accepted_when_goal_state_fits_budget(self) -> None:
+        """`/rubric next` still applies when the combined notice text fits."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the fix"
+            app._goal_status = "active"
+
+            await app._handle_command("/rubric next update docs")
+            await pilot.pause()
+
+            assert app._next_rubric == "update docs"
+            assert any(
+                "Rubric set for next turn." in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
+    async def test_next_rubric_revalidated_when_goal_grows_before_consumption(
+        self,
+    ) -> None:
+        """A rubric that fit at set time is re-checked when the turn actually runs.
+
+        `_next_rubric_size_error` validates against goal state as it stood when
+        the command was typed, and that state is mutable: amending the goal or
+        recording a blocker note afterwards can push the combined notice over
+        budget. Consuming it unchecked degrades the notice and silently disables
+        the one-shot grade the command promised.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._ui_adapter = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.hooks = HooksManager.inert()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the fix"
+            app._goal_status = "active"
+            # Fits beside a short objective, but not beside a maximal one: the
+            # pair has to cross GOAL_APPLICATION_CHAR_LIMIT once the goal grows.
+            criteria = "x" * (GOAL_APPLICATION_CHAR_LIMIT // 2)
+
+            await app._handle_command(f"/rubric next {criteria}")
+            await pilot.pause()
+            assert app._next_rubric == criteria
+
+            # The goal grows after the one-shot rubric was accepted.
+            app._active_goal = "g" * GOAL_OBJECTIVE_CHAR_LIMIT
+
+            assert app._next_rubric_size_error(app._next_rubric) is not None
+
+            # `_run_agent_task` owns the consumption check, so stub only the
+            # streaming call it makes afterwards.
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new=AsyncMock(),
+            ):
+                await app._run_agent_task("keep going")
+                await pilot.pause()
+
+            assert app._next_rubric is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "no longer fits alongside the current goal state" in errors
 
     async def test_bare_rubric_shows_usage(self) -> None:
         """Bare `/rubric` should teach the command instead of showing only state."""
@@ -12811,6 +13701,23 @@ class TestRubricCommand:
             assert app._status_bar.rubric_label == _rubric_status_label(
                 "checkmark", "Rubric set"
             )
+
+    async def test_oversized_rubric_file_preserves_current_state(
+        self, tmp_path: Path
+    ) -> None:
+        """A large file is refused without replacing the valid sticky rubric."""
+        rubric_file = tmp_path / "large.md"
+        rubric_file.write_text("x" * (RUBRIC_CHAR_LIMIT + 1), encoding="utf-8")
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric set keep this")
+            await app._handle_command(f"/rubric file {rubric_file}")
+            await pilot.pause()
+
+            assert app._active_rubric == "keep this"
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 12,000" in errors
 
     async def test_rubric_file_reports_unparsable_path(self) -> None:
         """An unbalanced quote in the path should report a parse error."""
@@ -13615,6 +14522,10 @@ class TestAutoClassifierModelCommand:
 
         screen = push.call_args.args[0]
         assert screen._recommended_models == _AUTO_CLASSIFIER_RECOMMENDED_MODELS
+        assert screen._recommended_models["google_genai:gemini-3.7-flash"] == (
+            "Gemini 3.7 Flash"
+        )
+        assert "google_genai:gemini-3.6-flash" not in screen._recommended_models
         assert screen._include_recent_models is False
 
     async def test_auto_model_selector_persists_to_auto_classifier_key(self) -> None:
@@ -14906,24 +15817,35 @@ class TestMessageTimestampFooters:
             assert footer.display is True
 
     async def test_resumed_history_populates_hook_transcript(self) -> None:
+        """Restored messages reach the hook transcript, recorded off the loop.
+
+        The thread assertion pins the offload: projecting a long transcript is
+        blocking, so doing it inline would stall the UI for the whole resume.
+        """
         from langchain_core.messages import HumanMessage
 
         from deepagents_code.app import _ThreadHistoryPayload
 
         app = DeepAgentsApp()
+        loop_thread = threading.get_ident()
+        append_threads: list[int] = []
+        runtime: Any = MagicMock()
+        runtime.append_messages.side_effect = lambda *_args, **_kwargs: (
+            append_threads.append(threading.get_ident())
+        )
+
+        payload = _ThreadHistoryPayload(
+            [],
+            0,
+            "",
+            transcript_messages=(HumanMessage(id="history-1", content="restored"),),
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._session_state is not None
-            runtime: Any = MagicMock()
             app._session_state.hooks = HooksManager.adopting(
                 runtime,
                 identity=app._session_state.hook_identity,
-            )
-            payload = _ThreadHistoryPayload(
-                [],
-                0,
-                "",
-                transcript_messages=(HumanMessage(id="history-1", content="restored"),),
             )
             await app._load_thread_history(
                 thread_id="t-restored",
@@ -14933,6 +15855,8 @@ class TestMessageTimestampFooters:
         runtime.append_messages.assert_called_once_with(
             "t-restored", payload.transcript_messages, agent_id=None
         )
+        assert append_threads
+        assert append_threads[0] != loop_thread
 
     async def test_load_thread_history_skips_duplicate_ids(self) -> None:
         """History reusing an already-mounted widget ID is skipped, not fatal.
@@ -15143,9 +16067,6 @@ class TestMessageTimestampFooters:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Scroll-up hydration of older messages builds visible footers."""
-        from deepagents_code.app import _ThreadHistoryPayload
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
         config = tmp_path / "config.toml"
         config.write_text("[ui]\nshow_message_timestamps = true\n")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -15153,33 +16074,21 @@ class TestMessageTimestampFooters:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
-            # Shrink the window so a small load archives messages above the
-            # visible range, mirroring a long thread scrolled to the bottom.
-            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 2)
-            payload = _ThreadHistoryPayload(
-                [
-                    MessageData(
-                        type=MessageType.USER,
-                        content=f"m{index}",
-                        id=f"hist-{index}",
-                        timestamp=1_704_110_400.0 + index,
-                    )
-                    for index in range(4)
-                ],
-                0,
-                "",
-            )
-            # Suppress history loading's delayed scroll-to-bottom timer. If it
-            # fires after the explicit hydrate-above call below, the resulting
-            # scroll offset change hydrates the tail and prunes `hist-0` again.
-            with patch.object(app, "set_timer"):
-                await app._load_thread_history(
-                    thread_id="t-long", preloaded_payload=payload
-                )
+            # Mount enough history to exceed the shrunken window, mirroring a
+            # long thread scrolled to the bottom.
+            for index in range(5):
+                await app._mount_message(UserMessage(f"m{index}", id=f"hist-{index}"))
             await pilot.pause()
 
-            # Older messages start archived (no widget/footer mounted yet).
+            # Shrink the window and prune the oldest rows so history is
+            # archived above the mounted tail; the newest rows stay visible.
+            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
+            monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
+            await app._prune_messages("above")
+            await pilot.pause()
+
+            # The oldest row is archived, so neither it nor its footer is
+            # mounted yet.
             with pytest.raises(NoMatches):
                 app.query_one("#hist-0-timestamp-footer", Static)
 
@@ -16045,10 +16954,7 @@ class TestDiffLineNumbersCommand:
             assert app._ui_adapter is not None
             assert app._ui_adapter._show_diff_line_numbers is False
             notify_mock.assert_called_once()
-            assert (
-                notify_mock.call_args.args[0]
-                == "Diff line numbers hidden for new diffs."
-            )
+            assert notify_mock.call_args.args[0] == "Line numbers hidden for new diffs."
             assert notify_mock.call_args.kwargs.get("severity") == "information"
             assert notify_mock.call_args.kwargs.get("markup") is False
 
@@ -16059,10 +16965,7 @@ class TestDiffLineNumbersCommand:
             assert app._show_diff_line_numbers is True
             assert app._ui_adapter._show_diff_line_numbers is True
             notify_mock.assert_called_once()
-            assert (
-                notify_mock.call_args.args[0]
-                == "Diff line numbers shown for new diffs."
-            )
+            assert notify_mock.call_args.args[0] == "Line numbers shown for new diffs."
 
 
 class TestDebugConsoleClickToCopyPreference:
@@ -16262,38 +17165,6 @@ class TestDebugConsoleClickToCopyPreference:
         assert result.ok is False
         assert result.severity == "error"
         assert result.message is not None
-
-
-@pytest.mark.parametrize(
-    ("key", "fallback"),
-    [
-        ("display.cursor_blink", True),
-        ("display.terminal_progress", True),
-        ("display.show_message_timestamps", False),
-        ("display.show_scrollbar", False),
-        ("display.debug_console_click_to_copy", False),
-        ("display.show_diff_line_numbers", True),
-    ],
-)
-def test_bool_display_preference_keys_match_the_manifest(
-    key: str, fallback: bool
-) -> None:
-    """Every `_load_bool_display_preference` key must exist and be a bool option.
-
-    The `fallback` argument duplicates the manifest default, and a mistyped key
-    silently resolves to it — with both in agreement that produces no symptom at
-    all until someone actually sets the option. Pinning existence, kind, and
-    default here is what makes the duplication safe.
-    """
-    from deepagents_code.config_manifest import OptionKind, get_option
-
-    option = get_option(key)
-    assert option is not None, f"{key} is not in the manifest"
-    assert option.kind is OptionKind.BOOL
-    assert option.default is fallback, (
-        f"{key} default {option.default!r} disagrees with the loader fallback "
-        f"{fallback!r}; they must match or the fallback path changes behavior"
-    )
 
 
 class TestAppBlurPausesCursorBlink:
@@ -16526,6 +17397,34 @@ class TestShellCommandInterrupt:
             assert len(buffered) == 1
             assert "sleep 999" in buffered[0].content
             assert "Command interrupted" in buffered[0].content
+
+    async def test_incognito_cancel_does_not_buffer_for_model(self) -> None:
+        """Esc during a `!!` command must keep the command out of model context."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+            mock_proc.returncode = None
+            mock_proc.pid = 12345
+            mock_proc.wait = AsyncMock()
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch("os.killpg") as mock_killpg,
+                patch("os.getpgid", return_value=12345),
+                pytest.raises(asyncio.CancelledError),
+            ):
+                await app._run_shell_task("cat secret-file", incognito=True)
+
+            # The process is still killed; only the buffering differs from the
+            # non-incognito path above.
+            mock_killpg.assert_called()
+            assert app._pending_shell_messages == []
 
     async def test_cleanup_clears_state(self) -> None:
         """_cleanup_shell_task should reset all shell state."""
@@ -16832,11 +17731,41 @@ class TestShellCommandInterrupt:
                 msg.type == MessageType.ERROR and "timed out" in msg.content
                 for msg in messages
             )
-            assert not any(
-                msg.type in {MessageType.USER, MessageType.ASSISTANT}
-                and "secret" in msg.content
-                for msg in messages
-            )
+            # `_pending_shell_messages` is the only model-facing channel, so
+            # assert there rather than on row types: the timeout branch mounts
+            # no output row at all, and the `!!` command itself now *does*
+            # appear in a USER row (see `_handle_shell_command`), so a
+            # row-type assertion would pass without testing anything.
+            assert app._pending_shell_messages == []
+
+    async def test_incognito_timeout_via_dispatcher_keeps_buffer_empty(self) -> None:
+        """A timed-out `!!` command must not buffer, even with its USER row."""
+        app = DeepAgentsApp()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_proc.returncode = None
+        mock_proc.pid = 12345
+        mock_proc.wait = AsyncMock()
+        mock_proc.terminate = MagicMock()
+        mock_proc.kill = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ):
+                await app._handle_shell_command("echo secret", incognito=True)
+                worker = app._shell_worker
+                assert worker is not None
+                await worker.wait()
+                await pilot.pause()
+
+            # The command text is expected on screen now; what must not happen
+            # is it reaching model context.
+            assert app.query(UserMessage).last().raw_text == "!!echo secret"
+            assert app._pending_shell_messages == []
 
     async def test_posix_killpg_called(self) -> None:
         """On POSIX, _kill_shell_process should use os.killpg with SIGTERM."""
@@ -16946,8 +17875,8 @@ class TestShellCommandInterrupt:
 
         handler.assert_awaited_once_with("echo secret", incognito=True)
 
-    async def test_incognito_shell_command_does_not_mount_header(self) -> None:
-        """Incognito shell commands should not echo the command before output."""
+    async def test_incognito_shell_uses_shell_widget_with_own_color(self) -> None:
+        """Incognito commands should use the shell widget with incognito styling."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -16956,18 +17885,17 @@ class TestShellCommandInterrupt:
                 mock_rw.return_value = MagicMock()
                 await app._handle_shell_command("echo secret", incognito=True)
 
-            messages = app._message_store.get_all_messages()
-            assert not any(
-                "incognito shell command" in msg.content or "echo secret" in msg.content
-                for msg in messages
-            )
+            message = app.query(UserMessage).last()
+            assert message.raw_text == "!!echo secret"
+            assert message.has_class("-mode-shell-incognito")
+            assert not message.has_class("-mode-shell")
 
             # Close the unawaited coroutine to suppress RuntimeWarning.
             coro = mock_rw.call_args[0][0]
             coro.close()
 
-    async def test_incognito_shell_output_is_app_message(self) -> None:
-        """Incognito shell output should avoid assistant transcript records."""
+    async def test_incognito_shell_output_uses_regular_shell_widget(self) -> None:
+        """Incognito output should use the regular shell output widget."""
         from deepagents_code.tui.widgets.message_store import MessageType
 
         app = DeepAgentsApp()
@@ -16998,15 +17926,15 @@ class TestShellCommandInterrupt:
 
         messages = app._message_store.get_all_messages()
         assert any(
-            msg.type == MessageType.APP and msg.content == "```text\nsecret\n```"
+            msg.type == MessageType.ASSISTANT
+            and msg.assistant_local_only
+            and msg.content == "```text\nsecret\n```"
             for msg in messages
         )
         assert not any(
-            msg.type in {MessageType.USER, MessageType.ASSISTANT}
-            and "secret" in msg.content
-            for msg in messages
+            msg.type == MessageType.APP and "secret" in msg.content for msg in messages
         )
-        write_mock.assert_not_awaited()
+        write_mock.assert_awaited_once()
 
     async def test_incognito_nonzero_exit_keeps_stderr_out_of_model(self) -> None:
         """A failing incognito command must not leak stderr to model records."""
@@ -17033,10 +17961,19 @@ class TestShellCommandInterrupt:
                 await pilot.pause()
 
         messages = app._message_store.get_all_messages()
-        assert not any(
-            msg.type in {MessageType.USER, MessageType.ASSISTANT}
-            and "secret leak" in msg.content
+        assistant_rows = [
+            msg
             for msg in messages
+            if msg.type == MessageType.ASSISTANT and "secret leak" in msg.content
+        ]
+        assert assistant_rows, "expected a local-only assistant row with stderr"
+        assert all(msg.assistant_local_only for msg in assistant_rows)
+        assert not any(
+            msg.type == MessageType.USER and "secret leak" in msg.content
+            for msg in messages
+        )
+        assert not any(
+            "secret leak" in str(msg.content) for msg in app._pending_shell_messages
         )
 
     async def test_non_incognito_shell_buffers_for_model_context(self) -> None:
@@ -17119,6 +18056,57 @@ class TestShellCommandInterrupt:
 
             rendered = app.query(AssistantMessage)
             assert any(w._content == "```text\nhi\n```" for w in rendered)
+
+    async def test_app_message_output_requires_incognito(self) -> None:
+        """App-rendered output must not be buffered for the model."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with pytest.raises(ValueError, match="requires incognito"):
+                await app._run_shell_task(
+                    "echo hi",
+                    incognito=False,
+                    output_as_app_message=True,
+                )
+
+            assert app._pending_shell_messages == []
+
+    async def test_shell_output_skips_write_when_mount_is_skipped(self) -> None:
+        """A torn-down screen must not trigger a write on an unmounted widget."""
+        app = DeepAgentsApp()
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"secret\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        write_mock = AsyncMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+            # `_mount_message` returns False when `#messages` is gone or
+            # already detached; simulate that teardown race directly.
+            app._mount_message = AsyncMock(return_value=False)  # ty: ignore
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch(
+                    "deepagents_code.app.AssistantMessage.write_initial_content",
+                    new=write_mock,
+                ),
+            ):
+                await app._run_shell_task("echo secret", incognito=True)
+                await pilot.pause()
+
+        write_mock.assert_not_awaited()
 
     async def test_pending_shell_flushed_on_next_user_send(self) -> None:
         """Buffered `!` output is written to graph state on the next send."""
@@ -17264,6 +18252,15 @@ class TestShellCommandInterrupt:
                 await app._run_startup_command("echo secret-startup")
                 await pilot.pause()
 
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        messages = app._message_store.get_all_messages()
+        assert any(
+            msg.type == MessageType.APP
+            and msg.content == "```text\nsecret-startup\n```"
+            for msg in messages
+        )
+        assert not any(msg.type == MessageType.ASSISTANT for msg in messages)
         assert app._pending_shell_messages == []
         app._agent.aupdate_state.assert_not_awaited()
 
@@ -17549,6 +18546,91 @@ class TestAppArgumentHints:
 class TestInterruptApprovalPriority:
     """Tests for escape interrupt priority when HITL approval is pending."""
 
+    async def test_escape_rejects_approval_arriving_during_prompt_search(
+        self,
+    ) -> None:
+        """A focused approval should retain Escape after search was opened."""
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            chat_input.open_prompt_search()
+            await pilot.pause()
+
+            menu = ApprovalMenu({"name": "execute", "args": {"command": "pwd"}})
+            future: asyncio.Future[dict[str, str]] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+            app._pending_approval_widget = menu
+            messages = app.query_one("#messages", Container)
+            await messages.mount(menu)
+            menu.focus()
+            await pilot.pause()
+            assert app.focused is menu
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert future.result() == {"type": "reject"}
+            assert chat_input._prompt_search_active is True
+
+    async def test_approval_arriving_during_prompt_search_keeps_shift_tab(
+        self,
+    ) -> None:
+        """A focused approval should retain shift+tab/ctrl+t after search opened.
+
+        The inline panel steps `toggle_auto_approve` aside so shift+tab can page
+        its results, but only while the query input has focus. Gating on panel
+        state alone left auto-approve untogglable and dropped shift+tab through
+        to `Screen.focus_previous`, moving focus off the pending approval.
+        """
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            chat_input.open_prompt_search()
+            await pilot.pause()
+
+            # While the query owns focus the panel keeps the chord.
+            assert app.check_action("toggle_auto_approve", ()) is False
+
+            menu = ApprovalMenu({"name": "execute", "args": {"command": "pwd"}})
+            future: asyncio.Future[dict[str, str]] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+            app._pending_approval_widget = menu
+            messages = app.query_one("#messages", Container)
+            await messages.mount(menu)
+            menu.focus()
+            await pilot.pause()
+            assert app.focused is menu
+
+            assert app.check_action("toggle_auto_approve", ()) is True
+
+            # Spy rather than assert on `_approval_mode`: whether the mode
+            # actually advances depends on sandbox and YOLO eligibility, but
+            # the chord reaching the action at all is what regressed.
+            with patch.object(
+                DeepAgentsApp, "action_toggle_auto_approve", new=AsyncMock()
+            ) as toggle:
+                await pilot.press("shift+tab")
+                await pilot.pause()
+
+            # With the binding enabled the app action consumes the key. When it
+            # was disabled the chord fell through to `Screen.focus_previous`,
+            # traversing focus off the pending approval.
+            toggle.assert_awaited_once()
+            assert app.focused is menu
+            assert chat_input._prompt_search_active is True
+
     async def test_escape_rejects_approval_before_canceling_worker(self) -> None:
         """When both HITL approval and worker are active, reject approval first."""
         app = DeepAgentsApp()
@@ -17786,6 +18868,30 @@ class TestIsUserTyping:
 
 class TestRequestApprovalBranching:
     """_request_approval should show a placeholder when the user is typing."""
+
+    async def test_auto_fallback_skips_shell_allow_list(self) -> None:
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = None
+        action_requests = [
+            {
+                "name": "execute",
+                "args": {"command": "echo hello"},
+                "description": "Auto human fallback: this action needs your review.",
+            }
+        ]
+
+        with (
+            patch.object(settings, "shell_allow_list", ["echo"]),
+            patch.object(app, "_mount_approval_widget", new=AsyncMock()) as mount,
+            patch.object(app, "_reveal_pending_tool_calls"),
+            patch.object(app, "_pause_loading_spinner_for_approval"),
+        ):
+            result = await app._request_approval(action_requests, None)
+
+        assert not result.done()
+        mount.assert_awaited_once()
 
     async def test_placeholder_mounted_when_typing(self) -> None:
         """If the user is typing, a Static placeholder is mounted instead of menu."""
@@ -18199,6 +19305,23 @@ class TestActionOpenEditor:
         assert app.focused is text_area
         return menu, text_area, future
 
+    def test_suspend_pauses_native_stderr_guard(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        guard = MagicMock()
+        guard.paused.return_value = contextlib.nullcontext()
+        app._terminal_stderr_guard = guard
+
+        with (
+            patch(
+                "textual.app.App.suspend", return_value=contextlib.nullcontext()
+            ) as textual_suspend,
+            app.suspend(),
+        ):
+            pass
+
+        guard.paused.assert_called_once_with()
+        textual_suspend.assert_called_once_with()
+
     async def test_updates_text_on_successful_edit(self) -> None:
         app = DeepAgentsApp(agent=MagicMock())
         text_area = MagicMock()
@@ -18215,6 +19338,34 @@ class TestActionOpenEditor:
 
         assert text_area.text == "edited"
         chat_input.focus_input.assert_called_once()
+
+    async def test_prompt_search_cancel_preserves_external_editor_result(self) -> None:
+        """Escape after Ctrl+X should not restore the pre-editor draft."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            text_area = chat_input._text_area
+            assert text_area is not None
+            text_area.insert("original draft")
+            chat_input.open_prompt_search()
+            await pilot.pause()
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="external editor result",
+                ),
+            ):
+                await app.action_open_editor()
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert chat_input._prompt_search_active is False
+            assert text_area.text == "external editor result"
 
     async def test_no_update_when_editor_returns_none(self) -> None:
         app = DeepAgentsApp(agent=MagicMock())
@@ -18906,9 +20057,13 @@ class TestApprovalModeSlashCommands:
         app = DeepAgentsApp(agent=MagicMock())
         app._auto_mode_eligible = True
         app._approval_mode = ApprovalMode.MANUAL
-        with patch.object(
-            app, "_set_approval_mode", new_callable=AsyncMock
-        ) as set_mode:
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch(
+                "deepagents_code.approval_mode.has_auto_mode_notice",
+                return_value=True,
+            ),
+        ):
             await app._handle_command("/auto")
         set_mode.assert_awaited_once_with(ApprovalMode.AUTO)
 
@@ -19830,8 +20985,58 @@ class TestToolsSlashCommand:
 class TestFetchThreadHistoryData:
     """Verify _fetch_thread_history_data handles server-mode resume scenarios."""
 
+    async def test_event_loop_progresses_during_message_preparation(self) -> None:
+        """The loop keeps running while a long history is prepared.
+
+        Thread identity alone only proves the call was dispatched elsewhere.
+        This blocks the worker and asserts a concurrent coroutine advanced
+        meanwhile, so it also fails if the work is dispatched somewhere that
+        still pins the loop.
+        """
+        state = MagicMock()
+        state.values = {"messages": [{"type": "human", "content": "hi"}]}
+        mock_agent = AsyncMock()
+        mock_agent.aget_state.return_value = state
+
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+        entered = threading.Event()
+        release = threading.Event()
+        ticks = 0
+
+        # Bind before patching, or the call below re-enters this stub.
+        real_prepare = DeepAgentsApp._prepare_thread_history_messages
+
+        def blocking_prepare(messages: list[Any]) -> object:
+            entered.set()
+            release.wait(timeout=5)
+            return real_prepare(messages)
+
+        async def tick() -> None:
+            nonlocal ticks
+            while not release.is_set():
+                ticks += 1
+                await asyncio.sleep(0)
+
+        with patch.object(
+            DeepAgentsApp,
+            "_prepare_thread_history_messages",
+            staticmethod(blocking_prepare),
+        ):
+            ticker = asyncio.create_task(tick())
+            fetch = asyncio.create_task(app._fetch_thread_history_data("t-1"))
+            await asyncio.to_thread(entered.wait, 5)
+            # The worker is parked inside prepare; the loop must still be free.
+            await asyncio.sleep(0)
+            progressed = ticks
+            assert progressed > 0
+            release.set()
+            payload = await fetch
+            await ticker
+
+        assert len(payload.messages) == 1
+
     async def test_dict_messages_converted_to_message_objects(self) -> None:
-        """Dict-based messages from server mode are deserialized before conversion."""
+        """Dict messages are deserialized, in a worker thread not the loop."""
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         state = MagicMock()
@@ -19851,8 +21056,23 @@ class TestFetchThreadHistoryData:
         mock_agent.aget_state.return_value = state
 
         app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
-        payload = await app._fetch_thread_history_data("t-1")
+        loop_thread = threading.get_ident()
+        prepare_threads: list[int] = []
+        original_prepare = app._prepare_thread_history_messages
 
+        def capture_prepare(messages: list[Any]) -> object:
+            prepare_threads.append(threading.get_ident())
+            return original_prepare(messages)
+
+        with patch.object(
+            DeepAgentsApp,
+            "_prepare_thread_history_messages",
+            staticmethod(capture_prepare),
+        ):
+            payload = await app._fetch_thread_history_data("t-1")
+
+        assert prepare_threads
+        assert prepare_threads[0] != loop_thread
         assert len(payload.messages) == 2
         assert isinstance(payload.messages[0], MessageData)
         assert payload.messages[0].type == MessageType.USER
@@ -19950,6 +21170,15 @@ class TestRemoteAgent:
 
 class TestTerminalBackgroundSync:
     """Tests for syncing Textual theme background to terminal background."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_terminal_program(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Drop the inherited `TERM_PROGRAM`.
+
+        Without this, the Apple Terminal guard short-circuits the other tests
+        in this class when the suite runs inside Terminal.app.
+        """
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
 
     def test_initial_theme_sync_sets_terminal_background(
         self, monkeypatch: pytest.MonkeyPatch
@@ -20096,6 +21325,69 @@ class TestTerminalBackgroundSync:
         app.sync_terminal_background()
 
         assert calls == []
+
+    def test_sync_terminal_background_skips_apple_terminal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-ANSI theme, so an empty `calls` proves the guard fired."""
+        from deepagents_code import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        # `calls` is not cleared after construction, so this also covers the
+        # implicit sync in `DeepAgentsApp.__init__`.
+        app = DeepAgentsApp()
+        app.theme = theme.DEFAULT_THEME
+        app.sync_terminal_background()
+
+        assert calls == []
+
+    def test_sync_terminal_background_skips_padded_apple_terminal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A padded `TERM_PROGRAM` groups with its unpadded form."""
+        from deepagents_code import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setenv("TERM_PROGRAM", " Apple_Terminal ")
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        app.theme = theme.DEFAULT_THEME
+        app.sync_terminal_background()
+
+        assert calls == []
+
+    def test_sync_terminal_background_runs_on_other_terminals(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only Apple Terminal is skipped; other terminals still sync."""
+        from deepagents_code import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+        app = DeepAgentsApp()
+        calls.clear()
+
+        app.theme = theme.DEFAULT_THEME
+        app.sync_terminal_background()
+
+        assert calls == [theme.get_registry()[theme.DEFAULT_THEME].colors.background]
 
     def test_exit_resets_terminal_background(
         self, monkeypatch: pytest.MonkeyPatch
@@ -24277,6 +25569,42 @@ class TestHasConversationMessages:
 
             assert await app._has_conversation_messages() is False
 
+    async def test_returns_true_for_inflight_user_message(self) -> None:
+        """Should detect a submitted user turn before its checkpoint commits."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            app._agent = AsyncMock()
+            app._lc_thread_id = "t1"
+            app._agent_running = True
+            app._agent_turn_started = True
+            app._active_user_message = UserMessage("hi")
+
+            assert await app._has_conversation_messages() is True
+
+    async def test_ignores_unsent_message_during_non_message_operation(self) -> None:
+        """A prompt retained from a failed send must not suppress the warning.
+
+        If the agent was unavailable when the user submitted, `_send_to_agent`
+        reports the error but never clears `_active_user_message`. A later
+        operation that reserves `_agent_running` (e.g. goal-criteria
+        generation) must not make the empty thread look non-empty.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+            app._lc_thread_id = "t1"
+            # Busy from a non-message operation; the mounted prompt was never
+            # sent, so its worker never started a turn.
+            app._agent_running = True
+            app._agent_turn_started = False
+            app._active_user_message = UserMessage("hi")
+
+            assert await app._has_conversation_messages() is False
+
     async def test_returns_false_when_only_system_messages(self) -> None:
         """Should return False when messages list has no HumanMessage."""
         from langchain_core.messages import SystemMessage
@@ -24931,13 +26259,15 @@ class TestRestartServerForAgentSwap:
                     "deepagents_code.sessions.get_thread_agent",
                     AsyncMock(return_value="coder"),
                 ),
+                patch.object(app, "_thread_links_configured", return_value=False),
                 patch.object(app, "_mount_message", side_effect=mounted.append),
                 patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
             ):
                 await app._restart_server_for_agent_swap("researcher")
 
         plain = [str(getattr(m, "_content", m)) for m in mounted]
-        assert any("Previous thread: old-thread" in s for s in plain)
+        assert "Resume previous thread with /threads -r" in plain
+        assert not any("old-thread" in s for s in plain)
         assert not any("Relaunch with" in s for s in plain)
 
     async def test_resume_hint_echoes_launch_command(
@@ -25735,29 +27065,68 @@ class TestNotificationCenterIntegration:
         ):
             yield
 
-    async def test_ctrl_n_with_empty_registry_emits_toast(self) -> None:
-        """ctrl+n with nothing pending notifies and doesn't push a modal."""
+    async def test_ctrl_n_with_empty_registry_opens_notifications_hub(self) -> None:
+        """ctrl+n keeps settings reachable when no notifications are pending."""
         from deepagents_code.notifications import NotificationRegistry
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+            _NotificationSettingsRow,
+        )
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         app._notice_registry = NotificationRegistry()
-
-        notified: list[str] = []
-        original_notify = app.notify
-
-        def capture_notify(message: str, **kwargs: Any) -> None:
-            notified.append(message)
-            original_notify(message, **kwargs)
-
-        app.notify = capture_notify  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("ctrl+n")
             await pilot.pause()
-            assert not isinstance(app.screen, ModalScreen)
 
-        assert any("No pending notifications" in m for m in notified)
+            assert isinstance(app.screen, NotificationCenterScreen)
+            assert len(app.screen.query(_NotificationSettingsRow)) == 1
+
+    async def test_notifications_command_opens_same_hub(self) -> None:
+        """The slash command and keybinding share the notification center."""
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/notifications")
+            await pilot.pause()
+
+            assert isinstance(app.screen, NotificationCenterScreen)
+
+    async def test_notification_hub_expands_settings_inline(self) -> None:
+        """Preferences expand inside the hub; Esc collapses back to the list."""
+        from textual.widgets import Checkbox
+
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            center = app.screen
+            assert isinstance(center, NotificationCenterScreen)
+
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.screen is center
+            assert center.settings_expanded
+            assert len(center.query(Checkbox)) > 0
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is center
+            assert not center.settings_expanded
 
     async def test_ctrl_n_over_modal_toasts_close_hint(self) -> None:
         """ctrl+n while a modal is open surfaces a hint instead of stacking."""
@@ -26070,13 +27439,15 @@ class TestNotificationCenterIntegration:
             keys = [r.notification.key for r in app.screen.query(_NotificationRow)]
             assert keys == ["dep:ripgrep"]
 
-    async def test_enter_api_key_save_last_entry_dismisses_center(self) -> None:
-        """Saving the only key removes it and dismisses the emptied center."""
+    async def test_enter_api_key_save_last_entry_keeps_settings_hub(self) -> None:
+        """Saving the only key leaves warning preferences reachable."""
         from deepagents_code.notifications import ActionId
         from deepagents_code.tui.widgets.auth import AuthResult
         from deepagents_code.tui.widgets.notification_center import (
             NotificationActionRequested,
             NotificationCenterScreen,
+            _NotificationRow,
+            _NotificationSettingsRow,
         )
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
@@ -26095,7 +27466,9 @@ class TestNotificationCenterIntegration:
                 await pilot.pause()
 
             assert app._notice_registry.get("dep:tavily") is None
-            assert not isinstance(app.screen, NotificationCenterScreen)
+            assert isinstance(app.screen, NotificationCenterScreen)
+            assert not list(app.screen.query(_NotificationRow))
+            assert len(app.screen.query(_NotificationSettingsRow)) == 1
 
     async def test_enter_api_key_reload_failure_surfaces_toast(self) -> None:
         """A reload race after saving logs and toasts instead of vanishing."""
@@ -26244,11 +27617,13 @@ class TestNotificationCenterIntegration:
                 assert keys == ["dep:ripgrep", "dep:tavily"]
                 assert app._notice_registry.get("dep:ripgrep") is dep
 
-    async def test_suppress_last_entry_closes_center(self) -> None:
-        """Suppressing the only remaining entry dismisses the center."""
+    async def test_suppress_last_entry_keeps_settings_hub(self) -> None:
+        """Suppressing the final entry leaves warning preferences reachable."""
         from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
             NotificationSuppressRequested,
+            _NotificationRow,
+            _NotificationSettingsRow,
         )
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
@@ -26268,7 +27643,9 @@ class TestNotificationCenterIntegration:
                 app.screen.post_message(NotificationSuppressRequested("dep:ripgrep"))
                 await pilot.pause()
 
-                assert not isinstance(app.screen, NotificationCenterScreen)
+                assert isinstance(app.screen, NotificationCenterScreen)
+                assert not list(app.screen.query(_NotificationRow))
+                assert len(app.screen.query(_NotificationSettingsRow)) == 1
 
     async def test_suppress_action_failure_keeps_entry_and_warns(self) -> None:
         """When suppress_warning returns False, the entry stays and a warning toasts."""
@@ -27600,8 +28977,42 @@ class TestNotificationCenterIntegration:
             assert screen._selected == 0
             await pilot.press("shift+tab")
             await pilot.pause()
-            # Wraps from row 0 to the last row; auto_approve stays off.
-            assert screen._selected == len(entries) - 1
+            # Wraps from row 0 to settings; auto_approve stays off.
+            assert screen._selected == len(entries)
+            assert app._auto_approve is False
+
+    async def test_notification_center_shift_tab_cycles_checkboxes_when_expanded(
+        self,
+    ) -> None:
+        """App-level shift+tab wraps checkbox focus while settings are expanded.
+
+        The app's priority `shift+tab -> toggle_auto_approve` binding wins
+        dispatch and routes cursor-style modals to `move_up` via
+        `_SupportsReverseNav`; with expanded settings that would strand focus
+        on the first checkbox instead of wrapping to the last.
+        """
+        from textual.widgets import Checkbox
+
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = NotificationCenterScreen([], suppressed=set())
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen.settings_expanded
+            checkboxes = list(screen.query(Checkbox))
+            assert app.focused is checkboxes[0]
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert app.focused is checkboxes[-1]
             assert app._auto_approve is False
 
     async def test_notification_detail_shift_tab_moves_cursor_up(self) -> None:
@@ -29140,6 +30551,20 @@ class TestLiveApprovalModeWrites:
         )
 
         assert app._approval_mode is ApprovalMode.MANUAL
+        # Flagged for the post-mount toast: a restored preference makes this
+        # downgrade reachable without the user choosing Auto this launch.
+        assert app._auto_downgraded_by_sandbox is True
+
+    def test_no_sandbox_downgrade_flag_without_auto(self) -> None:
+        """Manual under a sandbox has nothing to explain."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(
+            approval_mode=ApprovalMode.MANUAL,
+            server_kwargs={"sandbox_type": "daytona"},
+        )
+
+        assert app._auto_downgraded_by_sandbox is False
 
     async def test_write_live_approval_mode_records_key(self) -> None:
         from deepagents_code.approval_mode import (
@@ -29451,6 +30876,10 @@ class TestLiveApprovalModeWrites:
                 patch.object(app, "_force_interrupt_active_work") as force,
                 patch.object(app, "notify") as notify,
                 patch(
+                    "deepagents_code.approval_mode.has_auto_mode_notice",
+                    return_value=True,
+                ),
+                patch(
                     "deepagents_code.approval_mode.save_auto_mode_notice"
                 ) as save_notice,
             ):
@@ -29521,6 +30950,10 @@ class TestLiveApprovalModeWrites:
                 accept_goal,
             ),
             patch.object(app, "notify") as notify,
+            patch(
+                "deepagents_code.approval_mode.has_auto_mode_notice",
+                return_value=True,
+            ),
             patch("deepagents_code.approval_mode.save_auto_mode_notice") as save_notice,
         ):
             await app._on_auto_approve_enabled()
@@ -29535,7 +30968,7 @@ class TestLiveApprovalModeWrites:
     async def test_toggle_auto_first_enable_shows_modal_and_saves_on_dismiss(
         self,
     ) -> None:
-        """First successful Auto toggle shows the education modal once."""
+        """First Auto toggle shows the confirmation modal before switching."""
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (
             AutoModeNoticeScreen,
@@ -29571,7 +31004,8 @@ class TestLiveApprovalModeWrites:
             ):
                 await app.action_toggle_auto_approve()
                 await pilot.pause()
-                assert app._approval_mode is ApprovalMode.AUTO
+                # Modal appears BEFORE mode changes — still MANUAL.
+                assert app._approval_mode is ApprovalMode.MANUAL
                 assert isinstance(app.screen, AutoModeNoticeScreen)
                 assert app.screen._body == build_auto_mode_notice_body(
                     classifier, distinct_from_main_model=True
@@ -30001,6 +31435,239 @@ class TestLiveApprovalModeWrites:
                 warn.assert_called_once()
                 assert "YOLO could not be persisted" in str(warn.call_args.args[0])
 
+    @pytest.mark.parametrize("mode_value", ["manual", "auto"])
+    async def test_set_approval_mode_persists_safe_startup_mode(
+        self, mode_value: str
+    ) -> None:
+        """A user-selected Manual or Auto becomes the next launch's mode."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        mode = ApprovalMode(mode_value)
+        with (
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=True,
+            ) as save_recent,
+            patch.object(app, "_notify_auto_classifier_active"),
+        ):
+            assert await app._set_approval_mode(mode) is True
+
+        save_recent.assert_called_once_with(mode_value)
+
+    async def test_set_approval_mode_warns_when_startup_mode_save_fails(
+        self,
+    ) -> None:
+        """The session change stands; only the durable record is reported lost."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        with (
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=False,
+            ),
+            patch.object(app, "notify") as notify,
+        ):
+            assert await app._set_approval_mode(ApprovalMode.MANUAL) is True
+
+        notify.assert_called_once_with(
+            "Approval mode changed for this session, but the startup preference "
+            "could not be saved. Check permissions for ~/.deepagents/.",
+            severity="warning",
+            markup=False,
+        )
+
+    async def test_set_approval_mode_does_not_persist_yolo_as_recent(self) -> None:
+        """YOLO stays opt-in every launch, so it is never recorded."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        with (
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode"
+            ) as save_recent,
+            patch.object(app, "_warn_yolo_active"),
+        ):
+            assert await app._set_approval_mode(ApprovalMode.YOLO) is True
+
+        save_recent.assert_not_called()
+
+    async def test_set_approval_mode_persists_before_goal_rubric_can_raise(
+        self,
+    ) -> None:
+        """An accepted mode is recorded even if goal-rubric cleanup fails.
+
+        The rubric helper is cancellable and can raise. If it ran first, the
+        session would sit in Auto while the next launch reverted to the old
+        mode, undoing a selection that actually succeeded.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(
+                    app,
+                    "_auto_accept_pending_goal_rubric",
+                    new=AsyncMock(side_effect=RuntimeError("boom")),
+                ),
+                patch(
+                    "deepagents_code.model_config.save_recent_startup_mode",
+                    return_value=True,
+                ) as save_recent,
+                patch.object(app, "_notify_auto_classifier_active"),
+                pytest.raises(RuntimeError),
+            ):
+                await app._set_approval_mode(ApprovalMode.AUTO)
+
+            save_recent.assert_called_once_with(ApprovalMode.AUTO.value)
+
+    async def test_persist_startup_mode_skips_duplicate_write(self) -> None:
+        """One confirmation must not write, or fail, twice.
+
+        The confirmation modal has two entry points that both activate Auto:
+        the awaiting caller and the task its result schedules.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        with patch(
+            "deepagents_code.model_config.save_recent_startup_mode",
+            return_value=True,
+        ) as save_recent:
+            await app._persist_startup_approval_mode(ApprovalMode.AUTO)
+            await app._persist_startup_approval_mode(ApprovalMode.AUTO)
+
+        save_recent.assert_called_once_with(ApprovalMode.AUTO.value)
+
+    async def test_persist_startup_mode_retries_after_failure(self) -> None:
+        """A failed write is not remembered as done."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        with (
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=False,
+            ) as save_recent,
+            patch.object(app, "notify"),
+        ):
+            await app._persist_startup_approval_mode(ApprovalMode.MANUAL)
+            await app._persist_startup_approval_mode(ApprovalMode.MANUAL)
+
+        assert save_recent.call_count == 2
+
+    async def test_notify_auto_mode_not_restored_surfaces_notice_gate(self) -> None:
+        """A notice-blocked Auto restore is explained after mount."""
+        app = DeepAgentsApp()
+        app._auto_downgraded_by_sandbox = False
+        with (
+            patch(
+                "deepagents_code.model_config.consume_recent_auto_not_restored_notice",
+                return_value="Auto was not restored.",
+            ),
+            patch.object(app, "notify") as notify,
+        ):
+            app._notify_auto_mode_not_restored()
+
+        notify.assert_called_once_with(
+            "Auto was not restored.",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+
+    async def test_notify_auto_mode_not_restored_prefers_sandbox_reason(self) -> None:
+        """A sandbox blocks Auto all session, so it outranks a stale notice."""
+        app = DeepAgentsApp()
+        app._auto_downgraded_by_sandbox = True
+        with (
+            patch(
+                "deepagents_code.model_config.consume_recent_auto_not_restored_notice",
+                return_value="Auto was not restored.",
+            ),
+            patch.object(app, "notify") as notify,
+        ):
+            app._notify_auto_mode_not_restored()
+
+        assert "sandbox" in str(notify.call_args.args[0])
+        # One-shot: a second refresh must not repeat the toast.
+        assert app._auto_downgraded_by_sandbox is False
+
+    async def test_notify_auto_mode_not_restored_stays_quiet_when_restored(
+        self,
+    ) -> None:
+        """Nothing to explain when the mode survived startup."""
+        app = DeepAgentsApp()
+        app._auto_downgraded_by_sandbox = False
+        with (
+            patch(
+                "deepagents_code.model_config.consume_recent_auto_not_restored_notice",
+                return_value=None,
+            ),
+            patch.object(app, "notify") as notify,
+        ):
+            app._notify_auto_mode_not_restored()
+
+        notify.assert_not_called()
+
+    @pytest.mark.parametrize("mode_value", ["auto", "manual"])
+    async def test_set_approval_mode_skips_persist_when_live_write_fails(
+        self, mode_value: str
+    ) -> None:
+        """A rejected live write must not arm the mode for the next launch."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        target = ApprovalMode(mode_value)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch(
+                    "deepagents_code.model_config.save_recent_startup_mode",
+                    return_value=True,
+                ) as save_recent,
+                patch.object(app, "_warn_live_approval_mode_unavailable"),
+                patch.object(app, "_force_interrupt_active_work"),
+            ):
+                assert await app._set_approval_mode(target) is False
+
+            save_recent.assert_not_called()
+
+    async def test_switch_to_manual_from_fallback_persists_manual(self) -> None:
+        """The live fallback's Manual switch updates the next bare launch."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        with (
+            patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=True,
+            ) as save_recent,
+        ):
+            assert await app._switch_to_manual_from_fallback() is True
+
+        save_recent.assert_called_once_with(ApprovalMode.MANUAL.value)
+
     async def test_prompt_yolo_push_failure_surfaces_and_allows_retry(self) -> None:
         """A push_screen failure warns the user and never latches the guard."""
         app = DeepAgentsApp()
@@ -30048,10 +31715,7 @@ class TestLiveApprovalModeWrites:
             server_kwargs={"auto_classifier_model": classifier},
         )
         app._model_override = "openai:gpt-5.5"
-        with (
-            patch.object(app, "_notify_auto_mode_enabled_once"),
-            patch.object(app, "notify") as notify,
-        ):
+        with patch.object(app, "notify") as notify:
             assert await app._set_approval_mode(ApprovalMode.AUTO) is True
 
         notify.assert_called_once_with(
@@ -30072,10 +31736,7 @@ class TestLiveApprovalModeWrites:
             server_kwargs={"auto_classifier_model": classifier},
         )
         app._model_override = "openai:gpt-5.5"
-        with (
-            patch.object(app, "_notify_auto_mode_enabled_once"),
-            patch.object(app, "notify") as notify,
-        ):
+        with patch.object(app, "notify") as notify:
             assert await app._set_approval_mode(ApprovalMode.AUTO) is True
 
         notify.assert_not_called()
@@ -30149,18 +31810,28 @@ class TestLiveApprovalModeWrites:
                     "deepagents_code.approval_mode.save_auto_mode_notice",
                     return_value=True,
                 ) as save_notice,
+                patch(
+                    "deepagents_code.model_config.save_recent_startup_mode",
+                    return_value=True,
+                ) as save_recent_mode,
             ):
-                assert await app._on_auto_approve_enabled() is True
+                # The method awaits the modal result, so start it as a task
+                # and press Enter to confirm.
+                task = asyncio.create_task(app._on_auto_approve_enabled())
                 await pilot.pause()
-                assert app._approval_mode is ApprovalMode.AUTO
+                # Modal appears BEFORE activation.
                 assert isinstance(app.screen, AutoModeNoticeScreen)
                 assert app.screen._body == build_auto_mode_notice_body(
                     classifier, distinct_from_main_model=True
                 )
+                assert app._approval_mode is not ApprovalMode.AUTO
                 save_notice.assert_not_called()
+                save_recent_mode.assert_not_called()
                 await pilot.press("enter")
-                await pilot.pause()
+                result = await task
+                assert result is True
                 save_notice.assert_called_once_with()
+                save_recent_mode.assert_called_once_with(ApprovalMode.AUTO.value)
                 assert app._approval_mode is ApprovalMode.AUTO
 
     async def test_on_auto_approve_enabled_skips_modal_when_notice_shown(self) -> None:
@@ -30200,58 +31871,6 @@ class TestLiveApprovalModeWrites:
                 assert not isinstance(app.screen, AutoModeNoticeScreen)
                 save_notice.assert_not_called()
 
-    async def test_mount_auto_shows_modal_when_notice_unseen(self) -> None:
-        from deepagents_code.approval_mode import ApprovalMode
-        from deepagents_code.tui.widgets.auto_mode_notice import (
-            AUTO_MODE_DOCS_URL,
-            AutoModeNoticeScreen,
-            build_auto_mode_notice_body,
-        )
-
-        classifier = "anthropic:claude-haiku-4-5"
-        with (
-            patch(
-                "deepagents_code.approval_mode.has_auto_mode_notice",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.approval_mode.save_auto_mode_notice",
-                return_value=True,
-            ) as save_notice,
-        ):
-            app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
-            app._auto_classifier_model = classifier
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app.screen._body == build_auto_mode_notice_body(
-                    classifier, distinct_from_main_model=True
-                )
-                assert AUTO_MODE_DOCS_URL in app.screen._body
-                save_notice.assert_not_called()
-                await pilot.press("enter")
-                await pilot.pause()
-                save_notice.assert_called_once_with()
-                assert not isinstance(app.screen, AutoModeNoticeScreen)
-                assert app._approval_mode is ApprovalMode.AUTO
-
-    async def test_mount_auto_skips_modal_when_notice_already_shown(self) -> None:
-        from deepagents_code.approval_mode import ApprovalMode
-        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
-
-        with (
-            patch(
-                "deepagents_code.approval_mode.has_auto_mode_notice",
-                return_value=True,
-            ),
-            patch("deepagents_code.approval_mode.save_auto_mode_notice") as save_notice,
-        ):
-            app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                assert not isinstance(app.screen, AutoModeNoticeScreen)
-                save_notice.assert_not_called()
-
     async def test_mount_auto_reports_classifier_after_notice_was_shown(self) -> None:
         """Returning Auto users still see which model authorizes actions."""
         from deepagents_code.approval_mode import ApprovalMode
@@ -30275,73 +31894,8 @@ class TestLiveApprovalModeWrites:
             markup=False,
         )
 
-    async def test_mount_auto_notice_escape_reverts_to_manual_without_save(
-        self,
-    ) -> None:
-        """Esc cancels Auto and does not record the notice for this machine."""
-        from deepagents_code.approval_mode import ApprovalMode
-        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
-
-        with (
-            patch(
-                "deepagents_code.approval_mode.has_auto_mode_notice",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.approval_mode.save_auto_mode_notice",
-                return_value=True,
-            ) as save_notice,
-        ):
-            app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app._approval_mode is ApprovalMode.AUTO
-                save_notice.assert_not_called()
-                with patch.object(
-                    app,
-                    "_write_live_approval_mode",
-                    new=AsyncMock(return_value=True),
-                ) as write_live:
-                    await pilot.press("escape")
-                    await pilot.pause()
-                save_notice.assert_not_called()
-                assert not isinstance(app.screen, AutoModeNoticeScreen)
-                assert app._approval_mode is ApprovalMode.MANUAL
-                # No live agent/session pair on mount-only setup, so no Store write.
-                write_live.assert_not_awaited()
-
-    async def test_mount_auto_notice_action_cancel_reverts_to_manual(self) -> None:
-        """`action_cancel` matches Esc: Manual, notice not saved.
-
-        Covers the app-interrupt path where the app's priority Escape handler
-        calls `action_cancel` on the modal rather than the screen's own binding.
-        """
-        from deepagents_code.approval_mode import ApprovalMode
-        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
-
-        with (
-            patch(
-                "deepagents_code.approval_mode.has_auto_mode_notice",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.approval_mode.save_auto_mode_notice",
-                return_value=True,
-            ) as save_notice,
-        ):
-            app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                assert isinstance(app.screen, AutoModeNoticeScreen)
-                app.screen.action_cancel()
-                await pilot.pause()
-                save_notice.assert_not_called()
-                assert not isinstance(app.screen, AutoModeNoticeScreen)
-                assert app._approval_mode is ApprovalMode.MANUAL
-
-    async def test_auto_notice_escape_writes_manual_when_session_live(self) -> None:
-        """Esc after an in-session Auto enable writes Manual to the live Store."""
+    async def test_toggle_auto_first_enable_esc_cancels_switch(self) -> None:
+        """Esc on the pre-confirmation modal cancels the Auto switch."""
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
@@ -30372,21 +31926,71 @@ class TestLiveApprovalModeWrites:
             ):
                 await app.action_toggle_auto_approve()
                 await pilot.pause()
+                # Modal appears, mode still MANUAL.
                 assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app._approval_mode is ApprovalMode.AUTO
-                write_live.assert_awaited_with(ApprovalMode.AUTO)
-                write_live.reset_mock()
+                assert app._approval_mode is ApprovalMode.MANUAL
                 await pilot.press("escape")
                 await pilot.pause()
+                # Esc cancels: no save, no mode change, no live write.
                 save_notice.assert_not_called()
+                assert not isinstance(app.screen, AutoModeNoticeScreen)
                 assert app._approval_mode is ApprovalMode.MANUAL
-                write_live.assert_awaited_with(ApprovalMode.MANUAL)
+                write_live.assert_not_awaited()
 
-    async def test_notify_auto_mode_enabled_once_is_reentrant_safe(self) -> None:
-        """Two enables before dismiss push a single modal, saved once."""
+    async def test_on_auto_approve_enabled_esc_returns_false(self) -> None:
+        """Esc on the inline Auto confirmation returns False without activating."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
+
+        app = DeepAgentsApp(auto_approve=False)
+        app._auto_mode_eligible = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(
+                thread_id="thread-1",
+                auto_approve=False,
+            )
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ) as write_live,
+                patch.object(
+                    app,
+                    "_auto_accept_pending_goal_rubric",
+                    new=AsyncMock(),
+                ),
+                patch(
+                    "deepagents_code.approval_mode.has_auto_mode_notice",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_auto_mode_notice",
+                ) as save_notice,
+                patch(
+                    "deepagents_code.model_config.save_recent_startup_mode",
+                    return_value=True,
+                ) as save_recent_mode,
+            ):
+                task = asyncio.create_task(app._on_auto_approve_enabled())
+                await pilot.pause()
+                assert isinstance(app.screen, AutoModeNoticeScreen)
+                await pilot.press("escape")
+                result = await task
+                assert result is False
+                save_notice.assert_not_called()
+                # A declined confirmation must not persist Auto for next launch.
+                save_recent_mode.assert_not_called()
+                assert app._approval_mode is not ApprovalMode.AUTO
+                write_live.assert_not_awaited()
+
+    async def test_prompt_auto_mode_confirmation_is_reentrant_safe(self) -> None:
+        """Two calls before dismiss push a single modal."""
         from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
         app = DeepAgentsApp()
+        app._auto_mode_eligible = True
         async with app.run_test() as pilot:
             await pilot.pause()
             with (
@@ -30397,10 +32001,10 @@ class TestLiveApprovalModeWrites:
                 patch(
                     "deepagents_code.approval_mode.save_auto_mode_notice",
                     return_value=True,
-                ) as save_notice,
+                ),
             ):
-                app._notify_auto_mode_enabled_once()
-                app._notify_auto_mode_enabled_once()
+                app._prompt_auto_mode_confirmation()
+                app._prompt_auto_mode_confirmation()
                 await pilot.pause()
                 notices = [
                     screen
@@ -30408,13 +32012,13 @@ class TestLiveApprovalModeWrites:
                     if isinstance(screen, AutoModeNoticeScreen)
                 ]
                 assert len(notices) == 1
-                await pilot.press("enter")
-                await pilot.pause()
-                save_notice.assert_called_once_with()
 
-    async def test_notify_auto_mode_enabled_once_survives_push_failure(self) -> None:
-        """A failed modal push never breaks the already-applied Auto enable."""
+    async def test_prompt_auto_mode_confirmation_survives_push_failure(self) -> None:
+        """A failed modal push does not activate Auto."""
+        from deepagents_code.approval_mode import ApprovalMode
+
         app = DeepAgentsApp()
+        app._auto_mode_eligible = True
         async with app.run_test() as pilot:
             await pilot.pause()
             with (
@@ -30426,13 +32030,48 @@ class TestLiveApprovalModeWrites:
                     "deepagents_code.approval_mode.save_auto_mode_notice"
                 ) as save_notice,
                 patch.object(app, "push_screen", side_effect=RuntimeError("boom")),
+                patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
             ):
                 # Must not raise despite the push failing.
-                app._notify_auto_mode_enabled_once()
+                app._prompt_auto_mode_confirmation()
                 await pilot.pause()
-            # The guard is reset so a later enable can retry the notice.
+            # The guard is reset so a later attempt can retry.
             assert app._auto_mode_notice_pending is False
             save_notice.assert_not_called()
+            # Auto was never activated.
+            assert app._approval_mode is not ApprovalMode.AUTO
+            warn.assert_called_once()
+            assert "Could not open the Auto confirmation" in str(warn.call_args.args[0])
+
+    async def test_server_auto_fallback_hides_diagnostics(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        app = DeepAgentsApp()
+        event = {
+            "event": "fallback",
+            "reason": "consecutive_policy_denials",
+            "consecutive_denials": 4,
+            "consecutive_unavailable": 0,
+            "total_denials": 4,
+        }
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.app")
+
+        with patch.object(app, "_mount_message", new=AsyncMock()) as mount:
+            await app._on_auto_mode_event(event)
+
+        await_args = mount.await_args
+        assert await_args is not None
+        mounted = await_args.args[0]
+        assert isinstance(mounted, AppMessage)
+        assert mounted._content == (
+            "Auto couldn't confidently approve this action, so it needs your review. "
+            "Auto will continue afterward."
+        )
+        assert (
+            "Auto human fallback reason=consecutive_policy_denials "
+            "consecutive_denials=4 consecutive_unavailable=0 total_denials=4"
+            in caplog.messages
+        )
 
     async def test_server_manual_fallback_updates_tui_mode_and_warns(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
@@ -30474,6 +32113,35 @@ class TestLiveApprovalModeWrites:
             markup=False,
         )
         mount.assert_awaited_once()
+
+    async def test_server_manual_fallback_clears_recent_auto(self) -> None:
+        """The server's safety decision must survive the session boundary."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        app._approval_mode = ApprovalMode.AUTO
+        event = {
+            "event": "fallback",
+            "mode": "manual",
+            "reason": "Auto control state was unavailable; using Manual approval.",
+        }
+
+        with (
+            patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=True,
+            ) as save_recent,
+            patch.object(app, "_mount_message", new=AsyncMock()),
+            patch.object(app, "notify"),
+        ):
+            await app._on_auto_mode_event(event)
+
+        save_recent.assert_called_once_with(ApprovalMode.MANUAL.value)
 
     @pytest.mark.parametrize("kind", ["denial", "unavailable"])
     async def test_tool_outcome_auto_event_is_not_mounted(self, kind: str) -> None:
@@ -32074,6 +33742,26 @@ class TestMCPLoginCommand:
                 "Usage: /mcp reconnect" in str(w._content)
                 for w in app.query(AppMessage)
             )
+
+    async def test_viewer_enter_on_remote_server_routes_to_reauth(self) -> None:
+        """End-to-end: Enter on a healthy OAuth server starts OAuth again."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_server_info = [
+                MCPServerInfo(name="slack", transport="http", tools=(), uses_oauth=True)
+            ]
+            with patch.object(
+                app, "_start_mcp_login", return_value=True
+            ) as start_login:
+                await app._show_mcp_viewer()
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+
+            start_login.assert_called_once_with("slack")
 
     async def test_viewer_ctrl_r_routes_to_reconnect_handler(self) -> None:
         """End-to-end: Ctrl+R in the viewer triggers the restart path.
@@ -34887,7 +36575,7 @@ class TestResumeScrollPosition:
                     content=f"message {index}",
                     id=f"resume-message-{index}",
                 )
-                for index in range(20)
+                for index in range(50)
             ],
             context_tokens=0,
             model_spec="",
@@ -34907,13 +36595,21 @@ class TestResumeScrollPosition:
             chat = app.query_one("#chat", _ChatScroll)
             for _ in range(20):
                 await pilot.pause()
-                if chat.max_scroll_y > 0 and chat.scroll_y == chat.max_scroll_y:
+                if (
+                    app._message_store.visible_count == 51
+                    and not app._history_prefetch_active
+                    and chat.max_scroll_y > 0
+                    and chat.scroll_y == chat.max_scroll_y
+                ):
                     break
 
+            assert app._message_store.visible_count == 51
+            assert not app._history_prefetch_active
             assert chat.max_scroll_y > 0
             assert chat.scroll_y == chat.max_scroll_y
-            # Resume reaches the bottom via a one-shot scroll, not bottom-follow
-            # (see `DeepAgentsApp.on_mount`).
+            # Resume reaches the bottom via refresh-deferred scrolls during the
+            # initial tail load and prefetch, not bottom-follow (see
+            # `DeepAgentsApp.on_mount`).
             assert not chat.is_anchored
 
 
@@ -35223,16 +36919,105 @@ class TestStatusBarConnectionMirroring:
         assert app._connecting is True
         assert app._resuming is False
 
-    async def test_sync_clears_resuming_when_connected(self) -> None:
-        """Clearing `_connecting` should also drop the resuming flag."""
+    async def test_server_ready_latches_resume_into_restoring_flag(self) -> None:
+        """Server readiness should not hide resume restoration progress.
+
+        Dispatches the real handler rather than replaying its assignment: the
+        latch at the top of `on_deep_agents_app_server_ready` has to run before
+        the handler's own `_sync_status_connection` consumes `_resuming`, and
+        only driving the handler can catch a reorder.
+        """
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        async with app.run_test():
+        async with app.run_test() as pilot:
+            await pilot.pause()
             app._connecting = True
             app._resuming = True
             app._sync_status_connection()
-            app._connecting = False
-            app._sync_status_connection()
+
+            app.on_deep_agents_app_server_ready(
+                DeepAgentsApp.ServerReady(
+                    agent=MagicMock(), server_proc=None, mcp_server_info=[]
+                )
+            )
+            await pilot.pause()
+
+            assert app._restoring_resumed_history is True
             assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "resuming"
+
+    async def test_server_ready_without_resume_leaves_indicator_clear(self) -> None:
+        """A plain connect must not arm the restore indicator."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = False
+            app._sync_status_connection()
+
+            app.on_deep_agents_app_server_ready(
+                DeepAgentsApp.ServerReady(
+                    agent=MagicMock(), server_proc=None, mcp_server_info=[]
+                )
+            )
+            await pilot.pause()
+
+            assert app._restoring_resumed_history is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+
+    async def test_server_ready_does_not_rearm_indicator_on_reconnect(self) -> None:
+        """A mid-session respawn must not resurrect the "Resuming" label.
+
+        The latch reads `_resuming`, which is never re-armed after init, so a
+        second `ServerReady` has to leave the indicator clear. Without that the
+        session-start sequence early-returns and nothing would ever clear it.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._sync_status_connection()
+
+            ready = DeepAgentsApp.ServerReady(
+                agent=MagicMock(), server_proc=None, mcp_server_info=[]
+            )
+            app.on_deep_agents_app_server_ready(ready)
+            await pilot.pause()
+            app._clear_resume_indicator()
+
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+            app.on_deep_agents_app_server_ready(ready)
+            await pilot.pause()
+
+            assert app._restoring_resumed_history is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+
+    async def test_server_start_failed_clears_resume_indicator(self) -> None:
+        """A failed startup must not strand the "Resuming" label.
+
+        `_run_session_start_sequence` never runs on this path, so neither of
+        its `finally` blocks can clear the flag — the handler owns it.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._restoring_resumed_history = True
+            app._sync_status_connection()
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("boom"))
+            )
+            await pilot.pause()
+
+            assert app._resuming is False
+            assert app._restoring_resumed_history is False
             assert app._status_bar is not None
             assert app._status_bar.connection_state == ""
 
@@ -38067,6 +39852,46 @@ class TestToolGroupCollapse:
             assert "Ran 1 shell command, read 1 file" in rendered.plain
 
 
+class TestUnsavedGoalContinuation:
+    """A failed goal save must still hand the model both halves of the goal."""
+
+    async def test_unsaved_creation_forwards_objective_and_criteria(self) -> None:
+        """Criteria omitted here are unobtainable through any other channel.
+
+        Both arguments are `str`-ish and positional at all three call sites, so
+        a swap or a dropped argument type-checks.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        inner = AsyncMock()
+
+        with patch.object(app, "_continue_goal_work", inner):
+            await app._continue_created_goal_work(
+                "ship login with passkeys",
+                "- passkeys work",
+                persisted=False,
+            )
+
+        inner.assert_awaited_once_with(
+            "created",
+            unsaved_objective="ship login with passkeys",
+            unsaved_criteria="- passkeys work",
+        )
+
+    async def test_persisted_creation_relies_on_the_state_notice(self) -> None:
+        """A successful save needs no fallback: the notice carries the state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        inner = AsyncMock()
+
+        with patch.object(app, "_continue_goal_work", inner):
+            await app._continue_created_goal_work(
+                "ship login with passkeys",
+                "- passkeys work",
+                persisted=True,
+            )
+
+        inner.assert_awaited_once_with("created")
+
+
 class TestForcedGoalCriteriaSync:
     """A forced sync after a criteria turn reads back and recovers on failure."""
 
@@ -39192,27 +41017,28 @@ class TestColdCacheWarningFlow:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A bad threshold must not silently disable or spam the warning."""
-        from deepagents_code import config_manifest
         from deepagents_code.config_manifest import (
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
             ConfigOption,
         )
+        from deepagents_code.configuration.resolver import (
+            ConfigResolver,
+            ResolvedValue,
+        )
 
-        real_resolve = config_manifest.resolve_scalar
+        real_get = ConfigResolver.get
 
         # Override only this option: `DeepAgentsApp.__init__` resolves many
-        # others through the same function, and returning `configured` for all
+        # others through the same resolver, and returning `configured` for all
         # of them makes the result depend on unrelated construction details.
-        def fake_resolve(
-            option: ConfigOption,
-            *,
-            toml_data: dict[str, Any],
-        ) -> tuple[Any, str]:
+        def fake_get(
+            self: ConfigResolver, option: ConfigOption
+        ) -> ResolvedValue[object]:
             if option.key == "warnings.cold_cache_min_delta_usd":
-                return (configured, "config")
-            return real_resolve(option, toml_data=toml_data)
+                return ResolvedValue(configured, {}, {}, {})
+            return real_get(self, option)
 
-        monkeypatch.setattr(config_manifest, "resolve_scalar", fake_resolve)
+        monkeypatch.setattr(ConfigResolver, "get", fake_get)
 
         app = DeepAgentsApp()
 
@@ -40400,3 +42226,699 @@ class TestColdCacheConfirmationBoundary:
         message = app.notify.call_args[0][0]
         assert "is not a table" in message
         assert "permissions" not in message
+
+
+class TestManagedVerdict:
+    """A user write must report whether managed policy overrode it.
+
+    `_save_ui_bool_result` reports "saved" whatever policy says, so the probe
+    is the only thing that turns a silently-overridden preference into a
+    message. `goals.auto_accept_criteria` had no probe at all.
+    """
+
+    def test_reports_managed_policy_as_effective(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A valid managed entry still decides after the user writes."""
+        from deepagents_code.app import _managed_verdict
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text("[goals]\nauto_accept_criteria = false\n", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+
+        decided, rejected, health_note = _managed_verdict("goals.auto_accept_criteria")
+
+        assert decided is True
+        assert rejected is False
+        assert health_note is None
+
+    def test_reports_a_malformed_managed_entry(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A malformed entry decides nothing but must not vanish.
+
+        It is the only signal an administrator has that their policy is inert,
+        and they are not at this keyboard -- so the caller turns this into a
+        toast rather than a log line.
+        """
+        from deepagents_code.app import _managed_verdict
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            '[goals]\nauto_accept_criteria = "not-a-bool"\n', encoding="utf-8"
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+
+        decided, rejected, health_note = _managed_verdict("goals.auto_accept_criteria")
+
+        assert decided is False
+        assert rejected is True
+        assert health_note is None
+
+    def test_reports_nothing_when_no_policy_is_installed(self) -> None:
+        """The common case stays quiet."""
+        from deepagents_code.app import _managed_verdict
+
+        assert _managed_verdict("goals.auto_accept_criteria") == (False, False, None)
+
+    def test_unknown_option_is_not_a_verdict(self) -> None:
+        """An unregistered key cannot be decided or rejected."""
+        from deepagents_code.app import _managed_verdict
+
+        assert _managed_verdict("not.a.real.option") == (False, False, None)
+
+    def test_an_unreadable_policy_file_is_reported(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A policy file that will not parse must not read as "no policy".
+
+        The probe used to assert `ProviderHealth.OK` over the empty table
+        `load_managed_config_toml` returns for an unreadable file, which
+        discarded the health that tells the two apart -- so the provider
+        emitted no rejection and the administrator got nothing at all.
+        """
+        import logging
+
+        from deepagents_code.app import _managed_verdict
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text("[goals\nauto_accept_criteria = ", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        try:
+            with caplog.at_level(logging.WARNING):
+                decided, rejected, health_note = _managed_verdict(
+                    "goals.auto_accept_criteria"
+                )
+        finally:
+            service.invalidate_config_sources()
+
+        assert decided is False
+        assert rejected is False
+        assert health_note is not None
+        assert caplog.text, "an unreadable policy file must be reported somewhere"
+
+
+class _NotifyRecorder:
+    """Minimal stand-in for the app surface the goal-preference save uses."""
+
+    def __init__(self) -> None:
+        self.notes: list[tuple[str, str]] = []
+
+    def notify(
+        self,
+        message: str,
+        *,
+        severity: str = "information",
+        markup: bool = True,
+    ) -> None:
+        """Record a toast instead of rendering it."""
+        del markup
+        self.notes.append((message, severity))
+
+
+class TestGoalAutoAcceptPreferenceReportsPolicy:
+    """The goal-criteria save must reach the probe, not just own one.
+
+    `TestManagedVerdict` exercises the helper in isolation, so deleting the
+    whole probe from this caller left the suite green -- on the setting that
+    decides whether Auto applies generated goal criteria without review.
+    """
+
+    async def test_effective_policy_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A valid managed entry tells the user their choice is inert."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text("[goals]\nauto_accept_criteria = false\n", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        recorder = _NotifyRecorder()
+        try:
+            await DeepAgentsApp._save_goal_auto_accept_preference(
+                # Only `self.notify` is used, so a recorder is enough.
+                cast("DeepAgentsApp", recorder),
+                enabled=True,
+            )
+        finally:
+            service.invalidate_config_sources()
+
+        assert recorder.notes == [
+            ("Preference saved, but managed config remains effective.", "warning")
+        ]
+
+    async def test_malformed_policy_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A rejected managed entry is not allowed to vanish."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            '[goals]\nauto_accept_criteria = "sometimes"\n', encoding="utf-8"
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        recorder = _NotifyRecorder()
+        try:
+            await DeepAgentsApp._save_goal_auto_accept_preference(
+                # Only `self.notify` is used, so a recorder is enough.
+                cast("DeepAgentsApp", recorder),
+                enabled=True,
+            )
+        finally:
+            service.invalidate_config_sources()
+
+        assert recorder.notes == [
+            (
+                (
+                    "Preference saved. A managed policy for this option was "
+                    "rejected as malformed and is not being applied."
+                ),
+                "warning",
+            )
+        ]
+
+    async def test_rejected_reload_reports_retained_policy(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The goal write must use current provider health, not cached metadata."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.configuration import resolver as resolver_module, service
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text("[goals]\nauto_accept_criteria = false\n", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        resolver_module.get_config_resolver()
+        managed.write_text("[goals\n", encoding="utf-8")
+        recorder = _NotifyRecorder()
+        try:
+            await DeepAgentsApp._save_goal_auto_accept_preference(
+                # Only `self.notify` is used, so a recorder is enough.
+                cast("DeepAgentsApp", recorder),
+                enabled=True,
+            )
+        finally:
+            service.invalidate_config_sources()
+
+        assert len(recorder.notes) == 1
+        message, severity = recorder.notes[0]
+        assert "current managed config file was rejected" in message
+        assert "last readable version remains effective" in message
+        assert severity == "warning"
+
+    async def test_no_policy_stays_quiet(self) -> None:
+        """The common case must not grow a spurious toast."""
+        from deepagents_code.app import DeepAgentsApp
+
+        recorder = _NotifyRecorder()
+        await DeepAgentsApp._save_goal_auto_accept_preference(
+            # Only `self.notify` is used, so a recorder is enough.
+            cast("DeepAgentsApp", recorder),
+            enabled=True,
+        )
+
+        assert recorder.notes == []
+
+
+class TestPromptClipboard:
+    """App wiring and priority-key routing for prompt recall."""
+
+    def test_ctrl_r_binding_is_priority(self) -> None:
+        bindings = [
+            binding
+            for binding in DeepAgentsApp.BINDINGS
+            if isinstance(binding, Binding) and binding.key == "ctrl+r"
+        ]
+
+        assert len(bindings) == 1
+        assert bindings[0].action == "open_prompt_clipboard"
+        assert bindings[0].priority is True
+
+    async def test_ctrl_r_inserts_selection_at_current_cursor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            text_area = chat_input._text_area
+            assert text_area is not None
+            monkeypatch.setattr(
+                chat_input, "recent_prompts", lambda: ("hello saved prompt",)
+            )
+            text_area.insert("hello")
+            text_area.move_cursor((0, len("hel")))
+
+            # First Ctrl+R opens the inline panel; a second escalates to the
+            # full modal.
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert isinstance(app.screen, PromptClipboardScreen)
+
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat_input.value == "helhello saved promptlo"
+            assert app.focused is text_area
+
+    async def test_escape_preserves_draft_and_cursor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            text_area = chat_input._text_area
+            assert text_area is not None
+            monkeypatch.setattr(chat_input, "recent_prompts", lambda: ("saved prompt",))
+            text_area.insert("draft text")
+            text_area.move_cursor((0, 3))
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat_input.value == "draft text"
+            assert text_area.cursor_location == (0, 3)
+            assert app.focused is text_area
+
+    async def test_ctrl_c_in_modal_copies_prompt_not_filter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(
+                chat_input, "recent_prompts", lambda: ("copy this prompt",)
+            )
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            screen = cast("PromptClipboardScreen", app.screen)
+            assert isinstance(screen, PromptClipboardScreen)
+
+            with patch(
+                "deepagents_code.clipboard.copy_text_with_feedback"
+            ) as copy_text:
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+
+            copy_text.assert_called_once_with(
+                app,
+                "copy this prompt",
+                failure_noun="prompt",
+                success_message="Prompt copied to clipboard",
+            )
+            assert app.screen is screen
+
+    async def test_escalation_carries_the_typed_query_into_the_modal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The second Ctrl+R must seed the modal filter with what was typed.
+
+        The inline side asserts an empty query and the modal side constructs
+        its filter directly, so the seam between them -- `escalate_prompt_search`
+        returning the query and `_open_prompt_clipboard_modal` passing it on --
+        had no coverage. A reordering in `_close_prompt_search` that cleared
+        the query before it was captured would open the modal unfiltered.
+        """
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(
+                chat_input,
+                "recent_prompts",
+                lambda: ("fix the bug", "add a feature"),
+            )
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("f", "i", "x")
+            await pilot.pause()
+            assert chat_input._prompt_search_query == "fix"
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.pause()
+
+            screen = cast("PromptClipboardScreen", app.screen)
+            assert isinstance(screen, PromptClipboardScreen)
+            assert screen.query_one("#prompt-filter", Input).value == "fix"
+            assert list(screen._filtered) == ["fix the bug"]
+
+    async def test_existing_chat_input_seeds_the_modal_filter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A draft becomes the initial query across both search tiers."""
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            text_area = chat_input._text_area
+            assert text_area is not None
+            monkeypatch.setattr(
+                chat_input,
+                "recent_prompts",
+                lambda: ("fix the bug", "add a feature"),
+            )
+            text_area.insert("fix")
+            await pilot.pause()
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert chat_input._prompt_search_query == "fix"
+            assert chat_input.value == "fix"
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.pause()
+
+            screen = cast("PromptClipboardScreen", app.screen)
+            assert isinstance(screen, PromptClipboardScreen)
+            assert screen.query_one("#prompt-filter", Input).value == "fix"
+            assert list(screen._filtered) == ["fix the bug"]
+
+    async def test_insertion_failure_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A refused insert must say so rather than dropping the prompt."""
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(chat_input, "recent_prompts", lambda: ("a prompt",))
+            monkeypatch.setattr(chat_input, "insert_at_cursor", lambda _text: False)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert isinstance(app.screen, PromptClipboardScreen)
+
+            with patch.object(app, "notify") as notify:
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.pause()
+
+            notify.assert_called_once()
+            assert "Could not insert the prompt" in notify.call_args.args[0]
+            assert notify.call_args.kwargs["severity"] == "warning"
+
+    async def test_insertion_into_a_vanished_composer_is_reported(self) -> None:
+        """Losing the composer between dismiss and apply must not be silent."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+
+            app._open_prompt_clipboard_modal()
+            await pilot.pause()
+
+            # The callback re-reads `_chat_input`, so clearing it stands in for
+            # the composer being torn down while the modal was open.
+            app._chat_input = None
+            with patch.object(app, "notify") as notify:
+                app.screen.dismiss("a prompt")
+                await pilot.pause()
+                await pilot.pause()
+
+            notify.assert_called_once()
+            assert "the composer is gone" in notify.call_args.args[0]
+            assert notify.call_args.kwargs["severity"] == "warning"
+            app._chat_input = chat_input
+
+    async def test_ctrl_r_steps_aside_for_model_selector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.widgets import model_selector
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+        app = DeepAgentsApp(agent=MagicMock())
+        screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(screen)
+            await pilot.pause()
+            assert screen._recommended_only is True
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert app.screen is screen
+            assert screen._recommended_only is False
+
+    async def test_shift_tab_pages_in_prompt_modal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The modal pages with shift+tab; it must not hit the app binding."""
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(
+                chat_input,
+                "recent_prompts",
+                lambda: tuple(f"prompt {i}" for i in range(12)),
+            )
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            screen = cast("PromptClipboardScreen", app.screen)
+            assert isinstance(screen, PromptClipboardScreen)
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 5
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
+    async def test_shift_tab_pages_the_inline_panel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The inline panel pages with shift+tab under the real app dispatch.
+
+        The widget-level paging test runs on a bare host with no competing
+        binding, so it cannot catch the `toggle_auto_approve` step-aside
+        regressing. Without it shift+tab would toggle auto-approve — a
+        permissions change — instead of paging results.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(
+                chat_input,
+                "recent_prompts",
+                lambda: tuple(f"prompt {i}" for i in range(12)),
+            )
+            approval_mode_before = app._approval_mode
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.pause()
+            assert chat_input._prompt_search_active is True
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert chat_input._prompt_search_index == 5
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert chat_input._prompt_search_index == 0
+            assert app._approval_mode == approval_mode_before
+
+    @pytest.mark.parametrize(
+        "pending_field",
+        [
+            "_pending_approval_widget",
+            "_pending_ask_user_widget",
+            "_pending_goal_review_widget",
+        ],
+    )
+    async def test_ctrl_r_is_disabled_for_inline_prompts(
+        self, pending_field: str
+    ) -> None:
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchPanel
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            setattr(app, pending_field, MagicMock())
+
+            assert app.check_action("open_prompt_clipboard", ()) is False
+
+            # Press the chord too: asserting the predicate alone would still
+            # pass if the routing stopped consulting `check_action`.
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert not isinstance(app.screen, PromptClipboardScreen)
+            panel = app.screen.query_one(PromptSearchPanel)
+            assert panel.styles.display == "none"
+
+    async def test_prompts_command_opens_without_awaiting_modal(self) -> None:
+        app = DeepAgentsApp()
+        with (
+            patch.object(app, "action_open_prompt_clipboard") as open_clipboard,
+            patch.object(app, "_prompt_clipboard_block_reason", return_value=None),
+        ):
+            await app._handle_command("/prompts")
+
+        open_clipboard.assert_called_once_with()
+
+    async def test_modal_warns_when_history_is_unreadable_but_listable(
+        self, tmp_path: Path
+    ) -> None:
+        """The modal's `empty_message` cannot cover a non-empty degraded list.
+
+        `recent_prompts` falls back to this session's entries on a read
+        failure, so the modal usually opens with rows and its empty state --
+        the only place the error was reported -- never renders.
+        """
+        history_file = tmp_path / "history.jsonl"
+        history_file.mkdir()
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            chat_input._history.history_file = history_file
+            chat_input._history.add("this session only")
+
+            with patch.object(app, "notify") as notify:
+                app._open_prompt_clipboard_modal()
+                await pilot.pause()
+
+            notify.assert_called_once()
+            message = notify.call_args.args[0]
+            assert "Could not read prompt history" in message
+            assert "this session's prompts only" in message
+            assert notify.call_args.kwargs["severity"] == "warning"
+            assert notify.call_args.kwargs["markup"] is False
+
+    async def test_modal_stays_quiet_when_history_reads_cleanly(
+        self, tmp_path: Path
+    ) -> None:
+        """The healthy path opens the modal without a warning."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            chat_input._history.history_file = tmp_path / "history.jsonl"
+            chat_input._history.add("a prompt")
+
+            with patch.object(app, "notify") as notify:
+                app._open_prompt_clipboard_modal()
+                await pilot.pause()
+
+            notify.assert_not_called()
+
+    async def test_prompts_command_explains_why_it_cannot_open(self) -> None:
+        """A blocked `/prompts` must say so instead of doing nothing.
+
+        `/prompts` carries `BypassTier.IMMEDIATE_UI`, so it runs while the
+        agent is busy -- exactly when an approval owns the screen and the
+        clipboard is blocked. A bare return there reads as a broken command.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_approval_widget = MagicMock()
+
+            with (
+                patch.object(app, "action_open_prompt_clipboard") as open_clipboard,
+                patch.object(app, "_mount_message", new=AsyncMock()) as mount,
+            ):
+                await app._handle_command("/prompts")
+
+            open_clipboard.assert_not_called()
+            mount.assert_awaited_once()
+            assert mount.await_args is not None
+            message = mount.await_args.args[0]
+            assert "approval" in str(message.render()).lower()
+
+    async def test_prompts_command_reports_each_blocking_surface(self) -> None:
+        """Every blocked branch names the surface that is in the way."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            for attribute, expected in (
+                ("_pending_approval_widget", "approval"),
+                ("_pending_ask_user_widget", "question"),
+                ("_pending_goal_review_widget", "goal review"),
+            ):
+                setattr(app, attribute, MagicMock())
+                reason = app._prompt_clipboard_block_reason()
+                assert reason is not None
+                assert expected in reason.lower()
+                setattr(app, attribute, None)
+
+            assert app._prompt_clipboard_block_reason() is None

@@ -172,7 +172,7 @@ class ApprovalMenu(Container):
         self._tool_names = [r.get("name", "unknown") for r in self._action_requests]
         self._is_auto_fallback = any(
             isinstance(request.get("description"), str)
-            and request["description"].startswith("Auto human fallback ")
+            and request["description"].startswith("Auto human fallback")
             for request in self._action_requests
         )
         # Only offer the Auto option when it can actually be enabled. A live
@@ -602,12 +602,8 @@ class ApprovalMenu(Container):
         Moves the cursor to Reject first, so the highlighted option always
         matches the decision the input will submit; it can only ever produce a
         reject, never an approval. Reveals the inline `Input` composed (hidden)
-        by `compose()` and focuses it; its value is emitted verbatim on submit,
-        leaving any model-facing framing to the caller.
-
-        Note:
-            `_frame_reject_reason` in `deepagents_code.tui.textual_adapter`
-            prefixes the raw text before it becomes `RejectDecision.message`.
+        by `compose()` and focuses it; its value is emitted verbatim on submit as
+        the human-provided reason in `RejectDecision.message`.
         """
         if self._reason_input_active:
             # Tab is advertised unconditionally, so a second press must not wipe

@@ -243,6 +243,10 @@ def collect_built_in_tools(
         enable_shell=True,
         enable_interpreter=enable_interpreter,
         fs_tools=fs_tools,
+        # Enumeration only -- this graph is never invoked. Enforcing
+        # `models.allowed` here would make a subagent that names a blocked
+        # model break `dcode tools list` instead of just being unusable.
+        enforce_model_policy=False,
     )
     tools = collect_tools_from_agent(agent)
     if tools is None:
@@ -481,7 +485,7 @@ async def _load_mcp_server_info(
         project_context = ProjectContext.from_user_cwd(Path.cwd())
     except (OSError, RuntimeError):
         # `Path.cwd()`/`.resolve()` raise OSError for a missing cwd and
-        # RuntimeError on a symlink loop (3.11-3.12); match the codebase's own
+        # RuntimeError on a symlink loop (3.12 only); match the codebase's own
         # convention in `project_utils` and fall back to no project context.
         logger.warning("Could not determine working directory for MCP discovery")
         project_context = None

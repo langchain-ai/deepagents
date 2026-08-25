@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING
 
 from deepagents_code.mcp_tools import MCPServerInfo as CodeMCPServerInfo, MCPToolInfo
 from deepagents_code.project_utils import ProjectContext
@@ -19,7 +19,7 @@ class DummyTool:
     name: str
 
 
-FakeCodeLoaderResult: TypeAlias = tuple[list[DummyTool], None, list[CodeMCPServerInfo]]
+type FakeCodeLoaderResult = tuple[list[DummyTool], None, list[CodeMCPServerInfo]]
 
 
 async def test_load_mcp_tools_delegates_to_deepagents_code_discovery(

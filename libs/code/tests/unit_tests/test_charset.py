@@ -51,6 +51,7 @@ class TestGlyphs:
         assert ord(UNICODE_GLYPHS.error) > 127
         assert ord(UNICODE_GLYPHS.circle_empty) > 127
         assert ord(UNICODE_GLYPHS.circle_filled) > 127
+        assert UNICODE_GLYPHS.square_filled == "■"
         assert ord(UNICODE_GLYPHS.checkbox_empty) > 127
         assert ord(UNICODE_GLYPHS.checkbox_checked) > 127
         assert ord(UNICODE_GLYPHS.output_prefix) > 127
@@ -81,6 +82,8 @@ class TestGlyphs:
         for char in ASCII_GLYPHS.circle_empty:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.circle_filled:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.square_filled:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.checkbox_empty:
             assert ord(char) < 128

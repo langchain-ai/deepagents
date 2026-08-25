@@ -8,7 +8,7 @@
 
 Thanks for contributing! A few essentials below. Remove these instructions before submission.
 
-1. **Title:** `type(scope): description` — e.g. `fix(sdk): ...`, `feat(cli): ...`. Allowed values: [pr_lint.yml](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml).
+1. **Title:** `type(scope): description` — e.g. `fix(sdk): ...`, `feat(code): ...`. Allowed values: [pr_lint.yml](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml).
 2. One package per PR unless a maintainer says otherwise
 3. External contributors: don't change `uv.lock` / add deps without maintainer approval
 4. Large pasted AI descriptions may be ignored or closed

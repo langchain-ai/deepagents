@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import gc
 import inspect
 import json
 import logging
@@ -2258,6 +2259,89 @@ class TestPriceCatalogGuard:
 
 class TestCostTrackingMiddleware:
     """Tests for cumulative cost writes on the model checkpoint path."""
+
+    def test_prepared_operation_cost_can_commit_or_rollback(
+        self,
+        recorder: _SessionCostRecorder,
+    ) -> None:
+        """Operation pricing is additive and restores records after failure."""
+        _collect(
+            recorder,
+            _record(message_id="offload-summary"),
+            checkpoint_ns="dcode_offload:operation-1",
+        )
+        state = cast(
+            "CostState",
+            {
+                "messages": [],
+                "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+            },
+        )
+
+        prepared = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+        one_call = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+
+        assert one_call is not None
+        assert prepared.update == {"_session_cost_usd": pytest.approx(one_call)}
+        assert recorder.drain(THREAD_ID) == []
+
+        prepared.rollback()
+        retried = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+        assert retried.update == {"_session_cost_usd": pytest.approx(one_call)}
+
+    def test_committed_prepare_does_not_restore_records(
+        self,
+        recorder: _SessionCostRecorder,
+    ) -> None:
+        """A committed prepare keeps its records drained.
+
+        Restoring them would let the next drain price the same spend a second
+        time, so `commit` must settle the instance without touching the
+        recorder.
+        """
+        _collect(
+            recorder,
+            _record(message_id="offload-summary"),
+            checkpoint_ns="dcode_offload:operation-1",
+        )
+        state = cast(
+            "CostState",
+            {"messages": [], "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}"},
+        )
+
+        prepared = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+        prepared.commit()
+        prepared.rollback()
+
+        assert cost_tracking.prepare_operation_cost(state, THREAD_ID).update == {}
+
+    def test_abandoned_prepare_warns_that_spend_was_lost(
+        self,
+        recorder: _SessionCostRecorder,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unsettled prepare must not disappear silently.
+
+        The drain is destructive, so a prepare that is neither committed nor
+        rolled back deletes its spend from the thread's lifetime total. That was
+        the one settlement outcome with no observable trace.
+        """
+        _collect(
+            recorder,
+            _record(message_id="offload-summary"),
+            checkpoint_ns="dcode_offload:operation-1",
+        )
+        state = cast(
+            "CostState",
+            {"messages": [], "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}"},
+        )
+
+        prepared = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+        with caplog.at_level(logging.WARNING):
+            del prepared
+            gc.collect()
+
+        assert "abandoned without commit or rollback" in caplog.text
 
     def test_cost_channel_is_private_and_additive(self) -> None:
         """The channel must compile to a summing reducer, not a `LastValue`.

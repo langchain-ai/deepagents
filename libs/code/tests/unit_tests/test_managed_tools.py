@@ -7,7 +7,6 @@ import io
 import os
 import subprocess
 import tarfile
-import warnings
 import zipfile
 from email.message import Message
 from pathlib import Path
@@ -430,55 +429,12 @@ def _make_fake_zip(
     return buf.getvalue()
 
 
-def _patch_legacy_tar_extractall(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Simulate Python 3.11 patch versions without `extractall(filter=...)`."""
-    original = tarfile.TarFile.extractall
-
-    def _legacy_extractall(
-        self: tarfile.TarFile,
-        path: str | os.PathLike[str] = ".",
-        members: list[tarfile.TarInfo] | None = None,
-        *,
-        numeric_owner: bool = False,
-        **kwargs: object,
-    ) -> None:
-        if "filter" in kwargs:
-            msg = "TarFile.extractall() got an unexpected keyword argument 'filter'"
-            raise TypeError(msg)
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message="Python 3.14 will, by default, filter extracted tar archives",
-                category=DeprecationWarning,
-            )
-            original(self, path, members=members, numeric_owner=numeric_owner)
-
-    monkeypatch.setattr(tarfile.TarFile, "extractall", _legacy_extractall)
-
-
-def test_extract_rg_supports_legacy_tar_extractall(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Tar extraction falls back when Python 3.11 lacks `filter=` support."""
-    rg_payload = b"#!/bin/sh\necho fake rg\n"
-    archive = tmp_path / "ripgrep-test.tar.gz"
-    archive.write_bytes(_make_fake_tarball(rg_payload))
-    _patch_legacy_tar_extractall(monkeypatch)
-
-    extracted = managed_tools._extract_rg(archive, tmp_path / "unpacked")
-
-    assert extracted.read_bytes() == rg_payload
-
-
-def test_extract_rg_legacy_fallback_rejects_unsafe_member(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Legacy extraction still rejects path traversal members."""
+def test_extract_rg_rejects_unsafe_tar_member(tmp_path: Path) -> None:
+    """Tar extraction with `filter="data"` refuses path-traversal members."""
     archive = tmp_path / "ripgrep-test.tar.gz"
     archive.write_bytes(_make_fake_tarball(b"bad", member_name="../rg"))
-    _patch_legacy_tar_extractall(monkeypatch)
 
-    with pytest.raises(tarfile.TarError, match="unsafe tar member"):
+    with pytest.raises(tarfile.OutsideDestinationError):
         managed_tools._extract_rg(archive, tmp_path / "unpacked")
 
 
@@ -998,22 +954,3 @@ def test_download_to_rejects_non_200_status(
     with pytest.raises(urllib.error.URLError, match="HTTP 503"):
         managed_tools._download_to("https://example.invalid/x", dest)
     assert dest.read_bytes() == b""
-
-
-def test_extract_tar_data_reraises_unrelated_typeerror(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """An unrelated `TypeError` propagates instead of falling to legacy tar."""
-    archive = tmp_path / "ripgrep-test.tar.gz"
-    archive.write_bytes(_make_fake_tarball(b"payload"))
-
-    def _boom_extractall(
-        _self: tarfile.TarFile, *_args: object, **_kwargs: object
-    ) -> None:
-        msg = "something else entirely"
-        raise TypeError(msg)
-
-    monkeypatch.setattr(tarfile.TarFile, "extractall", _boom_extractall)
-
-    with pytest.raises(TypeError, match="something else entirely"):
-        managed_tools._extract_rg(archive, tmp_path / "unpacked")

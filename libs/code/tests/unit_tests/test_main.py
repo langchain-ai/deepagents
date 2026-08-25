@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import logging
 import os
 import signal
 import sys
@@ -38,6 +39,7 @@ from deepagents_code.main import (
     _handle_termination_signal,
     _install_termination_signal_handlers,
     _is_managed_ripgrep_path,
+    _print_session_stats,
     _render_teardown_thread_hints,
     _restart_current_process,
     _ripgrep_install_hint,
@@ -1868,6 +1870,167 @@ class TestResumeHintLogic:
         assert not show, "No hint when thread_exists returns False"
 
 
+class TestPrintSessionStats:
+    """Test configurable usage statistics at session teardown."""
+
+    @staticmethod
+    def _render(
+        config_toml: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> str:
+        """Render the teardown table against a real `config.toml`.
+
+        Args:
+            config_toml: Contents to write to the user config file.
+            tmp_path: Directory to hold the config file.
+            monkeypatch: Fixture used to redirect the config path.
+
+        Returns:
+            Everything the teardown printed to the console.
+        """
+        from deepagents_code._session_stats import SessionStats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(config_toml, encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+
+        stats = SessionStats(wall_time_seconds=2.0)
+        stats.record_request("test-model", 100, 50)
+        buffer = StringIO()
+        _print_session_stats(stats, Console(file=buffer, width=200))
+        return buffer.getvalue()
+
+    @pytest.mark.parametrize(
+        ("config_toml", "expected_visible"),
+        [
+            ("", True),
+            ("[ui]\nshow_usage_stats = true\n", True),
+            ("[ui]\nshow_usage_stats = false\n", False),
+        ],
+    )
+    def test_respects_show_usage_stats(
+        self,
+        config_toml: str,
+        expected_visible: bool,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`[ui].show_usage_stats` controls teardown table rendering."""
+        output = self._render(config_toml, tmp_path, monkeypatch)
+
+        if expected_visible:
+            assert "test-model" in output
+        else:
+            # Nothing at all, not merely a missing model row: a suppressed
+            # table must not leave a header or a stray blank line behind.
+            assert output == ""
+
+    def test_absent_config_file_keeps_stats(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A user with no `config.toml` at all still gets the table.
+
+        The other cases write an empty-but-present file, which exercises a
+        different branch of `load_config_toml` than a missing path does.
+        """
+        from deepagents_code._session_stats import SessionStats
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "does_not_exist.toml",
+        )
+        stats = SessionStats(wall_time_seconds=2.0)
+        stats.record_request("test-model", 100, 50)
+        buffer = StringIO()
+
+        _print_session_stats(stats, Console(file=buffer, width=200))
+
+        assert "test-model" in buffer.getvalue()
+
+    def test_malformed_value_keeps_stats(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A wrong-typed TOML value is rejected rather than coerced.
+
+        TOML has no truthy strings, so `show_usage_stats = "no"` is the
+        likeliest way to get this wrong, and `bool("no")` is `True` — naive
+        coercion would show the table to a user who meant to hide it.
+
+        The default is also `True`, so "rejected, fell through to the default"
+        and "coerced to `True`" render identically; `"test-model" in output`
+        cannot tell them apart. The log assertion is the one carrying the
+        weight here. The rejection happens in `_coerce_toml`, one layer below
+        the `OptionKind` guard; that guard is covered directly in
+        `test_config_manifest.py`.
+        """
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+            output = self._render(
+                '[ui]\nshow_usage_stats = "no"\n', tmp_path, monkeypatch
+            )
+
+        assert "test-model" in output
+        assert "show_usage_stats" in caplog.text
+        assert "expected bool" in caplog.text
+
+    def test_managed_config_overrides_user_preference(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Managed policy outranks the user's `config.toml`.
+
+        The resolver reads the managed tier by default. A refactor that passed
+        an isolated user source would drop admin policy with every other test
+        in this class still green.
+        """
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed_config.toml"
+        managed.write_text("[ui]\nshow_usage_stats = false\n", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+
+        output = self._render("[ui]\nshow_usage_stats = true\n", tmp_path, monkeypatch)
+
+        assert output == ""
+
+    def test_non_stats_payload_warns_and_skips_config(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-`SessionStats` payload warns and never resolves the option.
+
+        `stats` is typed `Any`, so nothing stops a caller from passing something
+        else. `main` itself always passes a real `SessionStats`
+        (`AppResult.session_stats` has a `default_factory`), so if this branch
+        ever fires something upstream is broken — hence the warning, which is
+        what keeps "the payload was wrong" apart from "the user disabled it".
+
+        The spy records rather than raises: `usage_table_enabled` catches
+        exceptions and returns `True`, so a raising stub would make a regressed
+        guard order pass vacuously. `load_config_toml` is the read being
+        trapped; `load_bool_display_preference` loads it before resolving, so
+        no lookup can slip past it.
+        """
+        calls: list[object] = []
+
+        def _spy() -> dict[str, object]:
+            calls.append(None)
+            return {}
+
+        monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", _spy)
+        buffer = StringIO()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.main"):
+            _print_session_stats(None, Console(file=buffer, width=200))
+
+        assert buffer.getvalue() == ""
+        assert not calls, "config must not be read for a non-stats payload"
+        assert "expected SessionStats" in caplog.text
+
+
 class TestTeardownThreadCheckpointLookup:
     """Test teardown checkpoint lookup guard behavior."""
 
@@ -1920,6 +2083,7 @@ class TestRenderTeardownThreadHints:
         *,
         thread_exists_mock: AsyncMock,
         thread_url: str | None,
+        tmp_path: Path | None = None,
         return_code: int = 0,
         launch_name: str = "dcode",
         term_program: str = "",
@@ -1930,7 +2094,14 @@ class TestRenderTeardownThreadHints:
         toml_data: dict | None = None,
         toml_error: Exception | None = None,
     ) -> str:
-        """Render teardown hints under controlled feature configuration."""
+        """Render teardown hints under controlled feature configuration.
+
+        The hint reads the option through the shared resolver, which loads the
+        user tier from `DEFAULT_CONFIG_PATH` (the `_isolate_state_dir` fixture
+        redirects it under the test's `tmp_path`), so TOML cases write a real
+        file rather than patching a loader the renderer no longer calls.
+        `tmp_path` is required exactly for those cases.
+        """
         buffer = StringIO()
         console = Console(file=buffer, width=200)
         # `launch_name` is resolved (and cached) inside the renderer.
@@ -1945,16 +2116,25 @@ class TestRenderTeardownThreadHints:
             env[LAUNCH_TERM_PROGRAM] = launch_term_program
         if resume_term_program is not None:
             env[RESUME_TERM_PROGRAM] = "1" if resume_term_program else "0"
+        if toml_data is not None:
+            assert tmp_path is not None, "toml_data requires tmp_path"
+            import tomli_w
+
+            (tmp_path / "config.toml").write_text(
+                tomli_w.dumps(toml_data), encoding="utf-8"
+            )
+        elif toml_error is not None:
+            # A corrupt file exercises the same failure class as a raising read:
+            # the user tier degrades to unusable and resolution falls through.
+            assert tmp_path is not None, "toml_error requires tmp_path"
+            (tmp_path / "config.toml").write_text(
+                "not = = valid toml\n", encoding="utf-8"
+            )
         with (
             patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
             patch(
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
-            ),
-            patch(
-                "deepagents_code.config_manifest.load_config_toml",
-                side_effect=toml_error,
-                return_value={} if toml_data is None else toml_data,
             ),
             patch.dict(os.environ, env),
             patch.object(sys, "platform", "darwin"),
@@ -1981,10 +2161,10 @@ class TestRenderTeardownThreadHints:
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
 
-    def test_resume_hint_honors_toml_feature_flag(self) -> None:
+    def test_resume_hint_honors_toml_feature_flag(self, tmp_path: Path) -> None:
         """`[features] resume_term_program` reaches the hint without an env var.
 
-        The helper otherwise stubs `load_config_toml` to `{}`, so without this
+        The helper otherwise leaves the user config absent, so without this
         case the entire config.toml route to the prefix could break with the
         suite still green.
         """
@@ -1993,27 +2173,32 @@ class TestRenderTeardownThreadHints:
         output = self._render(
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
+            tmp_path=tmp_path,
             launch_term_program="iTerm.app",
             toml_data={"features": {"resume_term_program": True}},
         )
 
         assert "TERM_PROGRAM=iTerm.app dcode -r test123" in output
 
-    def test_resume_hint_survives_config_read_failure(self) -> None:
-        """A raising config read must not take down the exit path.
+    def test_resume_hint_survives_config_read_failure(self, tmp_path: Path) -> None:
+        """A failed config read must not take down the exit path.
 
         `_render_teardown_thread_hints` runs from a bare `finally` in
         `cli_main`, so an exception escaping here would replace whatever is
         already unwinding -- including the `KeyboardInterrupt` that produces
         exit code 130.
+
+        The option is enabled only in the (corrupt) user file: an unreadable
+        user tier resolves to unset, so the mode-dependent default (`False`
+        here) applies and the prefix stays out.
         """
         thread_exists_mock = AsyncMock(return_value=True)
 
         output = self._render(
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
+            tmp_path=tmp_path,
             launch_term_program="iTerm.app",
-            resume_term_program=True,
             toml_error=RecursionError("deeply nested TOML"),
         )
 
@@ -2208,7 +2393,6 @@ class TestRenderTeardownThreadHints:
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=None,
             ),
-            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
             patch.object(sys, "platform", platform),
             patch.dict(os.environ, env),
         ):
@@ -2639,6 +2823,82 @@ class TestRunTextualCliAsyncMcp:
 
         assert captured_kwargs["mcp_preload_kwargs"] is None
 
+    def test_auto_classifier_problem_reports_model_policy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Startup diagnostics identify an administrator-blocked classifier."""
+        from deepagents_code.main import _auto_classifier_spec_problem
+        from deepagents_code.model_config import ModelConfig
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        problem = _auto_classifier_spec_problem("openai:blocked")
+
+        assert problem is not None
+        assert "administrator-managed" in problem
+
+    def test_policy_blocked_classifier_does_not_reach_agent_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blocked classifier is neutralized, not warned about and forwarded.
+
+        `create_cli_agent` raises on a blocked classifier spec, so forwarding it
+        after printing an advisory would kill the session the advisory was
+        warning about. The runtime model -- already policy-checked -- is used
+        instead, matching how the other two classifier problems degrade.
+        """
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+        from deepagents_code.model_config import ModelConfig
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        from deepagents_code.main import _classifier_model_after_policy
+
+        # Blocked -> inherit the (already checked) runtime model.
+        assert (
+            _classifier_model_after_policy("openai:blocked") == INHERIT_CLASSIFIER_MODEL
+        )
+        # Allowed, absent, and the sentinel itself all pass through untouched.
+        assert _classifier_model_after_policy("anthropic:allowed") == (
+            "anthropic:allowed"
+        )
+        assert _classifier_model_after_policy(None) is None
+        assert (
+            _classifier_model_after_policy(INHERIT_CLASSIFIER_MODEL)
+            == INHERIT_CLASSIFIER_MODEL
+        )
+
+    def test_classifier_policy_is_a_no_op_without_an_allowlist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no policy, any resolved classifier spec is forwarded unchanged."""
+        from deepagents_code.main import _classifier_model_after_policy
+        from deepagents_code.model_config import ModelConfig
+
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: ModelConfig()),
+        )
+
+        assert _classifier_model_after_policy("openai:anything") == "openai:anything"
+
     async def test_resolves_configured_auto_classifier_before_tui_launch(self) -> None:
         """The TUI and server receive the same effective env/TOML classifier."""
         app_result = AppResult(return_code=0, thread_id="thread-123")
@@ -2769,6 +3029,7 @@ class TestServerCleanupLifecycle:
         """run_textual_app must call server_proc.stop() in the finally block."""
         server_proc = SimpleNamespace(stop=MagicMock())
 
+        guard = MagicMock()
         with (
             patch.object(
                 DeepAgentsApp,
@@ -2776,8 +3037,32 @@ class TestServerCleanupLifecycle:
                 new_callable=AsyncMock,
             ),
             patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
+            ),
+            patch(
                 "deepagents_code.client.launch.server.emit_preserved_log_notices",
             ) as emit,
+        ):
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
+
+        guard.close.assert_called_once_with()
+        server_proc.stop.assert_called_once_with()
+        emit.assert_called_once_with()
+
+    async def test_server_proc_stopped_when_stderr_guard_install_fails(self) -> None:
+        """Server cleanup must run when the stderr guard cannot be installed."""
+        server_proc = SimpleNamespace(stop=MagicMock())
+
+        with (
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                side_effect=OSError("too many open files"),
+            ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
+            pytest.raises(TextualAppError, match="too many open files"),
         ):
             await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
@@ -5131,11 +5416,16 @@ class TestSelectProjectServersToPersist:
         )
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
-    def test_refresh_picker_action_follows_abort(
+    def test_refresh_picker_defaults_to_refresh(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Moving down once from the safe default selects environment refresh."""
+        """With a refresh option, a bare Enter repairs the environment.
+
+        "Abort launch" keeps the leading row, but the highlight starts on
+        "Refresh environment now" — fixing the environment is the action the
+        prompt steers toward, and aborting is one keystroke away.
+        """
         from rich.console import Console
 
         from deepagents_code.main import (
@@ -5160,17 +5450,11 @@ class TestSelectProjectServersToPersist:
                         exit=lambda *, result: holder.update(value=result)
                     )
                 )
-                move_down = next(
-                    binding.handler
-                    for binding in bindings
-                    if binding.handler.__name__ == "_down"
-                )
                 confirm = next(
                     binding.handler
                     for binding in bindings
                     if binding.handler.__name__ == "_confirm"
                 )
-                move_down(event)
                 confirm(event)
                 return holder["value"]
 
@@ -5197,6 +5481,62 @@ class TestSelectProjectServersToPersist:
         assert rendered.index("Continue this session only") < rendered.index(
             "Continue and hide until versions change"
         )
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_refresh_picker_abort_launch_is_one_move_up(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Moving up once from the refresh default selects "Abort launch"."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _run_trust_action_picker,
+            _TrustAction,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _TrustAction:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, _TrustAction] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                move_up = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_up"
+                )
+                confirm = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_confirm"
+                )
+                move_up(event)
+                confirm(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        result = _run_trust_action_picker(
+            Console(stderr=True),
+            remember_label="Continue and hide until versions change",
+            allow_label="Continue this session only",
+            deny_label="Abort launch",
+            refresh_label="Refresh environment now",
+            deny_first=True,
+        )
+
+        assert result is _TrustAction.DENY
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_abort_on_deny_maps_picker_deny_to_cancelled(
@@ -6058,11 +6398,15 @@ class TestSelectProjectMcpTrustAction:
 
         assert result is _TrustAction[expected_name]
 
-    @pytest.mark.parametrize("token", ["u", "update", "f", "refresh"])
+    @pytest.mark.parametrize("token", ["", "u", "update", "f", "refresh"])
     def test_text_fallback_refresh_tokens(
         self, token: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The dependency-floor fallback accepts update and refresh spellings."""
+        """The dependency-floor fallback accepts update and refresh spellings.
+
+        An empty answer (a bare Enter) also refreshes: refresh is the default
+        in this prompt shape, matching the inline picker's initial highlight.
+        """
         from rich.console import Console
 
         from deepagents_code.main import (
@@ -6081,6 +6425,30 @@ class TestSelectProjectMcpTrustAction:
         )
 
         assert result is _TrustAction.REFRESH
+
+    @pytest.mark.parametrize("token", ["n", "no"])
+    def test_text_fallback_refresh_prompt_refuse_tokens(
+        self, token: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refusing the dependency-floor prompt stays an explicit choice."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _select_trust_action,
+            _TrustAction,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": token)
+
+        result = _select_trust_action(
+            Console(stderr=True), refresh_label="Refresh environment now"
+        )
+
+        assert result is _TrustAction.DENY
 
 
 class TestCheckMcpProjectTrustDedupe:

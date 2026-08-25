@@ -1054,6 +1054,27 @@ def test_load_trusted_cache_endpoints_reads_config_from_disk(
     assert load_trusted_cache_endpoints() == frozenset({"smith.langchain.com"})
 
 
+def test_load_trusted_cache_endpoints_prefers_managed_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Managed endpoint trust replaces a conflicting user configuration."""
+    from unit_tests.conftest import redirect_managed_config
+
+    (tmp_path / "config.toml").write_text(
+        '[warnings]\ntrusted_cache_endpoints = ["user.example.com"]\n',
+        encoding="utf-8",
+    )
+    managed = tmp_path / "managed_config.toml"
+    managed.write_text(
+        '[warnings]\ntrusted_cache_endpoints = ["managed.example.com"]\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+
+    assert load_trusted_cache_endpoints() == frozenset({"managed.example.com"})
+
+
 def test_load_trusted_cache_endpoints_survives_an_undecodable_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -781,13 +781,24 @@ class TestLoadThemePreference:
 
         assert _load_theme_preference() == "langchain"
 
-    def test_unknown_env_theme_returns_default(
+    def test_unknown_env_theme_falls_through_to_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from deepagents_code.app import _load_theme_preference
 
         config = tmp_path / "config.toml"
         config.write_text('[ui]\ntheme = "langchain-light"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv(THEME, "nonexistent-theme")
+
+        assert _load_theme_preference() == "langchain-light"
+
+    def test_unknown_env_theme_returns_default_without_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.app import _load_theme_preference
+
+        config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         monkeypatch.setenv(THEME, "nonexistent-theme")
 

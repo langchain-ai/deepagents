@@ -3,6 +3,12 @@ type: Codebase Guide
 title: Deep Agents monorepo quickstart
 description: "Entry point for engineers working on the Deep Agents Python monorepo: package roles, runtime boundaries, validation, and change-sensitive areas."
 tags: [deepagents, python, monorepo, engineering]
+openwiki:
+  roles: [repository, workflow]
+  change_kinds: [task-routing, operations]
+  source_paths: [libs/deepagents/deepagents/graph.py, libs/code/deepagents_code/config.py, libs/code/deepagents_code/tui/widgets/messages.py, .github/workflows/openwiki-update.yml]
+  test_paths: [libs/code/tests/unit_tests/test_coding_agent_metadata.py, libs/code/tests/unit_tests/tui/test_textual_adapter.py, libs/code/tests/unit_tests/tui/widgets/test_messages.py, .github/scripts/tests/workflows/test_workflow_secret_scoping.py]
+  validation_commands: ["cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_coding_agent_metadata.py tests/unit_tests/tui/test_textual_adapter.py -k 'ContractCompliance or versions_contains_cli_version or versions_marks_editable_cli_version'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k TestAssistantMessageStreamCoalescing", "uv run --directory libs/deepagents --group test pytest -q .github/scripts/tests/workflows/test_workflow_secret_scoping.py"]
 ---
 # Deep Agents monorepo
 
@@ -12,6 +18,7 @@ Deep Agents is an opinionated, extensible agent harness built on LangChain and L
 
 - Read [Architecture overview](architecture/overview.md) to trace `create_deep_agent()` from SDK construction into LangChain/LangGraph execution and to understand package boundaries.
 - Read [Deep Agents Code](workflows/deep-agents-code.md) before changing the terminal agent, approval routing, auto mode, sandboxes, or MCP loading.
+- Read [Talon runtime](workflows/talon-runtime.md) before changing the experimental long-running local host, channels, cron work, assistant state, or approval routing.
 - Read [Evaluation and release](workflows/evaluation-and-release.md) before changing eval harnesses, Harbor workflows, score aggregation, or package-release automation.
 - Use [Operations and testing](engineering/operations-and-testing.md) for the package-local edit/test/lint loop, CI controls, integrations, and source map.
 
@@ -24,14 +31,31 @@ Deep Agents is an opinionated, extensible agent harness built on LangChain and L
 | `libs/deepagents/` | Core SDK: `create_deep_agent`, middleware, profiles, backends, and subagent machinery. | `libs/deepagents/deepagents/graph.py` |
 | `libs/code/` | `dcode` / Deep Agents Code terminal coding agent, with a Textual client and LangGraph server process. | `libs/code/deepagents_code/main.py` |
 | `libs/acp/` | Agent Client Protocol adapter for compiled Deep Agent graphs and ACP-capable editors. | `libs/acp/deepagents_acp/server.py` |
-| `libs/cli/` | Managed Deep Agents deployment CLI; not the interactive terminal agent. | `libs/cli/deepagents_cli/main.py` |
 | `libs/evals/` | Unit/live evaluation tooling, Harbor integrations, datasets, and scorecard documentation. | `libs/evals/README.md` |
-| `libs/talon/` | Local runtime host for long-running agents. | `libs/talon/README.md` |
+| `libs/talon/` | Experimental local runtime host for long-running agents, channels, and cron jobs. | `libs/talon/deepagents_talon/__main__.py` |
 | `libs/partners/` | Sandbox/provider integrations: Daytona, Modal, QuickJS, Runloop, and Vercel. | `libs/partners/` |
 | `.github/` | Reusable CI, Harbor evaluations, release, and repository policy automation. | `.github/workflows/ci.yml` |
 | `examples/` | Focused patterns and deployable-reference agents rather than a shared product runtime. | `examples/README.md` |
 
-The core SDK in [Architecture overview](architecture/overview.md) supplies the harness that [Deep Agents Code](workflows/deep-agents-code.md) configures for interactive coding. That agent is exercised and compared through [Evaluation and release](workflows/evaluation-and-release.md); package checks and publishing rules live in [Operations and testing](engineering/operations-and-testing.md).
+The core SDK in [Architecture overview](architecture/overview.md) supplies the harness that [Deep Agents Code](workflows/deep-agents-code.md) configures for interactive coding and that [Talon runtime](workflows/talon-runtime.md) hosts for long-running channel and scheduled work. That agent is exercised and compared through [Evaluation and release](workflows/evaluation-and-release.md); package checks and publishing rules live in [Operations and testing](engineering/operations-and-testing.md).
+
+## Task routing
+
+Use this table to reach the owning behavior and the smallest evidence-backed check without a repository-wide search. Package tests belong in the affected package; the workflow guard is runnable from the SDK `uv` environment.
+
+| Change area or user intent | Relevant wiki page | Exact source entry points | Important symbols or types | Focused tests | Minimal validation command |
+| --- | --- | --- | --- | --- | --- |
+| Construct or extend a Deep Agent graph, middleware, backend, or profile | [Architecture overview](architecture/overview.md) | `libs/deepagents/deepagents/graph.py`, `middleware/`, `backends/`, `profiles/` | `create_deep_agent`, `DeepAgentState` | `libs/deepagents/tests/unit_tests/` nearest behavior suite | `cd libs/deepagents && make test TEST_FILE=tests/unit_tests/<focused_test>.py` |
+| Change the dcode UI/server, approvals, Auto policy, sandbox, or MCP behavior | [Deep Agents Code](workflows/deep-agents-code.md) | `libs/code/deepagents_code/{main,server_graph,agent,approval_mode,auto_mode,mcp_tools}.py` | `create_cli_agent`, `make_graph` | `test_approval_mode.py`, `test_auto_mode.py`, or `test_server_graph.py` | `cd libs/code && make test TEST_FILE=tests/unit_tests/<focused_test>.py` |
+| Change Talon host startup, channel turn routing, approval flow, cron jobs, or assistant-local state | [Talon runtime](workflows/talon-runtime.md) | `libs/talon/deepagents_talon/{__main__,host,runtime,config,data_lifecycle}.py`, `cron/scheduler.py` | `main`, `TalonHost`, `DeepAgentRuntime`, `PersistentCronScheduler` | `test_host.py`, `test_runtime.py`, `cron/test_scheduler.py`, or `test_data_lifecycle.py` | `cd libs/talon && make test TEST_FILE=tests/<focused_test>.py` |
+| Change dcode trace metadata, turn attribution, or editable-install observability | [Deep Agents Code trace metadata](workflows/deep-agents-code.md#trace-metadata-and-editable-install-attribution) | `libs/code/deepagents_code/{config.py,tui/textual_adapter.py,client/non_interactive.py}` | `build_stream_config`, `_resolve_editable_info` | `test_coding_agent_metadata.py::TestContractCompliance`, `test_textual_adapter.py::TestBuildStreamConfig` | `cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_coding_agent_metadata.py tests/unit_tests/tui/test_textual_adapter.py -k 'ContractCompliance or versions_contains_cli_version or versions_marks_editable_cli_version'` |
+| Change dcode configuration precedence, administrator policy, or managed-config startup behavior | [Deep Agents Code configuration](workflows/deep-agents-code.md#configuration-and-managed-policy) | `libs/code/deepagents_code/{config_manifest.py,configuration/}` | `resolve_ranked`, `require_healthy_managed_config`, `get_managed_snapshot` | `test_configuration.py`, `test_configuration_resolver.py` | `cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_configuration.py tests/unit_tests/test_configuration_resolver.py -k 'managed_provider_failure_is_fail_closed or corrupt_managed_config_does_not_empty_the_mcp_deny_set or durable_found_masks_only_lower_priority_ephemeral_tiers'` |
+| Change `ask_user` question/answer encoding or Auto consent evidence | [Deep Agents Code ask-user contract](workflows/deep-agents-code.md#ask-user-wire-contract) | `libs/code/deepagents_code/{_ask_user_types,ask_user,auto_mode}.py` | `encode_multi_select_answer`, `ask_user_answer_is_empty` | `test_ask_user_types.py::TestMultiSelectAnswerEncoding`, `TestAskUserAnswerIsEmpty` | `cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_ask_user_types.py -k 'MultiSelectAnswerEncoding or AskUserAnswerIsEmpty'` |
+| Change how sent prompts render, wrap, collapse, or copy in the dcode transcript | [Deep Agents Code](workflows/deep-agents-code.md#transcript-presentation-and-selection) | `libs/code/deepagents_code/tui/widgets/messages.py` | `UserMessage`, `_UserMessageContent`, `get_selection` | `test_messages.py::TestUserMessageAppearance` | `cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k UserMessageAppearance` |
+| Change dcode assistant-response streaming latency, batching, or flush/exit behavior | [Deep Agents Code](workflows/deep-agents-code.md#assistant-response-streaming) | `libs/code/deepagents_code/tui/{widgets/messages,textual_adapter}.py` | `AssistantMessage.append_content`, `_flush_pending_append`, `_stop_assistant_streams` | `test_messages.py::TestAssistantMessageStreamCoalescing` | `cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k TestAssistantMessageStreamCoalescing` |
+| Change cached MCP tool retries, error messages, or failure diagnostics | [Deep Agents Code](workflows/deep-agents-code.md#cached-mcp-tool-failure-boundary) | `libs/code/deepagents_code/mcp_tools.py` | `_build_cached_mcp_tool`, `_handle_cached_mcp_tool_error`, `MCPSessionManager` | `test_mcp_tools.py::TestCachedSessionProxy::{test_repeated_transient_error_surfaces_tool_message,test_generic_oserror_is_not_retried}` | `cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_mcp_tools.py -k 'repeated_transient_error_surfaces_tool_message or generic_oserror_is_not_retried'` |
+| Change eval results, unified Harbor orchestration, or package release behavior | [Evaluation and release](workflows/evaluation-and-release.md) | `libs/evals/deepagents_evals/cli.py`, `.github/scripts/evals/{unified_prep,aggregate_unified}.py`, `.github/workflows/{unified_evals,release}.yml` | `deepagents-evals`, `counts.failed` | `libs/evals/tests/unit_tests/` or `.github/scripts/tests/evals/` nearest suite | `cd libs/evals && make test TEST_FILE=tests/unit_tests/<focused_test>.py` |
+| Change scheduled OpenWiki updates, their secret boundary, or generated-document commit behavior | [Operations and testing](engineering/operations-and-testing.md#generated-openwiki-maintenance) | `.github/workflows/openwiki-update.yml`, `AGENTS.md` | `update` job; `test_openwiki_uses_dedicated_environment` | `.github/scripts/tests/workflows/test_workflow_secret_scoping.py` | `uv run --directory libs/deepagents --group test pytest -q .github/scripts/tests/workflows/test_workflow_secret_scoping.py` |
 
 ## Fast local loop
 
@@ -49,21 +73,17 @@ The common package targets are `make test` (socket-restricted unit tests), `make
 ## Product and security boundaries
 
 - The SDK is a harness, not a new graph runtime: LangChain owns the agent loop and LangGraph owns state, checkpointing, streaming, and interrupts.
-- Tool authority follows the configured backend and middleware. The root README’s security model is **trust the LLM**: enforce containment at tool/sandbox boundaries rather than treating model intent as a security control.
+- Tool authority follows the configured backend and middleware. The root README's security model is **trust the LLM**: enforce containment at tool/sandbox boundaries rather than treating model intent as a security control.
 - Deep Agents Code adds approval UX and policy, but approval is not containment. For untrusted repositories, use a remote sandbox; read [Deep Agents Code](workflows/deep-agents-code.md) before changing approval/MCP behavior.
 - Real model/Harbor evaluations have separate credentials, costs, and semantics from unit tests; they are documented in [Evaluation and release](workflows/evaluation-and-release.md).
 
 ## Current repository context
 
-The supplied working-tree snapshot had a modified `AGENTS.md` plus untracked OpenWiki workflow/wiki files; source documentation work should not overwrite that unrelated state. Recent history indicates active work in two high-risk areas:
+The recorded wiki `gitHead` (`19de73de163d2ca907fa4d9a44f2e19af635aa39`) is unavailable in this shallow checkout, so Git cannot produce a commit range. The reachable HEAD is `dfde21e379201c833da4162444ef4a13b46980fd` (`release(deepagents-talon): 0.0.4`); current source, tests, package metadata, and the package README are the evidence for this update.
 
-- `feat(code): classifier-backed Auto approval mode` introduced a large Auto-mode and approval-routing surface in `libs/code`; fail-closed behavior and prompt-authority provenance are critical.
-- HEAD, `feat(evals): compare branch variants with a neutral harness`, expanded unified Harbor evaluation to compare branch variants without changing the evaluator/harness baseline.
-
-Treat both as change-sensitive seams and follow the linked workflow pages for their exact checks and limits.
+Talon now has a canonical maintainer page because its current package is an independently released, Python 3.12+ experimental runtime host. It composes `create_deep_agent()` for channel and scheduled work, persists cron records and assistant material, and explicitly keeps production security boundaries out of scope. See [Talon runtime](workflows/talon-runtime.md) for the lifecycle, state/retention boundaries, and focused tests.
 
 ## Backlog
 
-- **Talon runtime host** — `libs/talon/README.md`; deferred from this first pass because the core SDK, dcode, and evaluation/release pathways dominate current repository changes.
 - **Partner implementations** — `libs/partners/{daytona,modal,quickjs,runloop,vercel}`; catalogued above but not individually documented because each is an integration package with its own boundary and should be expanded when modified.
 - **Examples** — `examples/README.md`; examples are intentionally navigated from their own READMEs and were not duplicated into the maintainer wiki.

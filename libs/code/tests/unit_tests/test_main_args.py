@@ -3542,3 +3542,68 @@ class TestWarnInterpreterDisabledBySandbox:
         assert exc_info.value.code == 0
         assert run_mock.call_args.kwargs["enable_interpreter"] is False
         assert "unavailable under a remote sandbox" not in capsys.readouterr().err
+
+
+class TestModelParamsRetryOverrideWarning:
+    """An ignored `--model-params` retry count must be visible, not buffered."""
+
+    @staticmethod
+    def _run_headless(argv: list[str]) -> None:
+        """Run `cli_main` headlessly so the caller can read captured stderr."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.return_value = "hi"
+
+        real_open = os.open
+
+        def _open_no_tty(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            if os.fsdecode(path) == "/dev/tty":
+                msg = "No controlling terminal"
+                raise OSError(msg)
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("os.open", side_effect=_open_no_tty),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+
+    def test_supplied_retry_param_warns(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--model-params max_retries` is always overridden, so say so."""
+        self._run_headless(
+            ["dcode", "--model-params", '{"max_retries": 10}', "-n", "hi"]
+        )
+        stderr = capsys.readouterr().err
+        assert "--model-params max_retries is ignored" in stderr
+        assert "--max-retries" in stderr
+
+    def test_unrelated_params_stay_quiet(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An ordinary override must not trigger the retry warning."""
+        self._run_headless(
+            ["dcode", "--model-params", '{"temperature": 0.7}', "-n", "hi"]
+        )
+        assert "is ignored; dcode owns the retry budget" not in capsys.readouterr().err

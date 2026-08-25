@@ -4721,6 +4721,28 @@ def cli_main() -> None:
                 )
                 sys.exit(1)
 
+        # dcode's model-node middleware owns the retry budget, so `create_model`
+        # forces the provider's own retry kwarg to its disable value. A
+        # `--model-params` retry count is therefore always overridden. Say so
+        # here: the override is logged into the debug buffer, which the user
+        # never sees, and a silently ignored explicit flag reads as a bug.
+        if isinstance(model_params, dict):
+            from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
+
+            retry_param_names = {"max_retries", *RETRY_PARAM_BY_PROVIDER.values()}
+            supplied = sorted(retry_param_names & set(model_params))
+            if supplied:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[bold yellow]Warning:[/bold yellow] --model-params "
+                    f"{', '.join(supplied)} is ignored; dcode owns the retry "
+                    "budget. Use --max-retries or [retries].max_retries in "
+                    "config.toml instead.",
+                    soft_wrap=True,
+                    highlight=False,
+                )
+
         max_retries = getattr(args, "max_retries", None)
         if max_retries is not None:
             from deepagents_code.config import CLI_MAX_RETRIES_KEY

@@ -5762,6 +5762,20 @@ class TestMessageQueue:
             release_restart.set()
             await restart_task
 
+    async def test_queue_restore_preserves_existing_draft_whitespace(self) -> None:
+        """Returning queued prompts does not strip whitespace from a draft."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            draft = "    def example():\n        pass\n"
+            assert app._chat_input is not None
+            app._chat_input.set_value_at_end(draft)
+            app._pending_messages.append(QueuedMessage("queued prompt", "normal"))
+
+            await app._restore_queue_to_input("Prompts restored.")
+
+            assert app._chat_input.value == f"{draft}\n\nqueued prompt"
+
     async def test_restart_remote_server_returns_queued_prompts_to_input(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

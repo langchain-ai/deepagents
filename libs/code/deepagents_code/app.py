@@ -19750,8 +19750,8 @@ class DeepAgentsApp(App):
         restored = "\n\n".join(texts)
         chat_input = self._chat_input
         if chat_input is not None:
-            draft = chat_input.value.strip()
-            if draft:
+            draft = chat_input.value
+            if draft.strip():
                 restored = f"{draft}\n\n{restored}"
             if not chat_input.set_value_at_end(restored):
                 logger.warning(

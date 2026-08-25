@@ -831,6 +831,20 @@ def _parse_remote_toml(
             "remote source contains invalid TOML",
             source,
         )
+    if not data:
+        # An empty local file is a deliberate administrator act. Here the
+        # descriptor asserts that this URL holds the whole managed policy, so a
+        # document with no keys contradicts it -- a botched publish, a
+        # truncated object store overwrite, or an edge answering while the
+        # origin is down. Reading it as "nothing is enforced" would let any of
+        # those evict live policy.
+        return _remote_status(
+            name,
+            path,
+            ProviderHealth.CORRUPT,
+            "remote source declared no policy",
+            source,
+        )
     if "managed_config" in data:
         return _remote_status(
             name,

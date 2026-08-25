@@ -4319,3 +4319,20 @@ def test_remote_toml_provider_accepts_a_body_at_the_size_limit(
 
     assert snapshot.status.health is ProviderHealth.OK
     assert snapshot.data == {"startup": {"mode": "manual"}}
+
+
+def test_remote_toml_provider_rejects_a_keyless_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A document with no keys contradicts the descriptor that named it.
+
+    The trust anchor asserts that the URL holds the complete managed policy, so
+    an empty body is a failed publish, not an administrator enforcing nothing.
+    Accepting it would let a bad deploy evict the last enforceable generation.
+    """
+    snapshot = _remote_snapshot(_RemoteResponse(b""), tmp_path, monkeypatch)
+
+    assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert "declared no policy" in (snapshot.status.detail or "")
+    assert not snapshot.data

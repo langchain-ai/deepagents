@@ -284,3 +284,45 @@ def test_companion_flags_spell_their_startup_mode() -> None:
     modes = {mode.value for mode in ApprovalMode}
     for flag in option.cli.companion_flags:
         assert flag.removeprefix("--") in modes
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("safe", "safe"),
+        ("all", "all"),
+        ("ALL", "all"),
+        ("Safe", "safe"),
+        ("task", ["task"]),
+        ("safe,task", ["safe", "task"]),
+        (" task , shell ", ["task", "shell"]),
+    ],
+)
+def test_interpreter_tools_accepted(raw: str, expected: object) -> None:
+    """Sentinels normalize case; anything else parses as a tool-name list."""
+    option = get_option("interpreter.ptc")
+    assert option is not None
+    result = CliProvider({"interpreter_tools": raw}).get(option).result
+    assert isinstance(result, Found)
+    assert result.value == expected
+
+
+@pytest.mark.parametrize("raw", ["", "   ", ",,,", " , ", "a,all", "safe,ALL", "x,All"])
+def test_interpreter_tools_rejected(raw: str) -> None:
+    """Blank input and a listed `all` must be rejected, not coerced.
+
+    `all` is the unrestricted PTC sentinel and is only valid standalone.
+    Rejection is enforced twice -- once in `_parse_interpreter_tools` and again
+    in the manifest coercion, which produces the more specific message. These
+    cases pin the outcome rather than which layer catches it, so removing
+    either layer alone stays green here by design; what must never regress is
+    a listed `all` resolving to a tool list.
+
+    Only the accepted list branch was covered before this: every rejection
+    path, sentinel normalization included, was untested.
+    """
+    option = get_option("interpreter.ptc")
+    assert option is not None
+    result = CliProvider({"interpreter_tools": raw}).get(option).result
+    assert isinstance(result, Invalid)
+    assert "--interpreter-tools" in result.reason

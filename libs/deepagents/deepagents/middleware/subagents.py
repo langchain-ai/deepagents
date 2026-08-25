@@ -4,7 +4,7 @@ import contextlib
 import dataclasses
 import json
 from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
-from typing import Annotated, Any, Literal, Never, NotRequired, TypedDict, cast
+from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -201,9 +201,6 @@ class ForkedSubAgent(_SubAgentBase):
 
     mode: Literal["fork"]
     """Required discriminator that enables conversation forking."""
-
-    system_prompt: NotRequired[Never]
-    """Forked subagents always use the parent's system prompt."""
 
 
 class CompiledSubAgent(TypedDict):

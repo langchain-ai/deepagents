@@ -1427,8 +1427,10 @@ def _append_discovered_config(
             # collision so relocating the profile never self-trusts the repo's
             # own MCP file.
             if identity is MCPConfigIdentity.SAME:
-                # One file: replace in place so precedence order is preserved.
-                found[index] = candidate
+                # One file: move it to this discovery position so a profile
+                # collision cannot give an earlier path higher precedence.
+                found.pop(index)
+                found.append(candidate)
                 return
             # Identity is unknown, so these may be two distinct files. Demote
             # the existing entry to project scope instead of dropping it: the

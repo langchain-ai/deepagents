@@ -2846,6 +2846,30 @@ class TestDiscoveryHelpers:
             DiscoveredMCPConfig(config, MCPConfigScope.PROJECT, project)
         ]
 
+    def test_profile_collision_preserves_project_config_precedence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The root project config still overrides the nested project config."""
+        project = tmp_path / "repo"
+        nested = project / ".deepagents"
+        nested.mkdir(parents=True)
+        nested_cfg = nested / ".mcp.json"
+        root_cfg = project / ".mcp.json"
+        nested_cfg.write_text(
+            '{"mcpServers":{"docs":{"command":"echo","args":["nested"]}}}'
+        )
+        root_cfg.write_text(
+            '{"mcpServers":{"docs":{"command":"echo","args":["root"]}}}'
+        )
+        _set_profile_root(monkeypatch, project, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
+
+        sources = discover_mcp_config_sources(project_context=context)
+        merged = load_merged_mcp_configs_lenient([source.path for source in sources])
+
+        assert [source.path for source in sources] == [nested_cfg, root_cfg]
+        assert merged == {"mcpServers": {"docs": {"command": "echo", "args": ["root"]}}}
+
     def test_symlink_collision_keeps_project_scope(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

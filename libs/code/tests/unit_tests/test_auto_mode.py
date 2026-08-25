@@ -4455,7 +4455,7 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
         tool_name="delete",
         args={"file_path": "old.py"},
     )
-    await _route_plan(
+    routed = await _route_plan(
         middleware,
         request,
         plan,
@@ -4465,11 +4465,97 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     assert plan["decisions"][0]["reason"] == "classifier did not respond within 0.05s"
+    assert routed is not None
+    assert routed["messages"][-1].content.startswith(
+        "Authorization review timed out; the identical call may be retried."
+    )
     lifecycle = [event for event in events if event["event"].startswith("review_")]
     assert [event["event"] for event in lifecycle] == [
         "review_started",
         "review_completed",
     ]
+
+
+async def test_classifier_timeout_retries_once_and_allows(
+    tmp_path: Path,
+) -> None:
+    class _RetryModel(_StructuredModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            if len(self.calls) == 1:
+                await asyncio.sleep(5)
+            return self.result
+
+    model = _RetryModel(_allow_result())
+    middleware = _middleware(
+        tmp_path,
+        classifier_timeout_seconds=0.05,
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert len(model.calls) == 2
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_nonconsecutive_classifier_unavailability_escalates(
+    tmp_path: Path,
+) -> None:
+    model = _StructuredModel(error=RuntimeError("provider unavailable"))
+    middleware = _middleware(tmp_path)
+    request, store, key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    first = await _plan(
+        middleware, request, tool_name="delete", args={"file_path": "1"}
+    )
+    assert first["decisions"][0]["disposition"] == "classifier_unavailable"
+    counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
+    counters["consecutive_unavailable"] = 0
+    second = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "2"},
+        call_id="call-2",
+    )
+    assert second["decisions"][0]["disposition"] == "classifier_unavailable"
+    counters["consecutive_unavailable"] = 0
+    third = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "3"},
+        call_id="call-3",
+    )
+    assert third["decisions"][0]["disposition"] == "classifier_unavailable"
+    counters["consecutive_unavailable"] = 0
+    fourth = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "4"},
+        call_id="call-4",
+    )
+
+    assert fourth["fallback_reason"] == "classifier_unavailable"
+    assert fourth["decisions"][0]["disposition"] == "require_human"
 
 
 @pytest.mark.parametrize("budget", [0, -1.0, float("nan"), float("inf")])
@@ -5878,6 +5964,8 @@ async def test_policy_denial_becomes_error_tool_message(tmp_path: Path) -> None:
     assert denial.status == "error"
     assert denial.tool_call_id == "call-1"
     assert "destructive_action" in denial.content
+    assert denial.content.startswith("Auto denied [destructive_action]:")
+    assert "Authorization review timed out" not in denial.content
 
 
 async def test_classifier_unavailable_emits_single_event_for_batch(

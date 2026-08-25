@@ -97,6 +97,7 @@ _REASON_LIMIT = 512
 _TOTAL_DENIAL_FALLBACK = 20
 _CONSECUTIVE_DENIAL_FALLBACK = 3
 _CONSECUTIVE_UNAVAILABLE_FALLBACK = 2
+_TOTAL_UNAVAILABLE_FALLBACK = 3
 _MIN_SECRET_LENGTH = 8
 _FALLBACK_REASON_CODES = frozenset(
     {
@@ -276,6 +277,7 @@ class AutoModeCounters(TypedDict):
     consecutive_denials: int
     total_denials: int
     consecutive_unavailable: int
+    total_unavailable: int
     last_batch_id: str | None
     last_turn_id: str | None
     last_mode: str
@@ -679,6 +681,7 @@ def _default_counters(mode: ApprovalMode) -> AutoModeCounters:
         "consecutive_denials": 0,
         "total_denials": 0,
         "consecutive_unavailable": 0,
+        "total_unavailable": 0,
         "last_batch_id": None,
         "last_turn_id": None,
         "last_mode": mode.value,
@@ -698,10 +701,12 @@ def _validate_counters(value: object) -> AutoModeCounters | None:
     consecutive_denials = value.get("consecutive_denials")
     total_denials = value.get("total_denials")
     consecutive_unavailable = value.get("consecutive_unavailable")
+    total_unavailable = value.get("total_unavailable", 0)
     integer_values = (
         consecutive_denials,
         total_denials,
         consecutive_unavailable,
+        total_unavailable,
     )
     if any(
         not isinstance(item, int) or isinstance(item, bool) or item < 0
@@ -728,6 +733,7 @@ def _validate_counters(value: object) -> AutoModeCounters | None:
         "consecutive_denials": cast("int", consecutive_denials),
         "total_denials": cast("int", total_denials),
         "consecutive_unavailable": cast("int", consecutive_unavailable),
+        "total_unavailable": cast("int", total_unavailable),
         "last_batch_id": last_batch_id,
         "last_turn_id": last_turn_id,
         "last_mode": last_mode,
@@ -2280,11 +2286,14 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if counters["last_mode"] != mode.value:
             counters["consecutive_denials"] = 0
             counters["consecutive_unavailable"] = 0
+            counters["total_unavailable"] = 0
             counters["last_mode"] = mode.value
             changed = True
         turn_id = _latest_turn_id(request.messages)
         if turn_id is not None and turn_id != counters["last_turn_id"]:
             counters["consecutive_denials"] = 0
+            counters["consecutive_unavailable"] = 0
+            counters["total_unavailable"] = 0
             counters["last_turn_id"] = turn_id
             changed = True
         if changed and not await _write_counters(store, thread_key, counters):
@@ -2494,31 +2503,26 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     self._classifier_construction_timeout_seconds,
                 ) from None
             raise
-        timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
-        try:
-            async with timeout_cm:
-                structured = model.with_structured_output(AutoDecisionBatch)
-                messages = [
-                    SystemMessage(content=_CLASSIFIER_POLICY),
-                    HumanMessage(
-                        content=_classifier_context(
-                            request,
-                            calls,
-                            all_calls,
-                            dispositions,
-                            tools,
-                            self._trusted_environment,
-                            self._trusted_ask_user_tool,
-                        )
-                    ),
-                ]
-                # Primary-model settings are provider- and model-specific
-                # (Anthropic `cache_control`, OpenAI `prompt_cache_key`,
-                # reasoning budgets, `--model-params`), so they only travel
-                # with the primary model. A distinct classifier runs on its
-                # own defaults.
-                settings = request.model_settings if spec is None else {}
-                result = await structured.ainvoke(
+        structured = model.with_structured_output(AutoDecisionBatch)
+        messages = [
+            SystemMessage(content=_CLASSIFIER_POLICY),
+            HumanMessage(
+                content=_classifier_context(
+                    request,
+                    calls,
+                    all_calls,
+                    dispositions,
+                    tools,
+                    self._trusted_environment,
+                    self._trusted_ask_user_tool,
+                )
+            ),
+        ]
+        settings = request.model_settings if spec is None else {}
+        for attempt in range(2):
+            timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
+            task = asyncio.create_task(
+                structured.ainvoke(
                     messages,
                     config={
                         "run_name": "dcode_auto_classifier",
@@ -2530,15 +2534,24 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     },
                     **settings,
                 )
-        except TimeoutError:
-            # `asyncio.timeout(...).expired()` distinguishes our wait budget
-            # from a provider that raises `TimeoutError` itself. `wait_for`
-            # cannot; both ends surface the same type.
-            if timeout_cm.expired():
-                raise _ClassifierDeadlineExceededError(
-                    self._classifier_timeout_seconds
-                ) from None
-            raise
+            )
+            try:
+                async with timeout_cm:
+                    result = await asyncio.shield(task)
+                break
+            except TimeoutError:
+                # `asyncio.timeout(...).expired()` distinguishes our wait budget
+                # from a provider that raises `TimeoutError` itself. `wait_for`
+                # cannot; both ends surface the same type.
+                if not timeout_cm.expired():
+                    raise
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                if attempt == 1:
+                    raise _ClassifierDeadlineExceededError(
+                        self._classifier_timeout_seconds
+                    ) from None
         if isinstance(result, AutoDecisionBatch):
             return result
         return AutoDecisionBatch.model_validate(result)
@@ -2712,7 +2725,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             )
         if counters["consecutive_denials"] >= _CONSECUTIVE_DENIAL_FALLBACK:
             plan["fallback_reason"] = "consecutive_policy_denials"
-        elif counters["consecutive_unavailable"] >= _CONSECUTIVE_UNAVAILABLE_FALLBACK:
+        elif (
+            counters["consecutive_unavailable"] >= _CONSECUTIVE_UNAVAILABLE_FALLBACK
+            or counters["total_unavailable"] >= _TOTAL_UNAVAILABLE_FALLBACK
+        ):
             plan["fallback_reason"] = "classifier_unavailable"
         if plan["fallback_reason"] is not None:
             for call in review_calls:
@@ -2779,6 +2795,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     counters["classifier_config_failed_spec"] = config_fault.spec
                 else:
                     counters["consecutive_unavailable"] += 1
+                    counters["total_unavailable"] += 1
                 counters["last_batch_id"] = batch_id
                 counters_saved = await _write_counters(
                     request.runtime.store, thread_key, counters
@@ -3456,6 +3473,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if counters is not None and counters["last_mode"] != current_mode.value:
             counters["consecutive_denials"] = 0
             counters["consecutive_unavailable"] = 0
+            counters["total_unavailable"] = 0
             counters["last_mode"] = current_mode.value
             if thread_key is None or not await _write_counters(
                 runtime.store, thread_key, counters
@@ -3556,7 +3574,15 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 continue
             unavailable = decision["disposition"] == "classifier_unavailable"
             label = "classifier unavailable" if unavailable else decision["category"]
-            content = f"Auto denied [{label}]: {decision['reason']}"
+            if unavailable and decision["reason"].startswith(
+                "classifier did not respond"
+            ):
+                content = (
+                    "Authorization review timed out; the identical call may be "
+                    f"retried. {decision['reason']}"
+                )
+            else:
+                content = f"Auto denied [{label}]: {decision['reason']}"
             denied_messages.append(
                 ToolMessage(
                     content=content,
@@ -3621,6 +3647,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             # so a bad spec keeps asking instead of resuming silent denials.
             counters["consecutive_denials"] = 0
             counters["consecutive_unavailable"] = 0
+            counters["total_unavailable"] = 0
             await _write_counters(runtime.store, thread_key, counters)
 
         terminal_ids = {message.tool_call_id for message in artificial}

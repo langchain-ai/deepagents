@@ -4496,6 +4496,75 @@ def test_stale_refresh_cannot_overwrite_a_newer_published_snapshot(
     assert service.get_managed_snapshot().data == {"startup": {"mode": "new"}}
 
 
+def test_newer_refresh_publishes_after_older_refresh_finishes_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each overlapping refresh receives its own publication ticket.
+
+    The older refresh can publish while the newer one is still fetching. The
+    newer result must remain eligible to replace it when that fetch finishes;
+    otherwise revoked permissions stay active until another reload.
+    """
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.types import ProviderStatus, TomlSnapshot
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+
+    old_started = Event()
+    finish_old = Event()
+    new_started = Event()
+    finish_new = Event()
+    load_number = 0
+
+    def snapshot(mode: str) -> TomlSnapshot:
+        return TomlSnapshot(
+            {"startup": {"mode": mode}},
+            ProviderStatus("managed config", managed, ProviderHealth.OK, None),
+        )
+
+    def overlapping_load(_path: Path | None = None) -> TomlSnapshot:
+        nonlocal load_number
+        load_number += 1
+        if load_number == 1:
+            old_started.set()
+            assert finish_old.wait(timeout=5)
+            return snapshot("old")
+        new_started.set()
+        assert finish_new.wait(timeout=5)
+        return snapshot("new")
+
+    monkeypatch.setattr(service, "_load_managed", overlapping_load)
+    old_result: list[TomlSnapshot] = []
+    new_result: list[TomlSnapshot] = []
+    old_worker = Thread(
+        target=lambda: old_result.append(service.get_managed_snapshot(refresh=True)),
+        name="older-refresh",
+        daemon=True,
+    )
+    new_worker = Thread(
+        target=lambda: new_result.append(service.get_managed_snapshot(refresh=True)),
+        name="newer-refresh",
+        daemon=True,
+    )
+
+    old_worker.start()
+    assert old_started.wait(timeout=5)
+    new_worker.start()
+    assert new_started.wait(timeout=5)
+    finish_old.set()
+    old_worker.join(timeout=5)
+    assert old_result[0].data == {"startup": {"mode": "old"}}
+
+    finish_new.set()
+    new_worker.join(timeout=5)
+    assert new_result[0].data == {"startup": {"mode": "new"}}
+    assert service.get_managed_snapshot().data == {"startup": {"mode": "new"}}
+
+
 @pytest.mark.parametrize(
     ("failure", "expected"),
     [

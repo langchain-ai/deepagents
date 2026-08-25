@@ -16260,6 +16260,7 @@ class DeepAgentsApp(App):
         so it mounts its own failure message — the `_handle_command`
         `try/except` no longer wraps it.
         """
+        from deepagents_code import config as config_module
         from deepagents_code.config import settings
 
         try:
@@ -16269,6 +16270,10 @@ class DeepAgentsApp(App):
 
             try:
                 changes = await asyncio.to_thread(settings.reload_from_environment)
+                blocked = config_module.managed_reload_block(changes)
+                if blocked is not None:
+                    await self._mount_message(ErrorMessage(blocked))
+                    return
 
                 from deepagents_code.model_config import clear_caches
 

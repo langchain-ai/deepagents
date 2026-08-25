@@ -36020,6 +36020,42 @@ class TestRespawnServer:
                 for report in reports
             )
 
+    async def test_reload_stops_when_managed_policy_refresh_is_blocked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retained policy snapshot must not be followed by a server restart."""
+        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX, settings
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+            blocked = (
+                f"{MANAGED_RELOAD_BLOCKED_PREFIX}remote managed config could "
+                "not be refreshed"
+            )
+            monkeypatch.setattr(
+                settings,
+                "reload_from_environment",
+                lambda: [blocked],
+            )
+            clear_caches = MagicMock()
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches",
+                clear_caches,
+            )
+            restart = AsyncMock()
+            monkeypatch.setattr(app, "_restart_server_manual_result", restart)
+
+            await app._run_reload()
+
+            clear_caches.assert_not_called()
+            restart.assert_not_awaited()
+            assert any(
+                blocked in str(message._content) for message in app.query(ErrorMessage)
+            )
+
     async def test_reload_preserves_queue_across_idle_server_restart(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

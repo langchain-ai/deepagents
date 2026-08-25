@@ -579,11 +579,14 @@ class ManagedPolicyError(ManagedConfigError):
 class _SnapshotState:
     """Mutable process snapshot guarded by `_snapshot_lock`."""
 
-    __slots__ = ("managed",)
+    __slots__ = ("generation", "managed")
 
     def __init__(self) -> None:
         """Start with no cached snapshot."""
         self.managed: TomlSnapshot | None = None
+        # Monotonic counter identifying the newest published snapshot. A load
+        # that started before the current generation must not overwrite it.
+        self.generation = 0
 
 
 _snapshot_lock = threading.RLock()
@@ -695,6 +698,7 @@ def get_managed_snapshot(
         cached = _snapshot_state.managed
         if not refresh and cached is not None:
             return cached
+        generation_at_start = _snapshot_state.generation
     # Load outside the lock. A remote descriptor turns this into an HTTPS
     # fetch, and every ordinary config read reaches `get_managed_snapshot`
     # through `get_config_resolver`, much of it from the Textual event loop.
@@ -712,7 +716,17 @@ def get_managed_snapshot(
     )
     with _snapshot_lock:
         if enforceable:
-            _snapshot_state.managed = candidate
+            # A refresh that started earlier can finish after a later one has
+            # already published. Publishing it would roll the process back to
+            # a policy generation the administrator has already replaced, so
+            # only the newest in-flight load may write the cache.
+            if generation_at_start >= _snapshot_state.generation:
+                _snapshot_state.managed = candidate
+                _snapshot_state.generation = generation_at_start + 1
+                return candidate
+            published = _snapshot_state.managed
+            if published is not None:
+                return published
             return candidate
         published = _snapshot_state.managed
         if not refresh and published is not None:
@@ -787,6 +801,9 @@ def invalidate_config_sources() -> None:
 
     with _snapshot_lock:
         _snapshot_state.managed = None
+        # Advance the generation so an in-flight load started before the reset
+        # cannot republish the snapshot being cleared.
+        _snapshot_state.generation += 1
     reset_config_resolver()
 
 

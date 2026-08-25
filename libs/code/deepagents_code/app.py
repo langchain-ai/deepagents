@@ -27095,13 +27095,17 @@ class DeepAgentsApp(App):
         comparison report a false match and silently skip the restore.
         """
         previous_cwd = Path(self._cwd)
-        await self._refresh_project_context_for_cwd_switch(cwd)
-        os.chdir(cwd)
         try:
+            await self._refresh_project_context_for_cwd_switch(cwd)
+            os.chdir(cwd)
             self._apply_cwd_to_ui(cwd)
         except BaseException:
             with suppress(OSError):
                 os.chdir(previous_cwd)
+            # Restore the previous project context so a failed switch does not
+            # leave settings pointed at a directory the process never entered.
+            with suppress(Exception):
+                await self._refresh_project_context_for_cwd_switch(previous_cwd)
             # Re-sync UI state to the restored cwd. Best-effort: a failure here
             # must not mask the original exception.
             with suppress(Exception):

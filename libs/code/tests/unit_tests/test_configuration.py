@@ -4438,6 +4438,64 @@ def test_managed_refresh_does_not_hold_the_snapshot_lock(
     reader.join(timeout=5)
 
 
+def test_stale_refresh_cannot_overwrite_a_newer_published_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An older in-flight load must not roll back a newer policy generation.
+
+    Loads run outside `_snapshot_lock`, so two refreshes can overlap. If the
+    managed file changes between their reads and the older read finishes last,
+    publishing it would resume enforcing policy the administrator already
+    replaced — including permissions the newer generation revoked.
+    """
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.types import ProviderStatus, TomlSnapshot
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+
+    old_started = Event()
+    finish_old = Event()
+
+    def snapshot(mode: str) -> TomlSnapshot:
+        return TomlSnapshot(
+            {"startup": {"mode": mode}},
+            ProviderStatus("managed config", managed, ProviderHealth.OK, None),
+        )
+
+    def old_load(_path: Path | None = None) -> TomlSnapshot:
+        old_started.set()
+        assert finish_old.wait(timeout=5)
+        return snapshot("old")
+
+    monkeypatch.setattr(service, "_load_managed", old_load)
+    old_result: list[TomlSnapshot] = []
+
+    def refresh_old() -> None:
+        old_result.append(service.get_managed_snapshot(refresh=True))
+
+    worker = Thread(target=refresh_old, name="stale-refresh", daemon=True)
+    worker.start()
+    assert old_started.wait(timeout=5)
+
+    # A newer refresh publishes while the older load is still in flight.
+    monkeypatch.setattr(service, "_load_managed", lambda _path=None: snapshot("new"))
+    assert service.get_managed_snapshot(refresh=True).data == {
+        "startup": {"mode": "new"}
+    }
+
+    finish_old.set()
+    worker.join(timeout=5)
+
+    # The stale load finishes last but must not overwrite the newer snapshot;
+    # as a refresh caller it still receives the generation it loaded.
+    assert old_result[0].data == {"startup": {"mode": "old"}}
+    assert service.get_managed_snapshot().data == {"startup": {"mode": "new"}}
+
+
 @pytest.mark.parametrize(
     ("failure", "expected"),
     [

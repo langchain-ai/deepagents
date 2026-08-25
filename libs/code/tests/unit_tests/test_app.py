@@ -38003,6 +38003,53 @@ class TestResumeThreadCwdSwitch:
         assert Path.cwd() == current
         assert app._cwd == str(current)
 
+    async def test_switch_process_cwd_restores_settings_on_chdir_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed chdir reloads the previous project context.
+
+        The refresh runs before `os.chdir`, so a chdir failure would otherwise
+        leave settings and model caches pointing at a directory the process
+        never entered.
+        """
+        from deepagents_code.config import settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        app._chat_input = None
+        app._status_bar = None
+
+        reloads: list[Path | None] = []
+        original_reload = settings.reload_from_environment
+
+        def recording_reload(*, start_path: Path | None = None) -> list[str]:
+            reloads.append(start_path)
+            return original_reload(start_path=start_path)
+
+        monkeypatch.setattr(settings, "reload_from_environment", recording_reload)
+
+        def boom(_cwd: object) -> None:
+            msg = "cannot chdir"
+            raise OSError(msg)
+
+        with (
+            patch("deepagents_code.model_config.clear_caches"),
+            patch("os.chdir", boom),
+            pytest.raises(OSError, match="cannot chdir"),
+        ):
+            await app._switch_process_cwd(target)
+
+        # Target refresh, then the rollback refresh for the previous cwd.
+        assert reloads == [target, current]
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+
     # --- _cwd_paths_equal (pure staticmethod) ---
 
     def test_cwd_paths_equal_matches_symlinked_paths(self, tmp_path: Path) -> None:

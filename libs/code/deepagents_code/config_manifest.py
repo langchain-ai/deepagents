@@ -819,6 +819,8 @@ def _cli_supplied_flag(option: ConfigOption, cli_value: object) -> str:
     for flag in spec.companion_flags:
         if flag.removeprefix("--") == cli_value:
             return flag
+    if cli_value is False:
+        return f"--no-{spec.flag.removeprefix('--')}"
     return spec.flag
 
 

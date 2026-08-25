@@ -3493,6 +3493,54 @@ def test_masked_cli_flag_warns_the_user(
     assert "managed config takes precedence" in err
 
 
+@pytest.mark.parametrize(
+    ("key", "managed_toml", "cli_args", "negative_flag", "positive_flag"),
+    [
+        (
+            "interpreter.enable_interpreter",
+            {"interpreter": {"enable_interpreter": True}},
+            {"interpreter": False},
+            "--no-interpreter",
+            "--interpreter",
+        ),
+        (
+            "threads.relative_time",
+            {"threads": {"relative_time": True}},
+            {"relative": False},
+            "--no-relative",
+            "--relative",
+        ),
+    ],
+)
+def test_masked_negative_boolean_flag_warns_with_the_negative_spelling(
+    key: str,
+    managed_toml: dict[str, Any],
+    cli_args: dict[str, object],
+    negative_flag: str,
+    positive_flag: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Managed-policy warnings must name the Boolean flag the user supplied."""
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.types import TomlSnapshot
+
+    option = get_option(key)
+    assert option is not None
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot.from_table("managed config", managed_toml),
+        user=TomlSnapshot.from_table("config.toml", {}),
+        cli_provider=CliProvider(cli_args),
+    )
+
+    _emit_ranked_diagnostics(option, resolver.get(option))
+
+    err = capsys.readouterr().err
+    assert f"{negative_flag} was ignored" in err
+    assert f"{positive_flag} was ignored" not in err
+
+
 def test_config_command_reports_the_cli_tier() -> None:
     """`dcode config` must credit a flag the user passed in this argv.
 

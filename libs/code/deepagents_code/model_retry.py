@@ -128,6 +128,7 @@ class _MessageStreamTracker:
 
     def __init__(self) -> None:
         self.has_streamed = False
+        self._tracked: list[tuple[StreamMessagesHandler, StreamMessagesHandler]] = []
 
     def callbacks_with_tracked_messages(
         self, callbacks: BaseCallbackManager
@@ -144,11 +145,6 @@ class _MessageStreamTracker:
         replacements: dict[int, StreamMessagesHandler] = {}
 
         def forward(source: StreamMessagesHandler, chunk: StreamChunk) -> None:
-            data = chunk[2]
-            if isinstance(data, tuple) and data:
-                message_id = getattr(data[0], "id", None)
-                if isinstance(message_id, str | int):
-                    source.seen.add(message_id)
             source.stream(chunk)
             self.has_streamed = True
 
@@ -164,6 +160,7 @@ class _MessageStreamTracker:
                 )
                 tracked.seen.update(handler.seen)
                 replacements[key] = tracked
+                self._tracked.append((handler, tracked))
             return replacements[key]
 
         tracked_callbacks = copy(callbacks)
@@ -172,6 +169,24 @@ class _MessageStreamTracker:
             replace(item) for item in callbacks.inheritable_handlers
         ]
         return tracked_callbacks if replacements else None
+
+    def merge_seen(self) -> None:
+        """Copy de-duplication ids recorded this attempt back to the originals.
+
+        Only the tracked copies are installed while the model runs, so every id
+        they record lands on them and not on the handlers that stay installed
+        for the rest of the graph run. Without this the original handler's
+        `on_chain_end` re-emits the finalized message and the answer renders
+        twice.
+
+        The whole set is copied rather than ids picked out of each chunk: the
+        handlers record ids from several places (`on_llm_end` for a streamed
+        run, `on_stream_event` for a v2 `message-start`) and the payload shape
+        differs between the v1 and v2 handlers. Copying the set needs to know
+        neither.
+        """
+        for source, tracked in self._tracked:
+            source.seen.update(tracked.seen)
 
 
 @contextmanager
@@ -213,6 +228,7 @@ def _track_message_streams(
         yield tracker
     finally:
         var_child_runnable_config.reset(token)
+        tracker.merge_seen()
 
 
 def _extract_status_code(exc: Exception) -> int | None:

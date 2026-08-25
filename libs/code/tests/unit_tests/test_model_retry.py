@@ -1083,3 +1083,38 @@ def test_valid_retry_event_renders_the_shared_status() -> None:
     """Both clients must render exactly what the producer formats."""
     event = build_retry_event(2, 5)
     assert retry_status_from_event(event) == format_retry_status(2, 5)
+
+
+@pytest.mark.parametrize(
+    "handler_name", ["StreamMessagesHandler", "StreamMessagesHandlerV2"]
+)
+def test_tracked_dedup_ids_reach_the_original_handler(handler_name: str) -> None:
+    """Ids recorded during an attempt must survive back to the real handler.
+
+    Only the tracked copy is installed while the model runs, so ids it records
+    would otherwise be dropped when the attempt ends, and the original handler's
+    `on_chain_end` would re-emit the finished message. The v1 and v2 handlers
+    record ids from different places and with different payload shapes, so both
+    are pinned here.
+    """
+    from langchain_core.callbacks import BaseCallbackManager as _Manager
+    from langgraph.pregel import _messages as _lg_messages
+
+    handler_cls = getattr(_lg_messages, handler_name)
+    source = handler_cls(lambda _chunk: None, subgraphs=False)
+    manager = _Manager(handlers=[source], inheritable_handlers=[source])
+
+    tracker = model_retry._MessageStreamTracker()
+    tracked_callbacks = tracker.callbacks_with_tracked_messages(manager)
+    assert tracked_callbacks is not None
+    tracked = tracked_callbacks.handlers[0]
+    assert isinstance(tracked, handler_cls)
+    assert tracked is not source
+
+    # Stand in for whichever bookkeeping path the handler uses; the tracker must
+    # not need to know which one ran.
+    tracked.seen.add("msg-1")
+    assert "msg-1" not in source.seen
+
+    tracker.merge_seen()
+    assert "msg-1" in source.seen

@@ -3598,6 +3598,68 @@ def test_managed_recursion_limit_masks_the_cli_flag(
         service.invalidate_config_sources()
 
 
+def test_rejected_managed_limit_does_not_warn_about_the_honoured_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A flag the fall-through ends up honouring must not be called ignored.
+
+    Regression: `_emit_ranked_diagnostics` fired on every iteration of the
+    fall-through loop. With an out-of-range managed limit masking an explicit
+    `--recursion-limit`, iteration 1 warned "was ignored: managed config takes
+    precedence. Ask your administrator" and iteration 2 then returned the CLI
+    value. A false warning is worse than silence: it sends the user to their
+    administrator about a non-problem.
+    """
+    from deepagents_code import main
+    from deepagents_code.config_manifest import resolve_recursion_limit
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    # Below `RECURSION_LIMIT_FLOOR`, so the managed tier is rejected and the
+    # loop falls through to the CLI value.
+    managed.write_text("[runtime]\nrecursion_limit = 5\n", encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    args.recursion_limit = 7
+    try:
+        main._resolver_for_args(args)
+        assert resolve_recursion_limit() == 7
+    finally:
+        service.invalidate_config_sources()
+
+    assert "was ignored" not in capsys.readouterr().err
+
+
+def test_masked_recursion_limit_still_warns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Deferring the warning must not silence a flag that genuinely lost."""
+    from deepagents_code import main
+    from deepagents_code.config_manifest import resolve_recursion_limit
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text("[runtime]\nrecursion_limit = 500\n", encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    args.recursion_limit = 7
+    try:
+        main._resolver_for_args(args)
+        assert resolve_recursion_limit() == 500
+    finally:
+        service.invalidate_config_sources()
+
+    err = capsys.readouterr().err
+    assert "--recursion-limit was ignored" in err
+    assert "managed config takes precedence" in err
+
+
 def test_cli_recursion_limit_outranks_user_toml(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

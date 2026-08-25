@@ -837,7 +837,10 @@ def _print_cli_warning(warning_key: tuple[str, str], message: str) -> None:
 
 
 def _emit_ranked_diagnostics(
-    option: ConfigOption, resolved: ResolvedValue[object]
+    option: ConfigOption,
+    resolved: ResolvedValue[object],
+    *,
+    warn_masked_cli: bool = True,
 ) -> None:
     """Emit provider rejections encountered before the effective value.
 
@@ -858,6 +861,11 @@ def _emit_ranked_diagnostics(
     Args:
         option: Manifest option being resolved.
         resolved: Rank-keyed provider results and selected value.
+        warn_masked_cli: Whether a masked CLI tier may warn. Callers that
+            resolve the same option repeatedly -- the bounded readers, which
+            re-resolve with rejected ranks excluded -- pass `False`, because an
+            intermediate resolution can show the CLI tier masked by a value the
+            loop is about to reject and honour the flag moments later.
     """
     from deepagents_code.configuration.providers import (
         RETAINED_SOURCE_SUFFIX,
@@ -889,7 +897,11 @@ def _emit_ranked_diagnostics(
     # managed `manual` starts in Manual, prints nothing and exits 0, and the
     # user blames the flag rather than their administrator's policy.
     cli_result = resolved.tier_health.get(CLI_RANK)
-    if CLI_RANK in resolved.masked_ranks and isinstance(cli_result, Found):
+    if (
+        warn_masked_cli
+        and CLI_RANK in resolved.masked_ranks
+        and isinstance(cli_result, Found)
+    ):
         _warn_cli_flag_masked(option, resolved)
     # A value the user typed that the provider refused. `emit` below logs the
     # same reason, but only into the buffer handler, so the flag would
@@ -1509,14 +1521,24 @@ def resolve_recursion_limit(
     from deepagents_code.configuration.resolver import CLI_RANK
 
     excluded: set[int] = set()
+    first_resolved: ResolvedValue[object] | None = None
+    settled: int | None = None
     while True:
         resolved = resolver.get_without_ranks(option, excluded)
-        _emit_ranked_diagnostics(option, resolved)
+        # `warn_masked_cli=False`: this loop re-resolves the option, and an
+        # intermediate iteration can show the CLI tier masked by a managed
+        # value the very next iteration rejects. Warning here told the user
+        # `--recursion-limit was ignored` and then returned their value.
+        _emit_ranked_diagnostics(option, resolved, warn_masked_cli=False)
+        if first_resolved is None:
+            first_resolved = resolved
         value, source = resolved.value, _ranked_source(resolved)
         if CLI_RANK in resolved.ranks and _is_valid_cli_recursion_limit(value):
-            return value
+            settled = value
+            break
         if is_valid_recursion_limit(value):
-            return value
+            settled = value
+            break
         rejected_ranks = set(resolved.ranks)
         if source == "default" or not rejected_ranks:
             break
@@ -1530,7 +1552,7 @@ def resolve_recursion_limit(
         )
         excluded.update(rejected_ranks)
 
-    if source != "default":
+    if settled is None and source != "default":
         logger.warning(
             "Ignoring %s recursion_limit %r (expected int in [%d, %d]); using %d",
             source,
@@ -1539,7 +1561,17 @@ def resolve_recursion_limit(
             RECURSION_LIMIT_CEILING,
             RECURSION_LIMIT_DEFAULT,
         )
-    return RECURSION_LIMIT_DEFAULT
+    # Emitted once the loop settles, against the first resolution: only now is
+    # it known whether the flag actually lost. `resolved` here is the winning
+    # tier, so the masked CLI entry is not on it -- the first resolution is the
+    # one that still carries the mask.
+    if (
+        first_resolved is not None
+        and CLI_RANK not in resolved.ranks
+        and CLI_RANK in first_resolved.masked_ranks
+    ):
+        _emit_ranked_diagnostics(option, first_resolved)
+    return RECURSION_LIMIT_DEFAULT if settled is None else settled
 
 
 # --- Option definitions -----------------------------------------------------

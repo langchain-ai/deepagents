@@ -27588,7 +27588,7 @@ class DeepAgentsApp(App):
             # not strand the app mid-switch.
             try:
                 await self._switch_process_cwd(previous_cwd)
-            except OSError:
+            except Exception:
                 logger.warning(
                     "Failed to restore cwd to %s after failed server restart; "
                     "process cwd and app state are now inconsistent",

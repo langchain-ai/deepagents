@@ -38387,6 +38387,44 @@ class TestResumeThreadCwdSwitch:
         ]
         old_server.stop.assert_not_called()
 
+    async def test_replace_server_restores_state_when_policy_rollback_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed policy rollback cannot leave the session disconnected."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        self._arm_server_backed_app(app, monkeypatch)
+        old_server = MagicMock()
+        old_agent = MagicMock()
+        app._server_proc = old_server
+        app._agent = old_agent
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._mcp_preload_kwargs = None
+        app._mcp_server_info = ["prev"]
+        switch = AsyncMock(
+            side_effect=[
+                RuntimeError("target policy unavailable"),
+                RuntimeError("previous policy unavailable"),
+            ]
+        )
+        monkeypatch.setattr(app, "_switch_process_cwd", switch)
+
+        result = await app._replace_server_after_cwd_switch(target)
+
+        assert result == "abort"
+        assert app._agent is old_agent
+        assert app._server_proc is old_server
+        assert app._mcp_server_info == ["prev"]
+        assert app._connecting is False
+        assert app._reconnecting is False
+        assert switch.await_args_list == [call(target), call(current)]
+        old_server.stop.assert_not_called()
+
     async def test_replace_server_failure_rolls_back_project_dotenv(
         self,
         tmp_path: Path,

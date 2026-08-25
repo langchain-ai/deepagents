@@ -3489,6 +3489,36 @@ def test_masked_cli_flag_warns_the_user(
     assert "managed config takes precedence" in err
 
 
+def test_config_command_reports_the_cli_tier() -> None:
+    """`dcode config` must credit a flag the user passed in this argv.
+
+    Regression: `resolver_from_snapshots` gained an optional `cli_provider`
+    and every pre-existing call site kept the default, so the command that
+    users open *because* a flag is not taking was the one reader that could
+    not see the CLI tier. It reported `default` for an option the current
+    argv was setting.
+    """
+    from deepagents_code.client.commands.config import _resolve
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import (
+        install_cli_provider,
+        reset_config_resolver,
+    )
+
+    option = get_option("interpreter.ptc")
+    assert option is not None
+    install_cli_provider(CliProvider({"interpreter_tools": "task"}))
+    try:
+        overridden, source, value = _resolve(option, toml_data={}, managed_toml_data={})
+    finally:
+        reset_config_resolver()
+
+    assert overridden is True
+    assert source == "CLI argument"
+    assert value == ["task"]
+
+
 def test_rejected_cli_value_warns_the_user(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

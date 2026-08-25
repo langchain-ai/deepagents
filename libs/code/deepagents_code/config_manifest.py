@@ -666,6 +666,7 @@ def _resolver_for_option_sources(
     """
     from deepagents_code.configuration.resolver import (
         get_config_resolver,
+        installed_cli_provider,
         resolver_from_snapshots,
     )
     from deepagents_code.configuration.types import (
@@ -684,9 +685,14 @@ def _resolver_for_option_sources(
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
     user_data = load_config_toml() if toml_data is None else toml_data
+    # The CLI tier is process-wide and is not part of the caller's generation,
+    # so it carries over unchanged. Omitting it made every bounded reader on
+    # this path -- and `dcode config` -- report `default` for options a flag in
+    # the current argv was setting.
     return resolver_from_snapshots(
         managed=TomlSnapshot.from_table("managed config", managed_data),
         user=TomlSnapshot.from_table("config.toml", user_data),
+        cli_provider=installed_cli_provider(),
     )
 
 

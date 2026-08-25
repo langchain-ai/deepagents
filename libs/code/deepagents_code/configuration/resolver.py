@@ -475,6 +475,21 @@ _resolver_cache_lock = threading.RLock()
 _resolver_cache = _ResolverCache()
 
 
+def installed_cli_provider() -> ConfigProvider | None:
+    """Return the parsed-argument provider installed for this process.
+
+    Ad-hoc resolvers built from caller-supplied snapshots do not go through the
+    process cache, so they have no CLI tier unless they ask for this one. A
+    reader that omits it reports the wrong source for any option a flag in the
+    current argv is setting.
+
+    Returns:
+        The installed provider, or `None` before `install_cli_provider` runs.
+    """
+    with _resolver_cache_lock:
+        return _resolver_cache.cli_provider
+
+
 def _reload_enforceable_managed_snapshot() -> TomlSnapshot:
     """Return a refreshed managed snapshot only when policy can enforce it."""
     from deepagents_code.configuration.service import (

@@ -261,7 +261,10 @@ def _resolve(
         resolve_auto_classifier_timeout_with_source,
         resolve_startup_mode_with_source,
     )
-    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.resolver import (
+        installed_cli_provider,
+        resolver_from_snapshots,
+    )
     from deepagents_code.configuration.types import (
         TomlSnapshot,
     )
@@ -320,10 +323,14 @@ def _resolve(
     # The `config` command reports one generation: the caller snapshots the
     # managed and user files once per invocation and every option resolves
     # against those exact tables, so this builds an ad-hoc resolver from the
-    # supplied snapshots rather than reading the shared process cache.
+    # supplied snapshots rather than reading the shared process cache. The CLI
+    # tier is the exception: it is process-wide rather than part of the file
+    # generation, so it carries over -- without it this command reports
+    # `default` for the very flags the user just passed.
     resolved = resolver_from_snapshots(
         managed=TomlSnapshot.from_table("managed config", managed_toml_data),
         user=TomlSnapshot.from_table("config.toml", toml_data),
+        cli_provider=installed_cli_provider(),
     ).get(option)
     _emit_ranked_diagnostics(option, resolved)
     source = _ranked_source(resolved)
@@ -487,7 +494,10 @@ def _option_provenance(
         Effective or dotted leaf-to-source mapping.
     """
     from deepagents_code.config_manifest import OptionKind
-    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.resolver import (
+        installed_cli_provider,
+        resolver_from_snapshots,
+    )
     from deepagents_code.configuration.types import (
         TomlSnapshot,
     )
@@ -500,10 +510,12 @@ def _option_provenance(
         return {"effective": source}
     # Per-leaf provenance must describe the same generation `_resolve` just
     # reported, so it resolves against the caller's snapshots rather than the
-    # shared process cache.
+    # shared process cache. The process-wide CLI tier carries over, matching
+    # `_resolve` above.
     resolved = resolver_from_snapshots(
         managed=TomlSnapshot.from_table("managed config", managed_toml_data or {}),
         user=TomlSnapshot.from_table("config.toml", toml_data or {}),
+        cli_provider=installed_cli_provider(),
     ).get(option)
     ranks_by_path: dict[tuple[str, ...], list[int]] = {}
     for rank, paths in resolved.provenance.items():

@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from email.message import Message
 from http.client import BadStatusLine, IncompleteRead, LineTooLong
 from io import BytesIO
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self
 from urllib.error import HTTPError, URLError
@@ -182,6 +184,7 @@ class _RemoteResponse:
 
     def __init__(self, payload: bytes, *, content_length: str | None = None) -> None:
         self._stream = BytesIO(payload)
+        self.closed = Event()
         self.read_timeouts: list[float | None] = []
         self.fp = SimpleNamespace(raw=SimpleNamespace(_sock=self))
         self.headers = Message()
@@ -192,7 +195,11 @@ class _RemoteResponse:
         return self
 
     def __exit__(self, *args: object) -> None:
-        return None
+        self.close()
+
+    def close(self) -> None:
+        """Record that production cleanup released the fake response."""
+        self.closed.set()
 
     def read(self, size: int = -1) -> bytes:
         return self._stream.read(size)
@@ -359,6 +366,43 @@ def test_remote_toml_provider_times_out_when_deadline_passes_during_open(
     assert "timed out" in (snapshot.status.detail or "")
 
 
+def test_remote_toml_provider_bounds_a_stalled_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DNS, TLS, and response headers share the end-to-end deadline."""
+    from deepagents_code.configuration import providers
+
+    entered = Event()
+    release = Event()
+    response = _RemoteResponse(b'[startup]\nmode = "manual"\n')
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            entered.set()
+            assert release.wait(timeout=1)
+            return response
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    monkeypatch.setattr(providers, "REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS", 0.05)
+    started = time.monotonic()
+    try:
+        snapshot = RemoteTomlProvider(
+            "managed config",
+            "https://config.example.com/policy.toml",
+            tmp_path / "managed.toml",
+        ).load()
+    finally:
+        release.set()
+
+    assert entered.is_set()
+    assert time.monotonic() - started < 0.5
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert "timed out" in (snapshot.status.detail or "")
+    assert response.closed.wait(timeout=1)
+
+
 def test_remote_toml_provider_rejects_late_empty_response(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -399,7 +443,7 @@ def test_remote_toml_provider_bounds_reads_by_remaining_deadline(
             return response
 
     monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
-    monotonic_values = iter([10.0, 12.0, 13.0, 14.0, 14.5, 14.75])
+    monotonic_values = iter([10.0, 10.0, 12.0, 13.0, 14.0, 14.5, 14.75])
     monkeypatch.setattr(providers.time, "monotonic", lambda: next(monotonic_values))
     snapshot = RemoteTomlProvider(
         "managed config",

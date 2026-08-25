@@ -12,6 +12,7 @@ from deepagents_code._env_vars import classify_env_bool
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from concurrent.futures import Future
     from http.client import HTTPResponse
     from pathlib import Path
     from typing import Protocol
@@ -632,6 +633,62 @@ def _remaining_timeout(deadline: float) -> float:
     return remaining
 
 
+def _close_completed_response(future: Future[HTTPResponse]) -> None:
+    """Close a response that arrived after its caller stopped waiting."""
+    from http.client import HTTPException
+
+    try:
+        response = future.result()
+    except (HTTPException, OSError, ValueError):
+        return
+    response.close()
+
+
+def _open_response_with_deadline(
+    opener: _RemoteOpener,
+    request: object,
+    *,
+    deadline: float,
+) -> HTTPResponse:
+    """Open a response without letting blocking setup exceed the deadline.
+
+    Returns:
+        The opened response.
+
+    Raises:
+        TimeoutError: If setup does not finish within the deadline.
+    """
+    from concurrent.futures import Future
+    from http.client import HTTPException
+    from threading import Thread
+
+    future: Future[HTTPResponse] = Future()
+
+    def open_response() -> None:
+        try:
+            response = opener.open(
+                request,
+                timeout=REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS,
+            )
+        except (HTTPException, OSError, ValueError) as exc:
+            future.set_exception(exc)
+        else:
+            future.set_result(response)
+
+    Thread(target=open_response, name="managed-config-open", daemon=True).start()
+    try:
+        response = future.result(timeout=_remaining_timeout(deadline))
+    except TimeoutError:
+        future.add_done_callback(_close_completed_response)
+        raise
+    try:
+        _fail_if_expired(deadline)
+    except TimeoutError:
+        response.close()
+        raise
+    return response
+
+
 def _set_response_timeout(response: HTTPResponse, timeout: float) -> None:
     """Tighten the active response socket to the remaining timeout.
 
@@ -790,11 +847,11 @@ class RemoteTomlProvider:
         opener = _build_remote_opener()
         deadline = time.monotonic() + REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS
         try:
-            with opener.open(
+            with _open_response_with_deadline(
+                opener,
                 request,
-                timeout=REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS,
+                deadline=deadline,
             ) as response:
-                _fail_if_expired(deadline)
                 payload = _read_limited_response(response, deadline=deadline)
         except HTTPError as exc:
             detail = (

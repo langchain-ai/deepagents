@@ -34499,6 +34499,53 @@ class TestRestartCommand:
             await app._restart_respawn_task
             assert typed == "hi"
 
+    @pytest.mark.timeout(15)
+    async def test_prompt_queues_during_restart_config_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prompt cannot reach the old agent during restart config refresh."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            reload_started = threading.Event()
+            release_reload = threading.Event()
+
+            def slow_reload() -> list[str]:
+                reload_started.set()
+                assert release_reload.wait(timeout=5)
+                return []
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", slow_reload)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(
+                app,
+                "_restart_server_manual",
+                AsyncMock(return_value=False),
+            )
+            dispatch = AsyncMock()
+            monkeypatch.setattr(app, "_dispatch_queued_message", dispatch)
+
+            await app._handle_restart_command("/restart")
+            assert await asyncio.to_thread(reload_started.wait, 5)
+            assert app._connecting is False
+            try:
+                await app._submit_input("keep this prompt", mode="normal")
+                dispatch.assert_not_awaited()
+                assert [item.text for item in app._pending_messages] == [
+                    "keep this prompt"
+                ]
+            finally:
+                release_reload.set()
+                assert app._restart_respawn_task is not None
+                await app._restart_respawn_task
+
     async def test_remote_server_mode_short_circuits(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

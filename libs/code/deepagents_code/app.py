@@ -11693,6 +11693,10 @@ class DeepAgentsApp(App):
             or self._modal_command_running()
             or self._reloading
             or self._connecting
+            or (
+                self._restart_respawn_task is not None
+                and not self._restart_respawn_task.done()
+            )
             or self._startup_sequence_running
             or self._server_startup_error is not None
         ):

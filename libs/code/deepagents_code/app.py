@@ -19728,10 +19728,16 @@ class DeepAgentsApp(App):
                 return
         texts = [msg.text for msg in self._pending_messages]
         self._pending_messages.clear()
-        for widget in self._queued_widgets:
+        # Snapshot before awaiting: `widget.remove()` yields, and a submission
+        # landing mid-loop appends to `_queued_widgets` (the restart task is
+        # still the busy gate until this returns), which would raise
+        # `RuntimeError: deque mutated during iteration`. Late widgets stay
+        # queued and are cleared on the next pass or by `_discard_queue`.
+        widgets = list(self._queued_widgets)
+        self._queued_widgets.clear()
+        for widget in widgets:
             with suppress(NoMatches, ScreenStackError):
                 await widget.remove()
-        self._queued_widgets.clear()
         self._sync_status_queued()
 
         restored = "\n\n".join(texts)

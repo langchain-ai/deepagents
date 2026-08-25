@@ -1,6 +1,9 @@
 """Tests for config module including project discovery utilities."""
 
 import logging
+import subprocess
+import sys
+import textwrap
 import time
 import warnings
 from collections.abc import Iterator
@@ -7826,3 +7829,39 @@ class TestReservedAgentNames:
         settings = Settings.__new__(Settings)
 
         assert settings.get_agent_dir("coder").name == "coder"
+
+
+class TestAgentDirStaysOffTheHeavyImportPath:
+    """`get_agent_dir` is a path join reached by client-side CLI commands.
+
+    `AGENTS.md` § Startup performance forbids importing `deepagents` or
+    LangChain on that path. The reserved-name check briefly imported
+    `deepagents_code.agent`, which pulls in both at module level and cost
+    roughly 0.8s on commands that touch no model code.
+    """
+
+    def test_reserved_name_check_does_not_import_the_agent_module(self) -> None:
+        """Run in a subprocess: the parent test session already imports agent."""
+        source = textwrap.dedent(
+            """
+            import sys
+            from deepagents_code.config import Settings
+
+            Settings.get_agent_dir(object.__new__(Settings), "demo")
+            heavy = sorted(
+                name
+                for name in sys.modules
+                if name == "deepagents_code.agent"
+                or name.split(".")[0] in {"langchain", "langgraph", "deepagents"}
+            )
+            print(",".join(heavy))
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", source],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        assert result.stdout.strip() == ""

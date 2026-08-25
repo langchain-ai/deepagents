@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code._paths import PATHS
 from deepagents_code._repository_bounds import REPOSITORY_TOOL_CALL_LIMIT
+from deepagents_code._reserved_names import reserved_agent_dir_names
 from deepagents_code.agent import (
     _AGENT_DIR_MARKER,
     _MEMORY_READONLY_SYSTEM_PROMPT,
@@ -43,7 +44,6 @@ from deepagents_code.agent import (
     _format_web_search_description,
     _format_write_file_description,
     _interrupt_predicate,
-    _reserved_agent_dir_names,
     _rubric_grader_system_prompt,
     _sanitize_agent_message_name,
     _should_interrupt_tool_call,
@@ -4807,7 +4807,7 @@ class TestGetAvailableAgentNames:
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
         _seed_agent(agents_dir, "agent")
-        for name in _reserved_agent_dir_names():
+        for name in reserved_agent_dir_names():
             _seed_agent(agents_dir, name)
 
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
@@ -4815,7 +4815,7 @@ class TestGetAvailableAgentNames:
 
     def test_reserved_agent_dir_names_includes_app_dirs(self) -> None:
         """The reserved-name set is sourced from each owning module."""
-        assert _reserved_agent_dir_names() == frozenset(
+        assert reserved_agent_dir_names() == frozenset(
             {BIN_DIR.name, DEFAULT_PLUGIN_DIRNAME, CONVERSATION_HISTORY_DIRNAME},
         )
 

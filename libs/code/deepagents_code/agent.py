@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import inspect
 import logging
 import os
@@ -75,6 +74,7 @@ from deepagents_code._repository_bounds import (
     REPOSITORY_TOOL_NAMES,
     RepositoryBounds,
 )
+from deepagents_code._reserved_names import reserved_agent_dir_names
 from deepagents_code.approval_mode import (
     ApprovalMode,
     aread_approval_mode_from_store,
@@ -1148,43 +1148,6 @@ and surface that directory as a selectable agent.
 """
 
 
-@functools.lru_cache(maxsize=1)
-def _reserved_agent_dir_names() -> frozenset[str]:
-    """Return non-agent directory names reserved by the app under the profile root.
-
-    These directories are created by the app for its own use and must never
-    appear in the agent picker — even if they contain an `AGENTS.md` file
-    (e.g. after `dcode -a plugins` stamps the marker via memory setup):
-
-    - `bin/` holds the managed `rg` binary when the shared installation
-      directory is unwritable (`managed_tools.FALLBACK_BIN_DIR`).
-    - `plugins/` holds installed plugin state (`plugins.store`).
-    - `conversation_history/` holds offloaded per-thread archives (`offload`).
-
-    `agent/` is deliberately absent: `ProfilePaths.default_skills_dir` names it,
-    but nothing reads that field yet, so reserving it would block a legitimate
-    agent name for a directory the app does not actually create.
-
-    Each name is derived from its owning module so it stays a single source of
-    truth rather than being hardcoded here. `FALLBACK_BIN_DIR` is the one that
-    lives under the profile root — the preferred `BIN_DIR` is installation-
-    scoped, so deriving from it would reserve a profile name based on an
-    unrelated path. The result is cached since the reserved set is constant for
-    the process.
-    """
-    from deepagents_code.managed_tools import FALLBACK_BIN_DIR
-    from deepagents_code.offload import CONVERSATION_HISTORY_DIRNAME
-    from deepagents_code.plugins.store import DEFAULT_PLUGIN_DIRNAME
-
-    return frozenset(
-        {
-            FALLBACK_BIN_DIR.name,
-            DEFAULT_PLUGIN_DIRNAME,
-            CONVERSATION_HISTORY_DIRNAME,
-        },
-    )
-
-
 def _is_agent_dir_entry(entry: Path) -> bool:
     """Return whether a `~/.deepagents/` entry should be listed as an agent.
 
@@ -1202,7 +1165,7 @@ def _is_agent_dir_entry(entry: Path) -> bool:
     `OSError` from `is_dir`/`is_symlink`/`is_file` propagates so callers can
     log with the failing entry's name as context.
     """
-    if entry.name.startswith(".") or entry.name in _reserved_agent_dir_names():
+    if entry.name.startswith(".") or entry.name in reserved_agent_dir_names():
         return False
     if entry.is_symlink() or not entry.is_dir():
         return False

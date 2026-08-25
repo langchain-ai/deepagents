@@ -4662,9 +4662,42 @@ def test_uv_cache_snapshot_precedes_install_lock() -> None:
         "resolve_tool_bin_dir()", maxsplit=1
     )[0]
 
-    assert bootstrap.index('UV_CACHE_CANDIDATES=""') < bootstrap.index(
+    assert bootstrap.index("snapshot_missing_uv_cache_paths") < bootstrap.index(
         "acquire_install_lock"
     )
+
+
+def test_uv_cache_snapshot_repairs_path_created_by_installer(tmp_path: Path) -> None:
+    """A missing cache is remembered before install and repaired after creation."""
+    home = tmp_path / "home"
+    cache = home / "cache" / "uv"
+    repaired = tmp_path / "repaired.txt"
+    home.mkdir()
+    script = tmp_path / "uv_cache_ownership_harness.sh"
+    script.write_text(
+        f"HOME={str(home)!r}\n"
+        f"XDG_CACHE_HOME={str(home / 'cache')!r}\n"
+        f"XDG_DATA_HOME={str(home / 'data')!r}\n"
+        f"{_extract_shell_function('path_is_under_home')}\n"
+        f"{_extract_shell_function('snapshot_missing_uv_cache_paths')}\n"
+        f"{_extract_shell_function('repair_created_uv_cache_paths')}\n"
+        f"fix_tree_owner() {{ printf '%s\\n' \"$1\" >> {str(repaired)!r}; }}\n"
+        "snapshot_missing_uv_cache_paths\n"
+        f"mkdir -p {str(cache)!r}\n"
+        "repair_created_uv_cache_paths\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert repaired.read_text(encoding="utf-8").splitlines() == [str(cache)]
 
 
 def test_install_uv_verbose_shows_installer_output(tmp_path: Path) -> None:

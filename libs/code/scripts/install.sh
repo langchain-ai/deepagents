@@ -1692,6 +1692,33 @@ resolve_uv_bin() {
   return 1
 }
 
+snapshot_missing_uv_cache_paths() {
+  local uv_cache_dir
+  UV_CACHE_CANDIDATES=""
+  for uv_cache_dir in \
+    "${XDG_CACHE_HOME:-${HOME}/.cache}/uv" \
+    "${HOME}/Library/Caches/uv" \
+    "${XDG_DATA_HOME:-${HOME}/.local/share}/uv"; do
+    if [ ! -e "$uv_cache_dir" ]; then
+      UV_CACHE_CANDIDATES="${UV_CACHE_CANDIDATES}${uv_cache_dir}"$'\n'
+    fi
+  done
+}
+
+repair_created_uv_cache_paths() {
+  local uv_cache_dir
+  while IFS= read -r uv_cache_dir; do
+    [ -n "$uv_cache_dir" ] || continue
+    # Validate after installation, when the formerly missing path can be
+    # resolved without weakening path_is_under_home's symlink-safe contract.
+    if path_is_under_home "$uv_cache_dir"; then
+      fix_tree_owner "$uv_cache_dir"
+    fi
+  done <<EOF
+${UV_CACHE_CANDIDATES}
+EOF
+}
+
 if ! resolve_uv_bin; then
   if [ -n "${UV_BIN:-}" ]; then
     log_error "UV_BIN is set but does not point to an executable uv: ${UV_BIN}"
@@ -1702,15 +1729,7 @@ if ! resolve_uv_bin; then
   # non-root `uv` invocations fail on a root-owned cache, far from here. Take
   # this snapshot before acquiring the install lock: its default path lives
   # below uv's data directory and can create that tree itself.
-  UV_CACHE_CANDIDATES=""
-  for uv_cache_dir in \
-    "${XDG_CACHE_HOME:-${HOME}/.cache}/uv" \
-    "${HOME}/Library/Caches/uv" \
-    "${XDG_DATA_HOME:-${HOME}/.local/share}/uv"; do
-    if [ ! -e "$uv_cache_dir" ] && path_is_under_home "$uv_cache_dir"; then
-      UV_CACHE_CANDIDATES="${UV_CACHE_CANDIDATES}${uv_cache_dir}"$'\n'
-    fi
-  done
+  snapshot_missing_uv_cache_paths
   acquire_install_lock
   UV_BIN_DIR_PREEXISTED=false
   if [ -d "${HOME}/.local/bin" ]; then
@@ -1722,12 +1741,7 @@ if ! resolve_uv_bin; then
     fix_file_owner "${HOME}/.local/bin"
   fi
   fix_file_owner "${HOME}/.local/bin/uv" "${HOME}/.local/bin/uvx" "${HOME}/.local/bin/env"
-  while IFS= read -r uv_cache_dir; do
-    [ -n "$uv_cache_dir" ] || continue
-    fix_tree_owner "$uv_cache_dir"
-  done <<EOF
-${UV_CACHE_CANDIDATES}
-EOF
+  repair_created_uv_cache_paths
   if ! resolve_uv_bin; then
     log_error "uv not found after installation. Restart your shell or add ~/.local/bin to PATH."
     exit 1

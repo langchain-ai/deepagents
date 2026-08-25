@@ -2215,18 +2215,37 @@ def _apply_inherited_pythonpath(env: dict[str, str]) -> None:
         env["PYTHONPATH"] = inherited
 
 
-def _resolve_retry_owned_model(model_spec: str, model_retries: int) -> BaseChatModel:
+def _resolve_retry_owned_model(
+    model_spec: str, model_retries: int
+) -> BaseChatModel | None:
     """Resolve a string model with provider retries disabled and metadata tagged.
 
+    Args:
+        model_spec: The subagent's declared model string.
+        model_retries: Retry budget to stamp on the resolved model.
+
     Returns:
-        The concrete model prepared by dcode's model factory.
+        The concrete model prepared by dcode's model factory, or `None` when it
+        cannot be built here and the caller should pass the spec through.
     """
     from deepagents_code.config import CLI_MAX_RETRIES_KEY, create_model
+    from deepagents_code.model_config import MissingCredentialsError
 
-    return create_model(
-        model_spec,
-        extra_kwargs={CLI_MAX_RETRIES_KEY: model_retries},
-    ).model
+    try:
+        return create_model(
+            model_spec,
+            extra_kwargs={CLI_MAX_RETRIES_KEY: model_retries},
+        ).model
+    except MissingCredentialsError:
+        # Taking ownership of retries is an optimization, not a precondition for
+        # launching. A subagent declaring a provider the user has not
+        # authenticated must not abort the whole CLI: pass the spec through so
+        # the credential error surfaces if and when that subagent runs.
+        logger.debug(
+            "Deferring model resolution for %r: no provider credentials yet",
+            model_spec,
+        )
+        return None
 
 
 def _has_resolvable_model_provider(model_spec: str) -> bool:
@@ -2603,7 +2622,11 @@ def create_cli_agent(
     if isinstance(model, str):
         model_policy.require_model_allowed(model)
         if enforce_model_policy and _has_resolvable_model_provider(model):
-            model = _resolve_retry_owned_model(model, model_retries)
+            # `None` means credentials are absent: keep the spec so graph
+            # construction resolves it later instead of failing the launch.
+            resolved = _resolve_retry_owned_model(model, model_retries)
+            if resolved is not None:
+                model = resolved
     if (
         isinstance(auto_classifier_model, str)
         and auto_classifier_model.strip()
@@ -2640,10 +2663,13 @@ def create_cli_agent(
                     else f"subagent {name!r}"
                 ),
             )
-            subagent["model"] = (
+            resolved_model = (
                 _resolve_retry_owned_model(model_spec, model_retries)
                 if enforce_model_policy and _has_resolvable_model_provider(model_spec)
-                else model_spec
+                else None
+            )
+            subagent["model"] = (
+                resolved_model if resolved_model is not None else model_spec
             )
         subagent_middleware = _subagent_cli_middleware(
             has_explicit_model=has_explicit_model,

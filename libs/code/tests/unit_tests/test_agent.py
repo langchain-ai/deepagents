@@ -149,6 +149,24 @@ def test_resolve_retry_owned_model_uses_dcode_factory() -> None:
     )
 
 
+def test_resolve_retry_owned_model_defers_without_credentials() -> None:
+    """An unauthenticated provider yields `None`, not a launch-aborting raise.
+
+    Owning the retry budget is an optimization. A subagent declaring a provider
+    the user has not authenticated must still let the CLI start, with the
+    credential error surfacing if and when that subagent runs.
+    """
+    from deepagents_code.model_config import MissingCredentialsError
+
+    with patch(
+        "deepagents_code.config.create_model",
+        side_effect=MissingCredentialsError(
+            "no creds", provider="anthropic", env_var="ANTHROPIC_API_KEY"
+        ),
+    ):
+        assert _resolve_retry_owned_model("anthropic:claude-test", 3) is None
+
+
 @pytest.mark.parametrize(
     ("model_spec", "expected"),
     [("anthropic:claude-test", True), ("claude-test", True), ("fake-model", False)],

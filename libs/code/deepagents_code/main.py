@@ -851,6 +851,39 @@ def _run_startup_auto_update(console: "Console") -> None:
         console.print(message, markup=True, highlight=False)
 
 
+def _reject_reserved_agent_arg(name: str) -> None:
+    """Exit with a CLI-level message when `-a` names an app-owned directory.
+
+    Agent profiles are siblings of directories the app owns under the profile
+    root, so `get_agent_dir` rejects those names. That raise happens inside
+    server-side agent construction, where the user sees a traceback rather than
+    an explanation, so catch the same names here at the point of entry.
+
+    Note:
+        Exits the process with status 2 (argparse's usage-error status) when
+        `name` is reserved.
+    """
+    from deepagents_code._reserved_names import reserved_agent_dir_names
+
+    reserved = reserved_agent_dir_names()
+    if name not in reserved:
+        return
+    from deepagents_code.config import console
+
+    console.print(
+        f"[bold red]Error:[/bold red] Agent name {name!r} is reserved for "
+        f"dcode's own state.",
+        markup=True,
+        highlight=False,
+    )
+    console.print(
+        f"Reserved names: {', '.join(sorted(reserved))}.",
+        markup=False,
+        highlight=False,
+    )
+    sys.exit(2)
+
+
 def _resolve_agent_arg(args: argparse.Namespace) -> str:
     """Resolve the final agent identifier from parsed CLI args.
 
@@ -867,7 +900,7 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     5. `DEFAULT_AGENT_NAME` as the final fallback.
 
     Both `default` and `recent` are gated by `_recent_agent_is_valid` so a
-    stale entry pointing at a deleted agent directory is ignored.
+    stale entry pointing at a deleted or app-owned directory is ignored.
 
     Extracted from the `cli_main` body so it's unit-testable without
     constructing the full arg tree.
@@ -881,6 +914,7 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     from deepagents_code._constants import DEFAULT_AGENT_NAME
 
     if args.agent is not None:
+        _reject_reserved_agent_arg(args.agent)
         return args.agent
     if getattr(args, "resume_thread", None) is not None:
         return DEFAULT_AGENT_NAME
@@ -1549,6 +1583,18 @@ def _recent_agent_is_valid(name: str) -> bool:
     profile root (symlink loops, EACCES) don't crash the launch — we
     treat them the same as "not valid" and fall back to the default.
     """
+    from deepagents_code._reserved_names import reserved_agent_dir_names
+
+    if name in reserved_agent_dir_names():
+        # `bin/` and `plugins/` are real directories under the profile root, so
+        # the `is_dir()` check below would accept them and the launch would
+        # then fail in `get_agent_dir`. A stale entry must fall back, never
+        # break every launch.
+        logger.warning(
+            "Stored agent %r names an app-owned directory; falling back to default",
+            name,
+        )
+        return False
     try:
         return (get_deepagents_home() / name).is_dir()
     except OSError:

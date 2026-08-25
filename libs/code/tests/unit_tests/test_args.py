@@ -1,15 +1,22 @@
 """Tests for CLI argument parsing."""
 
+import argparse
 import io
 import re
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from rich.console import Console
 
+from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code._paths import PATHS
-from deepagents_code.main import parse_args
+from deepagents_code.main import (
+    _recent_agent_is_valid,
+    _resolve_agent_arg,
+    parse_args,
+)
 from deepagents_code.ui import show_help, show_threads_list_help
 
 
@@ -929,3 +936,61 @@ class TestJsonArg:
         assert args.command == "skills"
         assert args.skills_command == "list"
         assert args.output_format == "json"
+
+
+class TestReservedAgentArg:
+    """`-a plugins` must fail at the CLI, not inside agent construction.
+
+    `agent.create_cli_agent` calls `settings.ensure_agent_dir(assistant_id)`
+    with no handler, so a reserved name surfaced to the user as an unhandled
+    `ValueError` from server startup.
+    """
+
+    @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
+    def test_reserved_name_exits_with_a_message(
+        self, name: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        args = argparse.Namespace(agent=name, resume_thread=None)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_agent_arg(args)
+
+        assert exc_info.value.code == 2
+        output = capsys.readouterr().out
+        assert name in output
+        assert "reserved" in output
+
+    def test_ordinary_name_passes_through(self) -> None:
+        args = argparse.Namespace(agent="coder", resume_thread=None)
+
+        assert _resolve_agent_arg(args) == "coder"
+
+
+class TestStaleStoredAgent:
+    """A stored `[agents].recent` must never break every launch.
+
+    `bin/` and `plugins/` are real directories under the profile root, so the
+    `is_dir()` staleness check accepted them and the launch then failed in
+    `get_agent_dir`.
+    """
+
+    @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
+    def test_a_reserved_stored_name_is_not_valid(self, name: str) -> None:
+        assert _recent_agent_is_valid(name) is False
+
+    def test_a_reserved_stored_name_falls_back_to_the_default(
+        self, tmp_path: Path
+    ) -> None:
+        """End to end through the resolver, with the directory actually present."""
+        (tmp_path / "plugins").mkdir()
+        args = argparse.Namespace(agent=None, resume_thread=None)
+
+        with (
+            patch("deepagents_code.main.get_deepagents_home", return_value=tmp_path),
+            patch("deepagents_code.model_config.load_default_agent", return_value=None),
+            patch(
+                "deepagents_code.model_config.load_recent_agent",
+                return_value="plugins",
+            ),
+        ):
+            assert _resolve_agent_arg(args) == DEFAULT_AGENT_NAME

@@ -40,8 +40,8 @@ class _ToolExclusionMiddleware(AgentMiddleware[Any, Any, Any]):
 
     Excluded names are also rejected at the tool-call boundary, since the
     executor still has them registered and dispatches on the name the model
-    emits. That keeps execution consistent with what was advertised. Exclusions
-    resolve per model.
+    emits. That keeps execution consistent with what was advertised; it is not a
+    security surface. Exclusions resolve per model.
 
     Args:
         excluded: Tool names to remove before the model sees them.

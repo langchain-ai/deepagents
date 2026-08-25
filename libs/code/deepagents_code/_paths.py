@@ -20,6 +20,7 @@ import errno
 import logging
 import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -47,6 +48,7 @@ __all__ = [
     "ProjectPaths",
     "classify_path",
     "get_deepagents_home",
+    "probe_writable",
     "project_paths",
 ]
 
@@ -241,6 +243,38 @@ def classify_path(path: Path) -> PathState:
         return PathState.UNREADABLE
     else:
         return PathState.EXISTS
+
+
+def probe_writable(directory: Path, *, mode: int = 0o777) -> None:
+    """Create *directory* and prove the process can write files inside it.
+
+    `mkdir(exist_ok=True)` only proves the directory exists; it succeeds on a
+    pre-existing root-owned directory. Creating a file is the only check that
+    distinguishes "present" from "usable".
+
+    The probe uses `tempfile.mkstemp`, not a PID-named file. These directories
+    are deliberately shared across profiles and processes, and PIDs are not
+    unique across containers or PID namespaces: a colliding name would make a
+    writable directory look unusable and would delete a peer's live probe.
+    Removal failures are suppressed separately, so a directory that accepts
+    files but refuses unlinks is still reported as writable.
+
+    Args:
+        directory: Directory to create and probe.
+        mode: Permission bits for directories this call creates.
+
+    Note:
+        `OSError` propagates from `mkdir` or `mkstemp` when the directory
+        cannot be created or cannot accept a file. Callers select a fallback
+        location on that error.
+    """
+    directory.mkdir(parents=True, exist_ok=True, mode=mode)
+    handle, name = tempfile.mkstemp(prefix=".deepagents-probe-", dir=directory)
+    os.close(handle)
+    try:
+        Path(name).unlink()
+    except OSError:
+        logger.debug("Could not remove the write probe %s", name, exc_info=True)
 
 
 def _normalize_absolute(path: Path, *, what: str = "Path") -> Path:

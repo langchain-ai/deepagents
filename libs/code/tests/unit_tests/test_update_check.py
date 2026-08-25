@@ -6630,18 +6630,18 @@ class TestUpdateLockLocationFallback:
         shared = tmp_path / "shared"
         shared.mkdir()
         profile = tmp_path / "profile" / "update.lock"
-        original_probe = update_check._probe_writable
+        original_probe = update_check.probe_writable
 
-        def fake_probe(directory: Path) -> None:
+        def fake_probe(directory: Path, *, mode: int = 0o777) -> None:
             if directory == shared:
                 msg = "Permission denied"
                 raise OSError(msg)
-            original_probe(directory)
+            original_probe(directory, mode=mode)
 
         with (
             patch.object(update_check, "UPDATE_LOCK_FILE", shared / "update.lock"),
             patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
-            patch.object(update_check, "_probe_writable", side_effect=fake_probe),
+            patch.object(update_check, "probe_writable", side_effect=fake_probe),
         ):
             assert update_check._resolve_update_lock_file() == profile
         assert profile.parent.is_dir()

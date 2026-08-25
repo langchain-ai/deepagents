@@ -39,7 +39,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
-from deepagents_code._paths import PATHS
+from deepagents_code._paths import PATHS, probe_writable
 from deepagents_code._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __version__
 from deepagents_code.model_config import (
     DEFAULT_CONFIG_PATH,
@@ -2273,21 +2273,6 @@ release on a different one.
 """
 
 
-def _probe_writable(directory: Path) -> None:
-    """Raise `OSError` when *directory* cannot be written to.
-
-    `mkdir(exist_ok=True)` only proves the directory exists; it succeeds on a
-    pre-existing root-owned directory. Writing a probe file proves the process
-    can actually create files there.
-    """
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    probe = directory / f".deepagents-probe-{os.getpid()}"
-    try:
-        probe.touch(exist_ok=False)
-    finally:
-        probe.unlink(missing_ok=True)
-
-
 def _resolve_update_lock_file() -> Path | None:
     """Return the first usable lock path, preferring installation scope.
 
@@ -2297,7 +2282,7 @@ def _resolve_update_lock_file() -> Path | None:
     """
     for candidate in (UPDATE_LOCK_FILE, FALLBACK_UPDATE_LOCK_FILE):
         try:
-            _probe_writable(candidate.parent)
+            probe_writable(candidate.parent, mode=0o700)
         except OSError:
             logger.info(
                 "Update lock directory %s is unusable; trying the next location",

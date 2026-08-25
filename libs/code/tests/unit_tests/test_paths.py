@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Protocol
 from unittest import mock
+from unittest.mock import patch
 
 import pytest
 
@@ -17,6 +18,7 @@ from deepagents_code._paths import (
     _capture_paths,
     classify_path,
     get_deepagents_home,
+    probe_writable,
     project_paths,
 )
 
@@ -178,6 +180,66 @@ def _subprocess_env(*, home: Path, configured: str | None) -> dict[str, str]:
     else:
         env["DEEPAGENTS_HOME"] = configured
     return env
+
+
+class TestProbeWritable:
+    """`probe_writable` decides which shared directory a process may use."""
+
+    def test_reports_a_writable_directory(self, tmp_path: Path) -> None:
+        """A usable directory is created and leaves no probe behind."""
+        directory = tmp_path / "fresh"
+
+        probe_writable(directory)
+
+        assert directory.is_dir()
+        assert list(directory.iterdir()) == []
+
+    def test_a_stale_probe_does_not_make_a_directory_look_unusable(
+        self, tmp_path: Path
+    ) -> None:
+        """A leftover probe must not demote a writable shared directory.
+
+        These directories are shared across profiles and processes, so a
+        PID-named probe could collide with a crashed peer's leftover file. The
+        probe would then fail on a directory whose very contents prove it is
+        writable, and the caller would fall back — splitting the lock it was
+        trying to share.
+        """
+        directory = tmp_path / "shared"
+        directory.mkdir()
+        (directory / f".deepagents-probe-{os.getpid()}").touch()
+
+        probe_writable(directory)
+
+    def test_does_not_delete_a_peer_probe(self, tmp_path: Path) -> None:
+        """Probing must not remove another process's in-flight probe file."""
+        directory = tmp_path / "shared"
+        directory.mkdir()
+        peer = directory / f".deepagents-probe-{os.getpid()}"
+        peer.touch()
+
+        probe_writable(directory)
+
+        assert peer.exists()
+
+    def test_reports_an_unwritable_directory(self, tmp_path: Path) -> None:
+        """A directory that cannot accept files raises for the caller."""
+        directory = tmp_path / "locked"
+        directory.mkdir(mode=0o500)
+        try:
+            with pytest.raises(OSError, match="Permission denied"):
+                probe_writable(directory)
+        finally:
+            directory.chmod(0o700)
+
+    def test_existing_dir_that_rejects_unlink_is_still_writable(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed cleanup must not be reported as an unwritable directory."""
+        directory = tmp_path / "sticky"
+        directory.mkdir()
+        with patch.object(Path, "unlink", side_effect=OSError("cannot unlink")):
+            probe_writable(directory)
 
 
 class TestDefaultProfileMarkerSurvivesChildProcesses:

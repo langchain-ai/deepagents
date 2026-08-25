@@ -1004,18 +1004,18 @@ class TestManagedBinDirFallback:
         shared = tmp_path / "shared"
         shared.mkdir()
         profile = tmp_path / "profile"
-        original_probe = managed_tools._probe_writable
+        original_probe = managed_tools.probe_writable
 
-        def fake_probe(directory: Path) -> None:
+        def fake_probe(directory: Path, *, mode: int = 0o777) -> None:
             if directory == shared:
                 msg = "Permission denied"
                 raise OSError(msg)
-            original_probe(directory)
+            original_probe(directory, mode=mode)
 
         with (
             patch.object(managed_tools, "BIN_DIR", shared),
             patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
-            patch.object(managed_tools, "_probe_writable", side_effect=fake_probe),
+            patch.object(managed_tools, "probe_writable", side_effect=fake_probe),
         ):
             assert managed_tools._resolve_install_bin_dir() == profile
         assert profile.is_dir()

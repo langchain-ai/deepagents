@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Mapping
 
     from deepagents_code.config_manifest import ConfigOption
-    from deepagents_code.configuration.resolver import RankedProviderValue
 
 from deepagents_code.configuration.resolver import CLI_RANK, RankedProviderValue
 from deepagents_code.configuration.types import (
@@ -70,7 +69,12 @@ class CliProvider:
         Args:
             args: Values produced by `argparse`, or an equivalent mapping.
         """
-        values = vars(args) if hasattr(args, "__dict__") else args
+        # Discriminate on the declared type, not on `__dict__`: every `Mapping`
+        # implementation other than `dict`/`MappingProxyType` also has one, so
+        # `hasattr` sent them down the `vars()` branch and snapshotted the
+        # object's attributes instead of its items -- every option then read
+        # back `Unset` with no error anywhere.
+        values = args if isinstance(args, Mapping) else vars(args)
         object.__setattr__(self, "args", MappingProxyType(dict(values)))
         object.__setattr__(self, "name", "CLI argument")
         object.__setattr__(self, "rank", CLI_RANK)

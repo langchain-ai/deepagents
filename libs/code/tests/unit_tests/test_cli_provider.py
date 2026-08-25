@@ -92,3 +92,37 @@ def test_persistent_action_flags_are_not_resolution_bindings() -> None:
         assert option is not None
         assert option.cli is None
         assert option.cli_flag is not None
+
+
+def test_cli_provider_reads_any_mapping_not_just_dict() -> None:
+    """A `Mapping` that is not a `dict` must resolve like one.
+
+    Regression: discriminating on `hasattr(args, "__dict__")` sent every
+    `Mapping` subclass down the `vars()` branch, snapshotting the object's
+    attributes instead of its items, so every option read back `Unset`.
+    """
+    from collections.abc import Mapping
+    from typing import Any
+
+    class ReadOnlyArgs(Mapping):  # type: ignore[type-arg]
+        def __init__(self, data: dict[str, Any]) -> None:
+            self._data = data
+
+        def __getitem__(self, key: str) -> Any:  # noqa: ANN401
+            return self._data[key]
+
+        def __iter__(self) -> Any:  # noqa: ANN401
+            return iter(self._data)
+
+        def __len__(self) -> int:
+            return len(self._data)
+
+    option = get_option("runtime.recursion_limit")
+    assert option is not None
+
+    mapping = ReadOnlyArgs({"recursion_limit": 42})
+    assert CliProvider(mapping).get(option).result == Found(42)
+    assert CliProvider({"recursion_limit": 42}).get(option).result == Found(42)
+    assert CliProvider(argparse.Namespace(recursion_limit=42)).get(
+        option
+    ).result == Found(42)

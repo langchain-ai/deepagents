@@ -649,8 +649,36 @@ jobs:
       # .github/scripts/tests/); talon CI still RUNS on these PRs — only its
       # blocking effect changes, and the talon-failure-advisory job posts a
       # sticky comment when the waiver fires.
-      - name: "📋 Checkout Code"
+      #
+      # The gate script is executed from the PR's BASE ref, not the PR
+      # checkout: on pull_request runs `actions/checkout` defaults to the
+      # (untrusted) PR merge commit, so a PR that edited ci_gate.py could
+      # make the required check pass regardless of real job results. Pinning
+      # to `github.base_ref` keeps the decision logic maintainer-controlled.
+      # `github.base_ref` is empty on push/merge_group, so `||` falls back to
+      # the commit that triggered the run.
+      - name: "📋 Checkout gate script from trusted base ref"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.base_ref || github.sha }}
+          path: .ci-gate-base
+          sparse-checkout: |
+            .github/scripts/checks/ci_gate.py
+          persist-credentials: false
+
+      # Bootstrap window: ci_gate.py does not exist on main until this change
+      # lands, so the base-ref checkout above is empty on the PR that
+      # introduces it. Only for that window, check out the PR's own copy as a
+      # fallback. Once the script is on the base branch, the base-ref copy is
+      # always used and this second checkout never changes what runs.
+      - name: "📋 Checkout PR gate script (bootstrap fallback)"
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .ci-gate-pr
+          sparse-checkout: |
+            .github/scripts/checks/ci_gate.py
+          persist-credentials: false
 
       - name: "🎉 All Checks Passed"
         env:
@@ -678,7 +706,14 @@ jobs:
           ' "$NEEDS")"
           echo "Job results: $results"
 
-          gate="$(python3 .github/scripts/checks/ci_gate.py \
+          gate_script=".ci-gate-base/.github/scripts/checks/ci_gate.py"
+          if [ ! -f "$gate_script" ]; then
+            # Bootstrap only: the script is not on the base branch yet.
+            gate_script=".ci-gate-pr/.github/scripts/checks/ci_gate.py"
+            echo "::warning::ci_gate.py not found on base ref; running the PR's copy (bootstrap window)."
+          fi
+
+          gate="$(python3 "$gate_script" \
             --event "$EVENT_NAME" \
             --talon "$TALON_CHANGED" \
             --results "$results")"

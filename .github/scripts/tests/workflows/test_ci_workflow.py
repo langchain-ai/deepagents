@@ -202,6 +202,36 @@ def test_ci_success_builds_named_results_from_needs_object() -> None:
     assert "talon-failure-advisory" not in workflow["jobs"]["ci_success"]["needs"]
 
 
+def test_ci_success_runs_gate_script_from_trusted_base_ref() -> None:
+    """The gate script must not come from the untrusted PR checkout.
+
+    On pull_request runs `actions/checkout` defaults to the PR merge commit,
+    so executing the helper from the default checkout would let a PR author
+    rewrite the gate to always pass. Pin the base-ref checkout, its
+    credential-less configuration, and that the run step invokes the base
+    copy (falling back to the PR copy only during the bootstrap window when
+    the script is not yet on the base branch).
+    """
+    workflow = _load_workflow(CI_WORKFLOW)
+    steps = workflow["jobs"]["ci_success"]["steps"]
+
+    base = _find_step(
+        workflow, job="ci_success", name="📋 Checkout gate script from trusted base ref"
+    )
+    assert base["with"]["ref"] == "${{ github.base_ref || github.sha }}"
+    assert base["with"]["path"] == ".ci-gate-base"
+    assert base["with"]["persist-credentials"] is False
+    assert ".github/scripts/checks/ci_gate.py" in base["with"]["sparse-checkout"]
+
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    # The base copy is preferred; the PR copy is only a bootstrap fallback.
+    assert '.ci-gate-base' in step["run"]
+    assert step["run"].index(".ci-gate-base") < step["run"].index(".ci-gate-pr")
+    # No step may execute the helper from the default (untrusted) checkout.
+    for s in steps:
+        assert "python3 .github/scripts/checks/ci_gate.py" not in s.get("run", "")
+
+
 @pytest.mark.parametrize(
     ("label", "context", "expected"),
     SELECTION_CASES,

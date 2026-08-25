@@ -2526,31 +2526,56 @@ def _provider_retry_disable_kwargs(
         RETRY_PARAM_BY_PROVIDER,
     )
 
-    retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
-    if retry_param is None and section:
+    # An explicit `[retries.<provider>].param` outranks the built-in registry:
+    # the user is correcting our knowledge of their provider's SDK, so honoring
+    # the registry instead would silently discard the directive.
+    retry_param: str | None = None
+    if section:
         provider_section = section.get(provider)
         if isinstance(provider_section, dict) and "param" in provider_section:
-            configured = _coerce_retry_param(
+            retry_param = _coerce_retry_param(
                 provider_section["param"],
                 source=f"[retries.{provider}].param",
             )
-            if configured is not None:
-                retry_param = configured
+    if retry_param is None:
+        retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
 
     # A custom provider that already exposes the conventional parameter has
-    # positively identified its retry control through model configuration.
+    # positively identified its retry control through model configuration. The
+    # value itself is replaced below -- it is a detection signal, not a setting.
     if retry_param is None and "max_retries" in model_kwargs:
         retry_param = "max_retries"
     if retry_param is None:
         # The provider's own SDK retry loop can't be identified, so it stays
         # active and may multiply the middleware's attempts. Register the
         # provider in `RETRY_PARAM_BY_PROVIDER` or set `[retries.<provider>].param`.
-        logger.debug(
-            "No retry-disable kwarg for provider %r; its SDK retries stay active",
+        logger.warning(
+            "No retry-disable kwarg known for provider %r, so its own SDK retries "
+            "stay active and may multiply dcode's retry attempts. Set "
+            "[retries.%s].param in config.toml to name the provider's "
+            "retry-count kwarg.",
+            provider,
             provider,
         )
         return {}
-    return {retry_param: RETRY_DISABLE_VALUE_BY_PROVIDER.get(provider, 0)}
+
+    disable_value = RETRY_DISABLE_VALUE_BY_PROVIDER.get(provider, 0)
+    existing = model_kwargs.get(retry_param)
+    if (
+        isinstance(existing, int)
+        and not isinstance(existing, bool)
+        and existing != disable_value
+    ):
+        logger.warning(
+            "Ignoring %s=%r for provider %r: dcode's model-node middleware owns "
+            "the retry budget, so the provider's own retry loop is disabled. Use "
+            "--max-retries or [retries.%s].max_retries to set the budget.",
+            retry_param,
+            existing,
+            provider,
+            provider,
+        )
+    return {retry_param: disable_value}
 
 
 CLI_MAX_RETRIES_KEY = "__deepagents_cli_max_retries__"
@@ -5524,13 +5549,20 @@ def create_model(
                 If not provided, uses environment-based defaults.
         extra_kwargs: Additional kwargs to pass to the model constructor.
 
-            These take highest priority, overriding values from the config file.
+            These take highest priority, overriding values from the config file,
+            with two retry-related exceptions.
 
             A `CLI_MAX_RETRIES_KEY` entry (set by the `--max-retries` flag) is
             treated specially: it is popped here and used to resolve the model
             retry count on the returned `ModelResult` (which drives dcode's
             model-node retry middleware), rather than being forwarded to the
             constructor.
+
+            The provider's own retry-count kwarg (`RETRY_PARAM_BY_PROVIDER`,
+            usually `max_retries`) is always forced off after this merge,
+            because the model-node middleware owns the retry budget and nested
+            SDK retries would multiply its attempts. Supplying that kwarg here
+            logs a warning; use `--max-retries` or `[retries]` instead.
         profile_overrides: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides (dcode wins).

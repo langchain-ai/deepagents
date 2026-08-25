@@ -1618,6 +1618,60 @@ class TestRetriesConfig:
             None, "custom_provider", {"max_retries": 9}
         ) == {"max_retries": 0}
 
+    def test_configured_param_outranks_the_registry(self) -> None:
+        """An explicit `param` corrects the built-in registry, not the reverse.
+
+        Honoring the registry first would silently discard a directive the
+        config schema accepts and validates.
+        """
+        section = {"openai": {"param": "num_retries"}}
+        assert _provider_retry_disable_kwargs(section, "openai", {}) == {
+            "num_retries": 0
+        }
+
+    @pytest.mark.parametrize(
+        "provider",
+        sorted(model_config.RETRY_PARAM_BY_PROVIDER),
+    )
+    def test_every_registered_provider_is_disabled(self, provider: str) -> None:
+        """Dropping a registry entry silently reactivates that provider's retries."""
+        param = model_config.RETRY_PARAM_BY_PROVIDER[provider]
+        expected = model_config.RETRY_DISABLE_VALUE_BY_PROVIDER.get(provider, 0)
+        assert _provider_retry_disable_kwargs(None, provider, {}) == {param: expected}
+
+    def test_unidentifiable_provider_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unknown provider's SDK retries multiply ours, so say so loudly."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _provider_retry_disable_kwargs(None, "mystery", {}) == {}
+
+        assert "may multiply" in caplog.text
+        assert "[retries.mystery].param" in caplog.text
+
+    def test_clobbering_an_explicit_value_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A user-supplied retry count is overridden, but never silently."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _provider_retry_disable_kwargs(
+                None, "fireworks", {"max_retries": 3}
+            ) == {"max_retries": 0}
+
+        assert "Ignoring max_retries=3" in caplog.text
+        assert "--max-retries" in caplog.text
+
+    def test_no_warning_when_the_value_already_matches(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Nothing is being taken away, so stay quiet."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _provider_retry_disable_kwargs(
+                None, "fireworks", {"max_retries": 0}
+            ) == {"max_retries": 0}
+
+        assert "Ignoring max_retries" not in caplog.text
+
     @pytest.mark.parametrize("value", [-1, 1.5, True, False, "3"])
     def test_resolve_config_retry_count_invalid_values_warn(
         self, value: object, caplog: pytest.LogCaptureFixture

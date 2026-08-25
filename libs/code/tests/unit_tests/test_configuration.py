@@ -252,6 +252,11 @@ class _RemoteResponse:
     def settimeout(self, value: float | None) -> None:
         self.read_timeouts.append(value)
 
+    def shutdown(self, how: int) -> None:
+        """Model socket shutdown by releasing an in-flight fake read."""
+        assert how == socket.SHUT_RDWR
+        self.close()
+
 
 class _TrackedErrorBody(BytesIO):
     """Byte stream that records when `HTTPError.close` releases its body."""
@@ -583,6 +588,34 @@ def test_remote_toml_provider_bounds_reads_by_remaining_deadline(
 
     assert snapshot.status.health is ProviderHealth.OK
     assert response.read_timeouts == [2.0, 0.5]
+
+
+def test_remote_toml_provider_bounds_a_stalled_chunked_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A drip-fed chunk line cannot reset socket timeouts indefinitely."""
+    from deepagents_code.configuration import providers
+
+    entered = Event()
+
+    class StalledChunkedResponse(_RemoteResponse):
+        def read1(self, size: int = -1) -> bytes:
+            del size
+            entered.set()
+            assert self.closed.wait(timeout=1)
+            return b""
+
+    response = StalledChunkedResponse(b"", chunked=True)
+    monkeypatch.setattr(providers, "REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS", 0.05)
+    started = time.monotonic()
+    snapshot = _remote_snapshot(response, tmp_path, monkeypatch)
+
+    assert entered.is_set()
+    assert time.monotonic() - started < 0.5
+    assert response.closed.is_set()
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert "timed out" in (snapshot.status.detail or "")
 
 
 @pytest.mark.parametrize(

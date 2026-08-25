@@ -26,6 +26,9 @@ if TYPE_CHECKING:
         def settimeout(self, value: float | None) -> None:
             """Set the maximum wait for the next socket operation."""
 
+        def shutdown(self, how: int) -> None:
+            """Stop an in-flight socket operation."""
+
     class _RemoteOpener(Protocol):
         """Minimal opener surface used by the remote provider."""
 
@@ -714,19 +717,54 @@ def _set_response_timeout(response: HTTPResponse, timeout: float) -> None:
         sock.settimeout(timeout)
 
 
+def _abort_response_read(response: HTTPResponse) -> None:
+    """Close a response after stopping its in-flight socket operation."""
+    from contextlib import suppress
+    from socket import SHUT_RDWR
+
+    if response.fp is not None:
+        raw = getattr(response.fp, "raw", None)
+        sock = cast("_TimeoutSocket | None", getattr(raw, "_sock", None))
+        if sock is not None:
+            with suppress(OSError):
+                sock.shutdown(SHUT_RDWR)
+    response.close()
+
+
 def _read_response_chunk(
     response: HTTPResponse,
     size: int,
     *,
     deadline: float,
 ) -> bytes:
-    """Read at most one socket chunk within the remaining deadline.
+    """Read at most one socket chunk behind an absolute-time wait.
 
     Returns:
         The next available body chunk.
+
+    Raises:
+        TimeoutError: If the absolute fetch deadline expires during the read.
     """
-    _set_response_timeout(response, _remaining_timeout(deadline))
-    return response.read1(size)
+    from concurrent.futures import Future
+    from http.client import HTTPException
+    from threading import Thread
+
+    timeout = _remaining_timeout(deadline)
+    _set_response_timeout(response, timeout)
+    future: Future[bytes] = Future()
+
+    def read_chunk() -> None:
+        try:
+            future.set_result(response.read1(size))
+        except (HTTPException, OSError, ValueError) as exc:
+            future.set_exception(exc)
+
+    Thread(target=read_chunk, name="managed-config-read", daemon=True).start()
+    try:
+        return future.result(timeout=timeout)
+    except TimeoutError:
+        _abort_response_read(response)
+        raise
 
 
 def _declared_body_length(response: HTTPResponse) -> int | None:

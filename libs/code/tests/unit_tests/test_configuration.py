@@ -535,6 +535,33 @@ def test_remote_toml_provider_rejects_invalid_response(
     assert expected in (snapshot.status.detail or "")
 
 
+def test_remote_toml_provider_reports_parser_recursion_as_corrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pathologically nested TOML cannot escape the managed-config status."""
+    from deepagents_code.configuration import providers
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            return _RemoteResponse(b"value = [[[[0]]]]\n")
+
+    def recurse(_source: str) -> dict[str, object]:
+        raise RecursionError
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    monkeypatch.setattr(providers.tomllib, "loads", recurse)
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert "invalid TOML" in (snapshot.status.detail or "")
+
+
 def test_managed_provider_failure_is_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

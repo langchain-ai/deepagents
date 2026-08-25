@@ -791,7 +791,7 @@ def _parse_remote_toml(
             "remote source is not UTF-8",
             source,
         )
-    except tomllib.TOMLDecodeError:
+    except (tomllib.TOMLDecodeError, RecursionError):
         return _remote_status(
             name,
             path,

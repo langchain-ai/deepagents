@@ -18581,13 +18581,7 @@ class TestInterruptApprovalPriority:
     async def test_approval_arriving_during_prompt_search_keeps_shift_tab(
         self,
     ) -> None:
-        """A focused approval should retain shift+tab/ctrl+t after search opened.
-
-        The inline panel steps `toggle_auto_approve` aside so shift+tab can page
-        its results, but only while the query input has focus. Gating on panel
-        state alone left auto-approve untogglable and dropped shift+tab through
-        to `Screen.focus_previous`, moving focus off the pending approval.
-        """
+        """A focused approval should retain shift+tab/ctrl+t after search opened."""
         from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         app = DeepAgentsApp()
@@ -18598,8 +18592,7 @@ class TestInterruptApprovalPriority:
             chat_input.open_prompt_search()
             await pilot.pause()
 
-            # While the query owns focus the panel keeps the chord.
-            assert app.check_action("toggle_auto_approve", ()) is False
+            assert app.check_action("toggle_auto_approve", ()) is True
 
             menu = ApprovalMenu({"name": "execute", "args": {"command": "pwd"}})
             future: asyncio.Future[dict[str, str]] = (
@@ -42723,10 +42716,10 @@ class TestPromptClipboard:
             assert app.screen is screen
             assert screen._recommended_only is False
 
-    async def test_shift_tab_pages_in_prompt_modal(
+    async def test_shift_tab_does_not_page_prompt_modal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The modal pages with shift+tab; it must not hit the app binding."""
+        """The app swallows Shift+Tab in the modal without moving selection."""
         from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
 
         app = DeepAgentsApp(agent=MagicMock())
@@ -42735,9 +42728,7 @@ class TestPromptClipboard:
             chat_input = app._chat_input
             assert chat_input is not None
             monkeypatch.setattr(
-                chat_input,
-                "recent_prompts",
-                lambda: tuple(f"prompt {i}" for i in range(12)),
+                chat_input, "recent_prompts", lambda: ("newest", "oldest")
             )
 
             await pilot.press("ctrl+r")
@@ -42747,49 +42738,41 @@ class TestPromptClipboard:
             screen = cast("PromptClipboardScreen", app.screen)
             assert isinstance(screen, PromptClipboardScreen)
 
-            await pilot.press("tab")
-            await pilot.pause()
-            assert screen._selected_index == 5
-
+            await pilot.press("down")
             await pilot.press("shift+tab")
             await pilot.pause()
-            assert screen._selected_index == 0
 
-    async def test_shift_tab_pages_the_inline_panel(
+            assert app.screen is screen
+            assert screen._selected_index == 1
+
+    async def test_shift_tab_no_longer_pages_inline_panel(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The inline panel pages with shift+tab under the real app dispatch.
-
-        The widget-level paging test runs on a bare host with no competing
-        binding, so it cannot catch the `toggle_auto_approve` step-aside
-        regressing. Without it shift+tab would toggle auto-approve — a
-        permissions change — instead of paging results.
-        """
+        """Shift+Tab uses the app action while inline prompt search is open."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             chat_input = app._chat_input
             assert chat_input is not None
             monkeypatch.setattr(
-                chat_input,
-                "recent_prompts",
-                lambda: tuple(f"prompt {i}" for i in range(12)),
+                chat_input, "recent_prompts", lambda: ("newest", "oldest")
             )
-            approval_mode_before = app._approval_mode
 
             await pilot.press("ctrl+r")
             await pilot.pause()
             await pilot.pause()
+            await pilot.press("down")
+            assert chat_input._prompt_search_index == 1
+
+            with patch.object(
+                DeepAgentsApp, "action_toggle_auto_approve", new=AsyncMock()
+            ) as toggle:
+                await pilot.press("shift+tab")
+                await pilot.pause()
+
+            toggle.assert_awaited_once()
             assert chat_input._prompt_search_active is True
-
-            await pilot.press("tab")
-            await pilot.pause()
-            assert chat_input._prompt_search_index == 5
-
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert chat_input._prompt_search_index == 0
-            assert app._approval_mode == approval_mode_before
+            assert chat_input._prompt_search_index == 1
 
     @pytest.mark.parametrize(
         "pending_field",

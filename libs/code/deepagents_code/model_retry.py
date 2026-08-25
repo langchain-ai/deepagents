@@ -417,7 +417,13 @@ def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
         attempts: Total model calls made, including the initial one.
         max_retries: Retry budget resolved for this model request.
     """
-    if max_retries and _is_retryable_model_error(exc):
+    if not _is_retryable_model_error(exc):
+        logger.debug(
+            "Model call failed with a non-transient %s; not retrying",
+            type(exc).__name__,
+            exc_info=exc,
+        )
+    elif max_retries:
         logger.error(
             "Model call failed after %d attempts (retry budget %d exhausted): %s",
             attempts,
@@ -426,8 +432,9 @@ def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
             exc_info=exc,
         )
     else:
-        logger.debug(
-            "Model call failed with a non-transient %s; not retrying",
+        logger.warning(
+            "Model call failed with a transient %s but retries are disabled "
+            "(retry budget 0)",
             type(exc).__name__,
             exc_info=exc,
         )

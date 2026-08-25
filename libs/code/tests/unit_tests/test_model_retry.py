@@ -1012,3 +1012,27 @@ def test_stream_tracker_setup_failure_preserves_the_model_error() -> None:
         middleware.wrap_model_call(
             cast("ModelRequest", SimpleNamespace(model=None)), _handler
         )
+
+
+def test_transient_failure_with_retries_disabled_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A zero budget must not report a transient fault as non-transient.
+
+    Auxiliary model calls fall back to a zero budget when the model carries no
+    retry metadata, so this is the branch that explains most give-ups.
+    """
+
+    def handler(_req_arg: object) -> str:
+        msg = "connection reset"
+        raise ModelConnectionError(msg)
+
+    mw = CodeModelRetryMiddleware(max_retries=0)
+    with (
+        caplog.at_level(logging.WARNING, logger="deepagents_code.model_retry"),
+        pytest.raises(ModelConnectionError),
+    ):
+        mw.wrap_model_call(_req(), _handler(handler))
+
+    assert "retries are disabled" in caplog.text
+    assert "non-transient" not in caplog.text

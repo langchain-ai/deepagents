@@ -44,6 +44,7 @@ from deepagents.profiles.provider._openrouter import (
     _openrouter_attribution_kwargs,
     check_openrouter_version,
 )
+from deepagents.profiles.provider._orcarouter import ORCAROUTER_BASE_URL
 from deepagents.profiles.provider.provider_profiles import (
     _PROVIDER_PROFILES,
     _merge_provider_profiles,
@@ -83,6 +84,16 @@ def _make_model(attrs: dict) -> MagicMock:
 
 class TestResolveModel:
     """Tests for `resolve_model`."""
+
+    @pytest.fixture(autouse=True)
+    def _scrub_orcarouter_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Pop `ORCAROUTER_API_KEY` before each test.
+
+        The OrcaRouter provider profile forwards this env var as `api_key`, so
+        an ambient value in the developer's shell would change the kwargs
+        `resolve_model` passes to `init_chat_model`.
+        """
+        monkeypatch.delenv("ORCAROUTER_API_KEY", raising=False)
 
     def test_passthrough_when_already_model(self) -> None:
         model = MagicMock(spec=BaseChatModel)
@@ -189,6 +200,30 @@ class TestResolveModel:
 
         mock.assert_called_once_with("anthropic:claude-sonnet-4-6")
         assert result is mock.return_value
+
+    def test_orcarouter_prefix_routes_through_openrouter_with_base_url(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            result = resolve_model("orcarouter:deepseek/deepseek-chat")
+
+        mock.assert_called_once_with(
+            "openrouter:deepseek/deepseek-chat",
+            base_url="https://api.orcarouter.ai/v1",
+            app_url=_OPENROUTER_APP_URL,
+            app_title=_OPENROUTER_APP_TITLE,
+        )
+        assert result is mock.return_value
+
+    def test_orcarouter_spec_keeps_orcarouter_profile(self) -> None:
+        """Profile lookup uses the original spec, not the rewritten one."""
+        kwargs = apply_provider_profile("orcarouter:deepseek/deepseek-chat")
+        assert kwargs["base_url"] == ORCAROUTER_BASE_URL
+
+    def test_orcarouter_api_key_env_is_forwarded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`ORCAROUTER_API_KEY` authenticates the OpenAI-compatible client."""
+        monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-test")
+        kwargs = apply_provider_profile("orcarouter:deepseek/deepseek-chat")
+        assert kwargs["api_key"] == "sk-orca-test"
 
 
 class TestGetModelIdentifier:

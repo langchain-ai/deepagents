@@ -22,6 +22,30 @@ LangChain specs and LangSmith params use different provider names for some
 integrations. Canonicalize only known aliases before comparing providers.
 """
 
+
+def _normalize_provider(provider: str) -> str:
+    """Canonicalize a provider name so equal providers compare equal.
+
+    Specs use the `provider:model` spelling (lowercase, underscore-separated,
+    e.g. `azure_openai`), while the `ls_provider` reported by `_get_ls_params`
+    may differ in case, use hyphens (`openai-codex`), or use an entirely
+    different name (`mistralai` vs `mistral`). Folding both sides through this
+    function before comparison keeps those spellings from reading as a
+    mismatch.
+    """
+    normalized = provider.lower().replace("-", "_")
+    return _PROVIDER_ALIASES.get(normalized, normalized)
+
+
+# OrcaRouter does not ship a dedicated LangChain integration package. Its API
+# is OpenAI-compatible, so `orcarouter:<model>` specs are routed through
+# LangChain's `openrouter` provider (whose `ChatOpenRouter` is an
+# OpenAI-compatible client) with the OrcaRouter base URL injected by the
+# built-in provider profile. The spec keeps the `orcarouter` prefix for the
+# profile registry and user-facing labels; only the `init_chat_model` provider
+# name is rewritten here.
+_ORCAROUTER_LANGCHAIN_PROVIDER = "openrouter"
+
 _BEDROCK_PROVIDERS = frozenset({"amazon_bedrock", "anthropic_bedrock", "aws", "bedrock", "bedrock_converse"})
 """Normalized provider names that identify AWS Bedrock chat models."""
 
@@ -44,6 +68,11 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     users can layer additional providers or overrides via
     `register_provider_profile`.
 
+    `orcarouter:<model>` specs are rewritten to the `openrouter` provider name
+    for `init_chat_model` (OrcaRouter's API is OpenAI-compatible and has no
+    dedicated LangChain package), while the `orcarouter` provider profile still
+    applies.
+
     Args:
         model: Model string (e.g. `"openai:gpt-5.4"`) or pre-configured
             `BaseChatModel` subclass instance.
@@ -54,7 +83,12 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     if isinstance(model, BaseChatModel):
         return model
 
-    return init_chat_model(model, **apply_provider_profile(model))
+    init_spec = model
+    provider, sep, _ = model.partition(":")
+    if sep and _normalize_provider(provider) == "orcarouter":
+        init_spec = f"{_ORCAROUTER_LANGCHAIN_PROVIDER}{model[len(provider) :]}"
+
+    return init_chat_model(init_spec, **apply_provider_profile(model))
 
 
 def get_model_identifier(model: BaseChatModel) -> str | None:
@@ -187,20 +221,6 @@ def model_matches_spec(model: BaseChatModel, spec: str) -> bool:
         )
         return True
     return _normalize_provider(provider) == _normalize_provider(current_provider)
-
-
-def _normalize_provider(provider: str) -> str:
-    """Canonicalize a provider name so equal providers compare equal.
-
-    Specs use the `provider:model` spelling (lowercase, underscore-separated,
-    e.g. `azure_openai`), while the `ls_provider` reported by `_get_ls_params`
-    may differ in case, use hyphens (`openai-codex`), or use an entirely
-    different name (`mistralai` vs `mistral`). Folding both sides through this
-    function before comparison keeps those spellings from reading as a
-    mismatch.
-    """
-    normalized = provider.lower().replace("-", "_")
-    return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
 def _string_attr(obj: object, attr: str) -> str | None:

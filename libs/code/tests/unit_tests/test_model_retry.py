@@ -86,6 +86,23 @@ class AuthenticationError(Exception):
         self.status_code = 401
 
 
+class _GoogleAPICoreError(Exception):
+    """Stand in for optional `google.api_core.exceptions` status errors."""
+
+    code: int
+
+    def __init__(self, code: int) -> None:
+        super().__init__(f"google status {code}")
+        self.code = code
+
+
+_GoogleAPICoreError.__module__ = "google.api_core.exceptions"
+
+
+class ResourceExhausted(Exception):  # noqa: N818  # mirrors the Google SDK name
+    """Name mirrors Google API Core's transient quota exception."""
+
+
 class _RetryingStreamingModel(BaseChatModel):
     """Emit one orphaned chunk, fail, then complete on the retry."""
 
@@ -321,6 +338,19 @@ def test_model_taxonomy_takes_precedence_over_legacy_fallback() -> None:
 )
 def test_predicate_retryable(exc: Exception) -> None:
     assert _is_retryable_model_error(exc) is True
+
+
+@pytest.mark.parametrize("code", [408, 409, 429, 500, 503, 504])
+def test_predicate_retries_google_api_core_status_codes(code: int) -> None:
+    assert _is_retryable_model_error(_GoogleAPICoreError(code)) is True
+
+
+def test_predicate_retries_google_api_core_transient_class_without_code() -> None:
+    assert _is_retryable_model_error(ResourceExhausted("quota unavailable")) is True
+
+
+def test_predicate_rejects_google_api_core_permanent_status_code() -> None:
+    assert _is_retryable_model_error(_GoogleAPICoreError(400)) is False
 
 
 @pytest.mark.parametrize(

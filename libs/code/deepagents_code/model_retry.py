@@ -79,10 +79,14 @@ _TRANSIENT_SDK_EXC_NAMES = frozenset(
         "APITimeoutError",
         "APIConnectionError",
         "APIConnectionTimeoutError",
+        "Aborted",
         "ConnectTimeoutError",
         "ConnectionClosedError",
+        "DeadlineExceeded",
         "EndpointConnectionError",
         "ReadTimeoutError",
+        "ResourceExhausted",
+        "ServiceUnavailable",
     }
 )
 """Provider SDK exception class names that signal a transient network fault.
@@ -94,6 +98,16 @@ distinct from `APIStatusError`, which carries an HTTP status handled separately.
 
 _HTTP_SERVER_ERROR_FLOOR = 500
 _HTTP_SERVER_ERROR_CEILING = 600
+
+
+def _google_api_core_status_code(exc: Exception) -> int | None:
+    """Return a numeric Google API Core status without importing its package."""
+    if not any(
+        base.__module__ == "google.api_core.exceptions" for base in type(exc).__mro__
+    ):
+        return None
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, int) and not isinstance(code, bool) else None
 
 
 class _MessageStreamTracker:
@@ -176,8 +190,8 @@ def _track_message_streams() -> Iterator[_MessageStreamTracker]:
 def _extract_status_code(exc: Exception) -> int | None:
     """Return an HTTP status code carried by a provider error, if any.
 
-    Inspects the common attributes used across SDKs (`status_code`,
-    `response.status_code`, `http_status`) plus botocore's
+    Inspects the common attributes used across SDKs (`status_code`, Google API
+    Core's numeric `code`, `response.status_code`, `http_status`) plus botocore's
     `response["ResponseMetadata"]["HTTPStatusCode"]` mapping defensively, so a
     missing or non-integer value simply yields `None`.
 
@@ -192,6 +206,10 @@ def _extract_status_code(exc: Exception) -> int | None:
         return None
     if isinstance(status, int):
         return status
+
+    google_status = _google_api_core_status_code(exc)
+    if google_status is not None:
+        return google_status
 
     response = getattr(exc, "response", None)
     if response is not None:

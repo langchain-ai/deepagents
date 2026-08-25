@@ -855,9 +855,9 @@ def _reject_reserved_agent_arg(name: str) -> None:
     """Exit with a CLI-level message when `-a` names an app-owned directory.
 
     Agent profiles are siblings of directories the app owns under the profile
-    root, so `get_agent_dir` rejects those names. That raise happens inside
-    server-side agent construction, where the user sees a traceback rather than
-    an explanation, so catch the same names here at the point of entry.
+    root, so `get_agent_dir` rejects those names. It is called from several
+    places downstream of launch, so the failure is not attributable to the flag
+    that caused it. Reject the name here, at the point of entry, instead.
 
     Note:
         Exits the process with status 2 (argparse's usage-error status) when
@@ -1572,11 +1572,12 @@ def _warn_if_interpreter_tools_without_interpreter(
 
 
 def _recent_agent_is_valid(name: str) -> bool:
-    """Return whether the selected profile still contains agent `name`.
+    """Return whether `name` is a usable agent in the selected profile.
 
-    Used to guard against a stale `[agents].recent` entry pointing at an
-    agent the user has since deleted — in that case we silently fall back
-    to the hard-coded default instead of failing at server start.
+    Used to guard against a stale `[agents].recent` entry pointing at an agent
+    the user has since deleted, or at a name the app owns — in either case we
+    silently fall back to the hard-coded default instead of failing at server
+    start.
 
     The path comes from the lightweight immutable launch snapshot rather than
     `settings`, which is intentionally imported *after* argparse in `cli_main`
@@ -1659,8 +1660,13 @@ def _configured_profile_notice() -> str | None:
 
     A mistyped or stale `DEEPAGENTS_HOME` resolves to an empty directory, which
     is indistinguishable from a first run: no credentials, no MCP tokens, no
-    config. Naming the profile — and whether it already existed — turns "all my
-    settings are gone" into "I am pointed at the wrong profile".
+    config. Naming the profile, and saying whether it already existed,
+    identifies the cause. Without it the launch looks like data loss.
+
+    `classify_path` reports three states and each gets its own line. An
+    unreadable root is a permission problem, not a wrong profile, so it must
+    not be described as a new empty profile. `_reject_degenerate_root` normally
+    stops that root at capture time, but permissions can change after it.
 
     Returns:
         A Rich-markup line, or `None` when the default profile is in use.
@@ -1670,8 +1676,15 @@ def _configured_profile_notice() -> str | None:
     if PATHS.uses_default_profile:
         return None
     root = _rich_path_display(PATHS.profile.root)
-    if classify_path(PATHS.profile.root) is PathState.EXISTS:
+    state = classify_path(PATHS.profile.root)
+    if state is PathState.EXISTS:
         return f"[dim]Using profile {root} (DEEPAGENTS_HOME)[/dim]"
+    if state is PathState.UNREADABLE:
+        return (
+            f"[yellow]Note:[/yellow] the profile at {root} (DEEPAGENTS_HOME) "
+            "exists but cannot be read. Check the permissions on it and on its "
+            "parent directories."
+        )
     return (
         f"[yellow]Note:[/yellow] creating a new empty profile at {root} "
         "(DEEPAGENTS_HOME). Existing settings and credentials live in a "
@@ -1686,24 +1699,31 @@ def _print_configured_profile_notice() -> None:
     `try`: a failure here must not be reported as "tool availability check
     skipped", and must not stop the tool warnings from printing.
     """
-    notice = None
     try:
         notice = _configured_profile_notice()
-        if notice is None:
-            return
+    except Exception:
+        # Nothing to fall back to: there is no notice text yet. Log and move
+        # on rather than failing a launch over a diagnostic line.
+        logger.warning("Could not build the profile notice", exc_info=True)
+        return
+    if notice is None:
+        return
+    try:
         from rich.console import Console as _Console
 
         _Console(stderr=True).print(notice)
     except Exception:
         logger.warning("Could not print the profile notice", exc_info=True)
-        if notice is not None:
-            # The point of the notice is that a silent wrong profile looks like
-            # lost settings, so fall back to plain stderr rather than dropping
-            # it.
-            with contextlib.suppress(Exception):
-                sys.stderr.write(
-                    f"Using profile {PATHS.profile.root} (DEEPAGENTS_HOME)\n"
-                )
+        # The point of the notice is that a silent wrong profile looks like
+        # lost settings, so fall back to plain stderr rather than dropping it.
+        # Strip the markup from the notice already computed instead of writing
+        # a different sentence: the "creating a new empty profile" case is the
+        # one that matters most, and a fixed "Using profile" line would state
+        # the opposite of it.
+        with contextlib.suppress(Exception):
+            from rich.markup import render
+
+            sys.stderr.write(f"{render(notice).plain}\n")
 
 
 def _suppress_hint_cli(key: str) -> str:

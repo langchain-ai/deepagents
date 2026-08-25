@@ -3,15 +3,17 @@
 `DEEPAGENTS_HOME` selects the user's profile and therefore a trust boundary. It
 must come from the inherited launch environment, not from a project or global
 dotenv file, and it must not move when the process changes directory or reloads
-settings. `PATHS` is the single launch-time snapshot used by both processes.
+settings. `PATHS` is the single launch-time snapshot used by both the client
+and the server subprocess.
 
 This module also owns `classify_path`. `Path.exists()` returns `False` for some
 permission errors, which makes an unreadable configured path indistinguishable
 from one that has not been created yet. Diagnostics need that distinction, so
 they probe with `Path.stat()` and retain an explicit `UNREADABLE` state.
 
-Keep this module limited to the standard library: it is imported on the CLI
-startup path and by the server subprocess before heavier packages are needed.
+Keep this module to the standard library plus `_home_error`, which has no
+imports of its own. This module is imported on the CLI startup path and by the
+server subprocess before heavier packages are needed.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from typing import TYPE_CHECKING
 from deepagents_code._home_error import DeepAgentsHomeError
 
 if TYPE_CHECKING:
-    from collections.abc import MutableMapping
+    from collections.abc import MutableMapping, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,8 @@ __all__ = [
     "ProfilePaths",
     "ProjectPaths",
     "classify_path",
+    "export_profile_env",
+    "first_writable",
     "get_deepagents_home",
     "harden_state_dir",
     "probe_writable",
@@ -73,7 +77,7 @@ directory is used.
 """
 
 DEFAULT_PROFILE_DIR_NAME = ".deepagents"
-"""Directory under the home directory used when no profile is configured."""
+"""Directory name used under the home directory when no profile is configured."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +89,13 @@ class ProfilePaths:
     dotenv_file: Path
     mcp_config_file: Path
     agent_profiles_dir: Path
+    """The profile root itself.
+
+    Agent profiles are direct children of the root, not of a dedicated
+    subdirectory, so an agent name can collide with an app-owned directory.
+    `_reserved_names.reserved_agent_dir_names` is what stops that.
+    """
+
     default_skills_dir: Path
     hooks_file: Path
     plugins_dir: Path
@@ -262,15 +273,19 @@ def probe_writable(directory: Path, *, mode: int = 0o777) -> None:
     distinguishes "present" from "usable".
 
     The probe uses `tempfile.mkstemp`, not a PID-named file. These directories
-    are deliberately shared across profiles and processes, and PIDs are not
-    unique across containers or PID namespaces: a colliding name would make a
-    writable directory look unusable and would delete a peer's live probe.
-    Removal failures are suppressed separately, so a directory that accepts
-    files but refuses unlinks is still reported as writable.
+    are shared across processes, and in the installation-scoped case across
+    profiles too. PIDs are not unique across containers or PID namespaces: a
+    colliding name would make a writable directory look unusable and would
+    delete a peer's live probe. Removal failures are suppressed separately, so
+    a directory that accepts files but refuses unlinks is still reported as
+    writable.
 
     Args:
         directory: Directory to create and probe.
-        mode: Permission bits for directories this call creates.
+        mode: Permission bits for directories this call creates. The default
+            `0o777` defers to the process umask, which is what an ordinary
+            tool directory wants. The state directory is the one that must not,
+            so `harden_state_dir` passes `0o700` and chmods afterwards.
 
     Note:
         `OSError` propagates from `mkdir` or `mkstemp` when the directory
@@ -283,7 +298,57 @@ def probe_writable(directory: Path, *, mode: int = 0o777) -> None:
     try:
         Path(name).unlink()
     except OSError:
-        logger.debug("Could not remove the write probe %s", name, exc_info=True)
+        # One stranded probe is harmless. Repeats are not: this runs on every
+        # launch, so a directory that never accepts an unlink (a sticky-bit
+        # directory owned by another user, an NFS or SMB mount with delete
+        # denied) grows an unbounded pile of `.deepagents-probe-*` files. Say so
+        # once per directory per process, so the pile has a discoverable cause.
+        if str(directory) in _LEAKED_PROBE_DIRS:
+            logger.warning(
+                "Cannot remove write probes in %s, so they are accumulating. "
+                "Delete the '.deepagents-probe-*' files there and check the "
+                "directory's delete permissions.",
+                directory,
+            )
+        else:
+            _LEAKED_PROBE_DIRS.add(str(directory))
+            logger.debug("Could not remove the write probe %s", name, exc_info=True)
+
+
+_LEAKED_PROBE_DIRS: set[str] = set()
+"""Directories that have already refused to remove a write probe."""
+
+
+def first_writable(
+    candidates: Sequence[Path], *, mode: int = 0o777, what: str
+) -> Path | None:
+    """Return the first candidate directory that accepts a file.
+
+    Shared by the managed-bin and update-lock resolvers, which both walk a
+    preferred-then-fallback pair. Callers keep their own "fell back" warning,
+    because the consequence of falling back differs between them.
+
+    Args:
+        candidates: Directories to try, most preferred first.
+        mode: Permission bits for directories this call creates.
+        what: Noun phrase naming the directory's purpose, used in the log.
+
+    Returns:
+        The first usable directory, or `None` when none of them is.
+    """
+    for directory in candidates:
+        try:
+            probe_writable(directory, mode=mode)
+        except OSError:
+            logger.info(
+                "%s directory %s is unusable; trying the next location",
+                what,
+                directory,
+                exc_info=True,
+            )
+            continue
+        return directory
+    return None
 
 
 def harden_state_dir(state_dir: Path | None = None) -> bool:
@@ -308,6 +373,10 @@ def harden_state_dir(state_dir: Path | None = None) -> bool:
         Failures are logged, never raised. `mkdir` can fail on a read-only or
         full filesystem, and `chmod` is routinely refused on CIFS/exFAT mounts.
         Neither is a reason to abort the launch that needed the directory.
+
+        On Windows the `chmod` step is skipped. POSIX mode bits do not restrict
+        access there, so the directory keeps the ACL it inherits from its
+        parent and this function adds no protection of its own.
     """
     if state_dir is None:
         state_dir = PATHS.profile.state_dir
@@ -388,9 +457,14 @@ def _same_directory(left: Path, right: Path) -> bool:
     misses a symlinked spelling of the target, and misses a case difference on
     the case-insensitive filesystems that are the default on macOS and Windows.
     Both are ordinary ways to spell the home directory, so both must compare
-    equal here. `os.path.samefile` compares device and inode, which settles
-    every spelling at once; `os.path.normcase` would not, because it is a
-    no-op on POSIX.
+    equal here. `Path.samefile` compares device and inode. That settles every
+    spelling at once. `os.path.normcase` does not, because it is a no-op on
+    POSIX.
+
+    A missing path is a real answer: it cannot be the directory it is compared
+    against. Any other `OSError` is not an answer, and this function refuses to
+    guess. Callers use it to reject a profile root, so a wrong `False` accepts
+    the alias the caller meant to reject.
 
     Args:
         left: First path to compare.
@@ -398,17 +472,32 @@ def _same_directory(left: Path, right: Path) -> bool:
 
     Returns:
         `True` when the two paths name one directory.
+
+    Raises:
+        DeepAgentsHomeError: If identity cannot be determined, such as when a
+            parent directory denies traversal or a symlink chain loops.
     """
     if str(left) == str(right):
         return True
     try:
         return Path(left).samefile(right)
-    except OSError:
-        # One of them does not exist or cannot be read. A profile root that is
-        # not there yet cannot be the home directory, and the lexical
-        # comparison above has already ruled out the spelling-only case.
-        logger.debug("Could not compare %s with %s", left, right)
+    except FileNotFoundError:
+        # A profile root that is not there yet cannot be the home directory,
+        # and the lexical comparison above has already ruled out the
+        # spelling-only case.
+        logger.debug("Could not compare %s with %s: one is missing", left, right)
         return False
+    except OSError as exc:
+        # EACCES, ELOOP, EIO, ESTALE: the answer is unknown, not "different".
+        # The whole point of `samefile` here is to catch the non-lexical
+        # spellings the comparison above misses, so returning `False` would
+        # accept exactly the aliases this guard exists to reject.
+        msg = (
+            f"Cannot determine whether {str(left)!r} is {str(right)!r}: "
+            f"{exc.strerror or exc}. Fix the permissions on those paths, or "
+            "set DEEPAGENTS_HOME to a path that can be read."
+        )
+        raise DeepAgentsHomeError(msg) from exc
 
 
 def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
@@ -424,14 +513,34 @@ def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
       the profile dotenv the user's generic `~/.env` and load it as trusted
       configuration.
     - An existing non-directory cannot hold a profile at all.
+    - A root that exists but cannot be read. Every later access fails one file
+      at a time, and each failure looks like a first run, so reject it once
+      here with the real cause.
+    - A symlink whose target is missing. The profile root is created lazily, so
+      it would otherwise be created through a link the user cannot see.
 
     Comparisons go through `_same_directory`, so a symlinked or differently
     cased spelling of `/` or of the home directory is rejected too.
 
+    The readability check runs first. `_same_directory` cannot compare a path
+    it may not read, so checking state first reports the permission problem
+    itself instead of the comparison that failed because of it.
+
     Raises:
         DeepAgentsHomeError: If the root is one of those cases.
     """
-    if root.parent == root or _same_directory(root, Path(root.anchor or "/")):
+    state = classify_path(root)
+    if state is PathState.UNREADABLE:
+        # Checked before the symlink branch too: `Path.is_symlink` swallows the
+        # `OSError` and reports `False` under EACCES, so an unreadable root
+        # would otherwise fall through every check and be accepted.
+        msg = (
+            f"Invalid DEEPAGENTS_HOME {str(root)!r}: exists but cannot be read. "
+            "Check the permissions on it and on its parent directories."
+        )
+        raise DeepAgentsHomeError(msg)
+    # `root` is normalized-absolute, so `anchor` is always set.
+    if root.parent == root or _same_directory(root, Path(root.anchor)):
         msg = (
             f"Invalid DEEPAGENTS_HOME {str(root)!r}: the filesystem root cannot "
             "be a profile. Use a dedicated directory."
@@ -445,11 +554,10 @@ def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
             "'~/.deepagents'."
         )
         raise DeepAgentsHomeError(msg)
-    state = classify_path(root)
-    if state is not PathState.EXISTS and root.is_symlink():
+    if state is PathState.MISSING and root.is_symlink():
         msg = (
             f"Invalid DEEPAGENTS_HOME {str(root)!r}: is a symlink whose target "
-            "is missing or cannot be resolved."
+            "is missing."
         )
         raise DeepAgentsHomeError(msg)
     if state is PathState.EXISTS and not root.is_dir():
@@ -459,7 +567,7 @@ def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
 
 def _resolve_profile_root(
     configured: str | None, launch_home: Path | None
-) -> tuple[Path, bool, Path | None, bool]:
+) -> tuple[Path, bool, Path | None, Path | None]:
     """Resolve a launch value, preferring the captured launch-user home.
 
     An absolute `DEEPAGENTS_HOME` never consults the home directory, so a host
@@ -467,8 +575,9 @@ def _resolve_profile_root(
 
     Returns:
         The normalized root, whether it is the default profile, the captured
-        launch home when resolution required one, and whether the home
-        comparison had to be skipped.
+        launch home when resolution required one, and the home used for the
+        degenerate-root comparison. The last is `None` when the home could not
+        be resolved, which means that comparison did not run.
 
     Note:
         `DeepAgentsHomeError` propagates from the resolution and validation
@@ -481,7 +590,10 @@ def _resolve_profile_root(
     # resolvable home still launches.
     comparison_home = home if home is not None else _best_effort_home()
     _reject_degenerate_root(root, comparison_home)
-    return root, uses_default, home, comparison_home is None
+    # Returned rather than reduced to a boolean: `_capture_paths` needs the
+    # same value for the default-marker check, and resolving it twice would
+    # warn twice on a host with no resolvable home.
+    return root, uses_default, home, comparison_home
 
 
 def _best_effort_home() -> Path | None:
@@ -599,15 +711,16 @@ def _honors_default_marker(root: Path, home: Path | None) -> bool:
 
     Args:
         root: The already-resolved profile root.
-        home: The launch home when resolution produced one.
+        home: The home already resolved for the degenerate-root comparison, or
+            `None` when it could not be resolved. Passed in rather than looked
+            up again, so an unresolvable home warns once per launch.
 
     Returns:
         `True` when `root` is the default profile directory for the launch home.
     """
-    resolved_home = home if home is not None else _best_effort_home()
-    if resolved_home is None:
+    if home is None:
         return False
-    return root == resolved_home / DEFAULT_PROFILE_DIR_NAME
+    return root == home / DEFAULT_PROFILE_DIR_NAME
 
 
 def _capture_paths(
@@ -628,17 +741,17 @@ def _capture_paths(
     Returns:
         An immutable path snapshot.
     """
-    profile_root, uses_default, home, home_check_skipped = _resolve_profile_root(
+    profile_root, uses_default, home, comparison_home = _resolve_profile_root(
         configured, launch_home
     )
     if not uses_default and default_marker:
-        uses_default = _honors_default_marker(profile_root, home)
+        uses_default = _honors_default_marker(profile_root, comparison_home)
     return DeepAgentsPathSnapshot(
         profile=_profile_paths(profile_root),
         installation=_installation_paths(),
         launch_home=home,
         uses_default_profile=uses_default,
-        home_check_skipped=home_check_skipped,
+        home_check_skipped=comparison_home is None,
     )
 
 
@@ -652,10 +765,11 @@ PATHS = _capture_paths(
 def export_profile_env(env: MutableMapping[str, str]) -> None:
     """Pin the resolved profile selection into a child environment.
 
-    Writes both the resolved root and the defaulted/configured marker, so a
-    child reconstructs the same snapshot the parent captured. Always assigns
-    both keys — a stale inherited marker must be cleared rather than left to
-    describe a profile it no longer applies to.
+    Writes the resolved root, then sets or clears the defaulted/configured
+    marker, so a child reconstructs the same snapshot the parent captured.
+    Both keys are always written. The marker is removed rather than left in
+    place when the profile is configured, because a stale inherited marker
+    would describe a profile it no longer applies to.
 
     Args:
         env: Environment mapping to update in place.
@@ -668,8 +782,9 @@ def export_profile_env(env: MutableMapping[str, str]) -> None:
 
 
 # Normalize the inherited value for every descendant process. Callers that
-# build an explicit child environment should still assign from `PATHS` so a
-# later accidental `os.environ` mutation cannot create client/server split-brain.
+# build an explicit child environment should still assign from `PATHS`. Then a
+# later accidental `os.environ` mutation cannot give the client and the server
+# different profile roots.
 export_profile_env(os.environ)
 
 

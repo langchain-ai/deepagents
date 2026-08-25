@@ -23,6 +23,40 @@ from deepagents_code.configuration.types import (
 )
 
 
+def parse_interpreter_tools(raw: str) -> str | list[str] | Invalid:
+    """Parse the shared `--interpreter-tools` grammar.
+
+    One rule serves both callers. `CliProvider` frames a rejection as a
+    warning and falls through to the next tier; `main` frames the same reason
+    as a usage error and exits 2. Two hand-maintained copies had already
+    drifted in wording.
+
+    Args:
+        raw: Raw flag text as the user typed it.
+
+    Returns:
+        The `"safe"`/`"all"` sentinel, a list of tool names, or `Invalid`
+        carrying the bare reason for the caller to frame.
+    """
+    text = raw.strip()
+    if not text:
+        return Invalid(
+            "requires a value: 'safe', 'all', or a comma-separated list of tool names"
+        )
+    normalized = text.lower()
+    if normalized in {"safe", "all"}:
+        return normalized
+    names = [token.strip() for token in text.split(",") if token.strip()]
+    if not names:
+        return Invalid("list must contain at least one non-empty tool name")
+    if any(name.lower() == "all" for name in names):
+        return Invalid(
+            "'all' cannot be combined with other tools; use 'all' on its own "
+            "or list explicit tool names (optionally with the 'safe' preset)"
+        )
+    return names
+
+
 @runtime_checkable
 class ConfigProvider(Protocol):
     """A ranked source of typed configuration values."""
@@ -160,35 +194,23 @@ class CliProvider:
         if option.kind is OptionKind.SHELL_LIST_DELEGATE and isinstance(raw, str):
             return coerce_environment_value(option, raw, flag)
         if option.kind is OptionKind.PTC_DELEGATE and isinstance(raw, str):
-            parsed = CliProvider._parse_interpreter_tools(raw, flag=flag)
+            parsed = parse_interpreter_tools(raw)
             if isinstance(parsed, Invalid):
-                return parsed
+                return Invalid(f"Ignoring {flag}={raw!r} ({parsed.reason})")
             return coerce_toml_value(option, parsed, source=flag)
         if option.kind is OptionKind.STRUCTURED and isinstance(raw, (dict, list)):
             return Found(raw)
+        if isinstance(raw, str) and not raw.strip():
+            # A CLI value is a shell string, not a TOML literal: `--flag ""` is
+            # an absent value, not an empty one. `coerce_toml_value` accepts the
+            # empty string, so without this the blank flag wins its rank and
+            # masks every real value in env and `config.toml`.
+            if raw:
+                return Invalid(
+                    f"Ignoring {flag}={raw!r} (whitespace-only; treated as unset)"
+                )
+            return Unset()
         return coerce_toml_value(option, raw, source=flag)
-
-    @staticmethod
-    def _parse_interpreter_tools(raw: str, *, flag: str) -> str | list[str] | Invalid:
-        """Normalize the CLI PTC spelling before manifest coercion.
-
-        Returns:
-            A sentinel, tool-name list, or `Invalid` rejection.
-        """
-        text = raw.strip()
-        if not text:
-            return Invalid(
-                f"Ignoring {flag}={raw!r} (expected 'safe', 'all', or tool names)"
-            )
-        normalized = text.lower()
-        if normalized in {"safe", "all"}:
-            return normalized
-        names = [token.strip() for token in text.split(",") if token.strip()]
-        if not names or any(name.lower() == "all" for name in names):
-            return Invalid(
-                f"Ignoring {flag}={raw!r} (expected 'safe', 'all', or tool names)"
-            )
-        return names
 
     def status(self) -> ProviderStatus:
         """Return the always-healthy in-memory CLI status."""

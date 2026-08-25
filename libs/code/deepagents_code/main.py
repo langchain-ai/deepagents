@@ -923,33 +923,16 @@ def _parse_interpreter_tools_flag(
         tokens, or includes `"all"` inside a list — the CLI treats those as
         usage errors.
     """
+    from deepagents_code.configuration.provider import parse_interpreter_tools
+    from deepagents_code.configuration.types import Invalid
+
     if raw is None:
         return None
-    text = raw.strip()
-    if not text:
-        sys.stderr.write(
-            "Error: --interpreter-tools requires a value: 'safe', 'all', or a "
-            "comma-separated list of tool names.\n"
-        )
+    parsed = parse_interpreter_tools(raw)
+    if isinstance(parsed, Invalid):
+        sys.stderr.write(f"Error: --interpreter-tools {parsed.reason}.\n")
         sys.exit(2)
-    normalized = text.lower()
-    if normalized in {"safe", "all"}:
-        return normalized
-    names = [token.strip() for token in text.split(",") if token.strip()]
-    if not names:
-        sys.stderr.write(
-            "Error: --interpreter-tools list must contain at least one "
-            "non-empty tool name.\n"
-        )
-        sys.exit(2)
-    if any(name.lower() == "all" for name in names):
-        sys.stderr.write(
-            "Error: --interpreter-tools 'all' cannot be combined with other "
-            "tools; use 'all' on its own or list explicit tool names "
-            "(optionally with the 'safe' preset).\n"
-        )
-        sys.exit(2)
-    return names
+    return parsed
 
 
 # Aliased from the dependency-free `_constants` module (see its docstring for
@@ -1034,11 +1017,23 @@ def _parse_allow_fs_tools_flag(
 def _resolver_for_args(args: argparse.Namespace) -> "ConfigResolver":
     """Return the shared resolver after installing parsed CLI state if needed."""
     from deepagents_code.configuration.provider import CliProvider
-    from deepagents_code.configuration.resolver import CLI_RANK, get_config_resolver
+    from deepagents_code.configuration.resolver import (
+        CLI_RANK,
+        get_config_resolver,
+        installed_cli_provider,
+    )
 
     resolver = get_config_resolver()
     if CLI_RANK not in resolver.provider_statuses():
-        resolver = get_config_resolver(cli_provider=CliProvider(args))
+        # Prefer the installed snapshot. `args` is mutated after
+        # `_install_cli_provider` runs -- managed exceptions rewrite `model`
+        # and `sandbox`, stdin piping sets `non_interactive_message`, the
+        # headless path clears the approval flags -- so rebuilding from `args`
+        # here yields a provider that compares unequal to the installed one and
+        # raises `ValueError` out of `get_config_resolver`.
+        resolver = get_config_resolver(
+            cli_provider=installed_cli_provider() or CliProvider(args)
+        )
     return resolver
 
 
@@ -1092,17 +1087,25 @@ def _resolve_interpreter_enabled(
     Managed policy and an explicit CLI flag are deliberate, invocation-scoped
     choices, so they outrank the remote-sandbox default. A remote sandbox
     cannot host the interpreter, so an enabling choice from either tier is
-    unsatisfiable and exits `1` with an actionable message instead of letting a
-    `ValueError` surface from deep inside agent construction.
+    unsatisfiable: under `strict` it exits `1` with an actionable message
+    instead of letting a `ValueError` surface from deep inside agent
+    construction, and otherwise it warns and reports the interpreter absent.
 
-    Honoring the CLI tier alone was a policy hole: `interpreter.
-    enable_interpreter` is an `ENFORCED_MANAGED_KEYS` member, and a managed
-    `true` silently became `false` whenever `--sandbox` named a remote backend.
+    Both tiers are honored because `interpreter.enable_interpreter` is an
+    `ENFORCED_MANAGED_KEYS` member. Honoring the CLI tier alone left a policy
+    hole: a managed `true` became `false` whenever `--sandbox` named a remote
+    backend.
 
     The environment and `config.toml` tiers are ambient preferences rather than
     choices about this run, so `--sandbox` still wins over them. Letting them
     through would turn the redundant-but-harmless `enable_interpreter = true`
     into a launch failure for every remote-sandbox run.
+
+    Only the managed and CLI tiers are answered from `resolved`. When neither
+    decides, the value comes from `settings.enable_interpreter`, which resolves
+    the same manifest option through the same chain; the resolver read above
+    still runs for its diagnostics. `test_local_mode_uses_config_default` pins
+    the `settings` source, so the two are not interchangeable in tests.
 
     Args:
         args: Parsed CLI arguments.
@@ -1140,6 +1143,11 @@ def _resolve_interpreter_enabled(
         enabled = bool(resolved.value)
         if enabled and remote_sandbox:
             if not strict:
+                # Same explanation, no abort: a listing that silently drops the
+                # interpreter reads as "policy disabled it", which is the one
+                # conclusion a user debugging a missing tool must not draw.
+                conflict = _interpreter_sandbox_conflict(sandbox, deciding_rank)
+                sys.stderr.write(f"Warning: {conflict}\n")
                 return False
             _exit_interpreter_conflicts_with_sandbox(sandbox, deciding_rank)
         return enabled
@@ -1165,6 +1173,27 @@ def _exit_interpreter_conflicts_with_sandbox(
     from rich.markup import escape
 
     from deepagents_code.config import console
+
+    console.print(
+        "[bold red]Error:[/bold red] "
+        f"{escape(_interpreter_sandbox_conflict(sandbox_type, deciding_rank))}"
+    )
+    sys.exit(1)
+
+
+def _interpreter_sandbox_conflict(sandbox_type: str, deciding_rank: int) -> str:
+    """Describe the interpreter/sandbox conflict and how to resolve it.
+
+    Shared so the launch abort and the `dcode tools` warning cannot drift into
+    telling the user two different things about one conflict.
+
+    Args:
+        sandbox_type: The remote sandbox backend in effect.
+        deciding_rank: The provider rank that enabled the interpreter.
+
+    Returns:
+        Plain-text explanation with the remedy for the deciding tier.
+    """
     from deepagents_code.configuration.resolver import MANAGED_RANK
 
     if deciding_rank == MANAGED_RANK:
@@ -1175,11 +1204,10 @@ def _exit_interpreter_conflicts_with_sandbox(
         )
     else:
         remedy = "Drop --sandbox or drop --interpreter."
-    console.print(
-        "[bold red]Error:[/bold red] the JS interpreter is not supported with "
-        f"the {escape(sandbox_type)} sandbox in this release. {escape(remedy)}"
+    return (
+        "the JS interpreter is not supported with the "
+        f"{sandbox_type} sandbox in this release. {remedy}"
     )
-    sys.exit(1)
 
 
 def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":

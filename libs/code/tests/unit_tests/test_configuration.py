@@ -3485,7 +3485,11 @@ def test_masked_cli_flag_warns_the_user(
         service.invalidate_config_sources()
 
     err = capsys.readouterr().err
-    assert "--auto-approve/--yolo" in err
+    # Names the flag the user actually typed. `_managed_policy_args` sets
+    # `--yolo`, so naming `--auto-approve` too would warn about a flag that
+    # was never passed.
+    assert "--yolo was ignored" in err
+    assert "--auto-approve" not in err
     assert "managed config takes precedence" in err
 
 
@@ -3842,3 +3846,64 @@ def test_startup_gate_accepts_a_missing_managed_file(
         main._require_managed_config_or_exit()
     finally:
         service.invalidate_config_sources()
+
+
+def test_agreeing_cli_flag_is_not_reported_as_ignored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A flag that agrees with managed policy must not be called ignored.
+
+    Masking is structural: every non-durable tier below a durable one lands in
+    `masked_ranks`, so a managed `[startup] mode` masks `--yolo` even when both
+    select YOLO. Warning there told the user their flag was dropped and sent
+    them to their administrator about a policy that did exactly what they
+    asked -- and the run started in YOLO regardless, so the message was simply
+    false.
+    """
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "yolo"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    try:
+        assert main._resolve_approval_mode(args).value == "yolo"
+    finally:
+        service.invalidate_config_sources()
+
+    assert "was ignored" not in capsys.readouterr().err
+
+
+def test_blank_cli_string_does_not_mask_real_values() -> None:
+    """`--flag ""` must fall through, not win its rank with an empty string.
+
+    A CLI value is a shell string, not a TOML literal. `coerce_toml_value`
+    accepts `""` as a legitimate value, so a blank flag resolved as `Found('')`
+    at the CLI rank and suppressed every real value below it -- reporting an
+    empty classifier sourced from `CLI argument` on the `dcode config` surface.
+    """
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import (
+        CLI_RANK,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.types import TomlSnapshot
+
+    option = get_option("models.auto_classifier")
+    assert option is not None
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot.from_table("managed config", {}),
+        user=TomlSnapshot.from_table(
+            "config.toml", {"models": {"auto_classifier": "openai:gpt-5"}}
+        ),
+        cli_provider=CliProvider({"auto_classifier_model": ""}),
+    )
+    resolved = resolver.get(option)
+
+    assert resolved.value == "openai:gpt-5"
+    assert CLI_RANK not in resolved.ranks

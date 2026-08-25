@@ -285,9 +285,13 @@ class CliSpec:
     """Other flags that set this option, for options driven by more than one.
 
     `startup.mode` is set by both `--auto-approve` and `--yolo`, which argparse
-    keeps mutually exclusive. Only `flag` carries the argparse destination the
-    provider reads; the companions exist so user-facing text can name every
-    spelling instead of guessing the one the user actually typed.
+    keeps mutually exclusive. Every companion's argparse destination is derived
+    from its own spelling and is read by the provider, in listed order, before
+    `flag` -- so a companion is a real binding, not display text.
+
+    Each companion must be spelled exactly like the config value it selects
+    (`--yolo` -> `"yolo"`): the provider derives the value from the flag, and
+    `test_companion_flags_spell_their_startup_mode` pins it.
     """
 
     def __post_init__(self) -> None:
@@ -771,7 +775,7 @@ def _ranked_source(resolved: ResolvedValue[object]) -> str:
 
 
 def _warn_cli_flag_masked(
-    option: ConfigOption, resolved: ResolvedValue[object]
+    option: ConfigOption, resolved: ResolvedValue[object], cli_value: object
 ) -> None:
     """Tell the user a flag they passed lost to a stronger config tier.
 
@@ -784,14 +788,38 @@ def _warn_cli_flag_masked(
     Args:
         option: Manifest option whose CLI tier was masked.
         resolved: Rank-keyed resolution carrying the masked and winning tiers.
+        cli_value: Value the masked CLI tier produced, used to name the flag.
     """
-    flag = _cli_display_flags(option)
+    flag = _cli_supplied_flag(option, cli_value)
     winner = resolved.provider_status[min(resolved.ranks)].name
     _print_cli_warning(
         ("masked cli flag", f"{flag}|{winner}"),
         f"{flag} was ignored: {winner} takes precedence. "
         "Ask your administrator if this is unexpected.",
     )
+
+
+def _cli_supplied_flag(option: ConfigOption, cli_value: object) -> str:
+    """Return the single flag that produced `cli_value`.
+
+    An option bound to several flags derives its value from the flag spelling
+    (`--yolo` -> `"yolo"`), so the value identifies the flag. Naming every
+    spelling would warn about a flag the user never typed.
+
+    Args:
+        option: Manifest option whose CLI tier was read.
+        cli_value: Value the CLI tier produced.
+
+    Returns:
+        The matching companion spelling, otherwise the primary flag.
+    """
+    spec = option.cli
+    if spec is None:
+        return option.cli_flag or option.key
+    for flag in spec.companion_flags:
+        if flag.removeprefix("--") == cli_value:
+            return flag
+    return spec.flag
 
 
 def _cli_display_flags(option: ConfigOption) -> str:
@@ -909,8 +937,12 @@ def _emit_ranked_diagnostics(
         warn_masked_cli
         and CLI_RANK in resolved.masked_ranks
         and isinstance(cli_result, Found)
+        # Masking is structural: every non-durable tier below a durable one is
+        # masked, so this fires even when policy and the flag agree. Warning
+        # then tells the user to question a policy that did what they asked.
+        and cli_result.value != resolved.value
     ):
-        _warn_cli_flag_masked(option, resolved)
+        _warn_cli_flag_masked(option, resolved, cli_result.value)
     # A value the user typed that the provider refused. `emit` below logs the
     # same reason, but only into the buffer handler, so the flag would
     # otherwise fall through to the next tier in silence.

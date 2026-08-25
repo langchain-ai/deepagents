@@ -3512,6 +3512,67 @@ class TestResolveInterpreterEnabled:
         with patch.object(settings, "enable_interpreter", True):
             assert _resolve_interpreter_enabled(args) is True
 
+    def test_managed_false_revokes_an_explicit_interpreter_flag(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Managed `false` must beat `--interpreter`, an enforced key.
+
+        This branch removed the assignment that used to enforce
+        `interpreter.enable_interpreter` in `_apply_managed_runtime_policy`;
+        only `models.default` kept its copy. Enforcement now rests entirely on
+        `deciding_rank` preferring `MANAGED_RANK`, and nothing covered the
+        revocation direction -- a CLI-wins short-circuit inserted before
+        `deciding_rank` left the whole suite green while a user's flag turned
+        on JS execution against policy.
+        """
+        import argparse
+
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_interpreter_enabled
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            "[interpreter]\nenable_interpreter = false\n", encoding="utf-8"
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(interpreter=True, sandbox=None)
+            assert _resolve_interpreter_enabled(args) is False
+        finally:
+            service.invalidate_config_sources()
+
+    def test_managed_true_survives_an_explicit_opt_out(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`--no-interpreter` must not revoke a managed `true` either.
+
+        The mirror of the revocation case: an enforced key is enforced in both
+        directions, so neither spelling of the flag may override policy.
+        """
+        import argparse
+
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_interpreter_enabled
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            "[interpreter]\nenable_interpreter = true\n", encoding="utf-8"
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(interpreter=False, sandbox=None)
+            assert _resolve_interpreter_enabled(args) is True
+        finally:
+            service.invalidate_config_sources()
+
     def test_managed_policy_outranks_the_sandbox_default(
         self,
         tmp_path: Path,

@@ -32,7 +32,7 @@ If the user does not know the ID, list recent threads first:
 python3 "$SKILL_DIR/scripts/inspect_sessions.py" --list 20
 ```
 
-Pass `--db PATH` only for a non-default session store. The default is `$DEEPAGENTS_HOME/.state/sessions.db`, falling back to `~/.deepagents/.state/sessions.db`; `DEEPAGENTS_SESSIONS_DB` can override it.
+Pass `--db PATH` only for a non-default session store. The default is `$DEEPAGENTS_HOME/.state/sessions.db`, or `~/.deepagents/.state/sessions.db` when that variable is unset. `DEEPAGENTS_SESSIONS_DB` overrides both. The script applies the same rules dcode does, so a relative or `~user` value is rejected rather than resolved to a database dcode never writes.
 
 ## Explain the result
 

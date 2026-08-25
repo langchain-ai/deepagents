@@ -216,31 +216,30 @@ def run_mcp_config() -> int:
     Returns:
         Process exit code: always 0.
     """
-    from deepagents_code._paths import PATHS
+    from deepagents_code._paths import PATHS, PathState, classify_path, project_paths
     from deepagents_code.mcp_tools import (
+        MCP_CONFIG_DISCOVERY_PATHS,
         _resolve_project_config_base,
-        discover_mcp_configs,
     )
     from deepagents_code.ui import console
 
-    found = {str(p.resolve()) for p in discover_mcp_configs()}
-    project_root = _resolve_project_config_base(None)
+    project = project_paths(_resolve_project_config_base(None))
 
+    # Same three locations, same order, as `discover_mcp_config_sources`. The
+    # user row is rendered from live `PATHS` rather than the display constant,
+    # which is frozen at import and would not follow a relocated profile.
     user_config = PATHS.profile.mcp_config_file
-    user_display = PATHS.display(user_config)
-
-    rows: list[tuple[str, str, bool]] = []
-    for display, label, resolved in (
-        (user_display, "user-level", user_config),
-        (
-            "<project-root>/.deepagents/.mcp.json",
-            "project subdir",
-            project_root / ".deepagents" / ".mcp.json",
-        ),
-        ("<project-root>/.mcp.json", "project root", project_root / ".mcp.json"),
-    ):
-        exists = str(resolved.resolve()) in found or resolved.is_file()
-        rows.append((display, label, exists))
+    candidates = (
+        (PATHS.display(user_config), user_config),
+        (MCP_CONFIG_DISCOVERY_PATHS[1][0], project.config_mcp_config_file),
+        (MCP_CONFIG_DISCOVERY_PATHS[2][0], project.root_mcp_config_file),
+    )
+    rows = [
+        (display, label, classify_path(path) is PathState.EXISTS)
+        for (_, label), (display, path) in zip(
+            MCP_CONFIG_DISCOVERY_PATHS, candidates, strict=True
+        )
+    ]
 
     width = max(len(p) for p, _, _ in rows)
     console.print(

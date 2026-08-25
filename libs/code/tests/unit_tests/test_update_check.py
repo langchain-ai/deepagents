@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 import pytest
 from packaging.version import InvalidVersion, Version
 
+from deepagents_code import update_check
 from deepagents_code._version import __version__
 from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
@@ -3835,13 +3836,24 @@ class TestUpdateInstallLock:
         assert stat.S_IMODE(lock_path.parent.stat().st_mode) == 0o700
 
     def test_unusable_lock_directory_fails_open(self, tmp_path, caplog) -> None:
-        """An unwritable state dir must not disable updates permanently."""
+        """Only an unusable *pair* of lock locations may disable the lock.
+
+        An unwritable installation directory alone now falls back to the
+        profile (see `TestUpdateLockLocationFallback`), so both must be
+        unusable before updates proceed unserialized.
+        """
         blocker = tmp_path / "blocker"
         blocker.write_text("not a directory", encoding="utf-8")
+        fallback_blocker = tmp_path / "fallback-blocker"
+        fallback_blocker.write_text("not a directory", encoding="utf-8")
         with (
             patch(
                 "deepagents_code.update_check.UPDATE_LOCK_FILE",
                 blocker / "update.lock",
+            ),
+            patch(
+                "deepagents_code.update_check.FALLBACK_UPDATE_LOCK_FILE",
+                fallback_blocker / "update.lock",
             ),
             caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
             update_install_lock() as holding,
@@ -6573,3 +6585,64 @@ class TestTargetedPrereleaseResolution:
         assert "core==1.0a1" in targeted_output
         assert "provider==1.0" in targeted_output
         assert "provider==1.1rc1" not in targeted_output
+
+
+class TestUpdateLockLocationFallback:
+    """The update lock must not fail open on every launch.
+
+    `UPDATE_LOCK_FILE` is derived from `sys.prefix`, which is unwritable for a
+    normal user on a system or root-owned install. Without a fallback the lock
+    would be skipped on every single launch, reinstating the concurrent
+    double-upgrade race it exists to prevent.
+    """
+
+    def test_prefers_the_installation_lock(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared" / "update.lock"
+        profile = tmp_path / "profile" / "update.lock"
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", shared),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+        ):
+            assert update_check._resolve_update_lock_file() == shared
+        assert shared.parent.is_dir()
+        assert not profile.parent.exists()
+
+    def test_falls_back_to_the_profile_lock(self, tmp_path: Path) -> None:
+        # An existing file where the lock directory should go reproduces the
+        # `mkdir` failure an unwritable prefix produces.
+        blocker = tmp_path / "shared"
+        blocker.write_text("")
+        shared = blocker / "update.lock"
+        profile = tmp_path / "profile" / "update.lock"
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", shared),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+        ):
+            assert update_check._resolve_update_lock_file() == profile
+        assert profile.parent.is_dir()
+
+    def test_returns_none_only_when_neither_is_usable(self, tmp_path: Path) -> None:
+        first = tmp_path / "a"
+        second = tmp_path / "b"
+        first.write_text("")
+        second.write_text("")
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", first / "update.lock"),
+            patch.object(
+                update_check, "FALLBACK_UPDATE_LOCK_FILE", second / "update.lock"
+            ),
+        ):
+            assert update_check._resolve_update_lock_file() is None
+
+    def test_lock_is_acquired_from_the_fallback_location(self, tmp_path: Path) -> None:
+        """A usable fallback yields a real lock, not a fail-open `True`."""
+        blocker = tmp_path / "shared"
+        blocker.write_text("")
+        profile = tmp_path / "profile" / "update.lock"
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", blocker / "update.lock"),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+            update_check.update_install_lock() as acquired,
+        ):
+            assert acquired is True
+            assert profile.exists()

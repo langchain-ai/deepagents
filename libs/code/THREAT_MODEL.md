@@ -44,9 +44,11 @@
 
 ### Assumptions
 
+> Throughout this document `~/.deepagents/` names the *effective* user profile directory. That is the default location; `DEEPAGENTS_HOME` selects a different one (TB14), and every claim about profile-owned files applies to whichever directory is selected at launch.
+
 1. The CLI runs locally on the user's machine; the user is a developer who invoked `deepagents` themselves.
 2. The project provides the HITL approval framework. Users control model selection, API keys, and whether to disable approval gates. Managed policy can narrow each of these; `[models].allowed` narrows model selection.
-3. `~/.deepagents/` is only writable by the authenticated local user — no multi-user shared home directories.
+3. The user profile directory is only writable by the authenticated local user — no multi-user shared home directories. `DEEPAGENTS_HOME` (see TB14) can relocate that directory outside `$HOME`; keeping the selected location single-user is then the operator's responsibility.
 4. Sandbox backends are trusted third-party services. CLI responsibility ends at correctly constructing and dispatching requests to them.
 5. LangSmith tracing, if enabled, is user-opted-in via environment variables.
 6. The LangGraph dev server subprocess binds to `127.0.0.1` by default (`client/launch/server.py:_DEFAULT_HOST`) and is ephemeral — started and stopped per CLI session.
@@ -531,7 +533,7 @@
 #### T11: Auto-Installed ripgrep Binary from Upstream Release
 
 - **Flow**: Download performed by `managed_tools.ensure_ripgrep` when `rg` is not on `PATH` — either on first run, or eagerly at install time via `dcode tools install` (invoked by `scripts/install.sh`).
-- **Description**: Without a system `rg`, Deep Agents Code fetches the pinned ripgrep release tarball from `github.com/BurntSushi/ripgrep/releases/...`, verifies it against an in-tree SHA-256 (`RIPGREP_ASSETS`), extracts it under a `TemporaryDirectory`, and atomically moves the binary into `~/.deepagents/bin/rg`. The binary then runs unsandboxed, inheriting the same trust as a user-installed `rg` (the SDK invokes it via `subprocess.run(["rg", ...])`). The same verified path backs the `dcode tools install` verb, so the install script reuses it rather than re-encoding the version + checksum table in bash.
+- **Description**: Without a system `rg`, Deep Agents Code fetches the pinned ripgrep release tarball from `github.com/BurntSushi/ripgrep/releases/...`, verifies it against an in-tree SHA-256 (`RIPGREP_ASSETS`), extracts it under a `TemporaryDirectory`, and atomically moves the binary into `managed_tools.BIN_DIR` (`<sys.prefix>/share/deepagents-code/bin/rg`, shared by every profile), or into the profile-scoped `managed_tools.FALLBACK_BIN_DIR` when that directory is not writable. The binary then runs unsandboxed, inheriting the same trust as a user-installed `rg` (the SDK invokes it via `subprocess.run(["rg", ...])`). The same verified path backs the `dcode tools install` verb, so the install script reuses it rather than re-encoding the version + checksum table in bash.
 - **Mitigations**: (1) SHA-256 verified against the pinned hash table before move — a mismatch aborts the install and leaves `BIN_DIR` clean. (2) Network egress is limited to `github.com`. (3) Opt-out via `DEEPAGENTS_CODE_OFFLINE` for air-gapped environments, or `DEEPAGENTS_CODE_RIPGREP_INSTALLER=system` to defer to the OS package manager instead of the managed binary. (4) Pinned version + checksums are bumped in-tree, so a compromised upstream release is detected on the next Deep Agents Code release rather than silently propagating. (5) Atomic move-into-place avoids partial installs when concurrent CLI invocations race. (6) The eager install-script path is non-`sudo` (no system package manager is invoked in the default `managed` mode).
 - **Preconditions**: User has not installed `rg` via their package manager, `DEEPAGENTS_CODE_OFFLINE` is unset, `DEEPAGENTS_CODE_RIPGREP_INSTALLER` is not `system`, and the host can reach `github.com`. The pinned SHA-256 in `RIPGREP_ASSETS` would need to be incorrect (a supply-chain compromise of the deepagents-code release) for a tampered binary to be installed.
 

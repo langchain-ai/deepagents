@@ -205,7 +205,7 @@ def resolve_mcp_config(
             describing why no usable config could be assembled.
     """
     from deepagents_code.mcp_tools import (
-        MCPConfigScope,
+        MCPConfigSources,
         _drop_invalid_mcp_config_servers,
         _load_mcp_config_top_level_with_error,
         _merge_mcp_configs_with_sources,
@@ -241,14 +241,10 @@ def resolve_mcp_config(
             ),
         )
 
-    user_paths = [
-        source.path for source in found if source.scope is MCPConfigScope.USER
-    ]
-    project_sources = [
-        source for source in found if source.scope is MCPConfigScope.PROJECT
-    ]
-    project_paths = [source.path for source in project_sources]
-    project_roots = {source.path: source.project_root for source in project_sources}
+    sources = MCPConfigSources.from_sources(found)
+    user_paths = sources.user_paths
+    project_paths = sources.project_paths
+    project_roots = sources.project_roots
     configs: list[dict[str, Any]] = []
     used_paths: list[Path] = []
     untrusted: tuple[Path, ...] = ()
@@ -300,7 +296,7 @@ def resolve_mcp_config(
             kept: dict[str, Any] = {}
             for name, server in servers.items():
                 source = server_sources[name]
-                project_root = project_roots.get(source) or project_base
+                project_root = project_roots.get(source, project_base)
                 kept.update(
                     filter_trusted_project_servers(
                         {name: server},

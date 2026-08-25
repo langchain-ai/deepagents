@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from deepagents_code._debug import configure_debug_logging
 from deepagents_code._debug_buffer import install_log_buffer
+from deepagents_code._home_error import DeepAgentsHomeError
 from deepagents_code._version import __version__
 
 if TYPE_CHECKING:
@@ -34,15 +35,20 @@ def __getattr__(name: str) -> Callable[[], None]:
 
     Raises:
         AttributeError: If *name* is not a lazily-provided attribute.
-        ValueError: If importing the CLI fails for a reason other than an
-            invalid `DEEPAGENTS_HOME` launch value.
+
+    Note:
+        Any import error other than an unresolvable profile location
+        propagates unchanged; `DeepAgentsHomeError` is reported as a message
+        plus exit 2 instead of a traceback.
     """
     if name == "cli_main":
         try:
             from deepagents_code.main import cli_main
-        except ValueError as exc:
-            if type(exc).__name__ != "DeepAgentsHomeError":
-                raise
+        except DeepAgentsHomeError as exc:
+            # `_paths` resolves the profile at import, so a bad DEEPAGENTS_HOME
+            # or an unresolvable home surfaces here. Report it as a message
+            # rather than a traceback: the user has a value to fix, and every
+            # module that imports `_paths` would fail the same way.
             message = str(exc)
 
             def cli_main() -> None:

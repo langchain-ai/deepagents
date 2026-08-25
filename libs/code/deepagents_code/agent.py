@@ -1156,20 +1156,28 @@ def _reserved_agent_dir_names() -> frozenset[str]:
     appear in the agent picker — even if they contain an `AGENTS.md` file
     (e.g. after `dcode -a plugins` stamps the marker via memory setup):
 
-    - `bin/` holds the managed `rg` binary (`managed_tools.BIN_DIR`).
+    - `bin/` holds the managed `rg` binary when the shared installation
+      directory is unwritable (`managed_tools.FALLBACK_BIN_DIR`).
     - `plugins/` holds installed plugin state (`plugins.store`).
     - `conversation_history/` holds offloaded per-thread archives (`offload`).
 
     Each name is derived from its owning module so it stays a single source of
-    truth rather than being hardcoded here. The result is cached since the
-    reserved set is constant for the process.
+    truth rather than being hardcoded here. `FALLBACK_BIN_DIR` is the one that
+    lives under the profile root — the preferred `BIN_DIR` is installation-
+    scoped, so deriving from it would reserve a profile name based on an
+    unrelated path. The result is cached since the reserved set is constant for
+    the process.
     """
-    from deepagents_code.managed_tools import BIN_DIR
+    from deepagents_code.managed_tools import FALLBACK_BIN_DIR
     from deepagents_code.offload import CONVERSATION_HISTORY_DIRNAME
     from deepagents_code.plugins.store import DEFAULT_PLUGIN_DIRNAME
 
     return frozenset(
-        {BIN_DIR.name, DEFAULT_PLUGIN_DIRNAME, CONVERSATION_HISTORY_DIRNAME},
+        {
+            FALLBACK_BIN_DIR.name,
+            DEFAULT_PLUGIN_DIRNAME,
+            CONVERSATION_HISTORY_DIRNAME,
+        },
     )
 
 

@@ -6,11 +6,13 @@ import hashlib
 import io
 import os
 import subprocess
+import sys
 import tarfile
 import zipfile
 from email.message import Message
 from pathlib import Path
 from unittest import mock
+from unittest.mock import patch
 
 import pytest
 
@@ -961,3 +963,91 @@ def test_download_to_rejects_non_200_status(
     with pytest.raises(urllib.error.URLError, match="HTTP 503"):
         managed_tools._download_to("https://example.invalid/x", dest)
     assert dest.read_bytes() == b""
+
+
+class TestManagedBinDirFallback:
+    """A root-owned install prefix must not mean "no managed ripgrep".
+
+    `BIN_DIR` lives under `sys.prefix` so profiles can share one verified
+    download. On a system or root-owned prefix that directory is unwritable for
+    a normal user, which previously left the slow grep fallback as the
+    permanent steady state.
+    """
+
+    def test_prefers_the_shared_installation_directory(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared"
+        profile = tmp_path / "profile"
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+        ):
+            assert managed_tools._resolve_install_bin_dir() == shared
+        assert shared.is_dir()
+
+    def test_falls_back_to_the_profile_directory(self, tmp_path: Path) -> None:
+        # An existing *file* stands in for an uncreatable directory: `mkdir`
+        # raises the same way it does on an unwritable prefix.
+        shared = tmp_path / "shared"
+        shared.write_text("")
+        profile = tmp_path / "profile"
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+        ):
+            assert managed_tools._resolve_install_bin_dir() == profile
+        assert profile.is_dir()
+
+    def test_raises_when_no_location_is_usable(self, tmp_path: Path) -> None:
+        first = tmp_path / "a"
+        second = tmp_path / "b"
+        first.write_text("")
+        second.write_text("")
+        with (
+            patch.object(managed_tools, "BIN_DIR", first),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", second),
+            pytest.raises(OSError, match=r"File exists|Not a directory|No such file"),
+        ):
+            managed_tools._resolve_install_bin_dir()
+
+    def test_managed_rg_path_finds_an_existing_fallback_binary(
+        self, tmp_path: Path
+    ) -> None:
+        """An `rg` left in the profile by an older layout is still found."""
+        shared = tmp_path / "shared"
+        profile = tmp_path / "profile"
+        profile.mkdir(parents=True)
+        name = "rg.exe" if sys.platform == "win32" else "rg"
+        existing = profile / name
+        existing.write_text("")
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+        ):
+            assert managed_tools.managed_rg_path() == existing
+
+    def test_path_prepends_both_locations(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared"
+        profile = tmp_path / "profile"
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False),
+        ):
+            managed_tools.prepend_managed_bin_to_path()
+            parts = os.environ["PATH"].split(os.pathsep)
+
+        assert parts[:2] == [str(shared), str(profile)]
+
+    def test_path_prepend_is_idempotent(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared"
+        profile = tmp_path / "profile"
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False),
+        ):
+            managed_tools.prepend_managed_bin_to_path()
+            once = os.environ["PATH"]
+            managed_tools.prepend_managed_bin_to_path()
+
+            assert os.environ["PATH"] == once

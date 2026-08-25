@@ -24,13 +24,24 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from deepagents_code._home_error import DeepAgentsHomeError
+
 logger = logging.getLogger(__name__)
 
 _MISSING_ERRNOS = {errno.ENOENT, errno.ENOTDIR}
 
-
-class DeepAgentsHomeError(ValueError):
-    """Raised when the launch-time `DEEPAGENTS_HOME` value is invalid."""
+__all__ = [
+    "PATHS",
+    "DeepAgentsHomeError",
+    "DeepAgentsPathSnapshot",
+    "InstallationPaths",
+    "PathState",
+    "ProfilePaths",
+    "ProjectPaths",
+    "classify_path",
+    "get_deepagents_home",
+    "project_paths",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +62,22 @@ class ProfilePaths:
     sessions_file: Path
     history_file: Path
     offload_dir: Path
+    bin_dir: Path
+    """Per-profile fallback for managed binaries.
+
+    Preferred location is `InstallationPaths.managed_bin_dir`, so profiles can
+    share one verified download. This is used when that directory is not
+    writable — a root-owned or system install prefix — because sharing is a
+    convenience and a working `rg` is not.
+    """
+
+    locks_dir: Path
+    """Per-profile fallback for install/update locks.
+
+    Twin of `bin_dir`: preferred location is
+    `InstallationPaths.locks_dir`. Falling back keeps self-upgrades serialized
+    rather than silently fail-open when the install prefix is unwritable.
+    """
 
     def agent_dir(self, name: str) -> Path:
         """Return the profile directory for an agent name."""
@@ -85,34 +112,20 @@ class ProjectPaths:
 
 @dataclass(frozen=True, slots=True)
 class DeepAgentsPathSnapshot:
-    """Frozen launch-time profile/install paths plus project-path construction."""
+    """Frozen launch-time profile and installation paths."""
 
     profile: ProfilePaths
     installation: InstallationPaths
     launch_home: Path | None
     uses_default_profile: bool
 
-    @staticmethod
-    def for_project(root: Path) -> ProjectPaths:
-        """Return project-controlled paths for an explicit root.
-
-        Returns:
-            Paths rooted at the normalized project directory.
-        """
-        normalized = _normalize_absolute(root)
-        config_dir = normalized / ".deepagents"
-        return ProjectPaths(
-            root=normalized,
-            config_dir=config_dir,
-            root_mcp_config_file=normalized / ".mcp.json",
-            config_mcp_config_file=config_dir / ".mcp.json",
-            skills_dir=config_dir / "skills",
-            agents_dir=config_dir / "agents",
-            hooks_file=config_dir / "hooks.json",
-        )
-
     def display(self, path: Path) -> str:
-        """Render default profile paths with `~` and configured paths literally.
+        """Abbreviate a path for display.
+
+        Paths under the default profile render with a leading `~`. A configured
+        profile renders literally, because abbreviating it would hide which
+        profile is in use. A path outside the profile root (an installation
+        path, say) also renders literally.
 
         Returns:
             A concise user-facing path.
@@ -123,8 +136,36 @@ class DeepAgentsPathSnapshot:
             relative = path.relative_to(self.profile.root)
         except ValueError:
             return str(path)
-        default_root = Path("~/.deepagents")
-        return str(default_root if relative == Path() else default_root / relative)
+        # `Path("~/.deepagents") / Path(".")` is `~/.deepagents`, so the
+        # profile root itself needs no special case.
+        return str(Path("~/.deepagents") / relative)
+
+
+def project_paths(root: Path) -> ProjectPaths:
+    """Return project-controlled paths for an explicit repository root.
+
+    Args:
+        root: Absolute project root.
+
+    Returns:
+        Paths rooted at the normalized project directory.
+
+    Note:
+        `_normalize_absolute` raises `ValueError` for a relative `root`. That is
+        a caller bug rather than a `DEEPAGENTS_HOME` misconfiguration, so it is
+        deliberately not a `DeepAgentsHomeError`.
+    """
+    normalized = _normalize_absolute(root, what="Project root")
+    config_dir = normalized / ".deepagents"
+    return ProjectPaths(
+        root=normalized,
+        config_dir=config_dir,
+        root_mcp_config_file=normalized / ".mcp.json",
+        config_mcp_config_file=config_dir / ".mcp.json",
+        skills_dir=config_dir / "skills",
+        agents_dir=config_dir / "agents",
+        hooks_file=config_dir / "hooks.json",
+    )
 
 
 class PathState(StrEnum):
@@ -173,25 +214,139 @@ def classify_path(path: Path) -> PathState:
         return PathState.EXISTS
 
 
-def _normalize_absolute(path: Path) -> Path:
+def _normalize_absolute(path: Path, *, what: str = "Path") -> Path:
     """Normalize an already-absolute path without touching the filesystem.
+
+    Args:
+        path: Path to normalize.
+        what: Noun used in the error message, so a failure names the input that
+            was actually wrong.
 
     Returns:
         The lexically normalized absolute path.
 
     Raises:
-        DeepAgentsHomeError: If `path` is relative.
+        ValueError: If `path` is relative.
     """
     if not path.is_absolute():
-        msg = f"Path must be absolute: {path}"
-        raise DeepAgentsHomeError(msg)
+        msg = f"{what} must be absolute: {path}"
+        raise ValueError(msg)
     return Path(os.path.normpath(str(path)))
+
+
+def _resolve_launch_home(launch_home: Path | None) -> Path:
+    """Return the explicit or OS-resolved launch home as an absolute path.
+
+    Returns:
+        The normalized launch home.
+
+    Raises:
+        DeepAgentsHomeError: If the home directory cannot be determined or is
+            not absolute. Both are reported against `DEEPAGENTS_HOME` because
+            setting it to an absolute path is the way out of either.
+    """
+    if launch_home is None:
+        try:
+            launch_home = Path.home()
+        except RuntimeError as exc:
+            # `Path.home()` raises when $HOME is unset and the uid has no passwd
+            # entry: a bare container, or a cleared-environment service unit.
+            msg = (
+                "Could not determine the home directory: set $HOME, or set "
+                "DEEPAGENTS_HOME to an absolute profile path."
+            )
+            raise DeepAgentsHomeError(msg) from exc
+    try:
+        return _normalize_absolute(launch_home, what="Home directory")
+    except ValueError as exc:
+        msg = (
+            f"Home directory is not absolute: {launch_home}. Set $HOME to an "
+            "absolute path, or set DEEPAGENTS_HOME to an absolute profile path."
+        )
+        raise DeepAgentsHomeError(msg) from exc
+
+
+def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
+    """Reject a resolved profile root that would scatter state.
+
+    A profile root is a trust boundary that owns everything beneath it, so it
+    must be a directory of its own. The rejected cases all resolve to something
+    the user did not mean:
+
+    - The filesystem root, from `DEEPAGENTS_HOME=/` or a `..` chain that walks
+      past it, would put credentials in `/.state/auth.json`.
+    - The home directory itself, from a `DEEPAGENTS_HOME=~/` typo, would make
+      the profile dotenv the user's generic `~/.env` and load it as trusted
+      configuration.
+    - An existing non-directory cannot hold a profile at all.
+
+    Raises:
+        DeepAgentsHomeError: If the root is one of those cases.
+    """
+    if root.parent == root:
+        msg = (
+            f"Invalid DEEPAGENTS_HOME {str(root)!r}: the filesystem root cannot "
+            "be a profile. Use a dedicated directory."
+        )
+        raise DeepAgentsHomeError(msg)
+    if launch_home is not None and root == launch_home:
+        msg = (
+            f"Invalid DEEPAGENTS_HOME {str(root)!r}: the home directory itself "
+            "cannot be a profile, because its '.env' would be loaded as "
+            "trusted configuration. Use a subdirectory such as "
+            "'~/.deepagents'."
+        )
+        raise DeepAgentsHomeError(msg)
+    if classify_path(root) is PathState.EXISTS and not root.is_dir():
+        msg = f"Invalid DEEPAGENTS_HOME {str(root)!r}: exists but is not a directory."
+        raise DeepAgentsHomeError(msg)
 
 
 def _resolve_profile_root(
     configured: str | None, launch_home: Path | None
 ) -> tuple[Path, bool, Path | None]:
     """Resolve a launch value using only the captured launch-user home.
+
+    An absolute `DEEPAGENTS_HOME` never consults the home directory, so a host
+    with no resolvable home can still run by setting it.
+
+    Returns:
+        The normalized root, whether it is the default profile, and the
+        captured launch home when resolution required one.
+
+    Note:
+        `DeepAgentsHomeError` propagates from the resolution and validation
+        helpers when the configured value is not supported.
+    """
+    root, uses_default, home = _resolve_profile_root_unchecked(configured, launch_home)
+    # An absolute value resolves without a home, but the "profile is the home
+    # directory" hazard applies to `/Users/me` exactly as much as to `~/`. Look
+    # the home up best-effort for that comparison only, so a host with no
+    # resolvable home still launches.
+    _reject_degenerate_root(root, home if home is not None else _best_effort_home())
+    return root, uses_default, home
+
+
+def _best_effort_home() -> Path | None:
+    """Return the launch home if it can be determined, else `None`.
+
+    Used only for validation, never to build a path, so an unresolvable home
+    must degrade to "cannot check" rather than fail the launch.
+
+    Returns:
+        The normalized home directory, or `None` when it cannot be resolved.
+    """
+    try:
+        return _resolve_launch_home(None)
+    except DeepAgentsHomeError:
+        logger.debug("Could not resolve the home directory for validation")
+        return None
+
+
+def _resolve_profile_root_unchecked(
+    configured: str | None, launch_home: Path | None
+) -> tuple[Path, bool, Path | None]:
+    """Apply the precedence rules without the degenerate-root checks.
 
     Returns:
         The normalized root, whether it is the default profile, and the
@@ -201,10 +356,10 @@ def _resolve_profile_root(
         DeepAgentsHomeError: If the configured value is not supported.
     """
     if not configured:
-        home = _normalize_launch_home(launch_home)
-        return _normalize_absolute(home / ".deepagents"), True, home
+        home = _resolve_launch_home(launch_home)
+        return home / ".deepagents", True, home
     if configured.startswith("~/"):
-        home = _normalize_launch_home(launch_home)
+        home = _resolve_launch_home(launch_home)
         return _normalize_absolute(home / configured[2:]), False, home
     if configured.startswith("~"):
         msg = (
@@ -220,13 +375,10 @@ def _resolve_profile_root(
             "a path beginning with '~/'."
         )
         raise DeepAgentsHomeError(msg)
+    # An absolute profile does not need a home directory; only report a home
+    # that was handed to us explicitly.
     home = _normalize_absolute(launch_home) if launch_home is not None else None
     return _normalize_absolute(path), False, home
-
-
-def _normalize_launch_home(launch_home: Path | None) -> Path:
-    """Return the explicit or OS-resolved launch home as an absolute path."""
-    return _normalize_absolute(launch_home if launch_home is not None else Path.home())
 
 
 def _profile_paths(root: Path) -> ProfilePaths:
@@ -251,6 +403,8 @@ def _profile_paths(root: Path) -> ProfilePaths:
         sessions_file=state_dir / "sessions.db",
         history_file=state_dir / "history.jsonl",
         offload_dir=root / "conversation_history",
+        bin_dir=root / "bin",
+        locks_dir=state_dir / "locks",
     )
 
 
@@ -260,7 +414,7 @@ def _installation_paths() -> InstallationPaths:
     Returns:
         Resource and lock paths for the current installation.
     """
-    root = _normalize_absolute(Path(sys.prefix))
+    root = _normalize_absolute(Path(sys.prefix), what="sys.prefix")
     resources = root / "share" / "deepagents-code"
     locks = root.parent / f".{root.name}.deepagents-code-locks"
     return InstallationPaths(

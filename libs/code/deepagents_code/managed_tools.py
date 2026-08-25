@@ -1,9 +1,13 @@
 """Auto-install pinned upstream binaries for optional tools.
 
 Today this only manages `ripgrep`. The SDK shells out to `rg` via `PATH`,
-so installing beside the dcode tool environment and prepending that directory
+so installing inside the dcode tool environment and prepending that directory
 to `os.environ["PATH"]` is sufficient — no SDK change required. Keeping helper
 binaries installation-scoped lets multiple profiles reuse one verified binary.
+
+`FALLBACK_BIN_DIR` covers the case where that shared directory is not writable
+(a system or root-owned `sys.prefix`). Run `dcode doctor` to see which of the
+two locations is actually in use.
 
 The pinned `RIPGREP_VERSION` and `RIPGREP_ASSETS` table is the single
 source of truth for what gets downloaded and verified. When bumping the
@@ -19,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER, is_env_truthy
-from deepagents_code._paths import PATHS
+from deepagents_code._paths import PATHS, PathState, classify_path
 
 if TYPE_CHECKING:
     import zipfile
@@ -65,7 +69,33 @@ RIPGREP_ASSETS: dict[tuple[str, str], tuple[str, str]] = {
 """`(sys.platform, normalized arch) -> (asset filename, sha256 hex)`."""
 
 BIN_DIR: Path = PATHS.installation.managed_bin_dir
-"""Directory holding managed binaries. Prepended to `PATH` on startup."""
+"""Preferred directory for managed binaries, shared by every profile.
+
+Prepended to `PATH` on startup. Tied to the installation rather than the
+profile so relocating `DEEPAGENTS_HOME` reuses one verified download.
+"""
+
+FALLBACK_BIN_DIR: Path = PATHS.profile.bin_dir
+"""Profile-scoped bin directory used when `BIN_DIR` is not writable.
+
+A system or root-owned install prefix (`pip install --break-system-packages`,
+a packaged interpreter) leaves `BIN_DIR` unwritable for a normal user, which
+would otherwise mean no managed ripgrep at all.
+"""
+
+
+def managed_bin_dirs() -> tuple[Path, ...]:
+    """Return both managed bin locations in preference order.
+
+    Read from the module globals on each call rather than frozen into a
+    constant, so a test (or a future runtime override) that patches `BIN_DIR`
+    is honored by lookup, `PATH` assembly, and install alike.
+
+    Returns:
+        The preferred installation directory followed by the profile fallback.
+    """
+    return (BIN_DIR, FALLBACK_BIN_DIR)
+
 
 _DOWNLOAD_TIMEOUT_SECONDS = 120
 _VERSION_CHECK_TIMEOUT_SECONDS = 5
@@ -158,8 +188,17 @@ def _artifact_not_found_error(
 
 
 def managed_rg_path() -> Path:
-    """Return the managed ripgrep binary path (`.exe` on Windows)."""
+    """Return the managed ripgrep binary path (`.exe` on Windows).
+
+    Returns:
+        The first existing candidate across both locations, otherwise the
+        preferred location so callers still get a usable install target.
+    """
     name = "rg.exe" if sys.platform == "win32" else "rg"
+    for directory in managed_bin_dirs():
+        candidate = directory / name
+        if classify_path(candidate) is PathState.EXISTS:
+            return candidate
     return BIN_DIR / name
 
 
@@ -212,32 +251,32 @@ def prefers_system_ripgrep() -> bool:
 
 
 def prepend_managed_bin_to_path() -> None:
-    """Idempotently prepend `BIN_DIR` to `os.environ["PATH"]`.
+    """Idempotently prepend both managed bin dirs to `os.environ["PATH"]`.
 
     Safe to call on every startup. Callers do not need to check whether
-    the directory exists — adding a non-existent directory to `PATH` is
+    the directories exist — adding a non-existent directory to `PATH` is
     harmless and matches behavior of common version managers.
     """
-    bin_str = str(BIN_DIR)
+    managed = [str(d) for d in managed_bin_dirs()]
     current = os.environ.get("PATH", "")
     parts = current.split(os.pathsep) if current else []
-    if parts and parts[0] == bin_str:
+    if parts[: len(managed)] == managed:
         return
-    parts = [bin_str, *(p for p in parts if p != bin_str)]
+    parts = [*managed, *(p for p in parts if p not in managed)]
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
 def _path_without_managed_bin() -> str | None:
-    """Return `PATH` with `BIN_DIR` removed."""
+    """Return `PATH` with every managed bin dir removed."""
     current = os.environ.get("PATH")
     if not current:
         return None
 
-    managed_dir = BIN_DIR.resolve()
+    managed_dirs = {d.resolve() for d in managed_bin_dirs()}
     parts = [
         part
         for part in current.split(os.pathsep)
-        if not part or Path(part).resolve() != managed_dir
+        if not part or Path(part).resolve() not in managed_dirs
     ]
     return os.pathsep.join(parts)
 
@@ -406,15 +445,48 @@ def _extract_zip_validated(zf: zipfile.ZipFile, extract_root: Path) -> None:
     zf.extractall(extract_root)  # noqa: S202  # validated above
 
 
+def _resolve_install_bin_dir() -> Path:
+    """Return the first managed bin dir that can be created.
+
+    Returns:
+        A usable, existing bin directory.
+
+    Note:
+        Re-raises the last candidate's `OSError` when none can be created, so
+        the message names the profile fallback the user can actually fix.
+    """
+    last_error: OSError | None = None
+    for directory in managed_bin_dirs():
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            last_error = exc
+            logger.info(
+                "Managed bin directory %s is unusable; trying the next location",
+                directory,
+                exc_info=True,
+            )
+            continue
+        if directory != BIN_DIR:
+            logger.warning(
+                "Installing ripgrep to the profile directory %s because the "
+                "shared installation directory %s is not writable",
+                directory,
+                BIN_DIR,
+            )
+        return directory
+    raise last_error if last_error is not None else OSError("no managed bin directory")
+
+
 def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
     """Download, verify, extract, and install ripgrep atomically.
 
-    Staging happens *inside* `BIN_DIR` so the final rename is on the same
-    filesystem and therefore atomic on POSIX. Windows keeps replacing the
-    user-facing `rg.exe` directly because symlink support varies by developer
-    mode and policy. POSIX installs use a versioned real binary plus a relative
-    `rg` symlink so moving or bind-mounting the tool environment does not bake
-    in its original absolute path. `_verify_sha256` propagates
+    Staging happens *inside* the chosen bin directory so the final rename is on
+    the same filesystem and therefore atomic on POSIX. Windows keeps replacing
+    the user-facing `rg.exe` directly because symlink support varies by
+    developer mode and policy. POSIX installs use a versioned real binary plus a
+    relative `rg` symlink so moving or bind-mounting the tool environment does
+    not bake in its original absolute path. `_verify_sha256` propagates
     `ChecksumMismatchError` to abort install before any move.
 
     Returns:
@@ -423,9 +495,9 @@ def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
     import os
     import tempfile
 
-    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    bin_dir = _resolve_install_bin_dir()
     url = f"{_RELEASE_URL_PREFIX}/{asset}"
-    with tempfile.TemporaryDirectory(prefix=".deepagents-rg-", dir=BIN_DIR) as tmp_str:
+    with tempfile.TemporaryDirectory(prefix=".deepagents-rg-", dir=bin_dir) as tmp_str:
         tmp = Path(tmp_str)
         archive = tmp / asset
         _download_to(url, archive)
@@ -433,15 +505,16 @@ def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
         extracted = _extract_rg(archive, tmp / "unpacked")
         if sys.platform != "win32":
             extracted.chmod(0o755)
-        dest = managed_rg_path()
+        name = "rg.exe" if sys.platform == "win32" else "rg"
+        dest = bin_dir / name
         if sys.platform == "win32":
             extracted.replace(dest)
             return dest
 
-        real = BIN_DIR / f"rg-{RIPGREP_VERSION}"
+        real = bin_dir / f"rg-{RIPGREP_VERSION}"
         extracted.replace(real)
         link = tmp / "rg-link"
-        link.symlink_to(os.path.relpath(real, start=BIN_DIR))
+        link.symlink_to(os.path.relpath(real, start=bin_dir))
         link.replace(dest)
         return dest
 
@@ -585,8 +658,13 @@ async def ensure_ripgrep() -> Path | None:
         )
         return None
     except PermissionError:
+        # Both the shared installation directory and the profile fallback were
+        # unwritable, so name them and the permission cause rather than letting
+        # the caller's generic "install ripgrep" hint mislead.
         logger.exception(
-            "ripgrep install failed: cannot write to %s — check permissions", BIN_DIR
+            "ripgrep install failed: cannot write to %s or %s — check permissions",
+            BIN_DIR,
+            FALLBACK_BIN_DIR,
         )
         return None
     except OSError as exc:

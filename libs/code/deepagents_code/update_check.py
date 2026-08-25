@@ -72,6 +72,17 @@ the lock matters. Its installation-derived location is shared by every profile
 that launches this tool environment. See `update_install_lock`.
 """
 
+FALLBACK_UPDATE_LOCK_FILE: Path = PATHS.profile.locks_dir / "update.lock"
+"""Profile-scoped lock used when the installation locks directory is unwritable.
+
+A system or root-owned `sys.prefix` makes `UPDATE_LOCK_FILE`'s parent
+uncreatable for a normal user. Without this fallback the lock would fail open
+on *every* launch, which is the concurrent-install race it exists to prevent.
+Profile-scoped serialization is weaker than installation-scoped — two profiles
+sharing one unwritable installation would not serialize against each other —
+but it is strictly better than no lock at all.
+"""
+
 UPDATE_STATE_FILE: Path = DEFAULT_STATE_DIR / "update_state.json"
 """Persistent flags for the update-notification UX.
 
@@ -2262,6 +2273,35 @@ release on a different one.
 """
 
 
+def _resolve_update_lock_file() -> Path | None:
+    """Return the first usable lock path, preferring installation scope.
+
+    Returns:
+        The lock file whose parent directory could be created, or `None` when
+        neither could be — the only case that legitimately fails open.
+    """
+    for candidate in (UPDATE_LOCK_FILE, FALLBACK_UPDATE_LOCK_FILE):
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError:
+            logger.info(
+                "Update lock directory %s is unusable; trying the next location",
+                candidate.parent,
+                exc_info=True,
+            )
+            continue
+        if candidate != UPDATE_LOCK_FILE:
+            logger.warning(
+                "Using the profile update lock %s because the shared "
+                "installation lock directory %s is not writable; upgrades are "
+                "serialized per profile only",
+                candidate,
+                UPDATE_LOCK_FILE.parent,
+            )
+        return candidate
+    return None
+
+
 @contextmanager
 def update_install_lock() -> Iterator[bool]:
     """Try to claim the exclusive right to self-upgrade dcode.
@@ -2314,19 +2354,19 @@ def update_install_lock() -> Iterator[bool]:
         yield False
         return
     try:
-        try:
-            UPDATE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        except OSError:
+        lock_file = _resolve_update_lock_file()
+        if lock_file is None:
             logger.warning(
-                "Proceeding without the update lock; could not create %s",
+                "Proceeding without the update lock; could not create %s or %s. "
+                "Concurrent dcode upgrades will not be serialized.",
                 UPDATE_LOCK_FILE.parent,
-                exc_info=True,
+                FALLBACK_UPDATE_LOCK_FILE.parent,
             )
             yield True
             return
         if os.name != "nt":
             try:
-                UPDATE_LOCK_FILE.parent.chmod(0o700)
+                lock_file.parent.chmod(0o700)
             except OSError:
                 # Only the permission hardening failed. The directory is still
                 # perfectly usable for locking (CIFS/exFAT mounts routinely
@@ -2334,10 +2374,10 @@ def update_install_lock() -> Iterator[bool]:
                 # this protection on every launch for no reason.
                 logger.warning(
                     "Could not restrict permissions on %s",
-                    UPDATE_LOCK_FILE.parent,
+                    lock_file.parent,
                     exc_info=True,
                 )
-        file_lock = FileLock(str(UPDATE_LOCK_FILE), timeout=0, thread_local=False)
+        file_lock = FileLock(str(lock_file), timeout=0, thread_local=False)
         try:
             file_lock.acquire()
         # `filelock.Timeout` subclasses `TimeoutError`, hence `OSError`, so this
@@ -2347,7 +2387,7 @@ def update_install_lock() -> Iterator[bool]:
         except Timeout:
             logger.info(
                 "Skipping update install; %s is held by another dcode process",
-                UPDATE_LOCK_FILE,
+                lock_file,
             )
             yield False
             return
@@ -2355,7 +2395,7 @@ def update_install_lock() -> Iterator[bool]:
             logger.warning(
                 "Proceeding without the update lock; could not acquire %s. "
                 "If this persists, removing that file may clear it.",
-                UPDATE_LOCK_FILE,
+                lock_file,
                 exc_info=True,
             )
             yield True
@@ -2376,7 +2416,7 @@ def update_install_lock() -> Iterator[bool]:
                     "Failed to release the update lock at %s; further update "
                     "attempts in this session may report a concurrent install "
                     "until dcode is restarted",
-                    UPDATE_LOCK_FILE,
+                    lock_file,
                     exc_info=True,
                 )
     finally:

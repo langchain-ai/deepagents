@@ -15,6 +15,7 @@ from deepagents_code.client.launch.server import (
     _build_server_cmd,
     _build_server_env,
     _scoped_env_overrides,
+    _server_env_with_overrides,
 )
 from deepagents_code.config import _DOTENV_DENIED_ENV_KEYS, _INHERITED_PYTHONPATH_ENV
 
@@ -180,3 +181,25 @@ class TestScopedEnvOverrides:
             ):
                 raise RuntimeError(msg)
             assert os.environ["TEST_SCOPED_PREV"] == "original"
+
+
+class TestServerEnvProfilePinning:
+    """The server must always inherit the client's profile selection.
+
+    `persist_env` validates its keys, but `update_env` accepts any key. Without
+    the final re-pin a caller could point the server at a different profile
+    than the client, splitting the trust root across the two processes.
+    """
+
+    def test_scoped_override_cannot_move_the_profile(self) -> None:
+        env = _server_env_with_overrides({}, {"DEEPAGENTS_HOME": "/tmp/evil"})
+        assert env["DEEPAGENTS_HOME"] == str(PATHS.profile.root)
+
+    def test_persistent_override_cannot_move_the_profile(self) -> None:
+        env = _server_env_with_overrides({"DEEPAGENTS_HOME": "/tmp/evil"}, {})
+        assert env["DEEPAGENTS_HOME"] == str(PATHS.profile.root)
+
+    def test_other_overrides_still_apply(self) -> None:
+        env = _server_env_with_overrides({"A": "1"}, {"B": "2"})
+        assert env["A"] == "1"
+        assert env["B"] == "2"

@@ -448,13 +448,21 @@ if [ "$OS" = "macos" ] && { [ -z "${HOME:-}" ] || [ "$(id -u)" -eq 0 ]; }; then
 fi
 
 # Normalize a POSIX absolute path lexically without requiring it to exist.
-# This mirrors `_paths._normalize_absolute`: repeated separators and `.` / `..`
-# components are collapsed, but no symlink or filesystem lookup is performed.
+# This mirrors `_paths._normalize_absolute` (i.e. `os.path.normpath`): repeated
+# separators and `.` / `..` components are collapsed, but no symlink or
+# filesystem lookup is performed. A leading exactly-double slash is preserved,
+# because POSIX leaves `//` implementation-defined and `os.path.normpath` keeps
+# it — collapsing it here would make the installer and every later launch
+# disagree about which directory one DEEPAGENTS_HOME value names.
+# `tests/unit_tests/test_install_script.py` asserts parity against the Python
+# implementation directly, so both sides stay in step.
 normalize_absolute_path() {
   local rest="$1"
   local normalized="/"
+  local root="/"
   local part
   case "$rest" in
+    //[!/]*|//) normalized="//"; root="//"; rest="${rest#//}" ;;
     /*) rest="${rest#/}" ;;
     *) return 1 ;;
   esac
@@ -468,17 +476,20 @@ normalize_absolute_path() {
     case "$part" in
       ""|.) ;;
       ..)
-        if [ "$normalized" != "/" ]; then
+        if [ "$normalized" != "$root" ]; then
           normalized="${normalized%/*}"
-          [ -n "$normalized" ] || normalized="/"
+          # Stripping the last component of a one-deep path leaves "" (root
+          # "/") or "/" (root "//"); both mean "back at the root".
+          case "$normalized" in
+            ""|/) normalized="$root" ;;
+          esac
         fi
         ;;
       *)
-        if [ "$normalized" = "/" ]; then
-          normalized="/${part}"
-        else
-          normalized="${normalized}/${part}"
-        fi
+        case "$normalized" in
+          /|//) normalized="${normalized}${part}" ;;
+          *) normalized="${normalized}/${part}" ;;
+        esac
         ;;
     esac
   done
@@ -487,7 +498,7 @@ normalize_absolute_path() {
 
 normalize_deepagents_home() {
   local raw="${DEEPAGENTS_HOME:-}"
-  local candidate
+  local candidate normalized_home
   case "$raw" in
     "") candidate="${HOME}/.deepagents" ;;
     \~/*) candidate="${HOME}/${raw#\~/}" ;;
@@ -503,6 +514,24 @@ normalize_deepagents_home() {
   esac
   if ! DEEPAGENTS_HOME="$(normalize_absolute_path "$candidate")"; then
     log_error "Invalid DEEPAGENTS_HOME '${raw}': the resolved path must be absolute."
+    exit 1
+  fi
+  # Same degenerate-root rejections as `_paths._reject_degenerate_root`, so the
+  # installer fails here rather than provisioning a profile the app refuses to
+  # launch from.
+  case "$DEEPAGENTS_HOME" in
+    /|//)
+      log_error "Invalid DEEPAGENTS_HOME '${raw}': the filesystem root cannot be a profile. Use a dedicated directory."
+      exit 1
+      ;;
+  esac
+  normalized_home="$(normalize_absolute_path "$HOME" 2>/dev/null || printf '%s' "$HOME")"
+  if [ "$DEEPAGENTS_HOME" = "$normalized_home" ]; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': the home directory itself cannot be a profile, because its '.env' would be loaded as trusted configuration. Use a subdirectory such as '~/.deepagents'."
+    exit 1
+  fi
+  if [ -e "$DEEPAGENTS_HOME" ] && [ ! -d "$DEEPAGENTS_HOME" ]; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': exists but is not a directory."
     exit 1
   fi
   export DEEPAGENTS_HOME
@@ -534,6 +563,7 @@ if [ "$(id -u)" -eq 0 ]; then
     log_warn "Could not determine non-root target user. Files under ${HOME} may remain owned by root."
     log_warn "  Re-run as the target user, or repair only the exact installed paths reported above."
     fix_file_owner() { :; }
+    fix_tree_owner() { :; }
   else
     fix_file_owner() {
       local path
@@ -543,9 +573,27 @@ if [ "$(id -u)" -eq 0 ]; then
         fi
       done
     }
+    # Repair a directory tree this installer created. Chowning only the
+    # directory inode leaves everything inside it root-owned, which succeeds
+    # silently and then breaks the target user's next `uv tool upgrade` from a
+    # completely unrelated code path. Callers must gate this on a
+    # `*_PREEXISTED` flag and `path_is_under_home`, so it only ever walks a
+    # tree this run created under the target user's home. `-xdev` keeps it off
+    # other filesystems, and `-h` never follows a symlink out of the tree.
+    fix_tree_owner() {
+      local path
+      for path in "$@"; do
+        [ -d "$path" ] || continue
+        if ! find "$path" -xdev -exec chown -h "$TARGET_USER" {} + 2>&1; then
+          log_warn "Could not fix ownership of the tree at $path for user ${TARGET_USER}."
+          log_warn "  Run: sudo chown -R ${TARGET_USER} $path"
+        fi
+      done
+    }
   fi
 else
   fix_file_owner() { :; }
+  fix_tree_owner() { :; }
 fi
 
 # ---------------------------------------------------------------------------
@@ -1023,16 +1071,27 @@ release_install_lock_reclaim_guard() {
   INSTALL_LOCK_RECLAIM_TOKEN=""
 }
 
+# Compute the same installation root Python derives from `sys.prefix` (see
+# `_paths._installation_paths`), which is where the install lock lives.
+#
+# `uv tool dir` is authoritative; the remaining branches are guesses. A guess
+# that misses — uv configured through `uv.toml`, a non-default `--tool-dir`, or
+# uv not yet on PATH at the first lock acquisition — yields a *different* lock
+# root, so concurrent `curl | bash` runs would not serialize. Sets
+# `INSTALL_LOCK_ROOT_GUESSED` so `acquire_install_lock` can say so once.
 resolve_installation_root() {
   local tool_dir=""
+  INSTALL_LOCK_ROOT_GUESSED=false
   if [ -n "${UV_BIN:-}" ]; then
     tool_dir="$("$UV_BIN" tool dir 2>/dev/null || true)"
   fi
   if [ -z "$tool_dir" ] && [ -n "${UV_TOOL_DIR_ENV:-}" ]; then
     tool_dir="$UV_TOOL_DIR_ENV"
+    INSTALL_LOCK_ROOT_GUESSED=true
   fi
   if [ -z "$tool_dir" ]; then
     tool_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/uv/tools"
+    INSTALL_LOCK_ROOT_GUESSED=true
   fi
   case "$tool_dir" in
     /*) ;;
@@ -1061,8 +1120,16 @@ acquire_install_lock() {
     log_error "Remove it or choose a different uv tool directory, then retry."
     exit 1
   fi
+  if [ "${INSTALL_LOCK_ROOT_GUESSED:-false}" = true ]; then
+    log_warn "Could not ask uv for its tool directory; guessing the installer lock root."
+    log_warn "  Concurrent installs may not serialize. Lock root: ${lock_root}"
+  fi
   if [ ! -d "$lock_root" ]; then
-    mkdir -p "$lock_root"
+    if ! mkdir -p "$lock_root"; then
+      log_error "Could not create the installer lock directory: ${lock_root}"
+      log_error "  This serializes concurrent installs; it is not related to DEEPAGENTS_HOME."
+      exit 1
+    fi
     fix_file_owner "$lock_root"
   fi
 
@@ -1176,7 +1243,7 @@ case "$ASSUME_YES" in
   *)          ASSUME_YES="0" ;;
 esac
 # How ripgrep gets provisioned: "managed" (default) eagerly fetches the
-# pinned, SHA-256-verified binary beside the dcode tool environment via
+# pinned, SHA-256-verified binary inside the dcode tool environment via
 # `dcode tools install`; "system" keeps the interactive package-manager path below. Any
 # value other than "system" normalizes to "managed".
 #
@@ -1609,12 +1676,30 @@ if ! resolve_uv_bin; then
   if [ -d "${HOME}/.local/bin" ]; then
     UV_BIN_DIR_PREEXISTED=true
   fi
+  # Note which uv-owned caches this run is about to create, so a root install
+  # can hand them back afterwards. Without this the target user's later
+  # non-root `uv` invocations fail on a root-owned cache, far from here.
+  UV_CACHE_CANDIDATES=""
+  for uv_cache_dir in \
+    "${XDG_CACHE_HOME:-${HOME}/.cache}/uv" \
+    "${HOME}/Library/Caches/uv" \
+    "${XDG_DATA_HOME:-${HOME}/.local/share}/uv"; do
+    if [ ! -e "$uv_cache_dir" ] && path_is_under_home "$uv_cache_dir"; then
+      UV_CACHE_CANDIDATES="${UV_CACHE_CANDIDATES}${uv_cache_dir}"$'\n'
+    fi
+  done
   log_info "uv not found — installing..."
   install_uv
   if [ "$UV_BIN_DIR_PREEXISTED" = false ]; then
     fix_file_owner "${HOME}/.local/bin"
   fi
   fix_file_owner "${HOME}/.local/bin/uv" "${HOME}/.local/bin/uvx" "${HOME}/.local/bin/env"
+  while IFS= read -r uv_cache_dir; do
+    [ -n "$uv_cache_dir" ] || continue
+    fix_tree_owner "$uv_cache_dir"
+  done <<EOF
+${UV_CACHE_CANDIDATES}
+EOF
   if ! resolve_uv_bin; then
     log_error "uv not found after installation. Restart your shell or add ~/.local/bin to PATH."
     exit 1
@@ -2340,7 +2425,7 @@ if path_is_under_home "$TOOL_BIN_DIR"; then
 fi
 if [ "$UV_TOOL_ENV_PREEXISTED" = false ] && [ -n "$UV_TOOL_DIR" ] && \
   path_is_under_home "${UV_TOOL_DIR}/deepagents-code"; then
-  fix_file_owner "${UV_TOOL_DIR}/deepagents-code"
+  fix_tree_owner "${UV_TOOL_DIR}/deepagents-code"
 fi
 # Restore ownership for the log path without recursively chowning a cache path
 # that could have been swapped after creation.
@@ -3500,7 +3585,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
   if [ "$RIPGREP_INSTALLER" = "managed" ] && [ "$VERIFY_OK" = true ] && [ -n "$DCODE_BIN" ]; then
     # Eager, non-prompting managed install through the freshly installed binary
     # — the same pinned, SHA-256-verified path dcode uses on first run
-    # (downloads beside the dcode tool environment). Doing it here removes the
+    # (downloads inside the dcode tool environment). Doing it here removes the
     # first-run download latency. The binary reuses a system `rg` already on
     # PATH and honors DEEPAGENTS_CODE_OFFLINE and
     # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system. Routine output stays behind
@@ -3510,7 +3595,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       log_info "Setting up ripgrep..."
       if "$DCODE_BIN" tools install; then
         if [ "$MANAGED_BIN_DIR_PREEXISTED" = false ] && [ -n "$MANAGED_BIN_DIR" ]; then
-          fix_file_owner "$MANAGED_BIN_DIR"
+          fix_tree_owner "$MANAGED_BIN_DIR"
         fi
       else
         ripgrep_managed_failed
@@ -3522,7 +3607,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
         register_temp "$ripgrep_setup_out"
         if "$DCODE_BIN" tools install >"$ripgrep_setup_out" 2>&1; then
           if [ "$MANAGED_BIN_DIR_PREEXISTED" = false ] && [ -n "$MANAGED_BIN_DIR" ]; then
-            fix_file_owner "$MANAGED_BIN_DIR"
+            fix_tree_owner "$MANAGED_BIN_DIR"
           fi
         else
           echo ""

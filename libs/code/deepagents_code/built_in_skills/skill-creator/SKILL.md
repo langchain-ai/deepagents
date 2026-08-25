@@ -288,7 +288,7 @@ For deepagents CLI, use any of the skill directories listed in "Skill Location f
 
 ```bash
 # User skills (default)
-scripts/init_skill.py <skill-name> --path "$DEEPAGENTS_HOME/agent/skills"
+scripts/init_skill.py <skill-name> --path "${DEEPAGENTS_HOME:-$HOME/.deepagents}/agent/skills"
 
 # Project skills
 scripts/init_skill.py <skill-name> --path .deepagents/skills

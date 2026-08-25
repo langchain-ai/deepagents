@@ -6,7 +6,7 @@ $DEEPAGENTS_HOME/<agent>/skills/<skill-name>/
 
 Example:
 ```python
-python quick_validate.py "$DEEPAGENTS_HOME/agent/skills/my-skill"
+python quick_validate.py "${DEEPAGENTS_HOME:-$HOME/.deepagents}/agent/skills/my-skill"
 ```
 """
 

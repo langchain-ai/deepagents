@@ -121,9 +121,9 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "BASHOPTS",
         "CDPATH",
         "COMSPEC",
+        "DEEPAGENTS_HOME",
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
-        "DEEPAGENTS_HOME",
         "ENV",
         "GIT_ASKPASS",
         "GIT_DIR",
@@ -248,6 +248,28 @@ def _is_dotenv_denied_env_key(key: str) -> bool:
     )
 
 
+def _report_denied_env_key(key: str, dotenv_path: Path, *, is_project: bool) -> None:
+    """Log a denied dotenv key at a level matching who could have set it.
+
+    A project `.env` is untrusted, so a denied key there is expected and stays
+    at debug. The user's own global `.env` is trusted, so silently dropping a
+    key the user deliberately wrote leaves them with a setting that never takes
+    effect and no way to find out why. `DEEPAGENTS_HOME` in particular is
+    chicken-and-egg: it selects the profile that owns this very file, so it can
+    only come from the launching shell.
+    """
+    if not is_project and key.upper() == "DEEPAGENTS_HOME":
+        logger.warning(
+            "Ignoring DEEPAGENTS_HOME in %s: it selects the profile that owns "
+            "that file, so it must be set in the launching shell environment "
+            "instead (for example 'export DEEPAGENTS_HOME=...').",
+            dotenv_path,
+        )
+        return
+    # Log the key only — the value is attacker-controlled.
+    logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+
+
 _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
         DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
@@ -360,8 +382,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             if value is None or key in env:
                 continue
             if _is_dotenv_denied_env_key(key):
-                # Log the key only — the value is attacker-controlled.
-                logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+                _report_denied_env_key(key, dotenv_path, is_project=is_project)
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
@@ -479,8 +500,7 @@ def _load_dotenv(
             if value is None or key in os.environ:
                 continue
             if _is_dotenv_denied_env_key(key):
-                # Log the key only — the value is attacker-controlled.
-                logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+                _report_denied_env_key(key, dotenv_path, is_project=is_project)
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # A committed project `.env` must not set a user-level trust
@@ -3320,12 +3340,24 @@ class Settings:
             Path to `{DEEPAGENTS_HOME}/{agent_name}`.
 
         Raises:
-            ValueError: If the agent name contains invalid characters.
+            ValueError: If the agent name contains invalid characters or names
+                a directory the app owns.
         """
         if not self._is_valid_agent_name(agent_name):
             msg = (
                 f"Invalid agent name: {agent_name!r}. Agent names can only "
                 "contain letters, numbers, hyphens, underscores, and spaces."
+            )
+            raise ValueError(msg)
+        # Agent profiles live directly under the profile root, so an agent
+        # named after an app-owned directory would resolve onto app state. The
+        # picker already hides these names; reject them on the write path too
+        # rather than letting `dcode -a plugins` stamp a marker into it.
+        from deepagents_code.agent import _reserved_agent_dir_names
+
+        if agent_name in _reserved_agent_dir_names():
+            msg = (
+                f"Invalid agent name: {agent_name!r} is reserved for dcode's own state."
             )
             raise ValueError(msg)
         return PATHS.profile.agent_dir(agent_name)

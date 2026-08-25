@@ -600,16 +600,27 @@ def _collect_configuration() -> DiagnosticSection:
     Returns:
         The `Configuration` section.
     """
+    from deepagents_code._paths import PathState, classify_path
+    from deepagents_code.managed_tools import BIN_DIR, FALLBACK_BIN_DIR
     from deepagents_code.model_config import DEFAULT_CONFIG_DIR
+    from deepagents_code.update_check import FALLBACK_UPDATE_LOCK_FILE
 
-    return DiagnosticSection(
-        title="Configuration",
-        items=[
-            _path_status("Data directory", DEFAULT_CONFIG_DIR),
-            _managed_config_diagnostic(),
-            _user_config_diagnostic(),
-        ],
-    )
+    items = [
+        _path_status("Data directory", DEFAULT_CONFIG_DIR),
+        _managed_config_diagnostic(),
+        _user_config_diagnostic(),
+        _path_status("Managed binaries", BIN_DIR),
+    ]
+    # Surface a profile-scoped fallback only once it exists, i.e. once it is
+    # actually the location in use. The installation-scoped directories are
+    # created lazily, so their absence is not evidence of a permission problem.
+    for label, fallback in (
+        ("Managed binaries (profile)", FALLBACK_BIN_DIR),
+        ("Update locks (profile)", FALLBACK_UPDATE_LOCK_FILE.parent),
+    ):
+        if classify_path(fallback) is PathState.EXISTS:
+            items.append(_path_status(label, fallback))
+    return DiagnosticSection(title="Configuration", items=items)
 
 
 def collect_sections() -> list[DiagnosticSection]:

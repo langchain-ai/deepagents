@@ -1599,6 +1599,36 @@ def _rich_path_display(path: Path) -> str:
     return escape(PATHS.display(path))
 
 
+def _profile_permission_hint() -> str:
+    """Return the shared "check permissions" remediation for the profile root."""
+    return f"Check permissions for {_rich_path_display(PATHS.profile.root)}"
+
+
+def _configured_profile_notice() -> str | None:
+    """Return a launch notice naming a non-default profile, if one is selected.
+
+    A mistyped or stale `DEEPAGENTS_HOME` resolves to an empty directory, which
+    is indistinguishable from a first run: no credentials, no MCP tokens, no
+    config. Naming the profile — and whether it already existed — turns "all my
+    settings are gone" into "I am pointed at the wrong profile".
+
+    Returns:
+        A Rich-markup line, or `None` when the default profile is in use.
+    """
+    from deepagents_code._paths import PathState, classify_path
+
+    if PATHS.uses_default_profile:
+        return None
+    root = _rich_path_display(PATHS.profile.root)
+    if classify_path(PATHS.profile.root) is PathState.EXISTS:
+        return f"[dim]Using profile {root} (DEEPAGENTS_HOME)[/dim]"
+    return (
+        f"[yellow]Note:[/yellow] creating a new empty profile at {root} "
+        "(DEEPAGENTS_HOME). Existing settings and credentials live in a "
+        "different profile."
+    )
+
+
 def _suppress_hint_cli(key: str) -> str:
     """Return a configured-path suppression hint for non-interactive output.
 
@@ -4282,7 +4312,7 @@ def _check_mcp_project_trust(
             Ctrl+D to abort the launch.
     """
     from deepagents_code.mcp_tools import (
-        MCPConfigScope,
+        MCPConfigSources,
         ProjectServerSummary,
         discover_mcp_config_sources,
         extract_project_server_summaries,
@@ -4302,11 +4332,7 @@ def _check_mcp_project_trust(
         )
         return None
 
-    project_configs = [
-        source.path
-        for source in config_sources
-        if source.scope is MCPConfigScope.PROJECT
-    ]
+    project_configs = MCPConfigSources.from_sources(config_sources).project_paths
     if not project_configs and not debug_prompt:
         return None
 
@@ -5513,7 +5539,7 @@ def cli_main() -> None:
                 logger.warning("--auto-update failed: filesystem error", exc_info=True)
                 console.print(
                     "[bold red]Error:[/bold red] Failed to toggle auto-updates. "
-                    f"Check permissions for {_rich_path_display(PATHS.profile.root)}"
+                    + _profile_permission_hint()
                 )
                 sys.exit(1)
             except Exception:
@@ -5533,7 +5559,7 @@ def cli_main() -> None:
             else:
                 console.print(
                     "[bold red]Error:[/bold red] Could not clear default model. "
-                    f"Check permissions for {_rich_path_display(PATHS.profile.root)}"
+                    + _profile_permission_hint()
                 )
                 sys.exit(1)
             sys.exit(0)
@@ -5584,7 +5610,7 @@ def cli_main() -> None:
             else:
                 console.print(
                     "[bold red]Error:[/bold red] Could not save default model. "
-                    f"Check permissions for {_rich_path_display(PATHS.profile.root)}"
+                    + _profile_permission_hint()
                 )
                 sys.exit(1)
             sys.exit(0)
@@ -5712,6 +5738,9 @@ def cli_main() -> None:
                 warn_console = None
                 try:
                     warn_console = _Console(stderr=True)
+                    profile_notice = _configured_profile_notice()
+                    if profile_notice is not None:
+                        warn_console.print(profile_notice)
                     missing_tools = check_optional_tools()
                     if _should_ensure_managed_ripgrep():
                         missing_tools = _auto_install_ripgrep_cli(

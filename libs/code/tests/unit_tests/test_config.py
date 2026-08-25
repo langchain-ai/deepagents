@@ -7714,3 +7714,83 @@ class TestResolveGoalAutoAcceptCriteria:
             True,
             f"env ({GOAL_AUTO_ACCEPT_CRITERIA})",
         )
+
+
+class TestDeniedHomeKeyReporting:
+    """A denied `DEEPAGENTS_HOME` must be loud in the user's own dotenv.
+
+    Denying it from a project `.env` is expected and stays at debug level. The
+    global `.env` is the user's own trusted file, so silently dropping a key
+    they deliberately wrote leaves a setting that never takes effect and no way
+    to discover why — the constraint (it selects the profile owning that very
+    file) is not guessable.
+    """
+
+    def test_global_dotenv_warns_with_actionable_text(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from deepagents_code.config import _report_denied_env_key
+
+        dotenv = tmp_path / ".env"
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            _report_denied_env_key("DEEPAGENTS_HOME", dotenv, is_project=False)
+
+        assert "DEEPAGENTS_HOME" in caplog.text
+        assert "launching shell" in caplog.text
+        assert str(dotenv) in caplog.text
+
+    def test_project_dotenv_stays_at_debug(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from deepagents_code.config import _report_denied_env_key
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            _report_denied_env_key(
+                "DEEPAGENTS_HOME", tmp_path / ".env", is_project=True
+            )
+
+        assert caplog.text == ""
+
+    def test_other_denied_keys_never_log_their_value(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An attacker-controlled value must not reach the log."""
+        from deepagents_code.config import _report_denied_env_key
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.config"):
+            _report_denied_env_key("BASH_ENV", tmp_path / ".env", is_project=False)
+
+        assert "BASH_ENV" in caplog.text
+
+    def test_case_insensitive_match(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Windows-style lowercase spelling is still warned about."""
+        from deepagents_code.config import _report_denied_env_key
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            _report_denied_env_key(
+                "deepagents_home", tmp_path / ".env", is_project=False
+            )
+
+        assert "launching shell" in caplog.text
+
+
+class TestReservedAgentNames:
+    """An agent must not be able to resolve onto app-owned profile state.
+
+    Agent profiles live directly under the profile root, so `dcode -a plugins`
+    would otherwise stamp an `AGENTS.md` marker into the plugin store.
+    """
+
+    @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
+    def test_reserved_names_are_rejected(self, name: str) -> None:
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="reserved"):
+            settings.get_agent_dir(name)
+
+    def test_ordinary_names_still_resolve(self) -> None:
+        settings = Settings.__new__(Settings)
+
+        assert settings.get_agent_dir("coder").name == "coder"

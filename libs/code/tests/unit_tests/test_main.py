@@ -6589,3 +6589,76 @@ class TestCheckMcpProjectTrustDedupe:
         combined = self._captured_prompt(capsys)
         assert combined.count('  "alpha" (stdio):') == 1, combined
         assert combined.count('  "beta" (stdio):') == 1, combined
+
+
+class TestCheckMcpProjectTrustScopeFilter:
+    """Only project-scoped configs may reach the approval prompt.
+
+    The user's own profile `.mcp.json` is already trusted. Listing its servers
+    in the "untrusted project servers" prompt would train users to approve
+    their own configuration, which is exactly the signal the prompt exists to
+    carry.
+    """
+
+    def _write_config(self, path: Path, servers: dict[str, Any]) -> None:
+        import json
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+    def test_user_scoped_servers_are_not_prompted(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A mixed source list prompts for the project server only."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        profile = tmp_path / "profile"
+        project = tmp_path / "repo"
+        user_cfg = profile / ".mcp.json"
+        project_cfg = project / ".mcp.json"
+        self._write_config(user_cfg, {"user_srv": {"command": "uvx", "args": ["u"]}})
+        self._write_config(
+            project_cfg, {"project_srv": {"command": "uvx", "args": ["p"]}}
+        )
+        monkeypatch.chdir(project)
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_config_sources",
+            return_value=[
+                DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+                _project_mcp_source(project_cfg, project),
+            ],
+        ):
+            result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is False
+        combined = capsys.readouterr()
+        text = combined.out + combined.err
+        assert "project_srv" in text
+        assert "user_srv" not in text
+
+    def test_only_user_scoped_sources_skip_the_prompt_entirely(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With nothing project-scoped there is nothing to approve."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        user_cfg = tmp_path / "profile" / ".mcp.json"
+        self._write_config(user_cfg, {"user_srv": {"command": "uvx", "args": ["u"]}})
+        monkeypatch.chdir(tmp_path)
+
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_config_sources",
+            return_value=[DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER)],
+        ):
+            result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is None
+        assert "user_srv" not in capsys.readouterr().err

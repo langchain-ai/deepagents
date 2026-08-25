@@ -26,7 +26,7 @@ from deepagents_code._paths import PATHS
 from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -395,6 +395,28 @@ def _build_server_env() -> dict[str, str]:
 
     if inherited_pythonpath is not None:
         env[_INHERITED_PYTHONPATH_ENV] = inherited_pythonpath
+    return env
+
+
+def _server_env_with_overrides(
+    persistent: Mapping[str, str], scoped: Mapping[str, str]
+) -> dict[str, str]:
+    """Assemble the server environment, then re-pin the profile selection.
+
+    `persist_env` validates its keys against `SERVER_ENV_PREFIX`, but
+    `update_env` accepts any key. The final assignment therefore is not
+    redundant: without it an `update_env("DEEPAGENTS_HOME"=...)` caller could
+    point the server at a different profile than the client, splitting the
+    trust root across the two processes.
+
+    Returns:
+        The child environment for the server subprocess.
+    """
+    env = _build_server_env()
+    env.update(persistent)
+    env.update(scoped)
+    # Profile selection is immutable and is not a restart override.
+    env["DEEPAGENTS_HOME"] = str(PATHS.profile.root)
     return env
 
 
@@ -840,11 +862,9 @@ class ServerProcess:
                 logger.info("Requested port in use, using port %d instead", self.port)
 
             cmd = _build_server_cmd(config_path, host=self.host, port=self.port)
-            env = _build_server_env()
-            env.update(self._persistent_env_overrides)
-            env.update(self._env_overrides)
-            # Profile selection is immutable and is not a restart override.
-            env["DEEPAGENTS_HOME"] = str(PATHS.profile.root)
+            env = _server_env_with_overrides(
+                self._persistent_env_overrides, self._env_overrides
+            )
 
             logger.info("Starting langgraph dev server: %s", " ".join(cmd))
             self._log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115

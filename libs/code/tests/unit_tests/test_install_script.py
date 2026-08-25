@@ -5378,6 +5378,9 @@ def test_root_install_chowns_only_exact_managed_leaves_with_optional_setup(
     )
     bin_dir = tmp_path / "bin"
     home = tmp_path / "home"
+    # A profile cannot *be* the home directory, so point it at a subdirectory.
+    # `home` itself must still never be a chown target.
+    profile = home / ".deepagents"
     managed_bin = tmp_path / "tools/deepagents-code/share/deepagents-code/bin"
     chown_log = tmp_path / "chown-invocations.txt"
     for name, body in {
@@ -5392,7 +5395,7 @@ def test_root_install_chowns_only_exact_managed_leaves_with_optional_setup(
         {
             "CHOWN_LOG": str(chown_log),
             "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
-            "DEEPAGENTS_HOME": str(home),
+            "DEEPAGENTS_HOME": str(profile),
             "FAKE_MANAGED_BIN_DIR": str(managed_bin),
         }
     )
@@ -5410,8 +5413,17 @@ def test_root_install_chowns_only_exact_managed_leaves_with_optional_setup(
     assert proc.returncode == 0, proc.stderr
     invocations = chown_log.read_text().splitlines()
     assert invocations
+    # `-R` stays banned: ownership repair walks only trees this run created,
+    # via `find -xdev -exec chown -h`, never a recursive chown of a broad root.
     assert all("-R" not in invocation.split() for invocation in invocations)
-    targets = [invocation.split()[-1] for invocation in invocations]
+    # `find -exec ... +` batches several paths into one invocation, so collect
+    # every argument rather than just the last token.
+    targets = {
+        arg
+        for invocation in invocations
+        for arg in invocation.split()
+        if arg.startswith("/")
+    }
     assert str(managed_bin) in targets
     assert str(home) not in targets
     assert str(home / ".local") not in targets
@@ -6771,3 +6783,103 @@ def test_install_script_rejects_unknown_flag(tmp_path: Path) -> None:
     assert proc.returncode == 2
     assert "Unrecognized argument" in proc.stderr
     assert not (tmp_path / "uv-args.txt").exists()
+
+
+_NORMALIZE_PARITY_CASES = [
+    "/a//b/",
+    "/a/./b",
+    "/a/b/..",
+    "/a/b/../../..",
+    "/..",
+    "/",
+    "/tmp/../..",
+    "/x/./../y",
+    # POSIX leaves a leading exactly-double slash implementation-defined and
+    # `os.path.normpath` preserves it. The installer must agree, or it exports
+    # one directory while every later launch resolves another.
+    "//",
+    "//.",
+    "//..",
+    "///a",
+    "//srv/profile",
+    "//a/../b",
+    "//a/b/../..",
+    "//a/b/../c",
+]
+
+
+@pytest.mark.parametrize("candidate", _NORMALIZE_PARITY_CASES)
+def test_shell_normalizer_matches_python_normalizer(candidate: str) -> None:
+    """`normalize_absolute_path` agrees with `_paths._normalize_absolute`.
+
+    The shell helper's docstring claims it mirrors the Python implementation.
+    Asserting against hardcoded strings would let the two drift while the claim
+    still read as verified, so this runs the same inputs through both.
+    """
+    from deepagents_code._paths import _normalize_absolute
+
+    script = (
+        f"{_extract_shell_function('normalize_absolute_path')}\n"
+        'normalize_absolute_path "$1"\n'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", candidate],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == str(_normalize_absolute(Path(candidate)))
+
+
+def test_shell_normalizer_rejects_relative_paths() -> None:
+    """A relative input is a non-zero exit, matching the Python `ValueError`."""
+    script = (
+        f"{_extract_shell_function('normalize_absolute_path')}\n"
+        'normalize_absolute_path "$1"\n'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", "relative/dir"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode != 0
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected_message"),
+    [
+        ("/", "filesystem root"),
+        ("~/", "home directory itself"),
+        ("{home}", "home directory itself"),
+    ],
+)
+def test_install_script_rejects_degenerate_deepagents_home(
+    tmp_path: Path, configured: str, expected_message: str
+) -> None:
+    """The installer rejects the same degenerate roots the app does.
+
+    Provisioning a profile the app then refuses to launch from would leave the
+    user with a "successful" install and an unusable CLI.
+    """
+    home = tmp_path / "home"
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": configured.format(home=home)})
+
+    assert proc.returncode == 1
+    assert expected_message in proc.stderr
+    assert not uv_args.exists()
+
+
+def test_install_script_rejects_non_directory_deepagents_home(tmp_path: Path) -> None:
+    """An existing regular file cannot hold a profile."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("")
+
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(blocker)})
+
+    assert proc.returncode == 1
+    assert "not a directory" in proc.stderr
+    assert not uv_args.exists()

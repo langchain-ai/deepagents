@@ -5618,10 +5618,13 @@ def create_model(
             constructor.
 
             The provider's own retry-count kwarg (`RETRY_PARAM_BY_PROVIDER`,
-            usually `max_retries`) is always forced off after this merge,
-            because the model-node middleware owns the retry budget and nested
-            SDK retries would multiply its attempts. Supplying that kwarg here
-            logs a warning; use `--max-retries` or `[retries]` instead.
+            usually `max_retries`) is forced off after this merge whenever dcode
+            can identify it, because the model-node middleware owns the retry
+            budget and nested SDK retries would multiply its attempts. Supplying
+            that kwarg here logs a warning; use `--max-retries` or `[retries]`
+            instead. A provider dcode cannot identify (absent from the registry,
+            no `[retries.<provider>].param`, and no `max_retries` already in the
+            kwargs) keeps its own retry loop and logs a warning saying so.
         profile_overrides: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides (dcode wins).

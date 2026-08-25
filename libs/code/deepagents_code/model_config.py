@@ -900,8 +900,13 @@ integer retry-count parameter or must declare one with
 RETRY_DISABLE_VALUE_BY_PROVIDER: dict[str, int] = {"google_genai": 1}
 """Non-zero provider-specific values that disable SDK retries.
 
-The Google SDK interprets zero attempts as "use the default"; one means the
-initial request only. Other registered providers disable retries with zero.
+`google-genai` counts *total attempts*, not retries. Before 1.68.0 it read zero
+as unset and restored its own five-attempt default; from 1.68.0 on it coerces
+zero to one (`_api_client._retry_args`), so zero and one now behave alike. One is
+sent because it disables retries on both, and it is the only value that means
+"the initial request only" on every version.
+
+Other registered providers count retries, so zero disables them.
 """
 
 LANGSMITH_SERVICE = "langsmith"

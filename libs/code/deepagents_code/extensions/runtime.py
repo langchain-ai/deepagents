@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+from deepagents_code.extensions.api import ExtensionAPI, ExtensionMode
 from deepagents_code.extensions.discovery import (
     discover_extensions,
     project_extensions_dir,
@@ -23,8 +24,6 @@ if TYPE_CHECKING:
     from deepagents_code.extensions.registry import SourceInfo
 
 logger = logging.getLogger(__name__)
-INTERACTIVE_MODE = "interactive"
-HEADLESS_MODE = "headless"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,10 +34,10 @@ class ExtensionLoadResult:
     errors: tuple[str, ...] = ()
     active: bool = False
     """Whether at least one authorized extension source activated the runtime."""
+    _apis: tuple[ExtensionAPI, ...] = field(default=(), repr=False)
 
 
-_shutdown_registry: ExtensionRegistry | None = None
-_server_errors: tuple[str, ...] = ()
+_server_extensions: ExtensionLoadResult | None = None
 
 
 def _prepare(
@@ -81,7 +80,7 @@ def _prepare(
 async def load_extensions(
     *,
     cwd: Path | None = None,
-    mode: str = INTERACTIVE_MODE,
+    mode: ExtensionMode = ExtensionMode.INTERACTIVE,
     project_root: Path | None = None,
     project_trust_granted: bool = False,
     cli_paths: tuple[Path, ...] = (),
@@ -110,30 +109,36 @@ async def load_extensions(
     sources, discovery_errors, session_cwd = prepared
     registry = ExtensionRegistry()
     errors = list(discovery_errors)
+    apis: list[ExtensionAPI] = []
     for source in sources:
         try:
-            await load_extension(source, registry, cwd=session_cwd, mode=mode)
+            api = await load_extension(source, registry, cwd=session_cwd, mode=mode)
         except ExtensionError as exc:
             logger.warning("Skipping extension %s", source.path, exc_info=True)
             errors.append(str(exc))
         except Exception as exc:
             logger.exception("Unexpected extension failure: %s", source.path)
             errors.append(f"{source.path}: {type(exc).__name__}: {exc}")
-    return ExtensionLoadResult(registry, tuple(errors), active=True)
+        else:
+            apis.append(api)
+    return ExtensionLoadResult(
+        registry,
+        tuple(errors),
+        active=True,
+        _apis=tuple(apis),
+    )
 
 
-def bind_server_extensions(
-    registry: ExtensionRegistry, *, errors: tuple[str, ...] = ()
-) -> None:
-    """Retain server-owned shutdown callbacks for lifespan teardown."""
-    global _server_errors, _shutdown_registry  # noqa: PLW0603
-    _shutdown_registry = registry
-    _server_errors = errors
+def bind_server_extensions(extensions: ExtensionLoadResult) -> None:
+    """Retain the server-owned extension runtime for lifespan teardown."""
+    global _server_extensions  # noqa: PLW0603
+    _server_extensions = extensions
 
 
 def server_extension_report() -> dict[str, object]:
     """Return sanitized metadata for the local provenance endpoint."""
-    registry = _shutdown_registry
+    extensions = _server_extensions
+    registry = None if extensions is None else extensions.registry
     registrations = () if registry is None else registry.registrations()
     return {
         "registrations": [
@@ -141,19 +146,20 @@ def server_extension_report() -> dict[str, object]:
             for kind, item in registrations
             if kind != "shutdown"
         ],
-        "errors": list(_server_errors),
+        "errors": [] if extensions is None else list(extensions.errors),
         "restart_required": registry.restart_required
         if registry is not None
         else False,
     }
 
 
-async def shutdown_extensions(registry: ExtensionRegistry) -> None:
+async def shutdown_extensions(extensions: ExtensionLoadResult) -> None:
     """Run teardown callbacks while isolating individual failures.
 
     Args:
-        registry: Registry whose session is ending.
+        extensions: Extension runtime whose session is ending.
     """
+    registry = extensions.registry
     try:
         for hook in reversed(registry.shutdown_hooks):
             try:
@@ -165,13 +171,13 @@ async def shutdown_extensions(registry: ExtensionRegistry) -> None:
                     "Shutdown hook from %s failed", hook.source.label, exc_info=True
                 )
     finally:
-        registry.deactivate_apis()
+        for api in extensions._apis:
+            api._deactivate()
 
 
 async def shutdown_server_extensions() -> None:
     """Release server-owned extensions on the persistent event loop."""
-    global _server_errors, _shutdown_registry  # noqa: PLW0603
-    registry, _shutdown_registry = _shutdown_registry, None
-    _server_errors = ()
-    if registry is not None:
-        await shutdown_extensions(registry)
+    global _server_extensions
+    extensions, _server_extensions = _server_extensions, None
+    if extensions is not None:
+        await shutdown_extensions(extensions)

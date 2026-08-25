@@ -7,7 +7,9 @@ from unittest.mock import patch
 import pytest
 
 from deepagents_code.extensions import load_extensions
+from deepagents_code.extensions.registry import ExtensionError
 from deepagents_code.extensions.runtime import (
+    ExtensionLoadResult,
     bind_server_extensions,
     shutdown_extensions,
     shutdown_server_extensions,
@@ -130,7 +132,7 @@ async def extension(d):
 
     assert [item.name for item in result.registry.tools] == ["ready"]
     assert len(result.errors) == 1
-    bind_server_extensions(result.registry)
+    bind_server_extensions(result)
     await shutdown_server_extensions()
     assert marker.exists()
 
@@ -203,9 +205,40 @@ async def test_shutdown_runs_in_reverse_registration_order(tmp_path: Path) -> No
     registry.add_shutdown_hook(lambda: order.append("first"), source)
     registry.add_shutdown_hook(lambda: order.append("second"), source)
 
-    await shutdown_extensions(registry)
+    await shutdown_extensions(ExtensionLoadResult(registry=registry, active=True))
 
     assert order == ["second", "first"]
+
+
+async def test_runtime_owns_registrar_until_shutdown(tmp_path: Path) -> None:
+    """Dynamic registration remains open until its runtime shuts down."""
+    root = tmp_path / "plugin"
+    root.mkdir()
+    (root / "extension.py").write_text(
+        "async def extension(d):\n    pass\n",
+        encoding="utf-8",
+    )
+    plugin = _plugin(root, ["extension.py"])
+
+    with patch(
+        "deepagents_code.plugins.discover_plugins",
+        return_value=PluginDiscoveryResult(plugins=(plugin,)),
+    ):
+        result = await load_extensions(cwd=tmp_path)
+
+    api = result._apis[0]
+
+    def late_tool() -> str:
+        """Return a late-registration marker."""
+        return "ready"
+
+    api.register_tool(late_tool)
+    assert result.registry.find_tool("late_tool") is not None
+
+    await shutdown_extensions(result)
+
+    with pytest.raises(ExtensionError, match="closed for this session"):
+        api.register_tool(late_tool)
 
 
 @pytest.mark.parametrize(

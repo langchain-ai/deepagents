@@ -9,7 +9,7 @@ import inspect
 import sys
 from typing import TYPE_CHECKING
 
-from deepagents_code.extensions.api import ExtensionAPI
+from deepagents_code.extensions.api import ExtensionAPI, ExtensionMode
 from deepagents_code.extensions.registry import ExtensionError
 
 if TYPE_CHECKING:
@@ -69,8 +69,8 @@ async def load_extension(
     registry: ExtensionRegistry,
     *,
     cwd: Path,
-    mode: str,
-) -> None:
+    mode: ExtensionMode,
+) -> ExtensionAPI:
     """Load one extension transactionally.
 
     Args:
@@ -78,6 +78,9 @@ async def load_extension(
         registry: Destination for registrations.
         cwd: Session working directory.
         mode: Runtime mode.
+
+    Returns:
+        The active registrar owned by the extension runtime.
 
     Raises:
         ExtensionError: If import or initialization fails.
@@ -104,4 +107,4 @@ async def load_extension(
             else f"Extension factory in {source.path} failed: {exc}"
         )
         raise ExtensionError(msg) from exc
-    registry.retain_api(api)
+    return api

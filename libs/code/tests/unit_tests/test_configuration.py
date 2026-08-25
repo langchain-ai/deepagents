@@ -10,7 +10,7 @@ from email.message import Message
 from http.client import BadStatusLine, IncompleteRead, LineTooLong
 from io import BytesIO
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self
 from urllib.error import HTTPError, URLError
@@ -4373,3 +4373,64 @@ def test_remote_policy_violation_names_the_url_not_the_trust_anchor(
     assert "https://config.example.com/policy.toml" in message
     assert "startup.mode" in message
     assert f"{managed} rejects" not in message
+
+
+def test_managed_refresh_does_not_hold_the_snapshot_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow remote fetch cannot block an ordinary config read.
+
+    Every config read reaches `get_managed_snapshot`, much of it from the
+    Textual event loop. Offloading the fetch to a worker thread is pointless if
+    the loop then waits on `_snapshot_lock` for the same five seconds.
+    """
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.types import ProviderStatus, TomlSnapshot
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+
+    fetching = Event()
+    release = Event()
+    reader_returned = Event()
+
+    def slow_load(_path: Path | None = None) -> TomlSnapshot:
+        fetching.set()
+        assert release.wait(timeout=5)
+        return TomlSnapshot(
+            {"startup": {"mode": "manual"}},
+            ProviderStatus(
+                "managed config",
+                managed,
+                ProviderHealth.OK,
+                None,
+                remote_source="https://config.example.com/policy.toml",
+            ),
+        )
+
+    monkeypatch.setattr(service, "_load_managed", slow_load)
+
+    def refresh() -> None:
+        service.get_managed_snapshot(refresh=True)
+
+    worker = Thread(target=refresh, name="managed-refresh", daemon=True)
+    worker.start()
+    assert fetching.wait(timeout=5)
+
+    def read() -> None:
+        with service._snapshot_lock:
+            reader_returned.set()
+
+    reader = Thread(target=read, name="config-reader", daemon=True)
+    reader.start()
+    # The lock must be free while the fetch is still in flight.
+    assert reader_returned.wait(timeout=5)
+    release.set()
+    worker.join(timeout=5)
+    reader.join(timeout=5)

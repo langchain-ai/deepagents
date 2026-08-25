@@ -695,15 +695,34 @@ def get_managed_snapshot(
         cached = _snapshot_state.managed
         if not refresh and cached is not None:
             return cached
-        candidate = _load_managed()
-        # Cache only a snapshot whose declared policy can actually be enforced.
-        # `usable` admits a parseable-but-unenforceable file, so gate on the
-        # policy check too, not just provider health.
-        if candidate.status.usable and not managed_policy_violations(
-            candidate.data, status=candidate.status
-        ):
+    # Load outside the lock. A remote descriptor turns this into an HTTPS
+    # fetch, and every ordinary config read reaches `get_managed_snapshot`
+    # through `get_config_resolver`, much of it from the Textual event loop.
+    # Holding the lock across the fetch would leave the loop blocked in
+    # `RLock.acquire` for its whole duration, which is exactly what moving the
+    # fetch onto a worker thread was meant to prevent. Two cold callers can now
+    # both load where one would have waited for the other; one bounded extra
+    # fetch is cheaper than a stalled UI.
+    candidate = _load_managed()
+    # Cache only a snapshot whose declared policy can actually be enforced.
+    # `usable` admits a parseable-but-unenforceable file, so gate on the
+    # policy check too, not just provider health.
+    enforceable = candidate.status.usable and not managed_policy_violations(
+        candidate.data, status=candidate.status
+    )
+    with _snapshot_lock:
+        if enforceable:
             _snapshot_state.managed = candidate
-        return candidate
+            return candidate
+        published = _snapshot_state.managed
+        if not refresh and published is not None:
+            # A concurrent caller published policy while this load was
+            # failing. Under the old serialized path this caller would have
+            # read that snapshot from the cache and never loaded at all, so
+            # prefer it over a failure it would not have seen. A `refresh`
+            # caller asked for this generation and must receive it.
+            return published
+    return candidate
 
 
 def get_config_sources(

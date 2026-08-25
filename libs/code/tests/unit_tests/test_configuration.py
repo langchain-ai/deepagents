@@ -253,6 +253,20 @@ class _RemoteResponse:
         self.read_timeouts.append(value)
 
 
+class _TrackedErrorBody(BytesIO):
+    """Byte stream that records when `HTTPError.close` releases its body."""
+
+    def __init__(self, payload: bytes) -> None:
+        """Initialize a tracked response body."""
+        super().__init__(payload)
+        self.closed_event = Event()
+
+    def close(self) -> None:
+        """Record closure before releasing the byte buffer."""
+        self.closed_event.set()
+        super().close()
+
+
 class _IncompleteRemoteResponse(_RemoteResponse):
     """Response whose HTTP framing reports an interrupted body."""
 
@@ -383,6 +397,38 @@ def test_remote_toml_provider_reports_safe_fetch_failure(
     assert "dns failed" not in (snapshot.status.detail or "")
 
 
+def test_remote_toml_provider_closes_http_error_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An HTTP status failure releases its response and connection promptly."""
+    from deepagents_code.configuration import providers
+
+    response = _TrackedErrorBody(b"untrusted error body")
+    failure = HTTPError(
+        "https://config.example.com/policy.toml",
+        503,
+        "Unavailable",
+        Message(),
+        response,
+    )
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            raise failure
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert response.closed
+
+
 def test_remote_toml_provider_times_out_when_deadline_passes_during_open(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -443,6 +489,48 @@ def test_remote_toml_provider_bounds_a_stalled_open(
     assert snapshot.status.health is ProviderHealth.UNREADABLE
     assert "timed out" in (snapshot.status.detail or "")
     assert response.closed.wait(timeout=1)
+
+
+def test_remote_toml_provider_closes_late_http_error_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A status failure arriving after timeout still releases its response."""
+    from deepagents_code.configuration import providers
+
+    entered = Event()
+    release = Event()
+    response = _TrackedErrorBody(b"untrusted error body")
+    failure = HTTPError(
+        "https://config.example.com/policy.toml",
+        503,
+        "Unavailable",
+        Message(),
+        response,
+    )
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            entered.set()
+            assert release.wait(timeout=1)
+            raise failure
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    monkeypatch.setattr(providers, "REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS", 0.05)
+    try:
+        snapshot = RemoteTomlProvider(
+            "managed config",
+            "https://config.example.com/policy.toml",
+            tmp_path / "managed.toml",
+        ).load()
+    finally:
+        release.set()
+
+    assert entered.is_set()
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert "timed out" in (snapshot.status.detail or "")
+    assert response.closed_event.wait(timeout=1)
 
 
 def test_remote_toml_provider_rejects_late_empty_response(

@@ -642,9 +642,13 @@ def _remaining_timeout(deadline: float) -> float:
 def _close_completed_response(future: Future[HTTPResponse]) -> None:
     """Close a response that arrived after its caller stopped waiting."""
     from http.client import HTTPException
+    from urllib.error import HTTPError
 
     try:
         response = future.result()
+    except HTTPError as exc:
+        exc.close()
+        return
     except (HTTPException, OSError, ValueError):
         return
     response.close()
@@ -920,18 +924,21 @@ class RemoteTomlProvider:
                     )
                 payload = _read_limited_response(response, deadline=deadline)
         except HTTPError as exc:
-            detail = (
-                "remote source refused redirects"
-                if _HTTP_REDIRECT_MIN <= exc.code < _HTTP_REDIRECT_MAX
-                else (f"remote source returned HTTP {exc.code}")
-            )
-            return _remote_status(
-                self.name,
-                self.path,
-                ProviderHealth.UNREADABLE,
-                detail,
-                source,
-            )
+            try:
+                detail = (
+                    "remote source refused redirects"
+                    if _HTTP_REDIRECT_MIN <= exc.code < _HTTP_REDIRECT_MAX
+                    else (f"remote source returned HTTP {exc.code}")
+                )
+                return _remote_status(
+                    self.name,
+                    self.path,
+                    ProviderHealth.UNREADABLE,
+                    detail,
+                    source,
+                )
+            finally:
+                exc.close()
         except TimeoutError:
             return _remote_status(
                 self.name,

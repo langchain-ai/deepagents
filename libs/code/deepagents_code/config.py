@@ -2447,9 +2447,9 @@ def _resolve_config_retry_count(
     """Resolve the model-node retry count for `provider` from `[retries]`.
 
     A per-provider `[retries.<provider>].max_retries` overrides the global
-    `[retries].max_retries`. The retry count now drives dcode's model-node retry
-    middleware rather than a provider constructor kwarg, so it applies uniformly
-    to every provider. Unknown or malformed keys are dropped with a warning.
+    `[retries].max_retries`. The retry count drives dcode's model-node retry
+    middleware, so it applies uniformly to every provider. Unknown or malformed
+    keys are dropped with a warning.
 
     `[retries.<provider>].param` identifies a custom provider's internal retry
     constructor kwarg. It does not change the middleware count; dcode sets that
@@ -2602,7 +2602,7 @@ middleware and the config resolver never drift.
 """
 
 MODEL_RETRIES_ATTR = "_deepagents_model_retries"
-"""Private model attribute carrying its resolved request-time retry budget."""
+"""Private model attribute carrying the budget resolved when it was built."""
 
 
 def _resolve_model_retries_from_section(

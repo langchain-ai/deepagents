@@ -54,11 +54,13 @@ __all__ = [
     "retry_status_from_event",
 ]
 
+# Curve parameters mirror Codex's retry defaults: a first retry fast enough to
+# stay under human-perceptible latency, then plain exponential growth.
 _INITIAL_DELAY_SECONDS = 0.2
-"""First backoff delay, matching Codex's 200ms initial retry wait."""
+"""First backoff delay: fast enough that one retry is not felt as a stall."""
 
 _BACKOFF_FACTOR = 2.0
-"""Exponential backoff multiplier (Codex uses 2.0)."""
+"""Exponential backoff multiplier."""
 
 _MAX_DELAY_SECONDS = 10.0
 """Cap on a single backoff delay so exponential growth stays bounded."""
@@ -69,10 +71,13 @@ _MAX_RETRY_AFTER_SECONDS = 60.0
 Providers routinely ask for 20-60s on a rate limit, well past the exponential
 curve. Honoring the request beats hammering the same quota, but an unbounded
 wait would stall the turn indefinitely on a hostile or mistaken header.
+
+This bounds one wait, not the turn: a full budget of header-honored retries can
+hold a turn for `max_retries` times this value.
 """
 
 _JITTER_FRACTION = 0.1
-"""Multiplicative jitter of +-10%, matching Codex's 0.9..1.1 range."""
+"""Multiplicative jitter of +-10%, spreading retries from concurrent callers."""
 
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
 """Non-5xx statuses worth retrying (timeout, provider lock conflict, rate limit)."""
@@ -114,7 +119,12 @@ def _google_api_core_status_code(exc: Exception) -> int | None:
 
 
 class _MessageStreamTracker:
-    """Forward LangGraph message-stream callbacks and record visible output."""
+    """Forward LangGraph message-stream callbacks and record visible output.
+
+    Retries only cover failures before the first token. Once a chunk has
+    reached the user it cannot be withdrawn, so the retry loop stops rather
+    than replaying a partial answer.
+    """
 
     def __init__(self) -> None:
         self.has_streamed = False
@@ -122,7 +132,15 @@ class _MessageStreamTracker:
     def callbacks_with_tracked_messages(
         self, callbacks: BaseCallbackManager
     ) -> BaseCallbackManager | None:
-        """Return a callback-manager copy that tracks message-stream delivery."""
+        """Return a callback-manager copy that tracks message-stream delivery.
+
+        Args:
+            callbacks: The run's callback manager.
+
+        Returns:
+            A copy with every `StreamMessagesHandler` wrapped, or `None` when
+            the run has none and the caller should leave the config alone.
+        """
         replacements: dict[int, StreamMessagesHandler] = {}
 
         def forward(source: StreamMessagesHandler, chunk: StreamChunk) -> None:
@@ -247,8 +265,9 @@ def _retry_after_seconds(exc: Exception) -> float | None:
 
     Reads the `Retry-After` response header, which providers set on 429 and 503
     in either delta-seconds or HTTP-date form. Our exponential curve tops out
-    around 3s per step, so ignoring the header means retrying well before the
-    quota resets and spending the whole budget for nothing.
+    capped at `_MAX_DELAY_SECONDS` and reaches only ~3s at the default budget, so
+    ignoring the header means retrying well before the quota resets and spending
+    the whole budget for nothing.
 
     Args:
         exc: The exception raised by the model call.
@@ -434,9 +453,9 @@ def _is_retryable_model_error(exc: Exception) -> bool:
 def format_retry_status(attempt: int, max_retries: int) -> str:
     """Return the concise user-facing status shown during a retry backoff.
 
-    Carries no trailing ellipsis: the TUI spinner appends its own, and the
-    previous wording claimed a dropped connection for rate limits and 5xx
-    responses, which `_is_retryable_model_error` also retries.
+    Carries no trailing ellipsis: the TUI spinner appends its own. Names no
+    cause either, because a retry may be a rate limit or a 5xx rather than a
+    dropped connection.
 
     Args:
         attempt: The 1-indexed retry number about to be attempted.
@@ -617,6 +636,10 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                 call. `0` disables retries unless the request's runtime-selected
                 model carries a different provider-specific budget.
         """
+        # `retry_on`, `max_delay` and `jitter` are passed for base-class
+        # consistency only. Both loops are overridden below and classify with
+        # `_is_retryable_model_error` directly; `_compute_delay` re-reads the
+        # delay attributes. Editing `self.retry_on` alone would have no effect.
         super().__init__(
             max_retries=max_retries,
             retry_on=_is_retryable_model_error,

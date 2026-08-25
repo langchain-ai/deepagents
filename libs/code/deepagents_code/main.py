@@ -1084,7 +1084,9 @@ def _install_cli_provider(args: argparse.Namespace) -> None:
     install_cli_provider(CliProvider(args))
 
 
-def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
+def _resolve_interpreter_enabled(
+    args: argparse.Namespace, *, strict: bool = True
+) -> bool:
     """Return the resolver-backed interpreter state for these CLI args.
 
     Managed policy and an explicit CLI flag are deliberate, invocation-scoped
@@ -1101,6 +1103,16 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     choices about this run, so `--sandbox` still wins over them. Letting them
     through would turn the redundant-but-harmless `enable_interpreter = true`
     into a launch failure for every remote-sandbox run.
+
+    Args:
+        args: Parsed CLI arguments.
+        strict: Whether an unsatisfiable choice stops the process. Read-only
+            callers such as `dcode tools` pass `False` and get `False`, which
+            is what the catalog would actually contain; only a launch has
+            something to abort.
+
+    Returns:
+        Whether the JS interpreter is enabled for this invocation.
 
     Raises:
         RuntimeError: If the manifest is missing the option, which is a
@@ -1126,6 +1138,8 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     if deciding_rank is not None:
         enabled = bool(resolved.value)
         if enabled and remote_sandbox:
+            if not strict:
+                return False
             _exit_interpreter_conflicts_with_sandbox(args.sandbox, deciding_rank)
         return enabled
     if remote_sandbox:

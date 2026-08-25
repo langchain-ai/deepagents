@@ -3511,6 +3511,20 @@ class TestResolveInterpreterEnabled:
         finally:
             service.invalidate_config_sources()
 
+    def test_non_strict_reports_absent_instead_of_exiting(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        """`dcode tools` must report, not abort, on an unsatisfiable pair.
+
+        A read-only listing has nothing to abort, and the interpreter would in
+        fact be absent, so `strict=False` reports `False`.
+        """
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task", "--sandbox", "daytona", "--interpreter"):
+            args = parse_args()
+        assert _resolve_interpreter_enabled(args, strict=False) is False
+
     @pytest.mark.parametrize(
         "toml_text",
         [

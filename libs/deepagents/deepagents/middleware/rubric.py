@@ -16,7 +16,7 @@ import logging
 import re
 import secrets
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from importlib import import_module
 from typing import (
     TYPE_CHECKING,
@@ -24,6 +24,7 @@ from typing import (
     Any,
     Literal,
     NotRequired,
+    TypeVar,
 )
 
 from langchain.agents import create_agent
@@ -60,6 +61,13 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
+
+_ReturnT = TypeVar("_ReturnT")
+
+
+def _extension_method(method: Callable[..., _ReturnT]) -> Callable[..., _ReturnT]:
+    """Mark a private method as accepting backward-compatible overrides."""
+    return method
 
 
 GraderVerdict = Literal["satisfied", "needs_revision", "failed"]
@@ -867,6 +875,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         logger.warning("RubricMiddleware grader returned an unusable response; retrying once. %s", correction)
         return await self._ainvoke_grader(state, iteration, correction, context=context)
 
+    @_extension_method
     def _grader_input(
         self,
         state: RubricState,

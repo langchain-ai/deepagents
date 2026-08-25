@@ -35,7 +35,6 @@ This is a monorepo of independently versioned packages under `libs/`:
 libs/
 ├── deepagents/     # Core SDK — create_deep_agent, middleware, backends
 ├── acp/            # Agent Client Protocol integration
-├── cli/            # Deployment CLI (init / deploy / agents / mcp-servers)
 ├── evals/          # Evaluation suite and Harbor integration
 ├── code/           # Prebuilt coding agent for interactive and headless use
 ├── talon/          # Local runtime host for long-running agents
@@ -136,7 +135,7 @@ Reserve `per-file-ignores` for categorical policy that applies to a whole class 
 "tests/**" = ["D1", "S101"]
 
 # BAD - single-line exception buried in pyproject.toml
-"deepagents_cli/agent.py" = ["PLR2004"]
+"deepagents_code/agent.py" = ["PLR2004"]
 ```
 
 ```python
@@ -198,7 +197,7 @@ Maintainers can apply the `bypass-warnings-check` PR label and re-run failed job
 
 ## Benchmarks
 
-Three packages carry benchmarks: `libs/deepagents`, `libs/code`, and `libs/partners/quickjs`. Each defines `bench` (walltime) and `bench-memory` (heap) Make targets. Other packages have no `bench` target, so `make -C libs/cli bench` fails.
+Three packages carry benchmarks: `libs/deepagents`, `libs/code`, and `libs/partners/quickjs`. Each defines `bench` (walltime) and `bench-memory` (heap) Make targets. Other packages have no `bench` target, so `make -C libs/evals bench` fails.
 
 These targets are the single source of truth for the benchmark invocation. Both local runs and the reusable CI workflow (`.github/workflows/_benchmark.yml`) call them. To change how benchmarks run, edit the Makefile; CI inherits the change.
 
@@ -227,11 +226,11 @@ Conventions live in [`AGENTS.md`](../AGENTS.md) at the repo root: Conventional C
 
 ```txt
 feat(sdk): add new chat completion feature
-fix(cli): resolve type hinting issue
+fix(sdk): resolve type hinting issue
 chore(evals): update infrastructure dependencies
-test(cli): missing unit tests for `_git`
-feat(cli): `--startup-cmd` flag
-style(cli): strip trailing annotations from `ask_user` questions
+test(code): missing unit tests for `_git`
+feat(code): `--startup-cmd` flag
+style(code): strip trailing annotations from `ask_user` questions
 ```
 
 External PRs must link an approved issue/discussion (see the contributing guide linked above), and the PR description fills in the repository template.

@@ -16,7 +16,7 @@ LangChain    -> agent abstraction: model + tools + middleware
 LangGraph    -> execution runtime: state, checkpoints, streaming, interrupts
 ```
 
-`create_deep_agent()` in `libs/deepagents/deepagents/graph.py` is the assembly point. It resolves a model/profile and backend, normalizes main/subagent middleware and prompts, builds the default general-purpose subagent where enabled, and delegates to LangChain’s `create_agent()`. The returned compiled graph is then invoked or streamed through LangGraph. This relationship matters: durable state, resumability, and interrupt mechanics belong to LangGraph; Deep Agents changes what the agent sees and does through composition.
+`create_deep_agent()` in `libs/deepagents/deepagents/graph.py` is the assembly point. It resolves a model/profile and backend, normalizes main/subagent middleware and prompts, builds the default general-purpose subagent where enabled, and delegates to LangChain's `create_agent()`. The returned compiled graph is then invoked or streamed through LangGraph. This relationship matters: durable state, resumability, and interrupt mechanics belong to LangGraph; Deep Agents changes what the agent sees and does through composition.
 
 The [Deep Agents Code workflow](../workflows/deep-agents-code.md) configures this assembly point into a coding-agent server graph. The [operations guide](../engineering/operations-and-testing.md) maps the packages and checks that protect the public interfaces around it.
 
@@ -25,7 +25,7 @@ The [Deep Agents Code workflow](../workflows/deep-agents-code.md) configures thi
 1. **Application creates a graph.** Public consumers import `create_deep_agent` from `libs/deepagents/deepagents/__init__.py` and provide a model, tools, system prompt, backends, subagents, persistence, and/or middleware.
 2. **SDK composes runtime behavior.** `graph.py` supplies the standard tool surface—planning/todos, filesystem operations, optional shell execution, and task delegation—and configures model/provider and harness profiles.
 3. **LangChain runs the loop.** The model receives the assembled prompt, messages, and current tool surface; it can respond or call tools, with results appended to state.
-4. **LangGraph manages execution.** It carries state/checkpoints, streams progress, and pauses/resumes through interrupts. Deep Agents’ `DeepAgentState` uses a delta-style message reducer to avoid superlinear checkpoint growth in long threads.
+4. **LangGraph manages execution.** It carries state/checkpoints, streams progress, and pauses/resumes through interrupts. Deep Agents' `DeepAgentState` uses a delta-style message reducer to avoid superlinear checkpoint growth in long threads.
 
 ### Middleware versus tools
 
@@ -36,7 +36,7 @@ When a behavior differs in delegated work, inspect the subagent type and its own
 ## Tool, backend, and state boundaries
 
 - **Backends** select storage and execution capabilities. Public exports include state, filesystem, store, composite, local-shell, LangSmith-sandbox, and ContextHub variants (`libs/deepagents/deepagents/backends/`). If a backend cannot execute shell commands, the SDK removes `execute` and shell-specific prompt text rather than merely denying a call later.
-- **Permissions** constrain built-in filesystem tools at call time. They do not hide tools and do not automatically authorize arbitrary caller tools; the containment boundary belongs to tools/backends, consistent with the root README’s trust-the-LLM posture.
+- **Permissions** constrain built-in filesystem tools at call time. They do not hide tools and do not automatically authorize arbitrary caller tools; the containment boundary belongs to tools/backends, consistent with the root README's trust-the-LLM posture.
 - **State/checkpoints** are LangGraph-owned, while filesystem and cross-thread memory persistence are routed by Deep Agents backends. Keep middleware-private state private where possible; recent SDK history includes a fix to isolate private custom state from subagents.
 - **Profiles** tune provider and harness behavior. Plugin registrations are additive through the `deepagents.provider_profiles` and `deepagents.harness_profiles` entry-point groups.
 
@@ -45,8 +45,8 @@ When a behavior differs in delegated work, inspect the subagent type and its own
 | Package | Relationship to the core SDK |
 | --- | --- |
 | `libs/code` | Builds a coding-specific middleware/tool/approval stack around `create_deep_agent` and exposes it through a terminal client plus LangGraph server. See [Deep Agents Code](../workflows/deep-agents-code.md). |
+| `libs/talon` | Hosts a compiled Deep Agent for long-running channel and cron work. Its `DeepAgentRuntime` supplies local execution, assistant-local skills/memory, web and cron tools, and an in-memory checkpointer; the experimental host is documented in [Talon runtime](../workflows/talon-runtime.md). |
 | `libs/acp` | Adapts a compiled graph (or session-aware graph factory) to ACP events: messages, tool progress/diffs, todos, and supported HITL flows. Free-form LangGraph interrupts are not generally representable there. |
-| `libs/cli` | Deploys managed Deep Agents projects, agents, and MCP server registrations through `langgraph-sdk`/HTTP; it is not the `dcode` interactive REPL. |
 | `libs/partners` | Supplies provider/sandbox integration packages. Shell/filesystem behavior remains backend-dependent, so partner changes can affect the SDK tool surface. |
 | root GitHub Action | `action.yml` runs `dcode` non-interactively. Its raw output is explicitly unfiltered, so downstream workflows should not blindly echo it into other services (`ACTION.md`). |
 

@@ -537,12 +537,25 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     # to survive a broken config.
     health = managed_snapshot_health(snapshot)
     path = status.path or "(unknown)"
+    location = (
+        f"{path} -> {status.remote_source}"
+        if status.remote_source is not None
+        else str(path)
+    )
     suffix = status.health.value.lower()
     detail = f" - {status.detail}" if status.detail else ""
     # Doctor exists to explain a failure, so it must carry the parse detail and
     # say who can fix it. Without this a user who just saw exit 78 learns
     # nothing new here.
-    hint = "" if status.usable else "; ask your administrator to repair or remove it"
+    if status.usable:
+        hint = ""
+    elif status.remote_source is not None:
+        hint = (
+            "; ask your administrator to verify that the managed-config source "
+            "is reachable"
+        )
+    else:
+        hint = "; ask your administrator to repair or remove it"
     # A file that parses is not necessarily enforceable, and both halves of
     # exit 78 have to show up here: reporting only `usable` gives a green row
     # to the `ManagedPolicyError` half. Status and violations are both derived
@@ -559,7 +572,7 @@ def _managed_config_diagnostic() -> DiagnosticItem:
         detail += f" - ignores {', '.join(health.rejections)}"
     return DiagnosticItem(
         "Managed config",
-        f"{path} ({suffix}){detail}{hint}",
+        f"{location} ({suffix}){detail}{hint}",
         ok=health.ok,
     )
 

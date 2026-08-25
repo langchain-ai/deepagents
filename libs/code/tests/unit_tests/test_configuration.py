@@ -764,6 +764,40 @@ def test_remote_failure_names_the_url_not_the_trust_anchor(
     assert "dns failed" not in message
 
 
+def test_doctor_remote_failure_names_the_url_not_the_trust_anchor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Doctor directs remote-policy repair at the source, not its descriptor."""
+    from deepagents_code.configuration import providers, service
+    from deepagents_code.doctor import _managed_config_diagnostic
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+    failure = URLError("dns failed")
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            raise failure
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    service.invalidate_config_sources()
+
+    item = _managed_config_diagnostic()
+
+    assert item.ok is False
+    assert str(managed) in item.value
+    assert "https://config.example.com/policy.toml" in item.value
+    assert "managed-config source is reachable" in item.value
+    assert "repair or remove" not in item.value
+    assert "dns failed" not in item.value
+
+
 def test_rejected_remote_url_is_never_echoed_back(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

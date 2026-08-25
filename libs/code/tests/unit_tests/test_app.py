@@ -5584,6 +5584,40 @@ class TestMessageQueue:
             release_restart.set()
             await restart_task
 
+    async def test_restart_completion_redrains_queue_after_server_ready_race(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Restart completion retries a drain skipped while its task was live."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            restart_started = asyncio.Event()
+            release_restart = asyncio.Event()
+            drained = asyncio.Event()
+            processed = AsyncMock(side_effect=lambda *_args: drained.set())
+
+            async def race_server_ready(*, preserve_queue: bool = False) -> None:
+                del preserve_queue
+                restart_started.set()
+                await release_restart.wait()
+                # Simulate the session-start drain after `ServerReady`, before
+                # this detached restart task has mounted its completion message.
+                await app._process_next_from_queue()
+
+            monkeypatch.setattr(app, "_run_restart_command", race_server_ready)
+            monkeypatch.setattr(app, "_process_message", processed)
+
+            task = app._schedule_restart_command()
+            await restart_started.wait()
+            await app._submit_input("after restart", "normal")
+            release_restart.set()
+            await task
+            await asyncio.wait_for(drained.wait(), timeout=1)
+
+            processed.assert_awaited_once_with("after restart", "normal")
+            assert not app._pending_messages
+            assert not app._queued_widgets
+
     async def test_failed_restart_returns_queued_prompts_to_input(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

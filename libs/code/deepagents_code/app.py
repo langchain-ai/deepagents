@@ -26408,7 +26408,24 @@ class DeepAgentsApp(App):
         self._restart_respawn_task = task
         self._track_server_restart_task(task)
         task.add_done_callback(_log_task_exception)
+        task.add_done_callback(self._finish_restart)
         return task
+
+    def _finish_restart(self, task: asyncio.Task[None]) -> None:
+        """Resume prompts whose server-ready drain raced restart completion."""
+        if task is not self._restart_respawn_task:
+            return
+        if (
+            self._pending_messages
+            and not self._agent_running
+            and self._agent is not None
+            and not self._exiting
+        ):
+            drain = asyncio.create_task(
+                self._process_next_from_queue(),
+                name="drain-after-restart",
+            )
+            drain.add_done_callback(_log_task_exception)
 
     async def _run_restart_command_detached(
         self, *, preserve_queue: bool = False

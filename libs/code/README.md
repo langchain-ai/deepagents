@@ -69,19 +69,31 @@ The fixed file may instead point to one centrally hosted policy:
 source = "https://config.example.com/dcode/managed_config.toml"
 ```
 
-In remote mode, the fixed file is only a trust anchor: it must contain exactly
-that table and string key, and the downloaded document is the complete managed
-policy. Remote policy cannot declare another `[managed_config]` source. The URL
-must use HTTPS and cannot contain credentials, a query string, or a fragment.
+In remote mode, the fixed file is only a trust anchor. It must contain exactly
+that table and string key. The downloaded document is then the complete managed
+policy. Remote policy cannot declare `[managed_config]` at all. The URL must use
+HTTPS. It cannot contain credentials, a query string, or a fragment.
+
 `dcode` connects directly with the system TLS trust store, ignores environment
-proxy settings, refuses redirects, times out after five seconds, and rejects
-responses larger than 1 MiB. Note that `SSL_CERT_FILE` and `SSL_CERT_DIR` still
-select the trust store, so a local user who controls the environment of the
-`dcode` process can substitute the certificate authorities this fetch accepts.
+proxy settings, and refuses redirects. It gives each connect and read operation
+five seconds, and it abandons the fetch when the five-second budget is spent.
+It rejects a response larger than 1 MiB.
+
+`dcode` also accepts only a complete policy document. The response must have
+status 200. Its framing must show that the body arrived whole: a
+`Content-Length` that matches the bytes read, or chunked encoding. A document
+with no keys is a failed publish, not an administrator who enforces nothing.
+Truncated TOML often still parses, so a partial document would otherwise
+enforce a policy with entries silently missing.
+
+`SSL_CERT_FILE` and `SSL_CERT_DIR` still select the trust store. A local user
+who controls the environment of the `dcode` process can therefore substitute
+the certificate authorities this fetch accepts.
+
 Private enterprise hosts are supported because the administrator-owned URL is
 the destination allowlist. There is no persistent cache or remote
 authentication. A fetch failure blocks startup just like an unreadable local
-policy; a failed `/reload` keeps the last policy that was enforceable in the
+policy. A failed `/reload` keeps the last policy that was enforceable in the
 running process.
 
 For an agent launch, managed values also override these CLI flags: the model,

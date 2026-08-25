@@ -532,6 +532,10 @@ normalize_deepagents_home() {
     log_error "Invalid DEEPAGENTS_HOME '${raw}': the home directory itself cannot be a profile, because its '.env' would be loaded as trusted configuration. Use a subdirectory such as '~/.deepagents'."
     exit 1
   fi
+  if [ -L "$DEEPAGENTS_HOME" ] && [ ! -e "$DEEPAGENTS_HOME" ]; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': is a symlink whose target is missing or cannot be resolved."
+    exit 1
+  fi
   if [ -e "$DEEPAGENTS_HOME" ] && [ ! -d "$DEEPAGENTS_HOME" ]; then
     log_error "Invalid DEEPAGENTS_HOME '${raw}': exists but is not a directory."
     exit 1

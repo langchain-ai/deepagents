@@ -7239,6 +7239,21 @@ def test_install_script_rejects_symlinked_deepagents_home_alias(
     assert not uv_args.exists()
 
 
+@pytest.mark.parametrize("target", ["missing", "profile-link"])
+def test_install_script_rejects_unresolved_deepagents_home_symlink(
+    tmp_path: Path, target: str
+) -> None:
+    """Dangling links and symlink loops fail before installation starts."""
+    link = tmp_path / "profile-link"
+    link.symlink_to(target, target_is_directory=True)
+
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(link)})
+
+    assert proc.returncode == 1
+    assert "symlink whose target is missing or cannot be resolved" in proc.stderr
+    assert not uv_args.exists()
+
+
 def test_install_script_rejects_case_alias_of_home(tmp_path: Path) -> None:
     """A differently cased home spelling is rejected where names ignore case."""
     home = tmp_path / "home"

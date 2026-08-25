@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from copy import copy
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware import ModelRetryMiddleware
 from langchain_core.callbacks import BaseCallbackManager
@@ -35,7 +35,7 @@ from deepagents_code.config import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Awaitable, Callable, Iterator, Mapping
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain_core.callbacks import BaseCallbackHandler
@@ -51,6 +51,7 @@ __all__ = [
     "build_retry_event",
     "format_retry_status",
     "retry_model_call",
+    "retry_status_from_event",
 ]
 
 _INITIAL_DELAY_SECONDS = 0.2
@@ -506,6 +507,34 @@ async def aretry_model_call[ResultT](
                 await asyncio.sleep(delay)
     msg = "Unexpected: auxiliary retry loop completed without returning"
     raise RuntimeError(msg)
+
+
+def retry_status_from_event(event: Mapping[Any, object]) -> str | None:
+    """Return retry status text for an untrusted `model_retry` payload.
+
+    Both the TUI and the headless client render this event, so the validation
+    lives with the producer rather than being written twice with different
+    strictness.
+
+    Args:
+        event: Custom-stream payload, not trusted to hold sane numbers.
+
+    Returns:
+        The status line, or `None` when the payload is malformed. A malformed
+        payload is a producer bug, so it is logged rather than passed through.
+    """
+    attempt = event.get("attempt")
+    max_retries = event.get("max_retries")
+    if (
+        isinstance(attempt, int)
+        and not isinstance(attempt, bool)
+        and isinstance(max_retries, int)
+        and not isinstance(max_retries, bool)
+        and 1 <= attempt <= max_retries
+    ):
+        return format_retry_status(attempt, max_retries)
+    logger.warning("Ignoring malformed model_retry payload: %r", dict(event))
+    return None
 
 
 def build_retry_event(attempt: int, max_retries: int) -> dict[str, object]:

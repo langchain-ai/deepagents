@@ -144,23 +144,15 @@ def _format_model_retry_status(event: dict[object, object]) -> str:
         event: Untrusted custom-stream payload.
 
     Returns:
-        A fixed retry status, or a fixed fallback for malformed payloads.
+        A retry status, or a cause-free fallback for malformed payloads.
     """
-    attempt = event.get("attempt")
-    max_retries = event.get("max_retries")
-    valid_ints = (
-        isinstance(attempt, int)
-        and not isinstance(attempt, bool)
-        and isinstance(max_retries, int)
-        and not isinstance(max_retries, bool)
-    )
-    if not valid_ints or not 1 <= attempt <= max_retries:
-        return "Reconnecting"
     # Delegate to the producer so the two never drift, and so the spinner does
     # not render its own "... " suffix on top of a status ending in an ellipsis.
-    from deepagents_code.model_retry import format_retry_status
+    from deepagents_code.model_retry import retry_status_from_event
 
-    return format_retry_status(attempt, max_retries)
+    # The fallback must not name a cause: the retry may be a rate limit or a 5xx,
+    # and "Reconnecting" would claim a dropped connection.
+    return retry_status_from_event(event) or "Retrying model request"
 
 
 def _permission_tool_calls(

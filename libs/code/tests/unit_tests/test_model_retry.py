@@ -56,6 +56,7 @@ from deepagents_code.model_retry import (
     build_retry_event,
     format_retry_status,
     retry_model_call,
+    retry_status_from_event,
 )
 
 _UNSET = object()
@@ -1036,3 +1037,29 @@ def test_transient_failure_with_retries_disabled_says_so(
 
     assert "retries are disabled" in caplog.text
     assert "non-transient" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        pytest.param({"attempt": 7, "max_retries": 5}, id="attempt-past-budget"),
+        pytest.param({"attempt": 0, "max_retries": 5}, id="attempt-not-1-indexed"),
+        pytest.param({"attempt": True, "max_retries": 5}, id="bool-attempt"),
+        pytest.param({"attempt": "1", "max_retries": 5}, id="string-attempt"),
+        pytest.param({"max_retries": 5}, id="missing-attempt"),
+        pytest.param({}, id="empty"),
+    ],
+)
+def test_malformed_retry_event_is_rejected_and_logged(
+    event: dict[str, object], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A malformed payload is a producer bug, so it must leave a trace."""
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.model_retry"):
+        assert retry_status_from_event(event) is None
+    assert "malformed model_retry payload" in caplog.text
+
+
+def test_valid_retry_event_renders_the_shared_status() -> None:
+    """Both clients must render exactly what the producer formats."""
+    event = build_retry_event(2, 5)
+    assert retry_status_from_event(event) == format_retry_status(2, 5)

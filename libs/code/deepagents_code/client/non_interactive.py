@@ -1024,7 +1024,16 @@ def _process_stream_chunk(
         _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
     elif stream_mode == "custom" and isinstance(data, dict):
         if data.get("type") == "model_retry":
-            console.print(f"[dim]{escape_markup(str(data.get('message', '')))}[/dim]")
+            from deepagents_code.model_retry import retry_status_from_event
+
+            # A `Retry-After` backoff can hold the turn for a minute, so this
+            # line is the only explanation for the stall; stop the spinner first
+            # so it cannot overwrite it. `highlight=False` keeps Rich from
+            # bolding the "1/5", which would cancel the `dim`.
+            if state.spinner:
+                state.spinner.stop()
+            status = retry_status_from_event(data) or "Retrying model request"
+            console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
         else:
             _process_rubric_event(cast("dict[str, Any]", data), state, console)
     elif stream_mode == "messages":

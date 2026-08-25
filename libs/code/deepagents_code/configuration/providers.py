@@ -183,6 +183,13 @@ def coerce_toml_value(
     kind = option.kind
     label = option.toml_path or option.key
 
+    if option.key == "threads.sort_order":
+        if isinstance(raw, str) and raw in {"created_at", "updated_at"}:
+            return Found(raw)
+        return Invalid(
+            f"Ignoring {label}={raw!r} in {source} "
+            "(expected 'created_at' or 'updated_at')"
+        )
     if kind in {
         OptionKind.BOOL,
         OptionKind.BOOL_MODE_DEFAULT,

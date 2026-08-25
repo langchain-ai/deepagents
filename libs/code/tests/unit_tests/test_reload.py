@@ -365,6 +365,25 @@ class TestReloadFromEnvironment:
         assert settings.shell_allow_list == ["ls", "grep"]
         assert any(change.startswith("shell_allow_list:") for change in changes)
 
+    def test_reload_preserves_cli_shell_allow_list(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Reloads retain the session-scoped CLI allow-list winner."""
+        from deepagents_code.configuration.provider import CliProvider
+        from deepagents_code.configuration.resolver import install_cli_provider
+
+        install_cli_provider(CliProvider({"shell_allow_list": "ls,cat"}))
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.shell_allow_list == ["ls", "cat"]
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "grep")
+        preview = settings.preview_reload_from_environment(start_path=tmp_path)
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert settings.shell_allow_list == ["ls", "cat"]
+        assert not any(change.startswith("shell_allow_list:") for change in preview)
+        assert not any(change.startswith("shell_allow_list:") for change in changes)
+
     def test_loads_project_dotenv_from_explicit_start_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -1764,6 +1783,50 @@ class TestReloadSkillReport:
         # Critical: must not claim every prior skill was removed.
         assert "Removed:" not in text
         assert "Skills updated" not in text
+
+
+async def test_reload_notifies_when_managed_policy_newly_masks_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reload-time CLI masking warning must reach the active Textual app."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.config import settings
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import install_cli_provider
+    from unit_tests.conftest import redirect_managed_config
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text("", encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    install_cli_provider(CliProvider({"shell_allow_list": "ls"}))
+    original_allow_list = settings.shell_allow_list
+    settings.reload_from_environment(start_path=tmp_path)
+    notices: list[tuple[str, str | None]] = []
+
+    def capture_notify(
+        message: str, *_args: object, severity: str | None = None, **_kwargs: object
+    ) -> None:
+        notices.append((str(message), severity))
+
+    app = DeepAgentsApp()
+    try:
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", capture_notify)
+            managed.write_text('[shell]\nallow_list = ["cat"]\n', encoding="utf-8")
+            reload_task = app._schedule_reload()
+            await reload_task
+            await pilot.pause()
+    finally:
+        settings.shell_allow_list = original_allow_list
+        service.invalidate_config_sources()
+
+    assert any(
+        "--shell-allow-list was ignored" in message and severity == "warning"
+        for message, severity in notices
+    )
 
 
 class TestReloadThemeReapply:

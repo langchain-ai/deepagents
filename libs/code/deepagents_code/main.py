@@ -19,7 +19,7 @@ import shutil
 import signal
 import sys
 import traceback
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from deepagents_code.app import AppResult
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.config import Glyphs
+    from deepagents_code.configuration.resolver import ConfigResolver
+    from deepagents_code.configuration.types import ProviderStatus
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
@@ -944,33 +946,16 @@ def _parse_interpreter_tools_flag(
         tokens, or includes `"all"` inside a list — the CLI treats those as
         usage errors.
     """
+    from deepagents_code.configuration.provider import parse_interpreter_tools
+    from deepagents_code.configuration.types import Invalid
+
     if raw is None:
         return None
-    text = raw.strip()
-    if not text:
-        sys.stderr.write(
-            "Error: --interpreter-tools requires a value: 'safe', 'all', or a "
-            "comma-separated list of tool names.\n"
-        )
+    parsed = parse_interpreter_tools(raw)
+    if isinstance(parsed, Invalid):
+        sys.stderr.write(f"Error: --interpreter-tools {parsed.reason}.\n")
         sys.exit(2)
-    normalized = text.lower()
-    if normalized in {"safe", "all"}:
-        return normalized
-    names = [token.strip() for token in text.split(",") if token.strip()]
-    if not names:
-        sys.stderr.write(
-            "Error: --interpreter-tools list must contain at least one "
-            "non-empty tool name.\n"
-        )
-        sys.exit(2)
-    if any(name.lower() == "all" for name in names):
-        sys.stderr.write(
-            "Error: --interpreter-tools 'all' cannot be combined with other "
-            "tools; use 'all' on its own or list explicit tool names "
-            "(optionally with the 'safe' preset).\n"
-        )
-        sys.exit(2)
-    return names
+    return parsed
 
 
 # Aliased from the dependency-free `_constants` module (see its docstring for
@@ -1052,55 +1037,245 @@ def _parse_allow_fs_tools_flag(
     return cast("list[FsToolName]", names)
 
 
-def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
-    """Return whether the JS interpreter should run for these CLI args.
+def _resolver_for_args(args: argparse.Namespace) -> "ConfigResolver":
+    """Return the shared resolver after installing parsed CLI state if needed."""
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import (
+        CLI_RANK,
+        get_config_resolver,
+        installed_cli_provider,
+    )
 
-    Delegates to `_resolve_enable_interpreter` so the CLI pre-flight gate and the
-    stored `ServerConfig` share one resolution rule and cannot drift. The default
-    comes from `[interpreter].enable_interpreter` in local mode and is disabled
-    for remote sandboxes, where `CodeInterpreterMiddleware` is unsupported;
-    explicit `--interpreter`/`--no-interpreter` overrides the default.
+    resolver = get_config_resolver()
+    if CLI_RANK not in resolver.provider_statuses():
+        # Prefer the installed snapshot. `args` is mutated after
+        # `_install_cli_provider` runs -- managed exceptions rewrite `model`
+        # and `sandbox`, stdin piping sets `non_interactive_message`, the
+        # headless path clears the approval flags -- so rebuilding from `args`
+        # here yields a provider that compares unequal to the installed one and
+        # raises `ValueError` out of `get_config_resolver`.
+        resolver = get_config_resolver(
+            cli_provider=installed_cli_provider() or CliProvider(args)
+        )
+    return resolver
 
-    `args.sandbox` is already normalized by `parse_args` (the bare-flag sentinel
-    is resolved to a provider name), so the resolver sees the concrete value.
+
+def _resolve_thread_list_display_options(
+    args: argparse.Namespace,
+) -> tuple[str, bool]:
+    """Resolve thread display flags through the ranked configuration chain.
+
+    Returns:
+        The effective sort key and relative-time state.
+
+    Raises:
+        RuntimeError: If either option is missing from the manifest.
     """
-    from deepagents_code._server_config import _resolve_enable_interpreter
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
 
-    return _resolve_enable_interpreter(args.interpreter, args.sandbox)
+    sort_option = get_option("threads.sort_order")
+    relative_option = get_option("threads.relative_time")
+    if sort_option is None or relative_option is None:
+        msg = "thread display options are missing from the configuration manifest"
+        raise RuntimeError(msg)
+
+    resolver = _resolver_for_args(args)
+    sort_order = resolver.get(sort_option)
+    relative_time = resolver.get(relative_option)
+    _emit_ranked_diagnostics(sort_option, sort_order)
+    _emit_ranked_diagnostics(relative_option, relative_time)
+    sort_by = "created" if sort_order.value == "created_at" else "updated"
+    return sort_by, bool(relative_time.value)
+
+
+def _install_cli_provider(args: argparse.Namespace) -> None:
+    """Install parsed arguments into the shared resolution chain.
+
+    Uses the deferred install: building the full resolver here would import
+    `deepagents_code.model_config` and read both TOML snapshots, which the
+    help-only fast paths (`dcode help`, bare command groups) must not pay
+    before they return.
+    """
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import install_cli_provider
+
+    install_cli_provider(CliProvider(args))
+
+
+def _resolve_interpreter_enabled(
+    args: argparse.Namespace, *, strict: bool = True
+) -> bool:
+    """Return the resolver-backed interpreter state for these CLI args.
+
+    Managed policy and an explicit CLI flag are deliberate, invocation-scoped
+    choices, so they outrank the remote-sandbox default. A remote sandbox
+    cannot host the interpreter, so an enabling choice from either tier is
+    unsatisfiable: under `strict` it exits `1` with an actionable message
+    instead of letting a `ValueError` surface from deep inside agent
+    construction, and otherwise it warns and reports the interpreter absent.
+
+    Both tiers are honored because `interpreter.enable_interpreter` is an
+    `ENFORCED_MANAGED_KEYS` member. Honoring the CLI tier alone left a policy
+    hole: a managed `true` became `false` whenever `--sandbox` named a remote
+    backend.
+
+    The environment and `config.toml` tiers are ambient preferences rather than
+    choices about this run, so `--sandbox` still wins over them. Letting them
+    through would turn the redundant-but-harmless `enable_interpreter = true`
+    into a launch failure for every remote-sandbox run.
+
+    Only the managed and CLI tiers are answered from `resolved`. When neither
+    decides, the value comes from `settings.enable_interpreter`, which resolves
+    the same manifest option through the same chain; the resolver read above
+    still runs for its diagnostics. `test_local_mode_uses_config_default` pins
+    the `settings` source, so the two are not interchangeable in tests.
+
+    Args:
+        args: Parsed CLI arguments.
+        strict: Whether an unsatisfiable choice stops the process. Read-only
+            callers such as `dcode tools` pass `False` and get `False`, which
+            is what the catalog would actually contain; only a launch has
+            something to abort.
+
+    Returns:
+        Whether the JS interpreter is enabled for this invocation.
+
+    Raises:
+        RuntimeError: If the manifest is missing the option, which is a
+            programming error rather than a runtime condition. Defaulting to
+            `True` here would enable JS execution for an enforced key.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import CLI_RANK, MANAGED_RANK
+
+    option = get_option("interpreter.enable_interpreter")
+    if option is None:
+        msg = (
+            "manifest option 'interpreter.enable_interpreter' is missing; "
+            "refusing to enable the interpreter without managed-policy input"
+        )
+        raise RuntimeError(msg)
+    resolved = _resolver_for_args(args).get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    sandbox = getattr(args, "sandbox", None)
+    remote_sandbox = bool(sandbox) and sandbox != "none"
+    deciding_rank = next(
+        (rank for rank in resolved.ranks if rank in {MANAGED_RANK, CLI_RANK}), None
+    )
+    if deciding_rank is not None:
+        enabled = bool(resolved.value)
+        if enabled and remote_sandbox:
+            if not strict:
+                # Same explanation, no abort: a listing that silently drops the
+                # interpreter reads as "policy disabled it", which is the one
+                # conclusion a user debugging a missing tool must not draw.
+                conflict = _interpreter_sandbox_conflict(sandbox, deciding_rank)
+                sys.stderr.write(f"Warning: {conflict}\n")
+                return False
+            _exit_interpreter_conflicts_with_sandbox(sandbox, deciding_rank)
+        return enabled
+    if remote_sandbox:
+        return False
+    from deepagents_code.config import settings
+
+    return settings.enable_interpreter
+
+
+def _exit_interpreter_conflicts_with_sandbox(
+    sandbox_type: str, deciding_rank: int
+) -> NoReturn:
+    """Abort the launch when the interpreter cannot run under a remote sandbox.
+
+    Always exits `1`: the two settings cannot both be honored, and the user
+    must drop one of them.
+
+    Args:
+        sandbox_type: The remote sandbox backend the user selected.
+        deciding_rank: The provider rank that enabled the interpreter.
+    """
+    from rich.markup import escape
+
+    from deepagents_code.config import console
+
+    console.print(
+        "[bold red]Error:[/bold red] "
+        f"{escape(_interpreter_sandbox_conflict(sandbox_type, deciding_rank))}"
+    )
+    sys.exit(1)
+
+
+def _interpreter_sandbox_conflict(sandbox_type: str, deciding_rank: int) -> str:
+    """Describe the interpreter/sandbox conflict and how to resolve it.
+
+    Shared so the launch abort and the `dcode tools` warning cannot drift into
+    telling the user two different things about one conflict.
+
+    Args:
+        sandbox_type: The remote sandbox backend in effect.
+        deciding_rank: The provider rank that enabled the interpreter.
+
+    Returns:
+        Plain-text explanation with the remedy for the deciding tier.
+    """
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+
+    if deciding_rank == MANAGED_RANK:
+        remedy = (
+            "Managed policy requires the JS interpreter, so this sandbox "
+            "cannot be used. Drop --sandbox or ask your administrator to "
+            "unset interpreter.enable_interpreter."
+        )
+    else:
+        remedy = "Drop --sandbox or drop --interpreter."
+    return (
+        "the JS interpreter is not supported with the "
+        f"{sandbox_type} sandbox in this release. {remedy}"
+    )
 
 
 def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":
-    """Resolve explicit flags and `[startup].mode` into a typed mode.
+    """Resolve the startup mode through the shared provider chain.
 
-    Args:
-        args: Parsed CLI arguments.
-
-    Returns:
-        Explicit `--yolo`, explicit `-y`/`--auto-approve` as `auto`, or the
-        validated startup config value. Invalid config remains fail-closed.
-    """
-    from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
-    from deepagents_code.model_config import load_startup_mode
-
-    if getattr(args, "yolo", False):
-        return ApprovalMode.YOLO
-    if args.auto_approve is True:
-        return ApprovalMode.AUTO
-    return coerce_approval_mode(load_startup_mode())
-
-
-def _resolve_auto_approve(args: argparse.Namespace) -> bool:
-    """Return the compatibility Boolean for callers using the old resolver.
-
-    Args:
-        args: Parsed CLI arguments.
+    When no explicit mode resolves, restore the app-managed recent mode through
+    `load_startup_mode`. That path also applies the Auto notice gate and queues
+    the explanation shown when a remembered Auto mode cannot be restored.
 
     Returns:
-        Whether startup resolves to either autonomous mode.
+        Typed effective approval mode.
     """
-    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.approval_mode import coerce_approval_mode
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import DEFAULT_RANK
 
-    return _resolve_approval_mode(args) is not ApprovalMode.MANUAL
+    option = get_option("startup.mode")
+    if option is None:
+        return coerce_approval_mode("manual")
+    resolved = _resolver_for_args(args).get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    if resolved.ranks == (DEFAULT_RANK,):
+        from deepagents_code.model_config import load_startup_mode
+
+        return coerce_approval_mode(load_startup_mode())
+    return coerce_approval_mode(resolved.value)
+
+
+def _resolved_recursion_limit(args: argparse.Namespace) -> int | None:
+    """Resolve an explicit CLI limit for the server-process boundary.
+
+    A normal TUI or headless launch builds the agent in a fresh server process,
+    where the parent's in-memory CLI provider does not exist. Resolve the full
+    managed/CLI/env/TOML chain here when the flag was supplied so the effective
+    value survives serialization. With no flag, keep deferring to the build
+    process so its ordinary configuration sources remain authoritative.
+
+    Returns:
+        The effective explicit limit, or `None` when the flag was absent.
+    """
+    if getattr(args, "recursion_limit", None) is None:
+        return None
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    return resolve_recursion_limit()
 
 
 def _prompt_yolo_acknowledgement(console: "Console") -> bool:
@@ -2170,7 +2345,7 @@ def parse_args() -> argparse.Namespace:
         "These take priority, overriding config file values.",
     )
 
-    from deepagents_code.ui import non_negative_int, positive_int
+    from deepagents_code.ui import non_negative_int, positive_int, shell_allow_list_arg
 
     parser.add_argument(
         "--max-retries",
@@ -2396,6 +2571,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-S",
         "--shell-allow-list",
+        type=shell_allow_list_arg,
         metavar="LIST",
         help="Comma-separated list of shell commands to auto-approve, "
         "'recommended' for safe defaults, or 'all' to allow any command. "
@@ -4382,20 +4558,32 @@ def _verify_interpreter_or_exit() -> None:
         sys.exit(1)
 
 
-def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
-    """Replace lower-tier runtime arguments with managed values.
+def _config_provider_statuses() -> Mapping[int, "ProviderStatus"]:
+    """Return shared provider health without resolving an option."""
+    from deepagents_code.configuration.resolver import get_config_resolver
 
-    An enforced key whose managed value cannot be applied is not skipped.
-    Skipping leaves the user's flag in force. An administrator typo
-    (`startup.mode = "YOLO"`) would then grant the escalation the policy
-    forbade, and the CLI would report no managed value for the key. Those keys
-    stop the launch, the same way an unparseable managed file does. See
-    `configuration.service.ENFORCED_MANAGED_KEYS`. Keys that cannot grant
-    privilege keep the ordinary ignore-and-fall-through rule.
+    return get_config_resolver().provider_statuses()
+
+
+def _apply_managed_runtime_exceptions(args: argparse.Namespace) -> None:
+    """Force managed values into `args` for consumers that bypass the resolver.
+
+    These are exceptions to the rule that policy is read through the ranked
+    chain: a handful of launch-orchestration values must reach `args` itself,
+    because their downstream consumer reads the namespace rather than the
+    resolver.
+
+    Also the enforcement point for `ENFORCED_MANAGED_KEYS`: a managed value
+    this process cannot actually enforce stops the launch via
+    `managed_policy_violations` and `sys.exit(78)`, rather than starting with
+    policy silently unapplied.
+
+    Args:
+        args: Parsed CLI arguments, mutated in place.
 
     Raises:
-        AssertionError: If managed policy is unusable, which means the startup
-            health gate did not run first.
+        AssertionError: If managed policy is unusable or the resolver has no
+            managed provider, meaning the startup health gate did not run first.
     """
     from deepagents_code.configuration.resolver import MANAGED_RANK
     from deepagents_code.configuration.service import (
@@ -4406,6 +4594,9 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
     from deepagents_code.configuration.types import Found, Invalid, Unset
 
     snapshot = get_managed_snapshot()
+    if MANAGED_RANK not in _config_provider_statuses():
+        msg = "shared resolver has no managed provider"
+        raise AssertionError(msg)
     if not snapshot.status.usable:
         # `_require_managed_config_or_exit` ran ~35 lines earlier in `cli_main`,
         # so this is unreachable. Assert it rather than inferring health from an
@@ -4472,38 +4663,14 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
     if declared("models.auto_classifier") and hasattr(args, "auto_classifier_model"):
         args.auto_classifier_model = None
 
-    for key, destination in {
-        "models.default": "model",
-        "interpreter.enable_interpreter": "interpreter",
-    }.items():
-        found, value = managed_value(key)
-        if found and hasattr(args, destination):
-            setattr(args, destination, value)
-
-    _apply_managed_sandbox(args, managed_value("sandboxes.default"))
-
-    limit_found, limit = managed_value("runtime.recursion_limit")
-    if limit_found and hasattr(args, "recursion_limit"):
-        args.recursion_limit = limit
+    model_found, model = managed_value("models.default")
+    if model_found and hasattr(args, "model"):
+        args.model = model
 
     if declared("interpreter.ptc") and hasattr(args, "interpreter_tools"):
         args.interpreter_tools = None
 
-    if declared("shell.allow_list") and hasattr(args, "shell_allow_list"):
-        args.shell_allow_list = None
-
-    found, startup_mode = managed_value("startup.mode")
-    if found:
-        # Only *revoke*: `_resolve_approval_mode` ends at
-        # `coerce_approval_mode(load_startup_mode())`, which already reads
-        # merged managed policy, so the positive value needs no flag. The
-        # headless warning keys off `explicit_approval_flag`, captured before
-        # this runs, so a positive value set here would not warn — but it would
-        # still misreport a user-supplied flag to every other reader of `args`.
-        if startup_mode != "auto":
-            args.auto_approve = False
-        if startup_mode != "yolo":
-            args.yolo = False
+    _apply_managed_sandbox(args, managed_value("sandboxes.default"))
 
 
 def _apply_managed_sandbox(
@@ -4633,6 +4800,7 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+        _install_cli_provider(args)
         explicit_approval_flag = (
             "--yolo"
             if getattr(args, "yolo", False)
@@ -4711,15 +4879,19 @@ def cli_main() -> None:
 
         # Import console/settings AFTER arg parsing and after the bare-help
         # fast path so neither argparse's `--help`/`-h` exit nor
-        # `deepagents <group>` pays the settings bootstrap cost.
-        from deepagents_code.config import console, settings
+        # `deepagents <group>` pays the settings bootstrap cost. `settings`
+        # must be named here even though this scope does not read it: the
+        # import is what triggers `_ensure_bootstrap()` (dotenv loading), and
+        # commands dispatched below — notably `auth status` — resolve
+        # credentials from the environment expecting `.env` to be loaded.
+        from deepagents_code.config import console, settings  # noqa: F401
 
         if command is None:
             # The health gate already ran above, for every command, so the
             # violation check inside cannot fire. Kept as defense in depth: it
             # is the only thing standing between a future entry point that
             # forgets the gate and a launch that silently ignores policy.
-            _apply_managed_runtime_policy(args)
+            _apply_managed_runtime_exceptions(args)
 
         if command == "auth":
             from deepagents_code.client.commands.auth import run_auth_command
@@ -4772,7 +4944,14 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
-            if getattr(args, "yolo", False):
+            # Raw flags are not authoritative here: an explicit `--yolo` or
+            # `--auto-approve` outranks the lower tiers, but managed
+            # `startup.mode` still revokes them, so every approval decision in
+            # this branch reads the resolved mode rather than `args`.
+            from deepagents_code.approval_mode import ApprovalMode
+
+            approval_mode = _resolve_approval_mode(args)
+            if approval_mode is ApprovalMode.YOLO:
                 from deepagents_code.approval_mode import has_yolo_acknowledgement
 
                 if not has_yolo_acknowledgement():
@@ -4781,12 +4960,18 @@ def cli_main() -> None:
                         "using it in ACP mode.\n"
                     )
                     sys.exit(2)
-            if getattr(args, "auto_classifier_model", None) is not None and not getattr(
-                args, "auto_approve", False
+            # Only Auto installs `AutoModeHITLMiddleware`, the sole consumer of
+            # the classifier model: `_run_acp_cli_async` receives
+            # `auto=approval_mode is ApprovalMode.AUTO`, and `create_cli_agent`
+            # skips the middleware when `auto_mode_enabled` is false. Accepting
+            # the flag in YOLO would launch with the model silently unused.
+            if getattr(args, "auto_classifier_model", None) is not None and (
+                approval_mode is not ApprovalMode.AUTO
             ):
                 sys.stderr.write(
-                    "Error: --auto-classifier-model requires --auto-approve "
-                    "in ACP mode.\n"
+                    "Error: --auto-classifier-model requires Auto "
+                    "mode in ACP mode (--auto-approve or "
+                    '[startup].mode = "auto").\n'
                 )
                 sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
@@ -4826,19 +5011,13 @@ def cli_main() -> None:
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
                     allow_fs_tools=allow_fs_tools,
-                    recursion_limit=getattr(args, "recursion_limit", None),
-                    auto=getattr(args, "auto_approve", False),
-                    yolo=getattr(args, "yolo", False),
+                    recursion_limit=_resolved_recursion_limit(args),
+                    auto=approval_mode is ApprovalMode.AUTO,
+                    yolo=approval_mode is ApprovalMode.YOLO,
                     auto_classifier_model=getattr(args, "auto_classifier_model", None),
                 )
             )
             sys.exit(exit_code)
-
-        # Apply shell-allow-list from command line if provided (overrides env var)
-        if args.shell_allow_list:
-            from deepagents_code.config import parse_shell_allow_list
-
-            settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
         apply_stdin_pipe(args)
 
@@ -4911,13 +5090,20 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
-        # Cleared here, before mode dispatch reads the flags and before any
-        # session output could bury the warning: `apply_stdin_pipe` has
-        # finalized `non_interactive_message` (the same predicate that selects
-        # the headless branch below), so this reliably clears the flags on both
-        # the `-n` and piped-stdin paths while leaving interactive launches
-        # untouched. `explicit_approval_flag` was captured at parse time, so
-        # only a flag the user actually typed warns.
+        # Warned here, before any session output could bury the message:
+        # `apply_stdin_pipe` has finalized `non_interactive_message` (the same
+        # predicate that selects the headless branch below), so this fires on
+        # both the `-n` and piped-stdin paths while leaving interactive
+        # launches untouched. `explicit_approval_flag` was captured at parse
+        # time, so only a flag the user actually typed warns.
+        #
+        # The two assignments below no longer drive anything. Headless never
+        # consults an approval mode -- `run_non_interactive` takes no
+        # auto/yolo parameters -- and `CliProvider` snapshotted `vars(args)`
+        # at `_install_cli_provider`, so mutating the namespace cannot change
+        # what the resolver reports. They are kept as a belt-and-braces guard
+        # for any future consumer that reads `args` directly; the warning
+        # above, not this clearing, is what the user sees.
         if explicit_approval_flag is not None and args.non_interactive_message:
             from rich.console import Console as _Console
 
@@ -4926,8 +5112,9 @@ def cli_main() -> None:
             # name — leaving no substring a CI job can grep for both spellings.
             # With the pre-existing `sys.exit(2)` gone, this text is the only
             # signal that the requested mode was dropped. Deliberately not also
-            # logged: with no handler configured, `logging.lastResort` would
-            # emit a WARNING to the same stderr and double the message.
+            # logged: the always-on buffer handler installed on the package
+            # logger in `__init__` swallows a `logger.warning` entirely, so a
+            # log call would add nothing a user could see.
             _Console(stderr=True).print(
                 f"[bold yellow]Warning:[/bold yellow] {explicit_approval_flag} has "
                 "no effect in headless mode; ignoring it. Shell access is "
@@ -5455,6 +5642,7 @@ def cli_main() -> None:
             if args.threads_command in {"list", "ls"}:
                 raw_cwd = getattr(args, "cwd", None)
                 cwd_filter = _normalize_cwd_filter(raw_cwd)
+                sort_by, relative = _resolve_thread_list_display_options(args)
                 # Warn (but still query) when the user passed an explicit
                 # `--cwd <path>` that does not exist on disk — otherwise a
                 # typo would silently return "No threads found" with no hint.
@@ -5475,11 +5663,11 @@ def cli_main() -> None:
                     list_threads_command(
                         agent_name=getattr(args, "agent", None),
                         limit=getattr(args, "limit", None),
-                        sort_by=getattr(args, "sort", None),
+                        sort_by=sort_by,
                         branch=getattr(args, "branch", None),
                         cwd=cwd_filter,
                         verbose=getattr(args, "verbose", False),
-                        relative=getattr(args, "relative", None),
+                        relative=relative,
                         output_format=output_format,
                     )
                 )
@@ -5600,7 +5788,7 @@ def cli_main() -> None:
                             rubric_max_iterations=getattr(
                                 args, "rubric_max_iterations", None
                             ),
-                            recursion_limit=getattr(args, "recursion_limit", None),
+                            recursion_limit=_resolved_recursion_limit(args),
                         ),
                         timeout=timeout,
                     )
@@ -5766,7 +5954,7 @@ def cli_main() -> None:
                         auto_classifier_model=getattr(
                             args, "auto_classifier_model", None
                         ),
-                        recursion_limit=getattr(args, "recursion_limit", None),
+                        recursion_limit=_resolved_recursion_limit(args),
                     )
                 )
                 return_code = result.return_code

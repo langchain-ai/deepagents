@@ -173,6 +173,7 @@ class TestAuthPromptScreen:
             PROVIDER_API_KEY_URLS["openrouter"]
             == "https://openrouter.ai/workspaces/default/keys"
         )
+        assert PROVIDER_API_KEY_URLS["orcarouter"] == "https://www.orcarouter.ai"
 
     def test_provider_metadata_maps_reference_known_providers(self) -> None:
         """Map keys stay in sync with real providers so none silently never resolve."""

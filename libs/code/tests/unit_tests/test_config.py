@@ -5094,12 +5094,14 @@ def _isolate_provider_profiles() -> Iterator[None]:
 
     saved_profiles = dict(provider_profiles._PROVIDER_PROFILES)
     saved_cli_flag = cli_config._cli_openrouter_profile_registered
+    saved_cli_orca_flag = cli_config._cli_orcarouter_profile_registered
     try:
         yield
     finally:
         provider_profiles._PROVIDER_PROFILES.clear()
         provider_profiles._PROVIDER_PROFILES.update(saved_profiles)
         cli_config._cli_openrouter_profile_registered = saved_cli_flag
+        cli_config._cli_orcarouter_profile_registered = saved_cli_orca_flag
 
 
 class TestOpenRouterVersionCheck:
@@ -5249,6 +5251,47 @@ app_categories = ["cloud-agent"]
 
         _, call_kwargs = mock_init.call_args
         assert call_kwargs["openrouter_provider"] == {"ignore": ["azure"]}
+
+
+class TestOrcaRouterProvider:
+    """Tests for the OrcaRouter named provider."""
+
+    def setup_method(self) -> None:
+        """Clear model config cache before each test."""
+        clear_caches()
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_routes_through_openrouter_with_orcarouter_base_url(
+        self, mock_init: Mock
+    ) -> None:
+        """`create_model` normalizes the provider and injects the OrcaRouter URL."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("orcarouter:deepseek/deepseek-chat")
+
+        args, call_kwargs = mock_init.call_args
+        assert args == ("deepseek/deepseek-chat",)
+        assert call_kwargs["model_provider"] == "openrouter"
+        assert call_kwargs["base_url"] == "https://api.orcarouter.ai/v1"
+        assert call_kwargs["app_url"] == "https://pypi.org/project/deepagents-code/"
+        assert call_kwargs["app_title"] == "Deep Agents Code"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_openrouter_spec_keeps_openrouter_provider(self, mock_init: Mock) -> None:
+        """`openrouter` specs are not rewritten."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("openrouter:deepseek/deepseek-chat")
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["model_provider"] == "openrouter"
+        assert "base_url" not in call_kwargs
 
 
 class TestCreateModelForwardsProviderProfile:

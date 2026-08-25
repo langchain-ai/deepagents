@@ -4987,6 +4987,66 @@ _cli_openrouter_profile_registered = False
 """Process-wide guard so the app's OpenRouter profile is registered exactly once."""
 
 
+# OrcaRouter does not ship a dedicated LangChain integration package. Its API
+# is OpenAI-compatible, so `orcarouter:<model>` specs are routed through
+# LangChain's `openrouter` provider (whose `ChatOpenRouter` is an
+# OpenAI-compatible client) with the OrcaRouter base URL injected by the SDK's
+# built-in `orcarouter` provider profile. The spec keeps the `orcarouter`
+# prefix for credentials, config.toml, and user-facing labels; only the
+# `init_chat_model` provider name is rewritten here.
+_ORCAROUTER_LANGCHAIN_PROVIDER = "openrouter"
+
+_ORCAROUTER_APP_URL = "https://pypi.org/project/deepagents-code/"
+"""Default `app_url` (maps to `HTTP-Referer`) for OrcaRouter attribution."""
+
+_ORCAROUTER_APP_TITLE = "Deep Agents Code"
+"""Default `app_title` (maps to `X-Title`) for OrcaRouter attribution."""
+
+_cli_orcarouter_profile_registered = False
+"""Process-wide guard so the app's OrcaRouter profile is registered exactly once."""
+
+
+def _ensure_cli_orcarouter_profile_registered() -> None:
+    """Register the CLI's OrcaRouter provider profile.
+
+    Mirrors the OpenRouter path: the profile supplies the OrcaRouter base URL
+    plus the app's attribution defaults via the same `apply_provider_profile`
+    path used for every other provider. When the SDK also ships an `orcarouter`
+    built-in profile, `register_provider_profile` merges on top of it.
+    """
+    global _cli_orcarouter_profile_registered  # noqa: PLW0603
+    if _cli_orcarouter_profile_registered:
+        return
+
+    from deepagents.profiles.provider import ProviderProfile, register_provider_profile
+
+    register_provider_profile(
+        "orcarouter",
+        ProviderProfile(
+            init_kwargs_factory=_cli_orcarouter_attribution_kwargs,
+        ),
+    )
+    _cli_orcarouter_profile_registered = True
+
+
+def _cli_orcarouter_attribution_kwargs() -> dict[str, Any]:
+    """App-specific OrcaRouter kwargs.
+
+    Injects the OrcaRouter base URL — OrcaRouter has no dedicated LangChain
+    package, so its OpenAI-compatible API rides the OpenRouter client — plus
+    the app's attribution defaults.
+
+    Returns:
+        Mapping of `base_url`, `app_url`, and `app_title` to spread into
+        `init_chat_model`.
+    """
+    return {
+        "base_url": "https://api.orcarouter.ai/v1",
+        "app_url": _ORCAROUTER_APP_URL,
+        "app_title": _ORCAROUTER_APP_TITLE,
+    }
+
+
 def _cli_openrouter_attribution_kwargs() -> dict[str, Any]:
     """App-specific OpenRouter attribution kwargs.
 
@@ -5272,7 +5332,13 @@ def _create_model_via_init(
 
     try:
         if provider:
-            return init_chat_model(model_name, model_provider=provider, **kwargs)
+            # OrcaRouter has no dedicated LangChain package; route through the
+            # OpenAI-compatible OpenRouter client while keeping the `orcarouter`
+            # label everywhere else.
+            init_provider = (
+                _ORCAROUTER_LANGCHAIN_PROVIDER if provider == "orcarouter" else provider
+            )
+            return init_chat_model(model_name, model_provider=init_provider, **kwargs)
         return init_chat_model(model_name, **kwargs)
     except ImportError as e:
         import importlib.util
@@ -5284,6 +5350,7 @@ def _create_model_via_init(
             "google_genai": "langchain-google-genai",
             "google_vertexai": "langchain-google-vertexai",
             "nvidia": "langchain-nvidia-ai-endpoints",
+            "orcarouter": "langchain-openrouter",
         }
         package = package_map.get(provider, f"langchain-{provider}")
         # Convert pip package name to Python module name for import check.
@@ -5583,11 +5650,16 @@ def create_model(
     # (applied below). The app's OpenRouter profile is stacked on top of the
     # built-in SDK profile so its `pre_init` (version check) and factory
     # (app attribution) compose into a single `apply_provider_profile` call.
+    # OrcaRouter rides the same path: it shares the OpenRouter client class, so
+    # its built-in profile supplies the base URL and the CLI layers the app's
+    # attribution on top.
     if provider:
         from deepagents.profiles.provider import apply_provider_profile
 
         if provider == "openrouter":
             _ensure_cli_openrouter_profile_registered()
+        elif provider == "orcarouter":
+            _ensure_cli_orcarouter_profile_registered()
 
         spec = f"{provider}:{model_name}" if model_name else provider
         try:

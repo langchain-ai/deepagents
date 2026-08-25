@@ -1490,6 +1490,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "ollama": ("langchain_ollama", "ollama"),
     "openai": ("langchain_openai", "openai"),
     "openrouter": ("langchain_openrouter", "openrouter"),
+    "orcarouter": ("langchain_openrouter", "orcarouter"),
     "perplexity": ("langchain_perplexity", "perplexity"),
     "together": ("langchain_together", "together"),
     "xai": ("langchain_xai", "xai"),

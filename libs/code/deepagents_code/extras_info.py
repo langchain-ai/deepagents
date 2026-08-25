@@ -1023,6 +1023,7 @@ MODEL_PROVIDER_EXTRAS: frozenset[str] = frozenset(
         "ollama",
         "openai",
         "openrouter",
+        "orcarouter",
         "perplexity",
         "together",
         "vertex",

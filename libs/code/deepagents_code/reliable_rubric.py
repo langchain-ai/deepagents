@@ -11,11 +11,8 @@ from deepagents.middleware.rubric import (
     GraderResponse,
     RubricMiddleware,
     RubricState,
-    _strategy_from_result,  # noqa: PLC2701
 )
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, hook_config
-from langchain_core.messages import HumanMessage
-from langgraph.errors import GraphBubbleUp
+from langchain.agents.middleware.types import AgentMiddleware, AgentState
 
 from deepagents_code.goal_state_notice import is_conversation_control_message
 
@@ -26,7 +23,6 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import AnyMessage
     from langchain_core.tools import BaseTool
-    from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +109,11 @@ class ReliableRubricMiddleware(RubricMiddleware):
     runtime context without requiring those application-specific capabilities in
     the SDK's `RubricMiddleware`. A transport retry re-invokes only the grader,
     never the task agent, so grader tools must be read-only or idempotent.
+
+    The transport retry wraps `_invoke_grader` (one grader call) rather than
+    `_grade` (the whole grading pass), so the SDK's coverage retry still runs on
+    top of it: a transport fault is retried within a call, and a grader that
+    under-reports its criteria is retried across calls.
     """
 
     def __init__(  # noqa: D107
@@ -135,93 +136,6 @@ class ReliableRubricMiddleware(RubricMiddleware):
         )
         self._grader_middleware = list(grader_middleware or ())
         self._grader_context_schema = grader_context_schema
-
-    @hook_config(can_jump_to=["model"])
-    def after_agent(
-        self,
-        state: RubricState,
-        runtime: Runtime[Any],
-    ) -> dict[str, Any] | None:
-        """Grade synchronously while preserving nested graph interrupts.
-
-        Returns:
-            The rubric state update, or `None` when no rubric is active.
-
-        Raises:
-            GraphBubbleUp: If the nested grader pauses or otherwise bubbles control.
-        """
-        prep = self._prepare_evaluation(state, runtime)
-        if prep is None:
-            return None
-        grading_run_id, iteration = prep
-
-        try:
-            graded = self._grade(
-                state,
-                iteration,
-                context=getattr(runtime, "context", None),
-            )
-        except GraphBubbleUp:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            return self._handle_grader_exception(
-                runtime,
-                state,
-                grading_run_id,
-                iteration,
-                exc,
-            )
-
-        return self._finalize_evaluation(
-            graded,
-            state,
-            runtime,
-            grading_run_id,
-            iteration,
-        )
-
-    async def aafter_agent(
-        self,
-        state: RubricState,
-        runtime: Runtime[Any],
-    ) -> dict[str, Any] | None:
-        """Grade asynchronously while preserving nested graph interrupts.
-
-        Returns:
-            The rubric state update, or `None` when no rubric is active.
-
-        Raises:
-            GraphBubbleUp: If the nested grader pauses or otherwise bubbles control.
-        """
-        prep = self._prepare_evaluation(state, runtime)
-        if prep is None:
-            return None
-        grading_run_id, iteration = prep
-
-        try:
-            graded = await self._agrade(
-                state,
-                iteration,
-                context=getattr(runtime, "context", None),
-            )
-        except GraphBubbleUp:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            return self._handle_grader_exception(
-                runtime,
-                state,
-                grading_run_id,
-                iteration,
-                exc,
-            )
-
-        return self._finalize_evaluation(
-            graded,
-            state,
-            runtime,
-            grading_run_id,
-            iteration,
-        )
 
     def _ensure_grader(self) -> Any:  # noqa: ANN401
         if self._grader is not None:
@@ -250,73 +164,42 @@ class ReliableRubricMiddleware(RubricMiddleware):
         self,
         state: RubricState,
         iteration: int,
+        correction: str | None = None,
     ) -> dict[str, Any]:
         """Build nested-grader input with a stable verification-operation ID.
+
+        Drops dcode control turns before delegating to the SDK, which applies
+        the delimiter sanitization for the untrusted transcript.
+
+        Args:
+            state: Agent state, read for the rubric and transcript.
+            iteration: Zero-based grading iteration.
+            correction: Feedback about a previous unusable response, if any.
 
         Returns:
             The nested grader's input state.
         """
         grading_run_id = state.get("_current_grading_run_id") or "untracked"
         grader_state = _without_internal_control_messages(state)
-        payload = self._build_grader_payload(grader_state, iteration)
-        return {
-            "messages": [HumanMessage(content=payload)],
-            "rubric_grading_operation_id": f"{grading_run_id}:{iteration}",
-        }
+        grader_input = super()._grader_input(grader_state, iteration, correction)
+        grader_input["rubric_grading_operation_id"] = f"{grading_run_id}:{iteration}"
+        return grader_input
 
-    def _grade_once(
+    def _invoke_grader(
         self,
         state: RubricState,
         iteration: int,
-        *,
-        context: object | None,
-    ) -> GraderResponse:
-        grader = self._ensure_grader()
-        metadata = self._grader_trace_metadata()
-        self._record_grader_trace_metadata(metadata)
-        result = grader.invoke(
-            self._grader_input(state, iteration),
-            config=self._grader_invocation_config(metadata),
-            context=context,
-        )
-        self._record_grader_trace_metadata(
-            self._grader_trace_metadata(
-                effective_strategy=_strategy_from_result(result),
-            )
-        )
-        return self._extract_graded(result)
-
-    async def _agrade_once(
-        self,
-        state: RubricState,
-        iteration: int,
-        *,
-        context: object | None,
-    ) -> GraderResponse:
-        grader = self._ensure_grader()
-        metadata = self._grader_trace_metadata()
-        self._record_grader_trace_metadata(metadata)
-        result = await grader.ainvoke(
-            self._grader_input(state, iteration),
-            config=self._grader_invocation_config(metadata),
-            context=context,
-        )
-        self._record_grader_trace_metadata(
-            self._grader_trace_metadata(
-                effective_strategy=_strategy_from_result(result),
-            )
-        )
-        return self._extract_graded(result)
-
-    def _grade(
-        self,
-        state: RubricState,
-        iteration: int,
+        correction: str | None = None,
         *,
         context: object | None = None,
     ) -> GraderResponse:
+        """Run one grader call, retrying once on a transient transport failure.
+
+        Returns:
+            The grader's structured verdict.
+        """
         try:
-            return self._grade_once(state, iteration, context=context)
+            return super()._invoke_grader(state, iteration, correction, context=context)
         except Exception as exc:
             if not _is_transient_grader_transport_error(exc):
                 raise
@@ -324,17 +207,25 @@ class ReliableRubricMiddleware(RubricMiddleware):
                 "Rubric grader transport failed; retrying grading once",
                 exc_info=True,
             )
-        return self._grade_once(state, iteration, context=context)
+        return super()._invoke_grader(state, iteration, correction, context=context)
 
-    async def _agrade(
+    async def _ainvoke_grader(
         self,
         state: RubricState,
         iteration: int,
+        correction: str | None = None,
         *,
         context: object | None = None,
     ) -> GraderResponse:
+        """Async variant of `_invoke_grader`. See that method for details.
+
+        Returns:
+            The grader's structured verdict.
+        """
         try:
-            return await self._agrade_once(state, iteration, context=context)
+            return await super()._ainvoke_grader(
+                state, iteration, correction, context=context
+            )
         except Exception as exc:
             if not _is_transient_grader_transport_error(exc):
                 raise
@@ -342,4 +233,6 @@ class ReliableRubricMiddleware(RubricMiddleware):
                 "Rubric grader transport failed; retrying grading once",
                 exc_info=True,
             )
-        return await self._agrade_once(state, iteration, context=context)
+        return await super()._ainvoke_grader(
+            state, iteration, correction, context=context
+        )

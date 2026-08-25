@@ -274,7 +274,7 @@ jobs:
           {
             printf 'Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`) for `%s` to the latest compatible stable PyPI release, and regenerates every affected `uv.lock`. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$PACKAGE"
             printf '%s\n\n' "$SUMMARY"
-            printf 'Opened automatically by `raise_langchain_minimums.yml`. Review the raised bounds against any compatibility notes in the manifest comments before merging.\n'
+            printf 'Opened automatically by [`raise_langchain_minimums.yml`](%s). Review the raised bounds against any compatibility notes in the manifest comments before merging.\n' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/raise_langchain_minimums.yml"
           } > "$body_file"
 
           pr_url=$(gh pr create \

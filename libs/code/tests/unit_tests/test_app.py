@@ -36172,6 +36172,36 @@ class TestRespawnServer:
                 blocked in str(message._content) for message in app.query(ErrorMessage)
             )
 
+    async def test_reload_waits_for_environment_mutation_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/reload` cannot overlap a cwd switch or another environment mutation."""
+        from deepagents_code import config as config_module
+
+        app = DeepAgentsApp()
+        reload_started = asyncio.Event()
+
+        async def reload_settings() -> list[str]:
+            reload_started.set()
+            await asyncio.sleep(0)
+            return []
+
+        monkeypatch.setattr(app, "_reload_settings_from_environment", reload_settings)
+        monkeypatch.setattr(
+            config_module,
+            "managed_reload_block",
+            lambda _changes: "blocked",
+        )
+        monkeypatch.setattr(app, "_mount_message", AsyncMock())
+
+        async with app._environment_mutation_lock:
+            reload_task = asyncio.create_task(app._run_reload())
+            await asyncio.sleep(0)
+            assert not reload_started.is_set()
+        await reload_task
+
+        assert reload_started.is_set()
+
     async def test_reload_preserves_queue_across_idle_server_restart(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -38627,6 +38657,69 @@ class TestResumeThreadCwdSwitch:
             await refresh
 
         assert reload_started.is_set()
+
+    @pytest.mark.timeout(15)
+    async def test_cancelled_cwd_refresh_finishes_before_rollback(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cancellation cannot let a target reload outlive the rollback reload."""
+        from deepagents_code.config import settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        app._chat_input = None
+        app._status_bar = None
+        target_started = threading.Event()
+        target_finished = threading.Event()
+        release_target = threading.Event()
+        rollback_started = threading.Event()
+        reloads: list[tuple[str, Path]] = []
+
+        def reload_from_environment(*, start_path: Path) -> list[str]:
+            reloads.append(("start", start_path))
+            if start_path == target:
+                target_started.set()
+                assert release_target.wait(timeout=5)
+                target_finished.set()
+            else:
+                rollback_started.set()
+            reloads.append(("finish", start_path))
+            return []
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+        with patch("deepagents_code.model_config.clear_caches"):
+            switch = asyncio.create_task(app._switch_process_cwd(target))
+            assert await asyncio.to_thread(target_started.wait, 5)
+            switch.cancel()
+            rollback_raced = await asyncio.to_thread(rollback_started.wait, 0.1)
+            still_running = not switch.done()
+            lock_held = app._environment_mutation_lock.locked()
+            release_target.set()
+            with pytest.raises(asyncio.CancelledError):
+                await switch
+
+        assert await asyncio.to_thread(target_finished.wait, 5)
+        assert not rollback_raced
+        assert still_running
+        assert lock_held
+        assert reloads == [
+            ("start", target),
+            ("finish", target),
+            ("start", current),
+            ("finish", current),
+        ]
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
 
     async def test_switch_process_cwd_restores_cwd_on_refresh_failure(
         self,

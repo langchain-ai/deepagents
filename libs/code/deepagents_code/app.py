@@ -16260,8 +16260,40 @@ class DeepAgentsApp(App):
         so it mounts its own failure message — the `_handle_command`
         `try/except` no longer wraps it.
         """
-        from deepagents_code import config as config_module
+        async with self._environment_mutation_lock:
+            await self._run_reload_unlocked()
+
+    @staticmethod
+    async def _reload_settings_from_environment(
+        *, start_path: Path | None = None
+    ) -> list[str]:
+        """Reload settings off-thread without orphaning work on cancellation.
+
+        Returns:
+            Human-readable descriptions of settings changes.
+
+        Raises:
+            asyncio.CancelledError: After any active reload thread has settled.
+        """
         from deepagents_code.config import settings
+
+        if start_path is None:
+            reload_work = asyncio.to_thread(settings.reload_from_environment)
+        else:
+            reload_work = asyncio.to_thread(
+                settings.reload_from_environment,
+                start_path=start_path,
+            )
+        reload_task = asyncio.create_task(reload_work, name="settings-reload")
+        try:
+            return await asyncio.shield(reload_task)
+        except asyncio.CancelledError:
+            await reload_task
+            raise
+
+    async def _run_reload_unlocked(self) -> None:
+        """Run `/reload` while the environment mutation lock is held."""
+        from deepagents_code import config as config_module
 
         try:
             # Snapshot pre-reload state so the report can show diffs.
@@ -16269,7 +16301,7 @@ class DeepAgentsApp(App):
             old_mcp_server_info = self._mcp_server_info
 
             try:
-                changes = await asyncio.to_thread(settings.reload_from_environment)
+                changes = await self._reload_settings_from_environment()
                 blocked = config_module.managed_reload_block(changes)
                 if blocked is not None:
                     await self._mount_message(ErrorMessage(blocked))
@@ -26299,11 +26331,10 @@ class DeepAgentsApp(App):
             Whether reload completed and restart should continue.
         """
         from deepagents_code import config as config_module
-        from deepagents_code.config import settings
         from deepagents_code.model_config import clear_caches
 
         try:
-            changes = await asyncio.to_thread(settings.reload_from_environment)
+            changes = await self._reload_settings_from_environment()
             clear_caches()
         except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
             logger.exception("Failed to reload configuration during restart")
@@ -27277,12 +27308,10 @@ class DeepAgentsApp(App):
             RuntimeError: If managed policy blocks the project refresh.
         """
         from deepagents_code import config as config_module
-        from deepagents_code.config import settings
         from deepagents_code.model_config import clear_caches
 
         async with self._environment_mutation_lock:
-            changes = await asyncio.to_thread(
-                settings.reload_from_environment,
+            changes = await self._reload_settings_from_environment(
                 start_path=cwd,
             )
             clear_caches()

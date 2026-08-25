@@ -34454,6 +34454,51 @@ class TestRestartCommand:
         assert reload_thread_ids
         assert all(thread_id != loop_thread_id for thread_id in reload_thread_ids)
 
+    @pytest.mark.timeout(15)
+    async def test_remote_config_refresh_keeps_chat_input_responsive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A slow remote policy refresh cannot occupy the App message pump."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            app._chat_input.focus_input()
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            reload_started = threading.Event()
+            release_reload = threading.Event()
+
+            def slow_reload() -> list[str]:
+                reload_started.set()
+                assert release_reload.wait(timeout=5)
+                return []
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", slow_reload)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(
+                app,
+                "_restart_server_manual",
+                AsyncMock(return_value=False),
+            )
+
+            app.post_message(ChatInput.Submitted("/restart", "command"))
+            assert await asyncio.to_thread(reload_started.wait, 5)
+            await pilot.press("h", "i")
+            await pilot.pause()
+            typed = app._chat_input.value
+
+            release_reload.set()
+            assert app._restart_respawn_task is not None
+            await app._restart_respawn_task
+            assert typed == "hi"
+
     async def test_remote_server_mode_short_circuits(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -34737,12 +34782,12 @@ class TestRestartCommand:
             task = app._restart_respawn_task
             assert task is not None
             assert not status_started.is_set()
-            assert app._connecting is True
-            assert app._reconnecting is True
-            assert app._agent is None
 
             try:
                 await status_started.wait()
+                assert app._connecting is True
+                assert app._reconnecting is True
+                assert app._agent is None
                 await app._submit_input("queued during restart", mode="normal")
                 assert len(app._pending_messages) == 1
                 assert app._pending_messages[0].text == "queued during restart"

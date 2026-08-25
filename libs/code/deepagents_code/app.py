@@ -3483,12 +3483,11 @@ class DeepAgentsApp(App):
         """
 
         self._restart_respawn_task: asyncio.Task[None] | None = None
-        """Strong reference to the detached `/restart` respawn task.
+        """Strong reference to the detached `/restart` task.
 
-        `_handle_restart_command` runs the multi-second server respawn off the
-        Textual message pump via `asyncio.create_task` so the chat input stays
-        responsive; holding the reference keeps the task from being GC'd
-        mid-flight and lets tests await it deterministically."""
+        `_handle_restart_command` runs config refresh and server respawn off
+        the Textual message pump so the chat input stays responsive; holding
+        the reference lets shutdown cancel it and tests await it."""
 
         self._server_restart_tasks: set[asyncio.Task[Any]] = set()
         """Background tasks that can restart the owned server subprocess.
@@ -26238,7 +26237,53 @@ class DeepAgentsApp(App):
             )
             return
 
-        await self._run_restart_command()
+        restart_task = self._restart_respawn_task
+        if restart_task is not None and not restart_task.done():
+            await self._mount_message(
+                AppMessage(
+                    "A server restart is already in progress. Queued prompts "
+                    "will be sent once it finishes.",
+                ),
+            )
+            return
+        self._schedule_restart_command()
+
+    def _schedule_restart_command(self) -> asyncio.Task[None]:
+        """Run config refresh and server respawn off the Textual message pump.
+
+        `_schedule_off_message_pump` is reserved for modal continuations. A
+        restart opens no modal, but its remote config fetch can still take the
+        full network timeout, so it needs its own detached task just like
+        `/reload`.
+
+        Returns:
+            The restart task, so tests and shutdown can await it.
+        """
+        task = asyncio.create_task(
+            self._run_restart_command_detached(),
+            name="restart",
+        )
+        self._restart_respawn_task = task
+        self._track_server_restart_task(task)
+        task.add_done_callback(_log_task_exception)
+        return task
+
+    async def _run_restart_command_detached(self) -> None:
+        """Serialize and safely report a detached `/restart` continuation.
+
+        Raises:
+            asyncio.CancelledError: If app teardown cancels the restart.
+        """
+        try:
+            async with self._environment_mutation_lock:
+                await self._run_restart_command()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Manual /restart failed unexpectedly")
+            await self._mount_message(
+                ErrorMessage(f"Restart failed: {type(exc).__name__}: {exc}"),
+            )
 
     async def _run_restart_command(self, *, preserve_queue: bool = False) -> None:
         """Validate and schedule a restart without echoing another command.
@@ -26339,35 +26384,22 @@ class DeepAgentsApp(App):
                 )
             return
 
-        # Run the respawn as a detached task, NOT awaited on the message pump.
-        # `_respawn_server`'s multi-second `server_proc.restart()` would
-        # otherwise stall the pump — key events stop being forwarded and the
-        # chat input freezes ("blocked") for the whole restart. Mirrors the
-        # MCP viewer/force-reconnect paths: `asyncio.create_task` keeps the
-        # pump free, so keystrokes stay live and any message the user submits
-        # while `_connecting` is queued and drained once `ServerReady` fires.
-        # `_run_restart_respawn` owns the transient status and completion
-        # banner; `_log_task_exception` surfaces anything unexpected. The
-        # pre-respawn guards above (remote/starting/failed/deferred) already
-        # ran synchronously, so the user got immediate feedback before this.
-        # Mark the app reconnecting before scheduling because `create_task`
-        # does not run the coroutine inline. Otherwise a submission or second
-        # `/restart` could enter before `_respawn_server` sets these fields.
+        # The whole restart continuation is already detached from the message
+        # pump, including the potentially slow remote config fetch above.
+        # Mark reconnecting before the respawn's first await so submissions are
+        # queued and drained once `ServerReady` fires.
         self._connecting = True
         self._reconnecting = True
         self._agent = None
         self._sync_status_connection()
-        task = asyncio.create_task(self._run_restart_respawn())
-        self._restart_respawn_task = task
-        self._track_server_restart_task(task)
-        task.add_done_callback(_log_task_exception)
+        await self._run_restart_respawn()
 
     async def _run_restart_respawn(self) -> None:
         """Respawn the server for `/restart`, detached from the message pump.
 
-        Scheduled via `asyncio.create_task` from `_handle_restart_command` so
-        the multi-second `server_proc.restart()` runs off the Textual message
-        pump, keeping the chat input responsive. Shows a transient
+        Called by the detached `/restart` continuation so the multi-second
+        `server_proc.restart()` runs off the Textual message pump, keeping the
+        chat input responsive. Shows a transient
         "Restarting server..." status for the duration and removes it whether
         the respawn succeeds, returns `False`, or raises. Mounts the completion
         banner only on success; on any non-success outcome it clears the

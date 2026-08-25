@@ -487,16 +487,23 @@ class TestServerGraph:
             "enable_interpreter": True,
         }
 
-    async def test_build_tools_delegates_mcp_loading_to_resolver(self) -> None:
+    @pytest.mark.parametrize(
+        "has_tavily", [False, True], ids=["without-tavily", "with-tavily"]
+    )
+    async def test_build_tools_delegates_mcp_loading_to_resolver(
+        self, *, has_tavily: bool
+    ) -> None:
         """`_build_tools` should defer all MCP work to the resolver.
 
         Adapter warmup now lives inside `_load_tools_from_config` (gated on
         active servers existing), so `_build_tools` no longer warms imports
         itself — it just calls the resolver and appends the returned tools.
+        MCP search remains available with or without the built-in Tavily tool.
         """
         fetch_tool = object()
         thread_tool = object()
-        discovered_mcp_tools = [object(), object()]
+        tavily_search = object()
+        discovered_mcp_tools = [SimpleNamespace(name="parallel_web_search"), object()]
 
         class FakeSessionManager:
             pass
@@ -504,13 +511,13 @@ class TestServerGraph:
         resolve_mcp_tools = AsyncMock(return_value=(discovered_mcp_tools, None, []))
         config_module = _module_with_attrs(
             "deepagents_code.config",
-            settings=SimpleNamespace(has_tavily=False),
+            settings=SimpleNamespace(has_tavily=has_tavily),
         )
         tools_module = _module_with_attrs(
             "deepagents_code.tools",
             fetch_url=fetch_tool,
             get_current_thread_id=thread_tool,
-            web_search=object(),
+            web_search=tavily_search,
         )
         mcp_module = _module_with_attrs(
             "deepagents_code.mcp_tools",
@@ -534,7 +541,10 @@ class TestServerGraph:
             )
 
         resolve_mcp_tools.assert_awaited_once()
-        assert tools == [fetch_tool, thread_tool, *discovered_mcp_tools]
+        expected_tools = [fetch_tool, thread_tool]
+        if has_tavily:
+            expected_tools.append(tavily_search)
+        assert tools == [*expected_tools, *discovered_mcp_tools]
         assert mcp_server_info == []
         assert mcp_tools is discovered_mcp_tools
 

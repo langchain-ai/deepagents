@@ -1593,6 +1593,66 @@ class TestGetMCPTools:
         ]
         await manager.cleanup()
 
+    @pytest.mark.usefixtures("fake_home")
+    async def test_keyless_remote_search_provider_loads_and_runs(
+        self,
+        write_config: Callable[..., str],
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+        fake_tool_result: Any,  # noqa: ANN401
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A URL-only MCP search provider needs neither Tavily nor provider keys."""
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
+        path = write_config(
+            {"mcpServers": {"parallel": {"url": "https://search.parallel.ai/mcp"}}}
+        )
+        session, recorded = fake_create_session
+        session.list_tools = AsyncMock(
+            return_value=_make_tool_page(
+                [
+                    _make_mcp_tool(
+                        "web_search",
+                        "Search the web",
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "objective": {"type": "string"},
+                                "search_queries": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                            },
+                            "required": ["objective", "search_queries"],
+                        },
+                    )
+                ]
+            )
+        )
+        session.call_tool = AsyncMock(return_value=fake_tool_result)
+
+        tools, manager, server_infos = await get_mcp_tools(path)
+        arguments = {
+            "objective": "Find Deep Agents documentation",
+            "search_queries": ["deep agents documentation"],
+        }
+        result = await tools[0].ainvoke(arguments)
+
+        assert [tool.name for tool in tools] == ["parallel_web_search"]
+        assert server_infos[0].status == "ok"
+        assert all(
+            connection
+            == {
+                "transport": "streamable_http",
+                "url": "https://search.parallel.ai/mcp",
+            }
+            for connection in recorded
+        )
+        session.call_tool.assert_awaited_once_with("web_search", arguments)
+        assert "ok" in str(result)
+        assert manager is not None
+        await manager.cleanup()
+
     async def test_discovery_failure_marks_server_error(
         self,
         write_config: Callable[..., str],

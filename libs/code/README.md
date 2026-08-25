@@ -42,6 +42,26 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
+## Web search
+
+The built-in `web_search` tool uses Tavily when `TAVILY_API_KEY` is configured.
+To use another search provider, add a compatible remote MCP server to
+`~/.deepagents/.mcp.json`. For example, Parallel provides a keyless search server:
+
+```json
+{
+  "mcpServers": {
+    "parallel": {
+      "url": "https://search.parallel.ai/mcp"
+    }
+  }
+}
+```
+
+The remote search tool appears as `parallel_web_search` and does not require a
+Parallel or Tavily API key. If `TAVILY_API_KEY` is also configured, the existing
+Tavily-backed `web_search` tool remains available alongside it.
+
 ## 🔒 Security model
 
 By default, `dcode` trusts the directory you run it in. Human-in-the-loop approval gates model-requested tool calls, but project artifacts are read before any approval prompt.

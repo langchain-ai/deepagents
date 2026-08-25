@@ -510,18 +510,22 @@ class TestFormatContentBlock:
         assert "[Image: image," in result
 
     @pytest.mark.parametrize(
-        "block",
+        ("block", "expected_fragment"),
         [
-            {"type": "image", "base64": 123},
-            {"type": "image", "url": "https://example.com/image.png"},
+            ({"type": "image", "base64": 123}, '"base64": 123'),
+            (
+                {"type": "image", "url": "https://example.com/image.png"},
+                '"url": "https://example.com/image.png"',
+            ),
         ],
     )
     def test_image_block_without_string_base64_falls_through_to_json(
-        self, block: dict[str, object]
+        self, block: dict[str, object], expected_fragment: str
     ) -> None:
         result = _format_content_block(block)
         assert "[Image" not in result
         assert '"type": "image"' in result
+        assert expected_fragment in result
 
     def test_plain_dict_serialized_as_json(self) -> None:
         result = _format_content_block({"type": "text", "text": "hello"})

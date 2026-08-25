@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -51,7 +51,7 @@ class ProviderStatus:
     path: Path | None
     health: ProviderHealth
     detail: str | None = None
-    remote_source: str | None = None
+    remote_source: str | None = field(default=None, kw_only=True)
     """Validated URL this status came from, when `path` is only a trust anchor.
 
     A remote managed policy reports the *local* descriptor file as its `path`,

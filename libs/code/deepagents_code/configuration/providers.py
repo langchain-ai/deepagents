@@ -561,7 +561,10 @@ def _remote_status(
     Returns:
         An unhealthy snapshot carrying no policy data.
     """
-    return TomlSnapshot({}, ProviderStatus(name, path, health, detail, source))
+    return TomlSnapshot(
+        {},
+        ProviderStatus(name, path, health, detail, remote_source=source),
+    )
 
 
 def _validate_remote_url(source: str) -> str:
@@ -809,7 +812,13 @@ def _parse_remote_toml(
         )
     return TomlSnapshot(
         data,
-        ProviderStatus(name, path, ProviderHealth.OK, None, source),
+        ProviderStatus(
+            name,
+            path,
+            ProviderHealth.OK,
+            None,
+            remote_source=source,
+        ),
     )
 
 

@@ -113,6 +113,28 @@ def test_managed_config_path_windows_ignores_process_env(
     )
 
 
+def test_provider_status_remote_source_is_keyword_only() -> None:
+    """The exported status keeps its original four positional parameters."""
+    from inspect import Parameter, signature
+
+    from deepagents_code.configuration import ProviderStatus
+
+    source = "https://config.example.com/policy.toml"
+    status = ProviderStatus(
+        "managed config",
+        None,
+        ProviderHealth.OK,
+        None,
+        remote_source=source,
+    )
+
+    assert status.remote_source == source
+    assert signature(ProviderStatus).parameters["remote_source"].kind is (
+        Parameter.KEYWORD_ONLY
+    )
+    assert ProviderStatus.__match_args__ == ("name", "path", "health", "detail")
+
+
 def test_registry_program_data_outranks_a_poisoned_process_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

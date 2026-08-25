@@ -18,6 +18,7 @@ from deepagents_code._paths import (
     _capture_paths,
     classify_path,
     get_deepagents_home,
+    harden_state_dir,
     probe_writable,
     project_paths,
 )
@@ -896,3 +897,67 @@ class TestHomeDirectoryProfileSpellings:
             snapshot = _capture_paths(str(configured))
 
         assert snapshot.profile.root == configured
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+class TestHardenStateDir:
+    """The state directory holds conversation content in mode-0644 files.
+
+    Its permission bits are the only thing keeping another local user out, so
+    these tests pin the directory itself rather than any single file under it.
+    """
+
+    def test_creates_the_state_directory_owner_only(
+        self, install_profile_snapshot: InstallProfileSnapshot, tmp_path: Path
+    ) -> None:
+        """A fresh profile never passes through a world-readable state."""
+        snapshot = install_profile_snapshot(tmp_path / "profile", launch_home=tmp_path)
+
+        harden_state_dir()
+
+        assert snapshot.profile.state_dir.stat().st_mode & 0o777 == 0o700
+
+    def test_restricts_an_existing_permissive_state_directory(
+        self, install_profile_snapshot: InstallProfileSnapshot, tmp_path: Path
+    ) -> None:
+        """`mkdir(mode=...)` is a no-op on an existing directory.
+
+        A profile created before the state directory was hardened must be
+        repaired, so the explicit `chmod` has to run on the exist_ok path too.
+        """
+        snapshot = install_profile_snapshot(tmp_path / "profile", launch_home=tmp_path)
+        snapshot.profile.state_dir.mkdir(parents=True)
+        snapshot.profile.state_dir.chmod(0o755)
+
+        harden_state_dir()
+
+        assert snapshot.profile.state_dir.stat().st_mode & 0o777 == 0o700
+
+    def test_a_refused_chmod_is_not_fatal(
+        self, install_profile_snapshot: InstallProfileSnapshot, tmp_path: Path
+    ) -> None:
+        """CIFS/exFAT mounts refuse `chmod`; the directory is still usable."""
+        install_profile_snapshot(tmp_path / "profile", launch_home=tmp_path)
+
+        with mock.patch.object(Path, "chmod", side_effect=OSError("read-only")):
+            harden_state_dir()
+
+    def test_the_sessions_database_lands_in_a_hardened_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """The regression was that only the update lock hardened the directory.
+
+        `sessions.py` creates it on its own path, so it must harden it too. It
+        locates the database from `model_config.DEFAULT_STATE_DIR`, not from
+        `PATHS.profile.state_dir`, so this patches the name it actually reads.
+        """
+        from deepagents_code import model_config, sessions as sessions_module
+
+        state_dir = tmp_path / "profile" / ".state"
+        with (
+            mock.patch.object(model_config, "DEFAULT_STATE_DIR", state_dir),
+            mock.patch.object(sessions_module, "_db_path", None),
+        ):
+            assert sessions_module.get_db_path() == state_dir / "sessions.db"
+
+        assert state_dir.stat().st_mode & 0o777 == 0o700

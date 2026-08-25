@@ -48,6 +48,7 @@ __all__ = [
     "ProjectPaths",
     "classify_path",
     "get_deepagents_home",
+    "harden_state_dir",
     "probe_writable",
     "project_paths",
 ]
@@ -283,6 +284,48 @@ def probe_writable(directory: Path, *, mode: int = 0o777) -> None:
         Path(name).unlink()
     except OSError:
         logger.debug("Could not remove the write probe %s", name, exc_info=True)
+
+
+def harden_state_dir(state_dir: Path | None = None) -> bool:
+    """Create a state directory and restrict it to its owner.
+
+    The state directory holds `sessions.db` and `history.jsonl`, which hold
+    full conversation content and are written with the default file mode. The
+    directory permissions are the only thing that keeps another local user out,
+    so every creator must go through this function rather than a bare `mkdir`.
+
+    Args:
+        state_dir: Directory to create, defaulting to the active profile's.
+            `state_migration` passes its own, since it migrates a profile that
+            is not necessarily the active one.
+
+    Returns:
+        Whether the directory now exists. A caller that must not write into a
+        missing directory checks this; one that only wants the hardening
+        applied can ignore it.
+
+    Note:
+        Failures are logged, never raised. `mkdir` can fail on a read-only or
+        full filesystem, and `chmod` is routinely refused on CIFS/exFAT mounts.
+        Neither is a reason to abort the launch that needed the directory.
+    """
+    if state_dir is None:
+        state_dir = PATHS.profile.state_dir
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError:
+        logger.warning("Could not create %s", state_dir, exc_info=True)
+        return False
+    if os.name == "nt":
+        return True
+    try:
+        state_dir.chmod(0o700)
+    except OSError:
+        # `mkdir(mode=...)` applies only when this call creates the directory,
+        # and umask can still clear bits, so an existing directory needs the
+        # explicit chmod. A refusal leaves the directory usable, so keep going.
+        logger.warning("Could not restrict permissions on %s", state_dir, exc_info=True)
+    return True
 
 
 def _normalize_absolute(path: Path, *, what: str = "Path") -> Path:

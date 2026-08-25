@@ -1093,7 +1093,7 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     unsatisfiable and exits `1` with an actionable message instead of letting a
     `ValueError` surface from deep inside agent construction.
 
-    Honouring the CLI tier alone was a policy hole: `interpreter.
+    Honoring the CLI tier alone was a policy hole: `interpreter.
     enable_interpreter` is an `ENFORCED_MANAGED_KEYS` member, and a managed
     `true` silently became `false` whenever `--sandbox` named a remote backend.
 
@@ -1140,7 +1140,7 @@ def _exit_interpreter_conflicts_with_sandbox(
 ) -> NoReturn:
     """Abort the launch when the interpreter cannot run under a remote sandbox.
 
-    Always exits `1`: the two settings cannot both be honoured, and the user
+    Always exits `1`: the two settings cannot both be honored, and the user
     must drop one of them.
 
     Args:
@@ -4478,7 +4478,20 @@ def _config_provider_statuses() -> Mapping[int, "ProviderStatus"]:
 
 
 def _apply_managed_runtime_exceptions(args: argparse.Namespace) -> None:
-    """Apply launch-orchestration exceptions outside config resolution.
+    """Force managed values into `args` for consumers that bypass the resolver.
+
+    These are exceptions to the rule that policy is read through the ranked
+    chain: a handful of launch-orchestration values must reach `args` itself,
+    because their downstream consumer reads the namespace rather than the
+    resolver.
+
+    Also the enforcement point for `ENFORCED_MANAGED_KEYS`: a managed value
+    this process cannot actually enforce stops the launch via
+    `managed_policy_violations` and `sys.exit(78)`, rather than starting with
+    policy silently unapplied.
+
+    Args:
+        args: Parsed CLI arguments, mutated in place.
 
     Raises:
         AssertionError: If managed policy is unusable or the resolver has no
@@ -4863,8 +4876,9 @@ def cli_main() -> None:
                 approval_mode is ApprovalMode.MANUAL
             ):
                 sys.stderr.write(
-                    "Error: --auto-classifier-model requires --auto-approve "
-                    "in ACP mode.\n"
+                    "Error: --auto-classifier-model requires Auto or YOLO "
+                    "mode in ACP mode (--auto-approve, --yolo, or "
+                    "[startup].mode).\n"
                 )
                 sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
@@ -4983,13 +4997,20 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
-        # Cleared here, before mode dispatch reads the flags and before any
-        # session output could bury the warning: `apply_stdin_pipe` has
-        # finalized `non_interactive_message` (the same predicate that selects
-        # the headless branch below), so this reliably clears the flags on both
-        # the `-n` and piped-stdin paths while leaving interactive launches
-        # untouched. `explicit_approval_flag` was captured at parse time, so
-        # only a flag the user actually typed warns.
+        # Warned here, before any session output could bury the message:
+        # `apply_stdin_pipe` has finalized `non_interactive_message` (the same
+        # predicate that selects the headless branch below), so this fires on
+        # both the `-n` and piped-stdin paths while leaving interactive
+        # launches untouched. `explicit_approval_flag` was captured at parse
+        # time, so only a flag the user actually typed warns.
+        #
+        # The two assignments below no longer drive anything. Headless never
+        # consults an approval mode -- `run_non_interactive` takes no
+        # auto/yolo parameters -- and `CliProvider` snapshotted `vars(args)`
+        # at `_install_cli_provider`, so mutating the namespace cannot change
+        # what the resolver reports. They are kept as a belt-and-braces guard
+        # for any future consumer that reads `args` directly; the warning
+        # above, not this clearing, is what the user sees.
         if explicit_approval_flag is not None and args.non_interactive_message:
             from rich.console import Console as _Console
 

@@ -2263,9 +2263,9 @@ def test_managed_auto_classifier_does_not_set_the_acp_incompatible_flag(
 ) -> None:
     """Managed policy must not set `--auto-classifier-model`.
 
-    Regression: assigning the flag made every ACP launch exit 2 with
-    "--auto-classifier-model requires --auto-approve in ACP mode", naming a flag
-    the user never passed. `build_server_config` falls through to
+    Regression: assigning the flag made every ACP launch exit 2 on the
+    `--auto-classifier-model` approval gate, naming a flag the user never
+    passed. `build_server_config` falls through to
     `resolve_auto_classifier_model_with_source` when the flag is unset, and that
     already reads managed policy at top precedence, so the positive value needs
     no flag — the same reasoning the `startup.mode` block uses.

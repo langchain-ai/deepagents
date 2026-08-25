@@ -3025,7 +3025,8 @@ class Settings:
             # Managed policy, the session CLI, and the user's file are safe to
             # take from their resolvers; the env tier stays with the
             # `env`-derived value computed above. Check the shared resolver
-            # first because a preview's fresh user-only resolver deliberately
+            # first because the preview's candidate resolver -- built from the
+            # managed snapshot and a *freshly parsed* user file -- deliberately
             # carries no process-local CLI provider.
             shell_resolved = resolver.get(shell_option)
             _emit_ranked_diagnostics(shell_option, shell_resolved)

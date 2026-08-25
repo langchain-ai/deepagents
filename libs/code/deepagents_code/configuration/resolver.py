@@ -406,7 +406,8 @@ def resolver_from_snapshots(
         cli_provider: Optional parsed-argument provider for this process.
 
     Returns:
-        Resolver containing managed, CLI, environment, user, and default providers.
+        Resolver containing managed, environment, user, and default providers,
+            plus the CLI provider when one is supplied.
     """
     from deepagents_code.configuration.providers import (
         DefaultProvider,
@@ -532,7 +533,10 @@ def get_config_resolver(
     Raises:
         ValueError: If `managed_snapshot` is a different generation than the
             one already installed and `refresh_managed` is not set. The
-            snapshot would otherwise be discarded in silence.
+            snapshot would otherwise be discarded in silence. Also if
+            `cli_provider` differs from the one already installed for this
+            process: one argv yields one CLI tier, and silently keeping either
+            provider would misreport every flag the other one carries.
     """
     from deepagents_code.configuration.providers import TomlFileProvider
     from deepagents_code.configuration.service import get_managed_snapshot

@@ -79,7 +79,8 @@ def test_acp_mode_rejects_auto_classifier_model(
         cli_main()
 
     assert exc_info.value.code == 2
-    assert "--auto-classifier-model requires --auto-approve" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "--auto-classifier-model requires Auto or YOLO mode" in err
     resolve_agent.assert_not_called()
 
 

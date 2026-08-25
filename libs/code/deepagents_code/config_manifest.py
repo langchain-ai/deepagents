@@ -727,12 +727,14 @@ def _resolve_option_without_managed(
 
     Companion to `_resolve_option` for the bounded readers' managed
     fall-through: an out-of-range managed value is rejected, and the option
-    must be re-read from CLI, env, `config.toml`, and the typed default.
+    must be re-read from the remaining tiers.
 
     With `toml_data=None`, rank exclusion runs directly against the shared
     resolver. That preserves both its process-local CLI provider and its pinned
     user snapshot, so a hand edit cannot change a later-built agent without
-    `/reload`.
+    `/reload`. With a caller-supplied table the tiers are CLI, env, that table,
+    and the typed default; the CLI provider carries over because it is
+    process-wide rather than part of the caller's generation.
 
     Returns:
         A rank-keyed `ResolvedValue` with the managed tier masked out.
@@ -740,6 +742,7 @@ def _resolve_option_without_managed(
     from deepagents_code.configuration.resolver import (
         MANAGED_RANK,
         get_config_resolver,
+        installed_cli_provider,
         resolver_from_snapshots,
     )
     from deepagents_code.configuration.types import (
@@ -753,6 +756,7 @@ def _resolve_option_without_managed(
     resolver = resolver_from_snapshots(
         managed=TomlSnapshot.declaring_nothing("managed config"),
         user=user,
+        cli_provider=installed_cli_provider(),
     )
     return resolver.get(option)
 

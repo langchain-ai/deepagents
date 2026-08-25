@@ -3461,9 +3461,10 @@ class TestResolveInterpreterEnabled:
     def test_empty_sandbox_treated_as_local(self) -> None:
         """An empty-string sandbox is falsy and must resolve as local mode.
 
-        Parity with the `_resolve_enable_interpreter` edge case (the CLI resolver
-        delegates to it); a regression in the falsy-sandbox guard must fail here
-        too, not only at the server-config layer.
+        `_server_config._resolve_enable_interpreter` applies the same rule
+        independently -- this branch removed the delegation that used to keep
+        them in lockstep -- so both need their own coverage or the two can
+        drift apart unnoticed.
         """
         import argparse
 

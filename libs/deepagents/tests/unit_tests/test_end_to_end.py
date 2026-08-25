@@ -37,7 +37,6 @@ from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
-from deepagents.middleware._model_profile import _scrub_unsupported_multimodal_content
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
 from deepagents.middleware.subagents import SubAgent  # noqa: TC001
@@ -120,8 +119,8 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
     captured_messages: list[list[BaseMessage]] = Field(default_factory=list, exclude=True)
     """Every message list passed to `_generate`, in call order.
 
-    Some middleware (e.g. active-model profile filtering) only transforms the
-    outgoing request, it never mutates persisted
+    Some middleware (e.g. `FilesystemMiddleware.wrap_model_call`'s multimodal
+    scrub) only transforms the outgoing request, it never mutates persisted
     graph state, so `result["messages"]` from `agent.invoke(...)` can't reveal
     what the model actually received. This does.
     """
@@ -4904,7 +4903,8 @@ def _read_file_agent(*, model: FixedGenericFakeChatModel, file_path: str, file_b
 def _second_call_tool_message(model: FixedGenericFakeChatModel) -> ToolMessage:
     """Return the `read_file` `ToolMessage` from the model's second invocation.
 
-    The second call is scrubbed because it carries the tool result back to the model.
+    The second call is the one `wrap_model_call` scrubs, since it's the request
+    that carries the tool result back to the model.
     """
     assert len(model.captured_messages) >= 2, "expected at least two model calls (initial + after tool result)"
     return next(m for m in model.captured_messages[1] if isinstance(m, ToolMessage))
@@ -4912,80 +4912,6 @@ def _second_call_tool_message(model: FixedGenericFakeChatModel) -> ToolMessage:
 
 def _is_placeholder_block(block: ContentBlock, *, path: str) -> bool:
     return block["type"] == "text" and path in block["text"]
-
-
-class TestMultimodalProfileScrubRuntimeModel:
-    @pytest.mark.parametrize(
-        ("startup_profile", "runtime_profile", "expected_block_type"),
-        [
-            ({"image_inputs": False}, {"image_inputs": True}, "image"),
-            ({"image_inputs": True}, {"image_inputs": False}, "text"),
-        ],
-    )
-    def test_scrubs_against_runtime_model(
-        self,
-        startup_profile: dict[str, bool],
-        runtime_profile: dict[str, bool],
-        expected_block_type: str,
-    ) -> None:
-        startup_model = FixedGenericFakeChatModel(
-            messages=iter([AIMessage(content="startup should not run")]),
-            profile=startup_profile,
-        )
-        runtime_model = FixedGenericFakeChatModel(
-            messages=iter([AIMessage(content="done")]),
-            profile=runtime_profile,
-        )
-
-        class RuntimeModelMiddleware(AgentMiddleware):
-            def wrap_model_call(
-                self,
-                request: ModelRequest,
-                handler: Callable[[ModelRequest], ModelResponse],
-            ) -> ModelResponse:
-                return handler(request.override(model=runtime_model))
-
-        agent = create_deep_agent(
-            model=startup_model,
-            middleware=[RuntimeModelMiddleware()],
-        )
-        image = {"type": "image", "base64": "aW1hZ2U=", "mime_type": "image/png"}
-
-        agent.invoke({"messages": [HumanMessage(content=[image])]})
-
-        assert not startup_model.captured_messages
-        received = next(message for message in runtime_model.captured_messages[0] if isinstance(message, HumanMessage))
-        assert received.content_blocks[0]["type"] == expected_block_type
-
-    async def test_async_scrubs_against_runtime_model(self) -> None:
-        startup_model = FixedGenericFakeChatModel(
-            messages=iter([AIMessage(content="startup should not run")]),
-            profile={"image_inputs": True},
-        )
-        runtime_model = FixedGenericFakeChatModel(
-            messages=iter([AIMessage(content="done")]),
-            profile={"image_inputs": False},
-        )
-
-        class RuntimeModelMiddleware(AgentMiddleware):
-            async def awrap_model_call(
-                self,
-                request: ModelRequest,
-                handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-            ) -> ModelResponse:
-                return await handler(request.override(model=runtime_model))
-
-        agent = create_deep_agent(
-            model=startup_model,
-            middleware=[RuntimeModelMiddleware()],
-        )
-        image = {"type": "image", "base64": "aW1hZ2U=", "mime_type": "image/png"}
-
-        await agent.ainvoke({"messages": [HumanMessage(content=[image])]})
-
-        assert not startup_model.captured_messages
-        received = next(message for message in runtime_model.captured_messages[0] if isinstance(message, HumanMessage))
-        assert received.content_blocks[0]["type"] == "text"
 
 
 class TestMultimodalProfileScrubNoProfile:
@@ -5059,7 +4985,7 @@ class TestMultimodalProfileScrubNonPdfFileProviderGate:
         )
 
         assert model._llm_type == "langchain-chat"
-        scrubbed = _scrub_unsupported_multimodal_content([message], model)
+        scrubbed = filesystem_middleware._scrub_unsupported_multimodal_content([message], model)
         assert scrubbed[0].content_blocks[0]["base64"] == _docx_base64()
 
     @pytest.mark.parametrize("llm_type", ["openai-chat", "azure-openai-chat", "chat-google-generative-ai", "openai-mantle-chat"])

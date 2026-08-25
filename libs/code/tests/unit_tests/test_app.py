@@ -38057,6 +38057,38 @@ class TestResumeThreadCwdSwitch:
 
     # --- _switch_process_cwd atomicity ---
 
+    async def test_cwd_refresh_waits_for_environment_mutation_lock(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cwd refresh cannot overlap another environment mutation."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(thread_id="t", cwd=tmp_path)
+        reload_started = threading.Event()
+
+        def reload_from_environment(*, start_path: Path) -> list[str]:
+            assert start_path == tmp_path
+            reload_started.set()
+            return []
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+        with patch("deepagents_code.model_config.clear_caches"):
+            async with app._environment_mutation_lock:
+                refresh = asyncio.create_task(
+                    app._refresh_project_context_for_cwd_switch(tmp_path)
+                )
+                await asyncio.sleep(0)
+                assert not reload_started.is_set()
+            await refresh
+
+        assert reload_started.is_set()
+
     async def test_switch_process_cwd_restores_cwd_on_refresh_failure(
         self,
         tmp_path: Path,

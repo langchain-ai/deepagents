@@ -27093,17 +27093,17 @@ class DeepAgentsApp(App):
         except ScreenStackError:
             logger.debug("Screen stack empty during cwd sync", exc_info=True)
 
-    @staticmethod
-    async def _refresh_project_context_for_cwd_switch(cwd: Path) -> None:
-        """Refresh project-scoped settings without blocking a cwd change."""
+    async def _refresh_project_context_for_cwd_switch(self, cwd: Path) -> None:
+        """Serialize a project-scoped settings refresh for a cwd change."""
         from deepagents_code.config import settings
         from deepagents_code.model_config import clear_caches
 
-        changes = await asyncio.to_thread(
-            settings.reload_from_environment,
-            start_path=cwd,
-        )
-        clear_caches()
+        async with self._environment_mutation_lock:
+            changes = await asyncio.to_thread(
+                settings.reload_from_environment,
+                start_path=cwd,
+            )
+            clear_caches()
         if changes:
             logger.debug("Refreshed project context for cwd switch: %s", changes)
 

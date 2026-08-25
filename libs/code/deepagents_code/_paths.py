@@ -523,7 +523,8 @@ def _resolve_profile_root_unchecked(
         return home / DEFAULT_PROFILE_DIR_NAME, True, home
     if configured.startswith("~/"):
         home = _resolve_launch_home(launch_home)
-        return _normalize_absolute(home / configured[2:]), False, home
+        relative = configured[2:].lstrip("/")
+        return _normalize_absolute(home / relative), False, home
     if configured.startswith("~"):
         msg = (
             "Invalid DEEPAGENTS_HOME: only an absolute path or a leading '~/' "

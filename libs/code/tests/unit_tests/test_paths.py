@@ -96,6 +96,11 @@ class TestGetDeepagentsHome:
         snapshot = _capture_paths("~/profiles/dcode", launch_home=tmp_path)
         assert snapshot.profile.root == tmp_path / "profiles" / "dcode"
 
+    def test_repeated_tilde_separators_stay_under_home(self, tmp_path: Path) -> None:
+        """Extra separators cannot turn the suffix into an absolute path."""
+        snapshot = _capture_paths("~//profiles/dcode", launch_home=tmp_path)
+        assert snapshot.profile.root == tmp_path / "profiles" / "dcode"
+
     def test_empty_override_is_unset(self, tmp_path: Path) -> None:
         """An empty override preserves the default root."""
         snapshot = _capture_paths("", launch_home=tmp_path)

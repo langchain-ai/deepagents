@@ -32,7 +32,6 @@ from langgraph.pregel._messages import (  # noqa: PLC2701  # not publicly re-exp
 from deepagents_code.config import (
     DEFAULT_MODEL_RETRIES,
     MODEL_RETRIES_ATTR,
-    get_glyphs,
 )
 
 if TYPE_CHECKING:
@@ -297,7 +296,14 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     try:
         import httpx
     except ImportError:
-        pass
+        # Raised for a genuinely absent httpx and for a broken sub-import
+        # (h11, certifi). The latter silently disables the classification this
+        # module exists for, so leave a trace.
+        logger.debug(
+            "httpx unavailable; its transport errors will not be classified "
+            "as retryable",
+            exc_info=True,
+        )
     else:
         # Deliberately narrower than `TransportError`, whose subclasses include
         # permanent faults: `UnsupportedProtocol` (a mistyped base_url scheme),
@@ -332,17 +338,18 @@ def _is_retryable_model_error(exc: Exception) -> bool:
 def format_retry_status(attempt: int, max_retries: int) -> str:
     """Return the concise user-facing status shown during a retry backoff.
 
+    Carries no trailing ellipsis: the TUI spinner appends its own, and the
+    previous wording claimed a dropped connection for rate limits and 5xx
+    responses, which `_is_retryable_model_error` also retries.
+
     Args:
         attempt: The 1-indexed retry number about to be attempted.
         max_retries: The configured maximum retry count.
 
     Returns:
-        A short status line, e.g. ``"model connection dropped, retrying 1/5..."``.
+        A short status line, e.g. ``"Retrying model request 1/5"``.
     """
-    return (
-        f"model connection dropped, retrying {attempt}/{max_retries}"
-        f"{get_glyphs().ellipsis}"
-    )
+    return f"Retrying model request {attempt}/{max_retries}"
 
 
 def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
@@ -466,6 +473,10 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             request: The in-flight model request (carries the runtime writer).
             attempt: The 1-indexed retry number about to be attempted.
             max_retries: Retry budget resolved for this model request.
+
+        Raises:
+            GraphBubbleUp: Propagates LangGraph control flow raised through the
+                writer rather than treating it as a writer fault.
         """
         event = build_retry_event(attempt, max_retries)
         logger.warning("Model call failed; %s", event["message"])
@@ -474,9 +485,13 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             return
         try:
             writer(event)
+        except GraphBubbleUp:
+            # LangGraph control flow must not be mistaken for a writer fault.
+            raise
         except Exception:
-            # A UI status must never break the retry/stream loop.
-            logger.debug("Failed to emit model_retry stream event", exc_info=True)
+            # This event is the only signal that the coming pause is a retry,
+            # so losing it leaves the user watching an unexplained stall.
+            logger.warning("Failed to emit model_retry stream event", exc_info=True)
 
     def _request_max_retries(self, request: ModelRequest) -> int:
         """Resolve the retry budget attached to this request's model.

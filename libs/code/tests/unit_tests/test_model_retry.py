@@ -205,17 +205,17 @@ def test_provider_overrides_global(tmp_path: Path) -> None:
         assert resolve_model_retries("anthropic") == 3
 
 
-def test_param_key_ignored_with_warning(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_param_key_does_not_disturb_the_count(tmp_path: Path) -> None:
+    """`param` names the SDK kwarg to disable; it never alters our budget.
+
+    The two keys are read by different resolvers: `max_retries` here, `param`
+    by `_provider_retry_disable_kwargs`. Neither warns on this path.
+    """
     cfg = _write_config(
         tmp_path,
         '[retries.openai]\nparam = "num_retries"\nmax_retries = 2\n',
     )
-    with (
-        patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg),
-        caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
-    ):
+    with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
         assert resolve_model_retries("openai") == 2
 
 
@@ -367,7 +367,7 @@ def test_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert mw.wrap_model_call(_req(events), _handler(handler)) == "OK"
     assert calls["n"] == 3
     assert [e["type"] for e in events] == ["model_retry", "model_retry"]
-    assert "retrying 1/5" in events[0]["message"]
+    assert events[0]["message"] == "Retrying model request 1/5"
 
 
 def test_exhaustion_reraises_original(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -421,23 +421,26 @@ def test_zero_retries_calls_handler_once() -> None:
     assert calls["n"] == 1
 
 
-def test_retry_scoped_to_model_node(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Retries re-invoke only the model handler; a separate "tool_calls" ledger
-    # is never touched, proving completed tool work is not replayed.
-    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
-    tool_calls: list[str] = []
-    model_calls = {"n": 0}
+def test_retry_reinvokes_only_the_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A retry re-runs the wrapped handler with the same request object.
 
-    def handler(_req_arg: object) -> str:
-        model_calls["n"] += 1
-        if model_calls["n"] < 2:
+    Where the retry boundary sits in the middleware stack is a property of
+    installation order, covered by
+    `test_agent.py::test_model_retry_wraps_only_inside_compaction`.
+    """
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    seen_requests: list[object] = []
+
+    def handler(req_arg: object) -> str:
+        seen_requests.append(req_arg)
+        if len(seen_requests) < 2:
             raise _CONNECT_ERROR
         return "OK"
 
     mw = CodeModelRetryMiddleware(max_retries=3)
-    assert mw.wrap_model_call(_req(), _handler(handler)) == "OK"
-    assert model_calls["n"] == 2
-    assert tool_calls == []
+    request = _req()
+    assert mw.wrap_model_call(request, _handler(handler)) == "OK"
+    assert seen_requests == [request, request]
 
 
 # --- backoff curve ---
@@ -704,7 +707,7 @@ def test_zero_startup_budget_still_retries_runtime_model(
     mw = CodeModelRetryMiddleware(max_retries=0)
     assert mw.wrap_model_call(_req(events, model_retries=3), _handler(handler)) == "OK"
     assert calls["n"] == 3
-    assert "retrying 1/3" in str(events[0]["message"])
+    assert events[0]["message"] == "Retrying model request 1/3"
 
 
 def test_model_budget_zero_disables_retries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -847,16 +850,14 @@ async def test_failed_attempt_stream_chunks_are_discarded(
     assert message_text == "final"
 
 
-@pytest.mark.parametrize("ellipsis", [UNICODE_GLYPHS.ellipsis, ASCII_GLYPHS.ellipsis])
-def test_status_helpers(ellipsis: str) -> None:
-    with patch("deepagents_code.model_retry.get_glyphs") as get_glyphs:
-        get_glyphs.return_value.ellipsis = ellipsis
-        assert (
-            format_retry_status(1, 5)
-            == f"model connection dropped, retrying 1/5{ellipsis}"
-        )
+def test_status_helpers() -> None:
+    # No trailing ellipsis: the TUI spinner widget appends its own, and the
+    # status must not claim a dropped connection for a rate limit or a 5xx.
+    status = format_retry_status(1, 5)
+    assert status == "Retrying model request 1/5"
+    assert not status.endswith((UNICODE_GLYPHS.ellipsis, ASCII_GLYPHS.ellipsis))
     event = build_retry_event(2, 5)
     assert event["type"] == "model_retry"
     assert event["attempt"] == 2
     assert event["max_retries"] == 5
-    assert "retrying 2/5" in str(event["message"])
+    assert event["message"] == "Retrying model request 2/5"

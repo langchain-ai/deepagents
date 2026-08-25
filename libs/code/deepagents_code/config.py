@@ -5458,13 +5458,21 @@ class ModelResult:
     def __post_init__(self) -> None:
         """Enforce the middleware's non-negative retry-budget invariant.
 
-        `resolve_model_retries` never returns a negative count, so a negative
-        value here signals a caller constructing `ModelResult` by hand with a
-        budget the retry middleware could not honor.
+        Non-negativity is enforced upstream by `non_negative_int` on
+        `--max-retries` and by `_coerce_max_retries` for config values, not by
+        `resolve_model_retries` itself, so a bad value here signals a caller
+        constructing `ModelResult` by hand with a budget the retry middleware
+        could not honor. `bool` is rejected for the same reason
+        `_request_max_retries` rejects it: `True` would silently read as a
+        budget of one.
 
         Raises:
+            TypeError: If `model_retries` is a `bool`.
             ValueError: If `model_retries` is negative.
         """
+        if isinstance(self.model_retries, bool):
+            msg = f"model_retries must be an int, got {self.model_retries!r}"
+            raise TypeError(msg)
         if self.model_retries < 0:
             msg = f"model_retries must be >= 0, got {self.model_retries}"
             raise ValueError(msg)

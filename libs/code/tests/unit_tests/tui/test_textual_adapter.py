@@ -2657,9 +2657,7 @@ class TestExecuteTaskTextualStreamCompletion:
                 adapter=adapter,
             )
 
-        assert (
-            f"model connection dropped, retrying 1/5{ASCII_GLYPHS.ellipsis}" in statuses
-        )
+        assert "Retrying model request 1/5" in statuses
         assert all("[/tmp/x]" not in status for status in statuses if status)
 
     async def test_hook_stop_after_clean_stream_calls_completion_callback(self) -> None:

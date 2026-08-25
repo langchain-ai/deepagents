@@ -159,10 +159,11 @@ def _format_model_retry_status(event: dict[object, object]) -> str:
     )
     if not valid_ints or not 1 <= attempt <= max_retries:
         return "Reconnecting"
-    return (
-        f"model connection dropped, retrying {attempt}/{max_retries}"
-        f"{get_glyphs().ellipsis}"
-    )
+    # Delegate to the producer so the two never drift, and so the spinner does
+    # not render its own "... " suffix on top of a status ending in an ellipsis.
+    from deepagents_code.model_retry import format_retry_status
+
+    return format_retry_status(attempt, max_retries)
 
 
 def _permission_tool_calls(

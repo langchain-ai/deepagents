@@ -31,7 +31,12 @@ _warned_usage_stats_rejections: set[str] = set()
 """Rejection reasons already reported by `_warn_rejected_usage_stats_value`."""
 
 SpinnerStatus = str | None
-"""Spinner display text, or `None` to hide."""
+"""Spinner display text, or `None` to hide.
+
+Deliberately unconstrained rather than the closed `Literal` set it replaced:
+retry status text is generated per attempt by `model_retry.format_retry_status`.
+Narrowing this back to a `Literal` union would break the retry spinner.
+"""
 
 UsageKind = Literal["assistant", "subagent", "offload", "auto"]
 """Billing/display class for a model request."""

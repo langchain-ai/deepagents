@@ -1,0 +1,16 @@
+libs/code/pyproject.toml
+  h_152f5d9f78d224 31
+libs/code/uv.lock
+  h_152f5d9f78d224 1218,2527,2534,2536
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "96f8f50ce565e75dbb01df70e3b9c9a0f10937f0",
+  "prompts": {},
+  "humans": {
+    "h_152f5d9f78d224": {
+      "author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

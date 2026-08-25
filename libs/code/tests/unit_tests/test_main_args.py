@@ -209,6 +209,43 @@ class TestResolveApprovalMode:
         finally:
             service.invalidate_config_sources()
 
+    def test_omitted_flag_restores_recent_auto(self, tmp_path: Path) -> None:
+        """A bare launch restores the Auto mode last selected in the TUI."""
+        from deepagents_code.approval_mode import save_auto_mode_notice
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
+
+        assert save_auto_mode_notice()
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nrecent = "auto"\n', encoding="utf-8"
+        )
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=None, yolo=False)
+            assert _resolve_approval_mode(args).value == "auto"
+        finally:
+            service.invalidate_config_sources()
+
+    def test_blocked_recent_auto_queues_an_explanation(self, tmp_path: Path) -> None:
+        """A stale Auto notice fails closed and explains the Manual fallback."""
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
+        from deepagents_code.model_config import (
+            consume_recent_auto_not_restored_notice,
+        )
+
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nrecent = "auto"\n', encoding="utf-8"
+        )
+        consume_recent_auto_not_restored_notice()
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=None, yolo=False)
+            assert _resolve_approval_mode(args).value == "manual"
+            assert consume_recent_auto_not_restored_notice() is not None
+        finally:
+            service.invalidate_config_sources()
+
     def test_removed_dangerously_auto_spelling_fails_closed(
         self, tmp_path: Path
     ) -> None:

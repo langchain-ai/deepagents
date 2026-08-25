@@ -1185,17 +1185,26 @@ def _exit_interpreter_conflicts_with_sandbox(
 def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":
     """Resolve the startup mode through the shared provider chain.
 
+    When no explicit mode resolves, restore the app-managed recent mode through
+    `load_startup_mode`. That path also applies the Auto notice gate and queues
+    the explanation shown when a remembered Auto mode cannot be restored.
+
     Returns:
         Typed effective approval mode.
     """
     from deepagents_code.approval_mode import coerce_approval_mode
     from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import DEFAULT_RANK
 
     option = get_option("startup.mode")
     if option is None:
         return coerce_approval_mode("manual")
     resolved = _resolver_for_args(args).get(option)
     _emit_ranked_diagnostics(option, resolved)
+    if resolved.ranks == (DEFAULT_RANK,):
+        from deepagents_code.model_config import load_startup_mode
+
+        return coerce_approval_mode(load_startup_mode())
     return coerce_approval_mode(resolved.value)
 
 

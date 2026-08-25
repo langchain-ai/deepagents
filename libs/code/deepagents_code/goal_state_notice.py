@@ -39,6 +39,12 @@ user transcript content. Keep this source in the internal-message filters when
 adding a new transcript or history projection.
 """
 SUPERSEDED_GOAL_STATE_SOURCE: Final = "goal_state_superseded"
+"""Source for the stand-in that replaces an oversized notice in a request.
+
+Deliberately not `GOAL_STATE_MESSAGE_SOURCE`: `is_goal_state_message` matches on
+that source, so reusing it would let a stand-in win
+`latest_goal_state_message_index` over the notice it was created to yield to.
+"""
 GOAL_MESSAGE_SCHEMA_VERSION: Final = 5
 """Canonical goal-message schema version.
 
@@ -833,6 +839,19 @@ def is_oversized_goal_state_message(message: object) -> bool:
 
 def superseded_goal_state_placeholder(message: object) -> HumanMessage:
     """Build a bounded same-index stand-in for an oversized prior notice.
+
+    An oversized notice must stop being model-visible, but it cannot be removed
+    from a model request. The summarizer picks its cutoff from `request.messages`
+    and persists that cutoff as an absolute index into `state["messages"]`, which
+    this middleware never filters. Any removal makes the two lists disagree by the
+    number of dropped entries, so the persisted cutoff slices the checkpointed
+    list too early: live turns vanish, and a `ToolMessage` can outlive the
+    `AIMessage` that called it (which the provider rejects).
+
+    Replacing in place keeps the length, every later index, and the human/AI/tool
+    shape identical to the checkpointed list, so the cutoff the summarizer chooses
+    is valid in both. The stand-in keeps the original `id` so an `add_messages`
+    reducer would overwrite rather than append if one ever saw it.
 
     Returns:
         Internal message that preserves the replaced notice's identifier.

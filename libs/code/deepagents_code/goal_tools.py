@@ -446,8 +446,10 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         notices remain byte-stable so changing goal state does not invalidate the
         cacheable conversation prefix. Oversized legacy notices are replaced by
         bounded same-index stand-ins so they cannot exhaust the model context.
-        The current notice explicitly supersedes them, and the system prompt is
-        left unchanged.
+        Replacement keeps the list length and every index stable, which the inner
+        summarizer's persisted absolute cutoff depends on — see
+        `superseded_goal_state_placeholder`. The current notice explicitly
+        supersedes them, and the system prompt is left unchanged.
 
         This middleware wraps the summarizer, so `request.messages` is the full
         persisted list rather than a trimmed window. The summarization cutoff is

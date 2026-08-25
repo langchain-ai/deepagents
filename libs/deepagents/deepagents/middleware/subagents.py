@@ -648,9 +648,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     # Computed early (from raw specs) so the mirrored `task` tool below has
     # this exact string -- staying byte-identical to the parent's is what
     # lets Anthropic's cache treat both tools blocks as the same content.
-    subagent_description_str = "\n".join(
-        _describe_subagent_for_tool(s["name"], s["description"], forked=_is_forked_subagent(s)) for s in subagents
-    )
+    subagent_description_str = "\n".join(_describe_subagent_for_tool(s["name"], s["description"], forked=_is_forked_subagent(s)) for s in subagents)
     if task_description is None:
         description = TASK_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
     elif "{available_agents}" in task_description:
@@ -973,9 +971,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         # Build system prompt with available agents
         if system_prompt and subagents:
-            agents_desc = "\n".join(
-                _describe_subagent_for_tool(s["name"], s["description"], forked=_is_forked_subagent(s)) for s in subagents
-            )
+            agents_desc = "\n".join(_describe_subagent_for_tool(s["name"], s["description"], forked=_is_forked_subagent(s)) for s in subagents)
             self.system_prompt = system_prompt + "\n\nAvailable subagent types:\n\n" + agents_desc
         else:
             self.system_prompt = system_prompt

@@ -75,6 +75,29 @@ def test_cli_provider_invalid_value_is_structured() -> None:
     assert isinstance(CliProvider({"sort": "oldest"}).get(option).result, Invalid)
 
 
+def test_blank_auto_classifier_flag_is_explicit_inherit() -> None:
+    """A blank `--auto-classifier-model` wins its rank as inherit, not `Unset`.
+
+    `parse_args` strips the flag's value, so both `--auto-classifier-model ""`
+    and a whitespace-only value arrive here as `""`. The launch path maps that
+    explicit blank to `INHERIT_CLASSIFIER_MODEL`, overriding env/`config.toml`;
+    the CLI tier must resolve the same way or `dcode config get
+    models.auto_classifier` reports the value the launch is ignoring. Other
+    options keep the usual rule that a blank shell string is absent.
+    """
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+    option = get_option("models.auto_classifier")
+    assert option is not None
+
+    result = CliProvider({"auto_classifier_model": ""}).get(option)
+    assert result.result == Found(INHERIT_CLASSIFIER_MODEL)
+
+    other = get_option("runtime.recursion_limit")
+    assert other is not None
+    assert isinstance(CliProvider({"recursion_limit": ""}).get(other).result, Unset)
+
+
 def test_cli_provider_status_reload_and_protocol() -> None:
     from deepagents_code.configuration.provider import ConfigProvider
 

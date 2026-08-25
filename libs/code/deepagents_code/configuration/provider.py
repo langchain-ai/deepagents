@@ -205,6 +205,19 @@ class CliProvider:
             # an absent value, not an empty one. `coerce_toml_value` accepts the
             # empty string, so without this the blank flag wins its rank and
             # masks every real value in env and `config.toml`.
+            if option.key == "models.auto_classifier":
+                # Except this one: `parse_args` strips the flag's value, so an
+                # empty string here can only be `--auto-classifier-model ""` --
+                # the explicit "inherit the main agent model" instruction that
+                # `run_textual_cli_async` maps to `INHERIT_CLASSIFIER_MODEL`
+                # ahead of env and `config.toml`. `Unset` would abstain the CLI
+                # tier, and `dcode --auto-classifier-model "" config get
+                # models.auto_classifier` would report the very env/TOML
+                # classifier the launch ignores. Returning the sentinel keeps
+                # introspection and the launch path on the same value.
+                from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+                return Found(INHERIT_CLASSIFIER_MODEL)
             if raw:
                 return Invalid(
                     f"Ignoring {flag}={raw!r} (whitespace-only; treated as unset)"

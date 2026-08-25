@@ -3878,14 +3878,20 @@ def test_agreeing_cli_flag_is_not_reported_as_ignored(
     assert "was ignored" not in capsys.readouterr().err
 
 
-def test_blank_cli_string_does_not_mask_real_values() -> None:
-    """`--flag ""` must fall through, not win its rank with an empty string.
+def test_blank_auto_classifier_flag_overrides_as_explicit_inherit() -> None:
+    """`--flag ""` must not win its rank as a plain empty string.
 
     A CLI value is a shell string, not a TOML literal. `coerce_toml_value`
     accepts `""` as a legitimate value, so a blank flag resolved as `Found('')`
     at the CLI rank and suppressed every real value below it -- reporting an
     empty classifier sourced from `CLI argument` on the `dcode config` surface.
+
+    For `models.auto_classifier` the blank flag is not absent either: it is the
+    explicit "inherit the main agent model" instruction, which the launch path
+    maps to `INHERIT_CLASSIFIER_MODEL` ahead of env and `config.toml`. The CLI
+    tier resolves the same sentinel so introspection agrees with the launch.
     """
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
     from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration.provider import CliProvider
     from deepagents_code.configuration.resolver import (
@@ -3905,5 +3911,5 @@ def test_blank_cli_string_does_not_mask_real_values() -> None:
     )
     resolved = resolver.get(option)
 
-    assert resolved.value == "openai:gpt-5"
-    assert CLI_RANK not in resolved.ranks
+    assert resolved.value == INHERIT_CLASSIFIER_MODEL
+    assert CLI_RANK in resolved.ranks

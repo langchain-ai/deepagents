@@ -17,7 +17,7 @@ from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast, override
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -2623,6 +2623,52 @@ def _resolve_model_retries_from_section(
         return cli_max_retries
     configured = _resolve_config_retry_count(section, provider)
     return configured if configured is not None else DEFAULT_MODEL_RETRIES
+
+
+def collect_retry_config_warnings() -> list[str]:
+    """Replay `[retries]` validation and return what it rejected, as text.
+
+    The retry validators report bad config through `logger.warning`, and dcode
+    attaches an in-memory buffer to the `deepagents_code` logger. That buffer
+    counts as a handler, so `logging.lastResort` never writes these records to
+    stderr and only the TUI debug console shows them. A typo'd provider key or a
+    non-integer budget would otherwise be ignored with no visible sign.
+
+    Startup calls this to print the same messages where the user will see them.
+    Capturing the real validators keeps the two paths from drifting.
+
+    Returns:
+        Formatted warning messages, empty when the config is clean.
+    """
+    captured: list[str] = []
+
+    class _Capture(logging.Handler):
+        @override
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    handler = _Capture(level=logging.WARNING)
+    handler.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+    try:
+        section = _read_config_toml_retries()
+        if section:
+            _coerce_max_retries(
+                section.get("max_retries", 0), source="[retries].max_retries"
+            )
+            for key, value in section.items():
+                if not isinstance(value, dict):
+                    continue
+                if "max_retries" in value:
+                    _coerce_max_retries(
+                        value["max_retries"],
+                        source=f"[retries.{key}].max_retries",
+                    )
+                if "param" in value:
+                    _coerce_retry_param(value["param"], source=f"[retries.{key}].param")
+    finally:
+        logger.removeHandler(handler)
+    return captured
 
 
 def resolve_model_retries(

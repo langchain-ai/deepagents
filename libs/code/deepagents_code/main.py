@@ -4943,6 +4943,24 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        # `[retries]` problems are reported by `logger.warning`, which the
+        # in-memory debug buffer swallows (see `collect_retry_config_warnings`).
+        # Print them here so a typo'd provider key or a non-integer budget is
+        # visible before the TUI takes over the screen.
+        from deepagents_code.config import collect_retry_config_warnings
+
+        retry_config_warnings = collect_retry_config_warnings()
+        if retry_config_warnings:
+            from rich.console import Console as _Console
+
+            stderr_console = _Console(stderr=True)
+            for warning in retry_config_warnings:
+                stderr_console.print(
+                    f"[bold yellow]Warning:[/bold yellow] {warning}",
+                    soft_wrap=True,
+                    highlight=False,
+                )
+
         max_turns_set = getattr(args, "max_turns", None) is not None
         if max_turns_set and not args.non_interactive_message:
             from rich.console import Console as _Console

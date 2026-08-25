@@ -7696,3 +7696,32 @@ class TestResolveGoalAutoAcceptCriteria:
             True,
             f"env ({GOAL_AUTO_ACCEPT_CRITERIA})",
         )
+
+
+class TestCollectRetryConfigWarnings:
+    """Retry config problems must reach the user, not just the debug buffer."""
+
+    @staticmethod
+    def _warnings(tmp_path: Path, toml: str) -> list[str]:
+        from deepagents_code.config import collect_retry_config_warnings
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(toml)
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            return collect_retry_config_warnings()
+
+    def test_clean_config_reports_nothing(self, tmp_path: Path) -> None:
+        """A valid budget must not produce noise on every launch."""
+        assert self._warnings(tmp_path, "[retries]\nmax_retries = 3\n") == []
+
+    def test_non_integer_budget_is_reported(self, tmp_path: Path) -> None:
+        """`max_retries = "five"` silently ran with the default before."""
+        warnings = self._warnings(tmp_path, '[retries]\nmax_retries = "five"\n')
+        assert any("[retries].max_retries" in text for text in warnings)
+
+    def test_bad_provider_param_is_reported(self, tmp_path: Path) -> None:
+        """A `param` that is not an identifier cannot disable SDK retries."""
+        warnings = self._warnings(
+            tmp_path, '[retries.openai]\nparam = "not an identifier"\n'
+        )
+        assert any("[retries.openai].param" in text for text in warnings)

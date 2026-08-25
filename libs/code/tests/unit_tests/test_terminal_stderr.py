@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import os
+import sys
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-from deepagents_code._terminal_stderr import TerminalStderrGuard, _stderr_targets_stdout
+import pytest
+
+from deepagents_code._terminal_stderr import (
+    TerminalStderrGuard,
+    _stderr_targets_stdout,
+    stdout_driver_class,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -67,6 +74,63 @@ def test_install_is_noop_outside_macos() -> None:
 
     assert guard.active is False
     isatty.assert_not_called()
+
+
+async def test_stdout_driver_renders_to_stdout() -> None:  # noqa: RUF029
+    """The subclass must flip the stream Textual's stock driver writes to.
+
+    Must be async: `Driver.__init__` calls `asyncio.get_running_loop()`. The
+    drivers are built under a patched `signal.signal` because `LinuxDriver`
+    registers process-global SIGTSTP/SIGCONT handlers it never removes.
+    """
+    from textual.drivers.linux_driver import LinuxDriver
+
+    app = SimpleNamespace()
+    driver_class = stdout_driver_class()
+    assert driver_class is not None
+    with patch("signal.signal"):
+        stock = LinuxDriver(app)  # ty: ignore[invalid-argument-type]
+        driver = driver_class(app)  # ty: ignore[invalid-argument-type]
+
+    # Pin the upstream contract too: if Textual renames `_file`, the subclass
+    # writes a dead attribute and the TUI silently renders to the guarded
+    # stderr. That must fail here rather than in a user's terminal.
+    assert stock._file is sys.__stderr__
+    assert driver._file is sys.__stdout__  # ty: ignore[unresolved-attribute]
+
+
+def test_stdout_driver_class_declines_when_stdout_is_unusable() -> None:
+    """A missing or closed stdout must not yield a driver that renders blind."""
+    with patch("deepagents_code._terminal_stderr.sys.__stdout__", None):
+        assert stdout_driver_class() is None
+
+    with patch(
+        "deepagents_code._terminal_stderr.sys.__stdout__",
+        SimpleNamespace(closed=True),
+    ):
+        assert stdout_driver_class() is None
+
+
+def test_stdout_driver_class_defers_to_explicit_textual_driver() -> None:
+    """An explicit `TEXTUAL_DRIVER` must win over the guard's override."""
+    with patch("textual.constants.DRIVER", "my.module:MyDriver"):
+        assert stdout_driver_class() is None
+
+
+def test_stdout_driver_rejects_moved_textual_internals() -> None:
+    """Textual moving its output stream must raise, not render to /dev/null."""
+    driver_class = stdout_driver_class()
+    assert driver_class is not None
+
+    def _init_without_file(*_: object, **__: object) -> None:
+        return
+
+    with (
+        patch("signal.signal"),
+        patch.object(driver_class.__mro__[1], "__init__", _init_without_file),
+        pytest.raises(RuntimeError, match="no longer stores its output stream"),
+    ):
+        driver_class(SimpleNamespace())  # ty: ignore[invalid-argument-type]
 
 
 def test_same_terminal_requires_matching_device_and_inode() -> None:

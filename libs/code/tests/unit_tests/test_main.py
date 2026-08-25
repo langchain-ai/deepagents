@@ -3017,7 +3017,10 @@ class TestRunTextualCliAsyncMcp:
 
 
 class TestServerCleanupLifecycle:
-    """Verify server_proc.stop() is guaranteed after the TUI exits.
+    """Verify TUI setup and teardown around `run_textual_app`.
+
+    Covers both the stderr-guard/driver wiring installed before `run_async`
+    and the cleanup guaranteed after it.
 
     The `Server log preserved at:` notice is drained by the process-global
     `emit_preserved_log_notices()` (patched here), called unconditionally once
@@ -3029,13 +3032,9 @@ class TestServerCleanupLifecycle:
         """run_textual_app must call server_proc.stop() in the finally block."""
         server_proc = SimpleNamespace(stop=MagicMock())
 
-        guard = MagicMock()
+        guard = MagicMock(active=False)
         with (
-            patch.object(
-                DeepAgentsApp,
-                "run_async",
-                new_callable=AsyncMock,
-            ),
+            patch.object(DeepAgentsApp, "run_async", new_callable=AsyncMock),
             patch(
                 "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
                 return_value=guard,
@@ -3049,6 +3048,91 @@ class TestServerCleanupLifecycle:
         guard.close.assert_called_once_with()
         server_proc.stop.assert_called_once_with()
         emit.assert_called_once_with()
+
+    async def test_stdout_driver_installed_while_stderr_is_suppressed(self) -> None:
+        """An active guard must redirect Textual to stdout before it renders.
+
+        The guard points fd 2 at /dev/null and Textual's stock Unix driver
+        renders to `sys.__stderr__`, so the driver must already be swapped by
+        the time `run_async` starts — a black screen otherwise.
+        """
+        driver_class = MagicMock()
+        observed: list[object] = []
+
+        async def _run_async(app: DeepAgentsApp) -> None:  # noqa: RUF029
+            observed.append(app.driver_class)
+
+        guard = MagicMock(active=True)
+        with (
+            patch.object(DeepAgentsApp, "run_async", new=_run_async),
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
+            ),
+            patch(
+                "deepagents_code._terminal_stderr.stdout_driver_class",
+                return_value=driver_class,
+            ),
+            patch("deepagents_code.client.launch.server.emit_preserved_log_notices"),
+        ):
+            await run_textual_app(server_proc=None, thread_id="t-1")  # ty: ignore
+
+        assert observed == [driver_class]
+
+    async def test_driver_untouched_while_stderr_is_not_suppressed(self) -> None:
+        """An inactive guard must leave Textual's auto-detected driver alone."""
+        stdout_driver = MagicMock()
+        observed: list[object] = []
+
+        async def _run_async(app: DeepAgentsApp) -> None:  # noqa: RUF029
+            observed.append(app.driver_class)
+
+        guard = MagicMock(active=False)
+        with (
+            patch.object(DeepAgentsApp, "run_async", new=_run_async),
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
+            ),
+            patch(
+                "deepagents_code._terminal_stderr.stdout_driver_class",
+                return_value=stdout_driver,
+            ) as stdout_driver_class,
+            patch("deepagents_code.client.launch.server.emit_preserved_log_notices"),
+        ):
+            await run_textual_app(server_proc=None, thread_id="t-1")  # ty: ignore
+
+        stdout_driver_class.assert_not_called()
+        assert len(observed) == 1
+        assert observed[0] is not stdout_driver
+
+    async def test_stderr_suppression_dropped_when_stdout_unusable(self) -> None:
+        """A visible TUI on stderr beats an invisible one on a dead stdout."""
+        observed: list[object] = []
+
+        async def _run_async(app: DeepAgentsApp) -> None:  # noqa: RUF029
+            observed.append(app.driver_class)
+
+        guard = MagicMock(active=True)
+        with (
+            patch.object(DeepAgentsApp, "run_async", new=_run_async),
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
+            ),
+            patch(
+                "deepagents_code._terminal_stderr.stdout_driver_class",
+                return_value=None,
+            ),
+            patch("deepagents_code.client.launch.server.emit_preserved_log_notices"),
+        ):
+            await run_textual_app(server_proc=None, thread_id="t-1")  # ty: ignore
+
+        guard.close.assert_called_with()
+        # Textual's auto-detected driver must survive; `None` would crash
+        # `_build_driver`, and the stdout class was never available.
+        assert len(observed) == 1
+        assert observed[0] is not None
 
     async def test_server_proc_stopped_when_stderr_guard_install_fails(self) -> None:
         """Server cleanup must run when the stderr guard cannot be installed."""

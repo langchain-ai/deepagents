@@ -1845,11 +1845,9 @@ if UV_TOOL_DIR_RAW=$("$UV_BIN" tool dir 2>/dev/null); then
   UV_TOOL_DIR="$UV_TOOL_DIR_RAW"
 fi
 MANAGED_BIN_DIR="${UV_TOOL_DIR:+${UV_TOOL_DIR}/deepagents-code/share/deepagents-code/bin}"
-MANAGED_BIN_DIR_PREEXISTED=false
-[ -z "$MANAGED_BIN_DIR" ] || [ ! -e "$MANAGED_BIN_DIR" ] || MANAGED_BIN_DIR_PREEXISTED=true
-# `dcode tools install` falls back here when MANAGED_BIN_DIR is unwritable.
-PROFILE_BIN_DIR_PREEXISTED=false
-[ ! -e "${DEEPAGENTS_HOME}/bin" ] || PROFILE_BIN_DIR_PREEXISTED=true
+# `dcode tools install` falls back to "${DEEPAGENTS_HOME}/bin" when
+# MANAGED_BIN_DIR is unwritable. Neither is snapshotted: see
+# fix_managed_bin_owner for why the repair must not be gated on pre-existence.
 
 # `uv tool install` writes into uv's caches too, so a root run leaves them
 # root-owned and the target user's next non-root `uv` fails on a stale cache,
@@ -3668,13 +3666,18 @@ ripgrep_managed_failed() {
 # both or the fallback stays root-owned inside the user's home. Each is gated
 # on `path_is_under_home` as fix_tree_owner requires: MANAGED_BIN_DIR derives
 # from `uv tool dir`, which the user can point outside $HOME.
+#
+# Repair on every root run, not only a first install — the same reason
+# `fix_tree_owner "${UV_TOOL_DIR}/deepagents-code"` is ungated. `dcode tools
+# install` has just written into these trees as root, and on an upgrade they
+# already exist, so a `*_PREEXISTED` gate would skip the common `sudo` path and
+# leave the freshly written `rg` root-owned. Both hold only the managed binary
+# the installer put there, so they are trees this installer owns outright.
 fix_managed_bin_owner() {
-  if [ "$MANAGED_BIN_DIR_PREEXISTED" = false ] && [ -n "$MANAGED_BIN_DIR" ] && \
-    path_is_under_home "$MANAGED_BIN_DIR"; then
+  if [ -n "$MANAGED_BIN_DIR" ] && path_is_under_home "$MANAGED_BIN_DIR"; then
     fix_tree_owner "$MANAGED_BIN_DIR"
   fi
-  if [ "$PROFILE_BIN_DIR_PREEXISTED" = false ] && [ -n "${DEEPAGENTS_HOME:-}" ] && \
-    path_is_under_home "${DEEPAGENTS_HOME}/bin"; then
+  if [ -n "${DEEPAGENTS_HOME:-}" ] && path_is_under_home "${DEEPAGENTS_HOME}/bin"; then
     fix_tree_owner "${DEEPAGENTS_HOME}/bin"
   fi
 }

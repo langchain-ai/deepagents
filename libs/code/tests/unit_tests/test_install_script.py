@@ -5597,6 +5597,71 @@ def test_root_install_chowns_only_exact_managed_leaves_with_optional_setup(
     assert (tmp_path / "dcode-tools.txt").exists()
 
 
+def test_root_upgrade_still_chowns_a_preexisting_managed_bin_dir(
+    tmp_path: Path,
+) -> None:
+    """The `sudo` upgrade path is the common one, and it must not be skipped.
+
+    `dcode tools install` writes into these trees as root on every run. Gating
+    the repair on "did this run create the directory?" skipped it whenever the
+    directory already existed — i.e. on every upgrade — leaving the freshly
+    written `rg` root-owned inside the target user's home.
+    """
+    env = _env(
+        tmp_path,
+        {"SUDO_USER": "target"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    profile = home / ".deepagents"
+    fallback_bin = profile / "bin"
+    # The upgrade case: both managed bin directories are already on disk with a
+    # binary in them before the installer runs.
+    fallback_bin.mkdir(parents=True)
+    (fallback_bin / "rg").write_text("stale binary\n")
+    chown_log = tmp_path / "chown-invocations.txt"
+    for name, body in {
+        "id": "printf '0\n'\n",
+        "uname": "printf 'Linux\n'\n",
+        "chown": 'printf \'%s\\n\' "$*" >>"$CHOWN_LOG"\n',
+    }.items():
+        tool = bin_dir / name
+        tool.write_text(f"#!/usr/bin/env bash\n{body}")
+        _make_executable(tool)
+    env.update(
+        {
+            "CHOWN_LOG": str(chown_log),
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_HOME": str(profile),
+            "FAKE_MANAGED_BIN_DIR": str(fallback_bin),
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    targets = {
+        arg
+        for invocation in chown_log.read_text().splitlines()
+        for arg in invocation.split()
+        if arg.startswith("/")
+    }
+    assert str(fallback_bin) in targets
+    # The repair still walks only the managed tree, never the home or profile.
+    assert str(home) not in targets
+    assert str(profile) not in targets
+
+
 def test_root_install_skips_a_managed_bin_dir_outside_home(tmp_path: Path) -> None:
     """A tool dir outside $HOME is never handed to the target user.
 

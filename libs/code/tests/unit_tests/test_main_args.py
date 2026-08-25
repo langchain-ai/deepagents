@@ -175,39 +175,78 @@ class TestAutoApproveArgument:
             parse_args()
 
 
-class TestResolveAutoApprove:
-    """Tests for `_resolve_auto_approve` (flag vs. `[startup].mode` precedence)."""
+class TestResolveApprovalMode:
+    """Tests for `_resolve_approval_mode` (flag vs. `[startup].mode`)."""
 
-    def test_explicit_flag_wins_without_consulting_config(self) -> None:
-        """An explicit -y (True) resolves True and never reads config."""
-        from deepagents_code.main import _resolve_auto_approve
+    def test_explicit_flag_wins_over_config(self, tmp_path: Path) -> None:
+        """An explicit `--auto-approve` outranks a `manual` config."""
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
 
-        args = argparse.Namespace(auto_approve=True)
-        with patch("deepagents_code.model_config.load_startup_mode") as mock_load:
-            assert _resolve_auto_approve(args) is True
-        mock_load.assert_not_called()
+        # `_isolate_state_dir` already points `DEFAULT_CONFIG_PATH` here.
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nmode = "manual"\n', encoding="utf-8"
+        )
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=True, yolo=False)
+            assert _resolve_approval_mode(args).value == "auto"
+        finally:
+            service.invalidate_config_sources()
 
-    def test_omitted_flag_manual_config_resolves_false(self) -> None:
-        """No flag + `[startup].mode = manual` keeps approvals on (False)."""
-        from deepagents_code.main import _resolve_auto_approve
+    def test_omitted_flag_reads_manual_from_config(self, tmp_path: Path) -> None:
+        """No flag + `[startup].mode = manual` keeps approvals on."""
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
 
-        args = argparse.Namespace(auto_approve=None)
-        with patch(
-            "deepagents_code.model_config.load_startup_mode",
-            return_value="manual",
-        ):
-            assert _resolve_auto_approve(args) is False
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nmode = "manual"\n', encoding="utf-8"
+        )
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=None, yolo=False)
+            assert _resolve_approval_mode(args).value == "manual"
+        finally:
+            service.invalidate_config_sources()
 
-    def test_omitted_flag_dangerously_auto_config_resolves_false(self) -> None:
-        """The removed `dangerously-auto` spelling fails closed."""
-        from deepagents_code.main import _resolve_auto_approve
+    def test_removed_dangerously_auto_spelling_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """The retired `dangerously-auto` spelling must not grant autonomy.
 
-        args = argparse.Namespace(auto_approve=None)
-        with patch(
-            "deepagents_code.model_config.load_startup_mode",
-            return_value="dangerously-auto",
-        ):
-            assert _resolve_auto_approve(args) is False
+        Previously asserted by patching `model_config.load_startup_mode`, which
+        `_resolve_approval_mode` stopped calling when it moved to the resolver.
+        The patch became a no-op and the assertion passed on the empty-config
+        default instead -- green whether or not the value fell back safely.
+        Write the real spelling into `config.toml` so the coercion runs.
+        """
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
+
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nmode = "dangerously-auto"\n', encoding="utf-8"
+        )
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=None, yolo=False)
+            assert _resolve_approval_mode(args).value == "manual"
+        finally:
+            service.invalidate_config_sources()
+
+    def test_config_can_select_an_autonomous_mode(self, tmp_path: Path) -> None:
+        """A valid config mode must still be honoured, or the test above is vacuous."""
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
+
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nmode = "auto"\n', encoding="utf-8"
+        )
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=None, yolo=False)
+            assert _resolve_approval_mode(args).value == "auto"
+        finally:
+            service.invalidate_config_sources()
 
     @pytest.mark.parametrize(
         ("args", "expected"),

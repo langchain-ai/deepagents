@@ -1203,20 +1203,6 @@ def _resolved_recursion_limit(args: argparse.Namespace) -> int | None:
     return resolve_recursion_limit()
 
 
-def _resolve_auto_approve(args: argparse.Namespace) -> bool:
-    """Return the compatibility Boolean for callers using the old resolver.
-
-    Args:
-        args: Parsed CLI arguments.
-
-    Returns:
-        Whether startup resolves to either autonomous mode.
-    """
-    from deepagents_code.approval_mode import ApprovalMode
-
-    return _resolve_approval_mode(args) is not ApprovalMode.MANUAL
-
-
 def _prompt_yolo_acknowledgement(console: "Console") -> bool:
     """Show an inline fail-closed selector for unrestricted execution.
 

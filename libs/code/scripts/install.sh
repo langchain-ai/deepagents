@@ -1671,14 +1671,11 @@ if ! resolve_uv_bin; then
     log_error "UV_BIN is set but does not point to an executable uv: ${UV_BIN}"
     exit 1
   fi
-  acquire_install_lock
-  UV_BIN_DIR_PREEXISTED=false
-  if [ -d "${HOME}/.local/bin" ]; then
-    UV_BIN_DIR_PREEXISTED=true
-  fi
   # Note which uv-owned caches this run is about to create, so a root install
   # can hand them back afterwards. Without this the target user's later
-  # non-root `uv` invocations fail on a root-owned cache, far from here.
+  # non-root `uv` invocations fail on a root-owned cache, far from here. Take
+  # this snapshot before acquiring the install lock: its default path lives
+  # below uv's data directory and can create that tree itself.
   UV_CACHE_CANDIDATES=""
   for uv_cache_dir in \
     "${XDG_CACHE_HOME:-${HOME}/.cache}/uv" \
@@ -1688,6 +1685,11 @@ if ! resolve_uv_bin; then
       UV_CACHE_CANDIDATES="${UV_CACHE_CANDIDATES}${uv_cache_dir}"$'\n'
     fi
   done
+  acquire_install_lock
+  UV_BIN_DIR_PREEXISTED=false
+  if [ -d "${HOME}/.local/bin" ]; then
+    UV_BIN_DIR_PREEXISTED=true
+  fi
   log_info "uv not found — installing..."
   install_uv
   if [ "$UV_BIN_DIR_PREEXISTED" = false ]; then

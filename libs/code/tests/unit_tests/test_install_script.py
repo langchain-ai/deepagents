@@ -4538,6 +4538,18 @@ def test_install_uv_hides_installer_output_by_default(tmp_path: Path) -> None:
     assert "UV_INSTALLER_NOISE" not in proc.stderr
 
 
+def test_uv_cache_snapshot_precedes_install_lock() -> None:
+    """Lock creation cannot hide a newly created uv data tree from ownership repair."""
+    source = SCRIPT.read_text(encoding="utf-8")
+    bootstrap = source.split("if ! resolve_uv_bin; then", maxsplit=1)[1].split(
+        "resolve_tool_bin_dir()", maxsplit=1
+    )[0]
+
+    assert bootstrap.index('UV_CACHE_CANDIDATES=""') < bootstrap.index(
+        "acquire_install_lock"
+    )
+
+
 def test_install_uv_verbose_shows_installer_output(tmp_path: Path) -> None:
     """`DEEPAGENTS_CODE_VERBOSE=1` opts back in to the uv installer's output."""
     proc = _run_install_uv(tmp_path, verbose=True)

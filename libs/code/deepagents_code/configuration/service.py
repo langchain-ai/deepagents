@@ -560,9 +560,17 @@ class ManagedPolicyError(ManagedConfigError):
     def __init__(self, status: ProviderStatus, keys: tuple[str, ...]) -> None:
         """Build a startup error naming the keys that stop the launch."""
         path = status.path or managed_config_path()
+        rejected = ", ".join(keys)
+        if status.remote_source is not None:
+            # The rejected value is in the remote document, not in the local
+            # trust anchor, which holds only a URL. Pointing the administrator
+            # at the anchor sends them to a file with no such key in it.
+            location = f"{path} points to {status.remote_source}, which"
+        else:
+            location = str(path)
         super().__init__(
             status,
-            f"Managed config at {path} rejects {', '.join(keys)}. "
+            f"Managed config at {location} rejects {rejected}. "
             "Ask your administrator to correct the value.",
         )
         self.keys = keys

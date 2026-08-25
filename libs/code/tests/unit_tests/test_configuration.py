@@ -4336,3 +4336,40 @@ def test_remote_toml_provider_rejects_a_keyless_policy(
     assert snapshot.status.health is ProviderHealth.CORRUPT
     assert "declared no policy" in (snapshot.status.detail or "")
     assert not snapshot.data
+
+
+def test_remote_policy_violation_names_the_url_not_the_trust_anchor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unenforceable remote value blames the document that declares it.
+
+    The sibling `ManagedConfigError` branch covers a failed fetch. This is the
+    other half of exit 78: the fetch worked and the policy it returned cannot
+    be applied. The local anchor holds only a URL, so telling the administrator
+    to correct the value there names a file with no such key.
+    """
+    from deepagents_code.configuration import providers, service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            return _RemoteResponse(b'[startup]\nmode = "not-a-real-mode"\n')
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    service.invalidate_config_sources()
+
+    with pytest.raises(service.ManagedPolicyError) as caught:
+        require_healthy_managed_config(refresh=True)
+
+    message = str(caught.value)
+    assert "https://config.example.com/policy.toml" in message
+    assert "startup.mode" in message
+    assert f"{managed} rejects" not in message

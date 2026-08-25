@@ -1057,16 +1057,35 @@ def _install_cli_provider(args: argparse.Namespace) -> None:
 
 
 def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
-    """Return the resolver-backed interpreter state for these CLI args."""
+    """Return the resolver-backed interpreter state for these CLI args.
+
+    Any tier that actually declares `interpreter.enable_interpreter` wins,
+    including managed policy. Only an undeclared option -- one resolving from
+    the typed default -- falls through to the sandbox rule, because a remote
+    sandbox cannot host the interpreter and is the right default there.
+
+    Honouring the CLI tier alone was a policy hole: `interpreter.
+    enable_interpreter` is an `ENFORCED_MANAGED_KEYS` member, and a managed
+    `true` silently became `false` whenever `--sandbox` named a remote backend.
+
+    Raises:
+        RuntimeError: If the manifest is missing the option, which is a
+            programming error rather than a runtime condition. Defaulting to
+            `True` here would enable JS execution for an enforced key.
+    """
     from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
-    from deepagents_code.configuration.resolver import CLI_RANK
+    from deepagents_code.configuration.resolver import DEFAULT_RANK
 
     option = get_option("interpreter.enable_interpreter")
     if option is None:
-        return True
+        msg = (
+            "manifest option 'interpreter.enable_interpreter' is missing; "
+            "refusing to enable the interpreter without managed-policy input"
+        )
+        raise RuntimeError(msg)
     resolved = _resolver_for_args(args).get(option)
     _emit_ranked_diagnostics(option, resolved)
-    if CLI_RANK in resolved.ranks:
+    if any(rank != DEFAULT_RANK for rank in resolved.ranks):
         return bool(resolved.value)
     if args.sandbox and args.sandbox != "none":
         return False

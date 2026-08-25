@@ -3263,6 +3263,56 @@ class TestResolveInterpreterEnabled:
         with patch.object(settings, "enable_interpreter", True):
             assert _resolve_interpreter_enabled(args) is True
 
+    def test_managed_policy_outranks_the_sandbox_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Managed `enable_interpreter` must survive a remote sandbox.
+
+        Regression: only the CLI tier was consulted, so a managed `true` --
+        an `ENFORCED_MANAGED_KEYS` member -- silently became `false` whenever
+        `--sandbox` named a remote backend. The sandbox rule is a default, so
+        it may only apply when no tier declared the option.
+        """
+        import argparse
+
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_interpreter_enabled
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            "[interpreter]\nenable_interpreter = true\n", encoding="utf-8"
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(interpreter=None, sandbox="daytona")
+            assert _resolve_interpreter_enabled(args) is True
+        finally:
+            service.invalidate_config_sources()
+
+    def test_sandbox_default_still_applies_when_undeclared(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With policy silent on the key, the sandbox default stands."""
+        import argparse
+
+        from deepagents_code.config import settings
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_interpreter_enabled
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text("[runtime]\nrecursion_limit = 100\n", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(interpreter=None, sandbox="daytona")
+            with patch.object(settings, "enable_interpreter", True):
+                assert _resolve_interpreter_enabled(args) is False
+        finally:
+            service.invalidate_config_sources()
+
 
 class TestRunTextualCliAsyncInterpreterDefault:
     """Tests for TUI helper interpreter tri-state forwarding."""

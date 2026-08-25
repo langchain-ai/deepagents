@@ -424,7 +424,7 @@ class TestReliableRubricMiddleware:
 
         assert result.result == "satisfied"
         assert grader.invoke.call_count == 2
-        assert "1 criteria" in _grader_payload(grader.invoke.call_args_list[1])
+        assert "1 of the 2 criteria" in _grader_payload(grader.invoke.call_args_list[1])
 
     async def test_inherits_sdk_coverage_retry_async(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")
@@ -439,7 +439,9 @@ class TestReliableRubricMiddleware:
 
         assert result.result == "satisfied"
         assert grader.ainvoke.await_count == 2
-        assert "1 criteria" in _grader_payload(grader.ainvoke.await_args_list[1])
+        assert "1 of the 2 criteria" in _grader_payload(
+            grader.ainvoke.await_args_list[1]
+        )
 
     def test_transport_retry_nests_inside_coverage_retry(self) -> None:
         # A transport fault is retried within a call; an under-report is retried

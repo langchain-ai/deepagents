@@ -105,7 +105,7 @@ def copy_text_with_feedback(
     app: App,
     text: str,
     *,
-    failure_noun: Literal["input", "selection"],
+    failure_noun: Literal["input", "prompt", "selection"],
     success_message: str | None = None,
 ) -> bool:
     """Copy text to the clipboard and surface the outcome as a toast.
@@ -117,7 +117,7 @@ def copy_text_with_feedback(
         app: The active Textual app, used for the clipboard backend and toasts.
         text: Text to copy.
         failure_noun: Noun used in the warning toast (e.g. `"input"`,
-            `"selection"`).
+            `"prompt"`, `"selection"`).
         success_message: Toast shown on success. When `None`, success is silent
             (used by the selection-copy path, which has no visible draft to
             confirm).

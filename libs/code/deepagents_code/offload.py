@@ -6,12 +6,15 @@ import logging
 import os
 import stat
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
 logger = logging.getLogger(__name__)
 
 _FALLBACK_ARTIFACTS_ROOT = "/dcode-artifacts-fallback"
+
+_SECONDS_PER_DAY = 86_400
 
 CONVERSATION_HISTORY_DIRNAME = "conversation_history"
 """Subdirectory of the offload root that holds per-thread conversation archives.
@@ -240,6 +243,117 @@ def _offload_fallback_root() -> Path:
         unique = Path(tempfile.mkdtemp(prefix=f"deepagents-{suffix}-", dir=temp_root))
         _UNIQUE_OFFLOAD_FALLBACK_ROOT = _prepare_temp_dir(unique)
         return _UNIQUE_OFFLOAD_FALLBACK_ROOT
+
+
+def _history_retention_days() -> int:
+    """Resolve the conversation-history retention window through the manifest.
+
+    Uses the canonical `history.retention_days` option, so managed config, the
+    `DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS` env var, and `config.toml` all
+    apply with their normal precedence, and `dcode config` reports the same
+    value the sweep acts on. A malformed or negative value is rejected by the
+    resolver and falls through to the next source, ending at the default.
+
+    Returns:
+        The resolved non-negative retention window in days; `0` disables the
+        sweep.
+    """
+    from deepagents_code.config_manifest import (
+        HISTORY_RETENTION_DAYS_DEFAULT,
+        _emit_ranked_diagnostics,
+        _resolve_option,
+        get_option,
+    )
+
+    option = get_option("history.retention_days")
+    if option is None:
+        return HISTORY_RETENTION_DAYS_DEFAULT
+    resolved = _resolve_option(option)
+    _emit_ranked_diagnostics(option, resolved)
+    value = resolved.value
+    if type(value) is int and value >= 0:
+        return value
+    return HISTORY_RETENTION_DAYS_DEFAULT
+
+
+def _delete_expired_archive(candidate: Path, archive_dir: Path, cutoff: float) -> bool:
+    """Delete one expired regular markdown archive.
+
+    The expiry check and `unlink` are serialized against a concurrent archive
+    refresh: the summarization middleware refreshes an archive by path
+    (read-append-rewrite), and on POSIX an `unlink` racing that rewrite would
+    orphan the open descriptor and silently drop the newly written history.
+    Opening the candidate and re-checking expiry with `fstat` on the live
+    descriptor immediately before `unlink` closes that window: a rewrite that
+    already refreshed the mtime is observed and the archive is kept, and a
+    rewrite that starts after the `fstat` still lands in the inode the writer
+    has open.
+
+    Args:
+        candidate: Direct child of the archive directory to inspect.
+        archive_dir: Directory that candidates must remain inside.
+        cutoff: Oldest mtime to retain, as Unix seconds.
+
+    Returns:
+        Whether the candidate was deleted.
+    """
+    if candidate.parent != archive_dir or candidate.suffix != ".md":
+        return False
+    try:
+        with candidate.open("rb") as archive_file:
+            info = os.fstat(archive_file.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_mtime >= cutoff:
+                return False
+            candidate.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.warning(
+            "Failed to sweep offloaded history archive %s", candidate, exc_info=True
+        )
+        return False
+    return True
+
+
+def _sweep_offloaded_history(retention_days: int) -> int:
+    """Delete expired archives after retention config has been validated.
+
+    Args:
+        retention_days: Number of days of archives to retain.
+
+    Returns:
+        The number of archives deleted.
+    """
+    try:
+        archive_dir = _offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME
+        candidates = list(archive_dir.iterdir())
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Could not resolve offloaded history archives for sweep", exc_info=True
+        )
+        return 0
+    cutoff = time.time() - retention_days * _SECONDS_PER_DAY
+    return sum(
+        _delete_expired_archive(candidate, archive_dir, cutoff)
+        for candidate in candidates
+    )
+
+
+def sweep_offloaded_history() -> int:
+    """Delete conversation-history archives older than the configured retention.
+
+    Returns:
+        The number of archive files deleted. Failures return zero or omit the
+        affected file from the count rather than raising.
+    """
+    try:
+        retention_days = _history_retention_days()
+        if retention_days == 0:
+            return 0
+        return _sweep_offloaded_history(retention_days)
+    except Exception:
+        logger.warning("Unexpected failure sweeping offloaded history", exc_info=True)
+        return 0
 
 
 def delete_offloaded_history(thread_id: str) -> bool:

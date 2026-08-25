@@ -1292,7 +1292,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
         Returns:
             The rendered help line for the modal footer.
         """
-        help_parts = [f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"]
+        help_parts = [
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
+            "Tab/Shift+Tab servers",
+        ]
         enter_hint = self._selected_enter_hint()
         if enter_hint is not None:
             help_parts.append(enter_hint)

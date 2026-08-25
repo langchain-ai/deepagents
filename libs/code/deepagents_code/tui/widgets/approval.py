@@ -172,7 +172,7 @@ class ApprovalMenu(Container):
         self._tool_names = [r.get("name", "unknown") for r in self._action_requests]
         self._is_auto_fallback = any(
             isinstance(request.get("description"), str)
-            and request["description"].startswith("Auto human fallback ")
+            and request["description"].startswith("Auto human fallback")
             for request in self._action_requests
         )
         # Only offer the Auto option when it can actually be enabled. A live

@@ -280,8 +280,15 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
+            # Deliberately not the shared `modal_navigation_hint` copy: Tab
+            # autocompletes here, so advertising "Tab/Shift+Tab navigate"
+            # would misdescribe it. Shift+Tab still works via
+            # `_SupportsReverseNav`; it is simply unadvertised.
+            assert "navigate" in str(help_text.content)
+            assert "Tab/Shift+Tab navigate" not in str(help_text.content)
             assert "Tab autocomplete" in str(help_text.content)
             assert "Esc skip setup" not in str(help_text.content)
+            assert "Esc close" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
 
     async def test_curated_selector_help_hides_default_hint(self) -> None:
@@ -323,8 +330,8 @@ class TestModelSelectorChrome:
         assert max_height.cells is not None
         assert max_height.cells <= 16
 
-    async def test_standard_selector_help_hides_cancel_hint(self) -> None:
-        """The regular /model selector should not leave a trailing separator."""
+    async def test_standard_selector_help_shows_close_hint(self) -> None:
+        """The regular `/model` selector should advertise Escape dismissal."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
@@ -337,7 +344,7 @@ class TestModelSelectorChrome:
             # Standard mode still advertises the default-setting shortcut that
             # curated/onboarding mode hides.
             assert "Ctrl+S set default" in str(help_text.content)
-            assert "Esc cancel" not in str(help_text.content)
+            assert "Esc close" in str(help_text.content)
 
     async def test_standard_selector_help_wraps_to_two_rows(self) -> None:
         """The standard footer is wider than the modal, so it must wrap.
@@ -1693,7 +1700,7 @@ class TestRecentModelsSection:
                 str(h.content)
                 for h in screen.query(".model-provider-header").results(Static)
             ]
-            assert any("OpenAI Codex (ChatGPT login)" in h for h in headers)
+            assert any("OpenAI (Subscription login)" in h for h in headers)
             assert not any("openai_codex" in h for h in headers)
 
     async def test_recent_row_shows_name_and_provider_tag(
@@ -1756,7 +1763,7 @@ class TestRecentModelsSection:
             text = str(recent.content)
             assert "(OpenAI Codex)" in text
             # The verbose auth label must not leak into the compact tag.
-            assert "ChatGPT login" not in text
+            assert "Subscription login" not in text
 
     async def test_recent_entries_appear_in_provider_section_too(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2189,6 +2196,90 @@ class TestModelSelectorAuthRouting:
 class TestModelSelectorFiltering:
     """Tests for search filtering."""
 
+    async def test_empty_allowlist_explains_policy(self) -> None:
+        """An empty policy shows its cause instead of offering custom models."""
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            "[models]\nallowed = []\n",
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            options = screen.query_one("#model-options", Container)
+            content = " ".join(str(widget.content) for widget in options.query(Static))
+            # An empty filter must not be blamed on a typo, and the message
+            # names the policy rather than offering a custom spec.
+            assert "models.allowed permits no models" in content
+            assert "press Enter" not in content
+
+    async def test_nonspec_filter_is_not_blamed_on_policy(self) -> None:
+        """A typo in the filter box is not the administrator's fault.
+
+        `is_model_allowed` rejects any non-spec string, so testing the filter
+        text directly would attribute every mistyped filter -- and every empty
+        one -- to `models.allowed`.
+        """
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            await pilot.press("z", "z", "z", "q")
+            await pilot.pause()
+
+            options = screen.query_one("#model-options", Container)
+            content = " ".join(str(widget.content) for widget in options.query(Static))
+            assert "models.allowed" not in content
+
+    async def test_blocked_spec_filter_names_the_policy_and_allowed_models(
+        self,
+    ) -> None:
+        """Typing a real but blocked spec does name the policy, and what is allowed."""
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            screen._filter_text = "openai:blocked"
+            screen._filtered_models = []
+            await screen._update_display()
+            await pilot.pause()
+
+            options = screen.query_one("#model-options", Container)
+            content = " ".join(str(widget.content) for widget in options.query(Static))
+            assert "not allowed by the configured models.allowed" in content
+            # Naming the permitted specs is the only way out when they are not
+            # discoverable, so the empty state must carry them.
+            assert "anthropic:claude-sonnet-5" in content
+
     async def test_typing_filters_models(self) -> None:
         """Typing in the filter input should filter models."""
         app = ModelSelectorTestApp()
@@ -2225,6 +2316,82 @@ class TestModelSelectorFiltering:
         screen.action_select()
 
         assert result == ("custom:my-model", "custom")
+
+    @pytest.mark.parametrize("custom_input", ["custom:blocked", "blocked"])
+    def test_disallowed_custom_model_spec_is_not_selected(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        custom_input: str,
+    ) -> None:
+        """Enter has no selection side effects for custom models denied by policy."""
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["custom:allowed"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        screen = _model_selector_for_filtering()
+
+        class FakeInput:
+            value = custom_input
+
+        screen._filtered_models = []
+        monkeypatch.setattr(screen, "query_one", lambda *_args, **_kwargs: FakeInput())
+        select = MagicMock()
+        dismiss = MagicMock()
+        notify = MagicMock()
+        monkeypatch.setattr(screen, "_select_with_auth_check", select)
+        monkeypatch.setattr(screen, "_dismiss_with_result", dismiss)
+        monkeypatch.setattr(screen, "notify", notify)
+
+        screen.action_select()
+
+        select.assert_not_called()
+        dismiss.assert_not_called()
+        # Silently swallowing the keypress reads as a dead binding, so the
+        # refusal has to say why.
+        notify.assert_called_once()
+        assert "models.allowed" in notify.call_args.args[0]
+        assert notify.call_args.kwargs["severity"] == "error"
+
+    def test_allowed_bare_name_is_selectable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A supported bare name is not rejected for lacking a provider prefix.
+
+        With `allowed = ["openai:gpt-5.6-terra"]`, entering `gpt-5.6-terra` must
+        be accepted: `create_model` infers `openai`, builds the canonical spec,
+        and allows it. The preflight has to judge the same canonical form.
+        """
+        from deepagents_code import model_config
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test-placeholder-not-a-real-key")
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["openai:gpt-5.6-terra"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        screen = _model_selector_for_filtering()
+
+        class FakeInput:
+            value = "gpt-5.6-terra"
+
+        screen._filtered_models = []
+        monkeypatch.setattr(screen, "query_one", lambda *_args, **_kwargs: FakeInput())
+        dismiss = MagicMock()
+        notify = MagicMock()
+        monkeypatch.setattr(screen, "_dismiss_with_result", dismiss)
+        monkeypatch.setattr(screen, "notify", notify)
+
+        screen.action_select()
+
+        # A bare name has no provider to pass along, so it takes the
+        # no-prefix branch and `create_model` infers the provider downstream.
+        dismiss.assert_called_once_with(("gpt-5.6-terra", ""))
+        notify.assert_not_called()
 
     def test_enter_selects_highlighted_model_not_filter_text(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2476,10 +2643,10 @@ class TestModelSelectorFuzzyMatching:
     def test_fuzzy_matches_provider_friendly_label(self) -> None:
         """The provider display label — not just the key — is searchable.
 
-        Searches "chatgpt", which appears in neither the spec
+        Searches "subscription", which appears in neither the spec
         (`openai_codex:gpt-5.2`), the friendly model name ("GPT-5.2"), nor the
         provider key (`openai_codex`) — only in the resolved display label
-        "OpenAI Codex (ChatGPT login)". So a match proves the provider-label
+        "OpenAI (Subscription login)". So a match proves the provider-label
         branch of the haystack is doing the work; there is no other source for
         it. Guards against the label term being silently dropped.
         """
@@ -2493,12 +2660,12 @@ class TestModelSelectorFuzzyMatching:
             screen._filtered_models,
         ):
             models.append(codex)
-        screen._filter_text = "chatgpt"
+        screen._filter_text = "subscription"
         screen._update_filtered_list()
 
         specs = [spec for spec, _ in screen._filtered_models]
         assert specs == ["openai_codex:gpt-5.2"], (
-            f"'chatgpt' should match only via the provider label. Got: {specs}"
+            f"'subscription' should match only via the provider label. Got: {specs}"
         )
 
     async def test_tab_noop_when_no_matches(self) -> None:
@@ -2938,7 +3105,7 @@ class TestCuratedModelSelection:
             ("anthropic:claude-sonnet-4-5", "anthropic"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -2948,7 +3115,7 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.6-luna", "openai"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -3418,7 +3585,6 @@ class TestGetModelDisplayName:
         ("spec", "name"),
         [
             ("fireworks:accounts/fireworks/models/kimi-k3", "Kimi K3"),
-            ("meta:muse-spark-1.1", "Muse Spark 1.1"),
             ("meta:muse-spark-1.2", "Muse Spark 1.2"),
             ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),

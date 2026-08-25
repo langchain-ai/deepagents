@@ -58,7 +58,6 @@ on:
           - "deepagents-code"
           - "all"
           - "deepagents"
-          - "deepagents-cli"
           - "deepagents-acp"
           - "deepagents-talon"
           - "langchain-daytona"

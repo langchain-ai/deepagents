@@ -293,7 +293,7 @@ def _resolve_openai_prompt_cache_key_enabled() -> bool:
     Called once when `ConfigurableModelMiddleware` is constructed. The read is
     kept off the blockbuster-guarded server loop by the caller: on the server
     path `create_cli_agent` runs inside `asyncio.to_thread` (see
-    `server_graph._make_graph`), so the synchronous `config.toml` read happens
+    `server_graph._make_graphs`), so the synchronous `config.toml` read happens
     on a worker thread.
 
     On an unexpected failure this defaults to enabled: breaking agent
@@ -366,15 +366,16 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
 
 def _model_spec_from_model(model: BaseChatModel) -> str | None:
     """Return a resumable `provider:model` spec for a model object."""
-    provider = _get_ls_provider(model)
     model_name = get_model_identifier(model)
-    if provider and model_name:
-        return f"{provider}:{model_name}"
-
     from deepagents_code.config import settings
 
     settings_provider = settings.model_provider or ""
     settings_model = settings.model_name or ""
+    if settings_provider and settings_model and model_name == settings_model:
+        return f"{settings_provider}:{settings_model}"
+    provider = _get_ls_provider(model)
+    if provider and model_name:
+        return f"{provider}:{model_name}"
     if settings_provider and settings_model:
         return f"{settings_provider}:{settings_model}"
     return None
@@ -535,6 +536,9 @@ def _apply_overrides(
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
             model params that should be recorded for resume.
+
+    Raises:
+        ModelNotAllowedError: If runtime context requests a blocked model.
     """
     ctx = _get_context(request)
     if ctx is None:
@@ -544,7 +548,7 @@ def _apply_overrides(
     model = ctx.model
     if model and not model_matches_spec(request.model, model):
         from deepagents_code.config import create_model
-        from deepagents_code.model_config import ModelConfigError
+        from deepagents_code.model_config import ModelConfigError, ModelNotAllowedError
 
         logger.debug("Overriding model to %s", model)
         model_kwargs = (
@@ -554,6 +558,12 @@ def _apply_overrides(
         )
         try:
             model_result = create_model(model, **model_kwargs)
+        except ModelNotAllowedError:
+            # `ModelNotAllowedError` is a `ModelConfigError`; without this
+            # clause the handler below would swallow a policy denial, log it,
+            # and silently continue on the *current* model while the UI
+            # reported a switch. Not redundant -- do not remove.
+            raise
         except ModelConfigError:
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "
@@ -598,6 +608,9 @@ async def _apply_overrides_async(
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
             model params that should be recorded for resume.
+
+    Raises:
+        ModelNotAllowedError: If runtime context requests a blocked model.
     """
     ctx = _get_context(request)
     if ctx is None:
@@ -607,7 +620,7 @@ async def _apply_overrides_async(
     model = ctx.model
     if model and not model_matches_spec(request.model, model):
         from deepagents_code.config import create_model
-        from deepagents_code.model_config import ModelConfigError
+        from deepagents_code.model_config import ModelConfigError, ModelNotAllowedError
 
         logger.debug("Overriding model to %s", model)
         model_kwargs = (
@@ -621,6 +634,12 @@ async def _apply_overrides_async(
                 model,
                 **model_kwargs,
             )
+        except ModelNotAllowedError:
+            # `ModelNotAllowedError` is a `ModelConfigError`; without this
+            # clause the handler below would swallow a policy denial, log it,
+            # and silently continue on the *current* model while the UI
+            # reported a switch. Not redundant -- do not remove.
+            raise
         except ModelConfigError:
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "

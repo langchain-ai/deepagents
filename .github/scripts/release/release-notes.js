@@ -1203,7 +1203,7 @@ async function checkCuratedState({
   warnUnparsableMarkedComments({ core, comments, login, id });
   if (!override) {
     core.setFailed(`Run ${COMMAND_MENTION} draft and then ${COMMAND_MENTION} apply before merging`);
-    return { status: 'missing' };
+    return { status: 'missing', component, version };
   }
 
   const changelog = await fetchChangelog(github, owner, repo, pr.head.sha, changelogPath);
@@ -1269,12 +1269,12 @@ async function checkCuratedState({
     }
     if (generatedEntriesChanged || draftMetadataChanged) {
       core.setFailed(`Run ${COMMAND_MENTION} draft and then ${COMMAND_MENTION} apply before merging`);
-      return { status: 'missing' };
+      return { status: 'missing', component, version };
     }
     const draftCommentUrl = override.comment.html_url
       ?? `https://github.com/${owner}/${repo}/pull/${number}#issuecomment-${override.comment.id}`;
     core.setFailed(`Review the curated release-note draft (${draftCommentUrl}), then run ${COMMAND_MENTION} apply before merging`);
-    return { status: 'unapplied', draftCommentUrl };
+    return { status: 'unapplied', draftCommentUrl, component, version };
   }
 
   const appliedMetadata = applied.metadata;
@@ -1329,11 +1329,15 @@ async function checkCuratedState({
   }
 
   if (failures.length > 0) {
-    core.setFailed(`${failures.join('; ')}. Run ${COMMAND_MENTION} draft and then ${COMMAND_MENTION} apply.`);
-    return { status: 'failed', failures };
+    // Prefix the target so the annotation GitHub surfaces from setFailed names the
+    // package and version being gated; bare reason strings are ambiguous across the
+    // many open release PRs this check covers.
+    const target = `for ${component} ${version}`;
+    core.setFailed(`${target}: ${failures.join('; ')}. Run ${COMMAND_MENTION} draft and then ${COMMAND_MENTION} apply.`);
+    return { status: 'failed', failures, component, version };
   }
   core.info(`Curated release notes are current for ${component} ${version}`);
-  return { status: 'passed' };
+  return { status: 'passed', component, version };
 }
 
 module.exports = {

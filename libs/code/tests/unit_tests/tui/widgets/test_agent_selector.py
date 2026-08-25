@@ -249,6 +249,7 @@ class TestAgentSelectorDefaultLabel:
             await pilot.pause()
             statics = app.screen.query(".agent-selector-help")
             rendered = " ".join(str(s.render()) for s in statics)
+            assert "Tab/Shift+Tab navigate" in rendered
             assert "Ctrl+S" in rendered
             assert "set default" in rendered
 

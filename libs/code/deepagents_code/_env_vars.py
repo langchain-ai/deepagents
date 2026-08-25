@@ -284,6 +284,18 @@ HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
+HISTORY_RETENTION_DAYS = "DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS"
+"""Days an offloaded conversation-history archive is kept before the startup
+sweep deletes it.
+
+Archives live under `~/.deepagents/conversation_history/` and are removed by a
+best-effort background sweep at startup once their age exceeds the window.
+Non-negative integers only: `0` disables the sweep entirely, and an
+unparseable or negative value falls through to the next config source. Also
+settable via `[history].retention_days` in config.toml (managed config takes
+precedence).
+"""
+
 INVOKED_AS = "DEEPAGENTS_CODE_INVOKED_AS"
 """Internal sentinel carrying the command name the user launched with.
 
@@ -444,6 +456,19 @@ request. Also the escape hatch for hosts embedding this package that manage
 process, so an embedder that starts its own would otherwise race this one.
 """
 
+READ_PROJECT_DOTENV = "DEEPAGENTS_CODE_READ_PROJECT_DOTENV"
+"""Toggle loading the *project* `.env` (the one found walking up from cwd).
+
+Enabled by default, preserving the historical behavior of applying the nearest
+project `.env` to the process environment (`override=False`, shell exports
+win). Set to a falsy value (`0`, `false`, `no`, `off`) — or `[startup]`
+`read_project_dotenv = false` in config.toml — to skip the project file
+entirely, as defense-in-depth against a cloned repo whose `.env` carries
+hostile values the dotenv denylist does not yet enumerate. The global
+`~/.deepagents/.env` is unaffected. This is user-controlled process env, not a
+repo file, so a project `.env` cannot disable itself.
+"""
+
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
 
@@ -526,6 +551,18 @@ SHOW_URL_OPEN_TOAST = "DEEPAGENTS_CODE_SHOW_URL_OPEN_TOAST"
 
 Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to suppress the success toast while still opening URLs normally.
+"""
+
+SHOW_USAGE_STATS = "DEEPAGENTS_CODE_SHOW_USAGE_STATS"
+"""Print the session usage-statistics table when a session ends.
+
+Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to suppress the table. Applies to both the TUI teardown and the headless
+`-x`/`--execute` run, which is why the option carries an env var at all: a CI
+runner can set one, but rarely has a `~/.deepagents/config.toml` to edit.
+
+Suppressing only the table is narrower than `--quiet`, which silences the rest
+of the headless teardown output too.
 """
 
 SPLASH_SHOW_CWD = "DEEPAGENTS_CODE_SPLASH_SHOW_CWD"

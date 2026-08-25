@@ -1,12 +1,32 @@
 """Tests for the MCP disabled-servers persistence store."""
 
+from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
+
+from deepagents_code import mcp_disabled
+from deepagents_code.configuration.service import invalidate_config_sources
 from deepagents_code.mcp_disabled import (
     get_disabled_servers,
     is_server_disabled,
     set_server_disabled,
 )
+from unit_tests.conftest import redirect_managed_config
+
+
+@pytest.fixture
+def managed_and_user_configs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[Path, Path]]:
+    """Point the default user config and managed config at tmp files."""
+    user = tmp_path / "config.toml"
+    managed = tmp_path / "managed.toml"
+    monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    invalidate_config_sources()
+    yield user, managed
+    invalidate_config_sources()
 
 
 class TestGetDisabledServers:
@@ -67,6 +87,34 @@ class TestGetDisabledServers:
         cfg = tmp_path / "config.toml"
         cfg.write_text("this is not valid toml = = =\n")
         assert get_disabled_servers(config_path=cfg) == set()
+
+    def test_managed_denies_union_with_user_entries(
+        self, managed_and_user_configs: tuple[Path, Path]
+    ) -> None:
+        user, managed = managed_and_user_configs
+        user.write_text('[mcp]\ndisabled_servers = ["github"]\n')
+        managed.write_text('[mcp]\ndisabled_servers = ["sensitive-server"]\n')
+        assert get_disabled_servers() == {"github", "sensitive-server"}
+
+    def test_managed_denies_survive_corrupt_user_toml(
+        self, managed_and_user_configs: tuple[Path, Path]
+    ) -> None:
+        # A user breaking their own config must not re-enable admin-denied servers.
+        user, managed = managed_and_user_configs
+        user.write_text("this is not valid toml = = =\n")
+        managed.write_text('[mcp]\ndisabled_servers = ["sensitive-server"]\n')
+        assert get_disabled_servers() == {"sensitive-server"}
+
+    def test_managed_denies_ignored_for_explicit_config_path(
+        self, managed_and_user_configs: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        # Explicit config_path is a test seam; managed policy only applies to the
+        # default user config so tests stay hermetic.
+        _, managed = managed_and_user_configs
+        managed.write_text('[mcp]\ndisabled_servers = ["sensitive-server"]\n')
+        cfg = tmp_path / "other.toml"
+        cfg.write_text('[mcp]\ndisabled_servers = ["github"]\n')
+        assert get_disabled_servers(config_path=cfg) == {"github"}
 
 
 class TestSetServerDisabled:

@@ -118,7 +118,6 @@ jobs:
             const scopeAliases = new Map([
               ['deepagents', 'sdk'],
               ['deepagents-acp', 'acp'],
-              ['deepagents-cli', 'cli'],
               ['deepagents-code', 'code'],
               ['deepagents-talon', 'talon'],
             ]);

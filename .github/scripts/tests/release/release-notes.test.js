@@ -708,6 +708,10 @@ test('required check passes only when applied metadata, changelog, body, and anc
   });
   assert.equal(result.status, 'passed', core.failed);
   assert.equal(core.failed, null);
+  // The refresh workflow names the validated package+version in its check output,
+  // so the result must carry them.
+  assert.equal(result.component, COMPONENT);
+  assert.equal(result.version, VERSION);
 });
 
 test('required check accepts apply after unrelated branch advancement', async () => {
@@ -848,6 +852,8 @@ test('required check warns when generated entries change after draft before appl
   const core = makeCore();
   const result = await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
   assert.equal(result.status, 'missing');
+  assert.equal(result.component, COMPONENT);
+  assert.equal(result.version, VERSION);
   assert.match(core.failed, /draft and then/);
   assert.equal(calls.createComment.length, 1);
   assert.match(calls.createComment[0].body, /New generated release entries appeared/);
@@ -1934,7 +1940,13 @@ test('required check fails when the PR body preview terminator is unparseable', 
   });
   const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment()] });
   const core = makeCore();
-  await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  const result = await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.component, COMPONENT);
+  assert.equal(result.version, VERSION);
+  // The annotation GitHub surfaces from setFailed must name the gated package and
+  // version — the bare reason list is ambiguous across open release PRs.
+  assert.match(core.failed, new RegExp(`^for ${COMPONENT} ${VERSION.replaceAll('.', '\\.')}: `));
   assert.match(core.failed, /exactly one release-notes preview terminator/);
 });
 

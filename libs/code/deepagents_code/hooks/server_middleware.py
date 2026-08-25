@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypeGuard, cast
@@ -89,6 +91,63 @@ _PENDING_POST_TOOL_STATE_KEY = "_hooks_pending_post_tools"
 _TASK_TOOL_NAME = "task"
 _COMPACT_TOOL_NAME = "compact_conversation"
 _INVOCATION_NAMESPACE = UUID("f2896d18-cf2a-4e7d-b11a-d5b10fc0e335")
+
+
+class HookTransportInterruptError(BaseException):
+    """Carry a hook request across a non-graph server operation boundary.
+
+    Derives from `BaseException`, not `Exception`, for the same reason
+    `asyncio.CancelledError` does: it is a control signal that must reach the
+    HTTP boundary intact. The compaction chain it crosses is lined with broad
+    `except Exception` handlers, any of which would otherwise turn a resumable
+    hook request into a permanent `"failed"` result.
+    """
+
+    def __init__(self, request: HookInvocationRequest) -> None:
+        """Initialize the transport interrupt.
+
+        Args:
+            request: Hook invocation the client must fulfill.
+        """
+        super().__init__(str(request.invocation_id))
+        self.request = request
+
+
+logger = logging.getLogger(__name__)
+
+_HOOK_RESPONSES: ContextVar[Mapping[str, object] | None] = ContextVar(
+    "deepagents_code_hook_responses",
+    default=None,
+)
+
+
+@contextmanager
+def operation_hook_responses(
+    responses: Mapping[str, object],
+) -> Iterator[None]:
+    """Serve hook responses while a server operation replays from the top.
+
+    Args:
+        responses: Resume payloads keyed by deterministic hook invocation ID.
+    """
+    token = _HOOK_RESPONSES.set(responses)
+    try:
+        yield
+    finally:
+        _HOOK_RESPONSES.reset(token)
+
+
+def _in_server_operation() -> bool:
+    """Report whether hooks are running under a non-graph server operation.
+
+    `None` means graph mode; an empty mapping means operation mode with no
+    answers accumulated yet, which is why this cannot be a truthiness check.
+
+    Returns:
+        `True` when the caller is inside `operation_hook_responses`.
+    """
+    return _HOOK_RESPONSES.get() is not None
+
 
 type PreToolBehavior = Literal["allow", "deny", "none"]
 _DEFAULT_DENY_REASON = "Blocked by PreToolUse hook"
@@ -764,10 +823,31 @@ def hook_decided_permission(state: object, tool_call_id: str) -> bool:
         expressed no opinion, or no outcome was recorded -- in every one of those
         cases normal approval still applies.
     """
+    return hook_permission_behavior(state, tool_call_id) is not None
+
+
+def hook_permission_behavior(
+    state: object, tool_call_id: str
+) -> Literal["allow", "deny"] | None:
+    """Return the explicit pre-execution hook permission for a call.
+
+    Args:
+        state: Agent state carrying the current turn's hook outcomes.
+        tool_call_id: Tool call to look up.
+
+    Returns:
+        The hook's explicit `allow` or `deny`, or `None` when normal approval
+            routing still decides permission.
+    """
     outcome = _pre_tool_state(state, tool_call_id)
     if outcome is None:
-        return False
-    return outcome.get("behavior") in {"allow", "deny"}
+        return None
+    behavior = outcome.get("behavior")
+    if behavior == "allow":
+        return "allow"
+    if behavior == "deny":
+        return "deny"
+    return None
 
 
 def _pre_tool_state(state: object, tool_call_id: str) -> Mapping[str, object] | None:
@@ -840,7 +920,20 @@ def _invoke_hook(
         invocation=HookInvocation(context=context, event=event),
         deadline=datetime.now(UTC) + deadline,
     )
-    raw = interrupt(build_hook_interrupt_payload(request))
+    operation_responses = _HOOK_RESPONSES.get()
+    if operation_responses is None:
+        raw = interrupt(build_hook_interrupt_payload(request))
+    else:
+        # Operation mode: `interrupt()` is unusable outside a Pregel task, so a
+        # request the client has not answered yet is raised out to the HTTP
+        # boundary instead. Because the operation re-executes from the top on
+        # every resume round, an already-answered invocation is replayed from
+        # this mapping rather than re-invoked -- that is what makes an operation
+        # with several hooks terminate instead of looping forever.
+        key = str(request.invocation_id)
+        if key not in operation_responses:
+            raise HookTransportInterruptError(request)
+        raw = operation_responses[key]
     try:
         response = parse_hook_resume_value(
             raw,
@@ -850,6 +943,16 @@ def _invoke_hook(
     except ValidationError:
         # Only shape errors degrade to a neutral decision. A plain `ValueError`
         # means the client answered a different request, so it stays fatal.
+        #
+        # Log it too: the diagnostic is only rendered by the client-side hook
+        # presenter, and the offload operation reads just the pre-tool channel
+        # from this update, so on that path the diagnostic is dropped and the
+        # hook is silently ignored.
+        logger.warning(
+            "Malformed hook resume value for invocation %s; treating it as no decision",
+            request.invocation_id,
+            exc_info=True,
+        )
         diagnostic = HookDiagnostic(
             code="invalid_resume",
             severity="warning",
@@ -1070,6 +1173,24 @@ def _ask_permission_via_hitl(
     Returns:
         A deny ToolMessage when the user rejects, otherwise `None` to proceed.
     """
+    if _in_server_operation():
+        # `interrupt()` is only usable inside a Pregel task: it reaches into the
+        # run's scratchpad, which a server operation's fabricated config has no
+        # equivalent of. Deny with an actionable reason instead of raising a
+        # `KeyError` on an internal LangGraph config key. The operation
+        # transport carries hook *invocations*, not HITL review requests, so
+        # there is no channel to prompt the user on here.
+        return _denied_tool_message(
+            call,
+            PermissionEffect(
+                behavior="deny",
+                reason=(
+                    f"PreToolUse returned `ask` for {call.name}, which cannot "
+                    "prompt for approval during a server-side operation such as "
+                    "/offload. Return `allow` or `deny` for this tool instead."
+                ),
+            ),
+        )
     description = permission.reason or "PreToolUse hook requested approval"
     response = interrupt(
         HITLRequest(

@@ -8,9 +8,8 @@ import logging
 import os
 import re
 import shutil
-import tomllib
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
@@ -50,7 +49,7 @@ from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     InterruptOnConfig,
 )
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain.tools import (
     BaseTool,
     ToolRuntime,  # LangChain inspects this annotation for runtime injection.
@@ -101,7 +100,11 @@ from deepagents_code.offload import (
     _artifacts_root,
     _offload_fallback_root,
 )
-from deepagents_code.offload_middleware import _create_cli_compaction_middleware
+from deepagents_code.offload_middleware import (
+    OffloadOperation,
+    _create_cli_compaction_middleware,
+    attach_offload_operation,
+)
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 from deepagents_code.reliable_rubric import ReliableRubricMiddleware
@@ -116,6 +119,7 @@ from deepagents_code.unicode_security import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 _MEMORY_READONLY_SYSTEM_PROMPT = (
     "<agent_memory>\n"
@@ -1054,30 +1058,45 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     ```
 
     Args:
-        config_path: Path to config file.
+        config_path: Path to config file. Passing a path also excludes
+            managed policy from this read, so production callers must pass
+            `None`.
 
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         List of `AsyncSubAgent` specs (empty if section is absent or invalid).
     """
+    is_default = config_path is None
     if config_path is None:
-        config_path = Path.home() / ".deepagents" / "config.toml"
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
-    if not config_path.exists():
-        return []
+        config_path = DEFAULT_CONFIG_PATH
 
-    try:
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as e:
-        logger.warning("Could not read async subagents from %s: %s", config_path, e)
+    from deepagents_code.configuration.service import get_config_sources
+
+    # `None` on the default path: that is what includes managed policy.
+    sources = get_config_sources(user_path=None if is_default else config_path)
+    if not sources.user.status.usable:
+        detail = sources.user.status.detail or sources.user.status.health.value
+        logger.warning(
+            "Could not read async subagents from %s: %s", config_path, detail
+        )
         console.print(
             f"[bold yellow]Warning:[/bold yellow] Could not read async subagents "
-            f"from {config_path}: {e}",
+            f"from {config_path}: {detail}",
         )
-        return []
-
+        # Managed policy parsed cleanly and must still apply, so keep
+        # going with the merged data (managed-only when the user file
+        # failed) instead of discarding it with the user's file.
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
+        )
+    data, _ = sources.merged()
     section = data.get("async_subagents")
     if not isinstance(section, dict):
         return []
@@ -2228,6 +2247,7 @@ def create_cli_agent(
     async_subagents: list[AsyncSubAgent] | None = None,
     goal_criteria_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
     rubric_grader_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
+    enforce_model_policy: bool = True,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -2376,6 +2396,11 @@ def create_cli_agent(
         rubric_grader_tools: External read-only context tools available to rubric
             grading for verifying work completed in MCP-backed or web-accessible
             systems.
+        enforce_model_policy: Check every model string against `models.allowed`.
+            Pass `False` **only** from callers that compile a graph they never
+            invoke (tool enumeration), so a blocked subagent model degrades the
+            listing rather than raising. Any caller that can run the graph must
+            leave this `True`.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -2389,7 +2414,13 @@ def create_cli_agent(
             non-`None` `sandbox`, when `settings.interpreter_ptc` contains
             unknown tool names, or when `interpreter_ptc="all"` is used
             without `auto_approve` or `interpreter_ptc_acknowledge_unsafe`.
-    """
+        ModelNotAllowedError: When `model`, `auto_classifier_model`,
+            `rubric_model`, or a subagent's frontmatter `model` is a string
+            outside the effective `models.allowed` policy. Model *strings* are
+            checked here because the SDK resolves them through
+            `init_chat_model`, bypassing `config.create_model`; a prebuilt
+            `BaseChatModel` came from a path that already checked.
+    """  # noqa: DOC502 - propagates from `ModelConfig.require_model_allowed`
     tools = tools or []
     mcp_tools = tuple(mcp_tools or ())
     if auto_mode_enabled and sandbox is not None:
@@ -2518,6 +2549,33 @@ def create_cli_agent(
             )
         return middleware
 
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+    from deepagents_code.model_config import ModelConfig
+
+    # Every model *string* this function forwards is checked here, because the
+    # SDK resolves strings through `init_chat_model` without passing through
+    # `create_model` -- the gate in `config.create_model` never sees them. A
+    # `BaseChatModel` was already built by a checked path, so it is exempt.
+    model_policy = ModelConfig.load()
+    if not enforce_model_policy:
+        # Read-only enumeration (`dcode tools list`, `/tools`) compiles a graph
+        # with a placeholder model purely to read its bound tool node. Nothing
+        # is ever invoked, so a subagent whose frontmatter names a blocked model
+        # must not turn listing tools into a crash. Runtime construction always
+        # enforces; this flag exists only for callers that never execute.
+        model_policy = replace(
+            model_policy, allowed_models=None, allowed_models_source=None
+        )
+    if isinstance(model, str):
+        model_policy.require_model_allowed(model)
+    if (
+        isinstance(auto_classifier_model, str)
+        and auto_classifier_model.strip()
+        # The sentinel means "reuse the runtime model", which the check above
+        # already covered; it is not a spec and would never match a policy.
+        and auto_classifier_model != INHERIT_CLASSIFIER_MODEL
+    ):
+        model_policy.require_model_allowed(auto_classifier_model.strip())
     for subagent_meta in list_subagents(
         user_agents_dir=user_agents_dir,
         project_agents_dir=project_agents_dir,
@@ -2533,6 +2591,19 @@ def create_cli_agent(
             "system_prompt": subagent_meta["system_prompt"],
         }
         if model_spec:
+            # Name the declaring file: this raise aborts the whole CLI launch,
+            # and across a dozen `agents/*.md` files the model alone is not
+            # enough to find the one to edit.
+            declared_in = subagent_meta.get("path")
+            name = subagent_meta["name"]
+            model_policy.require_model_allowed(
+                model_spec,
+                context=(
+                    f"subagent {name!r} ({declared_in})"
+                    if declared_in
+                    else f"subagent {name!r}"
+                ),
+            )
             subagent["model"] = model_spec
         subagent_middleware = _subagent_cli_middleware(
             has_explicit_model=has_explicit_model,
@@ -2595,8 +2666,9 @@ def create_cli_agent(
     # `ReliableRubricMiddleware`: otherwise the grading agent's spend lands in
     # the next turn's checkpoint, or is lost on a session's final turn.
     # The CLI reads these channels back from `state_values` on thread resume.
-    # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
-    # constrained `update_goal` tool, and maintains goal-state notices.
+    # Goal tools: exposes the constrained write-side `update_goal` tool and
+    # maintains goal-state notices that carry the objective and acceptance
+    # criteria while they are live, so the model needs no goal/rubric read tool.
     from deepagents_code.cost_tracking import CostTrackingMiddleware
     from deepagents_code.goal_tools import GoalToolsMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware
@@ -2876,7 +2948,7 @@ def create_cli_agent(
         trusted_root, narrow_allow_list = auto_mode_config
         # An explicit argument wins; otherwise the env var / `config.toml`
         # preference is read here, where agent construction already runs off the
-        # blockbuster-guarded server loop (see `server_graph._make_graph`).
+        # blockbuster-guarded server loop (see `server_graph._make_graphs`).
         classifier_model = (
             auto_classifier_model
             if auto_classifier_model is not None
@@ -2906,7 +2978,16 @@ def create_cli_agent(
     from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
     hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools))
+    server_hooks_middleware = ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools)
+    agent_middleware.append(server_hooks_middleware)
+
+    # Publish the server operation on the backend shared with `server_graph`.
+    # The custom HTTP route owns checkpoint access and persistence, while this
+    # object retains the exact compaction and hook instances used by the agent.
+    attach_offload_operation(
+        composite_backend,
+        OffloadOperation(compaction_middleware, server_hooks_middleware),
+    )
 
     if fs_tools is not None:
         # `fs_tools` is an explicit allowlist here (`--allow-fs-tools all` and an
@@ -3045,6 +3126,15 @@ def create_cli_agent(
                 )
             )
         )
+
+    # Checked unconditionally, unlike the middleware below: a rubric model the
+    # policy blocks is a misconfiguration worth reporting at launch, not at the
+    # first invocation that happens to supply a rubric. A blank string is
+    # skipped because it is not a spec -- `RubricMiddleware` rejects it a few
+    # lines below with "`model` is required", which is the accurate diagnosis;
+    # a policy check here would instead advise a fully qualified spec.
+    if isinstance(rubric_model, str) and rubric_model.strip():
+        model_policy.require_model_allowed(rubric_model)
 
     # Rubric-driven self-evaluation. The middleware is a no-op until a
     # `rubric` is supplied on invocation state, so installing it is safe.

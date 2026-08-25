@@ -1,8 +1,12 @@
 """Estimate and persist cumulative model cost for each thread.
 
-The graph owns the durable total. `CostTrackingMiddleware` is the only writer of
-`_session_cost_usd`, so each cost update rides the model checkpoint and works for
-local, headless, and remote graph execution without a client-side state update.
+The graph owns the durable total. `CostTrackingMiddleware` writes ordinary graph
+deltas, while `prepare_operation_cost` gives server-owned operations a
+rollback-safe delta to commit with their state update. Each cost update therefore
+rides a graph checkpoint and works for local, headless, and remote execution
+without a client-side state update -- the middleware also runs in local
+in-process agents, where there is no server and the delta rides the local
+checkpoint.
 The client is a reader: it renders the streamed total and never maintains its own
 lifetime figure.
 
@@ -55,7 +59,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
@@ -101,6 +105,7 @@ tell a broken remote install from models with no published rates.
 _PROVIDER_ALIASES: dict[str, str] = {
     "azure_openai": "azure",
     "bedrock": "aws",
+    "google_anthropic_vertex": "google",
     "google_genai": "google",
     "google_vertexai": "google",
     "mistralai": "mistral",
@@ -454,7 +459,7 @@ def _build_price_updater(update_prices_cls: type[UpdatePrices]) -> UpdatePrices:
 def _prices_auto_update_enabled() -> bool:
     """Resolve the `update.prices_auto_update` option through the manifest.
 
-    Routing the gate through `resolve_scalar` keeps env-over-TOML precedence
+    Routing the gate through the shared resolver keeps env-over-TOML precedence
     and the `config get update.prices_auto_update` report in lockstep with what
     the updater actually does; reading the env var inline would show a user who
     opted out in `config.toml` `false` while the hourly fetch still started.
@@ -463,17 +468,15 @@ def _prices_auto_update_enabled() -> bool:
         `True` unless the option resolved to disabled or its manifest entry is
             missing.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("update.prices_auto_update")
     if option is None:
         return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def _start_price_updater() -> None:
@@ -494,9 +497,8 @@ def _start_price_updater() -> None:
 
     Does nothing when the `update.prices_auto_update` option resolves to
     disabled or `DEEPAGENTS_CODE_OFFLINE` is truthy. Either opt-out still marks
-    the start as attempted: config is read once at process start in practice,
-    so a later flip would not take effect anyway, and re-resolving on every
-    priced request would re-read `config.toml` each time.
+    the start as attempted: the updater thread is started once and never
+    stopped, so a later flip would not take effect anyway.
     """
     global _PRICE_UPDATER, _PRICE_UPDATER_ATTEMPTED  # noqa: PLW0603
     if is_env_truthy(OFFLINE):
@@ -1966,6 +1968,142 @@ def _restore_recorded_costs(
         return False
     recorder.restore(thread_id, records)
     return True
+
+
+@dataclass(slots=True)
+class PreparedOperationCost:
+    """A priced side-operation delta pending checkpoint persistence.
+
+    Use exactly once: every prepare must be either committed (its `update`
+    persisted) or rolled back. `_drain_recorded_costs` is destructive, so a
+    prepare that is neither deletes that spend from the thread's lifetime total
+    permanently, and nothing can detect the loss afterwards.
+
+    `_settled` is `init=False` so a caller cannot construct a pre-neutralized
+    instance whose `rollback` is already a no-op. The class stays unfrozen only
+    because marking settlement on a frozen dataclass needs
+    `object.__setattr__`, which this project's lint rules reject.
+    """
+
+    thread_id: str
+    records: list[_ModelCallRecord]
+    delta_usd: float
+    _settled: bool = field(default=False, init=False)
+
+    @property
+    def update(self) -> dict[str, float]:
+        """Additive checkpoint update for this prepared charge."""
+        return {"_session_cost_usd": self.delta_usd} if self.delta_usd > 0 else {}
+
+    def rollback(self) -> None:
+        """Return claimed records to the recorder when no charge was committed.
+
+        `_drain_recorded_costs` **removes** the entries from the process-wide
+        recorder, so a prepare that is neither committed nor rolled back deletes
+        that spend from the thread's lifetime total permanently. Restoring lets
+        the next drain price it again.
+
+        Only call this when the checkpoint write did not land: restoring records
+        for a write that *did* commit double-charges the thread on the next
+        drain. Repeat calls are ignored for the same reason.
+        """
+        if self._settled:
+            return
+        self._settled = True
+        if not _restore_recorded_costs(self.thread_id, self.records):
+            logger.warning(
+                "Could not restore %d operation cost record(s) after a failed "
+                "checkpoint update; $%.6f is dropped from the thread total",
+                len(self.records),
+                self.delta_usd,
+            )
+
+    def commit(self) -> None:
+        """Mark the prepared charge as persisted.
+
+        Records nothing: the delta reaches the thread through `update`, which
+        the caller writes to the checkpoint. This only settles the instance so
+        an abandoned prepare can be told apart from a completed one.
+        """
+        self._settled = True
+
+    def __del__(self) -> None:
+        """Warn when a prepare was abandoned without settling.
+
+        The drain is destructive, so an instance collected while unsettled has
+        silently deleted its spend from the thread's lifetime total. Committing
+        and rolling back are both observable; only the leak was not, which is
+        the one case the class docstring calls unrecoverable.
+        """
+        if not self._settled:
+            logger.warning(
+                "Operation cost prepare for thread %s was abandoned without "
+                "commit or rollback; $%.6f across %d record(s) is lost from the "
+                "thread total",
+                self.thread_id,
+                self.delta_usd,
+                len(self.records),
+            )
+
+
+def prepare_operation_cost(
+    state: CostState,
+    thread_id: str,
+) -> PreparedOperationCost:
+    """Price model calls made by a server operation without committing them.
+
+    The caller must persist `PreparedOperationCost.update` atomically with the
+    operation state, or call `rollback()` if that write fails or is abandoned.
+    A prepare with a zero delta still consumes its records, so an abandoned
+    prepare must roll back even when it has nothing to write.
+
+    Args:
+        state: Current thread state used for model/provider fallback metadata.
+        thread_id: Thread that owns the side-operation model calls.
+
+    Returns:
+        Prepared additive cost delta and the claimed recorder entries.
+
+    """
+    records = _drain_recorded_costs(thread_id)
+    fallback = _checkpointed_model_spec(state)
+    delta_usd = 0.0
+    try:
+        for record in records:
+            cost_usd = estimate_cost(
+                record.usage_metadata,
+                *_pricing_target(record.model_name, record.provider, fallback),
+            )
+            if cost_usd is None:
+                # Matches `CostTrackingMiddleware`: silently omitting an
+                # unpriceable call leaves the total quietly short, so name what
+                # could not be priced.
+                logger.warning(
+                    "No pricing for operation model call %r (provider %r); "
+                    "its cost is omitted from the thread total",
+                    record.model_name,
+                    record.provider,
+                )
+                continue
+            delta_usd += cost_usd
+    except BaseException:
+        if not _restore_recorded_costs(thread_id, records):
+            # `_restore_recorded_costs` returns `bool` so callers can report a
+            # failed restore; the other two call sites both log. Without this a
+            # pricing crash could drop the drained spend with no record.
+            logger.warning(
+                "Could not restore %d drained cost record(s) for thread %s "
+                "after a pricing failure; that spend is lost from the "
+                "lifetime total",
+                len(records),
+                thread_id,
+            )
+        raise
+    return PreparedOperationCost(
+        thread_id=thread_id,
+        records=records,
+        delta_usd=delta_usd,
+    )
 
 
 class _CostTransfer(TypedDict):

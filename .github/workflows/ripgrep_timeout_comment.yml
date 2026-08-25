@@ -1,5 +1,8 @@
-# Posts a sticky PR comment when the bounded ripgrep install in `_test.yml`
-# gave up, so a reviewer can see that the affected legs ran without ripgrep.
+# Posts a sticky PR comment when a ripgrep install in `_test.yml` gave up, so a
+# reviewer can see that the affected legs ran without ripgrep. Two steps produce
+# the marker artifact: the bounded install on an ordinary PR (hit its timeout)
+# and the unbounded strict install on a release PR (failed and was bypassed
+# under `bypass-ripgrep-check`). The comment wording distinguishes the two.
 #
 # Trigger — `workflow_run` of ci.yml, completed, rather than `pull_request`:
 # a `pull_request` run from a fork gets a read-only token and cannot comment.
@@ -84,12 +87,14 @@ jobs:
             );
 
             if (!prNumber) {
-              // Failing to notify about a real timeout is a broken mechanism,
-              // not a no-op: say so loudly instead of logging into a run page
-              // nobody opens.
+              // A PR that was closed or had its head branch deleted between
+              // CI completing and this workflow firing resolves to nothing —
+              // that is a normal race, not a broken mechanism, and there is
+              // no conversation left to warn. The `::warning::` annotation in
+              // the CI run itself is the record of the timeout.
               const message = `CI run ${run.id} has no resolvable pull request.`;
               if (timeoutArtifacts.length > 0) {
-                core.setFailed(`${message} A ripgrep timeout went unreported.`);
+                core.warning(`${message} A ripgrep timeout goes unreported; the artifacts are ${timeoutArtifacts.map(a => a.name).join(', ')}.`);
               } else {
                 core.info(`${message} No timeout to report.`);
               }
@@ -106,6 +111,34 @@ jobs:
             if (pullRequest.head.sha !== run.head_sha) {
               core.info(`Ignoring stale CI run ${run.id}; PR #${prNumber} now points at ${pullRequest.head.sha}.`);
               return;
+            }
+
+            // Which failure mode the comment describes is decided by the PR
+            // kind, not by the label. On a release PR the only producer of
+            // these artifacts is the strict step's bypass path, which has no
+            // timeout -- so claiming "took more than two minutes" there would
+            // be false. Matches `_test.yml`'s release-PR predicate; keep the
+            // two in step (`test_ci_workflow.py` asserts they agree).
+            const isReleasePullRequest =
+              pullRequest.head.ref.startsWith('release-please--') ||
+              pullRequest.title.startsWith('release(');
+            // The label only decides one sentence: whether the merge will carry
+            // the bypass into the publish run. A failed read leaves it false,
+            // which downgrades that sentence to "could not confirm" rather than
+            // asserting either outcome.
+            let hasBypassLabel = false;
+            try {
+              const labels = await github.paginate(
+                github.rest.issues.listLabelsOnIssue,
+                { owner, repo, issue_number: prNumber, per_page: 100 },
+              );
+              hasBypassLabel = labels.some(label => label.name === 'bypass-ripgrep-check');
+            } catch (error) {
+              core.warning(
+                `Could not read labels for PR #${prNumber} ` +
+                  `(status ${error.status ?? 'unknown'}: ${error.message}); ` +
+                  'treating bypass-ripgrep-check as unconfirmed.',
+              );
             }
 
             const comments = await github.paginate(
@@ -147,20 +180,37 @@ jobs:
               .map(artifact => artifact.name.replace(/^ripgrep-timeout-/, ''))
               .sort();
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${run.id}`;
-            const body = [
-              marker,
-              '**Warning: ripgrep did not install in time.**',
-              '',
-              'Installation took more than two minutes on these test runners:',
-              '',
-              ...legs.map(leg => `- \`${leg}\``),
-              '',
-              'Those runners ran without ripgrep. The real-binary grep tests were skipped there, including the symlink containment check. `grep` on the filesystem backend used the Python fallback, which is slower and does not skip `.gitignore`d or hidden files, so some results differ.',
-              '',
-              'Release PRs, merge-queue runs, and the release workflow do not use this timeout. They fail if ripgrep does not install.',
-              '',
-              `No action is needed to merge. Re-run CI to get ripgrep coverage. [View the CI run](${runUrl})`,
-            ].join('\n');
+            const body = isReleasePullRequest
+              ? [
+                  marker,
+                  '**Notice: the strict ripgrep install failed and was bypassed.**',
+                  '',
+                  'Installation failed on these release-PR test runners:',
+                  '',
+                  ...legs.map(leg => `- \`${leg}\``),
+                  '',
+                  'Those runners continued without ripgrep. The real-binary grep tests were skipped there, including the symlink containment check.',
+                  '',
+                  hasBypassLabel
+                    ? 'If the `bypass-ripgrep-check` label is still on this PR when it merges, the publish run is dispatched with `dangerous-skip-ripgrep-check=true`. A repeat apt failure there is then tolerated, and the rg-gated artifact tests skip instead of failing the release.'
+                    : 'The `bypass-ripgrep-check` label could not be read on this PR. If it is absent at merge time, the publish run enforces the strict install and an apt failure there fails the release.',
+                  '',
+                  `Merge only if the apt failure is transient. Remove the label and re-run CI to restore ripgrep coverage. [View the CI run](${runUrl})`,
+                ].join('\n')
+              : [
+                  marker,
+                  '**Warning: ripgrep did not install in time.**',
+                  '',
+                  'Installation took more than two minutes on these test runners:',
+                  '',
+                  ...legs.map(leg => `- \`${leg}\``),
+                  '',
+                  'Those runners ran without ripgrep. The real-binary grep tests were skipped there, including the symlink containment check. `grep` on the filesystem backend used the Python fallback, which is slower and does not skip `.gitignore`d or hidden files, so some results differ.',
+                  '',
+                  'Release PRs, merge-queue runs, and the release workflow do not use this timeout. They fail if ripgrep does not install.',
+                  '',
+                  `No action is needed to merge. Re-run CI to get ripgrep coverage. [View the CI run](${runUrl})`,
+                ].join('\n');
 
             if (existing) {
               await github.rest.issues.updateComment({

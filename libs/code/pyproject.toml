@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.57"
+version = "0.1.61"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -27,20 +27,20 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.7.7",
+    "deepagents==0.7.8",
     "langchain>=1.3.17,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
 
     # Client-server architecture
-    "langgraph-sdk>=0.4.2,<1.0.0",
+    "langgraph-sdk>=0.4.3,<1.0.0",
     "langgraph-cli[inmem]>=0.4.31,<1.0.0",
-    "langgraph-runtime-inmem>=0.32.6,<1.0.0",
+    "langgraph-runtime-inmem>=0.33.0,<1.0.0",
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional
-    "langchain-anthropic>=1.5.6,<2.0.0",
-    "langchain-google-genai>=4.3.4,<5.0.0",
-    "langchain-openai>=1.5.2,<2.0.0",
+    "langchain-anthropic>=1.6.1,<2.0.0",
+    "langchain-google-genai>=4.3.5,<5.0.0",
+    "langchain-openai>=1.6.0,<2.0.0",
     "pydantic>=2.12.5,<2.14.0a0",
 
     # UI/Terminal
@@ -68,7 +68,7 @@ dependencies = [
     # compatibility promise, and this range spans every 0.1.x patch, so re-verify
     # both against `cost_tracking._build_price_overrides` and
     # `cost_tracking._find_override_model` when widening it.
-    "genai-prices>=0.1.3,<0.2.0",
+    "genai-prices>=0.1.4,<0.2.0",
 
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
@@ -104,13 +104,13 @@ dependencies = [
 
 [project.optional-dependencies]
 # Model providers
-anthropic = ["langchain-anthropic>=1.5.6,<2.0.0"]
+anthropic = ["langchain-anthropic>=1.6.1,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.3,<1.0.0"]
-bedrock = ["langchain-aws>=1.7.2,<2.0.0"]
+bedrock = ["langchain-aws>=1.7.3,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.0,<2.0.0"]
-fireworks = ["langchain-fireworks>=1.5.2,<2.0.0"]
-google-genai = ["langchain-google-genai>=4.3.4,<5.0.0"]
+fireworks = ["langchain-fireworks>=1.6.0,<2.0.0"]
+google-genai = ["langchain-google-genai>=4.3.5,<5.0.0"]
 groq = ["langchain-groq>=1.1.3,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.2.2,<2.0.0"]
 ibm = ["langchain-ibm>=1.1.0,<2.0.0"]
@@ -122,9 +122,9 @@ nvidia = [
     "langchain-nvidia-ai-endpoints>=1.4.3,<2.0.0",
 ]
 ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
-openai = ["langchain-openai>=1.5.2,<2.0.0"]
+openai = ["langchain-openai>=1.6.0,<2.0.0"]
 openrouter = ["langchain-openrouter>=0.2.8,<2.0.0"]
-perplexity = ["langchain-perplexity>=1.4.0,<2.0.0"]
+perplexity = ["langchain-perplexity>=1.4.1,<2.0.0"]
 together = ["langchain-together>=0.4.0,<2.0.0"]
 vertex = ["langchain-google-vertexai>=3.2.4,<4.0.0"]
 xai = ["langchain-xai>=1.3.0,<2.0.0"]

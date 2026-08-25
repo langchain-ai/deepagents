@@ -5,8 +5,8 @@ models instead of fakes: the agent drafts a document, a grader model scores it
 against `RUBRIC`, and the middleware loops the agent until every criterion is
 verifiably satisfied or `MAX_ITERATIONS` is spent.
 
-Credentials come from a gitignored `.env` (see `.env.example`). They are read
-through `os.environ` only and are never printed.
+Credentials come from a gitignored `.env`. They are read through `os.environ`
+only and are never printed.
 
 Usage:
     uv run --with "deepagents" --with "langchain[anthropic]" --with python-dotenv \
@@ -88,7 +88,7 @@ def _require_env(*names: str) -> None:
     missing = [name for name in dict.fromkeys(names) if not os.environ.get(name)]
     if missing:
         print(f"Missing required environment variable(s): {', '.join(missing)}", file=sys.stderr)
-        print("Copy examples/rubric_middleware/.env.example to a .env file and fill it in.", file=sys.stderr)
+        print("Create examples/rubric_middleware/.env and fill in the required variables.", file=sys.stderr)
         raise SystemExit(1)
 
 

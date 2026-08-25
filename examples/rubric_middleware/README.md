@@ -11,8 +11,13 @@ prompts injected back into the agent.
 
 ## Setup
 
-```bash
-cp .env.example .env   # then fill in your keys
+Create a gitignored `.env` in this directory with the required keys:
+
+```dotenv
+ANTHROPIC_API_KEY=<FILL_IN>
+LANGSMITH_API_KEY=<FILL_IN>
+# Optional:
+LANGSMITH_PROJECT=deepagents-rubric-example
 ```
 
 `.env` is gitignored. `ANTHROPIC_API_KEY` and `LANGSMITH_API_KEY` are required;

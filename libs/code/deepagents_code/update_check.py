@@ -349,6 +349,28 @@ def read_installed_distribution_version() -> str | None:
         return None
 
 
+def cached_release_requires_prereleases(version: str | None) -> bool | None:
+    """Return cached pre-release-pin status, or `None` without a fresh answer."""
+    if not version:
+        return None
+    try:
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        checked_at = _coerce_checked_at(data.get("checked_at"))
+        if not is_update_cache_fresh(checked_at):
+            return None
+        values = data.get(_RELEASE_PRERELEASE_PINS_KEY)
+        cached = values.get(version) if isinstance(values, dict) else None
+        if not isinstance(cached, list):
+            return None
+        pins = [_canonical_prerelease_pin(pin) for pin in cached]
+        return bool(pins) if all(pin is not None for pin in pins) else None
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug("Failed to read cached release pre-release pins", exc_info=True)
+        return None
+
+
 def get_cached_update_available() -> tuple[bool, str | None]:
     """Check for updates using only a fresh local cache entry.
 

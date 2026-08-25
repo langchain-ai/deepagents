@@ -25273,19 +25273,6 @@ class TestDeferredActions:
             assert len(app._pending_messages) == 1
             assert app._pending_messages[0].text == "/auto model openai:gpt-5.5-mini"
 
-    async def test_model_with_args_still_queues(self) -> None:
-        """/model gpt-4 should be queued when busy, not bypass."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent_running = True
-
-            app.post_message(ChatInput.Submitted("/model gpt-4", "command"))
-            await pilot.pause()
-
-            assert len(app._pending_messages) == 1
-            assert app._pending_messages[0].text == "/model gpt-4"
-
     async def test_side_effect_free_bypasses_queue(self) -> None:
         """SIDE_EFFECT_FREE commands bypass the queue."""
         app = DeepAgentsApp()

@@ -191,14 +191,22 @@ def managed_rg_path() -> Path:
     """Return the managed ripgrep binary path (`.exe` on Windows).
 
     Returns:
-        The first existing candidate across both locations, otherwise the
-        preferred location so callers still get a usable install target.
+        A current candidate across both locations, the first existing stale
+        candidate, or the preferred location when neither exists.
     """
     name = "rg.exe" if sys.platform == "win32" else "rg"
-    for directory in managed_bin_dirs():
-        candidate = directory / name
-        if classify_path(candidate) is PathState.EXISTS:
-            return candidate
+    candidates = [directory / name for directory in managed_bin_dirs()]
+    existing = [
+        candidate
+        for candidate in candidates
+        if classify_path(candidate) is PathState.EXISTS
+    ]
+    if len(existing) > 1:
+        for candidate in existing:
+            if _managed_binary_is_current(candidate):
+                return candidate
+    if existing:
+        return existing[0]
     return BIN_DIR / name
 
 
@@ -255,9 +263,15 @@ def prepend_managed_bin_to_path() -> None:
 
     Safe to call on every startup. Callers do not need to check whether
     the directories exist — adding a non-existent directory to `PATH` is
-    harmless and matches behavior of common version managers.
+    harmless and matches behavior of common version managers. When a current
+    fallback binary exists beside a stale shared binary, its directory wins.
     """
-    managed = [str(d) for d in managed_bin_dirs()]
+    directories = list(managed_bin_dirs())
+    active = managed_rg_path().parent
+    if active in directories:
+        directories.remove(active)
+        directories.insert(0, active)
+    managed = [str(directory) for directory in directories]
     current = os.environ.get("PATH", "")
     parts = current.split(os.pathsep) if current else []
     if parts[: len(managed)] == managed:

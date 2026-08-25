@@ -1048,6 +1048,41 @@ class TestManagedBinDirFallback:
         ):
             assert managed_tools.managed_rg_path() == existing
 
+    async def test_current_fallback_shadows_stale_shared_binary(
+        self, tmp_path: Path
+    ) -> None:
+        """A verified fallback avoids repeat installs and leads `PATH`."""
+        shared = tmp_path / "shared"
+        profile = tmp_path / "profile"
+        shared.mkdir()
+        profile.mkdir()
+        name = "rg.exe" if sys.platform == "win32" else "rg"
+        stale = shared / name
+        current = profile / name
+        stale.write_text("")
+        current.write_text("")
+        install = mock.Mock(side_effect=AssertionError("must not reinstall"))
+
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            patch.object(
+                managed_tools,
+                "_managed_binary_is_current",
+                side_effect=lambda candidate: candidate == current,
+            ),
+            patch.object(managed_tools, "_install_ripgrep_sync", install),
+            patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False),
+        ):
+            assert await managed_tools.ensure_ripgrep() == current
+            managed_tools.prepend_managed_bin_to_path()
+            assert managed_tools.managed_rg_path() == current
+            assert os.environ["PATH"].split(os.pathsep)[:2] == [
+                str(profile),
+                str(shared),
+            ]
+        install.assert_not_called()
+
     def test_path_prepends_both_locations(self, tmp_path: Path) -> None:
         shared = tmp_path / "shared"
         profile = tmp_path / "profile"

@@ -831,11 +831,15 @@ def _print_cli_warning(warning_key: tuple[str, str], message: str) -> None:
     _warned_non_table_paths.add(warning_key)
 
     from rich.console import Console
+    from rich.text import Text
 
     # `soft_wrap` keeps the message greppable on one line off a TTY, matching
     # the headless approval-flag warning in `main`.
+    warning = Text("Warning:", style="bold yellow")
+    warning.append(" ")
+    warning.append(message)
     Console(stderr=True).print(
-        f"[bold yellow]Warning:[/bold yellow] {message}",
+        warning,
         soft_wrap=True,
     )
 

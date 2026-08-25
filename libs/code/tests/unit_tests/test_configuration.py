@@ -3526,9 +3526,11 @@ def test_rejected_cli_value_warns_the_user(
 
     Regression: the rejection reason went only to `logger.warning`, and the
     always-on buffer handler on the package logger means that reaches no
-    stream at all. `dcode --interpreter-tools 'x,all' config` therefore exited
-    0 and reported the option as `default` -- actively confirming the wrong
-    hypothesis for a user debugging why their flag did nothing.
+    stream at all. `dcode --interpreter-tools '[/tmp],all' config` therefore
+    exited 0 and reported the option as `default` -- actively confirming the
+    wrong hypothesis for a user debugging why their flag did nothing. The
+    bracket-shaped input must also stay literal instead of being parsed as
+    Rich markup.
     """
     from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration.provider import CliProvider
@@ -3540,7 +3542,7 @@ def test_rejected_cli_value_warns_the_user(
     resolver = resolver_from_snapshots(
         managed=TomlSnapshot.from_table("managed config", {}),
         user=TomlSnapshot.from_table("config.toml", {}),
-        cli_provider=CliProvider({"interpreter_tools": "x,all"}),
+        cli_provider=CliProvider({"interpreter_tools": "[/tmp],all"}),
     )
     resolved = resolver.get(option)
     _emit_ranked_diagnostics(option, resolved)
@@ -3548,6 +3550,7 @@ def test_rejected_cli_value_warns_the_user(
     err = capsys.readouterr().err
     assert "Warning:" in err
     assert "--interpreter-tools" in err
+    assert "[/tmp],all" in err
 
 
 def test_unmasked_cli_flag_is_silent(

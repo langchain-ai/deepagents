@@ -594,7 +594,9 @@ class TestReadGitCommitShaViaSubprocess:
 class TestReadGitRemoteUrlFromFilesystem:
     def _write_config(self, tmp_path: Path, body: str) -> None:
         git_dir = tmp_path / ".git"
-        git_dir.mkdir(exist_ok=True)
+        (git_dir / "objects").mkdir(parents=True, exist_ok=True)
+        (git_dir / "refs").mkdir(exist_ok=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
         (git_dir / "config").write_text(body)
 
     def test_reads_origin_url(self, tmp_path: Path) -> None:
@@ -619,6 +621,42 @@ class TestReadGitRemoteUrlFromFilesystem:
             read_git_remote_url_from_filesystem(tmp_path)
             == "git@github.com:langchain-ai/deepagents.git"
         )
+
+    def test_reads_origin_url_from_linked_worktree(self, tmp_path: Path) -> None:
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        _init_git_repo(main)
+        _run_git(
+            main,
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/langchain-ai/deepagents.git",
+        )
+        _add_git_worktree(main, worktree, "worktree")
+        nested = worktree / "src"
+        nested.mkdir()
+
+        assert (
+            read_git_remote_url_from_filesystem(nested)
+            == "https://github.com/langchain-ai/deepagents.git"
+        )
+
+    def test_forged_pointer_does_not_expose_remote(self, tmp_path: Path) -> None:
+        main = tmp_path / "main"
+        forged = tmp_path / "forged"
+        _init_git_repo(main)
+        _run_git(
+            main,
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/langchain-ai/deepagents.git",
+        )
+        forged.mkdir()
+        (forged / ".git").write_text(f"gitdir: {main / '.git'}\n")
+
+        assert read_git_remote_url_from_filesystem(forged) == ""
 
     def test_no_origin_returns_none(self, tmp_path: Path) -> None:
         self._write_config(tmp_path, "[core]\n\tbare = false\n")

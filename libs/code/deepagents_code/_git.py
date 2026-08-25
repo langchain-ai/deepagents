@@ -556,16 +556,19 @@ def read_git_remote_url_from_filesystem(path: str | Path) -> str | None:
         The `origin` remote URL, an empty string when `path` is not inside a
         git repository, or `None` when no `origin` URL is configured.
     """
-    git_dir = find_git_dir(path)
-    if git_dir is None:
+    common_dir = find_git_common_dir(path)
+    if common_dir is None:
+        root = find_git_root(path)
+        common_dir = find_git_common_dir(root) if root is not None else None
+    if common_dir is None:
         return ""
 
     try:
-        raw = (git_dir / "config").read_text(encoding="utf-8")
+        raw = (common_dir / "config").read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
     except OSError:
-        logger.debug("Failed to read git config in %s", git_dir, exc_info=True)
+        logger.debug("Failed to read git config in %s", common_dir, exc_info=True)
         return None
 
     in_origin = False

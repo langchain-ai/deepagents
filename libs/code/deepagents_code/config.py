@@ -32,7 +32,11 @@ from deepagents_code._env_vars import (
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
-from deepagents_code._paths import PATHS
+from deepagents_code._paths import (
+    DEEPAGENTS_HOME_ENV,
+    DEFAULT_PROFILE_MARKER_ENV,
+    PATHS,
+)
 from deepagents_code._version import __version__
 from deepagents_code.config_manifest import (
     INTERPRETER_ENABLE_DEFAULT,
@@ -121,8 +125,8 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "BASHOPTS",
         "CDPATH",
         "COMSPEC",
-        "DEEPAGENTS_HOME",
-        "DEEPAGENTS_HOME_IS_DEFAULT",
+        DEEPAGENTS_HOME_ENV,
+        DEFAULT_PROFILE_MARKER_ENV,
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
         "ENV",
@@ -250,25 +254,40 @@ def _is_dotenv_denied_env_key(key: str) -> bool:
 
 
 def _report_denied_env_key(key: str, dotenv_path: Path, *, is_project: bool) -> None:
-    """Log a denied dotenv key at a level matching who could have set it.
+    """Report a denied dotenv key at a level matching who could have set it.
 
     A project `.env` is untrusted, so a denied key there is expected and stays
-    at debug. The user's own global `.env` is trusted, so silently dropping a
-    key the user deliberately wrote leaves them with a setting that never takes
-    effect and no way to find out why. `DEEPAGENTS_HOME` in particular is
-    chicken-and-egg: it selects the profile that owns this very file, so it can
-    only come from the launching shell.
+    at debug. The user's own global `.env` is trusted. Silently dropping a key
+    the user deliberately wrote leaves them with a setting that never takes
+    effect and no way to find out why, so every denied key from that file is
+    reported, not `DEEPAGENTS_HOME` alone.
+
+    The report goes to stderr as well as the logger. The package installs a
+    buffering handler at import, which stops `logging.lastResort` from writing
+    warnings to the terminal, so a `logger.warning` alone would be visible only
+    under `--debug`. `_debug` prints and logs for the same reason.
+
+    `DEEPAGENTS_HOME` gets its own sentence: it selects the profile that owns
+    this file, so it cannot be read from it.
     """
-    if not is_project and key.upper() == "DEEPAGENTS_HOME":
-        logger.warning(
-            "Ignoring DEEPAGENTS_HOME in %s: it selects the profile that owns "
-            "that file, so it must be set in the launching shell environment "
-            "instead (for example 'export DEEPAGENTS_HOME=...').",
-            dotenv_path,
-        )
+    if is_project:
+        # Log the key only — the value is attacker-controlled.
+        logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
         return
-    # Log the key only — the value is attacker-controlled.
-    logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+    if key.upper() == DEEPAGENTS_HOME_ENV:
+        message = (
+            f"Ignoring {DEEPAGENTS_HOME_ENV} in {dotenv_path}: it selects the "
+            "profile that owns that file, so it must be set in the launching "
+            "shell environment instead (for example 'export "
+            f"{DEEPAGENTS_HOME_ENV}=...')."
+        )
+    else:
+        message = (
+            f"Ignoring {key!r} in {dotenv_path}: this variable cannot be set "
+            "from a .env file. Set it in your shell environment instead."
+        )
+    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201  # user-facing
+    logger.warning("%s", message)
 
 
 _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
@@ -3389,17 +3408,11 @@ class Settings:
         Returns:
             Path to `{DEEPAGENTS_HOME}/{agent_name}`.
 
-        Raises:
-            ValueError: If the agent name contains invalid characters or names
-                a directory the app owns. The second case comes from
-                `get_agent_dir`.
+        Note:
+            `ValueError` propagates from `get_agent_dir` when the name contains
+            invalid characters or names a directory the app owns. Validation is
+            not repeated here, so there is one place it can change.
         """
-        if not self._is_valid_agent_name(agent_name):
-            msg = (
-                f"Invalid agent name: {agent_name!r}. Agent names can only "
-                "contain letters, numbers, hyphens, underscores, and spaces."
-            )
-            raise ValueError(msg)
         agent_dir = self.get_agent_dir(agent_name)
         agent_dir.mkdir(parents=True, exist_ok=True)
         return agent_dir

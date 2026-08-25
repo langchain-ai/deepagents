@@ -7797,6 +7797,53 @@ class TestDeniedHomeKeyReporting:
 
         assert "BASH_ENV" in caplog.text
 
+    @pytest.mark.parametrize(
+        "key", ["BASH_ENV", "GIT_SSH_COMMAND", "PYTHONPATH", "NODE_OPTIONS"]
+    )
+    def test_every_denied_key_in_the_users_own_dotenv_is_reported(
+        self, key: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The trusted-file rule applies to all denied keys, not just one.
+
+        A user who writes `PYTHONPATH` into their own `~/.deepagents/.env`
+        otherwise gets a setting that never takes effect, with the drop
+        recorded only at debug level.
+        """
+        from deepagents_code.config import _report_denied_env_key
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            _report_denied_env_key(key, tmp_path / ".env", is_project=False)
+
+        assert key in caplog.text
+        assert "shell environment" in caplog.text
+
+    def test_the_report_reaches_stderr_not_only_the_log(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The package's buffering handler defeats `logging.lastResort`.
+
+        With a handler on the `deepagents_code` logger, a bare
+        `logger.warning` never reaches the terminal, so the user still has no
+        way to find out why their key was dropped.
+        """
+        from deepagents_code.config import _report_denied_env_key
+
+        _report_denied_env_key("BASH_ENV", tmp_path / ".env", is_project=False)
+
+        assert "BASH_ENV" in capsys.readouterr().err
+
+    def test_the_default_profile_marker_is_denied_from_a_dotenv(self) -> None:
+        """The marker key must stay on the denylist.
+
+        `_honors_default_marker` re-derives the default location, so a forged
+        marker can only change display. `PATHS` is frozen before any dotenv
+        loads, which makes this defense-in-depth for a layer that could be
+        reordered later — so it needs its own guard.
+        """
+        from deepagents_code.config import _is_dotenv_denied_env_key
+
+        assert _is_dotenv_denied_env_key("DEEPAGENTS_HOME_IS_DEFAULT")
+
     def test_case_insensitive_match(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

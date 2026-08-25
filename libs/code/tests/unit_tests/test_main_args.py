@@ -2052,6 +2052,43 @@ def test_managed_thread_display_options_override_cli_flags(
     assert mock_list.await_args.kwargs[kwarg] == expected  # ty: ignore[unresolved-attribute]
 
 
+def test_invalid_managed_thread_sort_falls_through_to_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown managed sort value must not mask a valid CLI choice."""
+    from deepagents_code.configuration import service
+    from deepagents_code.main import cli_main
+    from unit_tests.conftest import redirect_managed_config
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[threads]\nsort_order = "created"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+
+    try:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "threads", "list", "--sort", "created"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch(
+                "deepagents_code.sessions.list_threads_command",
+                new_callable=AsyncMock,
+            ) as mock_list,
+        ):
+            cli_main()
+    finally:
+        service.invalidate_config_sources()
+
+    assert mock_list.await_args.kwargs["sort_by"] == "created"  # ty: ignore[unresolved-attribute]
+
+
 class TestThreadsListCwdFilter:
     """Tests for `deepagents threads list --cwd` path normalization."""
 

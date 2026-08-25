@@ -47,8 +47,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "DEFAULT_MODEL_RETRIES",
     "CodeModelRetryMiddleware",
+    "aretry_model_call",
     "build_retry_event",
     "format_retry_status",
+    "retry_model_call",
 ]
 
 _INITIAL_DELAY_SECONDS = 0.2
@@ -274,6 +276,33 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     return min(max(seconds, 0.0), _MAX_RETRY_AFTER_SECONDS)
 
 
+def _compute_backoff_delay(attempt: int) -> float:
+    """Return the jittered exponential delay after a zero-indexed attempt."""
+    delay = min(_INITIAL_DELAY_SECONDS * (_BACKOFF_FACTOR**attempt), _MAX_DELAY_SECONDS)
+    if delay > 0:
+        jitter_amount = delay * _JITTER_FRACTION
+        delay = max(0.0, delay + random.uniform(-jitter_amount, jitter_amount))  # noqa: S311  # backoff jitter, not security-sensitive
+    return delay
+
+
+def _retry_delay_seconds(attempt: int, exc: Exception) -> float:
+    """Return a provider-directed or local backoff delay for one failure."""
+    retry_after = _retry_after_seconds(exc)
+    return retry_after if retry_after is not None else _compute_backoff_delay(attempt)
+
+
+def _model_max_retries(model: object, fallback: int) -> int:
+    """Return valid retry metadata attached to `model`, or `fallback`."""
+    raw_retries = getattr(model, MODEL_RETRIES_ATTR, None)
+    if (
+        isinstance(raw_retries, int)
+        and not isinstance(raw_retries, bool)
+        and raw_retries >= 0
+    ):
+        return raw_retries
+    return fallback
+
+
 def _is_transient_sdk_error(exc: Exception) -> bool:
     """Return whether `exc` is a name-matched transient provider SDK error.
 
@@ -397,6 +426,74 @@ def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
         )
 
 
+def retry_model_call[ResultT](model: object, call: Callable[[], ResultT]) -> ResultT:
+    """Run a non-streaming auxiliary model call with its configured retry budget.
+
+    Args:
+        model: Model carrying dcode retry metadata when dcode owns its SDK retries.
+        call: Fresh invocation callable to run for each attempt.
+
+    Returns:
+        The successful call result.
+
+    Raises:
+        GraphBubbleUp: Propagates LangGraph control flow immediately.
+        RuntimeError: If the retry loop exits without returning (unreachable in
+            practice). Exhausted and non-transient errors propagate unchanged.
+    """
+    max_retries = _model_max_retries(model, 0)
+    for attempt in range(max_retries + 1):
+        try:
+            return call()
+        except GraphBubbleUp:
+            raise
+        except Exception as exc:  # classified by _is_retryable_model_error
+            if not _is_retryable_model_error(exc) or attempt >= max_retries:
+                _log_give_up(exc, attempt + 1, max_retries)
+                raise
+            logger.warning("Auxiliary model call failed; retrying")
+            if delay := _retry_delay_seconds(attempt, exc):
+                time.sleep(delay)
+    msg = "Unexpected: auxiliary retry loop completed without returning"
+    raise RuntimeError(msg)
+
+
+async def aretry_model_call[ResultT](
+    model: object, call: Callable[[], Awaitable[ResultT]]
+) -> ResultT:
+    """Async variant of `retry_model_call`.
+
+    Args:
+        model: Model carrying dcode retry metadata when dcode owns its SDK retries.
+        call: Fresh async invocation callable to run for each attempt.
+
+    Returns:
+        The successful call result.
+
+    Raises:
+        GraphBubbleUp: Propagates LangGraph control flow immediately.
+        RuntimeError: If the retry loop exits without returning (unreachable in
+            practice). Exhausted and non-transient errors propagate unchanged.
+    """
+    import asyncio
+
+    max_retries = _model_max_retries(model, 0)
+    for attempt in range(max_retries + 1):
+        try:
+            return await call()
+        except GraphBubbleUp:
+            raise
+        except Exception as exc:  # classified by _is_retryable_model_error
+            if not _is_retryable_model_error(exc) or attempt >= max_retries:
+                _log_give_up(exc, attempt + 1, max_retries)
+                raise
+            logger.warning("Auxiliary model call failed; retrying")
+            if delay := _retry_delay_seconds(attempt, exc):
+                await asyncio.sleep(delay)
+    msg = "Unexpected: auxiliary retry loop completed without returning"
+    raise RuntimeError(msg)
+
+
 def build_retry_event(attempt: int, max_retries: int) -> dict[str, object]:
     """Build the custom-stream payload announcing a model retry.
 
@@ -459,9 +556,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             Delay in seconds.
         """
         retry_after = _retry_after_seconds(exc)
-        if retry_after is not None:
-            return retry_after
-        return self._compute_delay(attempt)
+        return retry_after if retry_after is not None else self._compute_delay(attempt)
 
     def _compute_delay(self, attempt: int) -> float:
         """Return the backoff delay before the retry following `attempt`.
@@ -472,8 +567,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         Returns:
             Delay in seconds, capped at `_MAX_DELAY_SECONDS`, with +-10% jitter.
         """
-        delay = self.initial_delay * (self.backoff_factor**attempt)
-        delay = min(delay, self.max_delay)
+        delay = min(self.initial_delay * (self.backoff_factor**attempt), self.max_delay)
         if self.jitter and delay > 0:
             jitter_amount = delay * _JITTER_FRACTION
             delay = max(0.0, delay + random.uniform(-jitter_amount, jitter_amount))  # noqa: S311  # backoff jitter, not security-sensitive
@@ -519,14 +613,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             The model-specific non-negative retry count, or the middleware's
             startup fallback when the model carries no valid metadata.
         """
-        raw_retries = getattr(getattr(request, "model", None), MODEL_RETRIES_ATTR, None)
-        if (
-            isinstance(raw_retries, int)
-            and not isinstance(raw_retries, bool)
-            and raw_retries >= 0
-        ):
-            return raw_retries
-        return self.max_retries
+        return _model_max_retries(getattr(request, "model", None), self.max_retries)
 
     def wrap_model_call(
         self,

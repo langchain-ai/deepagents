@@ -2518,17 +2518,22 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 # with the primary model. A distinct classifier runs on its
                 # own defaults.
                 settings = request.model_settings if spec is None else {}
-                result = await structured.ainvoke(
-                    messages,
-                    config={
-                        "run_name": "dcode_auto_classifier",
-                        "tags": ["dcode:auto"],
-                        "metadata": {
-                            "lc_source": "auto_mode_classifier",
-                            "classifier_model": spec or "inherited",
+                from deepagents_code.model_retry import aretry_model_call
+
+                result = await aretry_model_call(
+                    model,
+                    lambda: structured.ainvoke(
+                        messages,
+                        config={
+                            "run_name": "dcode_auto_classifier",
+                            "tags": ["dcode:auto"],
+                            "metadata": {
+                                "lc_source": "auto_mode_classifier",
+                                "classifier_model": spec or "inherited",
+                            },
                         },
-                    },
-                    **settings,
+                        **settings,
+                    ),
                 )
         except TimeoutError:
             # `asyncio.timeout(...).expired()` distinguishes our wait budget

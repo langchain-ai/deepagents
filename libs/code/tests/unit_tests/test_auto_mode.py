@@ -81,6 +81,7 @@ from deepagents_code.auto_mode import (
     sanitize_auto_reason,
     user_prompt_metadata,
 )
+from deepagents_code.config import MODEL_RETRIES_ATTR
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
@@ -4379,6 +4380,45 @@ async def test_invoke_failure_names_distinct_classifier_spec(
     # permanent-configuration latch.
     assert counters["consecutive_unavailable"] == 1
     assert counters["classifier_config_failed_spec"] is None
+
+
+async def test_classifier_retries_a_transient_invoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An inherited classifier gets dcode retries outside the model middleware."""
+
+    class _TransientModel(_StructuredModel):
+        attempts = 0
+
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            self.attempts += 1
+            if self.attempts == 1:
+                msg = "provider unavailable"
+                raise TimeoutError(msg)
+            return await super().ainvoke(messages, **kwargs)
+
+    monkeypatch.setattr(
+        "deepagents_code.model_retry._retry_delay_seconds", lambda *_: 0
+    )
+    model = _TransientModel(_allow_result())
+    setattr(model, MODEL_RETRIES_ATTR, 1)
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert model.attempts == 2
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
 async def test_invoke_failure_evicts_cached_classifier(

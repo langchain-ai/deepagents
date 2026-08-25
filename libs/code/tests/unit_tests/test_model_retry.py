@@ -54,6 +54,7 @@ from deepagents_code.model_retry import (
     _retry_after_seconds,
     build_retry_event,
     format_retry_status,
+    retry_model_call,
 )
 
 _UNSET = object()
@@ -435,6 +436,28 @@ def test_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls["n"] == 3
     assert [e["type"] for e in events] == ["model_retry", "model_retry"]
     assert events[0]["message"] == "Retrying model request 1/5"
+
+
+def test_auxiliary_call_uses_model_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct classifier/compaction calls honor the model's stamped budget."""
+    monkeypatch.setattr(
+        "deepagents_code.model_retry._retry_delay_seconds", lambda *_: 0
+    )
+    model = SimpleNamespace()
+    setattr(model, MODEL_RETRIES_ATTR, 2)
+    calls = 0
+
+    def call() -> str:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise _READ_ERROR
+        return "OK"
+
+    assert retry_model_call(model, call) == "OK"
+    assert calls == 3
 
 
 def test_exhaustion_reraises_original(monkeypatch: pytest.MonkeyPatch) -> None:

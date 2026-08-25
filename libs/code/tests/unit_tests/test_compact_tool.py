@@ -21,6 +21,7 @@ from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.offload_middleware import (
     CLICompactionMiddleware,
     _ArchiveReadGuard,
+    _RetryingModelInvoker,
     _runtime_model_config,
 )
 from deepagents_code.tool_display import format_tool_display
@@ -477,6 +478,7 @@ class TestCLICompactionMiddleware:
         # archive path, and the guard exposes no such attribute. The server
         # operation applies the guard separately at the write site.
         assert create_summarization.call_args.args[1] is startup._backend
+        assert isinstance(selected._lc_helper._summary_model, _RetryingModelInvoker)
 
     def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:
         """Server-side offload uses the CLI's effective model profile."""
@@ -594,6 +596,10 @@ class TestCLICompactionMiddleware:
         assert result.name == "SummarizationMiddleware"
         assert result.system_prompt == "SYSTEM PROMPT"
         assert result._summarization is sdk._summarization
+        assert isinstance(
+            result._summarization._lc_helper._summary_model,
+            _RetryingModelInvoker,
+        )
 
 
 class TestRuntimeModelConfig:

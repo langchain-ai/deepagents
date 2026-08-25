@@ -751,7 +751,9 @@ def default_cache_dir() -> Path:
     to `~/AppData/Local`), and `XDG_CACHE_HOME` elsewhere when it is an
     absolute path (falling back to `~/.cache`). The XDG spec treats relative
     `XDG_CACHE_HOME` values as invalid, so they are ignored rather than
-    resolved against the launch directory.
+    resolved against the launch directory. If the OS home directory cannot be
+    resolved, caches fall back to the selected profile's `.state/cache`
+    directory so an absolute `DEEPAGENTS_HOME` remains usable.
 
     Platform-native locations are the convention for a long-lived app (this is
     what `platformdirs` codifies and what `uv` itself does — its own cache is
@@ -770,13 +772,19 @@ def default_cache_dir() -> Path:
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
             return Path(local_app_data)
-        return Path.home() / "AppData" / "Local"
+    elif sys.platform != "darwin":
+        xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+        if xdg_cache_home and Path(xdg_cache_home).is_absolute():
+            return Path(xdg_cache_home)
+    try:
+        home = Path.home()
+    except RuntimeError:
+        return DEFAULT_STATE_DIR / "cache"
+    if sys.platform == "win32":
+        return home / "AppData" / "Local"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Caches"
-    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
-    if xdg_cache_home and Path(xdg_cache_home).is_absolute():
-        return Path(xdg_cache_home)
-    return Path.home() / ".cache"
+        return home / "Library" / "Caches"
+    return home / ".cache"
 
 
 RECENT_MODELS_FILENAME = "recent_models.json"

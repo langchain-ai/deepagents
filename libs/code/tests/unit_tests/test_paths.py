@@ -213,6 +213,38 @@ class TestHomeCheckSkipped:
         assert snapshot.profile.root == configured
         assert snapshot.home_check_skipped is True
 
+    def test_update_check_import_uses_profile_cache_without_home(
+        self, tmp_path: Path
+    ) -> None:
+        """Startup consumers cannot reintroduce a required home lookup."""
+        configured = tmp_path / "profile"
+        env = _subprocess_env(home=tmp_path, configured=str(configured))
+        env.pop("LOCALAPPDATA", None)
+        env.pop("XDG_CACHE_HOME", None)
+        code = """
+from pathlib import Path
+
+def unavailable_home(cls):
+    raise RuntimeError("home unavailable")
+
+Path.home = classmethod(unavailable_home)
+from deepagents_code.update_check import UPDATE_LOG_DIR
+print(UPDATE_LOG_DIR)
+"""
+
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == str(
+            configured / ".state" / "cache" / "deepagents-code" / "update_logs"
+        )
+
 
 class TestDisplayOutsideTheProfileRoot:
     """A path outside the profile must not be given a bogus `~` prefix."""

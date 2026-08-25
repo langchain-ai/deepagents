@@ -285,6 +285,35 @@ def format_retry_status(attempt: int, max_retries: int) -> str:
     )
 
 
+def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
+    """Record why the retry loop stopped before re-raising.
+
+    `on_failure="error"` re-raises the original exception, which carries no
+    trace of the attempts spent on it. Without this the caller sees a bare
+    provider error and cannot tell a first-attempt failure from an exhausted
+    budget.
+
+    Args:
+        exc: The exception about to be re-raised.
+        attempts: Total model calls made, including the initial one.
+        max_retries: Retry budget resolved for this model request.
+    """
+    if max_retries and _is_retryable_model_error(exc):
+        logger.error(
+            "Model call failed after %d attempts (retry budget %d exhausted): %s",
+            attempts,
+            max_retries,
+            type(exc).__name__,
+            exc_info=exc,
+        )
+    else:
+        logger.debug(
+            "Model call failed with a non-transient %s; not retrying",
+            type(exc).__name__,
+            exc_info=exc,
+        )
+
+
 def build_retry_event(attempt: int, max_retries: int) -> dict[str, object]:
     """Build the custom-stream payload announcing a model retry.
 
@@ -418,6 +447,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                 raise
             except Exception as exc:  # noqa: BLE001  # classified by _is_retryable_model_error
                 if not _is_retryable_model_error(exc) or attempt >= max_retries:
+                    _log_give_up(exc, attempt + 1, max_retries)
                     return self._handle_failure(exc, attempt + 1)
                 self._emit_retry_status(request, attempt + 1, max_retries)
                 delay = self._compute_delay(attempt)
@@ -460,6 +490,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                 raise
             except Exception as exc:  # noqa: BLE001  # classified by _is_retryable_model_error
                 if not _is_retryable_model_error(exc) or attempt >= max_retries:
+                    _log_give_up(exc, attempt + 1, max_retries)
                     return self._handle_failure(exc, attempt + 1)
                 self._emit_retry_status(request, attempt + 1, max_retries)
                 delay = self._compute_delay(attempt)

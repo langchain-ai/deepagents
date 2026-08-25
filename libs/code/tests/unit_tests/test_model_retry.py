@@ -399,6 +399,70 @@ def test_retry_scoped_to_model_node(monkeypatch: pytest.MonkeyPatch) -> None:
     assert tool_calls == []
 
 
+# --- give-up diagnostics ---
+
+
+def test_exhaustion_logs_the_attempt_count(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An exhausted budget is recorded; the bare re-raise carries no count."""
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+
+    def handler(_req_arg: object) -> str:
+        raise _READ_ERROR
+
+    mw = CodeModelRetryMiddleware(max_retries=2)
+    with (
+        caplog.at_level(logging.ERROR, logger="deepagents_code.model_retry"),
+        pytest.raises(httpx.ReadError),
+    ):
+        mw.wrap_model_call(_req(), _handler(handler))
+
+    assert "after 3 attempts" in caplog.text
+    assert "retry budget 2 exhausted" in caplog.text
+
+
+def test_non_transient_failure_is_not_logged_as_exhaustion(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A deterministic error never spent the budget, so don't claim it did."""
+
+    def handler(_req_arg: object) -> str:
+        raise _VALUE_ERROR
+
+    mw = CodeModelRetryMiddleware(max_retries=5)
+    with (
+        caplog.at_level(logging.ERROR, logger="deepagents_code.model_retry"),
+        pytest.raises(ValueError, match="bad request"),
+    ):
+        mw.wrap_model_call(_req(), _handler(handler))
+
+    assert "exhausted" not in caplog.text
+
+
+async def test_async_exhaustion_logs_the_attempt_count(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The async path reports exhaustion too."""
+
+    async def _no_sleep(*_a: object, **_k: object) -> None:  # noqa: RUF029  # async stub replacing asyncio.sleep
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+
+    async def handler(_req_arg: object) -> str:  # noqa: RUF029  # awaited by middleware; no internal await needed
+        raise _READ_ERROR
+
+    mw = CodeModelRetryMiddleware(max_retries=1)
+    with (
+        caplog.at_level(logging.ERROR, logger="deepagents_code.model_retry"),
+        pytest.raises(httpx.ReadError),
+    ):
+        await mw.awrap_model_call(_req(), _async_handler(handler))
+
+    assert "after 2 attempts" in caplog.text
+
+
 # --- per-request retry budget carried on the model ---
 
 

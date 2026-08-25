@@ -560,15 +560,19 @@ def test_wrap_model_call_disables_malformed_summarization_cutoff(
     assert state["_summarization_event"] is not None
 
 
-def test_wrap_model_call_preserves_superseded_oversized_notice() -> None:
-    """A bounded notice supersedes legacy text without rewriting history."""
+def test_wrap_model_call_replaces_superseded_oversized_notice() -> None:
+    """A bounded same-index stand-in keeps legacy poison from the model."""
     rubric = "x" * (RUBRIC_CHAR_LIMIT + 1)
     state: dict[str, object] = {
         "rubric": rubric,
         "_sticky_rubric": rubric,
     }
     legacy = build_goal_state_notice({"rubric": "old"}, event_id="legacy-oversized")
-    legacy.content = f"legacy notice {rubric}"
+    legacy.content = (
+        "legacy notice\n<acceptance_criteria>"
+        f"{'x' * (RUBRIC_CHAR_LIMIT + 1)}"
+        "</acceptance_criteria>"
+    )
     legacy.additional_kwargs = {
         **legacy.additional_kwargs,
         "goal_message_schema_version": GOAL_MESSAGE_SCHEMA_VERSION - 1,
@@ -586,11 +590,37 @@ def test_wrap_model_call_preserves_superseded_oversized_notice() -> None:
     )
 
     messages = captured["request"].messages
-    assert messages[:-1] == request.messages
-    assert messages[1] is legacy
-    assert rubric in messages[1].content
+    assert len(messages) == 3
+    assert messages[0] is request.messages[0]
+    assert messages[1].id == legacy.id
+    assert "oversized superseded goal/rubric state notice was omitted" in (
+        messages[1].content
+    )
+    assert rubric not in messages[1].content
     assert "too large to include safely" in messages[-1].content
     assert len(messages[-1].content) < 2_000
+
+
+def test_wrap_model_call_preserves_bounded_stale_notice() -> None:
+    """Schema-invalid history remains byte-stable while it fits the budget."""
+    state: dict[str, object] = {"rubric": "current"}
+    stale = build_goal_state_notice({"rubric": "old"}, event_id="bounded-stale")
+    stale.additional_kwargs = {
+        **stale.additional_kwargs,
+        "goal_message_schema_version": GOAL_MESSAGE_SCHEMA_VERSION - 1,
+    }
+    request = _fake_request(None, state=state, messages=[stale])
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    messages = captured["request"].messages
+    assert messages[0] is stale
+    assert messages[-1] is not stale
+    assert "Acceptance criteria" in messages[0].content
 
 
 def test_discarding_malformed_summarization_event_is_logged(

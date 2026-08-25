@@ -38,10 +38,12 @@ from deepagents_code.goal_state_notice import (
     goal_notice_size_error,
     goal_state_fingerprint,
     has_goal_or_rubric_state,
+    is_oversized_goal_state_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
     latest_human_is_unsaved_goal_continuation,
     log_malformed_summarization_event,
+    superseded_goal_state_placeholder,
     validated_summarization_cutoff,
 )
 
@@ -440,10 +442,12 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
         When checkpointed history no longer surfaces a current notice, a
         transient goal-state notice is appended to the request messages only
-        (not persisted; `before_model` owns the durable write). Earlier notices
-        remain byte-stable so changing goal state does not invalidate the
-        cacheable conversation prefix. The current notice explicitly supersedes
-        them, and the system prompt is left unchanged.
+        (not persisted; `before_model` owns the durable write). Earlier bounded
+        notices remain byte-stable so changing goal state does not invalidate the
+        cacheable conversation prefix. Oversized legacy notices are replaced by
+        bounded same-index stand-ins so they cannot exhaust the model context.
+        The current notice explicitly supersedes them, and the system prompt is
+        left unchanged.
 
         This middleware wraps the summarizer, so `request.messages` is the full
         persisted list rather than a trimmed window. The summarization cutoff is
@@ -454,9 +458,10 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
         Returns:
             The request unchanged apart from any malformed-event state override
-            when no notice is needed. Otherwise, a request with the current
-            goal-state notice appended and, for a malformed
-            `_summarization_event`, a state override nulling that event.
+            when no notice or oversized-message replacement is needed. Otherwise,
+            a request with oversized legacy notices replaced in place, any current
+            goal-state notice appended, and — for a malformed
+            `_summarization_event` — a state override nulling that event.
         """
         values = cast("dict[str, Any]", request.state)
         event = values.get("_summarization_event")
@@ -480,9 +485,22 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             # retains the canonical goal state.
             cutoff=len(request.messages) if malformed_event else (cutoff or 0),
         )
-        if notice is None:
+        messages = [
+            (
+                superseded_goal_state_placeholder(message)
+                if is_oversized_goal_state_message(message)
+                else message
+            )
+            for message in request.messages
+        ]
+        if notice is not None:
+            messages.append(notice)
+        if notice is None and all(
+            projected is original
+            for projected, original in zip(messages, request.messages, strict=True)
+        ):
             return request
-        return request.override(messages=[*request.messages, notice])
+        return request.override(messages=messages)
 
     @override
     def wrap_model_call[ResponseT](

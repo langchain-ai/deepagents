@@ -12,6 +12,7 @@ import hashlib
 import html
 import json
 import logging
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final, Literal, NamedTuple, TypedDict, cast
@@ -37,6 +38,7 @@ Despite the `HumanMessage` transport role, messages with this source are never
 user transcript content. Keep this source in the internal-message filters when
 adding a new transcript or history projection.
 """
+SUPERSEDED_GOAL_STATE_SOURCE: Final = "goal_state_superseded"
 GOAL_MESSAGE_SCHEMA_VERSION: Final = 5
 """Canonical goal-message schema version.
 
@@ -56,7 +58,9 @@ _GOAL_MESSAGE_KIND_KEY: Final = "goal_message_kind"
 _GOAL_INTERNAL_SOURCES = frozenset(
     {GOAL_CONTROL_MESSAGE_SOURCE, GOAL_STATE_MESSAGE_SOURCE}
 )
-_CONVERSATION_CONTROL_SOURCES = frozenset({*_GOAL_INTERNAL_SOURCES, "rubric_grader"})
+_CONVERSATION_CONTROL_SOURCES = frozenset(
+    {*_GOAL_INTERNAL_SOURCES, SUPERSEDED_GOAL_STATE_SOURCE, "rubric_grader"}
+)
 _USER_HIDDEN_SOURCES = frozenset({*_CONVERSATION_CONTROL_SOURCES, "summarization"})
 _LEGACY_CONVERSATION_CONTROL_PREFIXES = (
     f"{SYSTEM_MESSAGE_PREFIX} Goal set by the user",
@@ -64,6 +68,11 @@ _LEGACY_CONVERSATION_CONTROL_PREFIXES = (
     f"{SYSTEM_MESSAGE_PREFIX} Goal resumed by the user.",
     f"{SYSTEM_MESSAGE_PREFIX} Goal/rubric state changed.",
     f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user.",
+)
+_GOAL_STATE_EMBEDDED_SECTION_PATTERN = re.compile(
+    r"<(goal_objective|acceptance_criteria|goal_status_note|prior_blocker)>(.*?)"
+    r"</\1>",
+    re.DOTALL,
 )
 
 GoalTransition = Literal["created", "amended", "resumed"]
@@ -803,3 +812,39 @@ def latest_goal_state_message_index(messages: Sequence[object]) -> int | None:
         if is_goal_state_message(messages[index]):
             return index
     return None
+
+
+def is_oversized_goal_state_message(message: object) -> bool:
+    """Return whether embedded goal-state text violates current size limits."""
+    if not is_goal_state_message(message):
+        return False
+    sections = dict(_GOAL_STATE_EMBEDDED_SECTION_PATTERN.findall(message_text(message)))
+    try:
+        validate_goal_notice_text(
+            objective=html.unescape(sections.get("goal_objective", "")) or None,
+            criteria=html.unescape(sections.get("acceptance_criteria", "")) or None,
+            status_note=html.unescape(sections.get("goal_status_note", "")) or None,
+            prior_blocker=html.unescape(sections.get("prior_blocker", "")) or None,
+        )
+    except GoalStateSizeError:
+        return True
+    return False
+
+
+def superseded_goal_state_placeholder(message: object) -> HumanMessage:
+    """Build a bounded same-index stand-in for an oversized prior notice.
+
+    Returns:
+        Internal message that preserves the replaced notice's identifier.
+    """
+    from langchain_core.messages import HumanMessage
+
+    return HumanMessage(
+        content=(
+            f"{SYSTEM_MESSAGE_PREFIX} An oversized superseded goal/rubric state "
+            "notice was omitted here. The current notice appears later in this "
+            "conversation."
+        ),
+        additional_kwargs={"lc_source": SUPERSEDED_GOAL_STATE_SOURCE},
+        id=getattr(message, "id", None),
+    )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from types import SimpleNamespace
@@ -38,7 +39,7 @@ if TYPE_CHECKING:
         CallbackManagerForLLMRun,
     )
 
-from deepagents_code import model_config
+from deepagents_code import model_config, model_retry
 from deepagents_code.config import (
     ASCII_GLYPHS,
     DEFAULT_MODEL_RETRIES,
@@ -980,3 +981,34 @@ def test_status_helpers() -> None:
     assert event["attempt"] == 2
     assert event["max_retries"] == 5
     assert event["message"] == "Retrying model request 2/5"
+
+
+def test_stream_tracker_setup_failure_preserves_the_model_error() -> None:
+    """A broken stream tracker must not mask why the model call failed.
+
+    `_track_message_streams` reconstructs a private LangGraph handler. If that
+    reconstruction ever breaks, the retry loop still has to report the model
+    failure rather than dying on a half-initialised tracker.
+    """
+
+    class _TrackerSetupError(Exception):
+        pass
+
+    @contextmanager
+    def _broken_tracker(_tracker: object) -> Iterator[None]:
+        raise _TrackerSetupError
+        yield  # pragma: no cover  # makes this a generator
+
+    middleware = CodeModelRetryMiddleware(max_retries=2)
+
+    def _handler(_request: ModelRequest) -> ModelResponse:
+        msg = "model is down"
+        raise ModelConnectionError(msg)
+
+    with (
+        patch.object(model_retry, "_track_message_streams", _broken_tracker),
+        pytest.raises(_TrackerSetupError),
+    ):
+        middleware.wrap_model_call(
+            cast("ModelRequest", SimpleNamespace(model=None)), _handler
+        )

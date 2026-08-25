@@ -156,13 +156,20 @@ class _MessageStreamTracker:
 
 
 @contextmanager
-def _track_message_streams() -> Iterator[_MessageStreamTracker]:
+def _track_message_streams(
+    tracker: _MessageStreamTracker,
+) -> Iterator[_MessageStreamTracker]:
     """Track whether one model attempt has emitted visible message output.
 
+    The caller owns `tracker` so the retry loop can read it even when this
+    context manager fails before yielding.
+
+    Args:
+        tracker: Attempt-local tracker to record message-stream delivery on.
+
     Yields:
-        The attempt-local message stream tracker.
+        The tracker passed in by the caller.
     """
-    tracker = _MessageStreamTracker()
     try:
         from langgraph.config import get_config
 
@@ -637,8 +644,9 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         """
         max_retries = self._request_max_retries(request)
         for attempt in range(max_retries + 1):
+            stream_tracker = _MessageStreamTracker()
             try:
-                with _track_message_streams() as stream_tracker:
+                with _track_message_streams(stream_tracker):
                     response = handler(request)
             except GraphBubbleUp:
                 raise
@@ -687,8 +695,9 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
 
         max_retries = self._request_max_retries(request)
         for attempt in range(max_retries + 1):
+            stream_tracker = _MessageStreamTracker()
             try:
-                with _track_message_streams() as stream_tracker:
+                with _track_message_streams(stream_tracker):
                     response = await handler(request)
             except GraphBubbleUp:
                 raise

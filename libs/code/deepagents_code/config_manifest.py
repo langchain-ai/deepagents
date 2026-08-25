@@ -849,16 +849,36 @@ def _warn_cli_value_rejected(option: ConfigOption, reason: str) -> None:
     _print_cli_warning(("rejected cli value", f"{flag}|{reason}"), reason)
 
 
+def _notify_cli_warning(message: str) -> bool:
+    """Show a CLI-tier warning in the active Textual app when one is running.
+
+    Returns:
+        Whether the warning was delivered through Textual.
+    """
+    try:
+        from textual._context import active_app  # noqa: PLC2701
+
+        app = active_app.get()
+    except (ImportError, LookupError):
+        return False
+    if not app.is_running:
+        return False
+    app.notify(message, severity="warning", markup=False)
+    return True
+
+
 def _print_cli_warning(warning_key: tuple[str, str], message: str) -> None:
-    """Print one CLI-tier warning to stderr, at most once per generation.
+    """Surface one CLI-tier warning, at most once per generation.
 
     Args:
         warning_key: Dedup key stored in `_warned_non_table_paths`.
-        message: Warning body, rendered after a `Warning:` prefix.
+        message: Warning body, rendered in Textual or after a `Warning:` prefix.
     """
     if warning_key in _warned_non_table_paths:
         return
     _warned_non_table_paths.add(warning_key)
+    if _notify_cli_warning(message):
+        return
 
     from rich.console import Console
     from rich.text import Text

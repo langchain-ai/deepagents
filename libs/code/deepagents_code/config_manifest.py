@@ -1310,9 +1310,10 @@ def resolve_auto_classifier_model_with_source(
 
     Shares the blank-env veto with
     `config.resolve_auto_classifier_model_with_problem` so `dcode config` cannot
-    report a classifier the runtime does not use. A managed value outranks that
-    veto. `None` means the classifier inherits the main agent model; a blank
-    managed value means inherit, credited to `managed config`.
+    report a classifier the runtime does not use. Managed values and explicit
+    CLI arguments outrank that veto. `None` means the classifier inherits the
+    main agent model; a blank managed value means inherit, credited to
+    `managed config`.
 
     Args:
         toml_data: Parsed `config.toml`.
@@ -1340,6 +1341,13 @@ def resolve_auto_classifier_model_with_source(
     from deepagents_code.configuration.service import managed_decided
 
     if managed_decided(source):
+        return (
+            value.strip() if isinstance(value, str) and value.strip() else None
+        ), source
+
+    from deepagents_code.configuration.resolver import CLI_RANK
+
+    if CLI_RANK in resolved.ranks:
         return (
             value.strip() if isinstance(value, str) and value.strip() else None
         ), source

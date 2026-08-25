@@ -3288,19 +3288,28 @@ class Settings:
         """
         return PATHS.profile.root
 
-    @staticmethod
-    def get_user_agent_md_path(agent_name: str) -> Path:
+    def get_user_agent_md_path(self, agent_name: str) -> Path:
         """Get user-level AGENTS.md path for a specific agent.
 
         Returns path regardless of whether the file exists.
+
+        Delegates to `get_agent_dir` so the name is held to one rule set.
+        Building the path directly would skip both the character check and the
+        reserved-name check: `onboarding.write_onboarding_name_memory` calls
+        this and then creates the parent, so an unchecked name here is exactly
+        how a marker lands in app-owned state.
 
         Args:
             agent_name: Name of the agent
 
         Returns:
             Path to `{DEEPAGENTS_HOME}/{agent_name}/AGENTS.md`.
+
+        Note:
+            `ValueError` propagates from `get_agent_dir` when the agent name
+            contains invalid characters or names a directory the app owns.
         """
-        return PATHS.profile.agent_dir(agent_name) / "AGENTS.md"
+        return self.get_agent_dir(agent_name) / "AGENTS.md"
 
     def get_project_agent_md_path(self) -> list[Path]:
         """Get project-level AGENTS.md paths.

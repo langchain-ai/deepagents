@@ -151,7 +151,17 @@ def write_onboarding_name_memory(
     if memory_path is None:
         from deepagents_code.config import settings
 
-        path = settings.get_user_agent_md_path(assistant_id)
+        try:
+            path = settings.get_user_agent_md_path(assistant_id)
+        except ValueError:
+            # An invalid or app-owned agent name. Writing the marker anyway is
+            # what would stamp `AGENTS.md` into app state, so skip it.
+            logger.warning(
+                "Skipping onboarding name memory for agent %r",
+                assistant_id,
+                exc_info=True,
+            )
+            return False
     else:
         path = memory_path
 

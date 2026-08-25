@@ -7830,6 +7830,26 @@ class TestReservedAgentNames:
 
         assert settings.get_agent_dir("coder").name == "coder"
 
+    @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
+    def test_the_agents_md_accessor_rejects_them_too(self, name: str) -> None:
+        """The marker write goes through this accessor, not `get_agent_dir`.
+
+        `onboarding.write_onboarding_name_memory` calls it and then creates the
+        parent directory, so leaving it unchecked is what would stamp
+        `AGENTS.md` into app-owned state.
+        """
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="reserved"):
+            settings.get_user_agent_md_path(name)
+
+    def test_the_agents_md_accessor_rejects_invalid_characters(self) -> None:
+        """It skipped the character check as well, not only reserved names."""
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="Invalid agent name"):
+            settings.get_user_agent_md_path("../escape")
+
 
 class TestAgentDirStaysOffTheHeavyImportPath:
     """`get_agent_dir` is a path join reached by client-side CLI commands.

@@ -1831,6 +1831,64 @@ class TestAgentResolutionScope:
         valid_recent.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("managed_setting", "cli_args", "kwarg", "expected"),
+    [
+        (
+            "relative_time = true",
+            ("--no-relative",),
+            "relative",
+            True,
+        ),
+        (
+            'sort_order = "created_at"',
+            ("--sort", "updated"),
+            "sort_by",
+            "created",
+        ),
+    ],
+)
+def test_managed_thread_display_options_override_cli_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    managed_setting: str,
+    cli_args: tuple[str, ...],
+    kwarg: str,
+    expected: object,
+) -> None:
+    """Managed thread display policy must win at command dispatch."""
+    from deepagents_code.configuration import service
+    from deepagents_code.main import cli_main
+    from unit_tests.conftest import redirect_managed_config
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(f"[threads]\n{managed_setting}\n", encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+
+    try:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "threads", "list", *cli_args],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch(
+                "deepagents_code.sessions.list_threads_command",
+                new_callable=AsyncMock,
+            ) as mock_list,
+        ):
+            cli_main()
+    finally:
+        service.invalidate_config_sources()
+
+    assert mock_list.await_args.kwargs[kwarg] == expected  # ty: ignore[unresolved-attribute]
+
+
 class TestThreadsListCwdFilter:
     """Tests for `deepagents threads list --cwd` path normalization."""
 

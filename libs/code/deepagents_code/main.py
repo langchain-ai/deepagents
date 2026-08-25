@@ -1042,6 +1042,34 @@ def _resolver_for_args(args: argparse.Namespace) -> "ConfigResolver":
     return resolver
 
 
+def _resolve_thread_list_display_options(
+    args: argparse.Namespace,
+) -> tuple[str, bool]:
+    """Resolve thread display flags through the ranked configuration chain.
+
+    Returns:
+        The effective sort key and relative-time state.
+
+    Raises:
+        RuntimeError: If either option is missing from the manifest.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+
+    sort_option = get_option("threads.sort_order")
+    relative_option = get_option("threads.relative_time")
+    if sort_option is None or relative_option is None:
+        msg = "thread display options are missing from the configuration manifest"
+        raise RuntimeError(msg)
+
+    resolver = _resolver_for_args(args)
+    sort_order = resolver.get(sort_option)
+    relative_time = resolver.get(relative_option)
+    _emit_ranked_diagnostics(sort_option, sort_order)
+    _emit_ranked_diagnostics(relative_option, relative_time)
+    sort_by = "created" if sort_order.value == "created_at" else "updated"
+    return sort_by, bool(relative_time.value)
+
+
 def _install_cli_provider(args: argparse.Namespace) -> None:
     """Install parsed arguments into the shared resolution chain.
 
@@ -5468,6 +5496,7 @@ def cli_main() -> None:
             if args.threads_command in {"list", "ls"}:
                 raw_cwd = getattr(args, "cwd", None)
                 cwd_filter = _normalize_cwd_filter(raw_cwd)
+                sort_by, relative = _resolve_thread_list_display_options(args)
                 # Warn (but still query) when the user passed an explicit
                 # `--cwd <path>` that does not exist on disk — otherwise a
                 # typo would silently return "No threads found" with no hint.
@@ -5488,11 +5517,11 @@ def cli_main() -> None:
                     list_threads_command(
                         agent_name=getattr(args, "agent", None),
                         limit=getattr(args, "limit", None),
-                        sort_by=getattr(args, "sort", None),
+                        sort_by=sort_by,
                         branch=getattr(args, "branch", None),
                         cwd=cwd_filter,
                         verbose=getattr(args, "verbose", False),
-                        relative=getattr(args, "relative", None),
+                        relative=relative,
                         output_format=output_format,
                     )
                 )

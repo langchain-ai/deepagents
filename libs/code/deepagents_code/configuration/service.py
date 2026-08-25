@@ -534,11 +534,15 @@ class ManagedConfigError(RuntimeError):
                 # removing it would drop policy entirely. Name the URL that
                 # failed -- `_validate_remote_url` has already guaranteed it
                 # carries no credentials, query string, or fragment.
+                if status.health is ProviderHealth.CORRUPT:
+                    action = "repair the managed-config document published there"
+                else:
+                    action = "verify that the managed-config source is reachable"
                 message = (
                     f"Managed config at {path} points to "
                     f"{status.remote_source}, which is "
                     f"{status.health.value}{detail}. Ask your administrator to "
-                    "verify that the managed-config source is reachable."
+                    f"{action}."
                 )
             else:
                 message = (

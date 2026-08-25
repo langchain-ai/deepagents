@@ -522,9 +522,7 @@ def _managed_config_diagnostic() -> DiagnosticItem:
         get_managed_snapshot,
         managed_snapshot_health,
     )
-    from deepagents_code.configuration.types import (
-        TomlSnapshot,
-    )
+    from deepagents_code.configuration.types import ProviderHealth, TomlSnapshot
 
     snapshot = get_managed_snapshot(refresh=True)
     user = TomlSnapshot.absent("config.toml")
@@ -550,10 +548,13 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     if status.usable:
         hint = ""
     elif status.remote_source is not None:
-        hint = (
-            "; ask your administrator to verify that the managed-config source "
-            "is reachable"
-        )
+        if status.health is ProviderHealth.CORRUPT:
+            hint = "; ask your administrator to repair the published document"
+        else:
+            hint = (
+                "; ask your administrator to verify that the managed-config source "
+                "is reachable"
+            )
     else:
         hint = "; ask your administrator to repair or remove it"
     # A file that parses is not necessarily enforceable, and both halves of

@@ -940,6 +940,68 @@ def test_doctor_remote_failure_names_the_url_not_the_trust_anchor(
     assert "dns failed" not in item.value
 
 
+def test_corrupt_remote_policy_directs_admin_to_repair_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reachable source with invalid TOML needs document repair."""
+    from deepagents_code.configuration import providers, service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            return _RemoteResponse(b"[broken")
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    service.invalidate_config_sources()
+
+    with pytest.raises(ManagedConfigError) as caught:
+        require_healthy_managed_config(refresh=True)
+
+    message = str(caught.value)
+    assert "repair the managed-config document published there" in message
+    assert "source is reachable" not in message
+    assert "repair or remove" not in message
+
+
+def test_doctor_corrupt_remote_policy_directs_admin_to_repair_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Doctor distinguishes corrupt remote content from an unreachable host."""
+    from deepagents_code.configuration import providers, service
+    from deepagents_code.doctor import _managed_config_diagnostic
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            return _RemoteResponse(b"[broken")
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    service.invalidate_config_sources()
+
+    item = _managed_config_diagnostic()
+
+    assert item.ok is False
+    assert "repair the published document" in item.value
+    assert "source is reachable" not in item.value
+    assert "repair or remove" not in item.value
+
+
 def test_rejected_remote_url_is_never_echoed_back(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

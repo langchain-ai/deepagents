@@ -1419,6 +1419,11 @@ def is_valid_recursion_limit(value: object) -> TypeIs[int]:
     )
 
 
+def _is_valid_cli_recursion_limit(value: object) -> TypeIs[int]:
+    """Return whether `value` satisfies the public CLI contract."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
 def resolve_recursion_limit(
     *,
     toml_data: dict[str, Any] | None = None,
@@ -1427,11 +1432,10 @@ def resolve_recursion_limit(
     """Resolve the effective main-agent `recursion_limit`.
 
     Resolves `runtime.recursion_limit` through the standard managed → CLI → env →
-    `config.toml` → default precedence. An out-of-range value (below
-    `RECURSION_LIMIT_FLOOR` or above `RECURSION_LIMIT_CEILING`) is discarded
-    with a logged warning and the next lower-precedence layer is tried, so a bad
-    higher-precedence override cannot mask a valid TOML setting (or the
-    default).
+    `config.toml` → default precedence. Explicit CLI values retain the
+    documented `>= 1` contract. Other out-of-range values (below
+    `RECURSION_LIMIT_FLOOR` or above `RECURSION_LIMIT_CEILING`) are discarded
+    with a logged warning and the next lower-precedence layer is tried.
 
     Managed values remain subject to the launch-time managed-health gate.
 
@@ -1442,7 +1446,8 @@ def resolve_recursion_limit(
             described in `_resolve_option`.
 
     Returns:
-        The resolved recursion limit, guaranteed within
+        The resolved recursion limit. CLI values are positive; values from all
+            other tiers are within
             `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
     """
     data = toml_data
@@ -1454,11 +1459,15 @@ def resolve_recursion_limit(
         toml_data=data,
         managed_toml_data=managed_toml_data,
     )
+    from deepagents_code.configuration.resolver import CLI_RANK
+
     excluded: set[int] = set()
     while True:
         resolved = resolver.get_without_ranks(option, excluded)
         _emit_ranked_diagnostics(option, resolved)
         value, source = resolved.value, _ranked_source(resolved)
+        if CLI_RANK in resolved.ranks and _is_valid_cli_recursion_limit(value):
+            return value
         if is_valid_recursion_limit(value):
             return value
         rejected_ranks = set(resolved.ranks)

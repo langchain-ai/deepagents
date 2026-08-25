@@ -3569,11 +3569,13 @@ def test_cli_recursion_limit_outranks_user_toml(
         model_config.clear_caches()
 
 
-def test_out_of_range_cli_recursion_limit_falls_through_to_environment(
+@pytest.mark.parametrize("limit", [1, 24, 100_001])
+def test_positive_cli_recursion_limit_preserves_the_documented_range(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    limit: int,
 ) -> None:
-    """An oversized CLI limit must not skip a valid lower-ranked value."""
+    """Every positive CLI limit wins over lower-ranked configuration."""
     from deepagents_code import _env_vars, main, model_config
     from deepagents_code.config_manifest import resolve_recursion_limit
     from deepagents_code.configuration import service
@@ -3587,11 +3589,11 @@ def test_out_of_range_cli_recursion_limit_falls_through_to_environment(
     monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "500")
     service.invalidate_config_sources()
     args = _managed_policy_args()
-    args.recursion_limit = 100_001
+    args.recursion_limit = limit
     try:
         main._resolver_for_args(args)
-        assert resolve_recursion_limit() == 500
-        assert main._resolved_recursion_limit(args) == 500
+        assert resolve_recursion_limit() == limit
+        assert main._resolved_recursion_limit(args) == limit
     finally:
         service.invalidate_config_sources()
 

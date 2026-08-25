@@ -679,6 +679,57 @@ class TestHomeDirectoryProfileSpellings:
         with pytest.raises(DeepAgentsHomeError, match="home directory itself"):
             _capture_paths(str(tmp_path), launch_home=tmp_path)
 
+    def test_rejects_a_symlinked_spelling_of_the_home_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """A symlink to the home directory is the same trust hazard.
+
+        Path construction is lexical on purpose, so a `==` against the home
+        misses this spelling entirely and `profile.dotenv_file` becomes the
+        user's generic `~/.env`.
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(home, target_is_directory=True)
+
+        with pytest.raises(DeepAgentsHomeError, match="home directory itself"):
+            _capture_paths(str(link), launch_home=home)
+
+    def test_rejects_a_case_variant_of_the_home_directory(self, tmp_path: Path) -> None:
+        """On a case-insensitive filesystem `/Users/Me` is `/Users/me`."""
+        home = tmp_path / "home"
+        home.mkdir()
+        variant = tmp_path / "HOME"
+        if not variant.exists():
+            pytest.skip("case-sensitive filesystem")
+
+        with pytest.raises(DeepAgentsHomeError, match="home directory itself"):
+            _capture_paths(str(variant), launch_home=home)
+
+    def test_rejects_a_symlinked_spelling_of_the_filesystem_root(
+        self, tmp_path: Path
+    ) -> None:
+        """A link to `/` would put credentials in `/.state/auth.json`."""
+        link = tmp_path / "slash"
+        link.symlink_to(Path("/"), target_is_directory=True)
+
+        with pytest.raises(DeepAgentsHomeError, match="filesystem root"):
+            _capture_paths(str(link), launch_home=tmp_path / "home")
+
+    def test_accepts_a_subdirectory_reached_through_a_symlink(
+        self, tmp_path: Path
+    ) -> None:
+        """Only identity with the home is rejected, not symlinks in general."""
+        home = tmp_path / "home"
+        (home / "profiles" / "main").mkdir(parents=True)
+        link = tmp_path / "link"
+        link.symlink_to(home / "profiles", target_is_directory=True)
+
+        snapshot = _capture_paths(str(link / "main"), launch_home=home)
+
+        assert snapshot.profile.root == link / "main"
+
     def test_rejects_absolute_home_when_launch_home_is_implicit(
         self, tmp_path: Path
     ) -> None:

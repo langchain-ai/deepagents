@@ -329,6 +329,37 @@ def _resolve_launch_home(launch_home: Path | None) -> Path:
         raise DeepAgentsHomeError(msg) from exc
 
 
+def _same_directory(left: Path, right: Path) -> bool:
+    """Report whether two paths name the same directory.
+
+    Path construction stays lexical on purpose, so `..` chains resolve without
+    touching the filesystem. Identity is a different question: a lexical `==`
+    misses a symlinked spelling of the target, and misses a case difference on
+    the case-insensitive filesystems that are the default on macOS and Windows.
+    Both are ordinary ways to spell the home directory, so both must compare
+    equal here. `os.path.samefile` compares device and inode, which settles
+    every spelling at once; `os.path.normcase` would not, because it is a
+    no-op on POSIX.
+
+    Args:
+        left: First path to compare.
+        right: Second path to compare.
+
+    Returns:
+        `True` when the two paths name one directory.
+    """
+    if str(left) == str(right):
+        return True
+    try:
+        return Path(left).samefile(right)
+    except OSError:
+        # One of them does not exist or cannot be read. A profile root that is
+        # not there yet cannot be the home directory, and the lexical
+        # comparison above has already ruled out the spelling-only case.
+        logger.debug("Could not compare %s with %s", left, right)
+        return False
+
+
 def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
     """Reject a resolved profile root that would scatter state.
 
@@ -343,16 +374,19 @@ def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
       configuration.
     - An existing non-directory cannot hold a profile at all.
 
+    Comparisons go through `_same_directory`, so a symlinked or differently
+    cased spelling of `/` or of the home directory is rejected too.
+
     Raises:
         DeepAgentsHomeError: If the root is one of those cases.
     """
-    if root.parent == root:
+    if root.parent == root or _same_directory(root, Path(root.anchor or "/")):
         msg = (
             f"Invalid DEEPAGENTS_HOME {str(root)!r}: the filesystem root cannot "
             "be a profile. Use a dedicated directory."
         )
         raise DeepAgentsHomeError(msg)
-    if launch_home is not None and root == launch_home:
+    if launch_home is not None and _same_directory(root, launch_home):
         msg = (
             f"Invalid DEEPAGENTS_HOME {str(root)!r}: the home directory itself "
             "cannot be a profile, because its '.env' would be loaded as "

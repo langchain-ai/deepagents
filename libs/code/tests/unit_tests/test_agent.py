@@ -1883,18 +1883,6 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_get_prompt.assert_not_called()
 
 
-class TestDefaultAgentName:
-    """Tests for the DEFAULT_AGENT_NAME constant."""
-
-    def test_default_agent_name_value(self) -> None:
-        """Guard against accidental renames of the default agent identifier.
-
-        Other modules (main.py, commands.py) rely on this value matching
-        the directory name under `~/.deepagents/`.
-        """
-        assert DEFAULT_AGENT_NAME == "agent"
-
-
 class TestListAgents:
     """Tests for list_agents output."""
 

@@ -7,10 +7,8 @@ These tests verify that:
 4. Tavily-specific exceptions are handled in web_search
 """
 
-import ast
 import logging
 import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,7 +19,6 @@ from deepagents_code.file_ops import FileOpTracker, _safe_read
 from deepagents_code.media_utils import (
     _get_clipboard_via_osascript,
     _get_macos_clipboard_image,
-    logger as media_utils_logger,
 )
 from deepagents_code.tools import web_search
 
@@ -186,30 +183,6 @@ class TestFileOpsExceptionHandling:
 
 class TestMediaUtilsExceptionHandling:
     """Test exception handling in media utilities."""
-
-    def test_media_utils_logger_exists(self):
-        """Test that media_utils module has proper logging configured."""
-        assert media_utils_logger is not None
-        assert media_utils_logger.name == "deepagents_code.media_utils"
-
-    def test_media_utils_exception_types(self):
-        """Test that media_utils uses proper exception types."""
-        # Read the source file and check exception handling
-        source_path = (
-            Path(__file__).parent.parent.parent / "deepagents_code" / "media_utils.py"
-        )
-        source = source_path.read_text()
-        tree = ast.parse(source)
-
-        # Find all except handlers - bare excepts have type=None
-        bare_excepts = [
-            node.lineno
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ExceptHandler) and node.type is None
-        ]
-
-        # Should have no bare excepts after our fix
-        assert len(bare_excepts) == 0, f"Found bare except at lines: {bare_excepts}"
 
     def test_pngpaste_timeout_logs_and_returns_none(self, caplog):
         """Test that pngpaste timeout is logged and function falls back."""

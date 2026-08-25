@@ -182,6 +182,32 @@ def _subprocess_env(*, home: Path, configured: str | None) -> dict[str, str]:
     return env
 
 
+class TestHomeCheckSkipped:
+    """An unresolvable home silently disables a security check.
+
+    `_paths` is imported before any log handler exists, so a log line about it
+    would be invisible even under `--debug`. The snapshot records it instead so
+    `dcode doctor` can report it.
+    """
+
+    def test_not_skipped_when_the_home_resolves(self, tmp_path: Path) -> None:
+        """The ordinary case records nothing."""
+        snapshot = _capture_paths(str(tmp_path / "profile"), launch_home=tmp_path)
+
+        assert snapshot.home_check_skipped is False
+
+    def test_recorded_when_the_home_cannot_be_resolved(self, tmp_path: Path) -> None:
+        """An absolute profile still launches, but the skip is recorded."""
+        configured = tmp_path / "profile"
+        with mock.patch.object(
+            Path, "home", side_effect=RuntimeError("home unavailable")
+        ):
+            snapshot = _capture_paths(str(configured))
+
+        assert snapshot.profile.root == configured
+        assert snapshot.home_check_skipped is True
+
+
 class TestProbeWritable:
     """`probe_writable` decides which shared directory a process may use."""
 

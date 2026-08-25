@@ -600,17 +600,33 @@ def _collect_configuration() -> DiagnosticSection:
     Returns:
         The `Configuration` section.
     """
-    from deepagents_code._paths import PathState, classify_path
+    from deepagents_code._paths import PATHS, PathState, classify_path
     from deepagents_code.managed_tools import BIN_DIR, FALLBACK_BIN_DIR
     from deepagents_code.model_config import DEFAULT_CONFIG_DIR
-    from deepagents_code.update_check import FALLBACK_UPDATE_LOCK_FILE
+    from deepagents_code.update_check import FALLBACK_UPDATE_LOCK_FILE, UPDATE_LOCK_FILE
 
     items = [
         _path_status("Data directory", DEFAULT_CONFIG_DIR),
         _managed_config_diagnostic(),
         _user_config_diagnostic(),
         _path_status("Managed binaries", BIN_DIR),
+        _path_status("Update locks", UPDATE_LOCK_FILE.parent),
     ]
+    if PATHS.home_check_skipped:
+        items.append(
+            DiagnosticItem(
+                label="Profile safety check",
+                value=(
+                    "skipped - the home directory could not be resolved, so "
+                    "DEEPAGENTS_HOME was not checked against it. Set $HOME."
+                ),
+                ok=False,
+            )
+        )
+    if not PATHS.uses_default_profile:
+        items.append(
+            DiagnosticItem(label="Profile", value=f"{PATHS.profile.root} (configured)")
+        )
     # Surface a profile-scoped fallback only once it exists, i.e. once it is
     # actually the location in use. The installation-scoped directories are
     # created lazily, so their absence is not evidence of a permission problem.

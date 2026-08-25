@@ -149,6 +149,14 @@ class DeepAgentsPathSnapshot:
     installation: InstallationPaths
     launch_home: Path | None
     uses_default_profile: bool
+    home_check_skipped: bool = False
+    """Whether the "profile is the home directory" check could not run.
+
+    True when the home directory could not be resolved. That silently disables
+    a security check, and this module is imported before any log handler
+    exists, so a log line alone would be invisible even under `--debug`.
+    `dcode doctor` reports this field instead.
+    """
 
     def display(self, path: Path) -> str:
         """Abbreviate a path for display.
@@ -401,15 +409,16 @@ def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
 
 def _resolve_profile_root(
     configured: str | None, launch_home: Path | None
-) -> tuple[Path, bool, Path | None]:
+) -> tuple[Path, bool, Path | None, bool]:
     """Resolve a launch value using only the captured launch-user home.
 
     An absolute `DEEPAGENTS_HOME` never consults the home directory, so a host
     with no resolvable home can still run by setting it.
 
     Returns:
-        The normalized root, whether it is the default profile, and the
-        captured launch home when resolution required one.
+        The normalized root, whether it is the default profile, the captured
+        launch home when resolution required one, and whether the home
+        comparison had to be skipped.
 
     Note:
         `DeepAgentsHomeError` propagates from the resolution and validation
@@ -420,15 +429,18 @@ def _resolve_profile_root(
     # directory" hazard applies to `/Users/me` exactly as much as to `~/`. Look
     # the home up best-effort for that comparison only, so a host with no
     # resolvable home still launches.
-    _reject_degenerate_root(root, home if home is not None else _best_effort_home())
-    return root, uses_default, home
+    comparison_home = home if home is not None else _best_effort_home()
+    _reject_degenerate_root(root, comparison_home)
+    return root, uses_default, home, comparison_home is None
 
 
 def _best_effort_home() -> Path | None:
     """Return the launch home if it can be determined, else `None`.
 
     Used only for validation, never to build a path, so an unresolvable home
-    must degrade to "cannot check" rather than fail the launch.
+    must degrade to "cannot check" rather than fail the launch. A `None` return
+    is recorded on the snapshot, because a check that quietly stops running is
+    worse than one that never existed.
 
     Returns:
         The normalized home directory, or `None` when it cannot be resolved.
@@ -436,7 +448,11 @@ def _best_effort_home() -> Path | None:
     try:
         return _resolve_launch_home(None)
     except DeepAgentsHomeError:
-        logger.debug("Could not resolve the home directory for validation")
+        logger.warning(
+            "Could not resolve the home directory; skipping the check that "
+            "DEEPAGENTS_HOME is not the home directory itself. Set $HOME to "
+            "restore it."
+        )
         return None
 
 
@@ -561,7 +577,9 @@ def _capture_paths(
     Returns:
         An immutable path snapshot.
     """
-    profile_root, uses_default, home = _resolve_profile_root(configured, launch_home)
+    profile_root, uses_default, home, home_check_skipped = _resolve_profile_root(
+        configured, launch_home
+    )
     if not uses_default and default_marker:
         uses_default = _honors_default_marker(profile_root, home)
     return DeepAgentsPathSnapshot(
@@ -569,6 +587,7 @@ def _capture_paths(
         installation=_installation_paths(),
         launch_home=home,
         uses_default_profile=uses_default,
+        home_check_skipped=home_check_skipped,
     )
 
 

@@ -29,11 +29,14 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from langgraph.errors import GraphBubbleUp
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
     from pathlib import Path
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
-    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.callbacks import (
+        AsyncCallbackManagerForLLMRun,
+        CallbackManagerForLLMRun,
+    )
 
 from deepagents_code import model_config
 from deepagents_code.config import (
@@ -116,6 +119,40 @@ class _RetryingStreamingModel(BaseChatModel):
             raise _READ_ERROR
         yield ChatGenerationChunk(
             message=AIMessageChunk(content="final", chunk_position="last")
+        )
+
+
+class _LiveStreamingModel(BaseChatModel):
+    """Pause after the first chunk so tests can observe live delivery."""
+
+    gate: asyncio.Event
+
+    @property
+    def _llm_type(self) -> str:
+        return "live-stream"
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ChatResult:
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="firstsecond"))]
+        )
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        yield ChatGenerationChunk(message=AIMessageChunk(content="first"))
+        await self.gate.wait()
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(content="second", chunk_position="last")
         )
 
 
@@ -815,10 +852,38 @@ async def test_async_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None
     assert calls["n"] == 2
 
 
-async def test_failed_attempt_stream_chunks_are_discarded(
+async def test_successful_stream_chunks_are_delivered_live() -> None:
+    """The first chunk reaches the consumer before the model call completes."""
+    gate = asyncio.Event()
+    agent = create_agent(
+        _LiveStreamingModel(gate=gate),
+        middleware=[CodeModelRetryMiddleware(max_retries=1)],
+    )
+    stream = agent.astream(
+        {"messages": [HumanMessage("hi")]},
+        stream_mode=["messages"],
+        subgraphs=True,
+    )
+
+    first = await asyncio.wait_for(anext(stream), timeout=1)
+    gate.set()
+    chunks = [first]
+    chunks.extend([chunk async for chunk in stream])
+
+    message_text = "".join(
+        message.text
+        for _namespace, mode, data in chunks
+        if mode == "messages"
+        for message in [data[0]]
+        if isinstance(message, AIMessageChunk)
+    )
+    assert message_text == "firstsecond"
+
+
+async def test_failed_attempt_is_not_retried_after_streaming(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only chunks from the successful model attempt reach `messages` stream."""
+    """A visible partial answer is not followed by a replayed retry."""
 
     async def _no_sleep(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029
         return None
@@ -830,14 +895,15 @@ async def test_failed_attempt_stream_chunks_are_discarded(
         middleware=[CodeModelRetryMiddleware(max_retries=1)],
     )
 
-    chunks = [
-        chunk
-        async for chunk in agent.astream(
-            {"messages": [HumanMessage("hi")]},
-            stream_mode=["messages", "custom"],
-            subgraphs=True,
-        )
-    ]
+    stream = agent.astream(
+        {"messages": [HumanMessage("hi")]},
+        stream_mode=["messages"],
+        subgraphs=True,
+    )
+    first = await anext(stream)
+    with pytest.raises(httpx.ReadError):
+        await anext(stream)
+    chunks = [first]
     message_text = "".join(
         message.text
         for _namespace, mode, data in chunks
@@ -846,8 +912,8 @@ async def test_failed_attempt_stream_chunks_are_discarded(
         if isinstance(message, AIMessageChunk)
     )
 
-    assert model.attempts == 2
-    assert message_text == "final"
+    assert model.attempts == 1
+    assert message_text == "orphaned"
 
 
 def test_status_helpers() -> None:

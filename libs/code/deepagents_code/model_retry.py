@@ -96,81 +96,79 @@ _HTTP_SERVER_ERROR_FLOOR = 500
 _HTTP_SERVER_ERROR_CEILING = 600
 
 
-class _MessageStreamBuffer:
-    """Buffer LangGraph message-stream callbacks until a model attempt succeeds."""
+class _MessageStreamTracker:
+    """Forward LangGraph message-stream callbacks and record visible output."""
 
     def __init__(self) -> None:
-        self._chunks: list[tuple[StreamMessagesHandler, StreamChunk]] = []
+        self.has_streamed = False
 
-    def callbacks_with_buffered_messages(
+    def callbacks_with_tracked_messages(
         self, callbacks: BaseCallbackManager
     ) -> BaseCallbackManager | None:
-        """Return a callback-manager copy with message streams redirected here."""
+        """Return a callback-manager copy that tracks message-stream delivery."""
         replacements: dict[int, StreamMessagesHandler] = {}
+
+        def forward(source: StreamMessagesHandler, chunk: StreamChunk) -> None:
+            data = chunk[2]
+            if isinstance(data, tuple) and data:
+                message_id = getattr(data[0], "id", None)
+                if isinstance(message_id, str | int):
+                    source.seen.add(message_id)
+            source.stream(chunk)
+            self.has_streamed = True
 
         def replace(handler: BaseCallbackHandler) -> BaseCallbackHandler:
             if not isinstance(handler, StreamMessagesHandler):
                 return handler
             key = id(handler)
             if key not in replacements:
-                buffered = type(handler)(
-                    lambda chunk, source=handler: self._chunks.append((source, chunk)),
+                tracked = type(handler)(
+                    lambda chunk, source=handler: forward(source, chunk),
                     handler.subgraphs,
                     parent_ns=handler.parent_ns,
                 )
-                buffered.seen.update(handler.seen)
-                replacements[key] = buffered
+                tracked.seen.update(handler.seen)
+                replacements[key] = tracked
             return replacements[key]
 
-        buffered_callbacks = copy(callbacks)
-        buffered_callbacks.handlers = [replace(item) for item in callbacks.handlers]
-        buffered_callbacks.inheritable_handlers = [
+        tracked_callbacks = copy(callbacks)
+        tracked_callbacks.handlers = [replace(item) for item in callbacks.handlers]
+        tracked_callbacks.inheritable_handlers = [
             replace(item) for item in callbacks.inheritable_handlers
         ]
-        return buffered_callbacks if replacements else None
-
-    def flush(self) -> None:
-        """Publish buffered chunks and preserve LangGraph's message de-duplication."""
-        for handler, chunk in self._chunks:
-            data = chunk[2]
-            if isinstance(data, tuple) and data:
-                message_id = getattr(data[0], "id", None)
-                if isinstance(message_id, str | int):
-                    handler.seen.add(message_id)
-            handler.stream(chunk)
-        self._chunks.clear()
+        return tracked_callbacks if replacements else None
 
 
 @contextmanager
-def _buffer_message_streams() -> Iterator[_MessageStreamBuffer]:
-    """Redirect the current run's LangGraph message callbacks for one attempt.
+def _track_message_streams() -> Iterator[_MessageStreamTracker]:
+    """Track whether one model attempt has emitted visible message output.
 
     Yields:
-        The attempt-local stream buffer to flush after a successful model call.
+        The attempt-local message stream tracker.
     """
-    buffer = _MessageStreamBuffer()
+    tracker = _MessageStreamTracker()
     try:
         from langgraph.config import get_config
 
         config = get_config()
     except RuntimeError:
-        yield buffer
+        yield tracker
         return
 
     callbacks = config.get("callbacks")
     if not isinstance(callbacks, BaseCallbackManager):
-        yield buffer
+        yield tracker
         return
-    buffered_callbacks = buffer.callbacks_with_buffered_messages(callbacks)
-    if buffered_callbacks is None:
-        yield buffer
+    tracked_callbacks = tracker.callbacks_with_tracked_messages(callbacks)
+    if tracked_callbacks is None:
+        yield tracker
         return
 
-    buffered_config = config.copy()
-    buffered_config["callbacks"] = buffered_callbacks
-    token = var_child_runnable_config.set(buffered_config)
+    tracked_config = config.copy()
+    tracked_config["callbacks"] = tracked_callbacks
+    token = var_child_runnable_config.set(tracked_config)
     try:
-        yield buffer
+        yield tracker
     finally:
         var_child_runnable_config.reset(token)
 
@@ -535,11 +533,19 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         max_retries = self._request_max_retries(request)
         for attempt in range(max_retries + 1):
             try:
-                with _buffer_message_streams() as stream_buffer:
+                with _track_message_streams() as stream_tracker:
                     response = handler(request)
             except GraphBubbleUp:
                 raise
-            except Exception as exc:  # noqa: BLE001  # classified by _is_retryable_model_error
+            except Exception as exc:  # classified by _is_retryable_model_error
+                if stream_tracker.has_streamed:
+                    logger.warning(
+                        "Model stream failed after output began; "
+                        "not retrying attempt %d",
+                        attempt + 1,
+                        exc_info=exc,
+                    )
+                    raise
                 if not _is_retryable_model_error(exc) or attempt >= max_retries:
                     _log_give_up(exc, attempt + 1, max_retries)
                     return self._handle_failure(exc, attempt + 1)
@@ -548,7 +554,6 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                 if delay > 0:
                     time.sleep(delay)
             else:
-                stream_buffer.flush()
                 return response
         msg = "Unexpected: retry loop completed without returning"
         raise RuntimeError(msg)
@@ -578,11 +583,19 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         max_retries = self._request_max_retries(request)
         for attempt in range(max_retries + 1):
             try:
-                with _buffer_message_streams() as stream_buffer:
+                with _track_message_streams() as stream_tracker:
                     response = await handler(request)
             except GraphBubbleUp:
                 raise
-            except Exception as exc:  # noqa: BLE001  # classified by _is_retryable_model_error
+            except Exception as exc:  # classified by _is_retryable_model_error
+                if stream_tracker.has_streamed:
+                    logger.warning(
+                        "Model stream failed after output began; "
+                        "not retrying attempt %d",
+                        attempt + 1,
+                        exc_info=exc,
+                    )
+                    raise
                 if not _is_retryable_model_error(exc) or attempt >= max_retries:
                     _log_give_up(exc, attempt + 1, max_retries)
                     return self._handle_failure(exc, attempt + 1)
@@ -591,7 +604,6 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                 if delay > 0:
                     await asyncio.sleep(delay)
             else:
-                stream_buffer.flush()
                 return response
         msg = "Unexpected: retry loop completed without returning"
         raise RuntimeError(msg)

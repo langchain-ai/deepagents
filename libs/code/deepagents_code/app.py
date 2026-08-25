@@ -16,7 +16,7 @@ import time
 import uuid
 import webbrowser
 from collections import deque
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from itertools import groupby
 from pathlib import Path
@@ -1002,7 +1002,6 @@ if TYPE_CHECKING:
         Awaitable,
         Callable,
         Coroutine,
-        Iterator,
         Mapping,
         Sequence,
     )
@@ -1021,7 +1020,6 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
-    from deepagents_code._terminal_stderr import TerminalStderrGuard
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
@@ -3100,35 +3098,6 @@ class DeepAgentsApp(App):
         """Return the main screen with chat-specific startup focus."""
         return _MainScreen(id="_default")
 
-    @override
-    @contextmanager
-    def suspend(self) -> Iterator[None]:
-        """Restore native stderr while another program owns the terminal.
-
-        Yields:
-            Control while the Textual application is suspended.
-        """
-        guard = self._terminal_stderr_guard
-        if guard is None:
-            with super().suspend():
-                yield
-            return
-        with guard.paused(), super().suspend():
-            yield
-
-    @override
-    def action_suspend_process(self) -> None:
-        """Restore native stderr while the process is suspended."""
-        guard = self._terminal_stderr_guard
-        if guard is None:
-            super().action_suspend_process()
-            return
-        guard.pause()
-        try:
-            super().action_suspend_process()
-        finally:
-            guard.resume()
-
     class ServerReady(Message):
         """Posted by the background server-startup worker on success."""
 
@@ -3270,7 +3239,6 @@ class DeepAgentsApp(App):
             self.sub_title = sub_title
 
         self._register_custom_themes()
-        self._terminal_stderr_guard: TerminalStderrGuard | None = None
         self._hook_trust: WorkspaceTrust | None = hook_trust
         """Project-hook trust shared across pending and live manager state."""
 
@@ -28525,8 +28493,6 @@ async def run_textual_app(
             snapshot with the final thread ID so callers can still render
             teardown hints for the thread that was active at the crash.
     """
-    from deepagents_code._terminal_stderr import TerminalStderrGuard
-
     app = DeepAgentsApp(
         agent=agent,
         assistant_id=assistant_id,
@@ -28554,10 +28520,7 @@ async def run_textual_app(
         title=title,
         sub_title=sub_title,
     )
-    stderr_guard: TerminalStderrGuard | None = None
     try:
-        stderr_guard = TerminalStderrGuard.install()
-        app._terminal_stderr_guard = stderr_guard
         await app.run_async()
     except Exception as e:
         # The app resolves resume intent and `/threads` switches internally, so
@@ -28573,9 +28536,6 @@ async def run_textual_app(
             ),
         ) from e
     finally:
-        if stderr_guard is not None:
-            stderr_guard.close()
-            app._terminal_stderr_guard = None
         # Guarantee server cleanup regardless of how the app exits.
         # Covers both the pre-started server_proc path and the deferred
         # server_kwargs path (where the background worker sets _server_proc).

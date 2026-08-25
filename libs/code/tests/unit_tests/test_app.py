@@ -19305,23 +19305,6 @@ class TestActionOpenEditor:
         assert app.focused is text_area
         return menu, text_area, future
 
-    def test_suspend_pauses_native_stderr_guard(self) -> None:
-        app = DeepAgentsApp(agent=MagicMock())
-        guard = MagicMock()
-        guard.paused.return_value = contextlib.nullcontext()
-        app._terminal_stderr_guard = guard
-
-        with (
-            patch(
-                "textual.app.App.suspend", return_value=contextlib.nullcontext()
-            ) as textual_suspend,
-            app.suspend(),
-        ):
-            pass
-
-        guard.paused.assert_called_once_with()
-        textual_suspend.assert_called_once_with()
-
     async def test_updates_text_on_successful_edit(self) -> None:
         app = DeepAgentsApp(agent=MagicMock())
         text_area = MagicMock()

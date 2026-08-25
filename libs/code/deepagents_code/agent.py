@@ -2216,13 +2216,18 @@ def _apply_inherited_pythonpath(env: dict[str, str]) -> None:
 
 
 def _resolve_retry_owned_model(
-    model_spec: str, model_retries: int
+    model_spec: str, cli_max_retries: int | None
 ) -> BaseChatModel | None:
     """Resolve a string model with provider retries disabled and metadata tagged.
 
+    Only an explicit `--max-retries` is forwarded. Passing the caller's already
+    resolved budget instead would take precedence over
+    `[retries.<provider>].max_retries`, so a model on a different provider could
+    never use its own configured budget.
+
     Args:
         model_spec: The subagent's declared model string.
-        model_retries: Retry budget to stamp on the resolved model.
+        cli_max_retries: The `--max-retries` flag value, or `None` when unset.
 
     Returns:
         The concrete model prepared by dcode's model factory, or `None` when it
@@ -2231,11 +2236,11 @@ def _resolve_retry_owned_model(
     from deepagents_code.config import CLI_MAX_RETRIES_KEY, create_model
     from deepagents_code.model_config import MissingCredentialsError
 
+    extra_kwargs = (
+        {} if cli_max_retries is None else {CLI_MAX_RETRIES_KEY: cli_max_retries}
+    )
     try:
-        return create_model(
-            model_spec,
-            extra_kwargs={CLI_MAX_RETRIES_KEY: model_retries},
-        ).model
+        return create_model(model_spec, extra_kwargs=extra_kwargs).model
     except MissingCredentialsError:
         # Taking ownership of retries is an optimization, not a precondition for
         # launching. A subagent declaring a provider the user has not
@@ -2293,6 +2298,7 @@ def create_cli_agent(
     goal_criteria_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
     rubric_grader_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
     model_retries: int = DEFAULT_MODEL_RETRIES,
+    cli_max_retries: int | None = None,
     enforce_model_policy: bool = True,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
@@ -2444,6 +2450,9 @@ def create_cli_agent(
             systems.
         model_retries: Model-node retry attempts after the first call. `0`
             disables retries. Resolved upstream from config/CLI.
+        cli_max_retries: The `--max-retries` flag value, or `None` when unset.
+            Forwarded to subagent models so each one resolves its own provider's
+            configured budget unless the user overrode it globally.
         enforce_model_policy: Check every model string against `models.allowed`.
             Pass `False` **only** from callers that compile a graph they never
             invoke (tool enumeration), so a blocked subagent model degrades the
@@ -2624,7 +2633,7 @@ def create_cli_agent(
         if enforce_model_policy and _has_resolvable_model_provider(model):
             # `None` means credentials are absent: keep the spec so graph
             # construction resolves it later instead of failing the launch.
-            resolved = _resolve_retry_owned_model(model, model_retries)
+            resolved = _resolve_retry_owned_model(model, cli_max_retries)
             if resolved is not None:
                 model = resolved
     if (
@@ -2664,7 +2673,7 @@ def create_cli_agent(
                 ),
             )
             resolved_model = (
-                _resolve_retry_owned_model(model_spec, model_retries)
+                _resolve_retry_owned_model(model_spec, cli_max_retries)
                 if enforce_model_policy and _has_resolvable_model_provider(model_spec)
                 else None
             )

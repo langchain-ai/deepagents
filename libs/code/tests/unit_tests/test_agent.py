@@ -3753,7 +3753,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] == "anthropic:claude-haiku-4-5"
-        mock_resolve.assert_called_once_with("anthropic:claude-haiku-4-5", 5)
+        mock_resolve.assert_called_once_with("anthropic:claude-haiku-4-5", None)
         pinned_middleware = pinned["middleware"]
         assert any(
             isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
@@ -4219,7 +4219,7 @@ class TestCreateCliAgentFsToolsWiring:
 
         _, kwargs = mock_create.call_args
         mock_resolve.assert_called_once_with(
-            "nvidia:nvidia/nemotron-3-ultra-550b-a55b", 5
+            "nvidia:nvidia/nemotron-3-ultra-550b-a55b", None
         )
         main_filesystem = next(
             middleware
@@ -6756,3 +6756,45 @@ class TestApplyInheritedPythonpath:
         env = {"PATH": "/usr/bin"}
         _apply_inherited_pythonpath(env)
         assert "PYTHONPATH" not in env
+
+
+class TestSubagentRetryBudgetResolution:
+    """`_resolve_retry_owned_model` must not forge the `--max-retries` flag."""
+
+    @staticmethod
+    def _captured_extra_kwargs(cli_max_retries: int | None) -> dict[str, object]:
+        from deepagents_code.agent import _resolve_retry_owned_model
+
+        captured: dict[str, object] = {}
+
+        def _fake_create_model(
+            spec: str,  # noqa: ARG001  # positional spec is not under test here
+            **kwargs: object,
+        ) -> SimpleNamespace:
+            captured.update(cast("dict[str, object]", kwargs["extra_kwargs"]))
+            return SimpleNamespace(model=SimpleNamespace())
+
+        with patch("deepagents_code.config.create_model", _fake_create_model):
+            _resolve_retry_owned_model("anthropic:claude-haiku-4-5", cli_max_retries)
+        return captured
+
+    def test_unset_flag_lets_the_model_resolve_its_own_budget(self) -> None:
+        """Without `--max-retries`, nothing may pre-empt the provider section.
+
+        Forwarding the caller's resolved budget here would outrank
+        `[retries.<provider>].max_retries`, so a subagent on another provider
+        could never use its own configured value.
+        """
+        assert self._captured_extra_kwargs(None) == {}
+
+    def test_explicit_flag_still_reaches_the_subagent(self) -> None:
+        """An explicit `--max-retries` remains a global override."""
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+        assert self._captured_extra_kwargs(2) == {CLI_MAX_RETRIES_KEY: 2}
+
+    def test_zero_flag_is_forwarded_not_treated_as_unset(self) -> None:
+        """`--max-retries 0` disables retries; it is not an absent flag."""
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+        assert self._captured_extra_kwargs(0) == {CLI_MAX_RETRIES_KEY: 0}

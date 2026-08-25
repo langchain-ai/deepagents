@@ -5446,6 +5446,10 @@ class ModelResult:
             the model profile (e.g. `{"audio", "video"}`).
         model_retries: Effective model-node retry count for the resolved
             provider (see `resolve_model_retries`). `0` disables retries.
+        cli_max_retries: The `--max-retries` flag value, or `None` when the user
+            did not set it. Kept distinct from `model_retries` so a model built
+            for a different provider can resolve its own configured budget
+            instead of inheriting this one.
     """
 
     model: BaseChatModel
@@ -5454,6 +5458,7 @@ class ModelResult:
     context_limit: int | None = None
     unsupported_modalities: frozenset[str] = frozenset()
     model_retries: int = DEFAULT_MODEL_RETRIES
+    cli_max_retries: int | None = None
 
     def __post_init__(self) -> None:
         """Enforce the middleware's non-negative retry-budget invariant.
@@ -5879,6 +5884,7 @@ def create_model(
         context_limit=context_limit,
         unsupported_modalities=unsupported_modalities,
         model_retries=model_retries,
+        cli_max_retries=cli_max_retries,
     )
 
 

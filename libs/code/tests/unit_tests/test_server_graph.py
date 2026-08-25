@@ -228,6 +228,7 @@ class TestServerGraph:
             model=model_obj,
             apply_to_settings=MagicMock(),
             model_retries=5,
+            cli_max_retries=None,
         )
         configure_redaction = MagicMock(side_effect=configure_redaction_side_effect)
         create_model = MagicMock(side_effect=create_model_side_effect)
@@ -369,6 +370,7 @@ class TestServerGraph:
             goal_criteria_tools=[fetch_tool, web_tool, mcp_tool],
             rubric_grader_tools=[fetch_tool, web_tool, mcp_tool],
             model_retries=5,
+            cli_max_retries=None,
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:
@@ -438,6 +440,7 @@ class TestServerGraph:
                     model=model_obj,
                     apply_to_settings=MagicMock(),
                     model_retries=5,
+                    cli_max_retries=None,
                 ),
             ),
             is_memory_auto_save_enabled=MagicMock(return_value=True),

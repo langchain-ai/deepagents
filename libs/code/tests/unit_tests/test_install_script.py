@@ -4679,6 +4679,9 @@ def test_uv_cache_snapshot_repairs_path_created_by_installer(tmp_path: Path) -> 
         f"XDG_CACHE_HOME={str(home / 'cache')!r}\n"
         f"XDG_DATA_HOME={str(home / 'data')!r}\n"
         f"{_extract_shell_function('path_is_under_home')}\n"
+        # `snapshot_missing_uv_cache_paths` reads the candidate list from this
+        # helper, so both layers cannot drift apart.
+        f"{_extract_shell_function('uv_cache_candidates')}\n"
         f"{_extract_shell_function('snapshot_missing_uv_cache_paths')}\n"
         f"{_extract_shell_function('repair_created_uv_cache_paths')}\n"
         f"fix_tree_owner() {{ printf '%s\\n' \"$1\" >> {str(repaired)!r}; }}\n"
@@ -7279,3 +7282,50 @@ def test_install_script_rejects_non_directory_deepagents_home(tmp_path: Path) ->
     assert proc.returncode == 1
     assert "not a directory" in proc.stderr
     assert not uv_args.exists()
+
+
+def test_uv_cache_locations_have_one_source() -> None:
+    """Both snapshot sites read `uv_cache_candidates`, not their own list.
+
+    The list appeared twice before. A cache location added to one copy and not
+    the other leaves a root-owned directory behind after a root install, which
+    surfaces later as a stale-cache failure far from the installer.
+    """
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert script.count('"${HOME}/Library/Caches/uv"') == 1
+    # Both consumers read the helper.
+    assert script.count("< <(uv_cache_candidates)") == 2
+
+
+def test_an_unnormalizable_home_stops_the_installer(tmp_path: Path) -> None:
+    """A relative `$HOME` must fail, not fall back to the raw string.
+
+    The app treats a non-absolute home as fatal, so silently comparing against
+    an unnormalized value would make the "profile is the home directory"
+    rejection unreliable in exactly the environment where the two layers must
+    agree.
+    """
+    script = tmp_path / "home_harness.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        'log_error() { printf "%s\\n" "$1" >&2; }\n'
+        f"{_extract_shell_function('normalize_absolute_path')}\n"
+        f"{_extract_shell_function('paths_are_same_file')}\n"
+        f"{_extract_shell_function('normalize_deepagents_home')}\n"
+        "HOME=relative/home\n"
+        f"DEEPAGENTS_HOME={str(tmp_path / 'profile')!r}\n"
+        "normalize_deepagents_home\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+
+    assert proc.returncode != 0
+    assert "home directory" in proc.stderr

@@ -527,7 +527,14 @@ normalize_deepagents_home() {
     log_error "Invalid DEEPAGENTS_HOME '${raw}': the filesystem root cannot be a profile. Use a dedicated directory."
     exit 1
   fi
-  normalized_home="$(normalize_absolute_path "$HOME" 2>/dev/null || printf '%s' "$HOME")"
+  # Fail rather than compare against an unnormalized value. The app treats a
+  # non-absolute home as fatal (`_paths._resolve_launch_home`), so falling back
+  # to the raw string here would make this rejection unreliable in exactly the
+  # environment where the two layers must agree.
+  if ! normalized_home="$(normalize_absolute_path "$HOME")"; then
+    log_error "Cannot resolve the home directory '${HOME}': \$HOME must be an absolute path."
+    exit 1
+  fi
   if paths_are_same_file "$DEEPAGENTS_HOME" "$normalized_home"; then
     log_error "Invalid DEEPAGENTS_HOME '${raw}': the home directory itself cannot be a profile, because its '.env' would be loaded as trusted configuration. Use a subdirectory such as '~/.deepagents'."
     exit 1
@@ -1698,17 +1705,25 @@ resolve_uv_bin() {
   return 1
 }
 
+uv_cache_candidates() {
+  # Single source of truth for uv's cache locations. Both the snapshot helper
+  # and the inline snapshot below read this list. A location added to one but
+  # not the other would silently leave a root-owned cache behind.
+  printf '%s\n' \
+    "${XDG_CACHE_HOME:-${HOME}/.cache}/uv" \
+    "${HOME}/Library/Caches/uv" \
+    "${XDG_DATA_HOME:-${HOME}/.local/share}/uv"
+}
+
 snapshot_missing_uv_cache_paths() {
   local uv_cache_dir
   UV_CACHE_CANDIDATES=""
-  for uv_cache_dir in \
-    "${XDG_CACHE_HOME:-${HOME}/.cache}/uv" \
-    "${HOME}/Library/Caches/uv" \
-    "${XDG_DATA_HOME:-${HOME}/.local/share}/uv"; do
+  while IFS= read -r uv_cache_dir; do
+    [ -n "$uv_cache_dir" ] || continue
     if [ ! -e "$uv_cache_dir" ]; then
       UV_CACHE_CANDIDATES="${UV_CACHE_CANDIDATES}${uv_cache_dir}"$'\n'
     fi
-  done
+  done < <(uv_cache_candidates)
 }
 
 repair_created_uv_cache_paths() {
@@ -1860,16 +1875,14 @@ MANAGED_BIN_DIR="${UV_TOOL_DIR:+${UV_TOOL_DIR}/deepagents-code/share/deepagents-
 # walking a tree the installer did not create is what fix_tree_owner forbids.
 UV_TOOL_CACHE_NEW=""
 UV_TOOL_CACHE_PREEXISTING=""
-for uv_cache_dir in \
-  "${XDG_CACHE_HOME:-${HOME}/.cache}/uv" \
-  "${HOME}/Library/Caches/uv" \
-  "${XDG_DATA_HOME:-${HOME}/.local/share}/uv"; do
+while IFS= read -r uv_cache_dir; do
+  [ -n "$uv_cache_dir" ] || continue
   if [ -e "$uv_cache_dir" ]; then
     UV_TOOL_CACHE_PREEXISTING="${UV_TOOL_CACHE_PREEXISTING}${uv_cache_dir}"$'\n'
   else
     UV_TOOL_CACHE_NEW="${UV_TOOL_CACHE_NEW}${uv_cache_dir}"$'\n'
   fi
-done
+done < <(uv_cache_candidates)
 if [ -n "$UV_TOOL_DIR" ] && [ -d "${UV_TOOL_DIR}/deepagents-code" ]; then
   shopt -s nullglob
   for du in "${UV_TOOL_DIR}"/deepagents-code/lib/python*/site-packages/deepagents_code-*.dist-info/direct_url.json; do

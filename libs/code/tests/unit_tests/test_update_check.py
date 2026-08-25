@@ -46,6 +46,7 @@ from deepagents_code.update_check import (
     _terminate_install_process,
     _uv_tool_bin_dir,
     _write_release_prerelease_pins,
+    cached_release_requires_prereleases,
     cleanup_update_logs,
     clear_resume_auto_update_deferral,
     clear_startup_auto_update_failure,
@@ -339,6 +340,67 @@ class TestLatestFromReleases:
         }
         assert _latest_from_releases(releases, include_prereleases=False) is None
         assert _latest_from_releases(releases, include_prereleases=True) == "1.0.0b1"
+
+
+class TestCachedReleaseRequiresPrereleases:
+    def test_fresh_cache_reports_prerelease_pin_without_http(self, cache_file) -> None:
+        """Fresh validated pin metadata is sufficient for the version hint."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time(),
+                    "release_prerelease_pins": {"99.0.0": ["deepagents==0.7.0a7"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("requests.get") as mock_get:
+            assert cached_release_requires_prereleases("99.0.0") is True
+
+        mock_get.assert_not_called()
+
+    def test_stale_cache_does_not_report_prerelease_pin(self, cache_file) -> None:
+        """Stale prerequisite metadata is not treated as authoritative."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time() - CACHE_TTL - 1,
+                    "release_prerelease_pins": {"99.0.0": ["deepagents==0.7.0a7"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert cached_release_requires_prereleases("99.0.0") is None
+
+    def test_empty_cached_pins_report_stable_only(self, cache_file) -> None:
+        """An explicit empty pin list authorizes the normal stable command."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time(),
+                    "release_prerelease_pins": {"99.0.0": []},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert cached_release_requires_prereleases("99.0.0") is False
+
+    def test_invalid_cached_pin_is_rejected(self, cache_file) -> None:
+        """Untrusted cache directives never influence the upgrade command."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time(),
+                    "release_prerelease_pins": {"99.0.0": ["-r /tmp/evil"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert cached_release_requires_prereleases("99.0.0") is None
 
 
 class TestCachedUpdateAvailable:

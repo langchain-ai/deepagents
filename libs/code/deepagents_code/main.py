@@ -165,17 +165,24 @@ def build_version_text() -> str:
 
     try:
         from deepagents_code.update_check import (
+            cached_release_requires_prereleases,
             get_cached_update_available,
             is_update_check_enabled,
             upgrade_command,
         )
 
-        if is_update_check_enabled():
+        if not editable and is_update_check_enabled():
             available, latest = get_cached_update_available()
             if available and latest:
-                text = (
-                    f"{text}\n\nUpdate available: v{latest}. Run: {upgrade_command()}"
-                )
+                needs_prereleases = cached_release_requires_prereleases(latest)
+                if needs_prereleases is not None:
+                    command = upgrade_command(
+                        include_prereleases=True if needs_prereleases else None,
+                        version=latest if needs_prereleases else None,
+                    )
+                    text = f"{text}\n\nUpdate available: v{latest}. Run: {command}"
+                else:
+                    text = f"{text}\n\nUpdate available: v{latest}."
     except Exception:
         logger.debug("Failed to read cached update status", exc_info=True)
 

@@ -510,12 +510,20 @@ def test_build_version_text_reports_cached_update() -> None:
 
     with (
         patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=False,
+        ),
+        patch(
             "deepagents_code.update_check.get_cached_update_available",
             return_value=(True, "99.99.99"),
         ),
         patch(
             "deepagents_code.update_check.is_update_check_enabled",
             return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.cached_release_requires_prereleases",
+            return_value=False,
         ),
         patch(
             "deepagents_code.update_check.upgrade_command",
@@ -527,6 +535,92 @@ def test_build_version_text_reports_cached_update() -> None:
     assert (
         "Update available: v99.99.99. Run: uv tool install -U deepagents-code" in text
     )
+
+
+def test_build_version_text_omits_cached_update_for_editable_install() -> None:
+    """`--version` never recommends package updates for editable checkouts."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch("deepagents_code.update_check.get_cached_update_available") as get_cached,
+    ):
+        text = build_version_text()
+
+    assert "Update available" not in text
+    get_cached.assert_not_called()
+
+
+def test_build_version_text_uses_prerelease_aware_upgrade_command() -> None:
+    """Cached prerequisite pins produce an installable upgrade command."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            return_value=(True, "99.99.99"),
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.cached_release_requires_prereleases",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.upgrade_command",
+            return_value="prerelease command",
+        ) as upgrade_command,
+    ):
+        text = build_version_text()
+
+    assert "Update available: v99.99.99. Run: prerelease command" in text
+    upgrade_command.assert_called_once_with(
+        include_prereleases=True,
+        version="99.99.99",
+    )
+
+
+def test_build_version_text_omits_command_without_cached_prerequisite_status() -> None:
+    """Unknown prerequisite status warns without suggesting a broken command."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            return_value=(True, "99.99.99"),
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.cached_release_requires_prereleases",
+            return_value=None,
+        ),
+        patch("deepagents_code.update_check.upgrade_command") as upgrade_command,
+    ):
+        text = build_version_text()
+
+    assert "Update available: v99.99.99." in text
+    assert "Run:" not in text
+    upgrade_command.assert_not_called()
 
 
 def test_build_version_text_honors_disabled_update_checks() -> None:

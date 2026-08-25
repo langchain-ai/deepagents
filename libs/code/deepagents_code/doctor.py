@@ -535,6 +535,9 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     # to survive a broken config.
     health = managed_snapshot_health(snapshot)
     path = status.path or "(unknown)"
+    # Printing the URL relies on `remote_source` being set only from
+    # `_validate_remote_url`'s output, so it carries no credentials or query
+    # token. A rejected source leaves the field unset and renders as the path.
     location = (
         f"{path} -> {status.remote_source}"
         if status.remote_source is not None

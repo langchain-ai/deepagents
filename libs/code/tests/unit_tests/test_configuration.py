@@ -43,7 +43,7 @@ from deepagents_code.configuration.writer import update_user_config
 from unit_tests.conftest import redirect_managed_config, resolve_option_for_test
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from urllib.request import Request
 
     from deepagents_code.configuration.types import TomlSnapshot
@@ -281,28 +281,49 @@ class _IncompleteRemoteResponse(_RemoteResponse):
         raise IncompleteRead(partial, 8)
 
 
+_CONTROL_CHARACTER_REJECTION = "must not contain whitespace or control characters"
+
+
 @pytest.mark.parametrize(
-    "source",
+    ("source", "expected"),
     [
-        "http://config.example.com/policy.toml",
-        "https://user@example.com/policy.toml",
-        "https://config.example.com/policy.toml?token=secret",
-        "https://config.example.com/policy.toml#fragment",
-        "https://config.example.com/policy file.toml",
-        "https://config.example.com/policy\tfile.toml",
-        "https://config.example.com/policy\x01file.toml",
-        "https://config.example.com/policy\x7ffile.toml",
+        ("http://config.example.com/policy.toml", "must be an absolute HTTPS URL"),
+        ("https://user@example.com/policy.toml", "must not contain credentials"),
+        (
+            "https://config.example.com/policy.toml?token=secret",
+            "must not contain a query string or fragment",
+        ),
+        (
+            "https://config.example.com/policy.toml#fragment",
+            "must not contain a query string or fragment",
+        ),
+        ("https://config.example.com/policy file.toml", _CONTROL_CHARACTER_REJECTION),
+        ("https://config.example.com/policy\tfile.toml", _CONTROL_CHARACTER_REJECTION),
+        (
+            "https://config.example.com/policy\x01file.toml",
+            _CONTROL_CHARACTER_REJECTION,
+        ),
+        (
+            "https://config.example.com/policy\x7ffile.toml",
+            _CONTROL_CHARACTER_REJECTION,
+        ),
     ],
 )
 def test_remote_toml_provider_rejects_unsafe_urls(
     source: str,
+    expected: str,
     tmp_path: Path,
 ) -> None:
-    """Remote policy only accepts credential-free absolute HTTPS URLs."""
+    """Remote policy only accepts credential-free absolute HTTPS URLs.
+
+    Each rejection is pinned to its own message: asserting only the health enum
+    would let all five collapse into one string that names none of them.
+    """
     snapshot = RemoteTomlProvider(
         "managed config", source, tmp_path / "managed.toml"
     ).load()
     assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert expected in (snapshot.status.detail or "")
     assert "secret" not in (snapshot.status.detail or "")
 
 
@@ -362,7 +383,7 @@ def test_remote_toml_provider_loads_policy_without_environment_proxy(
                 Message(),
                 None,
             ),
-            "refused redirects",
+            "refused a redirect (HTTP 302)",
         ),
         (
             HTTPError(
@@ -653,46 +674,61 @@ def test_remote_toml_provider_rejects_incomplete_response(
 
 
 @pytest.mark.parametrize(
-    ("response", "expected"),
+    ("build_response", "expected"),
     [
         (
-            _RemoteResponse(
+            lambda: _RemoteResponse(
                 b"x", content_length=str(REMOTE_MANAGED_CONFIG_MAX_BYTES + 1)
             ),
             "size limit",
         ),
         (
-            _RemoteResponse(b"x" * (REMOTE_MANAGED_CONFIG_MAX_BYTES + 1), chunked=True),
+            lambda: _RemoteResponse(
+                b"x" * (REMOTE_MANAGED_CONFIG_MAX_BYTES + 1), chunked=True
+            ),
             "size limit",
         ),
         (
-            _RemoteResponse(b'[startup]\nmode = "manual"\n', content_length="abc"),
+            lambda: _RemoteResponse(
+                b'[startup]\nmode = "manual"\n', content_length="abc"
+            ),
             "invalid body length",
         ),
         (
-            _RemoteResponse(b'[startup]\nmode = "manual"\n', content_length="-1"),
+            lambda: _RemoteResponse(
+                b'[startup]\nmode = "manual"\n', content_length="-1"
+            ),
             "invalid body length",
         ),
         (
-            _RemoteResponse(b"[mcp]\n", content_length=""),
+            lambda: _RemoteResponse(b"[mcp]\n", content_length=""),
             "invalid body length",
         ),
-        (_RemoteResponse(b"\xff"), "not UTF-8"),
-        (_RemoteResponse(b"[broken"), "invalid TOML"),
+        (lambda: _RemoteResponse(b"\xff"), "not UTF-8"),
+        (lambda: _RemoteResponse(b"[broken"), "invalid TOML"),
         (
-            _RemoteResponse(b'[managed_config]\nsource = "https://nested.example"\n'),
+            lambda: _RemoteResponse(
+                b'[managed_config]\nsource = "https://nested.example"\n'
+            ),
             "must not declare",
         ),
     ],
 )
 def test_remote_toml_provider_rejects_invalid_response(
-    response: _RemoteResponse,
+    build_response: Callable[[], _RemoteResponse],
     expected: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Remote bodies are bounded, UTF-8 TOML, and cannot chain sources."""
+    """Remote bodies are bounded, UTF-8 TOML, and cannot chain sources.
+
+    The responses are built per test rather than at collection: each wraps a
+    stateful `BytesIO`, and a reused instance would read as exhausted and
+    report the wrong rejection.
+    """
     from deepagents_code.configuration import providers
+
+    response = build_response()
 
     class Opener:
         def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
@@ -756,25 +792,39 @@ def test_managed_provider_failure_is_fail_closed(
 
 
 @pytest.mark.parametrize(
-    "managed_toml",
+    ("managed_toml", "expected"),
     [
         (
-            '[managed_config]\nsource = "https://config.example.com/policy.toml"\n'
-            "[ui]\nshow_scrollbar = true\n"
+            (
+                '[managed_config]\nsource = "https://config.example.com/policy.toml"\n'
+                "[ui]\nshow_scrollbar = true\n"
+            ),
+            "cannot contain local policy keys",
         ),
-        "[managed_config]\nsource = 5\n",
+        ("[managed_config]\nsource = 5\n", "must be a non-empty string"),
         (
-            '[managed_config]\nsource = "https://config.example.com/policy.toml"\n'
-            "extra = true\n"
+            (
+                '[managed_config]\nsource = "https://config.example.com/policy.toml"\n'
+                "extra = true\n"
+            ),
+            "must contain only a string source",
         ),
+        ("managed_config = 5\n", "must contain only a string source"),
+        ("[managed_config]\n", "must contain only a string source"),
+        ('[managed_config]\nsource = "   "\n', "must be a non-empty string"),
     ],
 )
 def test_remote_managed_descriptor_must_be_exclusive(
     managed_toml: str,
+    expected: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Malformed or mixed remote descriptors fail before any network request."""
+    """Malformed or mixed remote descriptors fail before any network request.
+
+    Each shape has its own diagnostic: asserting only the health enum would let
+    them collapse into one message that names none of them.
+    """
     from deepagents_code.configuration import service
     from deepagents_code.configuration.providers import RemoteTomlProvider
 
@@ -789,7 +839,12 @@ def test_remote_managed_descriptor_must_be_exclusive(
 
     with pytest.raises(ManagedConfigError):
         require_healthy_managed_config(refresh=True)
-    assert service.managed_health(refresh=True).status.health is ProviderHealth.CORRUPT
+    status = service.managed_health(refresh=True).status
+    assert status.health is ProviderHealth.CORRUPT
+    assert expected in (status.detail or "")
+    # The anchor file is what is broken here, so these must not claim a remote
+    # source and send the operator to a document that was never fetched.
+    assert status.remote_source is None
 
 
 def test_remote_managed_policy_outranks_lower_sources(
@@ -971,6 +1026,42 @@ def test_doctor_remote_failure_names_the_url_not_the_trust_anchor(
     assert "managed-config source is reachable" in item.value
     assert "repair or remove" not in item.value
     assert "dns failed" not in item.value
+
+
+def test_doctor_shows_a_healthy_remote_source_with_no_remediation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A working remote deployment reads as working, and names its URL.
+
+    This row is how an administrator confirms the fetch succeeded, so it must
+    show the anchor and the source it resolved to, and offer no repair hint.
+    """
+    from deepagents_code.configuration import providers, service
+    from deepagents_code.doctor import _managed_config_diagnostic
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            return _RemoteResponse(b'[startup]\nmode = "manual"\n')
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    service.invalidate_config_sources()
+    try:
+        item = _managed_config_diagnostic()
+    finally:
+        service.invalidate_config_sources()
+
+    assert item.ok is True
+    assert f"{managed} -> https://config.example.com/policy.toml" in item.value
+    assert "ask your administrator" not in item.value.lower()
 
 
 def test_corrupt_remote_policy_directs_admin_to_repair_document(
@@ -4523,6 +4614,227 @@ def test_remote_toml_provider_rejects_a_keyless_policy(
     assert not snapshot.data
 
 
+def test_remote_toml_provider_rejects_an_over_declared_body(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A body longer than its declared length is trailing garbage.
+
+    The under-declared direction surfaces as `IncompleteRead`. This one is the
+    smuggling shape: extra TOML appended past the length the framing promised.
+    """
+    response = _RemoteResponse(b'[startup]\nmode = "manual"\n', content_length="5")
+    snapshot = _remote_snapshot(response, tmp_path, monkeypatch)
+
+    assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert "more than its declared" in (snapshot.status.detail or "")
+    assert not snapshot.data
+
+
+def test_remote_toml_provider_rejects_a_repeated_content_length(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two lengths cannot both delimit the body, so neither is trusted.
+
+    `Message.get` and `http.client` both take the *first* value, so a short
+    first header would agree with itself and accept the prefix of a longer
+    policy as a whole document -- silently dropping deny-list entries.
+    """
+    payload = b'[startup]\nmode = "manual"\n'
+    response = _RemoteResponse(payload, content_length="5")
+    response.headers["Content-Length"] = str(len(payload))
+    snapshot = _remote_snapshot(response, tmp_path, monkeypatch)
+
+    assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert "conflicting body lengths" in (snapshot.status.detail or "")
+    assert not snapshot.data
+
+
+def test_remote_toml_provider_rejects_conflicting_framing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`Content-Length` with chunked framing disagree about where the body ends."""
+    payload = b'[startup]\nmode = "manual"\n'
+    response = _RemoteResponse(payload, content_length=str(len(payload)))
+    response.headers["Transfer-Encoding"] = "chunked"
+    snapshot = _remote_snapshot(response, tmp_path, monkeypatch)
+
+    assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert "conflicting body framing" in (snapshot.status.detail or "")
+    assert not snapshot.data
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"Content-Type": "text/html; charset=utf-8"}, "'text/html', not TOML"),
+        ({"Content-Encoding": "gzip"}, "sent a compressed body"),
+    ],
+)
+def test_remote_toml_provider_rejects_a_body_that_is_not_the_policy(
+    headers: dict[str, str],
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 200 that is not TOML blames the server, not the published document.
+
+    A captive portal, an SSO interstitial, and a gateway error page all answer
+    200 with HTML. Reading them would fail in `tomllib` and report `CORRUPT`,
+    which tells the administrator to repair a file that is byte-perfect.
+    """
+    response = _RemoteResponse(b"<html>Sign in</html>")
+    for name, value in headers.items():
+        response.headers[name] = value
+    snapshot = _remote_snapshot(response, tmp_path, monkeypatch)
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert expected in (snapshot.status.detail or "")
+    assert not snapshot.data
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    ["application/toml", "text/plain; charset=utf-8", "application/octet-stream"],
+)
+def test_remote_toml_provider_accepts_declared_toml_media_types(
+    content_type: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server that labels the policy body is not penalized for doing so."""
+    response = _RemoteResponse(b'[startup]\nmode = "manual"\n')
+    response.headers["Content-Type"] = content_type
+    snapshot = _remote_snapshot(response, tmp_path, monkeypatch)
+
+    assert snapshot.status.health is ProviderHealth.OK
+    assert snapshot.data == {"startup": {"mode": "manual"}}
+
+
+def test_remote_toml_provider_reports_an_unenforceable_read_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A response with no controllable socket fails closed, and says why.
+
+    `fp.raw._sock` is a CPython internal. If it stops resolving, every remote
+    fetch degrades -- so the detail must name the real cause instead of
+    rendering as the generic read failure shared with a DNS miss.
+    """
+    response = _RemoteResponse(b'[startup]\nmode = "manual"\n')
+    response.fp = SimpleNamespace(raw=SimpleNamespace())
+    snapshot = _remote_snapshot(response, tmp_path, monkeypatch)
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert "read timeout could not be enforced" in (snapshot.status.detail or "")
+    assert not snapshot.data
+
+
+def test_remote_toml_provider_bounds_a_real_http_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The private-attribute traversal must work on a genuine response.
+
+    Every other test builds a double shaped to match `fp.raw._sock`, so none of
+    them would notice a CPython layout change that breaks the real thing.
+    """
+    import socket as socket_module
+    from http.client import HTTPResponse
+
+    from deepagents_code.configuration import providers
+
+    body = b'[startup]\nmode = "manual"\n'
+    server, client = socket_module.socketpair()
+    try:
+        server.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body),
+        )
+        response = HTTPResponse(client)
+        response.begin()
+
+        class Opener:
+            def open(self, _request: object, *, timeout: int) -> HTTPResponse:
+                assert timeout > 0
+                return response
+
+        monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+        snapshot = RemoteTomlProvider(
+            "managed config",
+            "https://config.example.com/policy.toml",
+            tmp_path / "managed.toml",
+        ).load()
+    finally:
+        server.close()
+        client.close()
+
+    assert snapshot.status.health is ProviderHealth.OK
+    assert snapshot.data == {"startup": {"mode": "manual"}}
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "https://config.example.com:8443/policy.toml",
+            "https://config.example.com:8443/policy.toml",
+        ),
+        ("https://[2001:db8::1]/policy.toml", "https://[2001:db8::1]/policy.toml"),
+        (
+            "https://CONFIG.Example.COM./policy.toml",
+            "https://config.example.com/policy.toml",
+        ),
+    ],
+)
+def test_remote_url_normalization_preserves_the_destination(
+    source: str,
+    expected: str,
+) -> None:
+    """Normalizing must not repoint the fetch at a different service.
+
+    Dropping the port rebuild would silently contact 443 instead of the port
+    the administrator pinned; dropping the IPv6 re-bracketing would make every
+    address-literal policy host unreachable.
+    """
+    from deepagents_code.configuration.providers import _validate_remote_url
+
+    assert _validate_remote_url(source) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("https://config.example.com:99999/policy.toml", "invalid port"),
+        ("https://config.example.com:abc/policy.toml", "invalid port"),
+        (
+            "https://:t0ken@config.example.com/policy.toml",
+            "must not contain credentials",
+        ),
+        ("https://user:t0ken@ex℀ample.com/policy.toml", "is not a valid URL"),
+    ],
+)
+def test_remote_url_rejections_name_their_cause_without_echoing_the_url(
+    source: str,
+    expected: str,
+    tmp_path: Path,
+) -> None:
+    """Each rejection has its own message, and none forwards the URL.
+
+    `urlsplit` puts the whole netloc -- `user:password@` included -- in its own
+    `ValueError`, and this detail reaches exit-78 stderr and the `doctor` row.
+    """
+    snapshot = RemoteTomlProvider(
+        "managed config", source, tmp_path / "managed.toml"
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert expected in (snapshot.status.detail or "")
+    assert "t0ken" not in (snapshot.status.detail or "")
+    assert snapshot.status.remote_source is None
+
+
 def test_remote_policy_violation_names_the_url_not_the_trust_anchor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4619,6 +4931,124 @@ def test_managed_refresh_does_not_hold_the_snapshot_lock(
     release.set()
     worker.join(timeout=5)
     reader.join(timeout=5)
+
+
+def test_invalidation_bars_an_in_flight_load_from_republishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A load started before `invalidate_config_sources` must not resurrect it.
+
+    The reset advances both tickets precisely so this cannot happen: without
+    it, a load in flight across the invalidation would repopulate the cache
+    with the generation the caller deliberately discarded, and the process
+    would silently resume enforcing it.
+    """
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.types import ProviderStatus, TomlSnapshot
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+
+    started = Event()
+    release = Event()
+
+    def slow_load(_path: Path | None = None) -> TomlSnapshot:
+        started.set()
+        assert release.wait(timeout=5)
+        return TomlSnapshot(
+            {"startup": {"mode": "discarded"}},
+            ProviderStatus("managed config", managed, ProviderHealth.OK, None),
+        )
+
+    monkeypatch.setattr(service, "_load_managed", slow_load)
+    loaded: list[TomlSnapshot] = []
+    worker = Thread(
+        target=lambda: loaded.append(service.get_managed_snapshot(refresh=True)),
+        name="invalidated-refresh",
+        daemon=True,
+    )
+    worker.start()
+    assert started.wait(timeout=5)
+
+    service.invalidate_config_sources()
+    release.set()
+    worker.join(timeout=5)
+
+    # The load still returns its own result to the caller that asked for it,
+    # but the cache stays empty so no later reader observes the cleared policy.
+    assert loaded[0].data == {"startup": {"mode": "discarded"}}
+    assert service._snapshot_state.managed is None
+
+
+def test_earlier_load_publishes_when_a_later_one_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A good generation is not discarded because a later load started.
+
+    Tickets order *publication*, not load start. Ordering on start would let
+    any overlapping caller forfeit its right to publish, so a successful fetch
+    racing a failing one would leave the cache empty -- every later reader
+    re-fetching, and two readers moments apart disagreeing about whether
+    policy is enforced at all.
+    """
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.types import ProviderStatus, TomlSnapshot
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+
+    started = Event()
+    release = Event()
+
+    def good_load(_path: Path | None = None) -> TomlSnapshot:
+        started.set()
+        assert release.wait(timeout=5)
+        return TomlSnapshot(
+            {"startup": {"mode": "manual"}},
+            ProviderStatus("managed config", managed, ProviderHealth.OK, None),
+        )
+
+    monkeypatch.setattr(service, "_load_managed", good_load)
+    good_result: list[TomlSnapshot] = []
+    worker = Thread(
+        target=lambda: good_result.append(service.get_managed_snapshot(refresh=True)),
+        name="good-refresh",
+        daemon=True,
+    )
+    worker.start()
+    assert started.wait(timeout=5)
+
+    # A later refresh starts and fails while the good one is still in flight.
+    monkeypatch.setattr(
+        service,
+        "_load_managed",
+        lambda _path=None: TomlSnapshot(
+            {},
+            ProviderStatus(
+                "managed config",
+                managed,
+                ProviderHealth.UNREADABLE,
+                "remote source timed out",
+            ),
+        ),
+    )
+    assert service.get_managed_snapshot(refresh=True).status.health is (
+        ProviderHealth.UNREADABLE
+    )
+
+    monkeypatch.setattr(service, "_load_managed", good_load)
+    release.set()
+    worker.join(timeout=5)
+
+    assert good_result[0].data == {"startup": {"mode": "manual"}}
+    assert service._snapshot_state.managed is not None
+    assert service.get_managed_snapshot().data == {"startup": {"mode": "manual"}}
 
 
 def test_stale_refresh_cannot_overwrite_a_newer_published_snapshot(

@@ -531,9 +531,10 @@ class ManagedConfigError(RuntimeError):
             elif status.remote_source is not None:
                 # Same reasoning one step out: the local file is a trust anchor
                 # holding a URL, so it is not what needs repairing, and
-                # removing it would drop policy entirely. Name the URL that
-                # failed -- `_validate_remote_url` has already guaranteed it
-                # carries no credentials, query string, or fragment.
+                # removing it would drop policy entirely. Naming the URL is safe
+                # because `remote_source` is set only from
+                # `_validate_remote_url`'s output, which rejects credentials,
+                # query strings, and fragments.
                 if status.health is ProviderHealth.CORRUPT:
                     action = "repair the managed-config document published there"
                 else:
@@ -581,16 +582,69 @@ class ManagedPolicyError(ManagedConfigError):
 
 
 class _SnapshotState:
-    """Mutable process snapshot guarded by `_snapshot_lock`."""
+    """Mutable process snapshot guarded by `_snapshot_lock`.
 
-    __slots__ = ("latest_ticket", "managed")
+    Loads run outside the lock, so several can overlap. The ticket pair keeps
+    them ordered: `begin_load` issues a monotonic ticket, and `publish` accepts
+    a candidate only when no *newer generation has already been published*.
+    Ordering on publication rather than on load start is what lets a load that
+    started earlier still fill an empty cache when a later load failed.
+    """
+
+    __slots__ = ("latest_ticket", "managed", "published_ticket")
 
     def __init__(self) -> None:
         """Start with no cached snapshot."""
         self.managed: TomlSnapshot | None = None
-        # Monotonic ticket issued when each load starts. A load that started
-        # before the latest ticket must not overwrite that newer attempt.
+        # Monotonic ticket issued when each load starts.
         self.latest_ticket = 0
+        # Ticket of the load whose snapshot is currently cached. `reset` raises
+        # it to `latest_ticket` so no load already in flight can republish the
+        # generation being cleared.
+        self.published_ticket = 0
+
+    def begin_load(self) -> int:
+        """Issue the ticket for one load attempt.
+
+        Returns:
+            The new ticket, to be passed back to `publish`.
+        """
+        with _snapshot_lock:
+            self.latest_ticket += 1
+            return self.latest_ticket
+
+    def publish(self, ticket: int, candidate: TomlSnapshot) -> TomlSnapshot:
+        """Cache an enforceable candidate unless a newer one already won.
+
+        Args:
+            ticket: The value `begin_load` returned for this load.
+            candidate: The enforceable snapshot this load produced.
+
+        Returns:
+            The candidate, or the newer generation that superseded it.
+        """
+        with _snapshot_lock:
+            if ticket > self.published_ticket:
+                # Nothing newer has published, so this generation is current
+                # even if a later load is still in flight. Publishing an older
+                # one would roll the process back to a policy the
+                # administrator has already replaced -- that is what the
+                # comparison prevents, and why it is against the *published*
+                # ticket and not against `latest_ticket`.
+                self.published_ticket = ticket
+                self.managed = candidate
+                return candidate
+            return self.managed if self.managed is not None else candidate
+
+    def reset(self) -> None:
+        """Drop the cached snapshot and bar every in-flight load from it."""
+        with _snapshot_lock:
+            self.managed = None
+            # Advance both tickets so a load started before the reset cannot
+            # republish the snapshot being cleared. Keeping these two writes
+            # together is what makes the invalidation atomic.
+            self.latest_ticket += 1
+            self.published_ticket = self.latest_ticket
 
 
 _snapshot_lock = threading.RLock()
@@ -682,7 +736,10 @@ def get_managed_snapshot(
     cleanly earlier. An unusable snapshot carries `data == {}`, which every
     reader would otherwise treat as "nothing is enforced", so caching it would
     turn one broken write by an administrator into a process-wide fail-open.
-    The caller still receives the failed load, so health checks see the error.
+    A `refresh` caller still receives the failed load, so health checks see the
+    error. A non-refresh caller may instead receive a generation another caller
+    published while this load was failing, because the serialized path it
+    replaces would have read that from the cache and never loaded at all.
 
     The same holds for a file that parses but cannot be enforced. Its health
     is `OK`, so a usability check alone would cache it. When the refresh
@@ -694,7 +751,8 @@ def get_managed_snapshot(
     only the last enforceable snapshot.
 
     Returns:
-        The cached snapshot, or the freshly loaded one when refreshing.
+        The cached snapshot, the freshly loaded one when refreshing, or a
+        newer generation that a concurrent load published first.
     """
     if path is not None:
         return _load_managed(path)
@@ -702,8 +760,7 @@ def get_managed_snapshot(
         cached = _snapshot_state.managed
         if not refresh and cached is not None:
             return cached
-        _snapshot_state.latest_ticket += 1
-        load_ticket = _snapshot_state.latest_ticket
+        load_ticket = _snapshot_state.begin_load()
     # Load outside the lock. A remote descriptor turns this into an HTTPS
     # fetch, and every ordinary config read reaches `get_managed_snapshot`
     # through `get_config_resolver`, much of it from the Textual event loop.
@@ -719,19 +776,9 @@ def get_managed_snapshot(
     enforceable = candidate.status.usable and not managed_policy_violations(
         candidate.data, status=candidate.status
     )
+    if enforceable:
+        return _snapshot_state.publish(load_ticket, candidate)
     with _snapshot_lock:
-        if enforceable:
-            # A refresh that started earlier can finish after a later one has
-            # already published. Publishing it would roll the process back to
-            # a policy generation the administrator has already replaced, so
-            # only the newest in-flight load may write the cache.
-            if load_ticket == _snapshot_state.latest_ticket:
-                _snapshot_state.managed = candidate
-                return candidate
-            published = _snapshot_state.managed
-            if published is not None:
-                return published
-            return candidate
         published = _snapshot_state.managed
         if not refresh and published is not None:
             # A concurrent caller published policy while this load was
@@ -739,6 +786,15 @@ def get_managed_snapshot(
             # read that snapshot from the cache and never loaded at all, so
             # prefer it over a failure it would not have seen. A `refresh`
             # caller asked for this generation and must receive it.
+            #
+            # The failure itself must not vanish: it is the only signal that
+            # the policy host stopped answering, and a non-refresh reader has
+            # no other channel for it.
+            logger.warning(
+                "Managed policy refresh failed (%s); serving the last "
+                "enforceable generation",
+                candidate.status.detail or candidate.status.health.value,
+            )
             return published
     return candidate
 
@@ -803,11 +859,7 @@ def invalidate_config_sources() -> None:
     """
     from deepagents_code.configuration.resolver import reset_config_resolver
 
-    with _snapshot_lock:
-        _snapshot_state.managed = None
-        # Advance the ticket so an in-flight load started before the reset
-        # cannot republish the snapshot being cleared.
-        _snapshot_state.latest_ticket += 1
+    _snapshot_state.reset()
     reset_config_resolver()
 
 

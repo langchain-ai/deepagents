@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 import tomllib
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from http.client import HTTPResponse
     from pathlib import Path
     from typing import Protocol
+    from urllib.request import Request
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.resolver import RankedProviderValue
@@ -30,9 +32,15 @@ if TYPE_CHECKING:
             """Stop an in-flight socket operation."""
 
     class _RemoteOpener(Protocol):
-        """Minimal opener surface used by the remote provider."""
+        """Minimal opener surface used by the remote provider.
 
-        def open(self, request: object, *, timeout: float) -> HTTPResponse:
+        An implementation must bypass environment proxies and refuse
+        redirects. The `cast` in `_build_remote_opener` erases that, so it is
+        recorded here: an opener that satisfies this protocol without both
+        properties silently reopens two destination-control holes.
+        """
+
+        def open(self, request: Request, *, timeout: float) -> HTTPResponse:
             """Open one HTTP response."""
 
 
@@ -51,11 +59,18 @@ from deepagents_code.configuration.types import (
     Unset,
 )
 
+logger = logging.getLogger(__name__)
+
 REMOTE_MANAGED_CONFIG_MAX_BYTES = 1024 * 1024
 REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS = 5
 _HTTP_OK = 200
-_HTTP_REDIRECT_MIN = 300
-_HTTP_REDIRECT_MAX = 400
+_REFUSED_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+"""Statuses `urllib` would have followed had `_RejectRedirects` allowed it.
+
+Not the whole 3xx range: a `300`, `304`, or `305` reaches the same handler
+without ever naming a redirect target, so reporting it as a refused redirect
+would misdescribe the server's answer.
+"""
 
 SHADOWED_TABLE_SUFFIX = "— every option under it falls back to its next source"
 """Tail of the rejection raised when a scalar shadows a whole TOML table.
@@ -531,7 +546,10 @@ def ranked_default_value(
 
 
 def _build_remote_opener() -> _RemoteOpener:
-    """Build a direct opener only when a remote descriptor is active.
+    """Build a redirect-refusing, proxy-bypassing opener.
+
+    The `urllib.request` imports are deferred into the body so an install with
+    no remote descriptor never pays for them.
 
     Returns:
         An opener that bypasses environment proxies and rejects redirects.
@@ -558,9 +576,9 @@ def _remote_status(
 ) -> TomlSnapshot:
     """Build an empty snapshot with safe remote-source diagnostics.
 
-    `source` is the validated URL, or `None` before validation accepted one --
-    a rejected source may carry the very query token the detail strings are
-    written to keep out of operator-visible text.
+    Pass `source` only after validation accepted it. Pass `None` for a
+    rejected source: it can hold a secret query token, and no detail string
+    this module writes contains the URL itself.
 
     Returns:
         An unhealthy snapshot carrying no policy data.
@@ -578,11 +596,22 @@ def _validate_remote_url(source: str) -> str:
         The normalized absolute HTTPS URL.
 
     Raises:
-        ValueError: If the URL could redirect trust or leak credentials.
+        ValueError: If the source is not an absolute HTTPS URL, carries
+            credentials, a query string, or a fragment, has an invalid port, or
+            contains whitespace or control characters.
     """
     from urllib.parse import urlsplit
 
-    parsed = urlsplit(source)
+    try:
+        parsed = urlsplit(source)
+    except ValueError as exc:
+        # `urlsplit` embeds the whole netloc in its own message -- including
+        # `user:password@` -- and every caller renders the detail to the
+        # operator. Replace it with a fixed string: this function exists to
+        # keep a rejected source out of operator-visible text, so it must not
+        # forward one from the parser either.
+        msg = "remote source is not a valid URL"
+        raise ValueError(msg) from exc
     if any(char <= " " or char == "\x7f" for char in source):
         # urllib raises `http.client.InvalidURL` for a control character, but
         # only once `opener.open()` is under way. `load()` catches it as an
@@ -643,23 +672,33 @@ def _remaining_timeout(deadline: float) -> float:
 
 
 def _close_completed_response(future: Future[HTTPResponse]) -> None:
-    """Close a response that arrived after its caller stopped waiting."""
+    """Close a response that arrived after its caller stopped waiting.
+
+    The caller has already reported `"remote source timed out"`, so the outcome
+    here cannot change what it returns. Record it anyway: "the host answered
+    just past the deadline" and "the host never answered" call for different
+    administrator action, and a handshake failure that only shows up on a slow
+    connection is otherwise invisible.
+    """
     from http.client import HTTPException
     from urllib.error import HTTPError
 
     try:
         response = future.result()
     except HTTPError as exc:
+        logger.debug("Abandoned managed-config fetch returned HTTP %s", exc.code)
         exc.close()
         return
-    except (HTTPException, OSError, ValueError):
+    except (HTTPException, OSError, ValueError) as exc:
+        logger.debug("Abandoned managed-config fetch failed (%s)", type(exc).__name__)
         return
+    logger.debug("Abandoned managed-config fetch completed after the deadline")
     response.close()
 
 
 def _open_response_with_deadline(
     opener: _RemoteOpener,
-    request: object,
+    request: Request,
     *,
     deadline: float,
 ) -> HTTPResponse:
@@ -702,18 +741,49 @@ def _open_response_with_deadline(
     return response
 
 
+class _RemotePolicyRejectedError(ValueError):
+    """Raised when this module rejects a response it did read.
+
+    `load()` maps it to `CORRUPT`, which tells the administrator to repair the
+    published document. Only rejections this module authors may carry that
+    instruction: a `ValueError` from a library on the same path (a closed
+    `http.client` file, for one) has nothing to do with the document, and
+    sending an administrator to edit a byte-perfect file is worse than saying
+    the fetch failed.
+    """
+
+
+class _TimeoutNotEnforceableError(OSError):
+    """Raised when a live response exposes no socket to time out.
+
+    Its own class, not a bare `OSError`, because the two mean different things
+    to an operator: this one says the read deadline is not being enforced on
+    this connection -- an internal invariant break -- while every sibling
+    `OSError` on this path is a network fault on the administrator's server.
+    Subclasses `OSError` so any handler that misses it still fails closed.
+    """
+
+
 def _set_response_timeout(response: HTTPResponse, timeout: float) -> None:
     """Tighten the active response socket to the remaining timeout.
 
+    A response with no `fp` is already exhausted: `read1` returns `b""` and
+    `_parse_remote_toml` rejects the empty body, so there is nothing to bound.
+
     Raises:
-        OSError: If a live response has no controllable socket.
+        _TimeoutNotEnforceableError: If a live response has no controllable socket.
     """
     if response.fp is not None:
         raw = getattr(response.fp, "raw", None)
         sock = cast("_TimeoutSocket | None", getattr(raw, "_sock", None))
-        if sock is None:
-            msg = "remote source response timeout could not be enforced"
-            raise OSError(msg)
+        # `fp.raw._sock` is a CPython internal. Check the method too, not just
+        # for `None`: a layout change that leaves `_sock` holding some other
+        # object would make the `cast` a lie and raise `AttributeError`, which
+        # no arm of `load()` catches, so it would escape as a traceback and
+        # bypass the `ManagedConfigError` exit path.
+        if sock is None or not hasattr(sock, "settimeout"):
+            msg = "remote source read timeout could not be enforced"
+            raise _TimeoutNotEnforceableError(msg)
         sock.settimeout(timeout)
 
 
@@ -767,6 +837,40 @@ def _read_response_chunk(
         raise
 
 
+_ALLOWED_REMOTE_MEDIA_TYPES = frozenset(
+    {"application/toml", "text/plain", "application/octet-stream"}
+)
+
+
+def _unexpected_payload_encoding(response: HTTPResponse) -> str | None:
+    """Reject a 200 whose body cannot be the TOML policy that was requested.
+
+    The request sends `Accept: application/toml`, but nothing obliges a server
+    to honour it. A captive portal, an SSO interstitial, or a gateway error
+    page all answer 200 with HTML, and `urllib` does not decode a body that
+    arrives compressed. Without this check both reach `tomllib` and report
+    `CORRUPT`, which tells the administrator to repair a document that is
+    fine -- and hides that something answered in its place.
+
+    Returns:
+        A safe operator-facing detail, or `None` when the body may be read.
+    """
+    encoding = (response.headers.get("Content-Encoding") or "").strip().lower()
+    if encoding and encoding != "identity":
+        return "remote source sent a compressed body"
+    content_type = response.headers.get("Content-Type")
+    if content_type is None:
+        return None
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if not media_type or media_type in _ALLOWED_REMOTE_MEDIA_TYPES:
+        return None
+    # The media type is echoed because it is the only way to tell an
+    # administrator what answered instead. It is server-controlled, so it is
+    # bounded and stripped of anything that could reflow operator output.
+    safe = "".join(char for char in media_type if char.isascii() and char.isprintable())
+    return f"remote source returned {safe[:64]!r}, not TOML"
+
+
 def _declared_body_length(response: HTTPResponse) -> int | None:
     """Return the body length this response's HTTP framing promises.
 
@@ -774,13 +878,33 @@ def _declared_body_length(response: HTTPResponse) -> int | None:
         The declared length, or `None` when chunked framing delimits the body.
 
     Raises:
-        ValueError: If framing cannot show that the body arrived whole, or the
-            declared length is over the fixed limit.
+        _RemotePolicyRejectedError: If framing cannot show that the body arrived
+            whole, or the declared length is over the fixed limit.
     """
-    raw_length = response.headers.get("Content-Length")
-    if raw_length is None:
-        encoding = (response.headers.get("Transfer-Encoding") or "").strip()
-        if encoding.lower() == "chunked":
+    chunked = "chunked" in {
+        token.strip().lower()
+        for value in response.headers.get_all("Transfer-Encoding") or ()
+        for token in value.split(",")
+    }
+    # `get_all` rather than `get`: a repeated header returns only its first
+    # value, and `http.client` reads it the same way. `Content-Length: 200`
+    # followed by `Content-Length: 5000` would then agree with itself at 200
+    # bytes and accept the prefix of a 5000-byte policy as a whole document --
+    # the exact truncation the rest of this function exists to reject.
+    declared_lengths = {
+        value.strip() for value in response.headers.get_all("Content-Length") or ()
+    }
+    if len(declared_lengths) > 1:
+        msg = "remote source sent conflicting body lengths"
+        raise _RemotePolicyRejectedError(msg)
+    if declared_lengths and chunked:
+        # `http.client` honours chunked framing and ignores the length, so the
+        # two disagree about where the body ends. Neither reading is safe to
+        # guess at on this boundary.
+        msg = "remote source sent conflicting body framing"
+        raise _RemotePolicyRejectedError(msg)
+    if not declared_lengths:
+        if chunked:
             # Chunked framing detects its own truncation: `http.client` raises
             # `IncompleteRead` when the terminating chunk never arrives.
             return None
@@ -788,18 +912,18 @@ def _declared_body_length(response: HTTPResponse) -> int | None:
         # one cut short, and TOML truncated at a line boundary still parses --
         # a deny list can lose its entries and still look healthy.
         msg = "remote source did not delimit the response body"
-        raise ValueError(msg)
+        raise _RemotePolicyRejectedError(msg)
     try:
-        declared = int(raw_length)
+        declared = int(next(iter(declared_lengths)))
     except ValueError as exc:
         msg = "remote source declared an invalid body length"
-        raise ValueError(msg) from exc
+        raise _RemotePolicyRejectedError(msg) from exc
     if declared < 0:
         msg = "remote source declared an invalid body length"
-        raise ValueError(msg)
+        raise _RemotePolicyRejectedError(msg)
     if declared > REMOTE_MANAGED_CONFIG_MAX_BYTES:
         msg = "remote source response exceeds the size limit"
-        raise ValueError(msg)
+        raise _RemotePolicyRejectedError(msg)
     return declared
 
 
@@ -813,9 +937,14 @@ def _read_limited_response(
     Returns:
         The bounded response body.
 
+    The read helpers it calls also raise `TimeoutError` once the end-to-end
+    deadline expires, and `_TimeoutNotEnforceableError` when the deadline
+    cannot be applied to the socket.
+
     Raises:
         IncompleteRead: If HTTP framing reports a truncated response.
-        ValueError: If the declared or actual body exceeds the fixed limit.
+        _RemotePolicyRejectedError: If the declared or actual body breaks the
+            framing or size limits.
     """
     declared_length = _declared_body_length(response)
     chunks: list[bytes] = []
@@ -834,11 +963,11 @@ def _read_limited_response(
     payload = b"".join(chunks)
     if len(payload) > REMOTE_MANAGED_CONFIG_MAX_BYTES:
         msg = "remote source response exceeds the size limit"
-        raise ValueError(msg)
+        raise _RemotePolicyRejectedError(msg)
     if declared_length is not None and len(payload) != declared_length:
         if len(payload) > declared_length:
             msg = "remote source sent more than its declared body length"
-            raise ValueError(msg)
+            raise _RemotePolicyRejectedError(msg)
         from http.client import IncompleteRead
 
         raise IncompleteRead(payload, declared_length - len(payload))
@@ -960,12 +1089,26 @@ class RemoteTomlProvider:
                         f"remote source returned HTTP {response.status}",
                         source,
                     )
+                unexpected = _unexpected_payload_encoding(response)
+                if unexpected is not None:
+                    return _remote_status(
+                        self.name,
+                        self.path,
+                        ProviderHealth.UNREADABLE,
+                        unexpected,
+                        source,
+                    )
                 payload = _read_limited_response(response, deadline=deadline)
         except HTTPError as exc:
             try:
+                # Only the statuses `HTTPRedirectHandler` would have followed
+                # are redirects this fetch refused. A `300`, `304`, or `305`
+                # also arrives as an `HTTPError` in the 3xx range, and naming
+                # those a refused redirect would send an administrator looking
+                # for a `Location` header their server never sent.
                 detail = (
-                    "remote source refused redirects"
-                    if _HTTP_REDIRECT_MIN <= exc.code < _HTTP_REDIRECT_MAX
+                    f"remote source refused a redirect (HTTP {exc.code})"
+                    if exc.code in _REFUSED_REDIRECT_STATUSES
                     else (f"remote source returned HTTP {exc.code}")
                 )
                 return _remote_status(
@@ -983,6 +1126,29 @@ class RemoteTomlProvider:
                 self.path,
                 ProviderHealth.UNREADABLE,
                 "remote source timed out",
+                source,
+            )
+        except _TimeoutNotEnforceableError as exc:
+            # Ahead of the `OSError` arm below, which would render this as the
+            # generic "could not be read (OSError)" and lose the one detail
+            # that matters: the read deadline is not being applied to this
+            # connection, which is a fault here and not on the policy host.
+            return _remote_status(
+                self.name,
+                self.path,
+                ProviderHealth.UNREADABLE,
+                str(exc),
+                source,
+            )
+        except _RemotePolicyRejectedError as exc:
+            # Ahead of the `OSError` arm too: `_TimeoutNotEnforceableError` is an
+            # `OSError`, and this one is the only `ValueError` that may claim
+            # the published document is at fault.
+            return _remote_status(
+                self.name,
+                self.path,
+                ProviderHealth.CORRUPT,
+                str(exc),
                 source,
             )
         except (HTTPException, URLError, OSError) as exc:
@@ -1018,11 +1184,16 @@ class RemoteTomlProvider:
                 source,
             )
         except ValueError as exc:
+            # Not `_RemotePolicyRejectedError`, so this came from a library on the
+            # fetch path rather than from a check in this module. It says
+            # nothing about the published document, so it must not carry the
+            # "repair the document" remediation `CORRUPT` selects, and its
+            # message is not ours to forward.
             return _remote_status(
                 self.name,
                 self.path,
-                ProviderHealth.CORRUPT,
-                str(exc),
+                ProviderHealth.UNREADABLE,
+                f"remote source could not be read ({type(exc).__name__})",
                 source,
             )
         return _parse_remote_toml(

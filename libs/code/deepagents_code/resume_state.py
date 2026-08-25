@@ -67,6 +67,8 @@ from langchain.agents.middleware.types import (
     AgentState,
     ContextT,
     PrivateStateAttr,
+    TracePolicy,
+    omit_payload,
 )
 from langchain_core.messages import AIMessage
 
@@ -263,6 +265,7 @@ class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
     run in LangSmith and works identically against remote graphs).
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
     state_schema = ResumeState
 
     def after_model(  # noqa: PLR6301  # AgentMiddleware hook must be an instance method.

@@ -23,6 +23,8 @@ from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
+    TracePolicy,
+    omit_payload,
 )
 from langgraph.types import Command
 
@@ -824,6 +826,8 @@ class ConfigurableModelMiddleware(AgentMiddleware):
     model call before provider-specific middleware (like
     `AnthropicPromptCachingMiddleware`) runs.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
 
     def __init__(
         self,

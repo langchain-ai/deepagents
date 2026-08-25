@@ -19,6 +19,8 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    TracePolicy,
+    omit_payload,
 )
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
@@ -286,6 +288,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     registered.
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
     state_schema = GoalToolState
 
     def __init__(self) -> None:

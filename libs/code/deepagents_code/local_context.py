@@ -28,6 +28,8 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
+    TracePolicy,
+    omit_payload,
 )
 
 from deepagents_code.unicode_security import sanitize_control_chars
@@ -699,6 +701,7 @@ class LocalContextMiddleware(AgentMiddleware):
     and remote sandboxes.
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
     state_schema = LocalContextState
 
     def __init__(

@@ -67,6 +67,8 @@ from langchain.agents.middleware.types import (
     ContextT,
     OmitFromInput,
     PrivateStateAttr,
+    TracePolicy,
+    omit_payload,
 )
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage
@@ -2223,6 +2225,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
     subagent total through state for its owning parent graph to checkpoint.
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
     state_schema = CostState
 
     def __init__(self, *, nested: bool = False) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from typing import Any
 
 import pytest
 
@@ -147,3 +148,120 @@ def test_startup_mode_names_both_approval_flags() -> None:
     assert option.cli is not None
     assert option.cli.companion_flags == ("--yolo",)
     assert option.cli.display_flags == "--auto-approve/--yolo"
+
+
+def _all_parser_destinations() -> set[str]:
+    """Collect every argparse destination, root parser and subcommands alike.
+
+    `parse_args` builds its parser inline, so the instance is captured on the
+    way through rather than rebuilt here -- a copy would drift from the real
+    one, which is exactly the failure this guards.
+
+    Returns:
+        Every `dest` the CLI can populate.
+    """
+    import sys
+    from unittest.mock import patch
+
+    from deepagents_code.main import parse_args
+
+    captured: list[argparse.ArgumentParser] = []
+    real_parse_args = argparse.ArgumentParser.parse_args
+
+    def _capture(
+        self: argparse.ArgumentParser, *args: Any, **kwargs: Any
+    ) -> argparse.Namespace:
+        captured.append(self)
+        return real_parse_args(self, *args, **kwargs)
+
+    with (
+        patch.object(sys, "argv", ["dcode", "-n", "task"]),
+        patch.object(argparse.ArgumentParser, "parse_args", _capture),
+    ):
+        parse_args()
+
+    assert captured, "parse_args did not build a parser"
+
+    dests: set[str] = set()
+
+    def _walk(parser: argparse.ArgumentParser) -> None:
+        for action in parser._actions:  # no public accessor
+            if action.dest != argparse.SUPPRESS:
+                dests.add(action.dest)
+            choices = getattr(action, "choices", None) or {}
+            if isinstance(action, argparse._SubParsersAction):
+                for sub in choices.values():
+                    _walk(sub)
+
+    _walk(captured[0])
+    return dests
+
+
+def test_every_cli_binding_names_a_real_argparse_destination() -> None:
+    """Each `CliSpec` must resolve to a destination argparse actually sets.
+
+    `CliProvider.get` maps a missing destination to `Unset`, which is
+    indistinguishable from an absent flag. A typo, or an argparse `dest=`
+    rename, therefore stops a bound flag working with no error at import, at
+    construction, or at read -- the option silently reads `Unset` forever.
+
+    Nothing else ties the two files together: the manifest declares the
+    bindings and argparse defines the destinations, across a boundary no type
+    check crosses.
+    """
+    from deepagents_code.config_manifest import get_config_options
+
+    dests = _all_parser_destinations()
+    missing = {
+        option.key: spec.dest_name
+        for option in get_config_options()
+        if (spec := option.cli) is not None
+        if spec.dest_name not in dests
+    }
+    assert not missing, f"CLI bindings name unknown argparse destinations: {missing}"
+
+
+def test_every_companion_flag_names_a_real_argparse_destination() -> None:
+    """Companion flags must resolve too: the provider reads `--yolo`'s dest."""
+    from deepagents_code.config_manifest import get_config_options
+
+    dests = _all_parser_destinations()
+    missing: dict[str, str] = {}
+    for option in get_config_options():
+        spec = option.cli
+        if spec is None:
+            continue
+        for flag in spec.companion_flags:
+            dest_name = CliSpec(flag).dest_name
+            if dest_name not in dests:
+                missing[option.key] = dest_name
+    assert not missing, f"companion flags name unknown destinations: {missing}"
+
+
+def test_bound_flags_have_no_truthy_argparse_default() -> None:
+    """A bound flag must default to `None`, or the CLI tier always declares.
+
+    `CliProvider.get` treats any non-`None` value as `Found`, so an
+    `action="store_true"` on a bound flag would make the CLI tier report
+    `False` on every invocation. That permanently masks the user's
+    `config.toml` for the option and fires a spurious "managed config takes
+    precedence" warning. Every bound flag is safe today; nothing keeps it so.
+    """
+    import sys
+    from unittest.mock import patch
+
+    from deepagents_code.config_manifest import get_config_options
+    from deepagents_code.main import parse_args
+
+    with patch.object(sys, "argv", ["dcode", "-n", "task"]):
+        args = parse_args()
+
+    offenders = {
+        option.key: value
+        for option in get_config_options()
+        if (spec := option.cli) is not None
+        if (value := getattr(args, spec.dest_name, None)) is not None
+    }
+    assert not offenders, (
+        f"bound flags declare a value with no flag passed: {offenders}"
+    )

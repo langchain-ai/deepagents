@@ -107,7 +107,7 @@ def _plugin_sources(plugins: Sequence[PluginInstance]) -> list[SourceInfo]:
         SourceInfo(
             _canonical(path),
             is_package=path.name == "__init__.py",
-            plugin_id=plugin.plugin_id,
+            source_id=plugin.plugin_id,
             version=plugin.version,
             installed_root=_canonical(plugin.root),
         )
@@ -127,7 +127,7 @@ def _entry_point_source(entry: importlib.metadata.EntryPoint) -> SourceInfo:
     return SourceInfo(
         _canonical(Path(spec.origin)),
         is_package=spec.submodule_search_locations is not None,
-        plugin_id=f"{entry.name}@entry-point",
+        source_id=f"{entry.name}@entry-point",
         version=version,
         installed_root=_canonical(Path(spec.origin).parent),
     )

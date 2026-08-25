@@ -133,7 +133,7 @@ def test_plugin_extension_discovery_requires_experimental_mode(
     monkeypatch.setenv(EXPERIMENTAL, "1")
     sources = discover_extensions(plugins=(plugin,)).sources
     assert [source.path for source in sources] == [path.resolve()]
-    assert sources[0].plugin_id == "example@test"
+    assert sources[0].source_id == "example@test"
 
 
 def test_plugin_manifest_does_not_resolve_extensions_when_disabled(

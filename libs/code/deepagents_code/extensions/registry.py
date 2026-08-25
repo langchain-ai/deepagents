@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class SourceScope(StrEnum):
-    """Authority scope that supplied an extension."""
+    """Authority scope that supplied an extension; temporary means one invocation."""
 
     USER = "user"
     PROJECT = "project"
@@ -35,7 +35,7 @@ class SourceInfo:
 
     path: Path
     is_package: bool = False
-    plugin_id: str | None = None
+    source_id: str | None = None
     scope: SourceScope = SourceScope.USER
     version: str | None = None
     installed_root: Path | None = None
@@ -43,8 +43,8 @@ class SourceInfo:
     @property
     def label(self) -> str:
         """Short extension label."""
-        if self.plugin_id is not None:
-            return self.plugin_id
+        if self.source_id is not None:
+            return self.source_id
         return self.path.parent.name if self.is_package else self.path.stem
 
     def as_dict(self) -> dict[str, str | bool | None]:
@@ -55,7 +55,7 @@ class SourceInfo:
             "scope": self.scope.value,
             "origin": "package" if self.is_package else "top-level",
             "is_package": self.is_package,
-            "plugin_id": self.plugin_id,
+            "source_id": self.source_id,
             "version": self.version,
             "installed_root": (
                 str(self.installed_root) if self.installed_root is not None else None

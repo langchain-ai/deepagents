@@ -17801,9 +17801,9 @@ class DeepAgentsApp(App):
 
         Dequeues and processes the next pending message in FIFO order.
         Uses the `_processing_pending` flag to prevent reentrant execution.
-        Leaves the queue untouched while the server is connecting so the
-        `ServerReady` path can resume draining against the fully initialized
-        session.
+        Leaves the queue untouched while a restart is live or the server is
+        connecting so the `ServerReady` path can resume draining against the
+        fully initialized session.
         """
         if (
             self._processing_pending
@@ -17816,6 +17816,10 @@ class DeepAgentsApp(App):
             or self._exit
             or self._exiting
             or self._reloading
+            or (
+                self._restart_respawn_task is not None
+                and not self._restart_respawn_task.done()
+            )
             or self._connecting
         ):
             return

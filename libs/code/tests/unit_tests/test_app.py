@@ -5552,6 +5552,38 @@ class TestMessageQueue:
             assert not app._pending_messages
             assert not app._queued_widgets
 
+    async def test_live_restart_task_keeps_queue_blocked_before_connecting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Turn cleanup must not dispatch to the old agent during config refresh."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            release_restart = asyncio.Event()
+
+            async def hold_restart() -> None:
+                await release_restart.wait()
+
+            restart_task = asyncio.create_task(hold_restart())
+            app._restart_respawn_task = restart_task
+            processed = AsyncMock()
+            monkeypatch.setattr(app, "_process_message", processed)
+
+            await app._submit_input("after restart", "normal")
+            assert [message.text for message in app._pending_messages] == [
+                "after restart"
+            ]
+            assert app._connecting is False
+
+            await app._process_next_from_queue()
+
+            processed.assert_not_awaited()
+            assert [message.text for message in app._pending_messages] == [
+                "after restart"
+            ]
+            release_restart.set()
+            await restart_task
+
     async def test_failed_restart_returns_queued_prompts_to_input(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

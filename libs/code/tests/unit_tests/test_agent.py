@@ -2228,6 +2228,69 @@ class TestCreateCliAgentSkillsSources:
             assert expected in rendered, f"missing {expected!r} in:\n{rendered}"
         assert rendered.rstrip().endswith("(higher priority)")
 
+    def test_missing_home_omits_optional_user_skill_sources(
+        self, tmp_path: Path
+    ) -> None:
+        """Agent startup does not stringify or access absent home aliases."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_claude_skills_dir.return_value = None
+        mock_settings.get_project_claude_skills_dir.return_value = None
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured_sources: list[list[str]] = []
+
+        class FakeSkillsMiddleware:
+            def __init__(self, **kwargs: Any) -> None:
+                captured_sources.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=_make_fake_chat_model(),
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=True,
+                enable_shell=False,
+            )
+
+        assert captured_sources == [
+            [
+                (str(Settings.get_built_in_skills_dir()), "Built-in"),
+                (str(skills_dir), "User Deepagents"),
+            ]
+        ]
+
 
 class TestCreateCliAgentMemorySources:
     """Test that `create_cli_agent` wires project AGENTS.md into memory sources."""

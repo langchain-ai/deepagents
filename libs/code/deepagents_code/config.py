@@ -3487,23 +3487,28 @@ class Settings:
         return self.project_root / ".deepagents" / "agents"
 
     @property
-    def user_agents_dir(self) -> Path:
+    def user_agents_dir(self) -> Path | None:
         """Base user-level `.agents` directory (`~/.agents`).
 
         Returns:
-            Path to `~/.agents`
+            Path to `~/.agents`, or `None` when the process has no resolvable
+                home directory.
         """
-        return Path.home() / ".agents"
+        if PATHS.launch_home is None:
+            return None
+        return PATHS.launch_home / ".agents"
 
-    def get_user_agent_skills_dir(self) -> Path:
+    def get_user_agent_skills_dir(self) -> Path | None:
         """Get user-level `~/.agents/skills/` directory.
 
         This is a generic alias path for skills that is tool-agnostic.
 
         Returns:
-            Path to `~/.agents/skills/`
+            Path to `~/.agents/skills/`, or `None` when the process has no
+                resolvable home directory.
         """
-        return self.user_agents_dir / "skills"
+        base = self.user_agents_dir
+        return None if base is None else base / "skills"
 
     def get_project_agent_skills_dir(self) -> Path | None:
         """Get project-level `.agents/skills/` directory.
@@ -3518,16 +3523,19 @@ class Settings:
         return self.project_root / ".agents" / "skills"
 
     @staticmethod
-    def get_user_claude_skills_dir() -> Path:
+    def get_user_claude_skills_dir() -> Path | None:
         """Get user-level `~/.claude/skills/` directory (experimental).
 
         Convenience bridge for cross-tool skill sharing with Claude Code.
         This is experimental and may be removed.
 
         Returns:
-            Path to `~/.claude/skills/`
+            Path to `~/.claude/skills/`, or `None` when the process has no
+                resolvable home directory.
         """
-        return Path.home() / ".claude" / "skills"
+        if PATHS.launch_home is None:
+            return None
+        return PATHS.launch_home / ".claude" / "skills"
 
     def get_project_claude_skills_dir(self) -> Path | None:
         """Get project-level `.claude/skills/` directory (experimental).

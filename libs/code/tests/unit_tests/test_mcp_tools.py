@@ -32,6 +32,7 @@ from deepagents_code.mcp_tools import (
     _MCP_STDERR_LINE_LIMIT,
     _MCP_STDERR_TRUNCATION_MARKER,
     DiscoveredMCPConfig,
+    MCPConfigIdentity,
     MCPConfigScope,
     MCPConfigSources,
     MCPServerInfo,
@@ -47,6 +48,7 @@ from deepagents_code.mcp_tools import (
     _load_tools_from_config,
     _MCPStderrSink,
     _normalize_mcp_arguments,
+    _same_config_location,
     _warm_mcp_adapter_imports,
     discover_mcp_config_sources,
     extract_project_server_summaries,
@@ -2908,7 +2910,9 @@ class TestDiscoveryHelpers:
         project_cfg.write_text("{}")
         _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
         context = ProjectContext(user_cwd=project, project_root=project)
-        monkeypatch.setattr(Path, "resolve", lambda *_args, **_kwargs: _raise_oserror())
+        monkeypatch.setattr(
+            Path, "samefile", lambda *_args, **_kwargs: _raise_oserror()
+        )
 
         sources = discover_mcp_config_sources(project_context=context)
 
@@ -6008,15 +6012,15 @@ class TestDiscoveryFailureModes:
         """Two project configs that cannot be told apart must both load.
 
         The `continue` this covers is what stops the higher-precedence root
-        config being dropped when `Path.resolve` fails.
+        config being dropped when `Path.samefile` fails.
         """
         root = tmp_path / "repo"
 
-        def unresolvable(self: Path, strict: bool = False) -> Path:
+        def unresolvable(self: Path, other: Path) -> bool:
             msg = "cannot resolve"
             raise OSError(msg)
 
-        monkeypatch.setattr(Path, "resolve", unresolvable)
+        monkeypatch.setattr(Path, "samefile", unresolvable)
 
         found: list[DiscoveredMCPConfig] = []
         first = DiscoveredMCPConfig(
@@ -6027,6 +6031,16 @@ class TestDiscoveryFailureModes:
         _append_discovered_config(found, second)
 
         assert found == [first, second]
+
+    def test_samefile_identity_collapses_a_case_alias(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Filesystem identity wins when resolved spellings retain their case."""
+        first = tmp_path / "Profile" / ".mcp.json"
+        second = tmp_path / "profile" / ".mcp.json"
+        monkeypatch.setattr(Path, "samefile", lambda *_args: True)
+
+        assert _same_config_location(first, second) is MCPConfigIdentity.SAME
 
 
 class TestMCPConfigSourcesTotality:

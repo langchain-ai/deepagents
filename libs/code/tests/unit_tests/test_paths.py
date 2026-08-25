@@ -1152,6 +1152,17 @@ class TestUnreadableProfileRoot:
         assert "symlink" not in str(exc_info.value)
         assert "permissions" in str(exc_info.value)
 
+    def test_a_statable_but_inaccessible_root_is_rejected(self, tmp_path: Path) -> None:
+        """A directory still needs read and search access after `stat` succeeds."""
+        configured = tmp_path / "profile"
+        configured.mkdir()
+
+        with (
+            mock.patch("deepagents_code._paths.os.access", return_value=False),
+            pytest.raises(DeepAgentsHomeError, match="cannot be read or searched"),
+        ):
+            _capture_paths(str(configured), launch_home=tmp_path)
+
     def test_a_missing_root_is_still_accepted(self, tmp_path: Path) -> None:
         """The profile root is created lazily, so absent is normal."""
         configured = tmp_path / "not-created-yet"

@@ -2734,12 +2734,9 @@ def create_cli_agent(
             sources.extend(plugin_skill_sources(plugin_result.plugins))
         except Exception:
             logger.warning("Could not discover plugin skills", exc_info=True)
-        sources.extend(
-            [
-                (str(skills_dir), "User Deepagents"),
-                (str(user_agent_skills_dir), "User Agents"),
-            ]
-        )
+        sources.append((str(skills_dir), "User Deepagents"))
+        if user_agent_skills_dir is not None:
+            sources.append((str(user_agent_skills_dir), "User Agents"))
         if project_skills_dir:
             sources.append((str(project_skills_dir), "Project Deepagents"))
         if project_agent_skills_dir:
@@ -2747,7 +2744,7 @@ def create_cli_agent(
 
         # Experimental: Claude Code skill directories
         user_claude_skills_dir = settings.get_user_claude_skills_dir()
-        if user_claude_skills_dir.exists():
+        if user_claude_skills_dir is not None and user_claude_skills_dir.exists():
             sources.append((str(user_claude_skills_dir), "User Claude"))
         project_claude_skills_dir = settings.get_project_claude_skills_dir()
         if project_claude_skills_dir:

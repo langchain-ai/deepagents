@@ -160,6 +160,8 @@ class DeepAgentsPathSnapshot:
     profile: ProfilePaths
     installation: InstallationPaths
     launch_home: Path | None
+    """Resolved user home for optional home-based integrations, if available."""
+
     uses_default_profile: bool
     home_check_skipped: bool = False
     """Whether the "profile is the home directory" check could not run.
@@ -539,6 +541,16 @@ def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
             "Check the permissions on it and on its parent directories."
         )
         raise DeepAgentsHomeError(msg)
+    if state is PathState.EXISTS and not root.is_dir():
+        msg = f"Invalid DEEPAGENTS_HOME {str(root)!r}: exists but is not a directory."
+        raise DeepAgentsHomeError(msg)
+    if state is PathState.EXISTS and not os.access(root, os.R_OK | os.X_OK):
+        msg = (
+            f"Invalid DEEPAGENTS_HOME {str(root)!r}: exists but cannot be read "
+            "or searched. Check the permissions on it and on its parent "
+            "directories."
+        )
+        raise DeepAgentsHomeError(msg)
     # `root` is normalized-absolute, so `anchor` is always set.
     if root.parent == root or _same_directory(root, Path(root.anchor)):
         msg = (
@@ -559,9 +571,6 @@ def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
             f"Invalid DEEPAGENTS_HOME {str(root)!r}: is a symlink whose target "
             "is missing."
         )
-        raise DeepAgentsHomeError(msg)
-    if state is PathState.EXISTS and not root.is_dir():
-        msg = f"Invalid DEEPAGENTS_HOME {str(root)!r}: exists but is not a directory."
         raise DeepAgentsHomeError(msg)
 
 
@@ -741,15 +750,15 @@ def _capture_paths(
     Returns:
         An immutable path snapshot.
     """
-    profile_root, uses_default, home, comparison_home = _resolve_profile_root(
-        configured, launch_home
+    profile_root, uses_default, _resolution_home, comparison_home = (
+        _resolve_profile_root(configured, launch_home)
     )
     if not uses_default and default_marker:
         uses_default = _honors_default_marker(profile_root, comparison_home)
     return DeepAgentsPathSnapshot(
         profile=_profile_paths(profile_root),
         installation=_installation_paths(),
-        launch_home=home,
+        launch_home=comparison_home,
         uses_default_profile=uses_default,
         home_check_skipped=comparison_home is None,
     )

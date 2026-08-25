@@ -44,6 +44,7 @@ def test_managed_bin_is_installation_scoped() -> None:
 
 def test_ripgrep_assets_has_all_expected_keys() -> None:
     assert set(managed_tools.RIPGREP_ASSETS.keys()) == _EXPECTED_PLATFORM_ARCHS
+    assert set(managed_tools.RIPGREP_BINARY_SHA256) == _EXPECTED_PLATFORM_ARCHS
 
 
 def test_ripgrep_assets_filenames_match_platform_arch() -> None:
@@ -70,6 +71,9 @@ def test_ripgrep_assets_values_are_well_formed() -> None:
     for (platform_, arch), entry in managed_tools.RIPGREP_ASSETS.items():
         asset, sha256 = entry
         assert managed_tools.RIPGREP_VERSION in asset, (platform_, arch, asset)
+        assert len(sha256) == 64
+        int(sha256, 16)
+    for sha256 in managed_tools.RIPGREP_BINARY_SHA256.values():
         assert len(sha256) == 64
         int(sha256, 16)
 
@@ -108,6 +112,7 @@ async def test_ensure_ripgrep_returns_managed_when_current(
     managed = tmp_path / "rg"
     managed.write_bytes(b"#!/bin/sh\necho rg\n")
     monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
 
     fake = mock.Mock()
     fake.returncode = 0
@@ -840,36 +845,45 @@ async def test_ensure_ripgrep_preserves_stale_on_download_failure(
     assert managed.read_bytes() == stale_bytes
 
 
-def test_managed_binary_is_current_detects_match(tmp_path: Path) -> None:
+def test_managed_binary_is_current_detects_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     binary = tmp_path / "rg"
     binary.write_text("")
     fake = mock.Mock()
     fake.returncode = 0
     fake.stdout = f"ripgrep {managed_tools.RIPGREP_VERSION} (rev abc)\n"
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", return_value=fake):
         assert managed_tools._managed_binary_is_current(binary) is True
 
 
-def test_managed_binary_is_current_detects_stale(tmp_path: Path) -> None:
+def test_managed_binary_is_current_detects_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     binary = tmp_path / "rg"
     binary.write_text("")
     fake = mock.Mock()
     fake.returncode = 0
     fake.stdout = "ripgrep 13.0.0 (rev abc)\n"
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", return_value=fake):
         assert managed_tools._managed_binary_is_current(binary) is False
 
 
-def test_managed_binary_is_current_treats_oserror_as_stale(tmp_path: Path) -> None:
+def test_managed_binary_is_current_treats_oserror_as_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A binary that won't even exec (corrupt, wrong-arch) is not trusted."""
     binary = tmp_path / "rg"
     binary.write_bytes(b"not-a-real-binary")
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", side_effect=OSError("ENOEXEC")):
         assert managed_tools._managed_binary_is_current(binary) is False
 
 
 def test_managed_binary_is_current_treats_nonzero_exit_as_stale(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A binary that prints the right version but exits non-zero is not trusted."""
     binary = tmp_path / "rg"
@@ -877,12 +891,13 @@ def test_managed_binary_is_current_treats_nonzero_exit_as_stale(
     fake = mock.Mock()
     fake.returncode = 1
     fake.stdout = f"ripgrep {managed_tools.RIPGREP_VERSION} (rev abc)\n"
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", return_value=fake):
         assert managed_tools._managed_binary_is_current(binary) is False
 
 
 def test_managed_binary_is_current_treats_empty_stdout_as_stale(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A binary that exits 0 with no output is not trusted."""
     binary = tmp_path / "rg"
@@ -890,17 +905,40 @@ def test_managed_binary_is_current_treats_empty_stdout_as_stale(
     fake = mock.Mock()
     fake.returncode = 0
     fake.stdout = ""
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", return_value=fake):
         assert managed_tools._managed_binary_is_current(binary) is False
 
 
-def test_managed_binary_is_current_falls_open_on_timeout(tmp_path: Path) -> None:
+def test_managed_binary_is_current_falls_open_on_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A timed-out probe (sandboxed subprocess) does not force a redownload."""
     binary = tmp_path / "rg"
     binary.write_text("")
     timeout = subprocess.TimeoutExpired(cmd=[str(binary), "--version"], timeout=5)
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", side_effect=timeout):
         assert managed_tools._managed_binary_is_current(binary) is True
+
+
+def test_managed_binary_checksum_is_checked_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repository bytes cannot reach the version probe without a pinned hash."""
+    binary = tmp_path / "rg"
+    binary.write_bytes(b"repository-controlled executable")
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: "x86_64")
+
+    with mock.patch.object(
+        subprocess,
+        "run",
+        side_effect=AssertionError("unverified binary must not execute"),
+    ) as probe:
+        assert managed_tools._managed_binary_is_current(binary) is False
+
+    probe.assert_not_called()
 
 
 def test_download_to_enforces_total_deadline(
@@ -1108,8 +1146,13 @@ class TestManagedBinDirFallback:
                 "_managed_binary_is_current",
                 side_effect=lambda candidate: candidate == current,
             ),
+            patch.object(
+                managed_tools,
+                "_managed_binary_is_verified",
+                side_effect=lambda candidate: candidate == current,
+            ),
             patch.object(managed_tools, "_install_ripgrep_sync", install),
-            patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False),
+            patch.dict(os.environ, {"PATH": "/usr/bin", OFFLINE: ""}, clear=False),
         ):
             assert await managed_tools.ensure_ripgrep() == current
             managed_tools.prepend_managed_bin_to_path()
@@ -1120,6 +1163,48 @@ class TestManagedBinDirFallback:
             assert parts[0] == str(profile)
             assert str(shared) not in parts
         install.assert_not_called()
+
+    async def test_unverified_fallback_is_replaced_without_execution(
+        self, tmp_path: Path
+    ) -> None:
+        """A checkout-provided profile binary never reaches `--version`."""
+        shared = tmp_path / "shared"
+        fallback = tmp_path / "checkout" / "profile" / "bin"
+        fallback.mkdir(parents=True)
+        candidate = fallback / managed_tools.managed_rg_filename()
+        candidate.write_bytes(b"repository-controlled executable")
+        replacement = b"checksum-verified replacement"
+
+        def install(_asset: str, _sha256: str) -> Path:
+            candidate.write_bytes(replacement)
+            return candidate
+
+        installed = mock.Mock(side_effect=install)
+
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", fallback),
+            patch.object(managed_tools, "_install_ripgrep_sync", installed),
+            patch.object(managed_tools.sys, "platform", "linux"),
+            patch.object(managed_tools, "_normalized_arch", return_value="x86_64"),
+            patch.dict(
+                managed_tools.RIPGREP_BINARY_SHA256,
+                {("linux", "x86_64"): hashlib.sha256(replacement).hexdigest()},
+            ),
+            patch.dict(os.environ, {"PATH": "/usr/bin", OFFLINE: ""}, clear=False),
+            patch("shutil.which", return_value=None),
+            patch.object(
+                subprocess,
+                "run",
+                side_effect=AssertionError("unverified binary must not execute"),
+            ) as probe,
+        ):
+            assert await managed_tools.ensure_ripgrep() == candidate
+            assert os.environ["PATH"].split(os.pathsep)[0] == str(fallback)
+
+        probe.assert_not_called()
+        installed.assert_called_once()
+        assert candidate.read_bytes() == replacement
 
     def test_path_prepends_only_the_active_location(self, tmp_path: Path) -> None:
         """With no binary installed, only the preferred directory is added.

@@ -964,6 +964,22 @@ class TestAgentsAliasDirectories:
         expected = Path.home() / ".agents" / "skills"
         assert settings.get_user_agent_skills_dir() == expected
 
+    def test_home_aliases_are_skipped_when_home_is_unresolvable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An absolute profile stays usable without optional home aliases."""
+        import deepagents_code.config as config_module
+        from deepagents_code._paths import _capture_paths
+
+        with patch.object(Path, "home", side_effect=RuntimeError("no home")):
+            snapshot = _capture_paths(str(tmp_path / "profile"))
+        monkeypatch.setattr(config_module, "PATHS", snapshot)
+        settings = Settings.__new__(Settings)
+
+        assert settings.user_agents_dir is None
+        assert settings.get_user_agent_skills_dir() is None
+        assert settings.get_user_claude_skills_dir() is None
+
     def test_get_project_agent_skills_dir_with_project(self, tmp_path: Path) -> None:
         """Test get_project_agent_skills_dir returns .agents/skills in project."""
         # Create a mock project with .git

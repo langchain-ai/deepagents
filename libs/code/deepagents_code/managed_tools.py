@@ -9,9 +9,9 @@ binaries installation-scoped lets multiple profiles reuse one verified binary.
 (a system or root-owned `sys.prefix`). Run `dcode doctor` to see which of the
 two locations is actually in use.
 
-The pinned `RIPGREP_VERSION` and `RIPGREP_ASSETS` table is the single
-source of truth for what gets downloaded and verified. When bumping the
-version, refresh both the version and the SHA-256 entries together.
+The pinned `RIPGREP_VERSION`, archive hashes in `RIPGREP_ASSETS`, and extracted
+binary hashes in `RIPGREP_BINARY_SHA256` are the source of truth for what gets
+downloaded and executed. Refresh all three together when bumping the version.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 RIPGREP_VERSION = "14.1.1"
-"""Pinned upstream ripgrep release. Bump alongside `RIPGREP_ASSETS`."""
+"""Pinned release. Bump alongside both SHA-256 tables."""
 
 _RELEASE_URL_PREFIX = (
     "https://github.com/BurntSushi/ripgrep/releases/download/" + RIPGREP_VERSION
@@ -72,6 +72,28 @@ RIPGREP_ASSETS: dict[tuple[str, str], tuple[str, str]] = {
     ),
 }
 """`(sys.platform, normalized arch) -> (asset filename, sha256 hex)`."""
+
+RIPGREP_BINARY_SHA256: dict[tuple[str, str], str] = {
+    ("darwin", "arm64"): (
+        "0e0cb83f5195f1f51bb8feef1fff5b0b171e82bd1db6bd35deee701a3e7102f8"
+    ),
+    ("darwin", "x86_64"): (
+        "923dcc25cab57d33f4e7dd0476d4b74a554401a38817e246a8d6101dcd51c50f"
+    ),
+    ("linux", "arm64"): (
+        "e07d5c85fa9ca740ff4ab8bbac60a1e11c7a5ce242435f7820a03f7c20ef6276"
+    ),
+    ("linux", "x86_64"): (
+        "f401154e2393f9002ac77e419f9ee5521c18f4f8cd3e32293972f493ba06fce7"
+    ),
+    ("win32", "arm64"): (
+        "f162b54de2adfc72d78adb1dbada2dedda111ae0a5e2f6e9500f4f909664c5d2"
+    ),
+    ("win32", "x86_64"): (
+        "f162b54de2adfc72d78adb1dbada2dedda111ae0a5e2f6e9500f4f909664c5d2"
+    ),
+}
+"""SHA-256 of the extracted `rg` binary in each pinned release asset."""
 
 BIN_DIR: Path = PATHS.installation.managed_bin_dir
 """Preferred directory for managed binaries, shared by every profile.
@@ -309,7 +331,14 @@ def prepend_managed_bin_to_path() -> None:
     active directory is `BIN_DIR` unless a managed binary really does live in
     the profile.
     """
-    active = str(managed_rg_path().parent)
+    candidate = managed_rg_path()
+    active_dir = candidate.parent
+    if active_dir == FALLBACK_BIN_DIR and not _managed_binary_is_verified(candidate):
+        # A profile can live inside a checkout, so a repository can provide
+        # `<profile>/bin/rg`. Never put that directory on PATH until the binary
+        # matches the pinned upstream bytes.
+        active_dir = BIN_DIR
+    active = str(active_dir)
     managed = {str(directory) for directory in managed_bin_dirs()}
     current = os.environ.get("PATH", "")
     parts = current.split(os.pathsep) if current else []
@@ -353,11 +382,12 @@ def _binary_identity(binary: Path) -> tuple[int, int, int] | None:
 def _managed_binary_is_current(binary: Path) -> bool:
     """Return whether the on-disk managed `rg` matches `RIPGREP_VERSION`.
 
-    Returns `False` on any concrete failure (`OSError`, non-zero exit,
-    empty stdout, version mismatch) so a corrupted or wrong-arch
-    binary written by a previously crashed install gets re-fetched. Only
-    `TimeoutExpired` "falls open" — that case suggests a sandboxed
-    subprocess rather than a broken binary.
+    The binary's pinned SHA-256 is checked before it is executed. Returns
+    `False` on any concrete failure (checksum mismatch, `OSError`, non-zero
+    exit, empty stdout, version mismatch) so an unverified profile fallback or
+    a corrupted install gets replaced. Only `TimeoutExpired` "falls open" —
+    after checksum verification, that case suggests a sandboxed subprocess
+    rather than a broken binary.
 
     The result is memoized on the binary's stat identity. `managed_rg_path`
     calls this whenever both bin directories hold a binary, and several call
@@ -370,14 +400,29 @@ def _managed_binary_is_current(binary: Path) -> bool:
         cached = _VERSION_PROBE_MEMO.get(memo_key)
         if cached is not None:
             return cached
-        result_is_current = _probe_managed_binary_version(binary)
+        result_is_current = _managed_binary_is_verified(
+            binary
+        ) and _probe_managed_binary_version(binary)
         _VERSION_PROBE_MEMO[memo_key] = result_is_current
         return result_is_current
-    return _probe_managed_binary_version(binary)
+    return _managed_binary_is_verified(binary) and _probe_managed_binary_version(binary)
 
 
 _VERSION_PROBE_MEMO: dict[tuple[str, tuple[int, int, int]], bool] = {}
 """Memo for `_managed_binary_is_current`, keyed on path and stat identity."""
+
+
+def _managed_binary_is_verified(binary: Path) -> bool:
+    """Return whether `binary` matches the pinned upstream executable bytes."""
+    arch = _normalized_arch()
+    expected = None if arch is None else RIPGREP_BINARY_SHA256.get((sys.platform, arch))
+    if expected is None:
+        return False
+    try:
+        return _sha256(binary) == expected
+    except OSError:
+        logger.debug("Could not checksum managed ripgrep at %s", binary, exc_info=True)
+        return False
 
 
 def _probe_managed_binary_version(binary: Path) -> bool:
@@ -463,6 +508,17 @@ def _download_to(url: str, dest: Path) -> None:
             fh.write(chunk)
 
 
+def _sha256(path: Path) -> str:
+    """Return the SHA-256 hex digest of `path`."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _verify_sha256(path: Path, expected_hex: str) -> None:
     """Verify `path` matches `expected_hex`.
 
@@ -470,13 +526,7 @@ def _verify_sha256(path: Path, expected_hex: str) -> None:
         ChecksumMismatchError: When the SHA-256 of `path` differs from
             `expected_hex`.
     """
-    import hashlib
-
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    actual = digest.hexdigest()
+    actual = _sha256(path)
     if actual != expected_hex:
         msg = (
             f"Checksum mismatch for {path.name}: expected {expected_hex}, got {actual}"

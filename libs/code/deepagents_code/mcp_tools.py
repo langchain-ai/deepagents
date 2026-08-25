@@ -1387,10 +1387,12 @@ class MCPConfigIdentity(StrEnum):
 def _same_config_location(first: Path, second: Path) -> MCPConfigIdentity:
     """Return whether two discovered paths identify the same config.
 
-    Lexically identical paths match without filesystem access. Symlink aliases
-    are collapsed when both files resolve successfully. `UNKNOWN` preserves an
-    indeterminate resolution error so the caller can fail closed when scopes
-    differ rather than retaining a possibly aliased user-trusted path.
+    Lexically identical paths match without filesystem access. `samefile`
+    compares filesystem identity, collapsing symlink and case aliases that
+    path resolution can preserve on case-insensitive filesystems. `UNKNOWN`
+    preserves an indeterminate identity error so the caller can fail closed
+    when scopes differ rather than retaining a possibly aliased user-trusted
+    path.
 
     Returns:
         The identity relationship between the two paths.
@@ -1398,7 +1400,7 @@ def _same_config_location(first: Path, second: Path) -> MCPConfigIdentity:
     if first == second:
         return MCPConfigIdentity.SAME
     try:
-        resolved_match = first.resolve(strict=False) == second.resolve(strict=False)
+        identity_match = first.samefile(second)
     except (OSError, RuntimeError):
         logger.warning(
             "Could not determine whether %s and %s are the same MCP config; "
@@ -1408,7 +1410,7 @@ def _same_config_location(first: Path, second: Path) -> MCPConfigIdentity:
             exc_info=True,
         )
         return MCPConfigIdentity.UNKNOWN
-    return MCPConfigIdentity.SAME if resolved_match else MCPConfigIdentity.DIFFERENT
+    return MCPConfigIdentity.SAME if identity_match else MCPConfigIdentity.DIFFERENT
 
 
 def _append_discovered_config(

@@ -3970,6 +3970,58 @@ class TestInstallLockRootGuessWarning:
         assert "guessing the installer lock root" not in result.stdout
 
 
+def test_install_lock_fails_when_lock_root_cannot_create_child(
+    tmp_path: Path,
+) -> None:
+    """An unwritable existing lock root fails instead of waiting forever."""
+    installation_root = tmp_path / "tools" / "deepagents-code"
+    lock_root = tmp_path / "tools" / ".deepagents-code.deepagents-code-locks"
+    lock_root.mkdir(parents=True)
+    script = tmp_path / "unwritable_lock_harness.sh"
+    script.write_text(
+        f"HOME={str(tmp_path)!r}\n"
+        "INSTALL_LOCK_KIND=''\n"
+        "INSTALL_LOCK_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
+        "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
+        "fix_file_owner() { return 0; }\n"
+        f"resolve_installation_root() {{ printf '%s' {str(installation_root)!r}; }}\n"
+        "log_warn() { return 0; }\n"
+        "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
+        f"{_extract_shell_function('lock_dir_mtime')}\n"
+        f"{_extract_shell_function('install_lock_identity')}\n"
+        f"{_extract_shell_function('install_lock_is_stale')}\n"
+        f"{_extract_shell_function('install_lock_reclaim_guard_is_stale')}\n"
+        f"{_extract_shell_function('wait_for_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('release_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock')}\n"
+        "mkdir() {\n"
+        '  if [ "$1" = "$INSTALL_LOCK_DIR" ]; then\n'
+        "    return 1\n"
+        "  fi\n"
+        '  command mkdir "$@"\n'
+        "}\n"
+        "sleep() { return 97; }\n"
+        "acquire_install_lock\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        timeout=10,
+    )
+
+    assert proc.returncode == 1
+    assert "Cannot create installer lock" in proc.stderr
+    assert "writable" in proc.stderr
+
+
 def test_install_script_reclaim_skips_new_lock_after_stale_check(
     tmp_path: Path,
 ) -> None:

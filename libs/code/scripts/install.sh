@@ -1160,6 +1160,15 @@ acquire_install_lock() {
       break
     fi
 
+    # A failed mkdir only means "another installer owns the lock" when the
+    # lock directory actually exists. If the root is unwritable (common with a
+    # system-wide, root-owned uv tool directory), waiting cannot make progress.
+    if [ ! -d "$INSTALL_LOCK_DIR" ]; then
+      log_error "Cannot create installer lock at $INSTALL_LOCK_DIR."
+      log_error "Check that the uv tool directory is writable, then retry."
+      exit 1
+    fi
+
     if install_lock_is_stale; then
       local _stale_id="${INSTALL_LOCK_STALE_ID:-}"
       if [ -z "$_stale_id" ] || ! acquire_install_lock_reclaim_guard; then

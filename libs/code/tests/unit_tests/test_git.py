@@ -658,6 +658,47 @@ class TestReadGitRemoteUrlFromFilesystem:
 
         assert read_git_remote_url_from_filesystem(forged) == ""
 
+    def test_reads_origin_url_from_submodule(self, tmp_path: Path) -> None:
+        child = tmp_path / "child"
+        parent = tmp_path / "parent"
+        _init_git_repo(child)
+        _init_git_repo(parent)
+        _run_git(
+            parent,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            str(child),
+            "child",
+        )
+
+        assert read_git_remote_url_from_filesystem(parent / "child") == str(child)
+
+    def test_submodule_pointer_with_mismatched_worktree_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        child = tmp_path / "child"
+        parent = tmp_path / "parent"
+        forged = tmp_path / "forged"
+        _init_git_repo(child)
+        _init_git_repo(parent)
+        _run_git(
+            parent,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            str(child),
+            "child",
+        )
+        forged.mkdir()
+        git_dir = _parse_git_dir_pointer(parent / "child" / ".git")
+        assert git_dir is not None
+        (forged / ".git").write_text(f"gitdir: {git_dir}\n")
+
+        assert read_git_remote_url_from_filesystem(forged) == ""
+
     def test_no_origin_returns_none(self, tmp_path: Path) -> None:
         self._write_config(tmp_path, "[core]\n\tbare = false\n")
         assert read_git_remote_url_from_filesystem(tmp_path) is None

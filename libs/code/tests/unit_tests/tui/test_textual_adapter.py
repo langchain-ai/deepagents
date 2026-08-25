@@ -65,7 +65,6 @@ from deepagents_code.tui.textual_adapter import (
     _dispatch_tool_result_hook,
     _format_rubric_details,
     _format_rubric_event,
-    _frame_reject_reason,
     _handle_interrupt_cleanup,
     _interrupt_owned_tool_rows,
     _is_auto_mode_classifier_chunk,
@@ -7305,7 +7304,7 @@ class TestExecuteTaskTextualAskUser:
         assert decisions == [
             {
                 "type": "reject",
-                "message": _frame_reject_reason("use a safer command"),
+                "message": "use a safer command",
             }
         ]
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
@@ -9310,8 +9309,8 @@ class TestToolHooksTextual:
         # Stayed rejected despite the resumed error ToolMessage driving set_error.
         assert execute_widgets[0]._status == "rejected"
 
-    async def test_hitl_reasoned_reject_frames_reason_for_model(self) -> None:
-        """The model gets framed rejection text; the row keeps the raw reason."""
+    async def test_hitl_reasoned_reject_forwards_raw_reason(self) -> None:
+        """The middleware receives the raw reason and the row renders it unchanged."""
         mounted: list[ToolCallMessage] = []
 
         async def capture_mount(widget: object) -> bool:
@@ -9376,11 +9375,8 @@ class TestToolHooksTextual:
         resume_cmd = agent.stream_inputs[1]
         assert isinstance(resume_cmd, Command)
         resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
-        expected_message = (
-            "User rejected the tool call with reason: use another command"
-        )
         assert resume_payload["interrupt-1"]["decisions"] == [
-            {"type": "reject", "message": expected_message}
+            {"type": "reject", "message": "use another command"}
         ]
         execute_widgets = [w for w in mounted if w.tool_name == "execute"]
         assert len(execute_widgets) == 1

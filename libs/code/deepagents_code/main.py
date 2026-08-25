@@ -3491,8 +3491,12 @@ def _run_trust_action_picker(
         refresh_label: Label for an explicit environment refresh, when offered.
         deny_first: When `True`, list the deny option first; callers whose
             "deny" reads as a safe default (e.g. aborting a launch) put it in
-            the leading position. The picker starts highlighted on the deny
-            option in either ordering, so a bare Enter refuses.
+            the leading position. When a refresh option is offered, the picker
+            starts highlighted on it rather than on deny: fixing the
+            environment is the action the prompt is steering toward, and deny
+            is still one keystroke away. Without a refresh option the picker
+            starts highlighted on deny in either ordering, so a bare Enter
+            refuses.
 
     Returns:
         The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
@@ -3546,13 +3550,17 @@ def _run_trust_action_picker(
         )
     elif deny_first:
         actions.reverse()
-    # Highlight the refusing option by identity, not position: `deny_first`
-    # moves it to the front, so a positional index would silently default to
-    # "allow" for exactly the callers that asked for a safer ordering.
+    # Highlight the default action by identity, not position: `deny_first`
+    # moves the deny option to the front, so a positional index would silently
+    # default to "allow" for exactly the callers that asked for a safer
+    # ordering. When a refresh option exists it is the default instead, so a
+    # bare Enter repairs the environment; a deny-only list still defaults to
+    # refusing.
+    default_action = (
+        _TrustAction.REFRESH if refresh_label is not None else _TrustAction.DENY
+    )
     selected_index = next(
-        index
-        for index, (action, _) in enumerate(actions)
-        if action is _TrustAction.DENY
+        index for index, (action, _) in enumerate(actions) if action is default_action
     )
 
     def _rows() -> FormattedText:
@@ -3750,11 +3758,14 @@ def _select_trust_action(
         choices = f"{allow_label} [y] · {remember_label} [r] · {deny_label} [N]"
         prompt = "Choose [y/r/N]: "
     elif deny_first:
+        # Deny keeps its leading position, but the refresh — not the deny —
+        # is the default: the uppercase [U] mirrors the picker's initial
+        # highlight so a bare Enter repairs the environment.
         choices = (
-            f"{deny_label} [N] · {refresh_label} [u] · "
+            f"{deny_label} [n] · {refresh_label} [U] · "
             f"{allow_label} [y] · {remember_label} [r]"
         )
-        prompt = "Choose [N/u/y/r]: "
+        prompt = "Choose [n/U/y/r]: "
     else:
         choices = (
             f"{allow_label} [y] · {remember_label} [r] · "
@@ -3773,7 +3784,9 @@ def _select_trust_action(
         return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
         return _TrustAction.REMEMBER
-    if refresh_label is not None and answer in {"u", "update", "f", "refresh"}:
+    # The refresh is the default in this prompt shape, so an empty answer
+    # selects it; anything else (including an explicit "n") refuses.
+    if refresh_label is not None and answer in {"", "u", "update", "f", "refresh"}:
         return _TrustAction.REFRESH
     return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
 

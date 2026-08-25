@@ -136,9 +136,6 @@ _hitl_adapter_cache: TypeAdapter | None = None
 
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
 
-_REJECT_REASON_PREFIX = "User rejected the tool call with reason: "
-"""Synthetic framing prepended to a user-typed HITL rejection reason."""
-
 
 def _format_model_retry_status(event: dict[object, object]) -> str:
     """Build retry spinner text from validated numeric event fields.
@@ -471,24 +468,6 @@ def _reject_tracked_rows(
             tool_msg.set_rejected(reason=reason)
             adapter._sync_tool_widget(tool_msg)
     return _dispatch_terminal_tool_result_hooks(rejected, "Tool approval rejected")
-
-
-def _frame_reject_reason(reason: str) -> str:
-    """Frame a user-typed rejection reason for the model.
-
-    Stock HITL uses the supplied message as the *entire* synthetic
-    `ToolMessage`, replacing its canned "user rejected the tool call" wording.
-    A bare reason ("no", "wrong file") therefore reaches the model with no
-    indication of who produced it or why the tool never ran, so the framing is
-    reattached here while the raw text is what the tool row renders.
-
-    Args:
-        reason: Non-empty reason typed into the rejection reason field.
-
-    Returns:
-        The reason prefixed with the synthetic rejection framing.
-    """
-    return f"{_REJECT_REASON_PREFIX}{reason}"
 
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
@@ -3267,8 +3246,7 @@ async def execute_task_textual(
                                 )
                                 reject_decision: RejectDecision = (
                                     RejectDecision(
-                                        type="reject",
-                                        message=_frame_reject_reason(reject_message),
+                                        type="reject", message=reject_message
                                     )
                                     if reject_message
                                     else RejectDecision(type="reject")

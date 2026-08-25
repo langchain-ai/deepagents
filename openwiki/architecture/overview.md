@@ -45,6 +45,7 @@ When a behavior differs in delegated work, inspect the subagent type and its own
 | Package | Relationship to the core SDK |
 | --- | --- |
 | `libs/code` | Builds a coding-specific middleware/tool/approval stack around `create_deep_agent` and exposes it through a terminal client plus LangGraph server. See [Deep Agents Code](../workflows/deep-agents-code.md). |
+| `libs/talon` | Hosts a compiled Deep Agent for long-running channel and cron work. Its `DeepAgentRuntime` supplies local execution, assistant-local skills/memory, web and cron tools, and an in-memory checkpointer; the experimental host is documented in [Talon runtime](../workflows/talon-runtime.md). |
 | `libs/acp` | Adapts a compiled graph (or session-aware graph factory) to ACP events: messages, tool progress/diffs, todos, and supported HITL flows. Free-form LangGraph interrupts are not generally representable there. |
 | `libs/partners` | Supplies provider/sandbox integration packages. Shell/filesystem behavior remains backend-dependent, so partner changes can affect the SDK tool surface. |
 | root GitHub Action | `action.yml` runs `dcode` non-interactively. Its raw output is explicitly unfiltered, so downstream workflows should not blindly echo it into other services (`ACTION.md`). |

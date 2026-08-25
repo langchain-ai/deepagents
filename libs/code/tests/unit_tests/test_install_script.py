@@ -5458,7 +5458,11 @@ def test_root_install_chowns_only_exact_managed_leaves_with_optional_setup(
     # A profile cannot *be* the home directory, so point it at a subdirectory.
     # `home` itself must still never be a chown target.
     profile = home / ".deepagents"
-    managed_bin = tmp_path / "tools/deepagents-code/share/deepagents-code/bin"
+    # `dcode tools install` falls back to the profile bin dir when the shared
+    # installation one is unwritable. It sits inside the target user's home, so
+    # a root install must hand it back or the user's next non-root run fails on
+    # root-owned files.
+    fallback_bin = profile / "bin"
     chown_log = tmp_path / "chown-invocations.txt"
     for name, body in {
         "id": "printf '0\\n'\n",
@@ -5473,7 +5477,7 @@ def test_root_install_chowns_only_exact_managed_leaves_with_optional_setup(
             "CHOWN_LOG": str(chown_log),
             "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
             "DEEPAGENTS_HOME": str(profile),
-            "FAKE_MANAGED_BIN_DIR": str(managed_bin),
+            "FAKE_MANAGED_BIN_DIR": str(fallback_bin),
         }
     )
 
@@ -5501,11 +5505,67 @@ def test_root_install_chowns_only_exact_managed_leaves_with_optional_setup(
         for arg in invocation.split()
         if arg.startswith("/")
     }
-    assert str(managed_bin) in targets
+    assert str(fallback_bin) in targets
     assert str(home) not in targets
     assert str(home / ".local") not in targets
     assert "/" not in targets
     assert (tmp_path / "dcode-tools.txt").exists()
+
+
+def test_root_install_skips_a_managed_bin_dir_outside_home(tmp_path: Path) -> None:
+    """A tool dir outside $HOME is never handed to the target user.
+
+    `uv tool dir` is user-configurable (`UV_TOOL_DIR`, `uv.toml`, `--tool-dir`)
+    and can name a system path such as `/opt/uv-tools`. Chowning that to a
+    non-root user would be a privilege handover, so `fix_tree_owner`'s
+    `path_is_under_home` gate must apply here too.
+    """
+    env = _env(
+        tmp_path,
+        {"SUDO_USER": "target"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    profile = home / ".deepagents"
+    outside_bin = tmp_path / "opt/uv-tools/deepagents-code/share/deepagents-code/bin"
+    chown_log = tmp_path / "chown-invocations.txt"
+    for name, body in {
+        "id": "printf '0\\n'\n",
+        "uname": "printf 'Linux\\n'\n",
+        "chown": 'printf \'%s\\n\' "$*" >>"$CHOWN_LOG"\n',
+    }.items():
+        tool = bin_dir / name
+        tool.write_text(f"#!/usr/bin/env bash\n{body}")
+        _make_executable(tool)
+    env.update(
+        {
+            "CHOWN_LOG": str(chown_log),
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_HOME": str(profile),
+            "FAKE_MANAGED_BIN_DIR": str(outside_bin),
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    targets = {
+        arg
+        for invocation in chown_log.read_text().splitlines()
+        for arg in invocation.split()
+        if arg.startswith("/")
+    }
+    assert not any(target.startswith(str(tmp_path / "opt")) for target in targets)
 
 
 def _invoke_with_local_dcode_not_on_path(

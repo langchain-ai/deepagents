@@ -576,10 +576,12 @@ if [ "$(id -u)" -eq 0 ]; then
     # Repair a directory tree this installer created. Chowning only the
     # directory inode leaves everything inside it root-owned, which succeeds
     # silently and then breaks the target user's next `uv tool upgrade` from a
-    # completely unrelated code path. Callers must gate this on a
-    # `*_PREEXISTED` flag and `path_is_under_home`, so it only ever walks a
-    # tree this run created under the target user's home. `-xdev` keeps it off
-    # other filesystems, and `-h` never follows a symlink out of the tree.
+    # completely unrelated code path. Callers must gate this on
+    # `path_is_under_home`, and on a `*_PREEXISTED` flag unless the tree is one
+    # the installer owns outright (its own uv tool environment), so it only
+    # ever walks a tree this installer is responsible for under the target
+    # user's home. `-xdev` keeps it off other filesystems, and `-h` never
+    # follows a symlink out of the tree.
     fix_tree_owner() {
       local path
       for path in "$@"; do
@@ -1141,7 +1143,11 @@ acquire_install_lock() {
       log_error "  This serializes concurrent installs; it is not related to DEEPAGENTS_HOME."
       exit 1
     fi
-    fix_file_owner "$lock_root"
+    # `uv tool dir` can point outside $HOME (a system-wide tool dir), and this
+    # hands the inode to a non-root user.
+    if path_is_under_home "$lock_root"; then
+      fix_file_owner "$lock_root"
+    fi
   fi
 
   INSTALL_LOCK_DIR="$lock_root/install.lock.d"
@@ -1814,10 +1820,29 @@ if UV_TOOL_DIR_RAW=$("$UV_BIN" tool dir 2>/dev/null); then
   UV_TOOL_DIR="$UV_TOOL_DIR_RAW"
 fi
 MANAGED_BIN_DIR="${UV_TOOL_DIR:+${UV_TOOL_DIR}/deepagents-code/share/deepagents-code/bin}"
-UV_TOOL_ENV_PREEXISTED=false
-[ -z "$UV_TOOL_DIR" ] || [ ! -e "${UV_TOOL_DIR}/deepagents-code" ] || UV_TOOL_ENV_PREEXISTED=true
 MANAGED_BIN_DIR_PREEXISTED=false
 [ -z "$MANAGED_BIN_DIR" ] || [ ! -e "$MANAGED_BIN_DIR" ] || MANAGED_BIN_DIR_PREEXISTED=true
+# `dcode tools install` falls back here when MANAGED_BIN_DIR is unwritable.
+PROFILE_BIN_DIR_PREEXISTED=false
+[ ! -e "${DEEPAGENTS_HOME}/bin" ] || PROFILE_BIN_DIR_PREEXISTED=true
+
+# `uv tool install` writes into uv's caches too, so a root run leaves them
+# root-owned and the target user's next non-root `uv` fails on a stale cache,
+# far from here. Snapshot which caches exist now: ones this run creates can be
+# handed back wholesale, while a pre-existing user cache is only reported —
+# walking a tree the installer did not create is what fix_tree_owner forbids.
+UV_TOOL_CACHE_NEW=""
+UV_TOOL_CACHE_PREEXISTING=""
+for uv_cache_dir in \
+  "${XDG_CACHE_HOME:-${HOME}/.cache}/uv" \
+  "${HOME}/Library/Caches/uv" \
+  "${XDG_DATA_HOME:-${HOME}/.local/share}/uv"; do
+  if [ -e "$uv_cache_dir" ]; then
+    UV_TOOL_CACHE_PREEXISTING="${UV_TOOL_CACHE_PREEXISTING}${uv_cache_dir}"$'\n'
+  else
+    UV_TOOL_CACHE_NEW="${UV_TOOL_CACHE_NEW}${uv_cache_dir}"$'\n'
+  fi
+done
 if [ -n "$UV_TOOL_DIR" ] && [ -d "${UV_TOOL_DIR}/deepagents-code" ]; then
   shopt -s nullglob
   for du in "${UV_TOOL_DIR}"/deepagents-code/lib/python*/site-packages/deepagents_code-*.dist-info/direct_url.json; do
@@ -2436,9 +2461,31 @@ if path_is_under_home "$TOOL_BIN_DIR"; then
   fi
   fix_file_owner "${TOOL_BIN_DIR}/dcode" "${TOOL_BIN_DIR}/deepagents-code"
 fi
-if [ "$UV_TOOL_ENV_PREEXISTED" = false ] && [ -n "$UV_TOOL_DIR" ] && \
-  path_is_under_home "${UV_TOOL_DIR}/deepagents-code"; then
+# Repair on every root run, not only a first install. `uv tool install` has
+# just written into this tree as root, so gating on "did this run create
+# it?" would leave the common `sudo` upgrade path root-owned — exactly
+# the breakage fix_tree_owner exists to prevent. The tree is dcode's own tool
+# environment, so the installer owns it whether or not this run created it.
+if [ -n "$UV_TOOL_DIR" ] && path_is_under_home "${UV_TOOL_DIR}/deepagents-code"; then
   fix_tree_owner "${UV_TOOL_DIR}/deepagents-code"
+fi
+while IFS= read -r uv_cache_dir; do
+  [ -n "$uv_cache_dir" ] || continue
+  if path_is_under_home "$uv_cache_dir"; then
+    fix_tree_owner "$uv_cache_dir"
+  fi
+done <<EOF
+${UV_TOOL_CACHE_NEW}
+EOF
+if [ "$(id -u)" -eq 0 ]; then
+  while IFS= read -r uv_cache_dir; do
+    [ -n "$uv_cache_dir" ] || continue
+    [ -d "$uv_cache_dir" ] || continue
+    log_warn "Installed as root using the pre-existing uv cache at ${uv_cache_dir}."
+    log_warn "  Some entries are now root-owned. Run: sudo chown -R ${TARGET_USER} ${uv_cache_dir}"
+  done <<EOF
+${UV_TOOL_CACHE_PREEXISTING}
+EOF
 fi
 # Restore ownership for the log path without recursively chowning a cache path
 # that could have been swapped after creation.
@@ -3594,6 +3641,23 @@ ripgrep_managed_failed() {
   ripgrep_manual_hint
 }
 
+# Hand back whichever managed bin directory `dcode tools install` just wrote
+# to. It prefers the installation-scoped MANAGED_BIN_DIR and falls back to the
+# profile-scoped one when that is unwritable, so a root install must repair
+# both or the fallback stays root-owned inside the user's home. Each is gated
+# on `path_is_under_home` as fix_tree_owner requires: MANAGED_BIN_DIR derives
+# from `uv tool dir`, which the user can point outside $HOME.
+fix_managed_bin_owner() {
+  if [ "$MANAGED_BIN_DIR_PREEXISTED" = false ] && [ -n "$MANAGED_BIN_DIR" ] && \
+    path_is_under_home "$MANAGED_BIN_DIR"; then
+    fix_tree_owner "$MANAGED_BIN_DIR"
+  fi
+  if [ "$PROFILE_BIN_DIR_PREEXISTED" = false ] && [ -n "${DEEPAGENTS_HOME:-}" ] && \
+    path_is_under_home "${DEEPAGENTS_HOME}/bin"; then
+    fix_tree_owner "${DEEPAGENTS_HOME}/bin"
+  fi
+}
+
 if [ "$SKIP_OPTIONAL" != "1" ]; then
   if [ "$RIPGREP_INSTALLER" = "managed" ] && [ "$VERIFY_OK" = true ] && [ -n "$DCODE_BIN" ]; then
     # Eager, non-prompting managed install through the freshly installed binary
@@ -3607,9 +3671,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       echo ""
       log_info "Setting up ripgrep..."
       if "$DCODE_BIN" tools install; then
-        if [ "$MANAGED_BIN_DIR_PREEXISTED" = false ] && [ -n "$MANAGED_BIN_DIR" ]; then
-          fix_tree_owner "$MANAGED_BIN_DIR"
-        fi
+        fix_managed_bin_owner
       else
         ripgrep_managed_failed
       fi
@@ -3619,9 +3681,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       if ripgrep_setup_out=$(mktemp 2>/dev/null); then
         register_temp "$ripgrep_setup_out"
         if "$DCODE_BIN" tools install >"$ripgrep_setup_out" 2>&1; then
-          if [ "$MANAGED_BIN_DIR_PREEXISTED" = false ] && [ -n "$MANAGED_BIN_DIR" ]; then
-            fix_tree_owner "$MANAGED_BIN_DIR"
-          fi
+          fix_managed_bin_owner
         else
           echo ""
           cat "$ripgrep_setup_out" >&2 2>/dev/null || true

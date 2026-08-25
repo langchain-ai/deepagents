@@ -336,6 +336,72 @@ def find_git_common_dir(path: str | Path) -> Path | None:
     return common_dir
 
 
+def _read_git_config_value(raw: str, section: str, key: str) -> str | None:
+    """Read one value from a Git config section.
+
+    Returns:
+        The configured value, or `None` when it is absent.
+    """
+    in_section = False
+    expected = section.replace(" ", "").lower()
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped.replace(" ", "").lower() == expected
+            continue
+        name, separator, value = stripped.partition("=")
+        if in_section and separator and name.strip().lower() == key:
+            return value.strip() or None
+    return None
+
+
+def _submodule_git_dir(root: Path, parent_config_dir: Path) -> Path | None:
+    """Resolve a validated submodule administration directory.
+
+    Returns:
+        The administration directory, or `None` when validation fails.
+    """
+    git_entry = root / ".git"
+    if git_entry.is_symlink() or not git_entry.is_file():
+        return None
+    git_dir = _parse_trusted_git_dir_pointer(git_entry)
+    if git_dir is None or not _is_valid_git_common_dir(git_dir):
+        return None
+    try:
+        git_dir.relative_to(parent_config_dir / "modules")
+        raw = (git_dir / "config").read_text(encoding="utf-8")
+        worktree = _read_git_config_value(raw, "[core]", "worktree")
+        if worktree is None:
+            return None
+        candidate = Path(worktree)
+        if not candidate.is_absolute():
+            candidate = git_dir / candidate
+        return git_dir if candidate.resolve(strict=True) == root else None
+    except (OSError, RuntimeError, ValueError):
+        logger.debug("Failed to validate submodule Git metadata")
+        return None
+
+
+def _find_git_config_dir(path: str | Path) -> Path | None:
+    """Locate a validated repository config directory.
+
+    Returns:
+        The config directory, or `None` when validation fails.
+    """
+    root = find_git_root(path)
+    if root is None:
+        return None
+    common_dir = find_git_common_dir(root)
+    if common_dir is not None:
+        return common_dir
+    parent_config_dir = _find_git_config_dir(root.parent)
+    return (
+        _submodule_git_dir(root, parent_config_dir)
+        if parent_config_dir is not None
+        else None
+    )
+
+
 def read_git_branch_from_filesystem(path: str | Path) -> str | None:
     """Read the current git branch from repository metadata.
 
@@ -556,32 +622,19 @@ def read_git_remote_url_from_filesystem(path: str | Path) -> str | None:
         The `origin` remote URL, an empty string when `path` is not inside a
         git repository, or `None` when no `origin` URL is configured.
     """
-    git_dir = find_git_dir(path)
-    if git_dir is None:
+    config_dir = _find_git_config_dir(path)
+    if config_dir is None:
         return ""
 
     try:
-        raw = (git_dir / "config").read_text(encoding="utf-8")
+        raw = (config_dir / "config").read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
     except OSError:
-        logger.debug("Failed to read git config in %s", git_dir, exc_info=True)
+        logger.debug("Failed to read Git config")
         return None
 
-    in_origin = False
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            # Section header, e.g. [remote "origin"]. Match case-insensitively
-            # on the remote name to mirror git's own behavior.
-            in_origin = stripped.replace(" ", "").lower() == '[remote"origin"]'
-            continue
-        if in_origin and stripped.lower().startswith("url"):
-            _, _, value = stripped.partition("=")
-            url = value.strip()
-            if url:
-                return url
-    return None
+    return _read_git_config_value(raw, '[remote "origin"]', "url")
 
 
 def read_git_remote_url_via_subprocess(path: str | Path) -> str:

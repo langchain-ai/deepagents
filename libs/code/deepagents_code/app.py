@@ -19727,27 +19727,25 @@ class DeepAgentsApp(App):
                 when the queue was empty, so callers can pass the message
                 unconditionally without rewording it for that case.
         """
-        if not self._pending_messages:
-            await self._mount_message(AppMessage(notice))
-            # A submission can land while the notice mount above yields: the
-            # restart task is still live until this restore returns, so the
-            # busy gate accepts it even though the outcome was already decided.
-            # Restore whatever slipped in rather than stranding it.
-            if not self._pending_messages:
-                return
-        texts = [msg.text for msg in self._pending_messages]
-        self._pending_messages.clear()
-        # Snapshot before awaiting: `widget.remove()` yields, and a submission
-        # landing mid-loop appends to `_queued_widgets` (the restart task is
-        # still the busy gate until this returns), which would raise
-        # `RuntimeError: deque mutated during iteration`. Late widgets stay
-        # queued and are cleared on the next pass or by `_discard_queue`.
-        widgets = list(self._queued_widgets)
-        self._queued_widgets.clear()
-        for widget in widgets:
-            with suppress(NoMatches, ScreenStackError):
-                await widget.remove()
+        # Mount first so a submission landing during this await is included in
+        # the restore. The restart task remains the busy gate until this method
+        # returns, so every submission in the remaining await windows queues.
+        await self._mount_message(AppMessage(notice))
+        texts: list[str] = []
+        while self._pending_messages or self._queued_widgets:
+            texts.extend(msg.text for msg in self._pending_messages)
+            self._pending_messages.clear()
+            # Snapshot before awaiting: `widget.remove()` yields, and a late
+            # submission appends another widget. The loop takes another pass
+            # so that prompt and placeholder cannot be stranded.
+            widgets = list(self._queued_widgets)
+            self._queued_widgets.clear()
+            for widget in widgets:
+                with suppress(NoMatches, ScreenStackError):
+                    await widget.remove()
         self._sync_status_queued()
+        if not texts:
+            return
 
         restored = "\n\n".join(texts)
         chat_input = self._chat_input
@@ -19767,7 +19765,6 @@ class DeepAgentsApp(App):
                 "%d prompt(s) dropped from the queue",
                 len(texts),
             )
-        await self._mount_message(AppMessage(notice))
 
     def _force_interrupt_active_work(self) -> None:
         """Cancel in-flight work before the standard `/clear` path runs.

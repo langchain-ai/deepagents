@@ -5692,6 +5692,42 @@ class TestMessageQueue:
             notices = [str(w._content) for w in app.query(AppMessage)]
             assert any("returned to the input" in n for n in notices)
 
+    async def test_queue_restore_drains_submission_during_widget_removal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prompt queued while a placeholder is removed must also be restored."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            release_restart = asyncio.Event()
+
+            async def hold_restart() -> None:
+                await release_restart.wait()
+
+            restart_task = asyncio.create_task(hold_restart())
+            app._restart_respawn_task = restart_task
+            await app._submit_input("first prompt", "normal")
+            original_remove = QueuedUserMessage.remove
+            submitted_late = False
+
+            async def remove(widget: QueuedUserMessage) -> None:
+                nonlocal submitted_late
+                await original_remove(widget)
+                if not submitted_late:
+                    submitted_late = True
+                    await app._submit_input("late prompt", "normal")
+
+            monkeypatch.setattr(QueuedUserMessage, "remove", remove)
+
+            await app._restore_queue_to_input("Prompts restored.")
+
+            assert not app._pending_messages
+            assert not app._queued_widgets
+            assert app._chat_input is not None
+            assert app._chat_input.value == "first prompt\n\nlate prompt"
+            release_restart.set()
+            await restart_task
+
     async def test_restart_remote_server_returns_queued_prompts_to_input(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

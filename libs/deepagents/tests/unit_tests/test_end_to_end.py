@@ -4664,7 +4664,7 @@ class TestRubricMiddlewareEndToEnd:
         # Four model calls: three iterations plus one retry.
         payloads = [str(batch[-1].content) for batch in grader_model.captured_messages]
         assert len(payloads) == 4
-        assert "A previous attempt returned 1 criteria; the rubric has exactly 3." in payloads[2]
+        assert "A previous attempt returned only 1 of the 3 criteria in the rubric." in payloads[2]
         assert "regrading after an unusable response" in payloads[2]
         # Both iteration-1 calls replay the frozen checklist, not just the prose.
         for payload in payloads[1:]:
@@ -4758,6 +4758,10 @@ class TestRubricMiddlewareEndToEnd:
                     self._grader_call(
                         result="satisfied",
                         explanation="ok",
+                        # A criterion is required for this to be a usable
+                        # verdict; without one the coverage gate downgrades it
+                        # and the agent loops, which this test does not model.
+                        criteria=[{"name": "whatever", "passed": True}],
                         call_id="grader_1",
                     )
                 ]

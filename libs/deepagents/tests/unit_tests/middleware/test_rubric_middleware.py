@@ -17,6 +17,7 @@ direct-hook unit tests could not.
 
 from __future__ import annotations
 
+import logging
 import re
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -1352,14 +1353,32 @@ class TestUsabilityCorrection:
         assert RubricMiddleware._usability_correction({}, self._graded(3)) is None
 
     def test_matching_count_against_frozen_list_is_usable(self) -> None:
+        """Count-only, by design: a matching count with renamed criteria passes.
+
+        The payload asks the grader to reuse each frozen name verbatim, but
+        that is guidance to the model, not an invariant this gate enforces --
+        `self._graded` deliberately generates its own names.
+        """
         state = {"_rubric_criteria": ["a", "b", "c"]}
         assert RubricMiddleware._usability_correction(state, self._graded(3)) is None
 
-    @pytest.mark.parametrize("actual", [0, 1, 5])
-    def test_count_mismatch_against_frozen_list_reports_both_numbers(self, actual: int) -> None:
+    @pytest.mark.parametrize("actual", [4, 5])
+    def test_over_coverage_against_frozen_list_is_usable(self, actual: int) -> None:
+        """More entries than frozen still accounts for every frozen criterion.
+
+        A grader that decomposes the rubric more finely on a later pass must
+        not block a run it graded in full. Rejecting this wedges the run: the
+        frozen list never widens, so every later pass repeats the mismatch
+        until `max_iterations` is spent.
+        """
+        state = {"_rubric_criteria": ["a", "b", "c"]}
+        assert RubricMiddleware._usability_correction(state, self._graded(actual)) is None
+
+    @pytest.mark.parametrize("actual", [0, 1, 2])
+    def test_under_coverage_against_frozen_list_reports_both_numbers(self, actual: int) -> None:
         state = {"_rubric_criteria": ["a", "b", "c"]}
         correction = RubricMiddleware._usability_correction(state, self._graded(actual))
-        assert correction == f"A previous attempt returned {actual} criteria; the rubric has exactly 3."
+        assert correction == f"A previous attempt returned only {actual} of the 3 criteria in the rubric."
 
 
 # ---------------------------------------------------------------------- #
@@ -1401,7 +1420,7 @@ class TestGraderRetry:
 
         assert mw._grade(self._STATE, 1) is full
         assert corrections[0] is None
-        assert corrections[1] == "A previous attempt returned 1 criteria; the rubric has exactly 2."
+        assert corrections[1] == "A previous attempt returned only 1 of the 2 criteria in the rubric."
 
     def test_retry_result_is_returned_even_when_still_unusable(
         self,
@@ -1415,6 +1434,65 @@ class TestGraderRetry:
         assert mw._grade(self._STATE, 0) is short
         assert len(corrections) == 2
 
+    def test_raising_retry_falls_back_to_the_first_response(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A transient error on the retry must not escalate to `grader_error`.
+
+        The first response is under-reported but valid, and the verdict gate
+        downgrades it. Propagating instead would end the run outright.
+        """
+        mw = RubricMiddleware(model=_STUB_MODEL)
+        short = GraderResponse(result="satisfied", explanation="ok", criteria=[{"name": "a", "passed": True}])
+        calls: list[str | None] = []
+
+        def _invoke(state, iteration, correction=None, *, context=None):  # noqa: ARG001
+            calls.append(correction)
+            if correction is None:
+                return short
+            msg = "529 overloaded"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(mw, "_invoke_grader", _invoke)
+        with caplog.at_level(logging.ERROR, logger="deepagents.middleware.rubric"):
+            assert mw._grade(self._STATE, 0) is short
+        assert len(calls) == 2
+        assert "coverage retry raised" in caplog.text
+        assert "keeping the first response" in caplog.text
+
+    def test_retry_does_not_swallow_graph_control_flow(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`GraphBubbleUp` from the retry is control flow, not a grader error."""
+        mw = RubricMiddleware(model=_STUB_MODEL)
+        short = GraderResponse(result="satisfied", explanation="ok", criteria=[{"name": "a", "passed": True}])
+
+        def _invoke(state, iteration, correction=None, *, context=None):  # noqa: ARG001
+            if correction is None:
+                return short
+            msg = "paused"
+            raise GraphBubbleUp(msg)
+
+        monkeypatch.setattr(mw, "_invoke_grader", _invoke)
+        with pytest.raises(GraphBubbleUp):
+            mw._grade(self._STATE, 0)
+
+    async def test_async_raising_retry_falls_back_to_the_first_response(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mw = RubricMiddleware(model=_STUB_MODEL)
+        short = GraderResponse(result="satisfied", explanation="ok", criteria=[{"name": "a", "passed": True}])
+
+        async def _ainvoke(state, iteration, correction=None, *, context=None):  # noqa: ARG001
+            if correction is None:
+                return short
+            msg = "529 overloaded"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(mw, "_ainvoke_grader", _ainvoke)
+        assert await mw._agrade(self._STATE, 0) is short
+
     async def test_async_retry_mirrors_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mw = RubricMiddleware(model=_STUB_MODEL)
         short = GraderResponse(result="needs_revision", explanation="no", criteria=[{"name": "a", "passed": False, "gap": "x"}])
@@ -1426,7 +1504,7 @@ class TestGraderRetry:
         corrections = _stub_invoke_grader(mw, monkeypatch, short, full)
 
         assert await mw._agrade(self._STATE, 0) is full
-        assert corrections[1] == "A previous attempt returned 1 criteria; the rubric has exactly 2."
+        assert corrections[1] == "A previous attempt returned only 1 of the 2 criteria in the rubric."
 
 
 # ---------------------------------------------------------------------- #
@@ -1613,6 +1691,61 @@ class TestUnverifiedVerdictGate:
         assert update["_rubric_status"] == "satisfied"
         assert "jump_to" not in update
         assert update["_rubric_evaluations"][-1]["unverified"] is False
+
+    def test_satisfied_with_finer_decomposition_terminates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A grader that splits a frozen criterion still graded the rubric in full.
+
+        Blocking this wedges the run: the frozen list never widens, so every
+        later pass repeats the mismatch until `max_iterations` is spent and a
+        passing run is recorded as a failure.
+        """
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=5)
+        calls = _stub_invoke_grader(
+            mw,
+            monkeypatch,
+            GraderResponse(
+                result="satisfied",
+                explanation="all good",
+                criteria=[
+                    {"name": "a", "passed": True},
+                    {"name": "b", "passed": True},
+                    {"name": "b, more precisely", "passed": True},
+                ],
+            ),
+        )
+
+        update = mw.after_agent(self._state(), _runtime())
+
+        assert update is not None
+        assert update["_rubric_status"] == "satisfied"
+        assert "jump_to" not in update
+        assert update["_rubric_evaluations"][-1]["unverified"] is False
+        assert calls == [None], "over-coverage must not trigger a retry"
+
+    def test_downgraded_prompt_omits_the_untrusted_pass_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unverified accounting must not be replayed as an exhaustive pass list.
+
+        A `satisfied` verdict cannot carry a failing criterion, so a downgraded
+        evaluation's criteria are all-passing and under-counted. Listing them
+        as "already satisfied" would tell the agent to preserve exactly the
+        claims the middleware just declined to trust.
+        """
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=5)
+        short = GraderResponse(
+            result="satisfied",
+            explanation="all good",
+            criteria=[{"name": "a", "passed": True}],
+        )
+        _stub_invoke_grader(mw, monkeypatch, short, short)
+
+        update = mw.after_agent(self._state(), _runtime())
+
+        assert update is not None
+        prompt = str(update["messages"][-1].content)
+        assert "could not verify every criterion" in prompt
+        assert "already satisfied" not in prompt
+        # Grader-internal retry bookkeeping must not read as agent feedback.
+        assert "previous attempt" not in prompt
 
     def test_needs_revision_with_thin_coverage_is_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """`needs_revision` claims nothing that needs blocking, so it stands."""
@@ -1830,7 +1963,7 @@ class TestGraderExtensionContract:
         assert calls == [
             (None, sentinel),
             (
-                "A previous attempt returned 1 criteria; the rubric has exactly 2.",
+                "A previous attempt returned only 1 of the 2 criteria in the rubric.",
                 sentinel,
             ),
         ]

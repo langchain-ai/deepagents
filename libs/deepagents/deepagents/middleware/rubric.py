@@ -16,7 +16,7 @@ import logging
 import re
 import secrets
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from importlib import import_module
 from typing import (
     TYPE_CHECKING,
@@ -24,7 +24,6 @@ from typing import (
     Any,
     Literal,
     NotRequired,
-    TypeVar,
 )
 
 from langchain.agents import create_agent
@@ -61,14 +60,6 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
-
-_ReturnT = TypeVar("_ReturnT")
-
-
-def _extension_method(method: Callable[..., _ReturnT]) -> Callable[..., _ReturnT]:
-    """Mark a private method as accepting backward-compatible overrides."""
-    return method
-
 
 GraderVerdict = Literal["satisfied", "needs_revision", "failed"]
 """Verdict the grader sub-agent emits via structured output.
@@ -248,13 +239,16 @@ class RubricEvaluation(TypedDict):
     """Per-criterion verdicts."""
 
     unverified: bool
-    """Whether a `satisfied` verdict was downgraded for lack of evidence.
+    """Whether a `satisfied` verdict was downgraded because grading was incomplete.
 
-    True only when the grader twice failed to return a full per-criterion
-    accounting and `result` was rewritten from `satisfied` to
-    `needs_revision` as a result. A `needs_revision` verdict that
-    under-reports is left alone -- it claims nothing that needs blocking --
-    so this stays False there.
+    True when the grader twice returned a criterion count the coverage check
+    rejected, and `result` was rewritten away from `satisfied` as a result.
+    The rewrite target is `needs_revision`. On the final iteration `result` is
+    then rewritten again to `max_iterations_reached` while this flag stays
+    True, so `(max_iterations_reached, unverified=True)` is a reachable pair.
+
+    A `needs_revision` verdict that under-reports is left alone. It claims
+    nothing that needs blocking, so this stays False there.
     """
 
 
@@ -295,13 +289,15 @@ class RubricState(AgentState):
     schema."""
 
     _rubric_criteria: NotRequired[Annotated[list[str], PrivateStateAttr]]
-    """Criterion names frozen from the first grading pass of the current run.
+    """Criterion names frozen from the first pass that reports a non-empty list.
 
     The rubric is free-form prose the middleware never parses, so the criterion
     set exists only as whatever the grader enumerated. Freezing that list once
-    and replaying it to later iterations keeps the criterion count stable across
-    a run. Names only -- pass/fail verdicts are deliberately excluded so a later
-    grader is not primed by an earlier one. Private; not in I/O schema.
+    and replaying it to later iterations keeps the criterion count from
+    shrinking across a run. It does not make the first decomposition complete;
+    see `_usability_correction` for what the frozen list does and does not
+    guarantee. Names only -- pass/fail verdicts are deliberately excluded so a
+    later grader is not primed by an earlier one. Private; not in I/O schema.
     """
 
 
@@ -678,6 +674,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         try:
             graded = await self._agrade(state, iteration, context=getattr(runtime, "context", None))
         except GraphBubbleUp:
+            # See `after_agent`: control flow, not a grading failure.
             raise
         except Exception as exc:  # noqa: BLE001
             return self._handle_grader_exception(runtime, state, grading_run_id, iteration, exc)
@@ -729,8 +726,11 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             )
             evaluation["result"] = "needs_revision"
             evaluation["unverified"] = True
+            # `correction` is written for the grader retry prompt and names
+            # grader attempts, not the agent's. Quoting it here would read as
+            # feedback on the agent's own previous draft.
             evaluation["explanation"] = (
-                f"Grading was incomplete, so the 'satisfied' verdict could not be confirmed. {correction} Original grader summary: {graded.explanation}"
+                f"The grader did not account for every criterion in the rubric, so its 'satisfied' verdict could not be confirmed. Original grader summary: {graded.explanation}"
             )
         elif correction is not None:
             logger.warning(
@@ -742,16 +742,29 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         if evaluation["result"] == "needs_revision" and iteration + 1 >= self.max_iterations:
             # Emit and persist the terminal status rather than a misleading
             # `needs_revision` event that the middleware will not actually loop on.
-            logger.info(
-                "RubricMiddleware exhausted max_iterations=%d without 'satisfied' verdict (grading_run_id=%s)",
-                self.max_iterations,
-                evaluation["grading_run_id"],
-            )
+            if evaluation["unverified"]:
+                # A broken grader, not a failing agent -- distinct enough to
+                # warrant a level an operator filtering at WARNING still sees.
+                logger.warning(
+                    "RubricMiddleware exhausted max_iterations=%d with an unverified grader (grading_run_id=%s); no iteration produced a complete per-criterion accounting",
+                    self.max_iterations,
+                    evaluation["grading_run_id"],
+                )
+            else:
+                logger.info(
+                    "RubricMiddleware exhausted max_iterations=%d without 'satisfied' verdict (grading_run_id=%s)",
+                    self.max_iterations,
+                    evaluation["grading_run_id"],
+                )
             evaluation["result"] = "max_iterations_reached"
         self._emit(runtime, "rubric_evaluation_end", grading_run_id, iteration, evaluation)
         if self._on_evaluation is not None:
             try:
                 self._on_evaluation(evaluation)
+            except GraphBubbleUp:
+                # A callback may interrupt (e.g. to gate a verdict on human
+                # review). That is control flow, not a callback bug.
+                raise
             except Exception:
                 logger.exception("RubricMiddleware on_evaluation callback raised")
         return self._compose_update(state, evaluation)
@@ -818,9 +831,23 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         """Return corrective feedback if the grader under-reported, else `None`.
 
         A response is unusable when it verifies nothing, or when a frozen
-        criterion list exists and the response does not cover it one-for-one.
+        criterion list exists and the response covers fewer criteria than it.
         Both cases mean the verdict is not backed by a full accounting of the
         rubric, so it cannot be trusted to end the loop.
+
+        Only under-coverage is rejected. A response with *more* entries than
+        the frozen list has still accounted for every frozen criterion, so it
+        is usable -- a grader that decomposes the rubric more finely on a
+        later pass must not block a run it actually graded in full.
+
+        Two limits are deliberate. Counts are compared, not names: the
+        payload asks the grader to reuse each name verbatim, but nothing
+        verifies that it did. And the first pass of a run has no frozen list
+        to compare against, so it can only reject an empty response -- the
+        rubric is free-form prose the middleware never parses, so no
+        ground-truth criterion count exists until a grader supplies one. The
+        guarantee is therefore that the criterion set cannot shrink mid-run,
+        not that the first decomposition was complete.
 
         `failed` is exempt: it reports that the rubric itself is ungradable,
         so an empty criteria list is the correct response rather than a gap
@@ -833,8 +860,8 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         expected = len(state.get("_rubric_criteria") or [])
         actual = len(graded.criteria)
         if expected:
-            if actual != expected:
-                return f"A previous attempt returned {actual} criteria; the rubric has exactly {expected}."
+            if actual < expected:
+                return f"A previous attempt returned only {actual} of the {expected} criteria in the rubric."
             return None
         if actual == 0:
             return "A previous attempt returned no per-criterion verdicts at all."
@@ -852,13 +879,24 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         This method owns the coverage retry. Subclasses that need to wrap a
         single grader call should override `_invoke_grader`, forward its
         `correction` and `context` arguments, and leave this method unchanged.
+
+        A retry that raises falls back to the first response rather than
+        propagating. The first response is under-reported but valid, and the
+        verdict gate downgrades it; letting a transient provider error through
+        would instead record `grader_error` and end the run outright.
         """
         graded = self._invoke_grader(state, iteration, context=context)
         correction = self._usability_correction(state, graded)
         if correction is None:
             return graded
-        logger.warning("RubricMiddleware grader returned an unusable response; retrying once. %s", correction)
-        return self._invoke_grader(state, iteration, correction, context=context)
+        self._log_coverage_retry(state, iteration, correction)
+        try:
+            return self._invoke_grader(state, iteration, correction, context=context)
+        except GraphBubbleUp:
+            raise
+        except Exception:  # noqa: BLE001 -- any grader failure is preferable to losing a usable verdict
+            self._log_coverage_retry_failure(state, iteration, graded)
+            return graded
 
     async def _agrade(
         self,
@@ -872,10 +910,36 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         correction = self._usability_correction(state, graded)
         if correction is None:
             return graded
-        logger.warning("RubricMiddleware grader returned an unusable response; retrying once. %s", correction)
-        return await self._ainvoke_grader(state, iteration, correction, context=context)
+        self._log_coverage_retry(state, iteration, correction)
+        try:
+            return await self._ainvoke_grader(state, iteration, correction, context=context)
+        except GraphBubbleUp:
+            raise
+        except Exception:  # noqa: BLE001 -- any grader failure is preferable to losing a usable verdict
+            self._log_coverage_retry_failure(state, iteration, graded)
+            return graded
 
-    @_extension_method
+    @staticmethod
+    def _log_coverage_retry(state: RubricState, iteration: int, correction: str) -> None:
+        """Record that a coverage retry is about to run."""
+        logger.warning(
+            "RubricMiddleware grader returned an unusable response; retrying once (grading_run_id=%s, iteration=%d). %s",
+            state.get("_current_grading_run_id"),
+            iteration,
+            correction,
+        )
+
+    @staticmethod
+    def _log_coverage_retry_failure(state: RubricState, iteration: int, graded: GraderResponse) -> None:
+        """Record that a coverage retry raised and the first response is kept."""
+        logger.exception(
+            "RubricMiddleware coverage retry raised (grading_run_id=%s, iteration=%d); keeping the first response (result=%s, criteria=%d), which the verdict gate will downgrade",
+            state.get("_current_grading_run_id"),
+            iteration,
+            graded.result,
+            len(graded.criteria),
+        )
+
     def _grader_input(
         self,
         state: RubricState,
@@ -987,8 +1051,10 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
 
         Two modes. With no frozen criterion list the grader is asked to
         enumerate the rubric itself; once a list exists it is replayed as a
-        numbered checklist and the grader is held to that exact count, which
-        keeps the criterion set stable across iterations of one run.
+        numbered checklist and the grader is asked for that exact count, which
+        keeps the criterion set from shrinking across iterations of one run.
+        Only under-coverage is enforced on the way back; see
+        `_usability_correction`.
 
         Args:
             state: Agent state, read for the rubric, transcript, and frozen
@@ -1075,7 +1141,10 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
                 else:
                     lines.append(f"- {name} (no specific feedback provided)")
 
-        if passing:
+        # Suppressed when `unverified`: the pass list came from the same
+        # accounting the middleware just rejected, so presenting it as
+        # exhaustive would tell the agent to preserve unverified claims.
+        if passing and not unverified:
             lines.append("")
             lines.append("Criteria already satisfied -- do not regress these:")
             lines.extend(f"- {criterion.get('name', '(unnamed criterion)')}" for criterion in passing)
@@ -1124,8 +1193,20 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
 
         # Freeze the criterion set on the first pass that reports one, so later
         # iterations grade the same list instead of re-deriving it from prose.
-        if not state.get("_rubric_criteria") and evaluation["criteria"]:
-            update["_rubric_criteria"] = [c["name"] for c in evaluation["criteria"]]
+        # `failed` is skipped: its criteria carry no coverage meaning, which is
+        # why `_usability_correction` exempts that verdict too.
+        if not state.get("_rubric_criteria") and evaluation["criteria"] and evaluation["result"] != "failed":
+            frozen = [c["name"] for c in evaluation["criteria"]]
+            # The count is unvalidated -- the rubric is never parsed, so a
+            # first-pass under-report is frozen as ground truth. Logged so the
+            # decomposition a run was graded against is auditable.
+            logger.info(
+                "RubricMiddleware froze %d criteria from the first grading pass (grading_run_id=%s); the count is unvalidated: %s",
+                len(frozen),
+                evaluation["grading_run_id"],
+                frozen,
+            )
+            update["_rubric_criteria"] = frozen
 
         if evaluation["result"] != "needs_revision":
             return update
@@ -1181,6 +1262,10 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         if self._on_evaluation is not None:
             try:
                 self._on_evaluation(evaluation)
+            except GraphBubbleUp:
+                # A callback may interrupt (e.g. to gate a verdict on human
+                # review). That is control flow, not a callback bug.
+                raise
             except Exception:
                 logger.exception("RubricMiddleware on_evaluation callback raised")
 
@@ -1222,7 +1307,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
 
 
 def _sanitize_for_payload(content: str) -> str:
-    """Escape literal `</rubric>` / `</transcript>` substrings in content."""
+    """Escape the literal closing tags matched by `_PAYLOAD_CLOSER_RE`."""
     return _PAYLOAD_CLOSER_RE.sub(r"<\\/\1", content)
 
 

@@ -881,11 +881,19 @@ def _declared_body_length(response: HTTPResponse) -> int | None:
         _RemotePolicyRejectedError: If framing cannot show that the body arrived
             whole, or the declared length is over the fixed limit.
     """
-    chunked = "chunked" in {
-        token.strip().lower()
-        for value in response.headers.get_all("Transfer-Encoding") or ()
-        for token in value.split(",")
-    }
+    transfer_encodings = response.headers.get_all("Transfer-Encoding") or ()
+    # Trust the framing mode `http.client` actually selected, not a looser
+    # token search over the header. It decodes only one exact `chunked` value;
+    # accepting combinations or whitespace variants here would treat a raw,
+    # connection-delimited body as self-delimiting.
+    chunked = (
+        response.chunked
+        and len(transfer_encodings) == 1
+        and transfer_encodings[0].lower() == "chunked"
+    )
+    if transfer_encodings and not chunked:
+        msg = "remote source sent an unsupported transfer encoding"
+        raise _RemotePolicyRejectedError(msg)
     # `get_all` rather than `get`: a repeated header returns only its first
     # value, and `http.client` reads it the same way. `Content-Length: 200`
     # followed by `Content-Length: 5000` would then agree with itself at 200

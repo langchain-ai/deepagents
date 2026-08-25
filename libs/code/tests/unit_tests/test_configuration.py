@@ -219,6 +219,7 @@ class _RemoteResponse:
         self._stream = BytesIO(payload)
         self.closed = Event()
         self.status = status
+        self.chunked = chunked
         self.read_timeouts: list[float | None] = []
         self.fp = SimpleNamespace(raw=SimpleNamespace(_sock=self))
         self.headers = Message()
@@ -4659,6 +4660,7 @@ def test_remote_toml_provider_rejects_conflicting_framing(
     payload = b'[startup]\nmode = "manual"\n'
     response = _RemoteResponse(payload, content_length=str(len(payload)))
     response.headers["Transfer-Encoding"] = "chunked"
+    response.chunked = True
     snapshot = _remote_snapshot(response, tmp_path, monkeypatch)
 
     assert snapshot.status.health is ProviderHealth.CORRUPT
@@ -4772,6 +4774,51 @@ def test_remote_toml_provider_bounds_a_real_http_response(
 
     assert snapshot.status.health is ProviderHealth.OK
     assert snapshot.data == {"startup": {"mode": "manual"}}
+
+
+@pytest.mark.parametrize("transfer_encoding", ["gzip, chunked", "chunked "])
+def test_remote_toml_provider_rejects_transfer_encoding_http_client_does_not_decode(
+    transfer_encoding: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Completeness must follow the real response's selected framing mode."""
+    import socket as socket_module
+    from http.client import HTTPResponse
+
+    from deepagents_code.configuration import providers
+
+    body = b'[startup]\nmode = "manual"\n'
+    server, client = socket_module.socketpair()
+    try:
+        server.sendall(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: "
+            + transfer_encoding.encode("ascii")
+            + b"\r\n\r\n"
+            + body
+        )
+        response = HTTPResponse(client)
+        response.begin()
+        assert response.chunked is False
+
+        class Opener:
+            def open(self, _request: object, *, timeout: int) -> HTTPResponse:
+                assert timeout > 0
+                return response
+
+        monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+        snapshot = RemoteTomlProvider(
+            "managed config",
+            "https://config.example.com/policy.toml",
+            tmp_path / "managed.toml",
+        ).load()
+    finally:
+        server.close()
+        client.close()
+
+    assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert "unsupported transfer encoding" in (snapshot.status.detail or "")
+    assert not snapshot.data
 
 
 @pytest.mark.parametrize(

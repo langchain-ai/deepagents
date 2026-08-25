@@ -1150,7 +1150,7 @@ and surface that directory as a selectable agent.
 
 @functools.lru_cache(maxsize=1)
 def _reserved_agent_dir_names() -> frozenset[str]:
-    """Return non-agent directory names reserved by the app under `~/.deepagents/`.
+    """Return non-agent directory names reserved by the app under the profile root.
 
     These directories are created by the app for its own use and must never
     appear in the agent picker — even if they contain an `AGENTS.md` file
@@ -1160,6 +1160,10 @@ def _reserved_agent_dir_names() -> frozenset[str]:
       directory is unwritable (`managed_tools.FALLBACK_BIN_DIR`).
     - `plugins/` holds installed plugin state (`plugins.store`).
     - `conversation_history/` holds offloaded per-thread archives (`offload`).
+
+    `agent/` is deliberately absent: `ProfilePaths.default_skills_dir` names it,
+    but nothing reads that field yet, so reserving it would block a legitimate
+    agent name for a directory the app does not actually create.
 
     Each name is derived from its owning module so it stays a single source of
     truth rather than being hardcoded here. `FALLBACK_BIN_DIR` is the one that

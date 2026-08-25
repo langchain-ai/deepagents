@@ -2278,7 +2278,7 @@ def _resolve_update_lock_file() -> Path | None:
 
     Returns:
         The lock file whose parent directory is writable, or `None` when
-        neither is — the only case that legitimately fails open.
+        neither is. The caller then proceeds without a lock.
     """
     for candidate in (UPDATE_LOCK_FILE, FALLBACK_UPDATE_LOCK_FILE):
         try:

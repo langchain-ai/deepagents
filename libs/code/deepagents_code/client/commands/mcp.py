@@ -226,8 +226,9 @@ def run_mcp_config() -> int:
     project = project_paths(_resolve_project_config_base(None))
 
     # Same three locations, same order, as `discover_mcp_config_sources`. The
-    # user row is rendered from live `PATHS` rather than the display constant,
-    # which is frozen at import and would not follow a relocated profile.
+    # user row is rendered from live `PATHS` so a test that patches the
+    # snapshot sees a row consistent with the rest of this output; the display
+    # constant is frozen at the same import and cannot follow a patch.
     user_config = PATHS.profile.mcp_config_file
     candidates = (
         (PATHS.display(user_config), user_config),

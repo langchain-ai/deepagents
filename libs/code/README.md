@@ -35,14 +35,17 @@ export DEEPAGENTS_HOME="$HOME/.local/share/deepagents"
 dcode
 ```
 
-Set it in the inherited launch environment before starting dcode. It accepts an
-absolute path or a leading `~/`; other relative paths and `~user` forms are
-rejected, as are the filesystem root, your home directory itself, and any
-existing non-directory. Project and global dotenv files cannot change it — that
-includes `$DEEPAGENTS_HOME/.env`, since the variable selects the profile that
-owns that file — and reloads or working-directory changes keep the launch-time
-value. dcode prints the selected profile at launch, and says so when it is
-creating a new empty one, so a typo does not look like lost settings.
+Set it in your shell before you start dcode. It accepts an absolute path or a
+leading `~/`. Other relative paths and `~user` forms are rejected, as are the
+filesystem root, your home directory itself, and any existing non-directory.
+
+No dotenv file can change it. That includes `$DEEPAGENTS_HOME/.env`, because
+the variable selects the profile that owns that file. Reloads and
+working-directory changes keep the launch-time value.
+
+When the profile is not the default, dcode prints its path at launch. If the
+directory is new and empty, dcode says so. A typo therefore does not look like
+lost settings.
 
 Existing data is not migrated automatically; move it from `~/.deepagents`
 yourself if you want to keep using it from the new root.
@@ -51,7 +54,7 @@ Managed support binaries and install/update locks are tied to the dcode
 installation so profiles can safely share them. When that installation
 directory is not writable — a system or root-owned install prefix — both fall
 back to the profile so a normal user still gets managed ripgrep and serialized
-upgrades. Run `dcode doctor` to see the locations in use.
+upgrades. Run `dcode doctor` to see which locations are in use.
 
 ## 🤔 What is this?
 

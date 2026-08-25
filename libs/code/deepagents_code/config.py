@@ -3373,7 +3373,9 @@ class Settings:
             Path to `{DEEPAGENTS_HOME}/{agent_name}`.
 
         Raises:
-            ValueError: If the agent name contains invalid characters.
+            ValueError: If the agent name contains invalid characters or names
+                a directory the app owns. The second case comes from
+                `get_agent_dir`.
         """
         if not self._is_valid_agent_name(agent_name):
             msg = (

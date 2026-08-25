@@ -410,7 +410,7 @@ def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
 def _resolve_profile_root(
     configured: str | None, launch_home: Path | None
 ) -> tuple[Path, bool, Path | None, bool]:
-    """Resolve a launch value using only the captured launch-user home.
+    """Resolve a launch value, preferring the captured launch-user home.
 
     An absolute `DEEPAGENTS_HOME` never consults the home directory, so a host
     with no resolvable home can still run by setting it.

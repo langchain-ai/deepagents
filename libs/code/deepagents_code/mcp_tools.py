@@ -1396,7 +1396,7 @@ def _same_config_location(first: Path, second: Path) -> MCPConfigIdentity:
     except (OSError, RuntimeError):
         logger.warning(
             "Could not determine whether %s and %s are the same MCP config; "
-            "treating the pair as project-scoped so it is not user-trusted",
+            "the pair cannot be told apart",
             first,
             second,
             exc_info=True,
@@ -1514,8 +1514,9 @@ def discover_mcp_config_sources(
 class MCPConfigSources:
     """Discovered MCP configs partitioned by trust scope.
 
-    Every consumer needs the same three views of a discovery result, so the
-    split lives here rather than being re-derived at each call site.
+    Consumers take the views they need. Centralizing the split keeps
+    provenance from being re-derived from path shape at each call site, which
+    is how trust used to be inferred.
     """
 
     user_paths: tuple[Path, ...]

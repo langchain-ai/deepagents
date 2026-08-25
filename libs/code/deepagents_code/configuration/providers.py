@@ -581,9 +581,11 @@ def _validate_remote_url(source: str) -> str:
 
     parsed = urlsplit(source)
     if any(char <= " " or char == "\x7f" for char in source):
-        # urllib raises `http.client.InvalidURL` (an `HTTPException`, not a
-        # `ValueError`) when `opener.open()` meets control characters, which
-        # would escape the failure handling in `RemoteTomlProvider.load()`.
+        # urllib raises `http.client.InvalidURL` for a control character, but
+        # only once `opener.open()` is under way. `load()` catches it as an
+        # `HTTPException`, so the operator is told the source "could not be
+        # read" and never learns the URL itself is malformed. Reject it here to
+        # name the real cause, and to skip a connection that cannot succeed.
         msg = "remote source must not contain whitespace or control characters"
         raise ValueError(msg)
     if parsed.scheme.lower() != "https" or not parsed.hostname:

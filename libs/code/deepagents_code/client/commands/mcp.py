@@ -216,7 +216,7 @@ def run_mcp_config() -> int:
     Returns:
         Process exit code: always 0.
     """
-    from deepagents_code._paths import PATHS, PathState, classify_path, project_paths
+    from deepagents_code._paths import PATHS, project_paths
     from deepagents_code.mcp_tools import (
         MCP_CONFIG_DISCOVERY_PATHS,
         _resolve_project_config_base,
@@ -235,7 +235,7 @@ def run_mcp_config() -> int:
         (MCP_CONFIG_DISCOVERY_PATHS[2][0], project.root_mcp_config_file),
     )
     rows = [
-        (display, label, classify_path(path) is PathState.EXISTS)
+        (display, label, path.is_file())
         for (_, label), (display, path) in zip(
             MCP_CONFIG_DISCOVERY_PATHS, candidates, strict=True
         )

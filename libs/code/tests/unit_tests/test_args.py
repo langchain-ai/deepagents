@@ -725,6 +725,7 @@ class TestMcpCommandDispatch:
         configured.mkdir(parents=True)
         (configured / ".mcp.json").write_text("{}")
         fake_project.mkdir()
+        (fake_project / ".mcp.json").mkdir()
 
         monkeypatch.setattr(
             "deepagents_code._paths.PATHS",
@@ -755,6 +756,7 @@ class TestMcpCommandDispatch:
             if "<project-root>/.deepagents/.mcp.json" in line
         )
         assert "found" in out.split(str(configured), maxsplit=1)[0].splitlines()[-1]
+        # A malformed directory at a config path is ignored by runtime discovery.
         assert "missing" in project_root_line
         assert "missing" in project_subdir_line
 

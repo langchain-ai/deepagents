@@ -250,15 +250,21 @@ class ReliableRubricMiddleware(RubricMiddleware):
         self,
         state: RubricState,
         iteration: int,
+        correction: str | None = None,
     ) -> dict[str, Any]:
         """Build nested-grader input with a stable verification-operation ID.
+
+        Args:
+            state: Agent state containing the rubric and transcript.
+            iteration: Zero-based grading iteration.
+            correction: Feedback about a previous unusable response, if any.
 
         Returns:
             The nested grader's input state.
         """
         grading_run_id = state.get("_current_grading_run_id") or "untracked"
         grader_state = _without_internal_control_messages(state)
-        payload = self._build_grader_payload(grader_state, iteration)
+        payload = self._build_grader_payload(grader_state, iteration, correction)
         return {
             "messages": [HumanMessage(content=payload)],
             "rubric_grading_operation_id": f"{grading_run_id}:{iteration}",

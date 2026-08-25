@@ -3029,6 +3029,7 @@ class TestServerCleanupLifecycle:
         """run_textual_app must call server_proc.stop() in the finally block."""
         server_proc = SimpleNamespace(stop=MagicMock())
 
+        guard = MagicMock()
         with (
             patch.object(
                 DeepAgentsApp,
@@ -3036,8 +3037,32 @@ class TestServerCleanupLifecycle:
                 new_callable=AsyncMock,
             ),
             patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
+            ),
+            patch(
                 "deepagents_code.client.launch.server.emit_preserved_log_notices",
             ) as emit,
+        ):
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
+
+        guard.close.assert_called_once_with()
+        server_proc.stop.assert_called_once_with()
+        emit.assert_called_once_with()
+
+    async def test_server_proc_stopped_when_stderr_guard_install_fails(self) -> None:
+        """Server cleanup must run when the stderr guard cannot be installed."""
+        server_proc = SimpleNamespace(stop=MagicMock())
+
+        with (
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                side_effect=OSError("too many open files"),
+            ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
+            pytest.raises(TextualAppError, match="too many open files"),
         ):
             await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 

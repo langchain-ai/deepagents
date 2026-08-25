@@ -6970,6 +6970,65 @@ def test_shell_normalizer_matches_python_normalizer(candidate: str) -> None:
     assert proc.stdout == str(_normalize_absolute(Path(candidate)))
 
 
+@pytest.mark.parametrize(
+    "tool_dir",
+    [
+        "/opt/uv/tools",
+        "/Users/someone/.local/share/uv/tools",
+        "/tmp/a b/tools",
+        "/var//lib/uv/tools",
+    ],
+)
+def test_shell_lock_root_matches_python_installation_paths(tool_dir: str) -> None:
+    """The installer and dcode must derive the same install/update lock root.
+
+    `install.sh` says it mirrors `_paths._installation_paths`, but the existing
+    checks compare against hardcoded strings, so the two could drift while the
+    claim still read as verified. If they drift, a `curl | bash` install and a
+    dcode self-upgrade stop sharing a lock and nothing fails.
+    """
+    from deepagents_code._paths import _normalize_absolute
+
+    installation_root = _normalize_absolute(Path(tool_dir) / "deepagents-code")
+    expected = (
+        installation_root.parent / f".{installation_root.name}.deepagents-code-locks"
+    )
+
+    # The three lines `acquire_install_lock` uses to build `lock_root`.
+    script = (
+        'installation_root="$1"\n'
+        'installation_parent="${installation_root%/*}"\n'
+        'installation_name="${installation_root##*/}"\n'
+        "printf '%s' "
+        '"${installation_parent}/.${installation_name}.deepagents-code-locks"\n'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", str(installation_root)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == str(expected)
+
+
+def test_shell_lock_root_formula_is_the_one_the_installer_uses() -> None:
+    """Pin the formula above to the real `acquire_install_lock` source.
+
+    The test above reproduces three lines rather than running the function,
+    which needs uv. Fail if those lines change.
+    """
+    source = _extract_shell_function("acquire_install_lock")
+
+    assert 'installation_parent="${installation_root%/*}"' in source
+    assert 'installation_name="${installation_root##*/}"' in source
+    assert (
+        'lock_root="${installation_parent}/.${installation_name}'
+        '.deepagents-code-locks"' in source
+    )
+
+
 def test_shell_normalizer_rejects_relative_paths() -> None:
     """A relative input is a non-zero exit, matching the Python `ValueError`."""
     script = (

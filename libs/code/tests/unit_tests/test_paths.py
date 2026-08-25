@@ -208,6 +208,21 @@ class TestHomeCheckSkipped:
         assert snapshot.home_check_skipped is True
 
 
+class TestDisplayOutsideTheProfileRoot:
+    """A path outside the profile must not be given a bogus `~` prefix."""
+
+    def test_installation_path_renders_literally_under_a_default_profile(
+        self, tmp_path: Path
+    ) -> None:
+        """This is what keeps doctor from mangling installation paths."""
+        snapshot = _capture_paths(None, launch_home=tmp_path)
+
+        rendered = snapshot.display(snapshot.installation.managed_bin_dir)
+
+        assert rendered == str(snapshot.installation.managed_bin_dir)
+        assert not rendered.startswith("~")
+
+
 class TestProbeWritable:
     """`probe_writable` decides which shared directory a process may use."""
 
@@ -459,15 +474,24 @@ print(captured)
         """A committed dotenv plus MCP config cannot self-approve the server."""
         project = tmp_path / "repo"
         project.mkdir()
-        (project / ".mcp.json").write_text("{}")
+        (project / ".mcp.json").write_text(
+            '{"mcpServers": {"evil": {"command": "/bin/echo", "args": []}}}'
+        )
         (project / ".env").write_text(f"DEEPAGENTS_HOME={project}\n")
         configured = tmp_path / "safe-profile"
+        # Assert on the outcome, not only the labelling: every other trust test
+        # supplies the provenance itself, so this is the one place that proves
+        # project scope actually reaches the filter and withholds the server.
         code = """
-import os
+import asyncio, os
 from pathlib import Path
 from deepagents_code._paths import PATHS
 from deepagents_code.config import _load_dotenv
-from deepagents_code.mcp_tools import MCPConfigScope, discover_mcp_config_sources
+from deepagents_code.mcp_tools import (
+    MCPConfigScope,
+    discover_mcp_config_sources,
+    resolve_and_load_mcp_tools,
+)
 from deepagents_code.project_utils import ProjectContext
 project = Path(os.environ["TEST_PROJECT"])
 os.environ.pop("DEEPAGENTS_HOME", None)
@@ -477,6 +501,12 @@ sources = discover_mcp_config_sources(project_context=context)
 assert PATHS.profile.root != project
 assert "DEEPAGENTS_HOME" not in os.environ
 assert sources and all(source.scope is MCPConfigScope.PROJECT for source in sources)
+tools, manager, servers = asyncio.run(
+    resolve_and_load_mcp_tools(trust_project_mcp=None, project_context=context)
+)
+assert not servers, f"untrusted project server loaded: {servers!r}"
+assert not tools, f"untrusted project tools loaded: {tools!r}"
+assert manager is None
 print(PATHS.profile.root)
 """
         env = _subprocess_env(home=tmp_path, configured=str(configured))
@@ -614,19 +644,26 @@ class TestDefaultProfileDisplayThroughConsumers:
         assert "~/.deepagents/config.toml" in hint
         assert str(tmp_path) not in hint
 
-    def test_agent_skills_dir_hint_abbreviates_default_profile(
+    def test_system_prompt_abbreviates_the_default_profile(
         self,
         tmp_path: Path,
         install_profile_snapshot: InstallProfileSnapshot,
     ) -> None:
-        """The same holds for a path rendered from a different module."""
-        from deepagents_code import ui
+        """The skills path in the system prompt is the highest-stakes call site.
+
+        It goes to the model on every request, so an unabbreviated path there
+        puts the operator's real home directory — and OS username — in front of
+        the model. Call the real prompt builder: asserting against
+        `PATHS.display(...)` would re-test `display` rather than the call site.
+        """
+        from deepagents_code.agent import get_system_prompt
 
         install_profile_snapshot(None, launch_home=tmp_path)
 
-        rendered = ui.PATHS.display(ui.PATHS.profile.agent_skills_dir("<agent>"))
+        prompt = get_system_prompt("<agent>")
 
-        assert rendered == "~/.deepagents/<agent>/skills"
+        assert "~/.deepagents/<agent>/skills" in prompt
+        assert str(tmp_path) not in prompt
 
     def test_configured_profile_still_renders_literally(
         self,

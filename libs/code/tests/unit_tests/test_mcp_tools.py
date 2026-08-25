@@ -5971,6 +5971,64 @@ class TestFilterTrustedProjectServers:
         assert list(kept) == ["z", "a", "m"]
 
 
+class TestDiscoveryFailureModes:
+    """Branches that only run when the filesystem misbehaves."""
+
+    def test_an_unreadable_candidate_does_not_disturb_later_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An EACCES on the user config must not change project scoping."""
+        from deepagents_code._paths import PATHS
+
+        project_root = tmp_path / "repo"
+        (project_root / ".deepagents").mkdir(parents=True)
+        (project_root / ".mcp.json").write_text("{}")
+        real_is_file = Path.is_file
+
+        def flaky_is_file(self: Path) -> bool:
+            if self == PATHS.profile.mcp_config_file:
+                msg = "Permission denied"
+                raise OSError(msg)
+            return real_is_file(self)
+
+        monkeypatch.setattr(Path, "is_file", flaky_is_file)
+
+        found = discover_mcp_config_sources(
+            project_context=ProjectContext(
+                user_cwd=project_root, project_root=project_root
+            )
+        )
+
+        assert [c.scope for c in found] == [MCPConfigScope.PROJECT]
+        assert found[0].project_root == project_root
+
+    def test_unresolvable_same_scope_collision_keeps_both_configs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two project configs that cannot be told apart must both load.
+
+        The `continue` this covers is what stops the higher-precedence root
+        config being dropped when `Path.resolve` fails.
+        """
+        root = tmp_path / "repo"
+
+        def unresolvable(self: Path, strict: bool = False) -> Path:
+            msg = "cannot resolve"
+            raise OSError(msg)
+
+        monkeypatch.setattr(Path, "resolve", unresolvable)
+
+        found: list[DiscoveredMCPConfig] = []
+        first = DiscoveredMCPConfig(
+            root / ".deepagents" / ".mcp.json", MCPConfigScope.PROJECT, root
+        )
+        second = DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root)
+        _append_discovered_config(found, first)
+        _append_discovered_config(found, second)
+
+        assert found == [first, second]
+
+
 class TestMCPConfigSourcesTotality:
     """`project_roots` is the key project trust approvals are checked against.
 

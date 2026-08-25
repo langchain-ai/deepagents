@@ -6671,3 +6671,23 @@ class TestUpdateLockLocationFallback:
         ):
             assert acquired is True
             assert profile.exists()
+
+    def test_the_fallback_lock_actually_excludes(self, tmp_path: Path) -> None:
+        """A fallback lock must serialize, not merely exist.
+
+        Asserting `acquired is True` and that the file appeared says nothing
+        about exclusion, which is the entire reason the fallback is preferred
+        over failing open.
+        """
+        blocker = tmp_path / "shared"
+        blocker.write_text("")
+        profile = tmp_path / "profile" / "update.lock"
+        profile.parent.mkdir(parents=True)
+
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", blocker / "update.lock"),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+            TestUpdateInstallLock._lock_held_by_subprocess(profile),
+            update_check.update_install_lock() as acquired,
+        ):
+            assert acquired is False

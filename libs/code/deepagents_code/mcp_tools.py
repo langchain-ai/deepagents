@@ -26,6 +26,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 
 from deepagents_code import _env_vars
@@ -1412,7 +1413,26 @@ def _append_discovered_config(
     A collision never grants user trust and never drops a config: the same file
     discovered twice keeps one record at project scope, and two files that
     cannot be told apart both load at project scope.
+
+    Only project candidates can collide, because `discover_mcp_config_sources`
+    probes the single user candidate first and `found` is therefore empty when
+    it arrives. Making that explicit keeps the "never drops a config" claim
+    true by construction: the collision branch below has no user-scope arm, so
+    a user candidate reaching it would fall through and be dropped.
+
+    Raises:
+        AssertionError: If a user candidate arrives after another entry, which
+            would mean the candidate ordering changed.
     """
+    if candidate.scope is not MCPConfigScope.PROJECT:
+        if found:
+            msg = (
+                "The user MCP config must be discovered first; collision "
+                "handling has no user-scope branch."
+            )
+            raise AssertionError(msg)
+        found.append(candidate)
+        return
     for index, existing in enumerate(found):
         identity = _same_config_location(existing.path, candidate.path)
         if identity is MCPConfigIdentity.DIFFERENT:
@@ -1421,32 +1441,31 @@ def _append_discovered_config(
             # Identity is unknown and the trust scope is the same either way,
             # so keeping both entries changes nothing.
             continue
-        if candidate.scope is MCPConfigScope.PROJECT:
-            # A configured home can equal a project root or its `.deepagents`
-            # directory. The standard project discovery provenance wins that
-            # collision so relocating the profile never self-trusts the repo's
-            # own MCP file.
-            if identity is MCPConfigIdentity.SAME:
-                # One file: move it to this discovery position so a profile
-                # collision cannot give an earlier path higher precedence.
-                found.pop(index)
-                found.append(candidate)
-                return
-            # Identity is unknown, so these may be two distinct files. Demote
-            # the existing entry to project scope instead of dropping it: the
-            # user's servers must still load, just without user-level trust.
-            logger.warning(
-                "Demoting MCP config %s to project scope because it could not "
-                "be distinguished from %s",
-                existing.path,
-                candidate.path,
-            )
-            found[index] = DiscoveredMCPConfig(
-                existing.path,
-                MCPConfigScope.PROJECT,
-                candidate.project_root,
-            )
+        # A configured home can equal a project root or its `.deepagents`
+        # directory. The standard project discovery provenance wins that
+        # collision so relocating the profile never self-trusts the repo's own
+        # MCP file.
+        if identity is MCPConfigIdentity.SAME:
+            # One file: move it to this discovery position so a profile
+            # collision cannot give an earlier path higher precedence.
+            found.pop(index)
             found.append(candidate)
+            return
+        # Identity is unknown, so these may be two distinct files. Demote the
+        # existing entry to project scope instead of dropping it: the user's
+        # servers must still load, just without user-level trust.
+        logger.warning(
+            "Demoting MCP config %s to project scope because it could not "
+            "be distinguished from %s",
+            existing.path,
+            candidate.path,
+        )
+        found[index] = DiscoveredMCPConfig(
+            existing.path,
+            MCPConfigScope.PROJECT,
+            candidate.project_root,
+        )
+        found.append(candidate)
         return
     found.append(candidate)
 
@@ -1502,6 +1521,13 @@ class MCPConfigSources:
     user_paths: tuple[Path, ...]
     project_paths: tuple[Path, ...]
     project_roots: Mapping[Path, Path]
+    """Trust root for each project path. Total over `project_paths`.
+
+    Read it with `[]`, never `.get(..., fallback)`. This mapping is the key
+    that project trust approvals are recorded and checked against, so a
+    re-derived fallback root would check trust against something the approval
+    was never granted for. A miss is a broken invariant and must be loud.
+    """
 
     @classmethod
     def from_sources(cls, found: Sequence[DiscoveredMCPConfig]) -> MCPConfigSources:
@@ -1515,10 +1541,11 @@ class MCPConfigSources:
             user_paths=tuple(s.path for s in found if s.scope is MCPConfigScope.USER),
             project_paths=tuple(s.path for s in project),
             # `DiscoveredMCPConfig` guarantees a project-scoped entry carries a
-            # root, so this mapping is total over `project_paths`.
-            project_roots={
-                s.path: s.project_root for s in project if s.project_root is not None
-            },
+            # root, so this mapping is total over `project_paths`. Wrapped so
+            # the frozen dataclass does not hand out a mutable dict.
+            project_roots=MappingProxyType(
+                {s.path: s.project_root for s in project if s.project_root is not None}
+            ),
         )
 
 
@@ -3158,11 +3185,11 @@ async def resolve_and_load_mcp_tools(
         # `configs` without a trust decision (defense in depth against a future
         # validator that accepts a shape `extract_project_server_summaries`
         # currently skips).
-        project_base = _resolve_project_config_base(project_context)
         kept: dict[str, Any] = {}
         for name, server in project_config["mcpServers"].items():
             source = server_sources[name]
-            project_root = project_roots.get(source, project_base)
+            # Indexed, not `.get`: see `MCPConfigSources.project_roots`.
+            project_root = project_roots[source]
             kept.update(
                 filter_trusted_project_servers(
                     {name: server},

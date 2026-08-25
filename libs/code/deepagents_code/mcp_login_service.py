@@ -209,7 +209,6 @@ def resolve_mcp_config(
         _drop_invalid_mcp_config_servers,
         _load_mcp_config_top_level_with_error,
         _merge_mcp_configs_with_sources,
-        _resolve_project_config_base,
         discover_mcp_config_sources,
         filter_trusted_project_servers,
         load_mcp_config,
@@ -272,7 +271,6 @@ def resolve_mcp_config(
         legacy_ignored = tuple(sorted(trust_lists.legacy_ignored))
         legacy_env_ignored = trust_lists.legacy_env_ignored
         malformed_approvals = trust_lists.malformed_approvals
-        project_base = _resolve_project_config_base(None)
         untrusted_paths: list[Path] = []
         if trust_lists.load_failed:
             # Whole-config trust and scoped TOML approvals fail closed. The
@@ -296,7 +294,8 @@ def resolve_mcp_config(
             kept: dict[str, Any] = {}
             for name, server in servers.items():
                 source = server_sources[name]
-                project_root = project_roots.get(source, project_base)
+                # Indexed, not `.get`: see `MCPConfigSources.project_roots`.
+                project_root = project_roots[source]
                 kept.update(
                     filter_trusted_project_servers(
                         {name: server},

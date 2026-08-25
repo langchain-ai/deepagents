@@ -37,6 +37,7 @@ from deepagents_code.mcp_tools import (
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
+    _append_discovered_config,
     _apply_tool_filter,
     _check_remote_server,
     _check_stdio_server,
@@ -5968,6 +5969,69 @@ class TestFilterTrustedProjectServers:
         )
 
         assert list(kept) == ["z", "a", "m"]
+
+
+class TestMCPConfigSourcesTotality:
+    """`project_roots` is the key project trust approvals are checked against.
+
+    A `.get(source, re-derived_base)` fallback there would silently check trust
+    against a root the approval was never granted for — the failure
+    `DiscoveredMCPConfig.__post_init__` exists to make impossible.
+    """
+
+    def test_project_roots_is_total_over_project_paths(self, tmp_path: Path) -> None:
+        """Every project path can be indexed without a fallback."""
+        root = tmp_path / "repo"
+        sources = MCPConfigSources.from_sources(
+            [
+                DiscoveredMCPConfig(tmp_path / "user.json", MCPConfigScope.USER),
+                DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root),
+            ]
+        )
+
+        assert [sources.project_roots[p] for p in sources.project_paths] == [root]
+
+    def test_project_roots_cannot_be_mutated(self, tmp_path: Path) -> None:
+        """A frozen dataclass must not hand out a mutable mapping."""
+        root = tmp_path / "repo"
+        sources = MCPConfigSources.from_sources(
+            [DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root)]
+        )
+
+        # The annotation already forbids this; cast so the runtime guarantee
+        # is what gets tested, not the type checker.
+        mutable = cast("dict[Path, Path]", sources.project_roots)
+        with pytest.raises(TypeError):
+            mutable[root / "other.json"] = root
+
+
+class TestUserConfigMustBeDiscoveredFirst:
+    """Collision handling has no user-scope branch, so ordering is load-bearing.
+
+    If a user candidate ever arrived after another entry it would fall through
+    the collision loop and be dropped silently, contradicting the documented
+    "never drops a config".
+    """
+
+    def test_a_late_user_candidate_is_rejected_loudly(self, tmp_path: Path) -> None:
+        """The precondition fails fast instead of dropping the config."""
+        root = tmp_path / "repo"
+        found = [DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root)]
+
+        with pytest.raises(AssertionError, match="discovered first"):
+            _append_discovered_config(
+                found,
+                DiscoveredMCPConfig(tmp_path / "user.json", MCPConfigScope.USER),
+            )
+
+    def test_the_first_user_candidate_is_appended(self, tmp_path: Path) -> None:
+        """The ordinary case is unchanged."""
+        found: list[DiscoveredMCPConfig] = []
+        candidate = DiscoveredMCPConfig(tmp_path / "user.json", MCPConfigScope.USER)
+
+        _append_discovered_config(found, candidate)
+
+        assert found == [candidate]
 
 
 class TestDiscoveredMCPConfigInvariant:

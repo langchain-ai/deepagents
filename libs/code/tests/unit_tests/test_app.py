@@ -42500,6 +42500,40 @@ class TestPromptClipboard:
             assert chat_input.value == "helhello saved promptlo"
             assert app.focused is text_area
 
+    async def test_tab_inserts_when_approval_arrives_during_prompt_modal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A background approval must not intercept the modal's Tab binding."""
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(
+                chat_input, "recent_prompts", lambda: ("newest", "oldest")
+            )
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, PromptClipboardScreen)
+
+            await pilot.press("down")
+            approval = MagicMock()
+            app._pending_approval_widget = approval
+
+            await pilot.press("tab")
+            await pilot.pause()
+            await pilot.pause()
+
+            approval.action_reject_with_reason.assert_not_called()
+            assert app.screen is not screen
+            assert chat_input.value == "oldest"
+
     async def test_escape_preserves_draft_and_cursor(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

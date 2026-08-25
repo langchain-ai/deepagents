@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
+import logging
 import os
 import subprocess
 import sys
@@ -16,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from deepagents_code import managed_tools
+from deepagents_code import _paths, managed_tools
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER
 from deepagents_code._paths import PATHS
 from deepagents_code.managed_tools import (
@@ -1004,7 +1006,7 @@ class TestManagedBinDirFallback:
         shared = tmp_path / "shared"
         shared.mkdir()
         profile = tmp_path / "profile"
-        original_probe = managed_tools.probe_writable
+        original_probe = _paths.probe_writable
 
         def fake_probe(directory: Path, *, mode: int = 0o777) -> None:
             if directory == shared:
@@ -1015,12 +1017,16 @@ class TestManagedBinDirFallback:
         with (
             patch.object(managed_tools, "BIN_DIR", shared),
             patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
-            patch.object(managed_tools, "probe_writable", side_effect=fake_probe),
+            # `first_writable` lives in `_paths`, so that is the seam.
+            patch.object(_paths, "probe_writable", side_effect=fake_probe),
         ):
             assert managed_tools._resolve_install_bin_dir() == profile
         assert profile.is_dir()
 
-    def test_raises_when_no_location_is_usable(self, tmp_path: Path) -> None:
+    def test_raises_when_no_location_is_usable(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Both candidates are named, and each real errno is logged."""
         first = tmp_path / "a"
         second = tmp_path / "b"
         first.write_text("")
@@ -1028,7 +1034,38 @@ class TestManagedBinDirFallback:
         with (
             patch.object(managed_tools, "BIN_DIR", first),
             patch.object(managed_tools, "FALLBACK_BIN_DIR", second),
-            pytest.raises(OSError, match=r"File exists|Not a directory|No such file"),
+            caplog.at_level(logging.INFO, logger="deepagents_code._paths"),
+            pytest.raises(managed_tools._NoWritableBinDirError) as exc_info,
+        ):
+            managed_tools._resolve_install_bin_dir()
+
+        assert str(first) in str(exc_info.value)
+        assert str(second) in str(exc_info.value)
+        # Each candidate's own failure is logged with a traceback, so --debug
+        # still shows which errno stopped it.
+        assert str(first) in caplog.text
+        assert str(second) in caplog.text
+
+    def test_a_non_permission_write_failure_still_raises_visibly(
+        self, tmp_path: Path
+    ) -> None:
+        """A full disk must not become the caller's "brew install" hint.
+
+        `probe_writable` raises `PermissionError` only for EACCES/EPERM. EROFS,
+        ENOSPC, and EDQUOT arrive as a plain `OSError`, which the generic
+        handler would turn into `None` and the misleading missing-tool hint.
+        """
+        first = tmp_path / "a"
+        second = tmp_path / "b"
+        with (
+            patch.object(managed_tools, "BIN_DIR", first),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", second),
+            patch.object(
+                _paths,
+                "probe_writable",
+                side_effect=OSError(errno.ENOSPC, "No space left on device"),
+            ),
+            pytest.raises(managed_tools._NoWritableBinDirError),
         ):
             managed_tools._resolve_install_bin_dir()
 
@@ -1077,13 +1114,22 @@ class TestManagedBinDirFallback:
             assert await managed_tools.ensure_ripgrep() == current
             managed_tools.prepend_managed_bin_to_path()
             assert managed_tools.managed_rg_path() == current
-            assert os.environ["PATH"].split(os.pathsep)[:2] == [
-                str(profile),
-                str(shared),
-            ]
+            parts = os.environ["PATH"].split(os.pathsep)
+            # The directory holding the current binary leads. The stale one is
+            # removed outright so it cannot shadow it later in `PATH`.
+            assert parts[0] == str(profile)
+            assert str(shared) not in parts
         install.assert_not_called()
 
-    def test_path_prepends_both_locations(self, tmp_path: Path) -> None:
+    def test_path_prepends_only_the_active_location(self, tmp_path: Path) -> None:
+        """With no binary installed, only the preferred directory is added.
+
+        The profile fallback must not be prepended on spec. TB14 permits a
+        `DEEPAGENTS_HOME` inside a checkout, so `<profile>/bin` can hold
+        repository-controlled executables; prepending it when no managed
+        binary lives there would put them ahead of the system `PATH` for every
+        subprocess the agent starts.
+        """
         shared = tmp_path / "shared"
         profile = tmp_path / "profile"
         with (
@@ -1094,7 +1140,32 @@ class TestManagedBinDirFallback:
             managed_tools.prepend_managed_bin_to_path()
             parts = os.environ["PATH"].split(os.pathsep)
 
-        assert parts[:2] == [str(shared), str(profile)]
+        assert parts[0] == str(shared)
+        assert str(profile) not in parts
+        # Pre-existing entries survive.
+        assert "/usr/bin" in parts
+
+    def test_path_prepend_keeps_a_repo_bin_out_when_unused(
+        self, tmp_path: Path
+    ) -> None:
+        """A populated profile `bin/` stays off `PATH` without a managed rg.
+
+        Regression guard for the TB14 case: the directory exists and holds an
+        executable, but no managed ripgrep was installed there.
+        """
+        shared = tmp_path / "shared"
+        profile = tmp_path / "checkout" / "bin"
+        profile.mkdir(parents=True)
+        (profile / "make").write_text("")
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False),
+        ):
+            managed_tools.prepend_managed_bin_to_path()
+            parts = os.environ["PATH"].split(os.pathsep)
+
+        assert str(profile) not in parts
 
     def test_path_prepend_is_idempotent(self, tmp_path: Path) -> None:
         shared = tmp_path / "shared"
@@ -1166,7 +1237,7 @@ def test_the_permission_error_reaches_the_cli_caller(
     remaining = _auto_install_ripgrep_cli(console, ["ripgrep"])
 
     output = buffer.getvalue()
-    assert "could not write it to" in output
+    assert "Could not write ripgrep to" in output
     assert "brew install" not in output
     # `rg` is still unavailable, so the tool stays in the missing list.
     assert remaining == ["ripgrep"]

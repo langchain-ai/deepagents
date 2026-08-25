@@ -23,7 +23,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER, is_env_truthy
-from deepagents_code._paths import PATHS, PathState, classify_path, probe_writable
+from deepagents_code._paths import (
+    PATHS,
+    PathState,
+    classify_path,
+    first_writable,
+)
 
 if TYPE_CHECKING:
     import zipfile
@@ -173,14 +178,21 @@ def _unsupported_ripgrep_error(
 
 
 def _unwritable_bin_dir_error() -> ManagedToolUnavailableError:
-    """Return a clear permission error naming both managed bin directories."""
+    """Return a clear write-failure error naming both managed bin directories.
+
+    The wording covers every reason a write can fail, not permissions alone.
+    A read-only filesystem, a full disk, and an exceeded quota all reach this
+    error, and telling those users to "check the permissions" sends them after
+    the wrong cause.
+    """
     return ManagedToolUnavailableError(
         tool="ripgrep",
         reason="permission_denied",
         message=(
-            f"Downloaded ripgrep but could not write it to {BIN_DIR} or "
-            f"{FALLBACK_BIN_DIR}. Check the permissions on those directories, "
-            "or install ripgrep with your package manager."
+            f"Could not write ripgrep to {BIN_DIR} or {FALLBACK_BIN_DIR}. "
+            "Check that one of them is writable and that the filesystem is "
+            "not full or read-only, or install ripgrep with your package "
+            "manager."
         ),
     )
 
@@ -200,27 +212,38 @@ def _artifact_not_found_error(
     )
 
 
+def managed_rg_filename() -> str:
+    """Return the managed ripgrep filename for this platform."""
+    return "rg.exe" if sys.platform == "win32" else "rg"
+
+
 def managed_rg_path() -> Path:
     """Return the managed ripgrep binary path (`.exe` on Windows).
 
     Returns:
         A current candidate across both locations, the first existing stale
         candidate, or the preferred location when neither exists.
+
+    Note:
+        The version probe runs only when both locations hold a binary, which
+        is the one case where the answer is not already determined. That probe
+        starts a subprocess, and this function is called several times per
+        launch, so `_managed_binary_is_current` memoizes on file identity.
     """
-    name = "rg.exe" if sys.platform == "win32" else "rg"
-    candidates = [directory / name for directory in managed_bin_dirs()]
+    candidates = [directory / managed_rg_filename() for directory in managed_bin_dirs()]
     existing = [
         candidate
         for candidate in candidates
         if classify_path(candidate) is PathState.EXISTS
     ]
-    if len(existing) > 1:
-        for candidate in existing:
-            if _managed_binary_is_current(candidate):
-                return candidate
-    if existing:
+    if not existing:
+        return candidates[0]
+    if len(existing) == 1:
         return existing[0]
-    return BIN_DIR / name
+    return next(
+        (candidate for candidate in existing if _managed_binary_is_current(candidate)),
+        existing[0],
+    )
 
 
 def is_offline() -> bool:
@@ -272,25 +295,28 @@ def prefers_system_ripgrep() -> bool:
 
 
 def prepend_managed_bin_to_path() -> None:
-    """Idempotently prepend both managed bin dirs to `os.environ["PATH"]`.
+    """Idempotently prepend the active managed bin dir to `os.environ["PATH"]`.
 
-    Safe to call on every startup. Callers do not need to check whether
-    the directories exist — adding a non-existent directory to `PATH` is
-    harmless and matches behavior of common version managers. When a current
-    fallback binary exists beside a stale shared binary, its directory wins.
+    Safe to call on every startup. Only the directory that holds the managed
+    binary is prepended, and the other managed directory is removed from the
+    rest of `PATH` so a stale copy cannot shadow it.
+
+    Prepending only one directory matters for the profile fallback. TB14
+    permits a `DEEPAGENTS_HOME` inside a checkout, so `<profile>/bin` can be a
+    repository-controlled directory. Prepending it unconditionally would put
+    committed executables ahead of the system `PATH` for every subprocess the
+    agent starts, even when no managed binary was ever installed there. The
+    active directory is `BIN_DIR` unless a managed binary really does live in
+    the profile.
     """
-    directories = list(managed_bin_dirs())
-    active = managed_rg_path().parent
-    if active in directories:
-        directories.remove(active)
-        directories.insert(0, active)
-    managed = [str(directory) for directory in directories]
+    active = str(managed_rg_path().parent)
+    managed = {str(directory) for directory in managed_bin_dirs()}
     current = os.environ.get("PATH", "")
     parts = current.split(os.pathsep) if current else []
-    if parts[: len(managed)] == managed:
+    desired = [active, *(p for p in parts if p not in managed)]
+    if parts == desired:
         return
-    parts = [*managed, *(p for p in parts if p not in managed)]
-    os.environ["PATH"] = os.pathsep.join(parts)
+    os.environ["PATH"] = os.pathsep.join(desired)
 
 
 def _path_without_managed_bin() -> str | None:
@@ -308,6 +334,22 @@ def _path_without_managed_bin() -> str | None:
     return os.pathsep.join(parts)
 
 
+def _binary_identity(binary: Path) -> tuple[int, int, int] | None:
+    """Return a stat identity for `binary`, or `None` when it cannot be read.
+
+    Used as a memo key for the version probe. An install replaces the file, so
+    the inode, size, or mtime changes and the next probe misses the memo.
+
+    Returns:
+        The inode, size, and mtime in nanoseconds, or `None`.
+    """
+    try:
+        stat_result = binary.stat()
+    except OSError:
+        return None
+    return (stat_result.st_ino, stat_result.st_size, stat_result.st_mtime_ns)
+
+
 def _managed_binary_is_current(binary: Path) -> bool:
     """Return whether the on-disk managed `rg` matches `RIPGREP_VERSION`.
 
@@ -316,6 +358,33 @@ def _managed_binary_is_current(binary: Path) -> bool:
     binary written by a previously crashed install gets re-fetched. Only
     `TimeoutExpired` "falls open" — that case suggests a sandboxed
     subprocess rather than a broken binary.
+
+    The result is memoized on the binary's stat identity. `managed_rg_path`
+    calls this whenever both bin directories hold a binary, and several call
+    sites reach `managed_rg_path` on one launch, so an uncached probe starts
+    the same subprocess four to six times.
+    """
+    identity = _binary_identity(binary)
+    if identity is not None:
+        memo_key = (str(binary), identity)
+        cached = _VERSION_PROBE_MEMO.get(memo_key)
+        if cached is not None:
+            return cached
+        result_is_current = _probe_managed_binary_version(binary)
+        _VERSION_PROBE_MEMO[memo_key] = result_is_current
+        return result_is_current
+    return _probe_managed_binary_version(binary)
+
+
+_VERSION_PROBE_MEMO: dict[tuple[str, tuple[int, int, int]], bool] = {}
+"""Memo for `_managed_binary_is_current`, keyed on path and stat identity."""
+
+
+def _probe_managed_binary_version(binary: Path) -> bool:
+    """Run `rg --version` and report whether it matches `RIPGREP_VERSION`.
+
+    Returns:
+        Whether the binary reports the pinned version.
     """
     import subprocess  # noqa: S404  # fixed-argv probe of a managed binary
 
@@ -472,37 +541,43 @@ def _extract_zip_validated(zf: zipfile.ZipFile, extract_root: Path) -> None:
     zf.extractall(extract_root)  # noqa: S202  # validated above
 
 
+class _NoWritableBinDirError(OSError):
+    """Raised when no managed bin directory can be created or written.
+
+    Its own type rather than a bare `OSError` because the caller must map this
+    to a visible message regardless of why the write failed. Selecting on
+    `PermissionError` catches EACCES and EPERM only, so a read-only filesystem
+    or a full disk would fall through to the generic handler and produce the
+    "ripgrep is not installed" hint for a problem no package manager can fix.
+    """
+
+
 def _resolve_install_bin_dir() -> Path:
     """Return the first managed bin dir that can be created.
 
     Returns:
         A usable, existing bin directory.
 
-    Note:
-        Re-raises the last candidate's `OSError` when none can be created, so
-        the message names the profile fallback the user can actually fix.
+    Raises:
+        _NoWritableBinDirError: If no candidate can be created or written. Its
+            message names both directories; `first_writable` has already logged
+            each candidate's own `OSError` with a traceback.
     """
-    last_error: OSError | None = None
-    for directory in managed_bin_dirs():
-        try:
-            probe_writable(directory)
-        except OSError as exc:
-            last_error = exc
-            logger.info(
-                "Managed bin directory %s is unusable; trying the next location",
-                directory,
-                exc_info=True,
-            )
-            continue
-        if directory != BIN_DIR:
-            logger.warning(
-                "Installing ripgrep to the profile directory %s because the "
-                "shared installation directory %s is not writable",
-                directory,
-                BIN_DIR,
-            )
-        return directory
-    raise last_error if last_error is not None else OSError("no managed bin directory")
+    directory = first_writable(managed_bin_dirs(), what="Managed bin")
+    if directory is None:
+        msg = (
+            f"No managed bin directory could be created or written: tried "
+            f"{BIN_DIR} and {FALLBACK_BIN_DIR}."
+        )
+        raise _NoWritableBinDirError(msg)
+    if directory != BIN_DIR:
+        logger.warning(
+            "Installing ripgrep to the profile directory %s because the "
+            "shared installation directory %s is not writable",
+            directory,
+            BIN_DIR,
+        )
+    return directory
 
 
 def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
@@ -567,7 +642,7 @@ async def ensure_ripgrep() -> Path | None:
         `ManagedToolUnavailableError` so callers can explain that retrying will
         not help.
     6. Otherwise download → SHA-256 verify → extract → install →
-        prepend `BIN_DIR` to `PATH` → return the installed path. On a
+        prepend the active managed bin dir to `PATH` → return the installed path. On a
         checksum mismatch, raises `ChecksumMismatchError` so callers can
         surface a loud notice. On a 404, or when neither managed bin directory
         is writable, raises `ManagedToolUnavailableError`; other failures log
@@ -685,14 +760,16 @@ async def ensure_ripgrep() -> Path | None:
             "ripgrep install failed: archive error (%s)", type(exc).__name__
         )
         return None
-    except PermissionError as exc:
-        # The download succeeded and only the write failed, so returning None
-        # would send the user the caller's generic "ripgrep is not installed —
-        # brew install ripgrep" hint for a problem `brew` cannot fix. Raise
-        # instead: every caller renders this message visibly, while the log
-        # line here is invisible without --debug.
+    except (_NoWritableBinDirError, PermissionError) as exc:
+        # The bin directory could not be written. That happens before the
+        # download (`_resolve_install_bin_dir`) or after it (the install
+        # itself), and both reach here. Returning None would send the user the
+        # caller's generic "ripgrep is not installed — brew install ripgrep"
+        # hint for a problem `brew` cannot fix. Raise instead: every caller
+        # renders this message visibly, while the log line here is invisible
+        # without --debug.
         logger.exception(
-            "ripgrep install failed: cannot write to %s or %s — check permissions",
+            "ripgrep install failed: cannot write to %s or %s",
             BIN_DIR,
             FALLBACK_BIN_DIR,
         )

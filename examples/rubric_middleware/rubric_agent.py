@@ -48,7 +48,8 @@ PROVIDER_KEY_VARS = {
 }
 """Environment variable holding the API key for each supported provider prefix."""
 
-LANGSMITH_PROJECT = os.environ.get("LANGSMITH_PROJECT", "deepagents-rubric-example")
+DEFAULT_LANGSMITH_PROJECT = "deepagents-rubric-example"
+"""LangSmith project used when the environment does not specify one."""
 
 TASK = """Write an internal engineering brief on why our nightly batch job started
 timing out after we moved it from a single worker to a four-worker pool. Save it to
@@ -92,6 +93,12 @@ def _require_env(*names: str) -> None:
         raise SystemExit(1)
 
 
+def _load_environment(env_file: str | None) -> str:
+    """Load dotenv values and resolve the LangSmith project."""
+    load_dotenv(env_file or find_dotenv(usecwd=True))
+    return os.environ.get("LANGSMITH_PROJECT", DEFAULT_LANGSMITH_PROJECT)
+
+
 def _print_evaluation(evaluation: RubricEvaluation) -> None:
     """Print one grader verdict as it happens."""
     verdict = evaluation["result"]
@@ -124,7 +131,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run the rubric loop once and report where the trace landed."""
     args = _parse_args()
-    load_dotenv(args.env_file or find_dotenv(usecwd=True))
+    langsmith_project = _load_environment(args.env_file)
     _require_env(
         _key_var_for(args.agent_model),
         _key_var_for(args.grader_model),
@@ -133,7 +140,7 @@ def main() -> None:
     # Tracing is the point of this example, so turn it on rather than
     # depending on whichever value the .env happens to carry.
     os.environ["LANGSMITH_TRACING"] = "true"
-    os.environ["LANGSMITH_PROJECT"] = LANGSMITH_PROJECT
+    os.environ["LANGSMITH_PROJECT"] = langsmith_project
 
     print(f"agent model:  {args.agent_model}")
     print(f"grader model: {args.grader_model}")
@@ -151,7 +158,7 @@ def main() -> None:
     )
     config: dict[str, Any] = {"configurable": {"thread_id": args.thread_id}}
 
-    with trace(name="rubric-middleware-example", project_name=LANGSMITH_PROJECT) as run:
+    with trace(name="rubric-middleware-example", project_name=langsmith_project) as run:
         result = agent.invoke(
             {"messages": [HumanMessage(content=TASK)], "rubric": RUBRIC},
             config=config,

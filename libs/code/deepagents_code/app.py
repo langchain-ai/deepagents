@@ -28554,9 +28554,10 @@ async def run_textual_app(
         title=title,
         sub_title=sub_title,
     )
-    stderr_guard = TerminalStderrGuard.install()
-    app._terminal_stderr_guard = stderr_guard
+    stderr_guard: TerminalStderrGuard | None = None
     try:
+        stderr_guard = TerminalStderrGuard.install()
+        app._terminal_stderr_guard = stderr_guard
         await app.run_async()
     except Exception as e:
         # The app resolves resume intent and `/threads` switches internally, so
@@ -28572,8 +28573,9 @@ async def run_textual_app(
             ),
         ) from e
     finally:
-        stderr_guard.close()
-        app._terminal_stderr_guard = None
+        if stderr_guard is not None:
+            stderr_guard.close()
+            app._terminal_stderr_guard = None
         # Guarantee server cleanup regardless of how the app exits.
         # Covers both the pre-started server_proc path and the deferred
         # server_kwargs path (where the background worker sets _server_proc).

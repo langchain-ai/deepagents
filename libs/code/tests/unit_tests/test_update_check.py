@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 import pytest
 from packaging.version import InvalidVersion, Version
 
-from deepagents_code import update_check
+from deepagents_code import _paths, update_check
 from deepagents_code._version import __version__
 from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
@@ -6630,7 +6630,7 @@ class TestUpdateLockLocationFallback:
         shared = tmp_path / "shared"
         shared.mkdir()
         profile = tmp_path / "profile" / "update.lock"
-        original_probe = update_check.probe_writable
+        original_probe = _paths.probe_writable
 
         def fake_probe(directory: Path, *, mode: int = 0o777) -> None:
             if directory == shared:
@@ -6641,7 +6641,8 @@ class TestUpdateLockLocationFallback:
         with (
             patch.object(update_check, "UPDATE_LOCK_FILE", shared / "update.lock"),
             patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
-            patch.object(update_check, "probe_writable", side_effect=fake_probe),
+            # `first_writable` lives in `_paths`, so that is the seam.
+            patch.object(_paths, "probe_writable", side_effect=fake_probe),
         ):
             assert update_check._resolve_update_lock_file() == profile
         assert profile.parent.is_dir()

@@ -22,7 +22,11 @@ from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import quote
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
-from deepagents_code._paths import export_profile_env
+from deepagents_code._paths import (
+    DEEPAGENTS_HOME_ENV,
+    PATHS,
+    export_profile_env,
+)
 from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
 
 if TYPE_CHECKING:
@@ -415,7 +419,18 @@ def _server_env_with_overrides(
     env = _build_server_env()
     env.update(persistent)
     env.update(scoped)
-    # Profile selection is immutable and is not a restart override.
+    # Profile selection is immutable and is not a restart override. Say so when
+    # a caller actually tried: silently pointing the server somewhere other
+    # than they asked is the kind of thing that gets debugged twice.
+    requested = env.get(DEEPAGENTS_HOME_ENV)
+    if requested is not None and requested != str(PATHS.profile.root):
+        logger.warning(
+            "Ignoring the %s=%r override for the server subprocess. The "
+            "profile is fixed at launch to %s.",
+            DEEPAGENTS_HOME_ENV,
+            requested,
+            PATHS.profile.root,
+        )
     export_profile_env(env)
     return env
 

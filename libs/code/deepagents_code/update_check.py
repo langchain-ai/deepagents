@@ -39,7 +39,11 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
-from deepagents_code._paths import PATHS, probe_writable
+from deepagents_code._paths import (
+    PATHS,
+    first_writable,
+    harden_state_dir,
+)
 from deepagents_code._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __version__
 from deepagents_code.model_config import (
     DEFAULT_CONFIG_PATH,
@@ -2280,26 +2284,28 @@ def _resolve_update_lock_file() -> Path | None:
         The lock file whose parent directory is writable, or `None` when
         neither is. The caller then proceeds without a lock.
     """
-    for candidate in (UPDATE_LOCK_FILE, FALLBACK_UPDATE_LOCK_FILE):
-        try:
-            probe_writable(candidate.parent, mode=0o700)
-        except OSError:
-            logger.info(
-                "Update lock directory %s is unusable; trying the next location",
-                candidate.parent,
-                exc_info=True,
-            )
-            continue
-        if candidate != UPDATE_LOCK_FILE:
-            logger.warning(
-                "Using the profile update lock %s because the shared "
-                "installation lock directory %s is not writable; upgrades are "
-                "serialized per profile only",
-                candidate,
-                UPDATE_LOCK_FILE.parent,
-            )
-        return candidate
-    return None
+    candidates = (UPDATE_LOCK_FILE, FALLBACK_UPDATE_LOCK_FILE)
+    chosen_dir = first_writable(
+        [candidate.parent for candidate in candidates],
+        mode=0o700,
+        what="Update lock",
+    )
+    if chosen_dir is None:
+        return None
+    chosen = next(c for c in candidates if c.parent == chosen_dir)
+    if chosen != UPDATE_LOCK_FILE:
+        logger.warning(
+            "Using the profile update lock %s because the shared "
+            "installation lock directory %s is not writable; upgrades are "
+            "serialized per profile only",
+            chosen,
+            UPDATE_LOCK_FILE.parent,
+        )
+    return chosen
+
+
+_WARNED_LOCK_UNAVAILABLE = False
+"""Whether the "no update lock" warning already reached stderr this process."""
 
 
 @contextmanager
@@ -2356,27 +2362,27 @@ def update_install_lock() -> Iterator[bool]:
     try:
         lock_file = _resolve_update_lock_file()
         if lock_file is None:
-            logger.warning(
-                "Proceeding without the update lock; could not create %s or %s. "
-                "Concurrent dcode upgrades will not be serialized.",
-                UPDATE_LOCK_FILE.parent,
-                FALLBACK_UPDATE_LOCK_FILE.parent,
+            # Both locations failed, so the lock is fail-open on every launch
+            # from now on — the permanent state `FALLBACK_UPDATE_LOCK_FILE`
+            # exists to prevent. A warning alone is invisible, so say it on
+            # stderr once per process.
+            message = (
+                "Proceeding without the update lock; could not create "
+                f"{UPDATE_LOCK_FILE.parent} or "
+                f"{FALLBACK_UPDATE_LOCK_FILE.parent}. Concurrent dcode "
+                "upgrades will not be serialized."
             )
+            global _WARNED_LOCK_UNAVAILABLE  # noqa: PLW0603  # once per process
+            if not _WARNED_LOCK_UNAVAILABLE:
+                _WARNED_LOCK_UNAVAILABLE = True
+                print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+            logger.warning("%s", message)
             yield True
             return
-        if os.name != "nt":
-            try:
-                lock_file.parent.chmod(0o700)
-            except OSError:
-                # Only the permission hardening failed. The directory is still
-                # perfectly usable for locking (CIFS/exFAT mounts routinely
-                # refuse `chmod`), so abandoning the lock here would disable
-                # this protection on every launch for no reason.
-                logger.warning(
-                    "Could not restrict permissions on %s",
-                    lock_file.parent,
-                    exc_info=True,
-                )
+        # Only the permission hardening can fail here. The directory is still
+        # usable for locking (CIFS/exFAT mounts routinely refuse `chmod`), so
+        # abandoning the lock would disable this protection for no reason.
+        harden_state_dir(lock_file.parent)
         file_lock = FileLock(str(lock_file), timeout=0, thread_local=False)
         try:
             file_lock.acquire()

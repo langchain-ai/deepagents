@@ -7739,6 +7739,38 @@ class TestDeniedHomeKeyReporting:
         assert "launching shell" in caplog.text
         assert str(dotenv) in caplog.text
 
+    def test_global_loader_warns_when_home_is_already_inherited(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Pinned launch state must not suppress the denied-key diagnostic."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        profile = tmp_path / "profile"
+        project.mkdir()
+        profile.mkdir()
+        dotenv = profile / ".env"
+        dotenv.write_text("DEEPAGENTS_HOME=/ignored\n", encoding="utf-8")
+        inherited = str(tmp_path / "active-profile")
+        monkeypatch.setenv("DEEPAGENTS_HOME", inherited)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", dotenv)
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+                config_mod._load_dotenv(start_path=project)
+
+            assert "DEEPAGENTS_HOME" in caplog.text
+            assert "launching shell" in caplog.text
+            assert os.environ["DEEPAGENTS_HOME"] == inherited
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
     def test_project_dotenv_stays_at_debug(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

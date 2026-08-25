@@ -380,10 +380,12 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             )
             return
         for key, value in values.items():
-            if value is None or key in env:
+            if value is None:
                 continue
             if _is_dotenv_denied_env_key(key):
                 _report_denied_env_key(key, dotenv_path, is_project=is_project)
+                continue
+            if key in env:
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
@@ -498,10 +500,12 @@ def _load_dotenv(
         values = dotenv.dotenv_values(dotenv_path=dotenv_path)
         applied = False
         for key, value in values.items():
-            if value is None or key in os.environ:
+            if value is None:
                 continue
             if _is_dotenv_denied_env_key(key):
                 _report_denied_env_key(key, dotenv_path, is_project=is_project)
+                continue
+            if key in os.environ:
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # A committed project `.env` must not set a user-level trust

@@ -167,4 +167,4 @@ def bind_runtime_host_policy(
             )
             registry.require_restart()
 
-    registry.subscribe(apply)
+    registry.subscribe_to_registrations(apply)

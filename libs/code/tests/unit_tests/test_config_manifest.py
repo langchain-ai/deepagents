@@ -4321,6 +4321,32 @@ def test_classifier_cli_overrides_blank_env_on_config_surface(monkeypatch) -> No
     assert displayed == "anthropic:claude-haiku-4-5"
 
 
+def test_blank_classifier_cli_displays_inheritance() -> None:
+    """A blank classifier flag must not expose its internal inherit sentinel."""
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import (
+        install_cli_provider,
+        reset_config_resolver,
+    )
+
+    option = get_option("models.auto_classifier")
+    assert option is not None
+    install_cli_provider(CliProvider({"auto_classifier_model": ""}))
+    try:
+        is_set, source, displayed = _resolve(
+            option,
+            toml_data={"models": {"auto_classifier": "openai:gpt-5"}},
+            managed_toml_data={},
+        )
+    finally:
+        reset_config_resolver()
+
+    assert is_set is True
+    assert source == "CLI argument"
+    assert displayed is None
+    assert _display_value(option, is_set=is_set, value=displayed) == "(unset)"
+
+
 def test_usable_env_classifier_is_still_reported(monkeypatch) -> None:
     """The veto must not swallow a real env value."""
     from deepagents_code import config_manifest

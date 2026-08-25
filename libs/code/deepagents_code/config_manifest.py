@@ -1384,6 +1384,10 @@ def resolve_auto_classifier_model_with_source(
     from deepagents_code.configuration.resolver import CLI_RANK
 
     if CLI_RANK in resolved.ranks:
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+        if value == INHERIT_CLASSIFIER_MODEL:
+            return None, source
         return (
             value.strip() if isinstance(value, str) and value.strip() else None
         ), source

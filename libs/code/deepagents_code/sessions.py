@@ -249,12 +249,8 @@ def format_timestamp(iso_timestamp: str | None) -> str:
         return ""
     try:
         dt = datetime.fromisoformat(iso_timestamp).astimezone()
-        return (
-            dt.strftime("%b %d, %-I:%M%p")
-            .lower()
-            .replace("am", "am")
-            .replace("pm", "pm")
-        )
+        hour_12 = dt.hour % 12 or 12
+        return f"{dt:%b %d}, {hour_12}:{dt:%M}{dt:%p}".lower()
     except (ValueError, TypeError):
         logger.debug(
             "Failed to parse timestamp %r; displaying as blank",

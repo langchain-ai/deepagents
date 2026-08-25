@@ -3315,14 +3315,27 @@ class TestResolveInterpreterEnabled:
         with patch.object(settings, "enable_interpreter", True):
             assert _resolve_interpreter_enabled(args) is False
 
-    def test_explicit_flag_overrides_sandbox_default(
-        self, mock_argv: MockArgvType
+    def test_explicit_flag_with_remote_sandbox_is_a_visible_error(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        """`--interpreter --sandbox <remote>` must abort with a real message.
+
+        The combination is unsatisfiable: `agent.py` refuses to build a remote
+        sandbox with the interpreter enabled. Returning `True` here surfaced
+        that as a bare `ValueError` traceback from deep inside agent
+        construction, which tells the user nothing about which two flags
+        conflict.
+        """
         from deepagents_code.main import _resolve_interpreter_enabled
 
         with mock_argv("-n", "task", "--sandbox", "daytona", "--interpreter"):
             args = parse_args()
-        assert _resolve_interpreter_enabled(args) is True
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_interpreter_enabled(args)
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "daytona" in out
+        assert "--interpreter" in out
 
     def test_explicit_no_flag_overrides_local_default(
         self, mock_argv: MockArgvType
@@ -3352,14 +3365,18 @@ class TestResolveInterpreterEnabled:
             assert _resolve_interpreter_enabled(args) is True
 
     def test_managed_policy_outranks_the_sandbox_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Managed `enable_interpreter` must survive a remote sandbox.
+        """Managed `enable_interpreter` must not be silently dropped.
 
         Regression: only the CLI tier was consulted, so a managed `true` --
         an `ENFORCED_MANAGED_KEYS` member -- silently became `false` whenever
-        `--sandbox` named a remote backend. The sandbox rule is a default, so
-        it may only apply when no tier declared the option.
+        `--sandbox` named a remote backend. Policy may not be revoked by a
+        user's flag, and the combination cannot be honoured either, so the
+        launch stops and names the administrator as the way out.
         """
         import argparse
 
@@ -3375,7 +3392,46 @@ class TestResolveInterpreterEnabled:
         service.invalidate_config_sources()
         try:
             args = argparse.Namespace(interpreter=None, sandbox="daytona")
-            assert _resolve_interpreter_enabled(args) is True
+            with pytest.raises(SystemExit) as exc_info:
+                _resolve_interpreter_enabled(args)
+            assert exc_info.value.code == 1
+            out = capsys.readouterr().out
+            assert "administrator" in out
+        finally:
+            service.invalidate_config_sources()
+
+    @pytest.mark.parametrize(
+        "toml_text",
+        [
+            "[interpreter]\nenable_interpreter = true\n",
+            "[interpreter]\nenable_interpreter = false\n",
+        ],
+        ids=["true", "false"],
+    )
+    def test_user_config_does_not_override_the_sandbox_rule(
+        self,
+        tmp_path: Path,
+        toml_text: str,
+    ) -> None:
+        """`config.toml` is an ambient preference; `--sandbox` is about this run.
+
+        Regression: treating *any* declaring tier as decisive meant the
+        redundant-but-harmless `enable_interpreter = true` in a user's
+        `config.toml` resolved `True` under a remote sandbox, which
+        `agent.py` then rejected with a `ValueError`. Selecting a remote
+        sandbox used to just work for these users and must keep working.
+        """
+        import argparse
+
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        # `_isolate_state_dir` already points `DEFAULT_CONFIG_PATH` here.
+        (tmp_path / "config.toml").write_text(toml_text, encoding="utf-8")
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(interpreter=None, sandbox="daytona")
+            assert _resolve_interpreter_enabled(args) is False
         finally:
             service.invalidate_config_sources()
 

@@ -1087,14 +1087,20 @@ def _install_cli_provider(args: argparse.Namespace) -> None:
 def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     """Return the resolver-backed interpreter state for these CLI args.
 
-    Any tier that actually declares `interpreter.enable_interpreter` wins,
-    including managed policy. Only an undeclared option -- one resolving from
-    the typed default -- falls through to the sandbox rule, because a remote
-    sandbox cannot host the interpreter and is the right default there.
+    Managed policy and an explicit CLI flag are deliberate, invocation-scoped
+    choices, so they outrank the remote-sandbox default. A remote sandbox
+    cannot host the interpreter, so an enabling choice from either tier is
+    unsatisfiable and exits `1` with an actionable message instead of letting a
+    `ValueError` surface from deep inside agent construction.
 
     Honouring the CLI tier alone was a policy hole: `interpreter.
     enable_interpreter` is an `ENFORCED_MANAGED_KEYS` member, and a managed
     `true` silently became `false` whenever `--sandbox` named a remote backend.
+
+    The environment and `config.toml` tiers are ambient preferences rather than
+    choices about this run, so `--sandbox` still wins over them. Letting them
+    through would turn the redundant-but-harmless `enable_interpreter = true`
+    into a launch failure for every remote-sandbox run.
 
     Raises:
         RuntimeError: If the manifest is missing the option, which is a
@@ -1102,7 +1108,7 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
             `True` here would enable JS execution for an enforced key.
     """
     from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
-    from deepagents_code.configuration.resolver import DEFAULT_RANK
+    from deepagents_code.configuration.resolver import CLI_RANK, MANAGED_RANK
 
     option = get_option("interpreter.enable_interpreter")
     if option is None:
@@ -1113,13 +1119,52 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
         raise RuntimeError(msg)
     resolved = _resolver_for_args(args).get(option)
     _emit_ranked_diagnostics(option, resolved)
-    if any(rank != DEFAULT_RANK for rank in resolved.ranks):
-        return bool(resolved.value)
-    if args.sandbox and args.sandbox != "none":
+    remote_sandbox = bool(args.sandbox) and args.sandbox != "none"
+    deciding_rank = next(
+        (rank for rank in resolved.ranks if rank in {MANAGED_RANK, CLI_RANK}), None
+    )
+    if deciding_rank is not None:
+        enabled = bool(resolved.value)
+        if enabled and remote_sandbox:
+            _exit_interpreter_conflicts_with_sandbox(args.sandbox, deciding_rank)
+        return enabled
+    if remote_sandbox:
         return False
     from deepagents_code.config import settings
 
     return settings.enable_interpreter
+
+
+def _exit_interpreter_conflicts_with_sandbox(
+    sandbox_type: str, deciding_rank: int
+) -> NoReturn:
+    """Abort the launch when the interpreter cannot run under a remote sandbox.
+
+    Always exits `1`: the two settings cannot both be honoured, and the user
+    must drop one of them.
+
+    Args:
+        sandbox_type: The remote sandbox backend the user selected.
+        deciding_rank: The provider rank that enabled the interpreter.
+    """
+    from rich.markup import escape
+
+    from deepagents_code.config import console
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+
+    if deciding_rank == MANAGED_RANK:
+        remedy = (
+            "Managed policy requires the JS interpreter, so this sandbox "
+            "cannot be used. Drop --sandbox or ask your administrator to "
+            "unset interpreter.enable_interpreter."
+        )
+    else:
+        remedy = "Drop --sandbox or drop --interpreter."
+    console.print(
+        "[bold red]Error:[/bold red] the JS interpreter is not supported with "
+        f"the {escape(sandbox_type)} sandbox in this release. {escape(remedy)}"
+    )
+    sys.exit(1)
 
 
 def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":

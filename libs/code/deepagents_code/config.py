@@ -13,6 +13,8 @@ import shlex
 import shutil
 import sys
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
@@ -45,7 +47,7 @@ from deepagents_code.config_manifest import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -2561,6 +2563,35 @@ def _resolve_retry_param_name(provider: str) -> str:
     return RETRY_PARAM_BY_PROVIDER.get(provider, "max_retries")
 
 
+_extra_skills_path_base: ContextVar[Path | None] = ContextVar(
+    "extra_skills_path_base",
+    default=None,
+)
+
+
+@contextmanager
+def _use_extra_skills_path_base(path: Path | None) -> Iterator[None]:
+    """Resolve relative extra skill roots from an explicit project path."""
+    token = _extra_skills_path_base.set(path)
+    try:
+        yield
+    finally:
+        _extra_skills_path_base.reset(token)
+
+
+def _resolve_extra_skills_path(raw: str) -> Path:
+    """Resolve one configured skill root from the active project path.
+
+    Returns:
+        The absolute, symlink-resolved skill root.
+    """
+    path = Path(raw).expanduser()
+    base = _extra_skills_path_base.get()
+    if base is not None and not path.is_absolute():
+        path = base / path
+    return path.resolve()
+
+
 def _parse_extra_skills_dirs(
     env_raw: str | None,
     config_toml_dirs: list[str] | None = None,
@@ -2590,7 +2621,7 @@ def _parse_extra_skills_dirs(
     # Env var takes precedence when set
     if env_raw:
         dirs = [
-            Path(p.strip()).expanduser().resolve()
+            _resolve_extra_skills_path(p.strip())
             for p in env_raw.split(":")
             if p.strip()
         ]
@@ -2598,7 +2629,7 @@ def _parse_extra_skills_dirs(
 
     if config_toml_dirs:
         dirs = [
-            Path(p).expanduser().resolve()
+            _resolve_extra_skills_path(p)
             for p in config_toml_dirs
             if isinstance(p, str) and p.strip()
         ]
@@ -2825,7 +2856,8 @@ class Settings:
             if option.key in {"shell.allow_list", "skills.extra_allowed_dirs"}
             or (option.group == "Interpreter" and option.settings_field is not None)
         )
-        resolved_config = get_config_resolver().resolve_options(wanted)
+        with _use_extra_skills_path_base(start_path):
+            resolved_config = get_config_resolver().resolve_options(wanted)
 
         # No `is None` fallback for either enforced key below. The manifest is a
         # module-level constant, so a missing option is a programming error, not
@@ -3041,25 +3073,30 @@ class Settings:
             project_root = previous["project_root"]
 
         try:
-            skills_option = get_option("skills.extra_allowed_dirs")
-            resolved_skills: list[Path] | None = None
-            skills_managed = False
-            if skills_option is not None:
-                skills_resolved = candidate_resolver.get(skills_option)
-                _emit_ranked_diagnostics(skills_option, skills_resolved)
-                if managed_decided(_ranked_source(skills_resolved)):
-                    skills_managed = True
-                    resolved_skills = cast("list[Path] | None", skills_resolved.value)
-                else:
-                    user_result = skills_resolved.tier_health[USER_RANK]
-                    if isinstance(user_result, Found):
-                        resolved_skills = cast("list[Path] | None", user_result.value)
-            env_skills = env.get(EXTRA_SKILLS_DIRS)
-            extra_skills_dirs = (
-                resolved_skills
-                if skills_managed or not env_skills
-                else _parse_extra_skills_dirs(env_skills)
-            )
+            with _use_extra_skills_path_base(start_path):
+                skills_option = get_option("skills.extra_allowed_dirs")
+                resolved_skills: list[Path] | None = None
+                skills_managed = False
+                if skills_option is not None:
+                    skills_resolved = candidate_resolver.get(skills_option)
+                    _emit_ranked_diagnostics(skills_option, skills_resolved)
+                    if managed_decided(_ranked_source(skills_resolved)):
+                        skills_managed = True
+                        resolved_skills = cast(
+                            "list[Path] | None", skills_resolved.value
+                        )
+                    else:
+                        user_result = skills_resolved.tier_health[USER_RANK]
+                        if isinstance(user_result, Found):
+                            resolved_skills = cast(
+                                "list[Path] | None", user_result.value
+                            )
+                env_skills = env.get(EXTRA_SKILLS_DIRS)
+                extra_skills_dirs = (
+                    resolved_skills
+                    if skills_managed or not env_skills
+                    else _parse_extra_skills_dirs(env_skills)
+                )
         except (OSError, ValueError):
             # Path resolution can fail (e.g. broken symlink loop). Keep the
             # previous value rather than letting the failure escape reload --

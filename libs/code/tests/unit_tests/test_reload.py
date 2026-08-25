@@ -165,6 +165,30 @@ class TestReloadFromEnvironment:
         assert preview == applied
         assert settings.extra_skills_dirs == [skills_dir]
 
+    def test_reload_resolves_relative_skill_roots_from_target_cwd(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cwd-switch reload interprets skill roots from the target project."""
+        from deepagents_code import model_config
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[skills]\nextra_allowed_dirs = ["shared-skills"]\n',
+            encoding="utf-8",
+        )
+        settings = Settings.from_environment(start_path=current)
+        assert settings.extra_skills_dirs == [current / "shared-skills"]
+
+        settings.reload_from_environment(start_path=target)
+
+        assert settings.extra_skills_dirs == [target / "shared-skills"]
+
     def test_preview_reload_retains_shell_allow_list_on_corrupt_toml(
         self, tmp_path: Path
     ) -> None:

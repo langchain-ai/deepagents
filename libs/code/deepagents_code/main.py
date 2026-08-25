@@ -1629,6 +1629,33 @@ def _configured_profile_notice() -> str | None:
     )
 
 
+def _print_configured_profile_notice() -> None:
+    """Print the configured-profile notice to stderr, if there is one.
+
+    Wrapped in its own error handling rather than sharing the optional-tools
+    `try`: a failure here must not be reported as "tool availability check
+    skipped", and must not stop the tool warnings from printing.
+    """
+    notice = None
+    try:
+        notice = _configured_profile_notice()
+        if notice is None:
+            return
+        from rich.console import Console as _Console
+
+        _Console(stderr=True).print(notice)
+    except Exception:
+        logger.warning("Could not print the profile notice", exc_info=True)
+        if notice is not None:
+            # The point of the notice is that a silent wrong profile looks like
+            # lost settings, so fall back to plain stderr rather than dropping
+            # it.
+            with contextlib.suppress(Exception):
+                sys.stderr.write(
+                    f"Using profile {PATHS.profile.root} (DEEPAGENTS_HOME)\n"
+                )
+
+
 def _suppress_hint_cli(key: str) -> str:
     """Return a configured-path suppression hint for non-interactive output.
 
@@ -5723,6 +5750,7 @@ def cli_main() -> None:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
         elif args.non_interactive_message:
+            _print_configured_profile_notice()
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)
             # Check for optional tools before running agent (stderr so
@@ -5738,9 +5766,6 @@ def cli_main() -> None:
                 warn_console = None
                 try:
                     warn_console = _Console(stderr=True)
-                    profile_notice = _configured_profile_notice()
-                    if profile_notice is not None:
-                        warn_console.print(profile_notice)
                     missing_tools = check_optional_tools()
                     if _should_ensure_managed_ripgrep():
                         missing_tools = _auto_install_ripgrep_cli(
@@ -5855,6 +5880,7 @@ def cli_main() -> None:
                 sys.exit(130)
             sys.exit(exit_code)
         else:
+            _print_configured_profile_notice()
             resume_thread = args.resume_thread  # "__MOST_RECENT__", "<id>", or None
             if resume_thread is None:
                 # A normal (non-resume) launch runs the update path and resets

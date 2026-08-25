@@ -692,6 +692,76 @@ class TestConfiguredProfileNotice:
         assert str(configured) in notice
 
 
+class TestConfiguredProfileNoticeReachesEveryLaunchPath:
+    """The notice only helps if the launch path a user takes actually prints it.
+
+    It was wired into the non-interactive branch only, so the interactive TUI
+    launch — how most users start dcode — showed nothing, leaving the exact
+    "where did my settings go?" case the notice exists to prevent.
+    """
+
+    def test_source_prints_the_notice_on_both_session_launches(self) -> None:
+        """Both session-launch branches call the printer."""
+        import inspect
+
+        from deepagents_code import main
+
+        source = inspect.getsource(main.cli_main)
+
+        assert source.count("_print_configured_profile_notice()") == 2
+
+    def test_printer_is_not_inside_the_optional_tools_guard(self) -> None:
+        """A markup failure here must not be reported as a tool-check failure."""
+        import inspect
+
+        from deepagents_code import main
+
+        source = inspect.getsource(main.cli_main)
+        notice_at = source.index("_print_configured_profile_notice()")
+        guard_at = source.index("Tool availability check skipped")
+
+        assert notice_at < guard_at
+
+    def test_printer_writes_to_stderr(
+        self,
+        tmp_path: Path,
+        install_profile_snapshot: InstallProfileSnapshot,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Piped stdout stays clean; the notice goes to stderr."""
+        from deepagents_code import main
+
+        configured = tmp_path / "custom"
+        configured.mkdir()
+        install_profile_snapshot(configured, launch_home=tmp_path)
+
+        main._print_configured_profile_notice()
+
+        captured = capsys.readouterr()
+        # Rich hard-wraps to the console width, and will break mid-path, so
+        # compare with every space removed.
+        err = "".join(captured.err.split())
+        assert str(configured) in err
+        assert captured.out == ""
+
+    def test_printer_stays_silent_for_the_default_profile(
+        self,
+        tmp_path: Path,
+        install_profile_snapshot: InstallProfileSnapshot,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The common case prints nothing at all."""
+        from deepagents_code import main
+
+        install_profile_snapshot(None, launch_home=tmp_path)
+
+        main._print_configured_profile_notice()
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+
 class TestHomeDirectoryProfileSpellings:
     """Every spelling of "the profile is my home directory" must be rejected.
 

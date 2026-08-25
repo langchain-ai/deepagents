@@ -91,9 +91,8 @@ def test_rejects_invalid_registrations(api: ExtensionAPI) -> None:
 
 
 def test_registrar_closes_after_session(api: ExtensionAPI) -> None:
-    """A retained registrar cannot mutate a registry after teardown."""
-    api._registry.retain_api(api)
-    api._registry.deactivate_apis()
+    """A deactivated registrar cannot mutate a registry after teardown."""
+    api._deactivate()
 
     with pytest.raises(ExtensionError, match="closed for this session"):
         api.register_middleware(_Middleware())

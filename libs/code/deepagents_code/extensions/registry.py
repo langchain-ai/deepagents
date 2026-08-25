@@ -16,8 +16,6 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.tools import BaseTool
 
-    from deepagents_code.extensions.api import ExtensionAPI
-
 logger = logging.getLogger(__name__)
 
 
@@ -97,7 +95,6 @@ class ExtensionRegistry:
         self.shutdown_hooks: list[RegisteredUnit[Callable[[], Any]]] = []
         self._lock = threading.RLock()
         self._listeners: list[Callable[[str, RegisteredUnit[Any]], None]] = []
-        self._apis: list[ExtensionAPI] = []
         self._restart_required = False
 
     @property
@@ -126,18 +123,6 @@ class ExtensionRegistry:
             del self.tools[snapshot.tools :]
             del self.backend_routes[snapshot.backend_routes :]
             del self.shutdown_hooks[snapshot.shutdown_hooks :]
-
-    def retain_api(self, api: ExtensionAPI) -> None:
-        """Keep a successful factory registrar active for this session."""
-        with self._lock:
-            self._apis.append(api)
-
-    def deactivate_apis(self) -> None:
-        """Close every registrar after session teardown."""
-        with self._lock:
-            apis, self._apis = self._apis, []
-        for api in apis:
-            api._deactivate()
 
     def subscribe(self, listener: Callable[[str, RegisteredUnit[Any]], None]) -> None:
         """Observe successful registrations made after host construction."""

@@ -8,7 +8,6 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
@@ -38,12 +37,8 @@ from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.filesystem import (
-    NUM_CHARS_PER_TOKEN,
-    FilesystemMiddleware,
-    FilesystemPermission,
-    _scrub_unsupported_multimodal_content,
-)
+from deepagents.middleware._model_profile import _scrub_unsupported_multimodal_content
+from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
 from deepagents.middleware.subagents import SubAgent  # noqa: TC001
 from deepagents.middleware.summarization import create_summarization_tool_middleware
@@ -4920,19 +4915,6 @@ def _is_placeholder_block(block: ContentBlock, *, path: str) -> bool:
 
 
 class TestMultimodalProfileScrubRuntimeModel:
-    def test_standalone_filesystem_middleware_scrubs(self) -> None:
-        model = FixedGenericFakeChatModel(
-            messages=iter([AIMessage(content="done")]),
-            profile={"image_inputs": False},
-        )
-        agent = create_agent(model, middleware=[FilesystemMiddleware()])
-        image = {"type": "image", "base64": "aW1hZ2U=", "mime_type": "image/png"}
-
-        agent.invoke({"messages": [HumanMessage(content=[image])]})
-
-        received = next(message for message in model.captured_messages[0] if isinstance(message, HumanMessage))
-        assert received.content_blocks[0]["type"] == "text"
-
     @pytest.mark.parametrize(
         ("startup_profile", "runtime_profile", "expected_block_type"),
         [

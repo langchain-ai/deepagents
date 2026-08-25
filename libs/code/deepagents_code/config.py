@@ -2583,7 +2583,8 @@ CLI_MAX_RETRIES_KEY = "__deepagents_cli_max_retries__"
 
 `cli_main` stashes the flag value under this key in the `model_params` dict it
 forwards to the run, and `create_model` pops it before resolving the effective
-model-node retry count (see `resolve_model_retries`). This lets the CLI value
+model-node retry count (see `_resolve_model_retries_from_section`). This lets
+the CLI value
 ride the existing `model_params`/`extra_kwargs` carrier to the one place that
 authoritatively resolves the provider.
 
@@ -2609,7 +2610,18 @@ def _resolve_model_retries_from_section(
     provider: str,
     cli_max_retries: int | None,
 ) -> int:
-    """Resolve a retry budget from already-loaded configuration.
+    """Resolve a retry budget from an already-loaded `[retries]` section.
+
+    Precedence (highest first):
+
+    1. `cli_max_retries` (the `--max-retries` flag).
+    2. `[retries.<provider>].max_retries` in `config.toml`.
+    3. `[retries].max_retries` (global) in `config.toml`.
+    4. `DEFAULT_MODEL_RETRIES`.
+
+    A resolved value of `0` disables retries. The caller passes the section in
+    so `create_model` reads `config.toml` once for both the budget and the
+    provider disable kwarg.
 
     Args:
         section: Raw `[retries]` mapping from `config.toml`, or `None`.
@@ -2617,7 +2629,8 @@ def _resolve_model_retries_from_section(
         cli_max_retries: Explicit CLI override, or `None` when unset.
 
     Returns:
-        The effective retry count.
+        The effective retry count. Always `>= 0` for a `cli_max_retries` that
+        came through `--max-retries`, which `non_negative_int` validates.
     """
     if cli_max_retries is not None:
         return cli_max_retries
@@ -2669,33 +2682,6 @@ def collect_retry_config_warnings() -> list[str]:
     finally:
         logger.removeHandler(handler)
     return captured
-
-
-def resolve_model_retries(
-    provider: str,
-    *,
-    cli_max_retries: int | None = None,
-) -> int:
-    """Resolve the effective model-node retry count for `provider`.
-
-    Precedence (highest first):
-
-    1. `cli_max_retries` (the `--max-retries` flag).
-    2. `[retries.<provider>].max_retries` in `config.toml`.
-    3. `[retries].max_retries` (global) in `config.toml`.
-    4. `DEFAULT_MODEL_RETRIES`.
-
-    A resolved value of `0` disables retries.
-
-    Args:
-        provider: Provider the retry count is being resolved for.
-        cli_max_retries: The `--max-retries` flag value, or `None` when unset.
-
-    Returns:
-        The effective retry count (always `>= 0`).
-    """
-    section = _read_config_toml_retries()
-    return _resolve_model_retries_from_section(section, provider, cli_max_retries)
 
 
 def _parse_extra_skills_dirs(
@@ -5491,7 +5477,8 @@ class ModelResult:
         unsupported_modalities: Input modalities not indicated as supported by
             the model profile (e.g. `{"audio", "video"}`).
         model_retries: Effective model-node retry count for the resolved
-            provider (see `resolve_model_retries`). `0` disables retries.
+            provider (see `_resolve_model_retries_from_section`). `0` disables
+            retries.
         cli_max_retries: The `--max-retries` flag value, or `None` when the user
             did not set it. Kept distinct from `model_retries` so a model built
             for a different provider can resolve its own configured budget
@@ -5511,7 +5498,7 @@ class ModelResult:
 
         Non-negativity is enforced upstream by `non_negative_int` on
         `--max-retries` and by `_coerce_max_retries` for config values, not by
-        `resolve_model_retries` itself, so a bad value here signals a caller
+        the retry resolver itself, so a bad value here signals a caller
         constructing `ModelResult` by hand with a budget the retry middleware
         could not honor. `bool` is rejected for the same reason
         `_request_max_retries` rejects it: `True` would silently read as a

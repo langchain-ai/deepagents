@@ -284,13 +284,56 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     return min(max(seconds, 0.0), _MAX_RETRY_AFTER_SECONDS)
 
 
-def _compute_backoff_delay(attempt: int) -> float:
-    """Return the jittered exponential delay after a zero-indexed attempt."""
-    delay = min(_INITIAL_DELAY_SECONDS * (_BACKOFF_FACTOR**attempt), _MAX_DELAY_SECONDS)
-    if delay > 0:
+def _backoff_delay(
+    attempt: int,
+    *,
+    initial: float,
+    factor: float,
+    max_delay: float,
+    jitter: bool,
+) -> float:
+    """Return the exponential backoff delay after a zero-indexed attempt.
+
+    The one place the curve is computed. The middleware reads its own mutable
+    attributes and the auxiliary helpers read the module constants, so both pass
+    their parameters in rather than keeping a second copy of the arithmetic.
+
+    Jitter is applied *after* the cap, so a returned delay can exceed
+    `max_delay` by the jitter fraction.
+
+    Args:
+        attempt: The 0-indexed attempt that just failed.
+        initial: Delay before the first retry.
+        factor: Multiplier applied per attempt.
+        max_delay: Ceiling applied before jitter.
+        jitter: Whether to spread the delay by `_JITTER_FRACTION`.
+
+    Returns:
+        Delay in seconds, never negative.
+    """
+    delay = min(initial * (factor**attempt), max_delay)
+    if jitter and delay > 0:
         jitter_amount = delay * _JITTER_FRACTION
         delay = max(0.0, delay + random.uniform(-jitter_amount, jitter_amount))  # noqa: S311  # backoff jitter, not security-sensitive
     return delay
+
+
+def _compute_backoff_delay(attempt: int) -> float:
+    """Return the jittered exponential delay after a zero-indexed attempt.
+
+    Args:
+        attempt: The 0-indexed attempt that just failed.
+
+    Returns:
+        Delay in seconds from the module's fixed curve.
+    """
+    return _backoff_delay(
+        attempt,
+        initial=_INITIAL_DELAY_SECONDS,
+        factor=_BACKOFF_FACTOR,
+        max_delay=_MAX_DELAY_SECONDS,
+        jitter=True,
+    )
 
 
 def _retry_delay_seconds(attempt: int, exc: Exception) -> float:
@@ -608,13 +651,16 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             attempt: The 0-indexed attempt that just failed.
 
         Returns:
-            Delay in seconds, capped at `_MAX_DELAY_SECONDS`, with +-10% jitter.
+            Delay in seconds from `self.max_delay`, with +-10% jitter applied
+            after the cap, so the result can exceed the cap by that fraction.
         """
-        delay = min(self.initial_delay * (self.backoff_factor**attempt), self.max_delay)
-        if self.jitter and delay > 0:
-            jitter_amount = delay * _JITTER_FRACTION
-            delay = max(0.0, delay + random.uniform(-jitter_amount, jitter_amount))  # noqa: S311  # backoff jitter, not security-sensitive
-        return delay
+        return _backoff_delay(
+            attempt,
+            initial=self.initial_delay,
+            factor=self.backoff_factor,
+            max_delay=self.max_delay,
+            jitter=self.jitter,
+        )
 
     @staticmethod
     def _emit_retry_status(

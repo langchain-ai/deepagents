@@ -45,8 +45,9 @@ from deepagents_code.config import (
     DEFAULT_MODEL_RETRIES,
     MODEL_RETRIES_ATTR,
     UNICODE_GLYPHS,
+    _read_config_toml_retries,
     _resolve_config_retry_count,
-    resolve_model_retries,
+    _resolve_model_retries_from_section,
 )
 from deepagents_code.model_retry import (
     _JITTER_FRACTION,
@@ -220,36 +221,55 @@ def _async_handler(
     return cast("Callable[[ModelRequest], Awaitable[ModelResponse]]", function)
 
 
-# --- resolve_model_retries / config resolution ---
+# --- retry budget config resolution ---
+
+
+def _resolve_retries(provider: str, *, cli_max_retries: int | None = None) -> int:
+    """Resolve a budget the way `create_model` does.
+
+    `create_model` reads the `[retries]` section once and passes it to
+    `_resolve_model_retries_from_section`, so the tests take that same path
+    rather than a wrapper production never calls.
+
+    Args:
+        provider: Effective model provider.
+        cli_max_retries: The `--max-retries` value, or `None` when unset.
+
+    Returns:
+        The effective retry count.
+    """
+    return _resolve_model_retries_from_section(
+        _read_config_toml_retries(), provider, cli_max_retries
+    )
 
 
 def test_default_retries_is_five(tmp_path: Path) -> None:
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "none.toml"):
-        assert resolve_model_retries("openai") == 5
+        assert _resolve_retries("openai") == 5
     assert DEFAULT_MODEL_RETRIES == 5
 
 
 def test_cli_zero_disables(tmp_path: Path) -> None:
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "none.toml"):
-        assert resolve_model_retries("openai", cli_max_retries=0) == 0
+        assert _resolve_retries("openai", cli_max_retries=0) == 0
 
 
 def test_cli_overrides_config(tmp_path: Path) -> None:
     cfg = _write_config(tmp_path, "[retries]\nmax_retries = 3\n")
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
-        assert resolve_model_retries("openai", cli_max_retries=1) == 1
+        assert _resolve_retries("openai", cli_max_retries=1) == 1
 
 
 def test_global_config_applies(tmp_path: Path) -> None:
     cfg = _write_config(tmp_path, "[retries]\nmax_retries = 3\n")
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
-        assert resolve_model_retries("openai") == 3
+        assert _resolve_retries("openai") == 3
 
 
 def test_global_zero_disables(tmp_path: Path) -> None:
     cfg = _write_config(tmp_path, "[retries]\nmax_retries = 0\n")
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
-        assert resolve_model_retries("openai") == 0
+        assert _resolve_retries("openai") == 0
 
 
 def test_provider_overrides_global(tmp_path: Path) -> None:
@@ -258,8 +278,8 @@ def test_provider_overrides_global(tmp_path: Path) -> None:
         "[retries]\nmax_retries = 3\n[retries.openai]\nmax_retries = 7\n",
     )
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
-        assert resolve_model_retries("openai") == 7
-        assert resolve_model_retries("anthropic") == 3
+        assert _resolve_retries("openai") == 7
+        assert _resolve_retries("anthropic") == 3
 
 
 def test_param_key_does_not_disturb_the_count(tmp_path: Path) -> None:
@@ -273,7 +293,7 @@ def test_param_key_does_not_disturb_the_count(tmp_path: Path) -> None:
         '[retries.openai]\nparam = "num_retries"\nmax_retries = 2\n',
     )
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
-        assert resolve_model_retries("openai") == 2
+        assert _resolve_retries("openai") == 2
 
 
 def test_resolve_config_retry_count_direct() -> None:

@@ -40,6 +40,7 @@ from deepagents_code.config import (
     _quiet_sdk_logging,
     _read_config_toml_retries,
     _resolve_config_retry_count,
+    _resolve_model_retries_from_section,
     apply_stored_langsmith_auth,
     build_langsmith_thread_url,
     configure_langsmith_secret_redaction,
@@ -58,7 +59,6 @@ from deepagents_code.config import (
     normalize_langsmith_endpoint,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
-    resolve_model_retries,
     settings,
     validate_model_capabilities,
 )
@@ -1782,13 +1782,24 @@ class TestRetriesConfig:
 
 
 class TestResolveModelRetries:
-    """`resolve_model_retries` resolves the model-node retry budget."""
+    """The retry resolver resolves the model-node retry budget."""
+
+    @staticmethod
+    def _resolve_retries(provider: str, *, cli_max_retries: int | None = None) -> int:
+        """Resolve a budget the way `create_model` does.
+
+        Returns:
+            The effective retry count.
+        """
+        return _resolve_model_retries_from_section(
+            _read_config_toml_retries(), provider, cli_max_retries
+        )
 
     def test_uses_default_when_config_is_absent(self, tmp_path: Path) -> None:
         """The default retry budget applies without config or a CLI flag."""
         config_path = tmp_path / "config.toml"
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert resolve_model_retries("openai") == 5
+            assert self._resolve_retries("openai") == 5
 
     def test_cli_value_beats_provider_and_global_config(self, tmp_path: Path) -> None:
         """The CLI retry count has highest precedence."""
@@ -1797,7 +1808,7 @@ class TestResolveModelRetries:
             "[retries]\nmax_retries = 2\n[retries.openai]\nmax_retries = 3\n"
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert resolve_model_retries("openai", cli_max_retries=4) == 4
+            assert self._resolve_retries("openai", cli_max_retries=4) == 4
 
 
 class TestCreateModelMaxRetries:

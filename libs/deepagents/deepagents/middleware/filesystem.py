@@ -891,13 +891,35 @@ DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
 # Template for truncation message in read_file
 # {file_path} will be filled in at runtime
-READ_FILE_TRUNCATION_MSG = (
+# Carries its own leading space so the empty-string substitution below leaves no
+# double space behind. Both sentences depend on a shell, so both sit in the slot.
+_READ_FILE_TRUNCATION_EXECUTE_HINT = (
+    " For example, if this is JSON, use execute(command='jq . {file_path}') to pretty-print it with line breaks. "
+    "For other formats, you can use appropriate formatting tools to split long lines."
+)
+
+_READ_FILE_TRUNCATION_MSG_TEMPLATE = (
     "\n\n[Output was truncated due to size limits. "
     "The file content is very large. "
-    "Consider reformatting the file to make it easier to navigate. "
-    "For example, if this is JSON, use execute(command='jq . {file_path}') to pretty-print it with line breaks. "
-    "For other formats, you can use appropriate formatting tools to split long lines.]"
+    "Consider reformatting the file to make it easier to navigate.{execute_hint}]"
 )
+
+READ_FILE_TRUNCATION_MSG = _READ_FILE_TRUNCATION_MSG_TEMPLATE.format(execute_hint=_READ_FILE_TRUNCATION_EXECUTE_HINT)
+_READ_FILE_TRUNCATION_MSG_WITHOUT_EXECUTE = _READ_FILE_TRUNCATION_MSG_TEMPLATE.format(execute_hint="")
+
+
+def _read_file_truncation_msg(backend: BackendProtocol) -> str:
+    """Pick the truncation notice matching the backend's execution support.
+
+    `execute` is filtered out of the request for backends that do not implement
+    `SandboxBackendProtocol`, so on those the `jq` suggestion names a tool the
+    model was never given. Mirrors `_GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE`,
+    which is swapped in at request time for the same reason.
+    """
+    if supports_execution(backend):
+        return READ_FILE_TRUNCATION_MSG
+    return _READ_FILE_TRUNCATION_MSG_WITHOUT_EXECUTE
+
 
 # Approximate number of characters per token for truncation calculations.
 # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
@@ -910,6 +932,7 @@ def _truncate_paginated_read(
     file_path: str,
     read_result: ReadResult,
     token_limit: int | None,
+    truncation_msg: str = READ_FILE_TRUNCATION_MSG,
 ) -> str:
     """Truncate a paginated read without skipping undisplayed source lines.
 
@@ -930,6 +953,10 @@ def _truncate_paginated_read(
             adjusted `next_offset` is derived from its 1-indexed line range.
         token_limit: Char budget is `NUM_CHARS_PER_TOKEN * token_limit`; when
             falsy, content is returned with its notice untouched.
+        truncation_msg: Notice appended when the budget is exceeded, with
+            `{file_path}` still unsubstituted. Defaults to the variant naming
+            `execute`; pass `_read_file_truncation_msg(backend)` to drop that
+            suggestion on backends where `execute` is filtered out.
 
     Returns:
         The (possibly truncated) content with a notice that never overstates
@@ -948,7 +975,7 @@ def _truncate_paginated_read(
     if not token_limit or len(content) + len(notice) < NUM_CHARS_PER_TOKEN * token_limit:
         return content + notice
 
-    truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+    truncation_msg = truncation_msg.format(file_path=file_path)
     threshold = NUM_CHARS_PER_TOKEN * token_limit
     if read_result.start_line is not None and read_result.end_line is not None:
         # Build the safe places where the content can be truncated. A long source
@@ -1849,7 +1876,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     content = "".join(lines[:line_limit])
 
             if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
-                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+                truncation_msg = _read_file_truncation_msg(self.backend).format(file_path=file_path)
                 max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
                 content = content[:max_content_length] + truncation_msg
 
@@ -1945,7 +1972,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # push real source lines off the end of the page (#2453).
             # The clamp notice is appended after truncation so it cannot be cut.
             return ToolMessage(
-                content=_truncate_paginated_read(content, validated_path, read_result, token_limit) + _clamped_offset_notice(offset),
+                content=_truncate_paginated_read(
+                    content,
+                    validated_path,
+                    read_result,
+                    token_limit,
+                    _read_file_truncation_msg(self.backend),
+                )
+                + _clamped_offset_notice(offset),
                 name="read_file",
                 tool_call_id=tool_call_id,
                 status="success",

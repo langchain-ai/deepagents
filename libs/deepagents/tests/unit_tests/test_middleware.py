@@ -1,5 +1,7 @@
 import mimetypes
+import tempfile
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +23,7 @@ from pydantic import ValidationError
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import (
     BackendProtocol,
     ExecuteResponse,
@@ -1730,6 +1733,47 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert "Output was truncated due to size limits" in result.content
         assert "remaining from offset" not in result.content
+
+    def test_read_file_truncation_omits_execute_hint_without_sandbox(self):
+        """`execute` is filtered out on a non-sandbox backend, so do not name it.
+
+        The suggestion arrives at the one moment the model is stuck with content
+        it cannot handle inline, which is when a model most likely to act on bad
+        advice will act on it.
+        """
+        backend, _ = _make_backend()
+        assert not supports_execution(backend)
+        read_result = ReadResult(
+            file_data=FileData(content="\n".join("x" * 80 for _ in range(100)), encoding="utf-8"),
+            total_lines=100,
+            start_line=1,
+            end_line=100,
+            next_offset=100,
+        )
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
+
+        assert "Output was truncated due to size limits" in result.content
+        assert "execute(" not in result.content
+        assert "jq" not in result.content
+
+    def test_read_file_truncation_keeps_execute_hint_on_a_sandbox_backend(self):
+        """A backend that can run commands still gets the `jq` suggestion."""
+        root = tempfile.mkdtemp()
+        backend = LocalShellBackend(root_dir=root)
+        assert supports_execution(backend)
+        (Path(root) / "notes.txt").write_text("\n".join("x" * 80 for _ in range(100)))
+
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
+
+        assert "Output was truncated due to size limits" in result.content
+        assert "execute(command='jq . /notes.txt')" in result.content
 
     def test_read_file_truncation_recomputes_remaining_lines_notice(self):
         backend, _ = _make_backend()

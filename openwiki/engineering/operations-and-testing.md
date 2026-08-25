@@ -47,6 +47,7 @@ From `libs/`, use fan-out commands such as `make lint`, `make format`, and `make
 | Core SDK middleware/backends/profiles | `libs/deepagents/tests/unit_tests/` and `libs/deepagents/Makefile` | Integration tests for networked backend/provider behavior; preserve public export/signature compatibility. |
 | Deep Agents Code UI/server/approval/MCP | `libs/code/tests/unit_tests/`; `make check` is the full local package suite | `tests/integration_tests/test_auto_approve_remote.py` for remote approval behavior; read [Deep Agents Code](../workflows/deep-agents-code.md) for fail-closed requirements. |
 | ACP adapter | `libs/acp/tests/` and its Makefile | ACP event/HITL/model-selection behavior; free-form interrupts and audio have known adapter limitations. |
+| Talon host, channels, cron, or assistant-local state | `libs/talon/tests/`; start with `test_host.py`, `test_runtime.py`, `cron/test_scheduler.py`, or `test_data_lifecycle.py` | Channel/provider tests for transport, exposure, media, reactions, or offsets; real model, MCP, voice, and tracing checks only when that external boundary changes. See [Talon runtime](../workflows/talon-runtime.md). |
 | Evals, reporter, Harbor scripts | `libs/evals/tests/unit_tests/`; `make lint` verifies catalog generation | Targeted live model/evaluation only when credentials/cost are intended; see [Evaluation and release](../workflows/evaluation-and-release.md). |
 | GitHub Action | `.github/scripts/test_github_action.py` plus action/workflow tests | Treat `response` as raw unfiltered output and avoid exposing it downstream. |
 
@@ -58,6 +59,7 @@ Do not read or expose `.env` files; sample `.env.example` files can explain conf
 - **LangSmith:** SDK tracing/sandboxes, managed deployment CLI interactions, real evaluations, and Harbor runs all integrate with LangSmith in different ways. Evaluation tracing requires LangSmith credentials; do not conflate it with offline unit testing.
 - **MCP:** `libs/code` supports stdio/HTTP/SSE servers and project/user configuration precedence. Project config is treated as a trust boundary; use its explicit trust flow rather than bypassing it. Details are in [Deep Agents Code](../workflows/deep-agents-code.md).
 - **ACP:** `libs/acp` converts compiled graph events to Agent Client Protocol for editor integration. It supports selected HITL interactions but not arbitrary free-form LangGraph interrupts.
+- **Talon:** `libs/talon` hosts a core SDK graph for long-running channel and cron work, and imports selected `deepagents-code` tools. It is experimental and is not a sandbox or multi-tenant security boundary; see [Talon runtime](../workflows/talon-runtime.md).
 - **GitHub Action:** root `action.yml` invokes dcode non-interactively, forwarding model, allowed shell commands, timeout, memory, MCP, sandbox, and other headless options. `ACTION.md` documents inputs/outputs and warns that output is raw.
 
 ## CI and release runbook
@@ -113,6 +115,8 @@ Terminal agent entry/server/assembly     libs/code/deepagents_code/{main,server_
 Configuration and managed policy         libs/code/deepagents_code/{config_manifest.py,configuration/}
 Approval / Auto / MCP policy             libs/code/deepagents_code/{approval_mode,auto_mode,mcp_tools}.py
 ACP adapter                              libs/acp/deepagents_acp/server.py
+Talon host and runtime assembly           libs/talon/deepagents_talon/{__main__,host,runtime,config}.py
+Talon cron and state retention            libs/talon/deepagents_talon/{cron/,data_lifecycle.py}
 Evals and catalogs                       libs/evals/{README.md,EVAL_CATALOG.md,UNIFIED_EVALS.md}
 Harbor prep and aggregation              .github/scripts/evals/{unified_prep,aggregate_unified}.py
 CI / reusable Harbor / release           .github/workflows/{ci,_harbor_run,unified_evals,release,release-please}.yml

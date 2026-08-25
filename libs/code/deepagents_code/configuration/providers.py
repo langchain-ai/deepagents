@@ -50,6 +50,7 @@ from deepagents_code.configuration.types import (
 
 REMOTE_MANAGED_CONFIG_MAX_BYTES = 1024 * 1024
 REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS = 5
+_HTTP_OK = 200
 _HTTP_REDIRECT_MIN = 300
 _HTTP_REDIRECT_MAX = 400
 
@@ -722,6 +723,42 @@ def _read_response_chunk(
     return response.read1(size)
 
 
+def _declared_body_length(response: HTTPResponse) -> int | None:
+    """Return the body length this response's HTTP framing promises.
+
+    Returns:
+        The declared length, or `None` when chunked framing delimits the body.
+
+    Raises:
+        ValueError: If framing cannot show that the body arrived whole, or the
+            declared length is over the fixed limit.
+    """
+    raw_length = response.headers.get("Content-Length")
+    if raw_length is None:
+        encoding = (response.headers.get("Transfer-Encoding") or "").strip()
+        if encoding.lower() == "chunked":
+            # Chunked framing detects its own truncation: `http.client` raises
+            # `IncompleteRead` when the terminating chunk never arrives.
+            return None
+        # Connection-close framing cannot distinguish a complete policy from
+        # one cut short, and TOML truncated at a line boundary still parses --
+        # a deny list can lose its entries and still look healthy.
+        msg = "remote source did not delimit the response body"
+        raise ValueError(msg)
+    try:
+        declared = int(raw_length)
+    except ValueError as exc:
+        msg = "remote source declared an invalid body length"
+        raise ValueError(msg) from exc
+    if declared < 0:
+        msg = "remote source declared an invalid body length"
+        raise ValueError(msg)
+    if declared > REMOTE_MANAGED_CONFIG_MAX_BYTES:
+        msg = "remote source response exceeds the size limit"
+        raise ValueError(msg)
+    return declared
+
+
 def _read_limited_response(
     response: HTTPResponse,
     *,
@@ -736,18 +773,7 @@ def _read_limited_response(
         IncompleteRead: If HTTP framing reports a truncated response.
         ValueError: If the declared or actual body exceeds the fixed limit.
     """
-    declared_length: int | None = None
-    raw_length = response.headers.get("Content-Length")
-    if raw_length is not None:
-        try:
-            declared = int(raw_length)
-        except ValueError:
-            declared = -1
-        if declared > REMOTE_MANAGED_CONFIG_MAX_BYTES:
-            msg = "remote source response exceeds the size limit"
-            raise ValueError(msg)
-        if declared >= 0:
-            declared_length = declared
+    declared_length = _declared_body_length(response)
     chunks: list[bytes] = []
     remaining = REMOTE_MANAGED_CONFIG_MAX_BYTES + 1
     while remaining > 0:
@@ -765,7 +791,10 @@ def _read_limited_response(
     if len(payload) > REMOTE_MANAGED_CONFIG_MAX_BYTES:
         msg = "remote source response exceeds the size limit"
         raise ValueError(msg)
-    if declared_length is not None and len(payload) < declared_length:
+    if declared_length is not None and len(payload) != declared_length:
+        if len(payload) > declared_length:
+            msg = "remote source sent more than its declared body length"
+            raise ValueError(msg)
         from http.client import IncompleteRead
 
         raise IncompleteRead(payload, declared_length - len(payload))
@@ -861,6 +890,18 @@ class RemoteTomlProvider:
                 request,
                 deadline=deadline,
             ) as response:
+                # `urllib` only raises for a status outside 200..299, so a
+                # `204` or a `206` reaches here as a success. A partial policy
+                # is the dangerous one: TOML cut at a line boundary parses, so
+                # a deny list can silently lose its entries.
+                if response.status != _HTTP_OK:
+                    return _remote_status(
+                        self.name,
+                        self.path,
+                        ProviderHealth.UNREADABLE,
+                        f"remote source returned HTTP {response.status}",
+                        source,
+                    )
                 payload = _read_limited_response(response, deadline=deadline)
         except HTTPError as exc:
             detail = (

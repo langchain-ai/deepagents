@@ -44,6 +44,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
     from urllib.request import Request
 
+    from deepagents_code.configuration.types import TomlSnapshot
+
 
 def _resolve(
     option: ConfigOption,
@@ -204,14 +206,30 @@ def test_toml_provider_marks_unreadable(
 class _RemoteResponse:
     """Minimal context-managed response for remote provider tests."""
 
-    def __init__(self, payload: bytes, *, content_length: str | None = None) -> None:
+    def __init__(
+        self,
+        payload: bytes,
+        *,
+        content_length: str | None = None,
+        status: int = 200,
+        chunked: bool = False,
+    ) -> None:
         self._stream = BytesIO(payload)
         self.closed = Event()
+        self.status = status
         self.read_timeouts: list[float | None] = []
         self.fp = SimpleNamespace(raw=SimpleNamespace(_sock=self))
         self.headers = Message()
         if content_length is not None:
             self.headers["Content-Length"] = content_length
+        elif chunked:
+            # Production accepts chunked framing without a declared length,
+            # because `http.client` raises `IncompleteRead` on a short body.
+            self.headers["Transfer-Encoding"] = "chunked"
+        else:
+            # A default-constructed double must model a complete response, or
+            # every test would exercise the undelimited-body rejection.
+            self.headers["Content-Length"] = str(len(payload))
 
     def __enter__(self) -> Self:
         return self
@@ -521,8 +539,20 @@ def test_remote_toml_provider_rejects_incomplete_response(
             "size limit",
         ),
         (
-            _RemoteResponse(b"x" * (REMOTE_MANAGED_CONFIG_MAX_BYTES + 1)),
+            _RemoteResponse(b"x" * (REMOTE_MANAGED_CONFIG_MAX_BYTES + 1), chunked=True),
             "size limit",
+        ),
+        (
+            _RemoteResponse(b'[startup]\nmode = "manual"\n', content_length="abc"),
+            "invalid body length",
+        ),
+        (
+            _RemoteResponse(b'[startup]\nmode = "manual"\n', content_length="-1"),
+            "invalid body length",
+        ),
+        (
+            _RemoteResponse(b"[mcp]\n", content_length=""),
+            "invalid body length",
         ),
         (_RemoteResponse(b"\xff"), "not UTF-8"),
         (_RemoteResponse(b"[broken"), "invalid TOML"),
@@ -4193,3 +4223,99 @@ def test_startup_gate_accepts_a_missing_managed_file(
         main._require_managed_config_or_exit()
     finally:
         service.invalidate_config_sources()
+
+
+def _remote_snapshot(
+    response: _RemoteResponse,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> TomlSnapshot:
+    """Load one remote policy from a fixed fake response.
+
+    Returns:
+        The snapshot the remote provider produced.
+    """
+    from deepagents_code.configuration import providers
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            return response
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    return RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+
+@pytest.mark.parametrize("status", [204, 205, 206])
+def test_remote_toml_provider_rejects_partial_success_status(
+    status: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a 200 carries a whole policy, and `urllib` raises for neither.
+
+    `HTTPErrorProcessor` raises only outside `200..299`, so a `206` arrives as
+    a success. TOML cut at a line boundary still parses, so accepting one would
+    enforce a policy with entries silently missing.
+    """
+    snapshot = _remote_snapshot(
+        _RemoteResponse(b"[mcp]\n", status=status),
+        tmp_path,
+        monkeypatch,
+    )
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert f"HTTP {status}" in (snapshot.status.detail or "")
+    assert not snapshot.data
+
+
+def test_remote_toml_provider_rejects_undelimited_body(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Connection-close framing cannot prove the policy arrived whole."""
+    response = _RemoteResponse(b"[mcp]\n")
+    del response.headers["Content-Length"]
+    snapshot = _remote_snapshot(response, tmp_path, monkeypatch)
+
+    assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert "did not delimit" in (snapshot.status.detail or "")
+    assert not snapshot.data
+
+
+def test_remote_toml_provider_accepts_chunked_framing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chunked responses have no declared length and are still complete.
+
+    `http.client` raises `IncompleteRead` when the terminating chunk is
+    missing, so chunked framing detects its own truncation and does not need
+    the `Content-Length` check.
+    """
+    snapshot = _remote_snapshot(
+        _RemoteResponse(b'[startup]\nmode = "manual"\n', chunked=True),
+        tmp_path,
+        monkeypatch,
+    )
+
+    assert snapshot.status.health is ProviderHealth.OK
+    assert snapshot.data == {"startup": {"mode": "manual"}}
+
+
+def test_remote_toml_provider_accepts_a_body_at_the_size_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The limit is inclusive, so a maximum-size policy still loads."""
+    policy = b'[startup]\nmode = "manual"\n# '
+    payload = policy + b"x" * (REMOTE_MANAGED_CONFIG_MAX_BYTES - len(policy))
+    assert len(payload) == REMOTE_MANAGED_CONFIG_MAX_BYTES
+    snapshot = _remote_snapshot(_RemoteResponse(payload), tmp_path, monkeypatch)
+
+    assert snapshot.status.health is ProviderHealth.OK
+    assert snapshot.data == {"startup": {"mode": "manual"}}

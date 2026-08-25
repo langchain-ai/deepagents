@@ -1593,8 +1593,8 @@ def _recent_agent_is_valid(name: str) -> bool:
         # `bin/` and `plugins/` are real directories under the profile root, so
         # the `is_dir()` check below would accept them and the launch would
         # then fail in `get_agent_dir`. A stale entry must fall back, never
-        # break every launch. The filesystem-aware check also catches a
-        # differently cased stale entry such as `Plugins`.
+        # break every launch. On case-insensitive filesystems the check also
+        # catches a differently cased stale entry such as `Plugins`.
         logger.warning(
             "Stored agent %r names an app-owned directory; falling back to default",
             name,

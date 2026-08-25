@@ -1,6 +1,7 @@
 """Unit tests for agent formatting functions."""
 
 import asyncio
+import sys
 import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -4813,13 +4814,18 @@ class TestGetAvailableAgentNames:
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["agent"]
 
-    def test_ignores_case_aliased_reserved_dirs(self, tmp_path: Path) -> None:
+    def test_ignores_case_aliased_reserved_dirs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A case-aliased reserved dir never surfaces as an agent.
 
         `iterdir()` returns the on-disk spelling, which an exact-string guard
         misses when it differs only by case (e.g. after `dcode -a Plugins`
-        created the entry on a case-insensitive filesystem).
+        created the entry on a case-insensitive filesystem). The alias only
+        exists where the filesystem folds case, so the test pins the platform
+        to macOS.
         """
+        monkeypatch.setattr(sys, "platform", "darwin")
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
         _seed_agent(agents_dir, "agent")
@@ -4828,6 +4834,24 @@ class TestGetAvailableAgentNames:
 
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["agent"]
+
+    def test_lists_case_aliased_dirs_on_case_sensitive_linux(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Linux a case-aliased dir is a real agent, not reserved state.
+
+        Case-sensitive filesystems keep `Plugins/` distinct from the
+        app-owned `plugins/`, so hiding it would silently drop a legitimate
+        agent from the picker.
+        """
+        monkeypatch.setattr(sys, "platform", "linux")
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        _seed_agent(agents_dir, "agent")
+        _seed_agent(agents_dir, "Plugins")
+
+        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["Plugins", "agent"]
 
     def test_reserved_agent_dir_names_includes_app_dirs(self) -> None:
         """The reserved-name set is sourced from each owning module."""

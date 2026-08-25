@@ -74,9 +74,17 @@ def _normalized_for_fs(name: str) -> str:
     macOS and Windows filesystems are case-insensitive, so `Plugins` opens the
     same directory as the reserved `plugins/`; Windows additionally strips
     trailing dots and spaces, so `plugins ` aliases it there too. Comparing
-    the raw string would let those spellings bypass the guard and stamp agent
-    state into an app-owned directory. (`plugins.` never reaches this guard:
-    the agent-name character allowlist rejects `.` first.)
+    the raw string on those platforms would let those spellings bypass the
+    guard and stamp agent state into an app-owned directory. (`plugins.`
+    never reaches this guard: the agent-name character allowlist rejects `.`
+    first.)
+
+    The fold applies only where the default filesystem performs it. On Linux
+    `Plugins/` is a genuinely different directory from `plugins/`, so folding
+    there would reject a harmless name and hide a real agent from the picker.
+    Linux can be given a case-insensitive mount, but detecting that is a
+    filesystem probe on the startup path and the common case must not reject
+    valid names.
 
     `str.casefold` (rather than `lower`) matches the full Unicode case
     folding the filesystems apply. The trailing dot/space strip applies only
@@ -87,10 +95,11 @@ def _normalized_for_fs(name: str) -> str:
     Returns:
         The normalized name.
     """
-    normalized = name.casefold()
+    if sys.platform == "darwin" or sys.platform == "win32":
+        name = name.casefold()
     if sys.platform == "win32":
-        normalized = normalized.rstrip(". ")
-    return normalized
+        name = name.rstrip(". ")
+    return name
 
 
 @functools.lru_cache(maxsize=1)

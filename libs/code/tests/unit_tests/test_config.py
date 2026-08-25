@@ -7880,17 +7880,34 @@ class TestReservedAgentNames:
     @pytest.mark.parametrize(
         "name", ["BIN", "Plugins", "CONVERSATION_HISTORY", "pLuGiNs"]
     )
-    def test_case_aliases_are_rejected(self, name: str) -> None:
+    def test_case_aliases_are_rejected(
+        self, name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Case-insensitive filesystems resolve these onto the reserved dir.
 
         On the default macOS/Windows filesystems `Plugins` is the same
         directory as `plugins/`, so an exact-string guard would let the name
         through and stamp agent state into app-owned directories.
         """
+        monkeypatch.setattr(sys, "platform", "darwin")
         settings = Settings.__new__(Settings)
 
         with pytest.raises(ValueError, match="reserved"):
             settings.get_agent_dir(name)
+
+    def test_case_alias_is_allowed_on_case_sensitive_linux(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Linux `Plugins/` is a different directory from `plugins/`.
+
+        The default Linux filesystems are case-sensitive, so an agent named
+        `Plugins` cannot collide with the app-owned `plugins/` directory and
+        must not be rejected.
+        """
+        monkeypatch.setattr(sys, "platform", "linux")
+        settings = Settings.__new__(Settings)
+
+        assert settings.get_agent_dir("Plugins").name == "Plugins"
 
     def test_windows_trailing_space_alias_is_rejected(
         self, monkeypatch: pytest.MonkeyPatch

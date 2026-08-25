@@ -82,7 +82,7 @@ from langchain.agents.middleware.summarization import (
     SummarizationMiddleware as LCSummarizationMiddleware,
     TokenCounter,
 )
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr, TracePolicy, omit_payload
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # runtime import: StructuredTool resolves the compact-tool annotations at schema-inference time
 )
@@ -492,6 +492,9 @@ def _upload_response_error(responses: list[FileUploadResponse]) -> str | None:
 
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     state_schema = SummarizationState
     serialized_name: ClassVar[str] = "SummarizationMiddleware"
@@ -1824,6 +1827,9 @@ class SummarizationToolMiddleware(AgentMiddleware):
         agent = create_deep_agent(middleware=[summ, tool_mw])
         ```
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     state_schema = SummarizationState
 

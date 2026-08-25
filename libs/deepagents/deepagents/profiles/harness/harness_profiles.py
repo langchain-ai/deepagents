@@ -621,6 +621,9 @@ class HarnessProfile:
     each other. For example, if a provider profile excludes `execute` and an
     exact-model profile excludes `grep`, the resolved profile excludes both
     tools.
+
+    Exclusions are model-facing calibration resolved per model; they are not a
+    security surface.
     """
 
     excluded_middleware: frozenset[type[AgentMiddleware] | str] = frozenset()

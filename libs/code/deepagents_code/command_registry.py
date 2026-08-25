@@ -120,6 +120,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="reset",
     ),
     SlashCommand(
+        name="/config",
+        description="Manage remote configuration URLs",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="settings preferences urls remote",
+        argument_hint="[add-url|remove-url|urls|reload]",
+    ),
+    SlashCommand(
         name="/copy",
         description="Copy the latest assistant message to clipboard",
         bypass_tier=BypassTier.QUEUED,

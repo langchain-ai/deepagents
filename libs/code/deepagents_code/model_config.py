@@ -3005,29 +3005,38 @@ def _resolve_models_section(
     """Resolve the model namespace before model-specific validation.
 
     Returns:
-        The deep-merged raw section, or an empty table when neither tier sets it.
+        The deep-merged raw section, or an empty table when no tier sets it.
     """
     from deepagents_code.configuration.resolver import (
         MANAGED_RANK,
+        REMOTE_CONFIG_RANK,
         USER_RANK,
         resolve_ranked,
     )
 
-    resolved = resolve_ranked(
-        (
-            _ranked_models_section(
-                sources.managed.data,
-                rank=MANAGED_RANK,
-                status=sources.managed.status,
-            ),
-            _ranked_models_section(
-                user_data,
-                rank=USER_RANK,
-                status=sources.user.status,
-            ),
+    tiers = [
+        _ranked_models_section(
+            sources.managed.data,
+            rank=MANAGED_RANK,
+            status=sources.managed.status,
         ),
-        strategy="deep_merge",
+    ]
+    if sources.remote is not None:
+        tiers.append(
+            _ranked_models_section(
+                sources.remote.data,
+                rank=REMOTE_CONFIG_RANK,
+                status=sources.remote.status,
+            )
+        )
+    tiers.append(
+        _ranked_models_section(
+            user_data,
+            rank=USER_RANK,
+            status=sources.user.status,
+        ),
     )
+    resolved = resolve_ranked(tuple(tiers), strategy="deep_merge")
     return {} if resolved is None else resolved.value
 
 
@@ -3041,15 +3050,17 @@ def _resolve_model_file_option(
 
     `ModelConfig` describes persisted choices. In particular its
     `auto_classifier_model` field intentionally does not reflect the runtime
-    environment override, so this reader constructs only the two file tiers.
+    environment override, so this reader constructs only the file tiers:
+    managed, remote (when configured), and user.
 
     Returns:
-        The ranked file value and its source, or `(None, None)` when both tiers
-        abstain.
+        The ranked file value and its source, or `(None, None)` when every
+        tier abstains.
     """
     from deepagents_code.configuration.providers import ranked_toml_value
     from deepagents_code.configuration.resolver import (
         MANAGED_RANK,
+        REMOTE_CONFIG_RANK,
         USER_RANK,
         resolve_ranked,
     )
@@ -3060,25 +3071,41 @@ def _resolve_model_file_option(
     )
     user_section = user_data.get("models")
     typed_user_data = {"models": user_section} if isinstance(user_section, dict) else {}
-    resolved = resolve_ranked(
-        (
-            ranked_toml_value(
-                option,
-                managed_data,
-                rank=MANAGED_RANK,
-                durable=True,
-                status=sources.managed.status,
-            ),
-            ranked_toml_value(
-                option,
-                typed_user_data,
-                rank=USER_RANK,
-                durable=True,
-                status=sources.user.status,
-            ),
+
+    tiers = [
+        ranked_toml_value(
+            option,
+            managed_data,
+            rank=MANAGED_RANK,
+            durable=True,
+            status=sources.managed.status,
         ),
-        strategy=option.merge_strategy.value,
+    ]
+    if sources.remote is not None:
+        remote_section = sources.remote.data.get("models")
+        remote_data = (
+            {"models": remote_section} if isinstance(remote_section, dict) else {}
+        )
+        tiers.append(
+            ranked_toml_value(
+                option,
+                remote_data,
+                rank=REMOTE_CONFIG_RANK,
+                durable=False,
+                status=sources.remote.status,
+            )
+        )
+    tiers.append(
+        ranked_toml_value(
+            option,
+            typed_user_data,
+            rank=USER_RANK,
+            durable=True,
+            status=sources.user.status,
+        ),
     )
+
+    resolved = resolve_ranked(tuple(tiers), strategy=option.merge_strategy.value)
     if resolved is None:
         return None, None
     source = " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)

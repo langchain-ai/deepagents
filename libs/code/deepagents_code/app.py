@@ -2978,6 +2978,50 @@ class _GoalGradeObservation:
     """Correlation ID minted by `RubricMiddleware` for the observed grade."""
 
 
+async def _fetch_remote_config_note() -> str | None:
+    """Fetch remote config URLs and return a note for the reload report.
+
+    Reads `[remote]` from config.toml, fetches each URL, and returns a
+    summary string for inclusion in the `/reload` report. Returns `None`
+    when no remote URLs are configured.
+
+    Returns:
+        A summary note for the reload report, or `None` when no remote
+        URLs are configured.
+    """
+    import tomllib
+
+    from deepagents_code.configuration.remote import (
+        fetch_all_remote_configs,
+        merge_remote_snapshots,
+        parse_remote_urls,
+    )
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            config_data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+    urls = parse_remote_urls(config_data)
+    if not urls:
+        return None
+
+    results = await asyncio.to_thread(fetch_all_remote_configs, urls)
+    merged = merge_remote_snapshots(results)
+
+    if not merged.status.usable or not merged.data:
+        failed = [r for r in results if not r.snapshot.status.usable]
+        if failed:
+            noun = "URL" if len(urls) == 1 else "URLs"
+            return f"Remote config: {len(failed)}/{len(urls)} {noun} failed."
+        return None
+
+    ok_count = sum(1 for r in results if r.snapshot.status.usable)
+    return f"Remote config: {ok_count}/{len(urls)} URL(s) fetched."
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-code."""
 
@@ -15571,6 +15615,9 @@ class DeepAgentsApp(App):
                 await self._reload_hooks()
                 if not await self._run_session_start_hook(SessionStartCause.CLEAR):
                     return
+        elif cmd == "/config" or cmd.startswith("/config "):
+            await self._mount_message(UserMessage(command))
+            await self._handle_config_command(command)
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
             # Reverse-scan for the newest assistant message that has finished
@@ -16231,6 +16278,9 @@ class DeepAgentsApp(App):
 
                 clear_caches()
                 self._sync_status_model()
+
+                # Fetch remote config if URLs are configured
+                remote_config_note = await self._fetch_and_apply_remote_config()
             except (OSError, ValueError):
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
@@ -16296,6 +16346,8 @@ class DeepAgentsApp(App):
             else:
                 report = "Configuration reloaded. No changes detected."
             report += "\nModel config caches cleared."
+            if remote_config_note:
+                report += f"\n{remote_config_note}"
             if theme_reload_ok:
                 report += "\nTheme registry reloaded."
                 if theme_switched_to is not None:
@@ -26625,6 +26677,245 @@ class DeepAgentsApp(App):
         finally:
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
+
+    async def _fetch_and_apply_remote_config(self) -> str | None:  # noqa: PLR6301
+        """Fetch remote config URLs and return a note for the reload report.
+
+        Reads `[remote]` from config.toml, fetches each URL, and returns a
+        summary string for inclusion in the `/reload` report. Returns `None`
+        when no remote URLs are configured.
+
+        Returns:
+            A summary note for the reload report, or `None` when no remote
+            URLs are configured.
+        """
+        return await _fetch_remote_config_note()
+
+    async def _handle_config_command(self, command: str) -> None:
+        """Handle the `/config` slash command — manage remote config URLs.
+
+        Subcommands:
+            `/config` — show current config status including remote URLs.
+            `/config urls` — list configured remote config URLs.
+            `/config add-url <url> [--token <token>]` — add a remote config URL.
+            `/config remove-url <url>` — remove a remote config URL.
+            `/config reload` — re-fetch all remote configs and apply them.
+
+        Args:
+            command: The raw command text.
+        """
+        from deepagents_code.configuration.remote import (
+            fetch_all_remote_configs,
+            merge_remote_snapshots,
+            parse_remote_urls,
+        )
+        from deepagents_code.configuration.writer import update_user_config
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+        args = command.strip()[len("/config") :].strip()
+
+        def _read_config_data() -> dict[str, Any]:
+            """Read the current config.toml data.
+
+            Returns:
+                Parsed TOML table, or an empty dict on failure.
+            """
+            import tomllib
+
+            try:
+                with DEFAULT_CONFIG_PATH.open("rb") as f:
+                    return tomllib.load(f)
+            except (OSError, tomllib.TOMLDecodeError):
+                return {}
+
+        if not args or args == "urls":
+            # Show current remote config status
+            config_data = await asyncio.to_thread(_read_config_data)
+            urls = parse_remote_urls(config_data)
+
+            if not urls:
+                await self._mount_message(
+                    AppMessage(
+                        "No remote config URLs configured.\n\n"
+                        "Add one with: /config add-url <https-url>\n"
+                        "With auth:  /config add-url <https-url> --token <bearer-token>"
+                    ),
+                )
+                return
+
+            lines = ["Remote config URLs:"]
+            for i, entry in enumerate(urls, 1):
+                auth_note = " (authenticated)" if entry.bearer_token else ""
+                lines.append(f"  {i}. {entry.url}{auth_note}")
+            lines.append(
+                "\nRun /config reload to fetch now, "
+                "or /reload to apply with next session."
+            )
+            await self._mount_message(AppMessage("\n".join(lines)))
+            return
+
+        if args.startswith("add-url "):
+            # Parse: /config add-url <url> [--token <token>]
+            rest = args[len("add-url ") :].strip()
+            parts = rest.split()
+            if not parts:
+                await self._mount_message(
+                    AppMessage(
+                        "Usage: /config add-url <https-url> [--token <bearer-token>]"
+                    ),
+                )
+                return
+
+            url = parts[0]
+            token: str | None = None
+            if "--token" in parts:
+                token_idx = parts.index("--token")
+                if token_idx + 1 < len(parts):
+                    token = parts[token_idx + 1]
+                else:
+                    await self._mount_message(
+                        AppMessage("Missing token value after --token."),
+                    )
+                    return
+
+            # Validate URL scheme
+            from urllib.parse import urlparse
+
+            parsed = urlparse(url)
+            if parsed.scheme not in {"https", "http"}:
+                await self._mount_message(
+                    AppMessage(
+                        f"URL must use https (or http for local testing): {url}"
+                    ),
+                )
+                return
+
+            def _add_url(table: dict[str, Any]) -> bool:
+                remote = table.setdefault("remote", {})
+                if not isinstance(remote, dict):
+                    return False
+                urls_list = remote.setdefault("urls", [])
+                if not isinstance(urls_list, list):
+                    return False
+                if url in urls_list:
+                    return False
+                urls_list.append(url)
+                if token:
+                    auth_table = remote.setdefault("auth", {})
+                    if not isinstance(auth_table, dict):
+                        return False
+                    auth_table[url] = {"bearer_token": token}
+                return True
+
+            result = await asyncio.to_thread(update_user_config, _add_url)
+            if result.ok and result.changed:
+                await self._mount_message(
+                    AppMessage(
+                        f"Added remote config URL: {url}\n"
+                        "Run /config reload to fetch it now."
+                    ),
+                )
+            elif result.ok:
+                await self._mount_message(
+                    AppMessage(f"URL already configured: {url}"),
+                )
+            else:
+                await self._mount_message(
+                    AppMessage(f"Failed to save: {result.error}"),
+                )
+            return
+
+        if args.startswith("remove-url "):
+            url = args[len("remove-url ") :].strip()
+            if not url:
+                await self._mount_message(
+                    AppMessage("Usage: /config remove-url <https-url>"),
+                )
+                return
+
+            def _remove_url(table: dict[str, Any]) -> bool:
+                remote = table.get("remote")
+                if not isinstance(remote, dict):
+                    return False
+                urls_list = remote.get("urls")
+                if not isinstance(urls_list, list) or url not in urls_list:
+                    return False
+                urls_list.remove(url)
+                auth_table = remote.get("auth")
+                if isinstance(auth_table, dict):
+                    auth_table.pop(url, None)
+                return True
+
+            result = await asyncio.to_thread(update_user_config, _remove_url)
+            if result.ok and result.changed:
+                await self._mount_message(
+                    AppMessage(f"Removed remote config URL: {url}"),
+                )
+            elif result.ok:
+                await self._mount_message(
+                    AppMessage(f"URL not found: {url}"),
+                )
+            else:
+                await self._mount_message(
+                    AppMessage(f"Failed to save: {result.error}"),
+                )
+            return
+
+        if args == "reload":
+            config_data = await asyncio.to_thread(_read_config_data)
+            urls = parse_remote_urls(config_data)
+            if not urls:
+                await self._mount_message(
+                    AppMessage("No remote config URLs configured."),
+                )
+                return
+
+            await self._mount_message(
+                AppMessage(f"Fetching {len(urls)} remote config(s)..."),
+            )
+            results = await asyncio.to_thread(fetch_all_remote_configs, urls)
+            merged = merge_remote_snapshots(results)
+
+            for result in results:
+                status = result.snapshot.status
+                if status.usable:
+                    await self._mount_message(
+                        AppMessage(f"  OK: {result.url}"),
+                    )
+                else:
+                    detail = f" — {status.detail}" if status.detail else ""
+                    await self._mount_message(
+                        AppMessage(
+                            f"  FAILED: {result.url} ({status.health.value}{detail})"
+                        ),
+                    )
+
+            if merged.status.usable and merged.data:
+                await self._mount_message(
+                    AppMessage(
+                        "Remote config loaded successfully. "
+                        "Run /reload to apply it to the current session."
+                    ),
+                )
+            else:
+                await self._mount_message(
+                    AppMessage(
+                        "No usable remote config was fetched. "
+                        "Check the URLs and network connectivity."
+                    ),
+                )
+            return
+
+        # Unknown subcommand
+        await self._mount_message(
+            AppMessage(
+                "Usage:\n"
+                "  /config              Show remote config URLs\n"
+                "  /config add-url <url> [--token <tok>]  Add a remote config URL\n"
+                "  /config remove-url <url>             Remove a remote config URL\n"
+                "  /config reload                       Fetch remote configs now"
+            ),
+        )
 
     async def _handle_threads_command(self, command: str) -> None:
         """Dispatch `/threads`, optionally resuming a thread without the modal.

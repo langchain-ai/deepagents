@@ -33,6 +33,13 @@ from deepagents_code.configuration.types import (
 MANAGED_RANK = 200
 """Managed policy rank; lower numeric ranks have stronger precedence."""
 
+REMOTE_CONFIG_RANK = 250
+"""Remote config rank; sits between managed and environment.
+
+Remote config is fetched from administrator-controlled URLs and acts like
+managed config for most purposes, but env vars can still override it.
+"""
+
 CLI_RANK = 300
 """Reserved seam for a future CLI provider; no CLI provider ships today."""
 
@@ -342,6 +349,7 @@ def resolver_from_snapshots(
     *,
     managed: TomlSnapshot,
     user: TomlSnapshot,
+    remote: TomlSnapshot | None = None,
     managed_loader: Callable[[], TomlSnapshot] | None = None,
     user_loader: Callable[[], TomlSnapshot] | None = None,
 ) -> ConfigResolver:
@@ -357,17 +365,21 @@ def resolver_from_snapshots(
     Args:
         managed: Managed TOML snapshot.
         user: User TOML snapshot.
+        remote: Optional remote TOML snapshot, fetched from configured URLs.
+            When `None`, no remote provider is included.
         managed_loader: Optional managed reload operation.
         user_loader: Optional user reload operation.
 
     Returns:
-        Resolver containing managed, environment, user, and default providers.
+        Resolver containing managed, remote, environment, user, and default
+        providers.
     """
     from deepagents_code.configuration.providers import (
         DefaultProvider,
         EnvProvider,
         TomlFileProvider,
     )
+    from deepagents_code.configuration.remote import RemoteConfigProvider
 
     # Snapshots built in-memory carry no path. Pass that through rather than
     # inventing a relative filename: `TomlFileProvider.load` would resolve it
@@ -376,28 +388,40 @@ def resolver_from_snapshots(
     # to sit in the repo the agent is running in and treat it as policy.
     managed_path = managed.status.path
     user_path = user.status.path
-    return ConfigResolver(
-        (
-            TomlFileProvider(
-                name=managed.status.name,
-                path=managed_path,
-                rank=MANAGED_RANK,
-                durable=True,
-                snapshot=managed,
-                loader=managed_loader,
-            ),
-            EnvProvider(),
-            TomlFileProvider(
-                name=user.status.name,
-                path=user_path,
-                rank=USER_RANK,
-                durable=True,
-                snapshot=user,
-                loader=user_loader,
-            ),
-            DefaultProvider(),
+
+    providers: list = [
+        TomlFileProvider(
+            name=managed.status.name,
+            path=managed_path,
+            rank=MANAGED_RANK,
+            durable=True,
+            snapshot=managed,
+            loader=managed_loader,
+        ),
+    ]
+
+    if remote is not None:
+        providers.append(
+            RemoteConfigProvider(
+                rank=REMOTE_CONFIG_RANK,
+                _snapshot=remote,
+            )
         )
-    )
+
+    providers.extend([
+        EnvProvider(),
+        TomlFileProvider(
+            name=user.status.name,
+            path=user_path,
+            rank=USER_RANK,
+            durable=True,
+            snapshot=user,
+            loader=user_loader,
+        ),
+        DefaultProvider(),
+    ])
+
+    return ConfigResolver(providers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -449,6 +473,7 @@ def get_config_resolver(
     *,
     refresh_managed: bool = False,
     managed_snapshot: TomlSnapshot | None = None,
+    remote_snapshot: TomlSnapshot | None = None,
 ) -> ConfigResolver:
     """Return the shared process resolver for the active config paths.
 
@@ -462,6 +487,9 @@ def get_config_resolver(
             misses. On a cache hit it is installed only when `refresh_managed`
             is set -- without it the resolver keeps the generation it is
             already serving, so the snapshot must be that same generation.
+        remote_snapshot: Optional remote config snapshot. When provided, a
+            remote provider is included in the chain between managed and
+            environment tiers.
 
     Returns:
         Resolver shared by consumers of the active managed and user paths.
@@ -491,6 +519,7 @@ def get_config_resolver(
             resolver = resolver_from_snapshots(
                 managed=managed,
                 user=user,
+                remote=remote_snapshot,
                 managed_loader=_reload_enforceable_managed_snapshot,
                 user_loader=user_provider.load,
             )
@@ -519,18 +548,52 @@ def get_config_resolver(
                     )
                     raise ValueError(msg)
             return resolver
-        resolver.reload_with_replacements(
-            {
-                MANAGED_RANK: TomlFileProvider(
-                    name=managed.status.name,
-                    path=managed.status.path,
-                    rank=MANAGED_RANK,
-                    durable=True,
-                    snapshot=managed,
-                    loader=_reload_enforceable_managed_snapshot,
-                )
-            }
+
+        # Check if the existing resolver has a remote provider. If not, and
+        # a remote snapshot is provided, we need to rebuild the resolver
+        # rather than trying to replace a rank that doesn't exist. Similarly,
+        # if the resolver has a remote provider but no remote snapshot is
+        # given, we rebuild to remove it.
+        resolver_ranks = {p.rank for p in resolver._providers}
+        needs_rebuild = (remote_snapshot is not None) != (
+            REMOTE_CONFIG_RANK in resolver_ranks
         )
+        if needs_rebuild:
+            user_provider = TomlFileProvider(
+                name="config.toml", path=DEFAULT_CONFIG_PATH
+            )
+            user = user_provider.load()
+            resolver = resolver_from_snapshots(
+                managed=managed,
+                user=user,
+                remote=remote_snapshot,
+                managed_loader=_reload_enforceable_managed_snapshot,
+                user_loader=user_provider.load,
+            )
+            _resolver_cache.entry = (key, resolver)
+            from deepagents_code.config_manifest import reset_source_diagnostics
+
+            reset_source_diagnostics()
+            return resolver
+
+        replacements: dict[int, ConfigProvider] = {
+            MANAGED_RANK: TomlFileProvider(
+                name=managed.status.name,
+                path=managed.status.path,
+                rank=MANAGED_RANK,
+                durable=True,
+                snapshot=managed,
+                loader=_reload_enforceable_managed_snapshot,
+            )
+        }
+        if remote_snapshot is not None:
+            from deepagents_code.configuration.remote import RemoteConfigProvider
+
+            replacements[REMOTE_CONFIG_RANK] = RemoteConfigProvider(
+                rank=REMOTE_CONFIG_RANK,
+                _snapshot=remote_snapshot,
+            )
+        resolver.reload_with_replacements(replacements)
         return resolver
 
 

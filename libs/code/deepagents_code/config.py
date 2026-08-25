@@ -2954,7 +2954,17 @@ class Settings:
             get_config_resolver,
             resolver_from_snapshots,
         )
+        from deepagents_code.configuration.service import get_remote_snapshot
         from deepagents_code.configuration.types import Found
+
+        # Fetch remote config if URLs are configured in config.toml. A real
+        # `/reload` refreshes; a preview keeps the cached snapshot so it does
+        # not swap what other readers observe mid-session.
+        try:
+            remote_snapshot = get_remote_snapshot(refresh=refresh_managed)
+        except Exception:
+            logger.warning("Failed to fetch remote config", exc_info=True)
+            remote_snapshot = None
 
         # A real `/reload` exists to pick up file edits made since the shared
         # resolver's snapshot was taken, so this method and later
@@ -2964,6 +2974,7 @@ class Settings:
         resolver = get_config_resolver(
             refresh_managed=refresh_managed,
             managed_snapshot=managed_snapshot,
+            remote_snapshot=remote_snapshot,
         )
 
         # A user file that fails to parse keeps the previous generation in

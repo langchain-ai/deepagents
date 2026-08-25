@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import tomllib
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal
@@ -161,10 +162,11 @@ def merge_managed_over_user(
 
 @dataclass(frozen=True, slots=True)
 class ConfigSources:
-    """Managed and user TOML snapshots from one resolution generation."""
+    """Managed, remote, and user TOML snapshots from one resolution generation."""
 
     managed: TomlSnapshot
     user: TomlSnapshot
+    remote: TomlSnapshot | None = None
 
     def dropped_managed_detail(self) -> str | None:
         """Return why the managed layer is absent from `merged`, if it is.
@@ -185,7 +187,7 @@ class ConfigSources:
         return self.managed.status.detail or self.managed.status.health.value
 
     def merged(self) -> tuple[dict[str, Any], dict[str, str]]:
-        """Return a deep merge where managed leaves outrank user leaves.
+        """Return a deep merge: managed over remote over user.
 
         Lists at `UNION_PATHS` accumulate instead of being replaced. A managed
         scalar replaces a colliding user table whatever its depth, but only
@@ -195,7 +197,35 @@ class ConfigSources:
         Returns:
             Merged table and dotted leaf-to-source mapping.
         """
-        return merge_managed_over_user(self.user.data, self.managed.data)
+        # Remote sits between user and managed: it outranks the user's own
+        # file, but managed policy still wins over both. Provenance is tracked
+        # per leaf across both merge passes, so a leaf the remote supplied is
+        # credited to the remote tier even though it flows through the managed
+        # merge as part of `base`.
+        if self.remote is not None and self.remote.status.usable:
+            base, base_sources = merge_toml_tables(
+                self.user.data,
+                self.remote.data,
+                lower_source=USER_SOURCE,
+                higher_source=self.remote.status.name,
+                union_paths=union_paths_under(()),
+            )
+        else:
+            base, base_sources = dict(self.user.data), {}
+
+        managed_table, managed_sources = merge_managed_over_user(
+            base, self.managed.data
+        )
+        # `managed_sources` labels every surviving `base` leaf as USER_SOURCE,
+        # because the managed merge cannot see the remote tier. Re-attribute
+        # those leaves with the first-pass labels: a leaf that remote supplied
+        # and managed did not touch keeps its remote label; a leaf managed
+        # overrode is already labeled MANAGED_SOURCE.
+        combined = dict(managed_sources)
+        for path, source in base_sources.items():
+            if combined.get(path) == USER_SOURCE:
+                combined[path] = source
+        return managed_table, combined
 
 
 def is_valid_managed_scalar(path: tuple[str, ...], value: object) -> bool:
@@ -641,12 +671,72 @@ def get_managed_snapshot(
         return candidate
 
 
+class _RemoteSnapshotState:
+    """Mutable process snapshot of merged remote config, guarded by `_snapshot_lock`."""
+
+    __slots__ = ("remote",)
+
+    def __init__(self) -> None:
+        """Start with no cached snapshot."""
+        self.remote: TomlSnapshot | None = None
+
+
+_remote_snapshot_state = _RemoteSnapshotState()
+
+
+def get_remote_snapshot(*, refresh: bool = False) -> TomlSnapshot | None:
+    """Return the merged remote config snapshot, fetching on first use or refresh.
+
+    Remote URLs are read from the user's own `config.toml` `[remote]` section,
+    so this layer cannot grant privilege a managed deny would take away: it
+    sits strictly below managed policy in precedence. A fetch failure keeps
+    the last usable snapshot rather than dropping config mid-session.
+
+    Args:
+        refresh: Re-fetch every configured URL before answering.
+
+    Returns:
+        The merged remote snapshot, or `None` when no URLs are configured.
+    """
+    from deepagents_code.configuration.remote import (
+        fetch_all_remote_configs,
+        merge_remote_snapshots,
+        parse_remote_urls,
+    )
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    with _snapshot_lock:
+        cached = _remote_snapshot_state.remote
+        if cached is not None and not refresh:
+            return cached
+
+        try:
+            with DEFAULT_CONFIG_PATH.open("rb") as handle:
+                user_data = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError):
+            return cached
+
+        urls = parse_remote_urls(user_data)
+        if not urls:
+            _remote_snapshot_state.remote = None
+            return None
+
+        results = fetch_all_remote_configs(urls)
+        merged = merge_remote_snapshots(results)
+        if merged.status.usable and merged.data:
+            _remote_snapshot_state.remote = merged
+            return merged
+        # All URLs failed: keep serving the last good snapshot if one exists.
+        return cached
+
+
 def get_config_sources(
     *,
     user_path: Path | None = None,
     managed_path: Path | None = None,
+    refresh_remote: bool = False,
 ) -> ConfigSources:
-    """Load one user snapshot and the current managed snapshot.
+    """Load one user snapshot and the current managed and remote snapshots.
 
     Managed policy is included exactly when `user_path` is `None`, which is
     what every production caller passes. Reading an explicit path is a
@@ -664,9 +754,11 @@ def get_config_sources(
             inspects one file.
         managed_path: Read managed policy from this file instead of the fixed
             OS path, bypassing the process snapshot. Intended for tests.
+        refresh_remote: Re-fetch remote config URLs instead of using the
+            cached snapshot.
 
     Returns:
-        Both snapshots from one resolution generation.
+        All snapshots from one resolution generation.
     """
     if user_path is not None:
         return ConfigSources(
@@ -685,11 +777,12 @@ def get_config_sources(
     return ConfigSources(
         managed=get_managed_snapshot(path=managed_path),
         user=TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load(),
+        remote=get_remote_snapshot(refresh=refresh_remote),
     )
 
 
 def invalidate_config_sources() -> None:
-    """Drop the cached managed snapshot and the shared process resolver.
+    """Drop the cached managed and remote snapshots and the shared process resolver.
 
     Test-only. Production reloads pass `refresh=True` instead, which keeps the
     last snapshot that parsed cleanly if the new one fails; clearing the cache
@@ -703,6 +796,7 @@ def invalidate_config_sources() -> None:
 
     with _snapshot_lock:
         _snapshot_state.managed = None
+        _remote_snapshot_state.remote = None
     reset_config_resolver()
 
 

@@ -655,24 +655,27 @@ jobs:
       - name: "🎉 All Checks Passed"
         env:
           EVENT_NAME: ${{ github.event_name }}
-          # Skipped jobs are filtered out below so the gate only judges jobs
-          # that actually ran.
-          RESULTS: ${{ toJSON(needs.*.result) }}
+          # Full needs context: the wildcard `toJSON(needs.*.result)` form
+          # loses job names (it yields a bare array of result strings), so
+          # the name -> result map is rebuilt from each entry below. Skipped
+          # jobs are filtered out so the gate only judges jobs that ran.
+          NEEDS: ${{ toJSON(needs) }}
           TALON_CHANGED: ${{ needs.changes.outputs.talon }}
         run: |
           set -euo pipefail
           # Get all job results (excluding 'changes' which always succeeds)
-          results="$(printf '%s' "$RESULTS" | python3 -c '
+          results="$(printf '%s' "$NEEDS" | python3 -c '
           import json
           import sys
 
-          results = json.loads(sys.argv[1])
-          results.pop("changes", None)
+          needs = json.loads(sys.argv[1])
           results = {
-              job: result for job, result in results.items() if result != "skipped"
+              job: entry["result"]
+              for job, entry in needs.items()
+              if job != "changes" and entry["result"] != "skipped"
           }
           json.dump(results, sys.stdout)
-          ' "$RESULTS")"
+          ' "$NEEDS")"
           echo "Job results: $results"
 
           gate="$(python3 .github/scripts/checks/ci_gate.py \

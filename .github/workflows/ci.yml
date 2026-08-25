@@ -41,6 +41,11 @@ jobs:
       deepagents: ${{ steps.filter.outputs.deepagents }}
       code: ${{ steps.filter.outputs.code }}
       talon: ${{ steps.filter.outputs.talon }}
+      # `talon-src` tracks only libs/talon/** so the `ci_success` waiver and
+      # the advisory job can tell "PR touches talon sources" apart from
+      # "talon CI runs" (the broad `talon` filter above also matches
+      # libs/code and libs/deepagents because talon editable-installs them).
+      talon-src: ${{ steps.filter.outputs.talon-src }}
       evals: ${{ steps.filter.outputs.evals }}
       acp: ${{ steps.filter.outputs.acp }}
       daytona: ${{ steps.filter.outputs.daytona }}
@@ -93,6 +98,13 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
+            # The broad `talon` filter above decides whether talon CI RUNS;
+            # this narrow one decides whether the PR TOUCHES talon sources.
+            # `ci_success` and the talon-failure-advisory job key off this
+            # output, so libs/code PRs (which match the broad filter via
+            # 'libs/code/**') get the talon failure waiver.
+            talon-src:
+              - 'libs/talon/**'
             evals:
               - 'libs/evals/**'
               - 'libs/deepagents/**'
@@ -500,15 +512,17 @@ jobs:
         run: python -m pytest .github/scripts/tests -v
 
   # Advisory-only job: never fails the workflow and is deliberately NOT in
-  # `ci_success.needs`, so its own result cannot gate anything. When the
-  # `ci_success` talon waiver fires (see the comment block there), it posts
-  # or updates a sticky PR comment recording the waived failures; once the
-  # talon jobs pass again it deletes the comment. Mirrors the sticky-comment
-  # pattern in release_fanout_bypass_warn.yml.
+  # `ci_success.needs`, so its own result cannot gate anything. It runs on
+  # PRs where the `talon-src` filter output is not 'true' — i.e. the PR does
+  # not touch libs/talon, so the `ci_success` talon waiver may fire (see the
+  # comment block there). It posts or updates a sticky PR comment recording
+  # the waived failures; once the talon jobs pass again it deletes the
+  # comment. Mirrors the sticky-comment pattern in
+  # release_fanout_bypass_warn.yml.
   talon-failure-advisory:
     name: "⚠️ talon failure advisory"
     needs: [changes, lint-talon, test-talon]
-    if: always() && github.event_name == 'pull_request' && needs.changes.outputs.talon != 'true'
+    if: always() && github.event_name == 'pull_request' && needs.changes.outputs.talon-src != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
@@ -639,12 +653,16 @@ jobs:
       # libs/code change can therefore break talon CI. The maintainers accept
       # merging such PRs with talon red at HEAD: the talon fix lands as its
       # own `fix(talon): ...` PR instead of forcing a combined PR (which would
-      # also fan release-please out across both packages' changelogs). On
-      # pull_request runs where the talon filter output is not 'true',
-      # `failure` results from lint-talon/test-talon are waived; `cancelled`
-      # results and every other job still block, and push / merge_group runs
-      # stay fully strict so a broken talon stays visible on main, where every
-      # job runs unconditionally. The waiver logic lives in
+      # also fan release-please out across both packages' changelogs). The
+      # waiver keys off the narrow `talon-src` filter output (libs/talon/**
+      # only), NOT the broad `talon` one that also matches libs/code and
+      # libs/deepagents — keying off `talon` would make every libs/code PR
+      # ineligible for its own waiver. On pull_request runs where the
+      # `talon-src` filter output is not 'true', `failure` results from
+      # lint-talon/test-talon are waived; `cancelled` results and every other
+      # job still block, and push / merge_group runs stay fully strict so a
+      # broken talon stays visible on main, where every job runs
+      # unconditionally. The waiver logic lives in
       # .github/scripts/checks/ci_gate.py (unit-tested under
       # .github/scripts/tests/); talon CI still RUNS on these PRs — only its
       # blocking effect changes, and the talon-failure-advisory job posts a
@@ -688,7 +706,7 @@ jobs:
           # the name -> result map is rebuilt from each entry below. Skipped
           # jobs are filtered out so the gate only judges jobs that ran.
           NEEDS: ${{ toJSON(needs) }}
-          TALON_CHANGED: ${{ needs.changes.outputs.talon }}
+          TALON_CHANGED: ${{ needs.changes.outputs.talon-src }}
         run: |
           set -euo pipefail
           # Get all job results (excluding 'changes' which always succeeds)

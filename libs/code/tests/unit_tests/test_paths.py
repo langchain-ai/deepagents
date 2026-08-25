@@ -568,6 +568,15 @@ class TestDegenerateProfileRoots:
         with pytest.raises(DeepAgentsHomeError, match="not a"):
             _capture_paths(str(target), launch_home=tmp_path)
 
+    def test_rejects_dangling_symlink(self, tmp_path: Path) -> None:
+        """A profile symlink must resolve before launch treats it as creatable."""
+        target = tmp_path / "missing-profile"
+        link = tmp_path / "profile-link"
+        link.symlink_to(target, target_is_directory=True)
+
+        with pytest.raises(DeepAgentsHomeError, match="symlink whose target"):
+            _capture_paths(str(link), launch_home=tmp_path)
+
     def test_accepts_nested_directory_under_home(self, tmp_path: Path) -> None:
         """The rejections above do not catch an ordinary nested profile."""
         snapshot = _capture_paths("~/profiles/work", launch_home=tmp_path)

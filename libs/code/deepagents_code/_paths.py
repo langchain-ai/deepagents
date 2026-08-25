@@ -402,7 +402,14 @@ def _reject_degenerate_root(root: Path, launch_home: Path | None) -> None:
             "'~/.deepagents'."
         )
         raise DeepAgentsHomeError(msg)
-    if classify_path(root) is PathState.EXISTS and not root.is_dir():
+    state = classify_path(root)
+    if state is not PathState.EXISTS and root.is_symlink():
+        msg = (
+            f"Invalid DEEPAGENTS_HOME {str(root)!r}: is a symlink whose target "
+            "is missing or cannot be resolved."
+        )
+        raise DeepAgentsHomeError(msg)
+    if state is PathState.EXISTS and not root.is_dir():
         msg = f"Invalid DEEPAGENTS_HOME {str(root)!r}: exists but is not a directory."
         raise DeepAgentsHomeError(msg)
 

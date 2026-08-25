@@ -11,10 +11,13 @@ status surfaced while retrying.
 from __future__ import annotations
 
 import logging
+import math
 import random
 import time
 from contextlib import contextmanager
 from copy import copy
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING
 
 from langchain.agents.middleware import ModelRetryMiddleware
@@ -57,6 +60,14 @@ _BACKOFF_FACTOR = 2.0
 
 _MAX_DELAY_SECONDS = 10.0
 """Cap on a single backoff delay so exponential growth stays bounded."""
+
+_MAX_RETRY_AFTER_SECONDS = 60.0
+"""Cap on a server-requested `Retry-After` wait.
+
+Providers routinely ask for 20-60s on a rate limit, well past the exponential
+curve. Honoring the request beats hammering the same quota, but an unbounded
+wait would stall the turn indefinitely on a hostile or mistaken header.
+"""
 
 _JITTER_FRACTION = 0.1
 """Multiplicative jitter of +-10%, matching Codex's 0.9..1.1 range."""
@@ -206,6 +217,48 @@ def _extract_status_code(exc: Exception) -> int | None:
     return None
 
 
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Return the server-requested retry delay carried by `exc`, if any.
+
+    Reads the `Retry-After` response header, which providers set on 429 and 503
+    in either delta-seconds or HTTP-date form. Our exponential curve tops out
+    around 3s per step, so ignoring the header means retrying well before the
+    quota resets and spending the whole budget for nothing.
+
+    Args:
+        exc: The exception raised by the model call.
+
+    Returns:
+        A non-negative delay in seconds capped at `_MAX_RETRY_AFTER_SECONDS`,
+        or `None` when the exception carries no usable header.
+    """
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return None
+    try:
+        raw = headers.get("retry-after")
+    except (AttributeError, TypeError):
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+
+    raw = raw.strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        seconds = (retry_at - datetime.now(UTC)).total_seconds()
+
+    if not math.isfinite(seconds):
+        return None
+    return min(max(seconds, 0.0), _MAX_RETRY_AFTER_SECONDS)
+
+
 def _is_transient_sdk_error(exc: Exception) -> bool:
     """Return whether `exc` is a name-matched transient provider SDK error.
 
@@ -246,9 +299,16 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     except ImportError:
         pass
     else:
-        # Covers ReadError, ConnectError, RemoteProtocolError, and every other
-        # TransportError, plus connect/read/write/pool timeouts.
-        httpx_transient = (httpx.TimeoutException, httpx.TransportError)
+        # Deliberately narrower than `TransportError`, whose subclasses include
+        # permanent faults: `UnsupportedProtocol` (a mistyped base_url scheme),
+        # `LocalProtocolError` (a malformed request), and `ProxyError` (a
+        # misconfigured proxy). Retrying those burns the whole budget on an
+        # error that was knowable on the first attempt.
+        httpx_transient = (
+            httpx.TimeoutException,
+            httpx.NetworkError,
+            httpx.RemoteProtocolError,
+        )
 
     if isinstance(exc, httpx_transient):
         return True
@@ -361,6 +421,25 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             jitter=True,
         )
 
+    def _retry_delay(self, attempt: int, exc: Exception) -> float:
+        """Return the wait before the retry following `attempt`.
+
+        A server-requested `Retry-After` wins over the local curve: the
+        provider knows when its quota resets, and retrying sooner just spends
+        the budget against a closed door.
+
+        Args:
+            attempt: The 0-indexed attempt that just failed.
+            exc: The exception that attempt raised.
+
+        Returns:
+            Delay in seconds.
+        """
+        retry_after = _retry_after_seconds(exc)
+        if retry_after is not None:
+            return retry_after
+        return self._compute_delay(attempt)
+
     def _compute_delay(self, attempt: int) -> float:
         """Return the backoff delay before the retry following `attempt`.
 
@@ -450,7 +529,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                     _log_give_up(exc, attempt + 1, max_retries)
                     return self._handle_failure(exc, attempt + 1)
                 self._emit_retry_status(request, attempt + 1, max_retries)
-                delay = self._compute_delay(attempt)
+                delay = self._retry_delay(attempt, exc)
                 if delay > 0:
                     time.sleep(delay)
             else:
@@ -493,7 +572,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                     _log_give_up(exc, attempt + 1, max_retries)
                     return self._handle_failure(exc, attempt + 1)
                 self._emit_retry_status(request, attempt + 1, max_retries)
-                delay = self._compute_delay(attempt)
+                delay = self._retry_delay(attempt, exc)
                 if delay > 0:
                     await asyncio.sleep(delay)
             else:

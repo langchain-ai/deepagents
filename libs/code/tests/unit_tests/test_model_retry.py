@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
@@ -43,8 +45,10 @@ from deepagents_code.config import (
     resolve_model_retries,
 )
 from deepagents_code.model_retry import (
+    _JITTER_FRACTION,
     CodeModelRetryMiddleware,
     _is_retryable_model_error,
+    _retry_after_seconds,
     build_retry_event,
     format_retry_status,
 )
@@ -299,6 +303,43 @@ def test_predicate_not_retryable(exc: Exception) -> None:
     assert _is_retryable_model_error(exc) is False
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(
+            httpx.UnsupportedProtocol("bad scheme"), id="unsupported-protocol"
+        ),
+        pytest.param(httpx.LocalProtocolError("bad request"), id="local-protocol"),
+        pytest.param(httpx.ProxyError("bad proxy"), id="proxy"),
+    ],
+)
+def test_permanent_transport_errors_are_not_retried(exc: Exception) -> None:
+    """`TransportError` subclasses that can never succeed on a retry.
+
+    A mistyped `base_url` scheme, a malformed request, or a misconfigured proxy
+    is knowable on the first attempt; retrying spends the whole budget to
+    surface the same config error.
+    """
+    assert isinstance(exc, httpx.TransportError)
+    assert _is_retryable_model_error(exc) is False
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(httpx.ReadError("dropped"), id="read"),
+        pytest.param(httpx.ConnectError("refused"), id="connect"),
+        pytest.param(httpx.WriteError("broken"), id="write"),
+        pytest.param(httpx.PoolTimeout("pool"), id="pool-timeout"),
+        pytest.param(httpx.ConnectTimeout("connect"), id="connect-timeout"),
+        pytest.param(httpx.RemoteProtocolError("server broke"), id="remote-protocol"),
+    ],
+)
+def test_transient_transport_errors_are_still_retried(exc: Exception) -> None:
+    """Narrowing the predicate must not drop the genuinely transient faults."""
+    assert _is_retryable_model_error(exc) is True
+
+
 # --- middleware behavior ---
 
 
@@ -397,6 +438,164 @@ def test_retry_scoped_to_model_node(monkeypatch: pytest.MonkeyPatch) -> None:
     assert mw.wrap_model_call(_req(), _handler(handler)) == "OK"
     assert model_calls["n"] == 2
     assert tool_calls == []
+
+
+# --- backoff curve ---
+
+
+def test_backoff_grows_exponentially_and_is_capped() -> None:
+    """The curve doubles from 200ms and stops at the 10s ceiling.
+
+    Asserted on the values rather than the constructor attributes: without
+    this, removing the cap or making growth linear passes the suite.
+    """
+    mw = CodeModelRetryMiddleware(max_retries=12)
+    delays = [mw._compute_delay(n) for n in range(12)]  # policy under test
+
+    # Nominal curve is 0.2 * 2**n with +-10% jitter, capped at 10s.
+    for n, delay in enumerate(delays):
+        nominal = min(0.2 * (2.0**n), 10.0)
+        assert delay == pytest.approx(nominal, rel=_JITTER_FRACTION)
+    assert delays[-1] <= 10.0 * (1 + _JITTER_FRACTION)
+    # Growth, not a constant.
+    assert delays[3] > delays[0]
+
+
+def test_backoff_jitter_varies_between_calls() -> None:
+    """Jitter is applied, so a thundering herd desynchronizes."""
+    mw = CodeModelRetryMiddleware()
+    samples = {mw._compute_delay(5) for _ in range(20)}  # policy under test
+    assert len(samples) > 1
+
+
+def test_retry_uses_the_computed_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The loop sleeps for the curve's values, in order."""
+    slept: list[float] = []
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.time.sleep", lambda seconds: slept.append(seconds)
+    )
+    calls = {"n": 0}
+
+    def handler(_req_arg: object) -> str:
+        calls["n"] += 1
+        if calls["n"] < 4:
+            raise _READ_ERROR
+        return "OK"
+
+    mw = CodeModelRetryMiddleware(max_retries=5)
+    assert mw.wrap_model_call(_req(), _handler(handler)) == "OK"
+    assert len(slept) == 3
+    assert slept[0] < slept[1] < slept[2]
+
+
+# --- Retry-After ---
+
+
+class _RateLimitError(Exception):
+    """Carries a 429 and a `Retry-After` header the way provider SDKs do."""
+
+    def __init__(self, retry_after: str = "1") -> None:
+        super().__init__("rate limited")
+        self.response = SimpleNamespace(
+            status_code=429, headers={"retry-after": retry_after}
+        )
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        pytest.param("30", 30.0, id="delta-seconds"),
+        pytest.param("  45  ", 45.0, id="padded"),
+        pytest.param("0", 0.0, id="zero"),
+        pytest.param("-5", 0.0, id="negative-clamped"),
+        pytest.param("600", 60.0, id="capped"),
+    ],
+)
+def test_retry_after_seconds_parses_delta(header: str, expected: float) -> None:
+    assert _retry_after_seconds(_RateLimitError(header)) == pytest.approx(expected)
+
+
+def test_retry_after_seconds_parses_http_date() -> None:
+    """The header may be an HTTP-date instead of a delta."""
+    when = datetime.now(UTC) + timedelta(seconds=20)
+    header = format_datetime(when, usegmt=True)
+    result = _retry_after_seconds(_RateLimitError(header))
+    assert result is not None
+    assert result == pytest.approx(20.0, abs=2.0)
+
+
+def test_retry_after_seconds_past_date_clamps_to_zero() -> None:
+    """A stale date means retry now, not a negative sleep."""
+    when = datetime.now(UTC) - timedelta(seconds=30)
+    header = format_datetime(when, usegmt=True)
+    assert _retry_after_seconds(_RateLimitError(header)) == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        pytest.param("soon", id="unparseable"),
+        pytest.param("", id="empty"),
+        pytest.param("   ", id="whitespace"),
+        pytest.param("nan", id="nan"),
+        pytest.param("inf", id="infinity"),
+    ],
+)
+def test_retry_after_seconds_ignores_unusable_headers(header: str) -> None:
+    assert _retry_after_seconds(_RateLimitError(header)) is None
+
+
+def test_retry_after_seconds_absent_header() -> None:
+    assert _retry_after_seconds(_READ_ERROR) is None
+    assert _retry_after_seconds(_StatusError(429)) is None
+
+
+_RATE_LIMIT_25S = _RateLimitError("25")
+_RATE_LIMIT_18S = _RateLimitError("18")
+
+
+def test_retry_after_overrides_the_backoff_curve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rate limit waits as long as the provider asked, not ~0.2s."""
+    slept: list[float] = []
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.time.sleep", lambda seconds: slept.append(seconds)
+    )
+    calls = {"n": 0}
+
+    def handler(_req_arg: object) -> str:
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise _RATE_LIMIT_25S
+        return "OK"
+
+    mw = CodeModelRetryMiddleware(max_retries=3)
+    assert mw.wrap_model_call(_req(), _handler(handler)) == "OK"
+    assert slept == [pytest.approx(25.0)]
+
+
+async def test_async_retry_after_overrides_the_backoff_curve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The async path honors the header too."""
+    slept: list[float] = []
+
+    async def _record(seconds: float, *_a: object, **_k: object) -> None:  # noqa: RUF029  # async stub replacing asyncio.sleep
+        slept.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", _record)
+    calls = {"n": 0}
+
+    async def handler(_req_arg: object) -> str:  # noqa: RUF029  # awaited by middleware; no internal await needed
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise _RATE_LIMIT_18S
+        return "OK"
+
+    mw = CodeModelRetryMiddleware(max_retries=3)
+    assert await mw.awrap_model_call(_req(), _async_handler(handler)) == "OK"
+    assert slept == [pytest.approx(18.0)]
 
 
 # --- give-up diagnostics ---

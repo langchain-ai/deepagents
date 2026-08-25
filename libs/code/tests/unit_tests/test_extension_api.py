@@ -9,7 +9,7 @@ from deepagents.backends import FilesystemBackend
 from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_code._env_vars import EXPERIMENTAL
-from deepagents_code.extensions import ExtensionAPI
+from deepagents_code.extensions import ExtensionAPI, ExtensionMode
 from deepagents_code.extensions.discovery import discover_extensions
 from deepagents_code.extensions.registry import (
     ExtensionError,
@@ -43,7 +43,7 @@ def api() -> ExtensionAPI:
         ExtensionRegistry(),
         SourceInfo(Path("/extensions/example.py")),
         cwd=Path("/workspace"),
-        mode="interactive",
+        mode=ExtensionMode.INTERACTIVE,
     )
 
 
@@ -67,7 +67,7 @@ def test_registers_supported_units_and_context(api: ExtensionAPI) -> None:
     assert len(registry.shutdown_hooks) == 1
     assert (api.cwd, api.mode, api.path) == (
         Path("/workspace"),
-        "interactive",
+        ExtensionMode.INTERACTIVE,
         Path("/extensions/example.py"),
     )
 

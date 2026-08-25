@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from deepagents_code.extensions.registry import ExtensionError
@@ -20,6 +21,13 @@ if TYPE_CHECKING:
 _ROUTE_PREFIX = re.compile(r"^/(?:[a-z0-9][a-z0-9_-]*/)+$")
 
 
+class ExtensionMode(StrEnum):
+    """Runtime mode exposed to extensions."""
+
+    INTERACTIVE = "interactive"
+    HEADLESS = "headless"
+
+
 class ExtensionAPI:
     """Factory-scoped registrar and read-only session context.
 
@@ -34,7 +42,7 @@ class ExtensionAPI:
         source: SourceInfo,
         *,
         cwd: Path,
-        mode: str,
+        mode: ExtensionMode,
     ) -> None:
         """Bind a registrar to one extension's provenance.
 
@@ -47,7 +55,7 @@ class ExtensionAPI:
         self._registry = registry
         self._source = source
         self._cwd = cwd
-        self._mode = mode
+        self._mode = ExtensionMode(mode)
         self._active = True
 
     def _deactivate(self) -> None:
@@ -65,14 +73,14 @@ class ExtensionAPI:
         return self._cwd
 
     @property
-    def mode(self) -> str:
+    def mode(self) -> ExtensionMode:
         """Runtime mode, either `interactive` or `headless`."""
         return self._mode
 
     @property
     def has_ui(self) -> bool:
         """Whether this session has an interactive terminal UI."""
-        return self._mode == "interactive"
+        return self._mode == ExtensionMode.INTERACTIVE
 
     @property
     def path(self) -> Path:

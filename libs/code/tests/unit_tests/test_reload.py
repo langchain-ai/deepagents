@@ -1339,6 +1339,61 @@ class TestReloadErrorPaths:
         assert settings.extra_skills_dirs == sentinel
         assert not any(change.startswith("extra_skills_dirs:") for change in changes)
 
+    def test_managed_skill_roots_are_validated_from_target_cwd(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An invalid target-relative managed root cannot fall through to env."""
+        import deepagents_code.config as config_mod
+        from deepagents_code import model_config
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        (current / "managed-skills").mkdir()
+        user_skills = tmp_path / "user-skills"
+        user_skills.mkdir()
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            '[skills]\nextra_allowed_dirs = ["managed-skills"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(current)
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS",
+            str(user_skills),
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+        try:
+            settings = Settings.from_environment(start_path=current)
+            previous = settings.extra_skills_dirs
+            assert previous == [current / "managed-skills"]
+            original_resolve = config_mod._resolve_extra_skills_path
+
+            def resolve_for_target(raw: str) -> Path:
+                if config_mod._extra_skills_path_base.get() == target:
+                    # Python 3.12 reports a target-cwd symlink loop this way.
+                    msg = "broken symlink loop"
+                    raise RuntimeError(msg)
+                return original_resolve(raw)
+
+            monkeypatch.setattr(
+                config_mod,
+                "_resolve_extra_skills_path",
+                resolve_for_target,
+            )
+            changes = settings.reload_from_environment(start_path=target)
+
+            assert config_mod.managed_reload_block(changes) is not None
+            assert settings.extra_skills_dirs == previous
+            assert settings.extra_skills_dirs != [user_skills]
+        finally:
+            service.invalidate_config_sources()
+
 
 class TestReloadableFieldConstants:
     """Guards for the derived reloadable-field constants."""

@@ -2992,7 +2992,12 @@ class Settings:
         # replaces the snapshot that every other reader in the process observes
         # before the user has accepted anything.
         try:
-            managed_snapshot = get_healthy_managed_snapshot(refresh=refresh_managed)
+            # Path-valued policy must be validated against the same project
+            # base used when the candidate resolver applies it below. Without
+            # this, a relative managed skill root can validate in the old cwd,
+            # fail in the target cwd, and fall through to the user's env value.
+            with _use_extra_skills_path_base(start_path):
+                managed_snapshot = get_healthy_managed_snapshot(refresh=refresh_managed)
         except ManagedConfigError as exc:
             logger.error("Keeping previous settings: %s", exc)  # noqa: TRY400
             # Report the block to the caller. Returning only `previous` reads

@@ -65,7 +65,6 @@ from deepagents_code.tui.textual_adapter import (
     _dispatch_tool_result_hook,
     _format_rubric_details,
     _format_rubric_event,
-    _frame_reject_reason,
     _handle_interrupt_cleanup,
     _interrupt_owned_tool_rows,
     _is_auto_mode_classifier_chunk,
@@ -2409,7 +2408,7 @@ class TestFormatRubricEvent:
         assert explanation.strip() in details
         assert "Exact copy remains intact" in details
         assert "Expected 'Not ready'; found 'Pending'." in details
-        assert "Passing criterion" not in details
+        assert "Satisfied criteria\n- Passing criterion" in details
         assert "Address every unmet criterion, then retry the check." in details
         assert "{'name':" not in details
         assert "truncated" not in details
@@ -2474,6 +2473,104 @@ class TestFormatRubricEvent:
 
         assert "The goal remains active" in details
         assert "`/goal clear`" in details
+
+    def test_details_report_the_full_pass_fail_accounting(self) -> None:
+        """Both verdicts render so a partial evaluation is visible as partial."""
+        details = _format_rubric_details(
+            {
+                "result": "needs_revision",
+                "criteria": [
+                    {"name": "Reports infeasibility", "passed": True},
+                    {"name": "Lists 15 shops", "passed": False, "gap": "Only 5."},
+                    {"name": "Two sources each", "passed": False},
+                ],
+            }
+        )
+
+        assert (
+            "Unmet criteria\n- Lists 15 shops\n  Only 5.\n- Two sources each" in details
+        )
+        assert "Satisfied criteria\n- Reports infeasibility" in details
+        # The satisfied list comes first so the panel reads as an accounting of
+        # the whole rubric rather than a list of defects.
+        assert details.index("Satisfied criteria") < details.index("Unmet criteria")
+
+    def test_criterion_without_a_boolean_verdict_is_listed_in_neither_section(
+        self,
+    ) -> None:
+        """A missing or non-boolean `passed` must not be guessed either way."""
+        details = _format_rubric_details(
+            {
+                "result": "needs_revision",
+                "criteria": [
+                    {"name": "No verdict"},
+                    {"name": "Null verdict", "passed": None},
+                    {"name": "Truthy non-bool", "passed": 1},
+                ],
+            }
+        )
+
+        assert "Unmet criteria" not in details
+        assert "Satisfied criteria" not in details
+
+    def test_all_criteria_passing_still_renders_on_a_failure_verdict(self) -> None:
+        """A downgraded verdict has passing criteria but no failing ones."""
+        details = _format_rubric_details(
+            {
+                "result": "needs_revision",
+                "unverified": True,
+                "criteria": [{"name": "compiles", "passed": True}],
+            }
+        )
+
+        assert "Unmet criteria" not in details
+        assert "Satisfied criteria\n- compiles" in details
+        assert "could not account for every criterion" in details
+        # The next step must not deny the criteria the same panel just listed.
+        assert "nothing was confirmed" not in details
+        assert "the full rubric was not verified" in details
+
+    def test_unverified_verdict_reads_as_a_verification_gap(self) -> None:
+        """A downgraded `satisfied` has no failing criteria to address."""
+        event = {
+            "type": "rubric_evaluation_end",
+            "result": "needs_revision",
+            "unverified": True,
+            "explanation": "Grading was incomplete.",
+            "criteria": [{"name": "compiles", "passed": True}],
+        }
+
+        assert _format_rubric_event(event) == (
+            "↻ Acceptance criteria could not be verified"
+        )
+        details = _format_rubric_details(event)
+        assert "Unmet criteria" not in details
+        assert "Address every unmet criterion" not in details
+        assert "could not account for every criterion" in details
+
+    def test_unverified_max_iterations_marks_the_limit_and_the_gap(self) -> None:
+        """The iteration-limit verdict keeps its suffix when nothing was verified."""
+        event = {
+            "type": "rubric_evaluation_end",
+            "result": "max_iterations_reached",
+            "unverified": True,
+        }
+
+        assert _format_rubric_event(event) == (
+            "⚠ Acceptance criteria could not be verified (iteration limit reached)"
+        )
+
+    def test_verified_revision_keeps_the_unmet_criteria_wording(self) -> None:
+        """Without `unverified`, confirmed defects still drive the next step."""
+        event = {
+            "type": "rubric_evaluation_end",
+            "result": "needs_revision",
+            "unverified": False,
+            "criteria": [{"name": "tests pass", "passed": False}],
+        }
+
+        assert _format_rubric_event(event) == "↻ Acceptance criteria not yet satisfied"
+        assert "Address every unmet criterion" in _format_rubric_details(event)
 
     def test_end_event_without_result_returns_none(self) -> None:
         """Partial end events should not render a spurious warning."""
@@ -7269,7 +7366,7 @@ class TestExecuteTaskTextualAskUser:
         assert decisions == [
             {
                 "type": "reject",
-                "message": _frame_reject_reason("use a safer command"),
+                "message": "use a safer command",
             }
         ]
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
@@ -9274,8 +9371,8 @@ class TestToolHooksTextual:
         # Stayed rejected despite the resumed error ToolMessage driving set_error.
         assert execute_widgets[0]._status == "rejected"
 
-    async def test_hitl_reasoned_reject_frames_reason_for_model(self) -> None:
-        """The model gets framed rejection text; the row keeps the raw reason."""
+    async def test_hitl_reasoned_reject_forwards_raw_reason(self) -> None:
+        """The middleware receives the raw reason and the row renders it unchanged."""
         mounted: list[ToolCallMessage] = []
 
         async def capture_mount(widget: object) -> bool:
@@ -9340,11 +9437,8 @@ class TestToolHooksTextual:
         resume_cmd = agent.stream_inputs[1]
         assert isinstance(resume_cmd, Command)
         resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
-        expected_message = (
-            "User rejected the tool call with reason: use another command"
-        )
         assert resume_payload["interrupt-1"]["decisions"] == [
-            {"type": "reject", "message": expected_message}
+            {"type": "reject", "message": "use another command"}
         ]
         execute_widgets = [w for w in mounted if w.tool_name == "execute"]
         assert len(execute_widgets) == 1

@@ -136,9 +136,6 @@ _hitl_adapter_cache: TypeAdapter | None = None
 
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
 
-_REJECT_REASON_PREFIX = "User rejected the tool call with reason: "
-"""Synthetic framing prepended to a user-typed HITL rejection reason."""
-
 
 def _permission_tool_calls(
     interrupt_id: str,
@@ -447,24 +444,6 @@ def _reject_tracked_rows(
     return _dispatch_terminal_tool_result_hooks(rejected, "Tool approval rejected")
 
 
-def _frame_reject_reason(reason: str) -> str:
-    """Frame a user-typed rejection reason for the model.
-
-    Stock HITL uses the supplied message as the *entire* synthetic
-    `ToolMessage`, replacing its canned "user rejected the tool call" wording.
-    A bare reason ("no", "wrong file") therefore reaches the model with no
-    indication of who produced it or why the tool never ran, so the framing is
-    reattached here while the raw text is what the tool row renders.
-
-    Args:
-        reason: Non-empty reason typed into the rejection reason field.
-
-    Returns:
-        The reason prefixed with the synthetic rejection framing.
-    """
-    return f"{_REJECT_REASON_PREFIX}{reason}"
-
-
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
     """Return a cached `TypeAdapter(HITLRequest)`.
 
@@ -587,13 +566,20 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
         return None
     if result == "satisfied":
         return f"{glyphs.checkmark} Acceptance criteria satisfied"
+    # `unverified` marks a grader that could not account for every criterion, so
+    # the verdict is a verification gap rather than a list of confirmed defects.
+    unverified = data.get("unverified") is True
     if result == "needs_revision":
+        if unverified:
+            return f"{glyphs.retry} Acceptance criteria could not be verified"
         return f"{glyphs.retry} Acceptance criteria not yet satisfied"
     if result == "max_iterations_reached":
-        return (
-            f"{glyphs.warning} Acceptance criteria not yet satisfied "
-            "(iteration limit reached)"
+        summary = (
+            "Acceptance criteria could not be verified"
+            if unverified
+            else "Acceptance criteria not yet satisfied"
         )
+        return f"{glyphs.warning} {summary} (iteration limit reached)"
     if result == "failed":
         return f"{glyphs.warning} Rubric is invalid or cannot be evaluated"
     if result == "grader_error":
@@ -625,22 +611,47 @@ def _format_rubric_details(data: dict[str, Any], *, goal_active: bool = False) -
 
     criteria = data.get("criteria")
     failing: list[tuple[str, str]] = []
+    passing: list[str] = []
     if isinstance(criteria, list):
         for criterion in criteria:
-            if isinstance(criterion, dict) and criterion.get("passed") is False:
+            if not isinstance(criterion, dict):
+                continue
+            verdict = criterion.get("passed")
+            # Strict identity keeps a missing or non-boolean verdict out of both
+            # lists rather than guessing which way it should count.
+            if verdict is False:
                 name = str(criterion.get("name") or "Unnamed criterion").strip()
                 gap = str(criterion.get("gap") or "").strip()
                 failing.append((name, gap))
+            elif verdict is True:
+                passing.append(
+                    str(criterion.get("name") or "Unnamed criterion").strip()
+                )
+    if passing:
+        # Shown so the panel reports the grader's full accounting; without it a
+        # partial evaluation is indistinguishable from a complete one.
+        sections.append(
+            "\n".join(["Satisfied criteria", *(f"- {name}" for name in passing)])
+        )
     if failing:
         lines = ["Unmet criteria"]
         for name, gap in failing:
             lines.append(f"- {name}" + (f"\n  {gap}" if gap else ""))
         sections.append("\n".join(lines))
 
+    unverified = data.get("unverified") is True
+
     if result == "max_iterations_reached" and goal_active:
         next_step = (
             "The goal remains active. Continue with another prompt to resume or "
             "retry, use `/goal <objective>` to amend it, or `/goal clear` to clear it."
+        )
+    elif result in {"needs_revision", "max_iterations_reached"} and unverified:
+        # The gap is in coverage, not in the criteria the grader did report, so
+        # the next step is to re-verify rather than to fix a listed failure.
+        next_step = (
+            "The grader could not account for every criterion, so the full "
+            "rubric was not verified. Retry the check to re-verify the work."
         )
     elif result in {"needs_revision", "max_iterations_reached"}:
         next_step = "Address every unmet criterion, then retry the check."
@@ -3236,8 +3247,7 @@ async def execute_task_textual(
                                 )
                                 reject_decision: RejectDecision = (
                                     RejectDecision(
-                                        type="reject",
-                                        message=_frame_reject_reason(reject_message),
+                                        type="reject", message=reject_message
                                     )
                                     if reject_message
                                     else RejectDecision(type="reject")

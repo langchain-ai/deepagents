@@ -443,10 +443,7 @@ async def _make_graphs() -> ServerRuntime:
             logger.warning("Extension not loaded: %s", message)
         if extension_result.active:
             extension_registry = extension_result.registry
-            bind_server_extensions(
-                extension_registry,
-                errors=extension_result.errors,
-            )
+            bind_server_extensions(extension_result)
     try:
         return await asyncio.to_thread(
             _create_cli_graphs_sync,

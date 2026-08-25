@@ -80,7 +80,46 @@ def test_acp_mode_rejects_auto_classifier_model(
 
     assert exc_info.value.code == 2
     err = capsys.readouterr().err
-    assert "--auto-classifier-model requires Auto or YOLO mode" in err
+    assert "--auto-classifier-model requires Auto mode in ACP mode" in err
+    resolve_agent.assert_not_called()
+
+
+def test_acp_mode_rejects_auto_classifier_model_in_yolo(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """YOLO must not silently drop the classifier model.
+
+    `create_cli_agent` only installs `AutoModeHITLMiddleware` when
+    `auto_mode_enabled` is true; in ACP that flag follows `auto`, not `yolo`,
+    so a classifier supplied alongside `--yolo` would never be consulted.
+    """
+    args = _make_acp_args(yolo=True, auto_classifier_model="openai:gpt-5.5-mini")
+
+    with (
+        patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "--acp",
+                "--yolo",
+                "--auto-classifier-model",
+                "openai:gpt-5.5-mini",
+            ],
+        ),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch(
+            "deepagents_code.approval_mode.has_yolo_acknowledgement",
+            return_value=True,
+        ),
+        patch("deepagents_code.main._resolve_agent_arg") as resolve_agent,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "--auto-classifier-model requires Auto mode in ACP mode" in err
     resolve_agent.assert_not_called()
 
 

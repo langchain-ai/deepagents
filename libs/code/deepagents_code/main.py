@@ -4886,13 +4886,18 @@ def cli_main() -> None:
                         "using it in ACP mode.\n"
                     )
                     sys.exit(2)
+            # Only Auto installs `AutoModeHITLMiddleware`, the sole consumer of
+            # the classifier model: `_run_acp_cli_async` receives
+            # `auto=approval_mode is ApprovalMode.AUTO`, and `create_cli_agent`
+            # skips the middleware when `auto_mode_enabled` is false. Accepting
+            # the flag in YOLO would launch with the model silently unused.
             if getattr(args, "auto_classifier_model", None) is not None and (
-                approval_mode is ApprovalMode.MANUAL
+                approval_mode is not ApprovalMode.AUTO
             ):
                 sys.stderr.write(
-                    "Error: --auto-classifier-model requires Auto or YOLO "
-                    "mode in ACP mode (--auto-approve, --yolo, or "
-                    "[startup].mode).\n"
+                    "Error: --auto-classifier-model requires Auto "
+                    "mode in ACP mode (--auto-approve or "
+                    '[startup].mode = "auto").\n'
                 )
                 sys.exit(2)
             assistant_id = _resolve_agent_arg(args)

@@ -122,9 +122,9 @@ def build_version_text() -> str:
     the resolved versions of the core LangChain-ecosystem dependencies.
 
     Reports the same version facts as the `/version` slash command, in the
-    same section order (versions, editable path, core dependencies, optional
-    dependencies), but omits its network-dependent release-age suffixes and
-    update-available hint so `--version` stays offline.
+    same section order (versions, editable path, update status, core dependencies,
+    optional dependencies). Release-age suffixes stay omitted so `--version`
+    remains offline; update status comes only from the fresh local cache.
 
     Returns:
         Multi-line version string suitable for stdout.
@@ -162,6 +162,22 @@ def build_version_text() -> str:
             text += f"\nEditable install: {path}" if path else "\nEditable install"
     except Exception:
         logger.warning("Unexpected error detecting editable install", exc_info=True)
+
+    try:
+        from deepagents_code.update_check import (
+            get_cached_update_available,
+            is_update_check_enabled,
+            upgrade_command,
+        )
+
+        if is_update_check_enabled():
+            available, latest = get_cached_update_available()
+            if available and latest:
+                text = (
+                    f"{text}\n\nUpdate available: v{latest}. Run: {upgrade_command()}"
+                )
+    except Exception:
+        logger.debug("Failed to read cached update status", exc_info=True)
 
     # Core dependencies precede optional dependencies to match the section
     # order of the `/version` slash command (see `_handle_version_command`).

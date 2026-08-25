@@ -504,6 +504,68 @@ def test_build_version_text_omits_core_deps_when_not_editable() -> None:
     assert "Core dependencies:" not in text
 
 
+def test_build_version_text_reports_cached_update() -> None:
+    """`--version` warns when the local cache knows about a newer release."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            return_value=(True, "99.99.99"),
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.upgrade_command",
+            return_value="uv tool install -U deepagents-code",
+        ),
+    ):
+        text = build_version_text()
+
+    assert (
+        "Update available: v99.99.99. Run: uv tool install -U deepagents-code" in text
+    )
+
+
+def test_build_version_text_honors_disabled_update_checks() -> None:
+    """`--version` does not inspect or report updates after an opt-out."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=False,
+        ),
+        patch("deepagents_code.update_check.get_cached_update_available") as get_cached,
+    ):
+        text = build_version_text()
+
+    assert "Update available" not in text
+    get_cached.assert_not_called()
+
+
+def test_build_version_text_ignores_cached_update_failure() -> None:
+    """A cache read failure never breaks `--version` output."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            side_effect=OSError,
+        ),
+    ):
+        text = build_version_text()
+
+    assert f"deepagents-code {__version__}" in text
+    assert "Update available" not in text
+
+
 def _editable_exact_pin_version_report(cli_metadata: str = "0.1.40") -> VersionReport:
     """Build a report with editable installs, CLI drift, and a newer SDK pin."""
     from packaging.requirements import Requirement

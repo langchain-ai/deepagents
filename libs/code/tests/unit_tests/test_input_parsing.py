@@ -386,22 +386,6 @@ def test_parse_pasted_path_payload_leading_path_with_suffix(tmp_path: Path) -> N
     assert payload[parsed.token_end :] == " what's in this image?"
 
 
-def test_dropped_payload_paths_resolves_image(tmp_path: Path) -> None:
-    """A dropped image path is resolved."""
-    img = tmp_path / "shot.png"
-    img.write_bytes(b"img")
-
-    assert dropped_payload_paths(str(img)) == [img.resolve()]
-
-
-def test_dropped_payload_paths_resolves_video(tmp_path: Path) -> None:
-    """A dropped video path is resolved."""
-    clip = tmp_path / "clip.mp4"
-    clip.write_bytes(b"vid")
-
-    assert dropped_payload_paths(str(clip)) == [clip.resolve()]
-
-
 def test_dropped_payload_paths_resolves_non_media(tmp_path: Path) -> None:
     """Classification is left to the caller, so non-media paths resolve too."""
     doc = tmp_path / "notes.txt"

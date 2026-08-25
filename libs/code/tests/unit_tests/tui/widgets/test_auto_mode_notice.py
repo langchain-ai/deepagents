@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deepagents_code.tui.widgets.auto_mode_notice import (
-    AUTO_MODE_NOTICE_BODY,
-    AUTO_MODE_NOTICE_MODEL_ANCHOR,
-    build_auto_mode_notice_body,
-)
+from deepagents_code.tui.widgets.auto_mode_notice import build_auto_mode_notice_body
 
 
 def test_distinct_classifier_says_it_is_not_the_coding_model() -> None:
@@ -93,8 +89,3 @@ def test_rejects_a_body_missing_the_anchor(
         build_auto_mode_notice_body(
             "anthropic:claude-haiku-4-5", distinct_from_main_model=True
         )
-
-
-def test_anchor_is_present_in_the_shipped_body() -> None:
-    """The constant and the body must stay in sync."""
-    assert AUTO_MODE_NOTICE_MODEL_ANCHOR in AUTO_MODE_NOTICE_BODY

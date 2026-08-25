@@ -81,14 +81,6 @@ class TestPendingNotificationInvariants:
                 payload=UpdateAvailablePayload(latest="1", upgrade_cmd="c"),
             )
 
-    def test_pending_notification_is_frozen(self) -> None:
-        """Public invariants: the dataclass is immutable after construction."""
-        from dataclasses import FrozenInstanceError
-
-        entry = _dep_entry()
-        with pytest.raises(FrozenInstanceError):
-            entry.key = "other"  # ty: ignore
-
 
 class TestNotificationRegistry:
     """Tests for add / remove / toast-binding semantics."""

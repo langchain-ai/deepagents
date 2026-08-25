@@ -28712,7 +28712,10 @@ async def run_textual_app(
             snapshot with the final thread ID so callers can still render
             teardown hints for the thread that was active at the crash.
     """
-    from deepagents_code._terminal_stderr import TerminalStderrGuard
+    from deepagents_code._terminal_stderr import (
+        TerminalStderrGuard,
+        stdout_driver_class,
+    )
 
     app = DeepAgentsApp(
         agent=agent,
@@ -28745,6 +28748,16 @@ async def run_textual_app(
     try:
         stderr_guard = TerminalStderrGuard.install()
         app._terminal_stderr_guard = stderr_guard
+        if stderr_guard.active:
+            # Suppression points fd 2 at /dev/null, and Textual's stock Unix
+            # driver renders every frame to `sys.__stderr__` — leave this out
+            # and the whole TUI is invisible. When stdout cannot be used
+            # instead, drop suppression rather than ship a black screen.
+            driver_class = stdout_driver_class()
+            if driver_class is None:
+                stderr_guard.close()
+            else:
+                app.driver_class = driver_class
         await app.run_async()
     except Exception as e:
         # The app resolves resume intent and `/threads` switches internally, so

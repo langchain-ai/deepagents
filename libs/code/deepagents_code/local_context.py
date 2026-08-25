@@ -28,6 +28,8 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
+    TracePolicy,
+    omit_payload,
 )
 
 from deepagents_code.unicode_security import sanitize_control_chars
@@ -698,6 +700,9 @@ class LocalContextMiddleware(AgentMiddleware):
     Because the script runs inside the backend, it works for both local shells
     and remote sandboxes.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     state_schema = LocalContextState
 

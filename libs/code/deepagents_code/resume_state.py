@@ -67,6 +67,8 @@ from langchain.agents.middleware.types import (
     AgentState,
     ContextT,
     PrivateStateAttr,
+    TracePolicy,
+    omit_payload,
 )
 from langchain_core.messages import AIMessage
 
@@ -262,6 +264,9 @@ class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
     instead of a separate `aupdate_state` (avoids a standalone `UpdateState`
     run in LangSmith and works identically against remote graphs).
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     state_schema = ResumeState
 

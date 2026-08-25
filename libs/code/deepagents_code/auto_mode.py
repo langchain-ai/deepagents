@@ -39,6 +39,8 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     PrivateStateAttr,
     ToolCallRequest,
+    TracePolicy,
+    omit_payload,
 )
 from langchain.tools import ToolRuntime  # noqa: TC002  # runtime injection marker
 from langchain_core.messages import (
@@ -1945,6 +1947,9 @@ def _validate_classifier_ids(batch: AutoDecisionBatch, expected_ids: set[str]) -
 class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
     """Apply deterministic policy, classifier review, and HITL fallback."""
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = AutoModeState
 
     @property
@@ -3646,6 +3651,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
 class HeadlessMCPGuardMiddleware(HumanInTheLoopMiddleware[AgentState[Any], Any, Any]):
     """Reject dynamically gated MCP calls when no approval UI exists."""
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(self, tool_names: set[str]) -> None:
         """Initialize the guard.

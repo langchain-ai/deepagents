@@ -895,9 +895,14 @@ _PATHS_BINDING_MODULES: tuple[str, ...] = (
 Those bindings are made once, so patching `deepagents_code._paths.PATHS` alone
 does **not** reach them — only the late-bound `get_deepagents_home()` readers
 follow it. `install_profile_snapshot` patches every name here so a test does
-not have to know which binding style its subject uses. Keep in sync with:
+not have to know which binding style its subject uses.
 
-    grep -rln '^from deepagents_code._paths import.*PATHS' deepagents_code
+Do not maintain this by hand.
+`test_paths.TestPathsBindingModulesDrift` parses every module under
+`deepagents_code` and fails when this tuple does not match what it finds. A
+module missing here is the dangerous direction: `install_profile_snapshot`
+would silently not patch it, and the test using the fixture would read the
+developer's real profile and still pass.
 """
 
 

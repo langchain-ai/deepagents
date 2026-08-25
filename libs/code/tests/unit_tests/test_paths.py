@@ -1,5 +1,6 @@
 """Unit and subprocess tests for the immutable launch path snapshot."""
 
+import ast
 import os
 import subprocess
 import sys
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from deepagents_code import _paths as _paths_module
 from deepagents_code._paths import (
     PATHS,
     DeepAgentsHomeError,
@@ -998,3 +1000,222 @@ class TestHardenStateDir:
             assert sessions_module.get_db_path() == state_dir / "sessions.db"
 
         assert state_dir.stat().st_mode & 0o777 == 0o700
+
+
+class TestPathsBindingModulesDrift:
+    """Guards `conftest._PATHS_BINDING_MODULES` against silent drift.
+
+    `install_profile_snapshot` patches `PATHS` on each module in that tuple.
+    A module that binds `PATHS` at import time but is absent from the tuple is
+    not patched, so a test using the fixture reads the developer's real
+    profile and still passes. That failure is invisible, which is why it needs
+    a check rather than a documented grep.
+
+    Only module-level imports count. A `from ... import PATHS` inside a
+    function re-binds on each call and therefore already follows a patch of
+    `deepagents_code._paths.PATHS`.
+    """
+
+    @staticmethod
+    def _module_level_imports(tree: ast.Module) -> list[ast.ImportFrom]:
+        """Return the `ImportFrom` nodes that execute at import time.
+
+        Descends through module-level `if`/`try`/`with` blocks but not into
+        functions or classes, whose imports run per call instead.
+
+        Returns:
+            The module-level `ImportFrom` nodes.
+        """
+        found: list[ast.ImportFrom] = []
+        stack: list[ast.AST] = list(tree.body)
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.ImportFrom):
+                found.append(node)
+                continue
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                continue
+            for field in ("body", "orelse", "finalbody", "handlers"):
+                stack.extend(getattr(node, field, []) or [])
+        return found
+
+    @classmethod
+    def _modules_binding_paths(cls, package_root: Path, prefix: str) -> set[str]:
+        """Return modules under `package_root` that bind `PATHS` at import time.
+
+        Uses `ast` rather than a regex so a parenthesized or multi-line import
+        is found too — exactly the spelling a line-oriented grep misses.
+
+        Args:
+            package_root: Directory holding the package's modules.
+            prefix: Dotted module path the imports must name.
+
+        Returns:
+            Dotted module names relative to `package_root`.
+        """
+        found: set[str] = set()
+        for source_file in sorted(package_root.rglob("*.py")):
+            try:
+                tree = ast.parse(source_file.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError):  # pragma: no cover - defensive
+                continue
+            for node in cls._module_level_imports(tree):
+                if node.module != prefix:
+                    continue
+                if not any(alias.name == "PATHS" for alias in node.names):
+                    continue
+                relative = source_file.relative_to(package_root).with_suffix("")
+                parts = [p for p in relative.parts if p != "__init__"]
+                found.add(".".join(parts))
+        return found
+
+    def test_the_tuple_matches_the_source(self) -> None:
+        """Every import-time `PATHS` binding is listed, and nothing extra is."""
+        from unit_tests.conftest import _PATHS_BINDING_MODULES
+
+        discovered = self._modules_binding_paths(
+            Path(_paths_module.__file__).parent, "deepagents_code._paths"
+        )
+        listed = set(_PATHS_BINDING_MODULES)
+
+        assert discovered - listed == set(), (
+            "These modules bind PATHS at import time but are missing from "
+            "_PATHS_BINDING_MODULES, so install_profile_snapshot will not "
+            "patch them and tests will silently read the real profile."
+        )
+        assert listed - discovered == set(), (
+            "These entries in _PATHS_BINDING_MODULES no longer bind PATHS at "
+            "import time; patching them creates an unused module attribute."
+        )
+
+    def test_a_parenthesized_import_is_detected(self, tmp_path: Path) -> None:
+        """The scan catches the spelling the previous grep recipe missed.
+
+        The documented recipe was `grep '^from deepagents_code._paths
+        import.*PATHS'`, which cannot match a multi-line import. A module
+        spelled this way would have been left unpatched with no failure.
+        """
+        (tmp_path / "wide.py").write_text(
+            "from pkg._paths import (\n    PATHS,\n    classify_path,\n)\n"
+        )
+
+        assert self._modules_binding_paths(tmp_path, "pkg._paths") == {"wide"}
+
+    def test_a_function_level_import_is_ignored(self, tmp_path: Path) -> None:
+        """Deferred imports follow a patch already, so they must not be listed."""
+        (tmp_path / "deferred.py").write_text(
+            "def go():\n    from pkg._paths import PATHS\n    return PATHS\n"
+        )
+
+        assert self._modules_binding_paths(tmp_path, "pkg._paths") == set()
+
+
+class TestUnreadableProfileRoot:
+    """An unreadable root must fail once, with its real cause.
+
+    `Path.is_symlink` swallows `OSError` and reports `False` under EACCES, and
+    `classify_path` reports `UNREADABLE` rather than `EXISTS`. Before the
+    explicit branch, such a root passed every guard and the launch continued.
+    Each later access then failed on its own, and each failure looked like a
+    first run.
+    """
+
+    def test_an_unreadable_root_is_rejected(self, tmp_path: Path) -> None:
+        configured = tmp_path / "profile"
+        configured.mkdir()
+
+        with (
+            mock.patch(
+                "deepagents_code._paths.classify_path",
+                return_value=PathState.UNREADABLE,
+            ),
+            pytest.raises(DeepAgentsHomeError, match="cannot be read"),
+        ):
+            _capture_paths(str(configured), launch_home=tmp_path)
+
+    def test_the_message_names_permissions_not_a_broken_symlink(
+        self, tmp_path: Path
+    ) -> None:
+        """The old symlink wording sent users after the wrong cause."""
+        configured = tmp_path / "profile"
+        configured.mkdir()
+
+        with (
+            mock.patch(
+                "deepagents_code._paths.classify_path",
+                return_value=PathState.UNREADABLE,
+            ),
+            pytest.raises(DeepAgentsHomeError) as exc_info,
+        ):
+            _capture_paths(str(configured), launch_home=tmp_path)
+
+        assert "symlink" not in str(exc_info.value)
+        assert "permissions" in str(exc_info.value)
+
+    def test_a_missing_root_is_still_accepted(self, tmp_path: Path) -> None:
+        """The profile root is created lazily, so absent is normal."""
+        configured = tmp_path / "not-created-yet"
+
+        snapshot = _capture_paths(str(configured), launch_home=tmp_path)
+
+        assert snapshot.profile.root == configured
+
+
+class TestHomeComparisonFailsClosed:
+    """An indeterminate home comparison must not be read as "different".
+
+    `_same_directory` exists to catch the non-lexical spellings of the home
+    directory — a symlink, a case difference. Those are exactly the spellings
+    that reach `samefile`, so answering `False` when it raises would accept the
+    alias the guard exists to reject, and load `~/.env` as trusted config.
+    """
+
+    def test_a_permission_error_is_not_treated_as_different(
+        self, tmp_path: Path
+    ) -> None:
+        configured = tmp_path / "profile"
+        configured.mkdir()
+
+        with (
+            mock.patch.object(Path, "samefile", side_effect=PermissionError("denied")),
+            pytest.raises(DeepAgentsHomeError, match="Cannot determine"),
+        ):
+            _capture_paths(str(configured), launch_home=tmp_path)
+
+    def test_a_missing_path_is_still_a_real_answer(self, tmp_path: Path) -> None:
+        """`FileNotFoundError` means "not the same", not "cannot tell"."""
+        configured = tmp_path / "absent"
+
+        with mock.patch.object(Path, "samefile", side_effect=FileNotFoundError("gone")):
+            snapshot = _capture_paths(str(configured), launch_home=tmp_path)
+
+        assert snapshot.profile.root == configured
+
+
+class TestHomeResolvedOncePerLaunch:
+    """An unresolvable home must warn once, not twice.
+
+    `_resolve_profile_root` needs a home for the degenerate-root comparison,
+    and the default-profile marker check needs the same value. Looking it up
+    twice emitted the multi-line warning twice on one launch.
+    """
+
+    def test_the_warning_is_not_repeated(self, tmp_path: Path) -> None:
+        configured = tmp_path / "profile"
+        calls: list[None] = []
+        real = _paths_module._resolve_launch_home
+
+        def counting(launch_home: Path | None) -> Path:
+            if launch_home is None:
+                calls.append(None)
+                msg = "no home"
+                raise DeepAgentsHomeError(msg)
+            return real(launch_home)
+
+        with mock.patch.object(
+            _paths_module, "_resolve_launch_home", side_effect=counting
+        ):
+            snapshot = _capture_paths(str(configured), default_marker=True)
+
+        assert snapshot.home_check_skipped is True
+        assert len(calls) == 1

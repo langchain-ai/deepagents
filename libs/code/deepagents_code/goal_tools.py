@@ -19,6 +19,8 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    TracePolicy,
+    omit_payload,
 )
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
@@ -285,6 +287,9 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     separate read tool is needed. Only the write-side `update_goal` tool is
     registered.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     state_schema = GoalToolState
 

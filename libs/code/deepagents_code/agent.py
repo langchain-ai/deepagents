@@ -49,7 +49,12 @@ from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     InterruptOnConfig,
 )
-from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    ToolCallRequest,
+    TracePolicy,
+    omit_payload,
+)
 from langchain.tools import (
     BaseTool,
     ToolRuntime,  # LangChain inspects this annotation for runtime injection.
@@ -788,6 +793,9 @@ class ShellAllowListMiddleware(AgentMiddleware):
     Use this middleware in non-interactive mode to avoid the
     interrupt/resume cycle that fragments traces.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(self, allow_list: list[str]) -> None:
         """Initialize with the shell allow-list to validate commands against.
@@ -1996,6 +2004,9 @@ class AsyncApprovalHITLMiddleware(HumanInTheLoopMiddleware[Any, Any, Any]):
     without the process-local `_RoutingDecision` type identity, so graph input
     cannot forge an autonomous mode.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     # Report the stock middleware name so the SDK dedups us into the single HITL
     # slot rather than appending a second stock HITL alongside us. This pairs

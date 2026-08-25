@@ -19697,6 +19697,63 @@ class DeepAgentsApp(App):
         self._deferred_actions.clear()
         self._sync_status_queued()
 
+    async def _restore_queue_to_input(self, notice: str) -> None:
+        """Return every queued prompt to the chat input and drop the queue.
+
+        For restart outcomes that neither respawn the server nor hand the queue
+        to `ServerReady` — a failed config refresh, remote-server mode, a server
+        still starting, or a failed respawn. Prompts queued while the restart
+        task was live would otherwise sit in `_pending_messages` indefinitely:
+        no `ServerReady` fires, and `_process_next_from_queue` cannot run
+        uninvited. Restoring the texts keeps them visible and editable instead
+        of silently stuck.
+
+        Texts join the input oldest-first, separated from each other (and from
+        any existing draft) by blank lines so multi-line prompts stay
+        unambiguous, and each queued placeholder is removed so the transcript
+        matches. Skips the queue-clearing work entirely when nothing is queued.
+
+        Args:
+            notice: User-facing explanation mounted after the restore. No-op
+                when the queue was empty, so callers can pass the message
+                unconditionally without rewording it for that case.
+        """
+        if not self._pending_messages:
+            await self._mount_message(AppMessage(notice))
+            # A submission can land while the notice mount above yields: the
+            # restart task is still live until this restore returns, so the
+            # busy gate accepts it even though the outcome was already decided.
+            # Restore whatever slipped in rather than stranding it.
+            if not self._pending_messages:
+                return
+        texts = [msg.text for msg in self._pending_messages]
+        self._pending_messages.clear()
+        for widget in self._queued_widgets:
+            with suppress(NoMatches, ScreenStackError):
+                await widget.remove()
+        self._queued_widgets.clear()
+        self._sync_status_queued()
+
+        restored = "\n\n".join(texts)
+        chat_input = self._chat_input
+        if chat_input is not None:
+            draft = chat_input.value.strip()
+            if draft:
+                restored = f"{draft}\n\n{restored}"
+            if not chat_input.set_value_at_end(restored):
+                logger.warning(
+                    "Text area unavailable while returning queued prompts to "
+                    "the input; %d prompt(s) dropped from the queue",
+                    len(texts),
+                )
+        else:
+            logger.warning(
+                "Chat input unavailable while returning queued prompts; "
+                "%d prompt(s) dropped from the queue",
+                len(texts),
+            )
+        await self._mount_message(AppMessage(notice))
+
     def _force_interrupt_active_work(self) -> None:
         """Cancel in-flight work before the standard `/clear` path runs.
 
@@ -26395,16 +26452,26 @@ class DeepAgentsApp(App):
             self._pending_messages.extendleft(reversed(preserved))
             self._sync_status_queued()
 
+        # Every bail-out below returns without handing the queue to
+        # `ServerReady` or the respawn's drain, so anything queued during the
+        # config refresh would otherwise sit pending until the next user
+        # submission triggered cleanup. Returning the texts to the chat input
+        # keeps them visible and editable instead of silently stuck.
         if not await self._reload_configuration_for_restart():
+            await self._restore_queue_to_input(
+                "Configuration reload failed; queued prompts were returned to "
+                "the input. Re-submit them or run `/restart` again after fixing "
+                "the configuration."
+            )
             return
 
         if self._server_kwargs is None:
-            await self._mount_message(
-                AppMessage(
-                    "Cannot restart: this app is connected to a remote "
-                    "LangGraph server (no owned subprocess). Configuration "
-                    "was reloaded; relaunch dcode to fully restart.",
-                ),
+            await self._restore_queue_to_input(
+                "Cannot restart: this app is connected to a remote LangGraph "
+                "server (no owned subprocess). Configuration was reloaded; "
+                "queued prompts were returned to the input. Re-submit them to "
+                "send on the current session, or relaunch dcode to fully "
+                "restart."
             )
             return
 
@@ -26421,40 +26488,34 @@ class DeepAgentsApp(App):
         # sibling guards elsewhere in this file.
         if self._connecting or self._server_proc is None:
             if self._server_startup_deferred:
-                await self._mount_message(
-                    AppMessage(
-                        "Server startup is waiting for a model. Configuration "
-                        "was reloaded; set credentials with `/auth`, reload the "
-                        "environment with `/reload`, or pick a model with "
-                        "`/model` to start the server.",
-                    ),
+                await self._restore_queue_to_input(
+                    "Server startup is waiting for a model. Configuration was "
+                    "reloaded; queued prompts were returned to the input. Set "
+                    "credentials with `/auth`, reload the environment with "
+                    "`/reload`, or pick a model with `/model` to start the "
+                    "server."
                 )
             elif self._connecting:
-                await self._mount_message(
-                    AppMessage(
-                        "The server is still starting. Configuration was "
-                        "reloaded and will apply once it finishes connecting; "
-                        "run `/restart` again afterward if needed.",
-                    ),
+                await self._restore_queue_to_input(
+                    "The server is still starting. Configuration was reloaded "
+                    "and will apply once it finishes connecting; queued prompts "
+                    "were returned to the input. Re-submit them to send on the "
+                    "current session, or run `/restart` again afterward."
                 )
             elif self._server_startup_error is not None:
-                await self._mount_message(
-                    AppMessage(
-                        "Cannot restart yet because the server did not finish "
-                        "starting. Configuration was reloaded; update "
-                        "credentials with `/auth` if needed, then pick a model "
-                        "with `/model` to try again. You can also relaunch "
-                        "dcode.\n\n"
-                        f"Last error: {self._server_startup_error}",
-                    ),
+                await self._restore_queue_to_input(
+                    "Cannot restart yet because the server did not finish "
+                    "starting. Configuration was reloaded; queued prompts were "
+                    "returned to the input. Update credentials with `/auth` if "
+                    "needed, then pick a model with `/model` to try again. You "
+                    "can also relaunch dcode.\n\n"
+                    f"Last error: {self._server_startup_error}",
                 )
             else:
-                await self._mount_message(
-                    AppMessage(
-                        "Cannot restart yet because the server is not running. "
-                        "Configuration was reloaded; relaunch dcode to start "
-                        "again.",
-                    ),
+                await self._restore_queue_to_input(
+                    "Cannot restart yet because the server is not running. "
+                    "Configuration was reloaded; queued prompts were returned "
+                    "to the input. Relaunch dcode to start again."
                 )
             return
 
@@ -26510,6 +26571,16 @@ class DeepAgentsApp(App):
                     await restarting.remove()
         if restarted:
             await self._mount_message(AppMessage("Restart complete."))
+        else:
+            # No `ServerReady` is coming to drain the queue (success hands the
+            # drain to its handler), so anything queued during the respawn
+            # would sit pending until the next user submission triggered
+            # cleanup. Returning the texts to the chat input keeps them
+            # visible and editable instead of silently stuck.
+            await self._restore_queue_to_input(
+                "Restart did not complete; queued prompts were returned to the "
+                "input. Re-submit them to send on the current session."
+            )
 
     async def _restart_server_manual(self) -> bool:
         """Respawn the app-owned LangGraph server for a user-initiated restart.

@@ -5552,6 +5552,161 @@ class TestMessageQueue:
             assert not app._pending_messages
             assert not app._queued_widgets
 
+    async def test_failed_restart_returns_queued_prompts_to_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed respawn returns prompts queued mid-restart to the input.
+
+        Guards the stranded-queue failure: prompts queued while the restart
+        task is live have no `ServerReady` drain when `_restart_server_manual`
+        returns `False`, so `_run_restart_respawn` must hand them back to the
+        chat input rather than leaving them pending until the next submission.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(
+                app, "_restart_server_manual", AsyncMock(return_value=False)
+            )
+
+            restart_started = asyncio.Event()
+            release_reload = asyncio.Event()
+            original_reload = app._reload_configuration_for_restart
+
+            async def _slow_reload() -> bool:
+                restart_started.set()
+                # Hold the refresh open so the submission below lands while the
+                # restart task is live but before the respawn outcome is known;
+                # a bare `asyncio.sleep(0)` would let the refresh finish first
+                # and race the queue assertion.
+                await release_reload.wait()
+                return await original_reload()
+
+            monkeypatch.setattr(app, "_reload_configuration_for_restart", _slow_reload)
+
+            await app._handle_restart_command("/restart")
+            assert app._restart_respawn_task is not None
+            await restart_started.wait()
+            await app._submit_input("queued during restart", "normal")
+            assert [m.text for m in app._pending_messages] == ["queued during restart"]
+            assert len(app._queued_widgets) == 1
+            release_reload.set()
+
+            await app._restart_respawn_task
+            await pilot.pause()
+
+            assert not app._pending_messages
+            assert not app._queued_widgets
+            assert app._chat_input is not None
+            assert app._chat_input.value == "queued during restart"
+            notices = [str(w._content) for w in app.query(AppMessage)]
+            assert any("returned to the input" in n for n in notices)
+            assert not any("Restart complete" in n for n in notices)
+
+    async def test_restart_config_failure_returns_queued_prompts_to_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed config refresh returns prompts queued during it.
+
+        Guards the earliest non-respawn exit in `_run_restart_command`: when
+        `_reload_configuration_for_restart` fails, the restart returns before
+        any respawn is scheduled, so prompts queued while the refresh ran must
+        go back to the chat input instead of stranding in `_pending_messages`.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            reload_started = asyncio.Event()
+            release_reload = asyncio.Event()
+
+            async def _failing_reload() -> bool:
+                reload_started.set()
+                # Hold the refresh open so the submission below lands in the
+                # queue while the restart task is still live; a bare
+                # `asyncio.sleep(0)` would let the refresh finish first and
+                # race the queue assertion.
+                await release_reload.wait()
+                return False
+
+            monkeypatch.setattr(
+                app, "_reload_configuration_for_restart", _failing_reload
+            )
+
+            await app._handle_restart_command("/restart")
+            assert app._restart_respawn_task is not None
+            await reload_started.wait()
+            await app._submit_input("queued during refresh", "normal")
+            assert [m.text for m in app._pending_messages] == ["queued during refresh"]
+            release_reload.set()
+
+            await app._restart_respawn_task
+            await pilot.pause()
+
+            assert not app._pending_messages
+            assert not app._queued_widgets
+            assert app._chat_input is not None
+            assert app._chat_input.value == "queued during refresh"
+            notices = [str(w._content) for w in app.query(AppMessage)]
+            assert any("returned to the input" in n for n in notices)
+
+    async def test_restart_remote_server_returns_queued_prompts_to_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A remote-server restart refusal returns queued prompts to the input.
+
+        Guards the `_server_kwargs is None` exit in `_run_restart_command`:
+        connected to a remote server there is no subprocess to respawn, so the
+        restart returns without any `ServerReady` drain and must restore
+        prompts queued during the config refresh.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_kwargs = None
+
+            reload_started = asyncio.Event()
+            release_reload = asyncio.Event()
+
+            async def _slow_reload() -> bool:
+                reload_started.set()
+                # Hold the refresh open so the submission below lands in the
+                # queue while the restart task is still live; a bare
+                # `asyncio.sleep(0)` would let the refresh finish first and
+                # race the queue assertion.
+                await release_reload.wait()
+                return True
+
+            monkeypatch.setattr(app, "_reload_configuration_for_restart", _slow_reload)
+
+            await app._handle_restart_command("/restart")
+            assert app._restart_respawn_task is not None
+            await reload_started.wait()
+            await app._submit_input("queued on remote", "normal")
+            assert [m.text for m in app._pending_messages] == ["queued on remote"]
+            release_reload.set()
+
+            await app._restart_respawn_task
+            await pilot.pause()
+
+            assert not app._pending_messages
+            assert not app._queued_widgets
+            assert app._chat_input is not None
+            assert app._chat_input.value == "queued on remote"
+            notices = [str(w._content) for w in app.query(AppMessage)]
+            assert any("remote LangGraph server" in n for n in notices)
+
     async def test_message_blocked_while_thread_switching(self) -> None:
         """Submissions should be ignored while thread switching is in-flight."""
         app = DeepAgentsApp()

@@ -26941,7 +26941,7 @@ class DeepAgentsApp(App):
                 # The cwd prompt ran before the combined agent/thread restart
                 # so the new server would inherit the chosen project context.
                 # If the restart failed, put the surviving UI session back.
-                self._switch_process_cwd(previous_cwd)
+                await self._switch_process_cwd(previous_cwd)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -27058,15 +27058,18 @@ class DeepAgentsApp(App):
             logger.debug("Screen stack empty during cwd sync", exc_info=True)
 
     @staticmethod
-    def _refresh_project_context_after_cwd_switch(cwd: Path) -> None:
-        """Refresh project-scoped settings and caches after a cwd change."""
+    async def _refresh_project_context_for_cwd_switch(cwd: Path) -> None:
+        """Refresh project-scoped settings without blocking a cwd change."""
         from deepagents_code.config import settings
         from deepagents_code.model_config import clear_caches
 
-        changes = settings.reload_from_environment(start_path=cwd)
+        changes = await asyncio.to_thread(
+            settings.reload_from_environment,
+            start_path=cwd,
+        )
         clear_caches()
         if changes:
-            logger.debug("Refreshed project context after cwd switch: %s", changes)
+            logger.debug("Refreshed project context for cwd switch: %s", changes)
 
     def _schedule_skill_discovery_after_cwd_switch(self) -> None:
         """Refresh skill autocomplete after a cwd-dependent project switch."""
@@ -27081,7 +27084,7 @@ class DeepAgentsApp(App):
             group="startup-skill-discovery",
         )
 
-    def _switch_process_cwd(self, cwd: Path) -> None:
+    async def _switch_process_cwd(self, cwd: Path) -> None:
         """Change process cwd and synchronize cwd-aware app state.
 
         Kept atomic with respect to the process cwd: if a post-`chdir` step
@@ -27092,9 +27095,9 @@ class DeepAgentsApp(App):
         comparison report a false match and silently skip the restore.
         """
         previous_cwd = Path(self._cwd)
+        await self._refresh_project_context_for_cwd_switch(cwd)
         os.chdir(cwd)
         try:
-            self._refresh_project_context_after_cwd_switch(cwd)
             self._apply_cwd_to_ui(cwd)
         except BaseException:
             with suppress(OSError):
@@ -27252,7 +27255,7 @@ class DeepAgentsApp(App):
                 timeout=10,
                 markup=False,
             )
-            self._switch_process_cwd(cwd)
+            await self._switch_process_cwd(cwd)
             return "continue"
 
         from deepagents_code.client.launch.server_manager import (
@@ -27271,7 +27274,7 @@ class DeepAgentsApp(App):
             self._agent = None
             self._sync_status_connection()
             self._preserve_launch_relative_server_paths(previous_cwd)
-            self._switch_process_cwd(cwd)
+            await self._switch_process_cwd(cwd)
 
             coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]
             if self._mcp_preload_kwargs is not None:
@@ -27333,7 +27336,7 @@ class DeepAgentsApp(App):
             # Roll back regardless of exception type so a cancelled restart does
             # not strand the app mid-switch.
             try:
-                self._switch_process_cwd(previous_cwd)
+                await self._switch_process_cwd(previous_cwd)
             except OSError:
                 logger.warning(
                     "Failed to restore cwd to %s after failed server restart; "
@@ -27547,7 +27550,7 @@ class DeepAgentsApp(App):
                 await self._retarget_hooks_after_cwd_switch(reload_manager=False)
                 return outcome
             self._preserve_launch_relative_server_paths(Path(self._cwd))
-            self._switch_process_cwd(target)
+            await self._switch_process_cwd(target)
             # Cross-agent resumes reload after the outgoing `SessionEnd`.
             await self._retarget_hooks_after_cwd_switch(
                 reload_manager=abort != "thread_switch"
@@ -27605,7 +27608,7 @@ class DeepAgentsApp(App):
             return
 
         try:
-            self._switch_process_cwd(previous_cwd)
+            await self._switch_process_cwd(previous_cwd)
         except OSError:
             logger.warning(
                 "Failed to restore cwd after failed thread switch to %s",

@@ -37276,9 +37276,12 @@ class TestResumeThreadCwdSwitch:
         target.mkdir()
         monkeypatch.chdir(current)
         app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        event_loop_thread = threading.get_ident()
+        reload_threads: list[int] = []
 
         def reload_from_environment(*, start_path: Path | None = None) -> list[str]:
             del start_path
+            reload_threads.append(threading.get_ident())
             return []
 
         monkeypatch.setattr(
@@ -37307,9 +37310,11 @@ class TestResumeThreadCwdSwitch:
             monkeypatch.setattr(app, "run_worker", run_worker)
 
             with patch("deepagents_code.model_config.clear_caches"):
-                app._switch_process_cwd(target)
+                await app._switch_process_cwd(target)
 
         assert scheduled_groups == ["startup-skill-discovery"]
+        assert reload_threads
+        assert reload_threads[0] != event_loop_thread
 
     async def test_offer_stay_warns_without_switching(
         self,
@@ -37476,9 +37481,9 @@ class TestResumeThreadCwdSwitch:
         monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
         replace_calls: list[Path] = []
 
-        def replace_server(cwd: Path) -> str:
+        async def replace_server(cwd: Path) -> str:
             replace_calls.append(cwd)
-            app._switch_process_cwd(cwd)
+            await app._switch_process_cwd(cwd)
             return "continue"
 
         app._replace_server_after_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
@@ -37993,7 +37998,7 @@ class TestResumeThreadCwdSwitch:
             patch("deepagents_code.model_config.clear_caches"),
             pytest.raises(RuntimeError, match="reload failed"),
         ):
-            app._switch_process_cwd(target)
+            await app._switch_process_cwd(target)
 
         assert Path.cwd() == current
         assert app._cwd == str(current)
@@ -38050,10 +38055,14 @@ class TestResumeThreadCwdSwitch:
         app._server_kwargs = None
         app._server_proc = None
         switch_calls: list[Path] = []
+
+        async def switch(cwd: Path) -> None:  # noqa: RUF029
+            switch_calls.append(cwd)
+
         monkeypatch.setattr(
             app,
             "_switch_process_cwd",
-            switch_calls.append,
+            switch,
         )
 
         await app._restore_cwd_after_failed_thread_switch(current)
@@ -38077,7 +38086,7 @@ class TestResumeThreadCwdSwitch:
         notify = MagicMock()
         app.notify = notify  # ty: ignore[invalid-assignment]
 
-        def boom(cwd: Path) -> None:
+        async def boom(cwd: Path) -> None:  # noqa: RUF029
             del cwd
             msg = "cannot chdir"
             raise OSError(msg)

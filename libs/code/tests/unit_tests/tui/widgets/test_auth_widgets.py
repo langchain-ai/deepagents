@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import UTC
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -1354,6 +1355,37 @@ api_key_url = "javascript:alert(1)"
             assert app.prompt_dismissed is False
             assert isinstance(app.screen, AuthPromptScreen)
         assert any("No credentials detected" in msg for msg, _ in notices)
+
+    async def test_ctrl_r_reload_offloads_remote_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stalled managed-config fetch leaves the event loop responsive."""
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocked_reload() -> list[str]:
+            started.set()
+            assert release.wait(timeout=1)
+            return []
+
+        monkeypatch.setattr(
+            "deepagents_code.config.settings.reload_from_environment",
+            blocked_reload,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            screen = cast("AuthPromptScreen", app.screen)
+            reload_task = asyncio.create_task(screen.action_reload_env())
+            started_in_time = await asyncio.wait_for(
+                asyncio.to_thread(started.wait),
+                timeout=0.5,
+            )
+            assert started_in_time
+            assert not reload_task.done()
+            release.set()
+            await reload_task
 
     async def test_ctrl_r_reload_when_not_blocking_stays_open_and_toasts(
         self, monkeypatch: pytest.MonkeyPatch

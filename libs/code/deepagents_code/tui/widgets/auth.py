@@ -17,6 +17,7 @@ Security notes:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from enum import StrEnum
@@ -1368,7 +1369,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         from deepagents_code.config import settings
 
         try:
-            settings.reload_from_environment()
+            await asyncio.to_thread(settings.reload_from_environment)
             clear_caches()
         except (OSError, ValueError) as exc:
             logger.warning("Failed to reload configuration from auth prompt: %s", exc)

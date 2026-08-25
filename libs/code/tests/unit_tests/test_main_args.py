@@ -1237,6 +1237,77 @@ def test_cli_main_forwards_recursion_limit_to_headless_server() -> None:
     assert run_mock.await_args.kwargs["recursion_limit"] == 3000  # ty: ignore
 
 
+def test_cli_main_installs_the_shell_allow_list_before_dispatch() -> None:
+    """`--shell-allow-list` must be resolvable by the time the agent is built.
+
+    This branch deleted the explicit application in `cli_main`
+    (`settings.shell_allow_list = parse_shell_allow_list(...)`). The flag's
+    whole effect now rests on an unwritten ordering invariant:
+    `_install_cli_provider` must run before the work that reads the value.
+    Nothing else fails if that ordering breaks -- the flag still parses, no
+    warning fires, and shell auto-approval simply stops applying.
+
+    Asserted against the resolver and a freshly built `Settings`, not the
+    `deepagents_code.config.settings` singleton. `_get_settings` caches
+    permanently on first access, and under pytest `agent.py` is already
+    imported (it binds `settings` at module scope), so the singleton in this
+    process was built long before this test ran. Reading it here would assert
+    the import order of the test session rather than the order in `cli_main`.
+
+    Scope, verified by mutation: this fails if the manifest binding names the
+    wrong argparse destination, and it does *not* fail if the explicit
+    `_install_cli_provider` call is deleted -- `_resolver_for_args` installs a
+    provider on demand, so the two paths are redundant. That redundancy is why
+    the flag survives; do not read a pass here as proof the explicit call is
+    still in place.
+    """
+    from deepagents_code.config import Settings
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import (
+        CLI_RANK,
+        get_config_resolver,
+    )
+    from deepagents_code.main import cli_main
+
+    seen: dict[str, object] = {}
+
+    async def _capture(**_kwargs: object) -> int:  # noqa: RUF029  # awaited by cli_main
+        option = get_option("shell.allow_list")
+        assert option is not None
+        resolved = get_config_resolver().get(option)
+        seen["value"] = resolved.value
+        seen["ranks"] = resolved.ranks
+        seen["settings"] = Settings.from_environment().shell_allow_list
+        return 0
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["deepagents", "-n", "task", "--shell-allow-list", "git status,ls"],
+        ),
+        patch.object(sys, "stdin", mock_stdin),
+        patch("deepagents_code.main.check_optional_tools", return_value=[]),
+        patch(
+            "deepagents_code.main._should_ensure_managed_ripgrep",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.client.non_interactive.run_non_interactive",
+            _capture,
+        ),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    assert seen["value"] == ["git status", "ls"]
+    assert seen["ranks"] == (CLI_RANK,)
+    assert seen["settings"] == ["git status", "ls"]
+
+
 class TestTimeoutArgument:
     """Tests for --timeout argument parsing, validation, and runtime behavior."""
 

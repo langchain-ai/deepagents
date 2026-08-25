@@ -26306,13 +26306,18 @@ class DeepAgentsApp(App):
             return False
         # A managed-policy block is not an exception: `_reload_values` catches
         # `ManagedConfigError` and reports it as the first change entry. With a
-        # remote source that block is a routine network outcome, so dropping it
-        # would mount "Restart complete." while the process silently kept the
-        # previous policy generation -- exactly what an administrator who
-        # restarted to pick up an edit must not be told.
+        # remote source that block is a routine network outcome, so treating it
+        # as success would mount "Restart complete." while the process silently
+        # kept the previous policy generation -- exactly what an administrator
+        # who restarted to pick up an edit must not be told.
         blocked = config_module.managed_reload_block(changes)
         if blocked is not None:
             await self._mount_message(ErrorMessage(blocked))
+            # Keep the caller from respawning: the subprocess would come back
+            # up on the previous policy generation, and `_run_restart_respawn`
+            # would mount "Restart complete." for a restart that applied no
+            # policy change.
+            return False
         return True
 
     async def _handle_restart_command(self, command: str) -> None:

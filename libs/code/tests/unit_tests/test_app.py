@@ -34762,8 +34762,9 @@ class TestRestartCommand:
         """A policy fetch failure must not read as a clean restart.
 
         `_reload_values` catches `ManagedConfigError` and reports it as the
-        first change entry, so dropping the return value would mount "Restart
-        complete." while the process kept the previous policy generation.
+        first change entry, so treating the reload as successful would respawn
+        the server on the previous policy generation and mount "Restart
+        complete." for a restart that applied no policy change.
         """
         from deepagents_code.config import (
             MANAGED_RELOAD_BLOCKED_PREFIX,
@@ -34787,10 +34788,78 @@ class TestRestartCommand:
                 "deepagents_code.model_config.clear_caches", lambda: None
             )
 
-            assert await app._reload_configuration_for_restart() is True
+            assert await app._reload_configuration_for_restart() is False
             assert any(
                 blocked in str(message._content) for message in app.query(ErrorMessage)
             )
+
+    async def test_blocked_managed_policy_refresh_stops_restart_before_respawn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blocked policy refresh must not respawn or report completion.
+
+        `_run_restart_command` gates the respawn on
+        `_reload_configuration_for_restart`; a `False` return has to stop the
+        restart before `_restart_server_manual` runs, return prompts queued
+        during the refresh to the chat input, and never mount "Restart
+        complete.".
+        """
+        from deepagents_code.config import (
+            MANAGED_RELOAD_BLOCKED_PREFIX,
+            settings,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            blocked = (
+                f"{MANAGED_RELOAD_BLOCKED_PREFIX}Managed config at /L/managed.toml "
+                "points to https://config.example.com/policy.toml, which is "
+                "UNREADABLE: remote source timed out."
+            )
+
+            reload_started = threading.Event()
+            release_reload = threading.Event()
+
+            def blocking_reload() -> list[str]:
+                reload_started.set()
+                # Hold the refresh open so the submission below lands in the
+                # queue while the restart task is live; a bare return would let
+                # the refresh finish first and race the queue assertion.
+                assert release_reload.wait(timeout=5)
+                return [blocked]
+
+            monkeypatch.setattr(settings, "reload_from_environment", blocking_reload)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            restart = AsyncMock(return_value=True)
+            monkeypatch.setattr(app, "_restart_server_manual", restart)
+
+            await app._handle_restart_command("/restart")
+            assert app._restart_respawn_task is not None
+            assert await asyncio.to_thread(reload_started.wait, 5)
+            await app._submit_input("queued during blocked refresh", "normal")
+            assert [m.text for m in app._pending_messages] == [
+                "queued during blocked refresh"
+            ]
+            release_reload.set()
+
+            await app._restart_respawn_task
+            await pilot.pause()
+
+            restart.assert_not_awaited()
+            assert not app._pending_messages
+            assert app._chat_input is not None
+            assert app._chat_input.value == "queued during blocked refresh"
+            assert any(
+                blocked in str(message._content) for message in app.query(ErrorMessage)
+            )
+            notices = [str(w._content) for w in app.query(AppMessage)]
+            assert not any("Restart complete" in n for n in notices)
 
     @pytest.mark.timeout(15)
     async def test_prompt_queues_during_restart_config_refresh(

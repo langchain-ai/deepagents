@@ -1109,3 +1109,64 @@ class TestManagedBinDirFallback:
             managed_tools.prepend_managed_bin_to_path()
 
             assert os.environ["PATH"] == once
+
+
+async def test_ensure_ripgrep_raises_when_neither_bin_dir_is_writable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A write failure must not be reported to the user as "not installed".
+
+    Returning `None` sent the caller down the generic missing-tool notice,
+    which tells the user to `brew install ripgrep` — advice that cannot fix a
+    permission problem on a download that already succeeded.
+    """
+    bin_dir = tmp_path / "bin"
+    fallback = tmp_path / "profile-bin"
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "FALLBACK_BIN_DIR", fallback)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: bin_dir / "rg")
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: "x86_64")
+    monkeypatch.setattr(
+        managed_tools,
+        "_install_ripgrep_sync",
+        mock.Mock(side_effect=PermissionError("read-only")),
+    )
+
+    with (
+        mock.patch("shutil.which", return_value=None),
+        pytest.raises(ManagedToolUnavailableError) as exc_info,
+    ):
+        await managed_tools.ensure_ripgrep()
+
+    error = exc_info.value
+    assert error.reason == "permission_denied"
+    # Both locations are named: the fix depends on which one the user owns.
+    assert str(bin_dir) in error.message
+    assert str(fallback) in error.message
+
+
+def test_the_permission_error_reaches_the_cli_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI path renders the message instead of the missing-tool hint."""
+    from rich.console import Console
+
+    from deepagents_code.main import _auto_install_ripgrep_cli
+
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=200, force_terminal=False)
+    monkeypatch.setattr(
+        managed_tools,
+        "ensure_ripgrep",
+        mock.Mock(side_effect=managed_tools._unwritable_bin_dir_error()),
+    )
+
+    remaining = _auto_install_ripgrep_cli(console, ["ripgrep"])
+
+    output = buffer.getvalue()
+    assert "could not write it to" in output
+    assert "brew install" not in output
+    # `rg` is still unavailable, so the tool stays in the missing list.
+    assert remaining == ["ripgrep"]

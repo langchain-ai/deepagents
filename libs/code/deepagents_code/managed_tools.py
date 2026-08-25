@@ -119,7 +119,7 @@ class ChecksumMismatchError(Exception):
     """
 
 
-UnavailableReason = Literal["unsupported", "artifact_not_found"]
+UnavailableReason = Literal["unsupported", "artifact_not_found", "permission_denied"]
 """Stable reason token for logging and telemetry."""
 
 
@@ -168,6 +168,19 @@ def _unsupported_ripgrep_error(
         message=(
             f"Managed ripgrep is not available for this system ({target}). "
             "Install ripgrep manually, or set DEEPAGENTS_CODE_RIPGREP_INSTALLER=system."
+        ),
+    )
+
+
+def _unwritable_bin_dir_error() -> ManagedToolUnavailableError:
+    """Return a clear permission error naming both managed bin directories."""
+    return ManagedToolUnavailableError(
+        tool="ripgrep",
+        reason="permission_denied",
+        message=(
+            f"Downloaded ripgrep but could not write it to {BIN_DIR} or "
+            f"{FALLBACK_BIN_DIR}. Check the permissions on those directories, "
+            "or install ripgrep with your package manager."
         ),
     )
 
@@ -556,8 +569,9 @@ async def ensure_ripgrep() -> Path | None:
     6. Otherwise download → SHA-256 verify → extract → install →
         prepend `BIN_DIR` to `PATH` → return the installed path. On a
         checksum mismatch, raises `ChecksumMismatchError` so callers can
-        surface a loud notice. On a 404, raises `ManagedToolUnavailableError`;
-        other failures log and return `None`.
+        surface a loud notice. On a 404, or when neither managed bin directory
+        is writable, raises `ManagedToolUnavailableError`; other failures log
+        and return `None`.
 
     A stale managed binary is never proactively deleted. The atomic
     replace in `_install_ripgrep_sync` overwrites it on success, and on
@@ -671,16 +685,19 @@ async def ensure_ripgrep() -> Path | None:
             "ripgrep install failed: archive error (%s)", type(exc).__name__
         )
         return None
-    except PermissionError:
-        # Both the shared installation directory and the profile fallback were
-        # unwritable, so name them and the permission cause rather than letting
-        # the caller's generic "install ripgrep" hint mislead.
+    except PermissionError as exc:
+        # The download succeeded and only the write failed, so returning None
+        # would send the user the caller's generic "ripgrep is not installed —
+        # brew install ripgrep" hint for a problem `brew` cannot fix. Raise
+        # instead: every caller renders this message visibly, while the log
+        # line here is invisible without --debug.
         logger.exception(
             "ripgrep install failed: cannot write to %s or %s — check permissions",
             BIN_DIR,
             FALLBACK_BIN_DIR,
         )
-        return None
+        error = _unwritable_bin_dir_error()
+        raise error from exc
     except OSError as exc:
         logger.exception(
             "ripgrep install failed: %s (errno=%s)", type(exc).__name__, exc.errno

@@ -938,18 +938,36 @@ class RemoteTomlProvider:
                 "remote source timed out",
                 source,
             )
-        except (HTTPException, URLError, OSError):
+        except (HTTPException, URLError, OSError) as exc:
             # `http.client.HTTPException` derives from `Exception`, not
             # `OSError`, so every wire-level parse failure it covers --
             # `IncompleteRead` from a truncated chunked body, `BadStatusLine`,
             # `LineTooLong` -- escapes the other arms. Catching one subclass
             # leaves the siblings to propagate as a traceback, which bypasses
             # the `ManagedConfigError` exit path and crashes `doctor`.
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, TimeoutError):
+                # `urllib` wraps a connect-phase stall as `URLError`, which is
+                # not a `TimeoutError`, so a blackholed host would otherwise
+                # report the generic read failure.
+                return _remote_status(
+                    self.name,
+                    self.path,
+                    ProviderHealth.UNREADABLE,
+                    "remote source timed out",
+                    source,
+                )
+            # Name the failure class. One fixed string cannot separate an
+            # expired certificate on the policy host -- the most
+            # security-relevant failure on this boundary -- from a DNS miss, a
+            # refused connection, or a local descriptor exhaustion that has
+            # nothing to do with the administrator's server. The class name
+            # carries no untrusted text: it is a type, not server output.
             return _remote_status(
                 self.name,
                 self.path,
                 ProviderHealth.UNREADABLE,
-                "remote source could not be read",
+                f"remote source could not be read ({type(reason).__name__})",
                 source,
             )
         except ValueError as exc:

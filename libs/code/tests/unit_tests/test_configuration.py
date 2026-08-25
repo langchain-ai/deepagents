@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
+import ssl
 import sys
 import time
 from email.message import Message
@@ -4434,3 +4436,74 @@ def test_managed_refresh_does_not_hold_the_snapshot_lock(
     release.set()
     worker.join(timeout=5)
     reader.join(timeout=5)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (
+            URLError(ssl.SSLCertVerificationError("certificate has expired")),
+            "SSLCertVerificationError",
+        ),
+        (URLError(socket.gaierror("name resolution failed")), "gaierror"),
+        (URLError(ConnectionRefusedError("refused")), "ConnectionRefusedError"),
+        (BadStatusLine("garbage"), "BadStatusLine"),
+    ],
+)
+def test_remote_read_failure_names_its_cause(
+    failure: Exception,
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One fixed string cannot separate a bad certificate from a DNS miss.
+
+    An expired or untrusted certificate on the policy host is the most
+    security-relevant failure on this boundary, and the administrator has to be
+    able to tell it apart from the network being down. The class name is a
+    type, not server output, so it carries no untrusted text.
+    """
+    from deepagents_code.configuration import providers
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            raise failure
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert expected in (snapshot.status.detail or "")
+    assert not snapshot.data
+
+
+def test_remote_connect_stall_reports_a_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`urllib` wraps a connect-phase stall as `URLError`, not `TimeoutError`.
+
+    A host that blackholes packets would otherwise report the generic read
+    failure, hiding the one cause the five-second bound exists to produce.
+    """
+    from deepagents_code.configuration import providers
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> _RemoteResponse:
+            assert timeout > 0
+            raise URLError(TimeoutError("timed out"))
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert "timed out" in (snapshot.status.detail or "")

@@ -265,3 +265,22 @@ def test_bound_flags_have_no_truthy_argparse_default() -> None:
     assert not offenders, (
         f"bound flags declare a value with no flag passed: {offenders}"
     )
+
+
+def test_companion_flags_spell_their_startup_mode() -> None:
+    """`_startup_mode` derives the mode from the flag, so they must agree.
+
+    The provider used to read a literal `"yolo"` destination, which made
+    `CliSpec` the source of truth for the flag's display while the destination
+    it actually reads was re-derived independently. Deriving both from the
+    spec closes that, at the cost of this naming invariant.
+    """
+    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.config_manifest import get_option
+
+    option = get_option("startup.mode")
+    assert option is not None
+    assert option.cli is not None
+    modes = {mode.value for mode in ApprovalMode}
+    for flag in option.cli.companion_flags:
+        assert flag.removeprefix("--") in modes

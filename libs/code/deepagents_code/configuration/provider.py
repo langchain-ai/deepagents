@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     import argparse
 
-    from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.config_manifest import CliSpec, ConfigOption
 
 from deepagents_code.configuration.resolver import CLI_RANK, RankedProviderValue
 from deepagents_code.configuration.types import (
@@ -99,7 +99,7 @@ class CliProvider:
             return RankedProviderValue(self.rank, self.durable, status, Unset())
 
         if option.key == "startup.mode":
-            result = self._startup_mode(spec.dest_name)
+            result = self._startup_mode(spec)
         else:
             raw = self.args.get(spec.dest_name)
             result = (
@@ -107,15 +107,32 @@ class CliProvider:
             )
         return RankedProviderValue(self.rank, self.durable, status, result)
 
-    def _startup_mode(self, dest: str) -> ProviderResult[object]:
+    def _startup_mode(self, spec: CliSpec) -> ProviderResult[object]:
         """Map the mutually exclusive approval flags to one config value.
+
+        The companion destinations are derived from the spec rather than
+        spelled out here. A literal `"yolo"` made `CliSpec` the source of truth
+        for the flag's *display* while this method independently re-derived the
+        destination it *reads*, so an argparse `dest=` rename would silently
+        degrade YOLO to `Unset` -- the same class of failure the `Mapping`
+        discrimination above guards against.
+
+        Args:
+            spec: CLI binding for `startup.mode`, carrying both flags.
 
         Returns:
             `Found` for an explicit mode, otherwise `Unset`.
         """
-        if self.args.get("yolo") is True:
-            return Found("yolo")
-        if self.args.get(dest) is True:
+        from deepagents_code.config_manifest import CliSpec
+
+        # Companions are checked first: `--yolo` is the stronger mode and wins
+        # if a caller somehow supplies both. Each companion flag is spelled
+        # exactly like the mode it selects (`--yolo` -> `"yolo"`), which
+        # `test_companion_flags_spell_their_startup_mode` pins.
+        for flag in spec.companion_flags:
+            if self.args.get(CliSpec(flag).dest_name) is True:
+                return Found(flag.removeprefix("--"))
+        if self.args.get(spec.dest_name) is True:
             return Found("auto")
         return Unset()
 

@@ -2211,7 +2211,7 @@ def parse_args() -> argparse.Namespace:
         "These take priority, overriding config file values.",
     )
 
-    from deepagents_code.ui import non_negative_int, positive_int
+    from deepagents_code.ui import non_negative_int, positive_int, shell_allow_list_arg
 
     parser.add_argument(
         "--max-retries",
@@ -2437,6 +2437,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-S",
         "--shell-allow-list",
+        type=shell_allow_list_arg,
         metavar="LIST",
         help="Comma-separated list of shell commands to auto-approve, "
         "'recommended' for safe defaults, or 'all' to allow any command. "

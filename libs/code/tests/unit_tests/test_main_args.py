@@ -58,6 +58,20 @@ def test_shell_allow_list_not_specified(mock_argv: MockArgvType) -> None:
         assert parsed_args.shell_allow_list is None
 
 
+def test_malformed_shell_allow_list_is_a_visible_cli_error(
+    mock_argv: MockArgvType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An invalid explicit policy must abort instead of falling through."""
+    with mock_argv("--shell-allow-list", "all,ls"), pytest.raises(SystemExit) as exc:
+        parse_args()
+
+    assert exc.value.code == 2
+    error = capsys.readouterr().err
+    assert "--shell-allow-list" in error
+    assert "Cannot combine 'all' with other commands" in error
+
+
 def test_parse_args_does_not_prepend_managed_bin(
     monkeypatch: pytest.MonkeyPatch, mock_argv: MockArgvType
 ) -> None:

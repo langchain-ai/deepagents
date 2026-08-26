@@ -547,6 +547,19 @@ def test_cold_cache_warning_threshold_default() -> None:
     assert _resolve_manifest_option(option, toml_data={}) == (0.50, "default")
 
 
+def test_model_switch_warning_threshold() -> None:
+    """Model-switch warnings default to 100k and accept zero as disabled."""
+    option = get_option("warnings.model_switch_token_threshold")
+    assert option is not None
+    assert _resolve_manifest_option(option, toml_data={}) == (100_000, "default")
+    assert _resolve_manifest_option(
+        option, toml_data={"warnings": {"model_switch_token_threshold": 0}}
+    ) == (0, "config.toml")
+    assert _resolve_manifest_option(
+        option, toml_data={"warnings": {"model_switch_token_threshold": -1}}
+    ) == (100_000, "default")
+
+
 def test_memory_auto_save_defaults_enabled(monkeypatch) -> None:
     """`memory.auto_save` resolves to enabled when nothing overrides it."""
     option = get_option("memory.auto_save")

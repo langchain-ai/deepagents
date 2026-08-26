@@ -113,6 +113,32 @@ class TestCreateDeepAgentMetadata:
         assert agent.config["metadata"]["ls_integration"] == "deepagents"
 
 
+class TestCodeMode:
+    """Tests for the default QuickJS interaction model."""
+
+    def test_default_hides_host_tools_from_the_model(self) -> None:
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+        model.call_history.clear()
+        agent = create_deep_agent(model=model)
+
+        agent.invoke({"messages": [{"role": "user", "content": "hello"}]})
+
+        assert [tool.name for tool in model.call_history[-1]["tools"]] == ["eval"]
+        host_tools = agent.nodes["tools"].bound._tools_by_name
+        assert {"eval", "read_file", "write_file", "task"} <= set(host_tools)
+
+    def test_direct_mode_preserves_direct_model_tools(self) -> None:
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+        model.call_history.clear()
+        agent = create_deep_agent(model=model, code_mode=False)
+
+        agent.invoke({"messages": [{"role": "user", "content": "hello"}]})
+
+        tool_names = {tool.name for tool in model.call_history[-1]["tools"]}
+        assert {"read_file", "write_file", "task"} <= tool_names
+        assert "eval" not in tool_names
+
+
 class TestProfileForModel:
     """Tests for _harness_profile_for_model."""
 

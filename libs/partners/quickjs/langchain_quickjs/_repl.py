@@ -365,16 +365,68 @@ def _bridge_symbol_name(tool_name: str) -> str:
 
 def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
     """Return JS that atomically rebuilds `globalThis.tools` from bridges."""
-    statements = ["globalThis.tools = {};"]
+    statements = ["(() => { const namespace = {};"]
     for tool_name, bridge_symbol in sorted(bridges.items()):
         quoted_tool_name = json.dumps(tool_name)
         quoted_bridge_symbol = json.dumps(bridge_symbol)
         statements.append(
-            "globalThis.tools"
-            f"[{quoted_tool_name}] = globalThis[{quoted_bridge_symbol}];"
+            f"namespace[{quoted_tool_name}] = globalThis[{quoted_bridge_symbol}];"
         )
-    statements.append("undefined")
+    statements.append("globalThis.tools = Object.freeze(namespace); })(); undefined")
     return " ".join(statements)
+
+
+def _render_node_compat_assignment(active_tools: frozenset[str]) -> str:
+    """Return JS that exposes stable Node-inspired filesystem and shell APIs.
+
+    The adapters look up `globalThis.tools` at invocation time, rather than
+    retaining host bridge functions. A capability removed from the active PTC
+    set therefore cannot be revived through a reference retained by guest JS.
+    """
+    fs_methods: list[str] = []
+    if "ls" in active_tools:
+        fs_methods.append("readdir: (path = '/') => globalThis.tools.ls({ path })")
+    if "readFile" in active_tools:
+        fs_methods.append(
+            "readFile: (filePath, options = {}) => globalThis.tools.readFile({ "
+            "file_path: filePath, offset: options.offset, limit: options.limit })"
+        )
+    if "writeFile" in active_tools:
+        fs_methods.append(
+            "writeFile: (filePath, data) => globalThis.tools.writeFile({ "
+            "file_path: filePath, content: "
+            "typeof data === 'string' ? data : String(data) })"
+        )
+    if "editFile" in active_tools:
+        fs_methods.append(
+            "editFile: (filePath, oldString, newString, options = {}) => "
+            "globalThis.tools.editFile({ file_path: filePath, old_string: oldString, "
+            "new_string: newString, replace_all: options.replaceAll })"
+        )
+    if "delete" in active_tools:
+        fs_methods.append(
+            "rm: (filePath) => globalThis.tools.delete({ file_path: filePath })"
+        )
+    if "glob" in active_tools:
+        fs_methods.append(
+            "glob: (pattern, options = {}) => globalThis.tools.glob({ "
+            "pattern, path: options.cwd })"
+        )
+    fs_namespace = ", ".join(fs_methods)
+    bash_namespace = ""
+    if "execute" in active_tools:
+        bash_namespace = (
+            "Object.freeze({ exec: (command, options = {}) => "
+            "globalThis.tools.execute({ command, timeout: options.timeout }) })"
+        )
+    else:
+        bash_namespace = "Object.freeze({})"
+    return (
+        "globalThis.fs = Object.freeze({ promises: Object.freeze({ "
+        f"{fs_namespace} "
+        "}) }); "
+        f"globalThis.bash = {bash_namespace}; undefined"
+    )
 
 
 class _ThreadREPL:
@@ -504,6 +556,13 @@ class _ThreadREPL:
                     camel,
                 )
                 continue
+            existing = name_to_tool.get(camel)
+            if existing is not None and existing.name != tool.name:
+                msg = (
+                    f"PTC tools {existing.name!r} and {tool.name!r} both map "
+                    f"to JavaScript name {camel!r}"
+                )
+                raise ValueError(msg)
             name_to_tool[camel] = tool
         target_names = frozenset(name_to_tool)
         if target_names == self._active_tool_names and self._tools_installed:
@@ -529,6 +588,7 @@ class _ThreadREPL:
         # (same trick as the console install).
         bridges = {camel: self._bridge_symbols[camel] for camel in target_names}
         ctx.eval(_render_tools_namespace_assignment(bridges))
+        ctx.eval(_render_node_compat_assignment(target_names))
         self._active_tool_names = target_names
         self._tools_installed = True
 
@@ -696,11 +756,16 @@ class _ThreadREPL:
         tool up through `self._registered_tools` on every call so a
         later `install_tools` that swaps the underlying object (same
         name, different instance) is picked up without re-registration.
+        Host functions cannot be unregistered, so every invocation also
+        verifies that its camel-case name is active for the current turn.
         """
         ctx = self._require_ctx()
         registered = self._registered_tools
 
         async def _bridge(raw_input: Any = None) -> Any:
+            if camel not in self._active_tool_names:
+                msg = f"tool '{camel}' is not active for this eval"
+                raise RuntimeError(msg)
             tool = registered.get(camel)
             if tool is None:
                 # Shouldn't happen — we only rewrite `globalThis.tools`

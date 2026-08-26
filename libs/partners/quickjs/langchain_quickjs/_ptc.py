@@ -22,7 +22,7 @@ The host-function bridge that actually invokes each tool lives in
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from langchain_core.tools import BaseTool
 
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-PTCOption = list[str | BaseTool]
+PTCOption = Literal["all"] | list[str | BaseTool]
 
 _RESERVED_SUBAGENT_TASK_NAME = "task"
 
@@ -45,7 +45,7 @@ _TASK_IN_PTC_MSG = (
 )
 
 
-def filter_tools_for_ptc(
+def filter_tools_for_ptc(  # noqa: C901  # supports explicit and all-tool PTC modes
     tools: Sequence[BaseTool],
     config: PTCOption,
     *,
@@ -58,7 +58,7 @@ def filter_tools_for_ptc(
     If the model wants a nested eval, it can just write nested code in one
     call — that's the whole point of PTC.
 
-    `config` is allowlist-only:
+    `config` may be `"all"` or an explicit allowlist:
 
     - `str` entries: expose matching tool names from `tools`.
     - `BaseTool` entries: expose those tools directly (minus
@@ -78,6 +78,14 @@ def filter_tools_for_ptc(
         not respect `interrupt_on` / HITL approval hooks for each
         individual tool invocation.
     """
+    if config == "all":
+        selected = [
+            tool
+            for tool in tools
+            if tool.name not in {self_tool_name, _RESERVED_SUBAGENT_TASK_NAME}
+        ]
+        _raise_on_invalid_ptc_tools(selected)
+        return selected
     if isinstance(config, list):
         explicit_tools: list[BaseTool] = []
         allow_names: set[str] = set()

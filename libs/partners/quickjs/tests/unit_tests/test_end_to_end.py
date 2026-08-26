@@ -16,6 +16,7 @@ handlers and assert it no longer errors.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
@@ -25,6 +26,7 @@ from typing import Annotated, Any
 
 import pytest
 from deepagents import create_deep_agent
+from deepagents.backends import LocalShellBackend
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
@@ -33,6 +35,8 @@ from langchain_core.tools import InjectedToolCallId, tool
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from tests._common import FakeChatModel
+
+logger = logging.getLogger(__name__)
 
 # The exact snippet a model produced in production when this regressed.
 _EVAL_CODE = "var result = tools.listUserIds({}); result;"
@@ -135,6 +139,47 @@ def _script(code: str, *, final_message: str = "Done.") -> Iterator[AIMessage]:
     )
 
 
+def _direct_script(file_path: str, shell_path: str) -> Iterator[AIMessage]:
+    return iter(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "write_file",
+                        "args": {"file_path": file_path, "content": "file-ok"},
+                        "id": "call_write",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "read_file",
+                        "args": {"file_path": file_path},
+                        "id": "call_read",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "execute",
+                        "args": {"command": f"printf shell-ok > {shell_path}"},
+                        "id": "call_execute",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="Done."),
+        ]
+    )
+
+
 def _make_agent(
     code: str,
     middleware: CodeInterpreterMiddleware,
@@ -164,6 +209,98 @@ def _assert_result_contains(content: str, expected: str) -> None:
     assert "<error" not in content, content
     assert "<result" in content, content
     assert expected in content, content
+
+
+def test_code_mode_uses_only_eval_for_filesystem_and_shell(tmp_path) -> None:
+    file_path = tmp_path / "from-quickjs.txt"
+    shell_path = tmp_path / "from-shell.txt"
+    code = (
+        f"await fs.promises.writeFile({str(file_path)!r}, 'file-ok');\n"
+        f"const read = await fs.promises.readFile({str(file_path)!r});\n"
+        f"const shell = await bash.exec('printf shell-ok > {shell_path}');\n"
+        "`${read}|${shell}`"
+    )
+    result = create_deep_agent(
+        model=FakeChatModel(messages=_script(code)),
+        backend=LocalShellBackend(root_dir=tmp_path, virtual_mode=False),
+    ).invoke({"messages": [HumanMessage(content="create the files")]})
+
+    tool_messages = [
+        message for message in result["messages"] if isinstance(message, ToolMessage)
+    ]
+    assert [message.name for message in tool_messages] == ["eval"]
+    _assert_result_contains(tool_messages[0].content, "file-ok")
+    assert file_path.read_text() == "file-ok"
+    assert shell_path.read_text() == "shell-ok"
+
+
+def test_codemode_uptake_benchmark(tmp_path) -> None:
+    trials = 5
+    code_successes = 0
+    direct_successes = 0
+    code_model_tool_calls = 0
+    direct_model_tool_calls = 0
+
+    for trial in range(trials):
+        code_file = tmp_path / f"code-{trial}.txt"
+        code_shell = tmp_path / f"code-shell-{trial}.txt"
+        code = (
+            f"await fs.promises.writeFile({str(code_file)!r}, 'file-ok');\n"
+            f"const read = await fs.promises.readFile({str(code_file)!r});\n"
+            f"await bash.exec('printf shell-ok > {code_shell}');\n"
+            "read"
+        )
+        code_result = create_deep_agent(
+            model=FakeChatModel(messages=_script(code)),
+            backend=LocalShellBackend(root_dir=tmp_path, virtual_mode=False),
+        ).invoke({"messages": [HumanMessage(content="complete the task")]})
+        code_messages = [
+            message
+            for message in code_result["messages"]
+            if isinstance(message, ToolMessage)
+        ]
+        code_model_tool_calls += len(code_messages)
+        if code_file.read_text() == "file-ok" and code_shell.read_text() == "shell-ok":
+            code_successes += 1
+
+        direct_file = tmp_path / f"direct-{trial}.txt"
+        direct_shell = tmp_path / f"direct-shell-{trial}.txt"
+        direct_result = create_deep_agent(
+            model=FakeChatModel(
+                messages=_direct_script(str(direct_file), str(direct_shell))
+            ),
+            backend=LocalShellBackend(root_dir=tmp_path, virtual_mode=False),
+            code_mode=False,
+        ).invoke({"messages": [HumanMessage(content="complete the task")]})
+        direct_messages = [
+            message
+            for message in direct_result["messages"]
+            if isinstance(message, ToolMessage)
+        ]
+        direct_model_tool_calls += len(direct_messages)
+        if (
+            direct_file.read_text() == "file-ok"
+            and direct_shell.read_text() == "shell-ok"
+        ):
+            direct_successes += 1
+
+    assert code_successes == trials
+    assert direct_successes == trials
+    assert code_model_tool_calls == trials
+    assert direct_model_tool_calls == 3 * trials
+    logger.warning(
+        "codemode uptake benchmark trials=%d codemode_success=%d/%d "
+        "direct_success=%d/%d codemode_model_tool_calls=%d "
+        "direct_model_tool_calls=%d model_tool_call_reduction=%.0f%%",
+        trials,
+        code_successes,
+        trials,
+        direct_successes,
+        trials,
+        code_model_tool_calls,
+        direct_model_tool_calls,
+        100 * (1 - code_model_tool_calls / direct_model_tool_calls),
+    )
 
 
 def test_deepagent_with_quickjs_interpreter_sync() -> None:

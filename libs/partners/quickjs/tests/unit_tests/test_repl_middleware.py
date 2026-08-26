@@ -190,6 +190,46 @@ def test_system_prompt_injected_once() -> None:
     assert "### Dispatching Subagents with `task`" not in sys_text
 
 
+def test_eval_only_keeps_ptc_in_guest_but_hides_it_from_the_model() -> None:
+    mw = CodeInterpreterMiddleware(ptc=["greet"], model_tool_mode="eval_only")
+    seen: list[ModelRequest] = []
+
+    def handler(req: ModelRequest):
+        seen.append(req)
+        from langchain.agents.middleware.types import ModelResponse
+        from langchain_core.messages import AIMessage
+
+        return ModelResponse(result=[AIMessage(content="ok")])
+
+    def greet(name: str) -> str:
+        return f"hello {name}"
+
+    req = MagicMock(spec=ModelRequest)
+    req.system_message = SystemMessage(content="base")
+    req.tools = [
+        StructuredTool.from_function(
+            name="greet", description="Greet a person.", func=greet
+        )
+    ]
+
+    def _override(**kwargs):
+        new = MagicMock(spec=ModelRequest)
+        new.system_message = kwargs.get("system_message", req.system_message)
+        new.tools = kwargs.get("tools", req.tools)
+        return new
+
+    req.override = _override
+    mw.wrap_model_call(req, handler)
+
+    assert [tool.name for tool in seen[0].tools] == ["eval"]
+    sys_text = "\n".join(
+        block["text"]
+        for block in seen[0].system_message.content_blocks
+        if block["type"] == "text"
+    )
+    assert "tools.greet" in sys_text
+
+
 def test_system_prompt_includes_subagent_guidance_when_specs_configured() -> None:
     mw = CodeInterpreterMiddleware()
     seen: list[ModelRequest] = []

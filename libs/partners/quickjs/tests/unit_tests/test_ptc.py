@@ -895,3 +895,105 @@ async def test_pydantic_return_arrives_as_object_matching_schema(
     )
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "object:ok:3"
+
+
+def test_filter_all_exposes_every_non_reserved_tool() -> None:
+    tools = [_echo_tool("eval"), _echo_tool("task"), _echo_tool("echo")]
+    exposed = filter_tools_for_ptc(tools, "all", self_tool_name="eval")
+    assert [tool.name for tool in exposed] == ["echo"]
+
+
+async def test_node_style_filesystem_and_shell_adapters(repl: _ThreadREPL) -> None:
+    class _ReadInput(BaseModel):
+        file_path: str
+        offset: int | None = None
+        limit: int | None = None
+
+    class _WriteInput(BaseModel):
+        file_path: str
+        content: str
+
+    class _ExecuteInput(BaseModel):
+        command: str
+        timeout: int | None = None
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def read_file(
+        file_path: str, offset: int | None = None, limit: int | None = None
+    ) -> str:
+        calls.append(
+            ("read_file", {"file_path": file_path, "offset": offset, "limit": limit})
+        )
+        return "file contents"
+
+    def write_file(file_path: str, content: str) -> str:
+        calls.append(("write_file", {"file_path": file_path, "content": content}))
+        return "written"
+
+    def execute(command: str, timeout: int | None = None) -> str:
+        calls.append(("execute", {"command": command, "timeout": timeout}))
+        return "shell output"
+
+    repl.install_tools(
+        [
+            StructuredTool.from_function(
+                name="read_file",
+                description="Read a file.",
+                func=read_file,
+                args_schema=_ReadInput,
+            ),
+            StructuredTool.from_function(
+                name="write_file",
+                description="Write a file.",
+                func=write_file,
+                args_schema=_WriteInput,
+            ),
+            StructuredTool.from_function(
+                name="execute",
+                description="Run a command.",
+                func=execute,
+                args_schema=_ExecuteInput,
+            ),
+        ]
+    )
+    outcome = await repl.eval_async(
+        "const [read, write, shell] = await Promise.all([\n"
+        "  fs.promises.readFile('/workspace/a.txt', { offset: 2, limit: 4 }),\n"
+        "  fs.promises.writeFile('/workspace/b.txt', 'new contents'),\n"
+        "  bash.exec('printf ok', { timeout: 9 }),\n"
+        "]);\n"
+        "`${read}|${write}|${shell}`"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "file contents|written|shell output"
+    assert sorted(calls, key=lambda call: call[0]) == [
+        ("execute", {"command": "printf ok", "timeout": 9}),
+        ("read_file", {"file_path": "/workspace/a.txt", "offset": 2, "limit": 4}),
+        ("write_file", {"file_path": "/workspace/b.txt", "content": "new contents"}),
+    ]
+
+
+async def test_retained_bridge_reference_cannot_call_removed_tool(
+    repl: _ThreadREPL,
+) -> None:
+    calls: list[dict] = []
+    repl.install_tools([_greet_tool(calls)])
+    captured = await repl.eval_async(
+        "globalThis.retainedGreet = tools.greet; 'captured'"
+    )
+    assert captured.error_type is None, captured.error_message
+
+    repl.install_tools([])
+    outcome = await repl.eval_async(
+        "try { await retainedGreet({name: 'blocked'}); 'called' } "
+        "catch (error) { `${error.name}:${error.message}` }"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "HostError:Host function failed"
+    assert calls == []
+
+
+def test_camel_case_collision_is_rejected(repl: _ThreadREPL) -> None:
+    with pytest.raises(ValueError, match="both map to JavaScript name 'aB'"):
+        repl.install_tools([_echo_tool("a-b"), _echo_tool("a_b")])

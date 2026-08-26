@@ -285,16 +285,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    code_mode: bool = True,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, InputAgentState, OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
 
-    By default, this agent has access to the following tools:
+    By default, models interact through one `eval` JavaScript REPL tool. The
+    REPL provides the host tool registry as `tools.*`, familiar filesystem
+    adapters under `fs.promises`, shell execution through `bash.exec`, and
+    subagent dispatch through top-level `task(...)`. Set `code_mode=False` to
+    restore direct model-bound filesystem and task tool schemas.
 
-    - `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`: file operations
-    - `execute`: run shell commands
-    - `task`: call subagents
-
-    The `execute` tool allows running shell commands if the backend implements
+    The `execute` host capability allows running shell commands if the backend implements
     [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
     For non-sandbox backends, the `execute` tool will return an error message.
 
@@ -562,6 +563,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         cache: The cache to use for the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
+        code_mode: When `True` (default), models receive only the QuickJS `eval`
+            schema and use host capabilities from JavaScript. Set to `False` to
+            preserve direct model-bound tools.
 
     Returns:
         A configured deep agent.
@@ -627,6 +631,28 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     )
 
     backend = backend if backend is not None else StateBackend()
+    has_per_tool_hitl = bool(interrupt_on) or any(
+        rule.mode == "interrupt" for rule in permissions or []
+    )
+    use_code_mode = (
+        code_mode
+        and not has_per_tool_hitl
+        and not any(
+            middleware_instance.name == "CodeInterpreterMiddleware"
+            for middleware_instance in middleware
+        )
+    )
+
+    def _code_interpreter_middleware() -> AgentMiddleware[Any, Any, Any]:
+        """Create the final middleware that reduces model tools to QuickJS."""
+        try:
+            from langchain_core._api import suppress_langchain_beta_warning  # noqa: PLC0415
+            from langchain_quickjs import CodeInterpreterMiddleware  # noqa: PLC0415
+        except ImportError as e:
+            msg = "Code mode requires langchain-quickjs. Install the `deepagents[quickjs]` extra or set `code_mode=False`."
+            raise ImportError(msg) from e
+        with suppress_langchain_beta_warning():
+            return CodeInterpreterMiddleware(ptc="all", model_tool_mode="eval_only")
 
     # The built-in tool-usage guidance prose duplicates the tools' own schema
     # descriptions, so the deepagents-owned middleware (filesystem / subagent /
@@ -721,6 +747,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 _build_interrupt_on_from_permissions(subagent_permissions or []),
                 subagent_interrupt_on,
             )
+            if use_code_mode and not subagent_interrupt_on:
+                subagent_middleware.append(_code_interpreter_middleware())
 
             # Inherit parent tools unless the subagent declares its own.
             # Descriptions are rewritten; exclusion is handled by middleware.
@@ -785,6 +813,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # tool-injecting middleware has run.
         if _profile.excluded_tools:
             gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
+        if use_code_mode:
+            gp_middleware.append(_code_interpreter_middleware())
 
         general_purpose_spec: SubAgent = {
             **GENERAL_PURPOSE_SUBAGENT,
@@ -890,6 +920,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # stripped last and cannot be restored by a custom wrap_model_call.
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
+    if use_code_mode:
+        deepagent_middleware.append(_code_interpreter_middleware())
     state_schemas = [state_schema] if state_schema is not None else []
     state_schemas.extend(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None)
     private_state_keys = private_state_field_names(*state_schemas)

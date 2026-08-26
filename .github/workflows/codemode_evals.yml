@@ -1,0 +1,202 @@
+name: "📊 Codemode uptake evals"
+run-name: >-
+  📊 Codemode uptake — ${{ inputs.model }} × ${{ inputs.trials }} trials
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model used for the paired direct/codemode comparison."
+        required: true
+        default: "anthropic:claude-sonnet-4-6"
+        type: choice
+        options:
+          - "anthropic:claude-sonnet-4-6"
+      trials:
+        description: "Sequential trials per mode."
+        required: true
+        default: "3"
+        type: choice
+        options:
+          - "1"
+          - "3"
+          - "5"
+      notes:
+        description: "Hypothesis or context recorded in the job summary."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SYNC: "true"
+  UV_FROZEN: "true"
+
+jobs:
+  paired-eval:
+    name: "📊 Direct vs. codemode"
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 360
+    defaults:
+      run:
+        working-directory: libs/evals
+    env:
+      LANGSMITH_TRACING: "true"
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      MODEL: ${{ inputs.model }}
+      TRIALS: ${{ inputs.trials }}
+      NOTES: ${{ inputs.notes }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: codemode-evals
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test
+
+      - name: "🧪 Run paired evals"
+        id: evals
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p codemode_eval_runs/direct codemode_eval_runs/codemode
+          tests=(
+            tests/evals/test_tool_usage_relational.py
+            tests/evals/test_tool_usage_incident_graph.py
+          )
+
+          set +e
+          LANGSMITH_TEST_SUITE="codemode-uptake-${GITHUB_RUN_ID}-direct" \
+            uv run deepagents-evals trials \
+              --model "$MODEL" \
+              --trials "$TRIALS" \
+              --out-dir codemode_eval_runs/direct \
+              --summary-out codemode_eval_runs/direct_summary.json \
+              -- "${tests[@]}"
+          direct_exit=$?
+
+          LANGSMITH_TEST_SUITE="codemode-uptake-${GITHUB_RUN_ID}-codemode" \
+            uv run deepagents-evals trials \
+              --model "$MODEL" \
+              --trials "$TRIALS" \
+              --repl quickjs \
+              --out-dir codemode_eval_runs/codemode \
+              --summary-out codemode_eval_runs/codemode_summary.json \
+              -- "${tests[@]}"
+          codemode_exit=$?
+          set -e
+
+          printf 'direct_exit=%s\n' "$direct_exit" >> "$GITHUB_OUTPUT"
+          printf 'codemode_exit=%s\n' "$codemode_exit" >> "$GITHUB_OUTPUT"
+
+      - name: "📈 Compare results"
+        if: always()
+        run: |
+          python3 <<'PYEOF'
+          import json
+          import os
+          from pathlib import Path
+
+          paths = {
+              "direct": Path("codemode_eval_runs/direct_summary.json"),
+              "codemode": Path("codemode_eval_runs/codemode_summary.json"),
+          }
+          missing = [str(path) for path in paths.values() if not path.is_file()]
+          if missing:
+              raise SystemExit(f"Missing eval summaries: {', '.join(missing)}")
+
+          summaries = {name: json.loads(path.read_text()) for name, path in paths.items()}
+
+          def mean(summary, section, key):
+              value = summary.get(section, {}).get(key, {}).get("mean")
+              return value if isinstance(value, (int, float)) else None
+
+          metrics = ("correctness", "tool_call_ratio", "median_duration_s", "solve_rate")
+          comparison = {
+              "model": os.environ["MODEL"],
+              "trials": int(os.environ["TRIALS"]),
+              "notes": os.environ["NOTES"],
+              "direct": summaries["direct"],
+              "codemode": summaries["codemode"],
+              "deltas": {
+                  metric: (
+                      None
+                      if mean(summaries["direct"], "metrics", metric) is None
+                      or mean(summaries["codemode"], "metrics", metric) is None
+                      else round(
+                          mean(summaries["codemode"], "metrics", metric)
+                          - mean(summaries["direct"], "metrics", metric),
+                          6,
+                      )
+                  )
+                  for metric in metrics
+              },
+          }
+          Path("codemode_eval_runs/comparison.json").write_text(
+              json.dumps(comparison, indent=2) + "\n"
+          )
+
+          lines = [
+              "# Codemode uptake comparison",
+              "",
+              f"Model: `{comparison['model']}` · Trials per mode: `{comparison['trials']}`",
+          ]
+          if comparison["notes"]:
+              lines.extend(["", f"Notes: {comparison['notes']}"])
+          lines.extend([
+              "",
+              "| Metric | Direct | Codemode | Δ (codemode − direct) |",
+              "|---|---:|---:|---:|",
+          ])
+          for metric in metrics:
+              direct = mean(summaries["direct"], "metrics", metric)
+              codemode = mean(summaries["codemode"], "metrics", metric)
+              delta = comparison["deltas"][metric]
+              lines.append(f"| `{metric}` | {direct} | {codemode} | {delta} |")
+          lines.extend([
+              "",
+              "| Mode | Passed | Failed | Total |",
+              "|---|---:|---:|---:|",
+          ])
+          for mode in ("direct", "codemode"):
+              counts = summaries[mode].get("counts", {})
+              lines.append(
+                  f"| {mode} | {mean(summaries[mode], 'counts', 'passed')} | "
+                  f"{mean(summaries[mode], 'counts', 'failed')} | "
+                  f"{mean(summaries[mode], 'counts', 'total')} |"
+              )
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a") as handle:
+                  handle.write("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          PYEOF
+
+      - name: "📤 Upload paired eval reports"
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codemode-uptake-${{ github.run_id }}
+          path: libs/evals/codemode_eval_runs
+          if-no-files-found: warn
+
+      - name: "🚦 Preserve eval failures"
+        if: always()
+        env:
+          DIRECT_EXIT: ${{ steps.evals.outputs.direct_exit }}
+          CODEMODE_EXIT: ${{ steps.evals.outputs.codemode_exit }}
+        run: |
+          if [ "${DIRECT_EXIT:-1}" != "0" ] || [ "${CODEMODE_EXIT:-1}" != "0" ]; then
+            echo "::error::Paired eval failure: direct=${DIRECT_EXIT:-missing}, codemode=${CODEMODE_EXIT:-missing}"
+            exit 1
+          fi

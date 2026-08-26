@@ -17,8 +17,6 @@ from typing_extensions import TypedDict
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-from langchain_quickjs import CodeInterpreterMiddleware
-
 from tests.evals.utils import (
     TrajectoryScorer,
     final_text_contains,
@@ -435,17 +433,13 @@ RELATIONAL_TOOL_IMPLEMENTATIONS = {tool.name: tool for tool in RELATIONAL_TOOLS}
 
 
 def _create_agent(model: BaseChatModel, repl_name: str | None):
-    """Create agent."""
-    middleware = []
-    tools = None
+    """Create the direct or default-codemode agent for a paired eval run."""
     if repl_name == "quickjs":
-        middleware = [CodeInterpreterMiddleware(ptc=RELATIONAL_TOOLS)]
-    elif repl_name is None:
-        tools = RELATIONAL_TOOLS
-    else:
-        msg = f'Unknown repl_name "{repl_name}"'
-        raise ValueError(msg)
-    return create_deep_agent(model=model, tools=tools, middleware=middleware)
+        return create_deep_agent(model=model, tools=RELATIONAL_TOOLS)
+    if repl_name is None:
+        return create_deep_agent(model=model, tools=RELATIONAL_TOOLS, code_mode=False)
+    msg = f'Unknown repl_name "{repl_name}"'
+    raise ValueError(msg)
 
 
 @pytest.mark.eval_tier("baseline")

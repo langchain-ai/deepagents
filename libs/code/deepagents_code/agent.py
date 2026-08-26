@@ -3289,5 +3289,6 @@ def create_cli_agent(
         store=store,
         subagents=all_subagents or None,
         name=_sanitize_agent_message_name(assistant_id),
+        code_mode=False,
     ).with_config({**config, "recursion_limit": effective_recursion_limit})
     return agent, composite_backend

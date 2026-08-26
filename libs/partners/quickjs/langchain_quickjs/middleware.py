@@ -32,6 +32,7 @@ from langchain_quickjs._format import format_outcome
 from langchain_quickjs._prompt import (
     render_eval_tool_code_doc,
     render_eval_tool_description,
+    render_node_compat_prompt,
     render_repl_system_prompt,
     render_subagent_system_prompt,
 )
@@ -59,6 +60,7 @@ _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
 
 PersistenceMode = Literal["thread", "turn", "call"]
+ModelToolMode = Literal["direct", "eval_only"]
 
 
 class REPLState(AgentState):
@@ -200,7 +202,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
             The REPL's own tool is always excluded; a model asking for
             `tools.eval("...")` would recurse pointlessly.
-        mode: REPL state persistence mode.
+        model_tool_mode: Model-facing tool mode.
+          mode: REPL state persistence mode.
             - `"thread"`: state persists across calls and across turns.
             - `"turn"`: state persists across calls within a turn only.
             - `"call"`: each eval call runs in a fresh REPL.
@@ -249,6 +252,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         capture_console: bool = True,
         subagents: bool = True,
         ptc: PTCOption | None = None,
+        model_tool_mode: ModelToolMode = "direct",
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
         snapshot_signing_key: str | bytes | None = None,
@@ -261,6 +265,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if max_snapshot_bytes is not None and max_snapshot_bytes < 1:
             msg = "`max_snapshot_bytes` must be >= 1 or None"
             raise ValueError(msg)
+        if model_tool_mode not in {"direct", "eval_only"}:
+            msg = '`model_tool_mode` must be "direct" or "eval_only"'
+            raise ValueError(msg)
         self._memory_limit = memory_limit
         self._timeout = timeout
         self._max_ptc_calls = max_ptc_calls
@@ -269,6 +276,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._capture_console = capture_console
         self._subagents = subagents
         self._ptc = ptc
+        self._model_tool_mode = model_tool_mode
         self._mode = _resolve_mode(mode=mode)
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
@@ -460,13 +468,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
     ) -> ModelResponse[ResponseT]:
-        """Inject the REPL's system-prompt snippet on every model call."""
-        prompt = self._prepare_for_call(request)
-        return handler(
-            request.override(
-                system_message=self._extend(request.system_message, prompt)
-            ),
-        )
+        """Install guest APIs and forward the configured model-visible toolset."""
+        return handler(self._request_for_model(request))
 
     async def awrap_model_call(
         self,
@@ -475,13 +478,21 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             [ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]
         ],
     ) -> ModelResponse[ResponseT]:
-        """(async) Inject the REPL's system-prompt snippet on every model call."""
+        """(async) Install guest APIs and forward the configured toolset."""
+        return await handler(self._request_for_model(request))
+
+    def _request_for_model(
+        self, request: ModelRequest[ContextT]
+    ) -> ModelRequest[ContextT]:
+        """Prepare guest PTC from live tools before reducing model schemas."""
         prompt = self._prepare_for_call(request)
-        return await handler(
-            request.override(
-                system_message=self._extend(request.system_message, prompt)
-            ),
-        )
+        system_message = self._extend(request.system_message, prompt)
+        if self._model_tool_mode == "eval_only":
+            return request.override(
+                system_message=system_message,
+                tools=list(self.tools),
+            )
+        return request.override(system_message=system_message)
 
     def _base_prompt(self, *, ptc_attached: bool) -> str:
         """Return the base REPL system prompt, rendered lazily and memoized.
@@ -540,7 +551,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 exposed_names,
                 render_ptc_prompt(exposed, tool_name=self._tool_name),
             )
-        return prompt + self._ptc_prompt_cache[1]
+        compatibility_prompt = render_node_compat_prompt(exposed)
+        return (
+            prompt
+            + self._ptc_prompt_cache[1]
+            + (f"\n\n{compatibility_prompt}" if compatibility_prompt else "")
+        )
 
     def _extend(
         self, system_message: SystemMessage | None, prompt: str

@@ -27,11 +27,12 @@ dependencies = [
     "langsmith>=0.11.1",
     "packaging>=23.2",
     "wcmatch>=11.0",
+    "langchain-quickjs>=0.3.5,<0.4.0",
 ]
 
 [project.optional-dependencies]
 aws = ["langchain-aws>=1.7.3,<2.0.0"]
-quickjs = ["langchain-quickjs>=0.3.5"]
+quickjs = []
 video = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<13.0.0"]
 
 [project.urls]
@@ -164,5 +165,8 @@ python-version = "3.11"
 [tool.ty.rules]
 # Most rules are enabled by default. Enable rules that are disabled by default:
 division-by-zero = "error"
+
+[tool.uv.sources]
+langchain-quickjs = { path = "../partners/quickjs", editable = true }
 # Add rules here to ignore, e.g.:
 # possibly-unresolved-reference = "ignore"

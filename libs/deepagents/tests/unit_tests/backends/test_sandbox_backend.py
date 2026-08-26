@@ -8,12 +8,14 @@ correctly.
 
 import base64
 import json
+import logging
 import os
 import re
 import stat
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
+from typing import Final
 
 import pytest
 
@@ -26,19 +28,30 @@ from deepagents.backends.sandbox import (
     _EDIT_COMMAND_TEMPLATE,
     _EDIT_INLINE_MAX_BYTES,
     _EDIT_TMPFILE_TEMPLATE,
+    _EXECUTE_CAPTURE_CLIP_NOTICE,
+    _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED,
+    _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE,
+    _EXECUTE_CAPTURE_HEAD_BYTES,
+    _EXECUTE_CAPTURE_HEAD_LINES,
+    _EXECUTE_CAPTURE_SENTINEL,
+    _EXECUTE_CAPTURE_TAIL_BYTES,
+    _EXECUTE_CAPTURE_TAIL_LINES,
     _GLOB_COMMAND_TEMPLATE,
     _GREP_PATH_GLOB_TEMPLATE,
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
     BaseSandbox,
+    _build_capture_execute_cmd,
     _build_grep_cmd,
     _build_read_cmd,
     _check_preflight_result,
     _map_edit_error,
+    _parse_capture_execute_output,
     _parse_glob_output,
     _parse_grep_output,
     _parse_read_output,
 )
+from deepagents.backends.utils import TRUNCATION_MARKER_TEMPLATE
 
 
 class MockSandbox(BaseSandbox):
@@ -2397,3 +2410,166 @@ class TestSandboxDelete:
         assert result.path is None
         assert result.error is not None
         assert "not found" in result.error
+
+
+class TestParseCaptureExecuteOutput:
+    """Meta-line parsing for capture-at-source `execute` offload.
+
+    Pure-function coverage, so these run everywhere -- unlike the end-to-end
+    offload tests, which need a real shell and are gated on `RUN_SANDBOX_TESTS`.
+    """
+
+    @staticmethod
+    def _meta(*fields: object) -> str:
+        return " ".join([_EXECUTE_CAPTURE_SENTINEL, *(str(f) for f in fields)]) + "\nBODY"
+
+    @pytest.mark.parametrize(
+        ("surplus", "expected_marker"),
+        [
+            (-10, False),  # single huge line: wc -l counted fewer lines than the budget
+            (-1, False),
+            # The wrapper only inserts a marker when the surplus is strictly
+            # positive, so `0` -- exactly head+tail lines, no middle to drop --
+            # must not select the marker-explaining note.
+            (0, False),
+            (1, True),
+            (4990, True),
+        ],
+    )
+    def test_marker_flag_set_only_by_positive_surplus(self, *, surplus: int, expected_marker: bool) -> None:
+        result = _parse_capture_execute_output(self._meta(0, 1, 0, surplus))
+
+        assert result.offloaded is True
+        assert result.preview_has_truncation_marker is expected_marker
+
+    def test_parses_exit_code_and_cap_flag(self) -> None:
+        result = _parse_capture_execute_output(self._meta(3, 1, 1, 7))
+
+        assert result.offloaded is True
+        assert result.response.exit_code == 3
+        assert result.response.truncated is True
+        assert result.response.output == "BODY"
+        assert result.preview_has_truncation_marker is True
+
+    def test_inline_output_is_not_offloaded(self) -> None:
+        result = _parse_capture_execute_output(self._meta(0, 0, 0, 0))
+
+        assert result.offloaded is False
+        assert result.preview_has_truncation_marker is False
+
+    @pytest.mark.parametrize(
+        "bad_surplus",
+        ["junk", "", "1.5"],
+    )
+    def test_unparseable_surplus_keeps_exit_code_and_cap_flag(self, bad_surplus: str) -> None:
+        """An unreadable surplus costs only the note's wording, never the exit code.
+
+        The surplus is parsed separately from the exit code precisely so a garbled
+        fifth field cannot discard a good exit code and cap flag by dropping the
+        whole result onto the raw-output fallback path -- which would also frame a
+        preview as complete output and leak the sentinel line to the model.
+        """
+        result = _parse_capture_execute_output(self._meta(3, 1, 1, bad_surplus))
+
+        assert result.offloaded is True
+        assert result.response.exit_code == 3
+        assert result.response.truncated is True
+        assert result.response.output == "BODY"
+        # Unknown surplus degrades to "no marker" rather than claiming one.
+        assert result.preview_has_truncation_marker is False
+
+    @pytest.mark.parametrize(
+        ("bad_meta", "reason"),
+        [
+            (f"{_EXECUTE_CAPTURE_SENTINEL} 0 1 0\nBODY", "legacy four-field meta line"),
+            (f"{_EXECUTE_CAPTURE_SENTINEL} 0 1 0 0 0\nBODY", "too many fields"),
+            (f"{_EXECUTE_CAPTURE_SENTINEL} junk 1 0 0\nBODY", "non-integer exit code"),
+            ("no sentinel here at all\nBODY", "sentinel absent"),
+            ("sh: warning: banner\n" + f"{_EXECUTE_CAPTURE_SENTINEL} 0 1 0 0\nBODY", "banner before sentinel"),
+        ],
+    )
+    def test_malformed_meta_falls_back_to_raw_output(self, bad_meta: str, reason: str) -> None:
+        result = _parse_capture_execute_output(bad_meta)
+
+        assert result.offloaded is False, reason
+        assert result.response.output == bad_meta, reason
+        assert result.preview_has_truncation_marker is False, reason
+
+    def test_malformed_meta_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The fallback reframes a preview as complete output, so it must not be silent."""
+        with caplog.at_level(logging.WARNING, logger="deepagents.backends.sandbox"):
+            _parse_capture_execute_output(f"{_EXECUTE_CAPTURE_SENTINEL} 0 1 0\nBODY")
+
+        assert any("meta line absent or malformed" in r.getMessage() for r in caplog.records)
+
+    def test_unparseable_exit_code_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Same reason as its two sibling fallbacks: the caller cannot tell it happened."""
+        with caplog.at_level(logging.WARNING, logger="deepagents.backends.sandbox"):
+            _parse_capture_execute_output(f"{_EXECUTE_CAPTURE_SENTINEL} junk 1 0 0\nBODY")
+
+        assert any("non-integer exit code" in r.getMessage() for r in caplog.records)
+
+    def test_marker_flag_requires_offloaded(self) -> None:
+        """A response carrying no preview can never claim a marker, whatever the surplus."""
+        result = _parse_capture_execute_output(self._meta(0, 0, 0, 5))
+
+        assert result.offloaded is False
+        assert result.preview_has_truncation_marker is False
+
+    def test_unparseable_surplus_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="deepagents.backends.sandbox"):
+            _parse_capture_execute_output(self._meta(0, 1, 0, "junk"))
+
+        assert any("non-integer preview line surplus" in r.getMessage() for r in caplog.records)
+
+    def test_backend_truncation_propagates_through_fallback(self) -> None:
+        result = _parse_capture_execute_output("garbage", backend_truncated=True)
+
+        assert result.offloaded is False
+        assert result.response.truncated is True
+
+
+class TestCaptureWrapperNotices:
+    """The wrapper's in-band notices must match what the note promises the model.
+
+    Every assertion here is on the static parts of the generated wrapper, so one
+    build shared across the class is enough.
+    """
+
+    cmd: Final = _build_capture_execute_cmd("echo hi", "/sandbox/cap", inline_budget=100)
+
+    def test_marker_format_derives_from_shared_template(self) -> None:
+        """Wrapper marker and preview note render the same shape, from one template."""
+        # The wrapper emits the marker via printf with the count as the operand.
+        assert TRUNCATION_MARKER_TEMPLATE.format(omitted_lines="%s") in self.cmd
+        # And nothing hardcodes a second, drifting copy of the shape.
+        assert TRUNCATION_MARKER_TEMPLATE.format(omitted_lines="%s") == "... [%s lines truncated] ..."
+
+    def test_wrapper_emits_clip_notice_only_in_byte_excerpt_branch(self) -> None:
+        # Guarded by a byte comparison, so a preview that loses nothing stays quiet.
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE.format(captured_bytes="%s") in self.cmd
+        assert f'[ "$__da_bytes" -gt $(({_EXECUTE_CAPTURE_HEAD_BYTES} + {_EXECUTE_CAPTURE_TAIL_BYTES})) ]' in self.cmd
+
+    def test_clip_notice_has_a_capped_variant_selected_by_the_cap_flag(self) -> None:
+        """A capped capture must not advertise the cap as the total, nor promise the full output."""
+        assert '[ "$__da_capped" -eq 1 ]' in self.cmd
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED.format(captured_bytes="%s") in self.cmd
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE.format(captured_bytes="%s") in self.cmd
+        # Only the uncapped wording may claim the path holds everything.
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED.count("full output at the path above") == 0
+
+    def test_head_tail_branch_discloses_its_byte_caps(self) -> None:
+        """The marker counts whole middle lines only, so byte-cap losses need their own notice.
+
+        Guarded by comparing the line-capped excerpt sizes against the byte caps, so a
+        preview whose excerpts fit stays quiet.
+        """
+        assert _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE in self.cmd
+        assert f'[ "$__da_head_bytes" -gt {_EXECUTE_CAPTURE_HEAD_BYTES} ]' in self.cmd
+        assert f'[ "$__da_tail_bytes" -gt {_EXECUTE_CAPTURE_TAIL_BYTES} ]' in self.cmd
+        # Takes no operand, so it must not smuggle in a printf conversion.
+        assert "%" not in _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE
+
+    def test_head_tail_line_budget_matches_surplus_arithmetic(self) -> None:
+        """The surplus the wrapper reports is relative to these two constants."""
+        assert f"$((__da_lines - {_EXECUTE_CAPTURE_HEAD_LINES} - {_EXECUTE_CAPTURE_TAIL_LINES}))" in self.cmd

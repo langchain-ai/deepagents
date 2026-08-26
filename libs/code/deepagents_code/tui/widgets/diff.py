@@ -218,6 +218,27 @@ class _Row(NamedTuple):
 # wrapped lines" hook.
 
 
+def _expand_tabs(content: Content, tab_size: int = 8) -> Content:
+    """Expand tabs using terminal-cell positions, even without style spans.
+
+    Args:
+        content: Text to expand.
+        tab_size: Number of terminal cells between tab stops.
+
+    Returns:
+        Content with tabs replaced by the cell-aware number of spaces.
+    """
+    if "\t" not in content.plain:
+        return content
+    if content.spans:
+        return content.expand_tabs(tab_size)
+    plain = "".join(
+        part + " " * expansion
+        for part, expansion in get_tab_widths(content.plain, tab_size)
+    )
+    return Content(plain)
+
+
 def _expanded_offsets(plain: str, base: int, tab_size: int = 8) -> list[int]:
     """Map each tab-expanded character position back to a logical offset.
 
@@ -351,7 +372,7 @@ class _DiffRowContent(Content):
     @cached_property
     def _body(self) -> Content:
         """The row's source text, gutter stripped and tabs expanded."""
-        return self[self.prefix_len :].expand_tabs()
+        return _expand_tabs(self[self.prefix_len :])
 
     @cached_property
     def _body_offsets(self) -> list[int]:

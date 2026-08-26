@@ -407,6 +407,27 @@ class TestComposeDiffLines:
         assert _selected(widget, 12, 8, 1) == "abcdef"
         assert _selected(widget, 12, 7, 2) == "f"
 
+    def test_unstyled_wide_character_before_tab_keeps_source_offsets(self) -> None:
+        """Cell-aware tab expansion keeps painted characters copyable."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+漢\tabcdef") if "漢" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+
+        for expected in "abcdef":
+            y, line = next(
+                (y, line)
+                for y, line in enumerate(_visual_lines(widget, 12))
+                if expected in line
+            )
+            index = line.index(expected)
+            x = sum(get_character_cell_size(char) for char in line[:index])
+            offset = _offset_at(widget, 12, x, y)
+            assert offset is not None
+            assert content.plain[offset] == expected
+            if expected == "a":
+                assert content.plain[offset:] == "abcdef"
+
     def test_styled_continuations_keep_per_segment_offsets(self) -> None:
         """Clicks on later styled segments map to their source characters."""
         text = "value = alpha + beta + gamma"

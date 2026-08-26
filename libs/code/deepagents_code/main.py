@@ -5321,11 +5321,12 @@ def cli_main() -> None:
         retry_config_warnings = collect_retry_config_warnings()
         if retry_config_warnings:
             from rich.console import Console as _Console
+            from rich.text import Text as _Text
 
             stderr_console = _Console(stderr=True)
             for warning in retry_config_warnings:
                 stderr_console.print(
-                    f"[bold yellow]Warning:[/bold yellow] {warning}",
+                    _Text.assemble(("Warning:", "bold yellow"), " ", warning),
                     soft_wrap=True,
                     highlight=False,
                 )

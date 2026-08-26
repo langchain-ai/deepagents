@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import UTC
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -63,12 +64,20 @@ class _AuthHostApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
+        self._environment_mutation_lock = asyncio.Lock()
         self.prompt_result: AuthResult | None = None
         self.prompt_dismissed = False
         self.credential_saved_count = 0
         self.credential_deleted_count = 0
         self.last_saved_provider: str | None = None
         self.last_deleted_provider: str | None = None
+
+    async def _reload_settings_from_environment_serialized(self) -> list[str]:
+        """Use the production reload core while modeling its app-level lock."""
+        from deepagents_code.app import DeepAgentsApp
+
+        async with self._environment_mutation_lock:
+            return await DeepAgentsApp._reload_settings_from_environment()
 
     def compose(self) -> ComposeResult:
         """Render a placeholder root."""
@@ -1355,6 +1364,109 @@ api_key_url = "javascript:alert(1)"
             assert app.prompt_dismissed is False
             assert isinstance(app.screen, AuthPromptScreen)
         assert any("No credentials detected" in msg for msg, _ in notices)
+
+    async def test_ctrl_r_reload_offloads_remote_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stalled managed-config fetch leaves the event loop responsive."""
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocked_reload() -> list[str]:
+            started.set()
+            assert release.wait(timeout=1)
+            return []
+
+        monkeypatch.setattr(
+            "deepagents_code.config.settings.reload_from_environment",
+            blocked_reload,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            screen = cast("AuthPromptScreen", app.screen)
+            reload_task = asyncio.create_task(screen.action_reload_env())
+            started_in_time = await asyncio.wait_for(
+                asyncio.to_thread(started.wait),
+                timeout=0.5,
+            )
+            assert started_in_time
+            assert not reload_task.done()
+            release.set()
+            await reload_task
+
+    async def test_ctrl_r_reload_waits_for_environment_mutation_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An auth reload cannot overlap another shared environment mutation."""
+        reload_started = threading.Event()
+
+        def reload_from_environment() -> list[str]:
+            reload_started.set()
+            return []
+
+        monkeypatch.setattr(
+            "deepagents_code.config.settings.reload_from_environment",
+            reload_from_environment,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            screen = cast("AuthPromptScreen", app.screen)
+            async with app._environment_mutation_lock:
+                reload_task = asyncio.create_task(screen.action_reload_env())
+                await asyncio.sleep(0)
+                assert not reload_started.is_set()
+            await reload_task
+
+        assert reload_started.is_set()
+
+    async def test_ctrl_r_reload_surfaces_managed_policy_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retained policy generation cannot be reported as reloaded."""
+        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX
+
+        blocked = (
+            f"{MANAGED_RELOAD_BLOCKED_PREFIX}remote managed config could not "
+            "be refreshed"
+        )
+        notices: list[tuple[str, str | None]] = []
+
+        def capture_notify(
+            message: str, *_args: object, severity: str | None = None, **_kwargs: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        monkeypatch.setattr(
+            "deepagents_code.config.settings.reload_from_environment",
+            lambda: [blocked],
+        )
+        cache_cleared = False
+
+        def clear_caches() -> None:
+            nonlocal cache_cleared
+            cache_cleared = True
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.auth.clear_caches",
+            clear_caches,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", capture_notify)
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            assert isinstance(app.screen, AuthPromptScreen)
+
+        assert cache_cleared is False
+        assert (blocked, "error") in notices
+        assert not any(message == "Environment reloaded." for message, _ in notices)
 
     async def test_ctrl_r_reload_when_not_blocking_stays_open_and_toasts(
         self, monkeypatch: pytest.MonkeyPatch

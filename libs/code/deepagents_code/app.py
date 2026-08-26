@@ -3537,13 +3537,15 @@ class DeepAgentsApp(App):
         something while it was open.
         """
 
-        self._restart_respawn_task: asyncio.Task[None] | None = None
-        """Strong reference to the detached `/restart` respawn task.
+        self._restart_respawn_task: asyncio.Task[Any] | None = None
+        """Strong reference to the detached restart task.
 
-        `_handle_restart_command` runs the multi-second server respawn off the
-        Textual message pump via `asyncio.create_task` so the chat input stays
-        responsive; holding the reference keeps the task from being GC'd
-        mid-flight and lets tests await it deterministically."""
+        `_schedule_restart_command` runs config refresh and server respawn off
+        the Textual message pump so the chat input stays responsive. This field
+        is the duplicate gate: a live task here makes a second `/restart` (or a
+        restart the `/reload` sequence requests) reuse it rather than repeat the
+        destructive setup. Holding the reference also lets shutdown cancel it
+        and tests await it."""
 
         self._server_restart_tasks: set[asyncio.Task[Any]] = set()
         """Background tasks that can restart the owned server subprocess.
@@ -7461,7 +7463,10 @@ class DeepAgentsApp(App):
                     AppMessage(f"Installed extra '{extra}'."),
                 )
                 return await self._reload_configuration_for_restart()
-            if await self._restart_after_install(extra):
+            if await self._restart_after_install(
+                extra,
+                mutation_lock_held=True,
+            ):
                 return True
             if self._server_kwargs is None:
                 await self._mount_message(
@@ -11761,6 +11766,7 @@ class DeepAgentsApp(App):
             or self._modal_command_running()
             or self._reloading
             or self._connecting
+            or self._restart_in_flight
             or self._startup_sequence_running
             or self._server_startup_error is not None
         ):
@@ -16399,9 +16405,14 @@ class DeepAgentsApp(App):
         if self._exiting:
             self._restart_requested_during_reload = False
             return
-        while self._restart_requested_during_reload:
+        if self._restart_requested_during_reload:
             self._restart_requested_during_reload = False
-            await self._run_restart_command(preserve_queue=True)
+            # Schedule rather than await, for the same reason `/restart` does:
+            # the config refresh can spend the whole remote-fetch timeout, and
+            # this reload task must not hold it. Scheduling also registers the
+            # restart in `_restart_respawn_task` and the server-restart
+            # tracker, so shutdown cancels it and the duplicate gate sees it.
+            self._schedule_restart_command(preserve_queue=True)
 
     async def _run_reload(self) -> None:
         """Refresh config, themes, skills, plugins, and hooks, then report.
@@ -16410,15 +16421,72 @@ class DeepAgentsApp(App):
         so it mounts its own failure message — the `_handle_command`
         `try/except` no longer wraps it.
         """
+        async with self._environment_mutation_lock:
+            await self._run_reload_unlocked()
+
+    @staticmethod
+    async def _reload_settings_from_environment(
+        *, start_path: Path | None = None
+    ) -> list[str]:
+        """Reload settings off-thread without orphaning work on cancellation.
+
+        Returns:
+            Human-readable descriptions of settings changes.
+
+        Raises:
+            asyncio.CancelledError: After any active reload thread has settled.
+        """
         from deepagents_code.config import settings
 
+        if start_path is None:
+            reload_work = asyncio.to_thread(settings.reload_from_environment)
+        else:
+            reload_work = asyncio.to_thread(
+                settings.reload_from_environment,
+                start_path=start_path,
+            )
+        reload_task = asyncio.create_task(reload_work, name="settings-reload")
+        try:
+            return await asyncio.shield(reload_task)
+        except asyncio.CancelledError:
+            await DeepAgentsApp._settle_cancelled_settings_reload(reload_task)
+            raise
+
+    @staticmethod
+    async def _settle_cancelled_settings_reload(
+        reload_task: asyncio.Task[list[str]],
+    ) -> None:
+        """Wait for a shielded reload without replacing caller cancellation."""
+        try:
+            await reload_task
+        except Exception:
+            logger.warning(
+                "Settings reload failed while settling caller cancellation",
+                exc_info=True,
+            )
+
+    async def _reload_settings_from_environment_serialized(self) -> list[str]:
+        """Reload settings while excluding every other environment mutation.
+
+        Returns:
+            Human-readable descriptions of settings changes.
+        """
+        async with self._environment_mutation_lock:
+            return await self._reload_settings_from_environment()
+
+    async def _run_reload_unlocked(self) -> None:
+        """Run `/reload` while the environment mutation lock is held."""
         try:
             # Snapshot pre-reload state so the report can show diffs.
             old_skill_names = {s["name"] for s in self._discovered_skills}
             old_mcp_server_info = self._mcp_server_info
 
             try:
-                changes = settings.reload_from_environment()
+                changes = await self._reload_settings_from_environment()
+                if await self._report_managed_block(changes) is not None:
+                    # No cache clear: policy refused the refresh, so the values
+                    # behind those caches are the ones still in force.
+                    return
 
                 from deepagents_code.model_config import clear_caches
 
@@ -17946,9 +18014,9 @@ class DeepAgentsApp(App):
 
         Dequeues and processes the next pending message in FIFO order.
         Uses the `_processing_pending` flag to prevent reentrant execution.
-        Leaves the queue untouched while the server is connecting so the
-        `ServerReady` path can resume draining against the fully initialized
-        session.
+        Leaves the queue untouched while a restart is live or the server is
+        connecting so the `ServerReady` path can resume draining against the
+        fully initialized session.
         """
         if (
             self._processing_pending
@@ -17961,6 +18029,7 @@ class DeepAgentsApp(App):
             or self._exit
             or self._exiting
             or self._reloading
+            or self._restart_in_flight
             or self._connecting
         ):
             return
@@ -19846,6 +19915,126 @@ class DeepAgentsApp(App):
             placeholder.remove()
         self._deferred_actions.clear()
         self._sync_status_queued()
+
+    async def _restore_queue_to_input(
+        self,
+        notice: str,
+        *,
+        empty_notice: str,
+    ) -> None:
+        """Return every queued prompt to the chat input and drop the queue.
+
+        For restart outcomes that neither respawn the server nor hand the queue
+        to `ServerReady` — a failed config refresh, remote-server mode, a server
+        still starting, or a failed respawn. Prompts queued while the restart
+        task was live would otherwise sit in `_pending_messages` indefinitely:
+        no `ServerReady` fires, and `_process_next_from_queue` cannot run
+        uninvited. Restoring the texts keeps them visible and editable instead
+        of silently stuck.
+
+        Texts join the input oldest-first, separated from each other (and from
+        any existing draft) by blank lines so multi-line prompts stay
+        unambiguous, and each queued placeholder is removed so the transcript
+        matches. Skips the queue-clearing work entirely when nothing is queued.
+
+        Args:
+            notice: User-facing explanation when prompts are queued.
+            empty_notice: Outcome wording that does not claim prompts were
+                restored, used when the queue is empty before the first await.
+        """
+        # Mount first so a submission landing during this await is included in
+        # the restore. The restart task remains the busy gate until this method
+        # returns, so every submission in the remaining await windows queues.
+        has_queued_prompts = bool(self._pending_messages or self._queued_widgets)
+        message = notice if has_queued_prompts else empty_notice
+        await self._mount_message(AppMessage(message))
+        texts: list[str] = []
+        while self._pending_messages or self._queued_widgets:
+            texts.extend(msg.text for msg in self._pending_messages)
+            self._pending_messages.clear()
+            # Snapshot before awaiting: `widget.remove()` yields, and a late
+            # submission appends another widget. The loop takes another pass
+            # so that prompt and placeholder cannot be stranded.
+            widgets = list(self._queued_widgets)
+            self._queued_widgets.clear()
+            for widget in widgets:
+                with suppress(NoMatches, ScreenStackError):
+                    await widget.remove()
+        self._sync_status_queued()
+        if not texts:
+            return
+
+        restored = "\n\n".join(texts)
+        chat_input = self._chat_input
+        if chat_input is not None:
+            draft = chat_input.value
+            if draft.strip():
+                restored = f"{draft}\n\n{restored}"
+            if not chat_input.set_value_at_end(restored):
+                await self._report_dropped_prompts(texts, "The text area")
+        else:
+            await self._report_dropped_prompts(texts, "The chat input")
+
+    async def _report_dropped_prompts(self, texts: list[str], subject: str) -> None:
+        """Hand back prompts the input could not accept.
+
+        The queue and its placeholders are already cleared by the time this
+        runs, so a `logger.warning` alone loses the user's typed text with no
+        trace on screen -- and the notice mounted at the top of the restore
+        says the prompts were returned. Mounting them keeps the text
+        recoverable by copy.
+
+        Args:
+            texts: Prompts that did not reach the input, oldest first.
+            subject: What was unavailable, opening the message.
+        """
+        logger.warning(
+            "%s was unavailable while returning queued prompts; "
+            "%d prompt(s) dropped from the queue",
+            subject,
+            len(texts),
+        )
+        joined = "\n\n".join(texts)
+        await self._mount_message(
+            ErrorMessage(
+                f"{subject} was unavailable, so {len(texts)} queued prompt(s) "
+                f"could not be returned to it. They are reproduced here so "
+                f"they are not lost:\n\n{joined}",
+            ),
+        )
+
+    @property
+    def _restart_in_flight(self) -> bool:
+        """Whether a detached restart continuation is still running.
+
+        Returns:
+            Whether `_restart_respawn_task` exists and has not finished.
+        """
+        task = self._restart_respawn_task
+        return task is not None and not task.done()
+
+    async def _report_managed_block(self, changes: Sequence[str]) -> str | None:
+        """Mount the managed-policy block a reload reported, if there was one.
+
+        A block is not an exception: `_reload_values` catches
+        `ManagedConfigError` and `reload_from_environment` prepends it to the
+        change list, so a caller that ignores it treats "policy refused to
+        refresh" as "nothing changed". Every caller has to report it and then
+        stop, and they stop in three different ways, so only the reporting
+        half is shared here.
+
+        Args:
+            changes: Change list the reload returned.
+
+        Returns:
+            The block notice, or `None` when policy did not block the reload.
+        """
+        from deepagents_code import config as config_module
+
+        blocked = config_module.managed_reload_block(changes)
+        if blocked is not None:
+            await self._mount_message(ErrorMessage(blocked))
+        return blocked
 
     def _force_interrupt_active_work(self) -> None:
         """Cancel in-flight work before the standard `/clear` path runs.
@@ -26413,11 +26602,19 @@ class DeepAgentsApp(App):
             )
         )
 
-    async def _restart_after_install(self, label: str) -> bool:
+    async def _restart_after_install(
+        self,
+        label: str,
+        *,
+        mutation_lock_held: bool = False,
+    ) -> bool:
         """Restart the app-owned server after installing a dependency.
 
         Args:
             label: Installed extra/package name, used for logs and fallback copy.
+            mutation_lock_held: Whether the caller already serializes environment
+                mutations. The install-on-select path holds the lock until this
+                restart completes, so its detached task must not acquire it again.
 
         Returns:
             `True` when the server restarted successfully; `False` when restart is
@@ -26432,20 +26629,23 @@ class DeepAgentsApp(App):
                 label,
             )
             return False
-        if not await self._reload_configuration_for_restart():
+        active = self._restart_respawn_task
+        if mutation_lock_held and active is not None and not active.done():
+            # The active task may be waiting to acquire the lock this caller
+            # holds. Awaiting that reused task here would deadlock the install
+            # continuation, so let the existing restart finish after the
+            # install releases the lock and leave this follow-up unapplied.
+            logger.info(
+                "Cannot auto-restart to load %s: another restart is in progress",
+                label,
+            )
             return False
-        restarting = await self._mount_transient_app_message("Restarting server...")
-        restarted = False
-        try:
-            restarted = await self._restart_server_manual()
-        finally:
-            if restarting is not None:
-                with suppress(NoMatches, ScreenStackError):
-                    await restarting.remove()
-        if not restarted:
-            return False
-        await self._mount_message(AppMessage("Restart complete."))
-        return True
+        restart = self._schedule_restart_command(
+            preserve_queue=True,
+            propagate_errors=True,
+            mutation_lock_held=mutation_lock_held,
+        )
+        return await restart
 
     async def _reload_configuration_for_restart(self) -> bool:
         """Reload config state before respawning the owned server.
@@ -26453,11 +26653,14 @@ class DeepAgentsApp(App):
         Returns:
             Whether reload completed and restart should continue.
         """
-        from deepagents_code.config import settings
         from deepagents_code.model_config import clear_caches
 
         try:
-            settings.reload_from_environment()
+            changes = await self._reload_settings_from_environment()
+            if await self._report_managed_block(changes) is not None:
+                # The previous policy remains in force. Keep its caches and
+                # stop before a respawn could report "Restart complete."
+                return False
             clear_caches()
         except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
             logger.exception("Failed to reload configuration during restart")
@@ -26505,23 +26708,8 @@ class DeepAgentsApp(App):
             )
             return
 
-        await self._run_restart_command()
-
-    async def _run_restart_command(self, *, preserve_queue: bool = False) -> None:
-        """Validate and schedule a restart without echoing another command.
-
-        Args:
-            preserve_queue: Keep prompts submitted during an active reload.
-        """
-        # A duplicate `/restart` bypasses the normal input queue while the
-        # first detached respawn is still connecting. Reject it before the
-        # destructive setup below so prompts queued during that respawn are
-        # preserved for the pending `ServerReady` handler to drain.
-        if (
-            self._restart_respawn_task is not None
-            and self._connecting
-            and self._reconnecting
-        ):
+        restart_task = self._restart_respawn_task
+        if restart_task is not None and not restart_task.done():
             await self._mount_message(
                 AppMessage(
                     "A server restart is already in progress. Queued prompts "
@@ -26529,6 +26717,151 @@ class DeepAgentsApp(App):
                 ),
             )
             return
+        self._schedule_restart_command()
+
+    def _schedule_restart_command(
+        self,
+        *,
+        preserve_queue: bool = False,
+        propagate_errors: bool = False,
+        mutation_lock_held: bool = False,
+    ) -> asyncio.Task[bool]:
+        """Run config refresh and server respawn off the Textual message pump.
+
+        `_schedule_off_message_pump` is reserved for modal continuations. A
+        restart opens no modal, but its remote config fetch can still take the
+        full network timeout, so it needs its own detached task just like
+        `/reload`.
+
+        Every restart entry point funnels through here, so this is also the
+        single duplicate gate: a live task is returned rather than replaced.
+        Overwriting `_restart_respawn_task` would leave the first continuation
+        running untracked while a second one repeated the destructive setup
+        against a subprocess already being replaced.
+
+        Args:
+            preserve_queue: Keep prompts submitted during an active reload.
+            propagate_errors: Preserve offered-restart exception behavior for
+                callers that await the returned task.
+            mutation_lock_held: Run under the caller's existing environment
+                mutation lock instead of acquiring it in the detached task.
+
+        Returns:
+            The restart task, so tests and shutdown can await it.
+        """
+        active = self._restart_respawn_task
+        if active is not None and not active.done():
+            return cast("asyncio.Task[bool]", active)
+        task = asyncio.create_task(
+            self._run_restart_command_detached(
+                preserve_queue=preserve_queue,
+                propagate_errors=propagate_errors,
+                mutation_lock_held=mutation_lock_held,
+            ),
+            name="restart",
+        )
+        self._restart_respawn_task = task
+        self._track_server_restart_task(task)
+        task.add_done_callback(_log_task_exception)
+        task.add_done_callback(self._finish_restart)
+        return task
+
+    def _finish_restart(self, task: asyncio.Task[Any]) -> None:
+        """Resume prompts whose server-ready drain raced restart completion."""
+        if task is not self._restart_respawn_task:
+            return
+        if (
+            self._pending_messages
+            and not self._agent_running
+            and self._agent is not None
+            and not self._exiting
+        ):
+            drain = asyncio.create_task(
+                self._process_next_from_queue(),
+                name="drain-after-restart",
+            )
+            drain.add_done_callback(_log_task_exception)
+
+    async def _run_restart_command_detached(
+        self,
+        *,
+        preserve_queue: bool = False,
+        propagate_errors: bool = False,
+        mutation_lock_held: bool = False,
+    ) -> bool:
+        """Serialize and safely report a detached `/restart` continuation.
+
+        Args:
+            preserve_queue: Keep prompts submitted during an active reload.
+            propagate_errors: Re-raise unexpected restart failures to an
+                awaiting offered-restart caller.
+            mutation_lock_held: Whether the caller already holds the environment
+                mutation lock until this task completes.
+
+        Returns:
+            Whether the server restarted successfully.
+
+        Raises:
+            asyncio.CancelledError: If app teardown cancels the restart.
+        """
+        try:
+            if mutation_lock_held:
+                return await self._run_restart_command(
+                    preserve_queue=preserve_queue,
+                    propagate_errors=propagate_errors,
+                )
+            async with self._environment_mutation_lock:
+                if not propagate_errors:
+                    return await self._run_restart_command(
+                        preserve_queue=preserve_queue
+                    )
+                return await self._run_restart_command(
+                    preserve_queue=preserve_queue,
+                    propagate_errors=True,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if propagate_errors:
+                raise
+            logger.exception("Manual /restart failed unexpectedly")
+            await self._mount_message(
+                ErrorMessage(f"Restart failed: {type(exc).__name__}: {exc}"),
+            )
+            return False
+
+    async def _run_restart_command(
+        self,
+        *,
+        preserve_queue: bool = False,
+        propagate_errors: bool = False,
+    ) -> bool:
+        """Validate and schedule a restart without echoing another command.
+
+        Args:
+            preserve_queue: Keep prompts submitted during an active reload.
+            propagate_errors: Re-raise unexpected respawn failures.
+
+        Returns:
+            Whether the server restarted successfully.
+        """
+        # A respawn already driving the app through a reconnect must not be
+        # re-entered: the destructive setup below would sever work bound to a
+        # subprocess that is already being replaced. Reject it here so prompts
+        # queued during that respawn survive for `ServerReady` to drain.
+        #
+        # `_schedule_restart_command` gates duplicate restarts by task, so this
+        # covers the other reconnect owners -- a cwd switch or a thread switch
+        # respawning the server -- which set the same two flags without going
+        # through a restart task.
+        if self._connecting and self._reconnecting:
+            await self._mount_message(
+                AppMessage(
+                    "A server restart is already in progress. Queued prompts "
+                    "will be sent once it finishes.",
+                ),
+            )
+            return False
 
         # Sever in-flight work bound to the dying subprocess. A direct restart
         # drops the queued backlog, but a restart requested during `/reload`
@@ -26543,18 +26876,37 @@ class DeepAgentsApp(App):
             self._pending_messages.extendleft(reversed(preserved))
             self._sync_status_queued()
 
+        # Every bail-out below returns without handing the queue to
+        # `ServerReady` or the respawn's drain, so anything queued during the
+        # config refresh would otherwise sit pending until the next user
+        # submission triggered cleanup. Returning the texts to the chat input
+        # keeps them visible and editable instead of silently stuck.
         if not await self._reload_configuration_for_restart():
-            return
-
-        if self._server_kwargs is None:
-            await self._mount_message(
-                AppMessage(
-                    "Cannot restart: this app is connected to a remote "
-                    "LangGraph server (no owned subprocess). Configuration "
-                    "was reloaded; relaunch dcode to fully restart.",
+            await self._restore_queue_to_input(
+                "Configuration reload failed; queued prompts were returned to "
+                "the input. Re-submit them or run `/restart` again after fixing "
+                "the configuration.",
+                empty_notice=(
+                    "Configuration reload failed. Fix the configuration, then "
+                    "run `/restart` again."
                 ),
             )
-            return
+            return False
+
+        if self._server_kwargs is None:
+            await self._restore_queue_to_input(
+                "Cannot restart: this app is connected to a remote LangGraph "
+                "server (no owned subprocess). Configuration was reloaded; "
+                "queued prompts were returned to the input. Re-submit them to "
+                "send on the current session, or relaunch dcode to fully "
+                "restart.",
+                empty_notice=(
+                    "Cannot restart: this app is connected to a remote LangGraph "
+                    "server (no owned subprocess). Configuration was reloaded; "
+                    "relaunch dcode to fully restart."
+                ),
+            )
+            return False
 
         # We own a server (`_server_kwargs is not None`) but it may not be
         # ready to respawn. `_server_proc` stays `None` until the startup
@@ -26568,97 +26920,113 @@ class DeepAgentsApp(App):
         # before a subprocess existed — not remote-server mode. Mirrors the
         # sibling guards elsewhere in this file.
         if self._connecting or self._server_proc is None:
+            # Same branch order, one restore: every arm reported its outcome
+            # and then fell through to the same call and the same `False`.
             if self._server_startup_deferred:
-                await self._mount_message(
-                    AppMessage(
-                        "Server startup is waiting for a model. Configuration "
-                        "was reloaded; set credentials with `/auth`, reload the "
-                        "environment with `/reload`, or pick a model with "
-                        "`/model` to start the server.",
-                    ),
+                notice = (
+                    "Server startup is waiting for a model. Configuration was "
+                    "reloaded; queued prompts were returned to the input. Set "
+                    "credentials with `/auth`, reload the environment with "
+                    "`/reload`, or pick a model with `/model` to start the "
+                    "server."
+                )
+                empty_notice = (
+                    "Server startup is waiting for a model. Configuration was "
+                    "reloaded. Set credentials with `/auth`, reload the "
+                    "environment with `/reload`, or pick a model with `/model` "
+                    "to start the server."
                 )
             elif self._connecting:
-                await self._mount_message(
-                    AppMessage(
-                        "The server is still starting. Configuration was "
-                        "reloaded and will apply once it finishes connecting; "
-                        "run `/restart` again afterward if needed.",
-                    ),
+                notice = (
+                    "The server is still starting. Configuration was reloaded "
+                    "and will apply once it finishes connecting; queued prompts "
+                    "were returned to the input. Re-submit them to send on the "
+                    "current session, or run `/restart` again afterward."
+                )
+                empty_notice = (
+                    "The server is still starting. Configuration was reloaded "
+                    "and will apply once it finishes connecting; run `/restart` "
+                    "again afterward."
                 )
             elif self._server_startup_error is not None:
-                await self._mount_message(
-                    AppMessage(
-                        "Cannot restart yet because the server did not finish "
-                        "starting. Configuration was reloaded; update "
-                        "credentials with `/auth` if needed, then pick a model "
-                        "with `/model` to try again. You can also relaunch "
-                        "dcode.\n\n"
-                        f"Last error: {self._server_startup_error}",
-                    ),
+                notice = (
+                    "Cannot restart yet because the server did not finish "
+                    "starting. Configuration was reloaded; queued prompts were "
+                    "returned to the input. Update credentials with `/auth` if "
+                    "needed, then pick a model with `/model` to try again. You "
+                    "can also relaunch dcode.\n\n"
+                    f"Last error: {self._server_startup_error}"
+                )
+                empty_notice = (
+                    "Cannot restart yet because the server did not finish "
+                    "starting. Configuration was reloaded. Update credentials "
+                    "with `/auth` if needed, then pick a model with `/model` to "
+                    "try again. You can also relaunch dcode.\n\n"
+                    f"Last error: {self._server_startup_error}"
                 )
             else:
-                await self._mount_message(
-                    AppMessage(
-                        "Cannot restart yet because the server is not running. "
-                        "Configuration was reloaded; relaunch dcode to start "
-                        "again.",
-                    ),
+                notice = (
+                    "Cannot restart yet because the server is not running. "
+                    "Configuration was reloaded; queued prompts were returned "
+                    "to the input. Relaunch dcode to start again."
                 )
-            return
+                empty_notice = (
+                    "Cannot restart yet because the server is not running. "
+                    "Configuration was reloaded. Relaunch dcode to start again."
+                )
+            await self._restore_queue_to_input(notice, empty_notice=empty_notice)
+            return False
 
-        # Run the respawn as a detached task, NOT awaited on the message pump.
-        # `_respawn_server`'s multi-second `server_proc.restart()` would
-        # otherwise stall the pump — key events stop being forwarded and the
-        # chat input freezes ("blocked") for the whole restart. Mirrors the
-        # MCP viewer/force-reconnect paths: `asyncio.create_task` keeps the
-        # pump free, so keystrokes stay live and any message the user submits
-        # while `_connecting` is queued and drained once `ServerReady` fires.
-        # `_run_restart_respawn` owns the transient status and completion
-        # banner; `_log_task_exception` surfaces anything unexpected. The
-        # pre-respawn guards above (remote/starting/failed/deferred) already
-        # ran synchronously, so the user got immediate feedback before this.
-        # Mark the app reconnecting before scheduling because `create_task`
-        # does not run the coroutine inline. Otherwise a submission or second
-        # `/restart` could enter before `_respawn_server` sets these fields.
+        # The whole restart continuation is already detached from the message
+        # pump, including the potentially slow remote config fetch above.
+        # Mark reconnecting before the respawn's first await so submissions are
+        # queued and drained once `ServerReady` fires.
         self._connecting = True
         self._reconnecting = True
         self._agent = None
         self._sync_status_connection()
-        task = asyncio.create_task(self._run_restart_respawn())
-        self._restart_respawn_task = task
-        self._track_server_restart_task(task)
-        task.add_done_callback(_log_task_exception)
+        return await self._run_restart_respawn(propagate_errors=propagate_errors)
 
-    async def _run_restart_respawn(self) -> None:
+    async def _run_restart_respawn(self, *, propagate_errors: bool = False) -> bool:
         """Respawn the server for `/restart`, detached from the message pump.
 
-        Scheduled via `asyncio.create_task` from `_handle_restart_command` so
-        the multi-second `server_proc.restart()` runs off the Textual message
-        pump, keeping the chat input responsive. Shows a transient
+        Called from a detached restart continuation -- `/restart`'s own task,
+        or the one the `/reload` sequence schedules for a restart requested
+        mid-reload -- so the multi-second `server_proc.restart()` runs off the
+        Textual message pump, keeping the chat input responsive. Shows a
+        transient
         "Restarting server..." status for the duration and removes it whether
         the respawn succeeds, returns `False`, or raises. Mounts the completion
         banner only on success; on any non-success outcome it clears the
         `_connecting`/`_reconnecting` flags the caller pre-set (on success the
         `ServerReady` handler clears them once the new server is live).
 
-        An *unexpected* raise — distinct from the handled `return False` path,
-        which posts `ServerStartFailed` so the recovery UI gives the user
-        feedback — is caught here and surfaced as an `ErrorMessage`, mirroring
-        `_reconnect_from_viewer_safe`, which detaches the same respawn. Without
-        this the exception would reach only `_log_task_exception` and log a
-        warning the interactive user never sees; `_log_task_exception` stays a
-        last-resort backstop for anything that escapes even this handler.
+        By default an *unexpected* raise — distinct from the handled `return
+        False` path — is caught and surfaced as an `ErrorMessage`, mirroring
+        `_reconnect_from_viewer_safe`. Offered restarts preserve their earlier
+        exception contract instead: they request propagation after this helper
+        clears reconnect state, removes the transient, and restores the queue.
+
+        Args:
+            propagate_errors: Re-raise unexpected respawn failures after cleanup.
+
+        Returns:
+            Whether the server restarted successfully.
         """
         restarting = None
         restarted = False
+        failure: Exception | None = None
         try:
             restarting = await self._mount_transient_app_message("Restarting server...")
             restarted = await self._restart_server_manual()
         except Exception as exc:
-            logger.exception("Manual /restart of server raised unexpectedly")
-            await self._mount_message(
-                ErrorMessage(f"Restart failed: {type(exc).__name__}: {exc}"),
-            )
+            if propagate_errors:
+                failure = exc
+            else:
+                logger.exception("Manual /restart of server raised unexpectedly")
+                await self._mount_message(
+                    ErrorMessage(f"Restart failed: {type(exc).__name__}: {exc}"),
+                )
         finally:
             if not restarted:
                 self._connecting = False
@@ -26669,6 +27037,20 @@ class DeepAgentsApp(App):
                     await restarting.remove()
         if restarted:
             await self._mount_message(AppMessage("Restart complete."))
+        else:
+            # No `ServerReady` is coming to drain the queue (success hands the
+            # drain to its handler), so anything queued during the respawn
+            # would sit pending until the next user submission triggered
+            # cleanup. Returning the texts to the chat input keeps them
+            # visible and editable instead of silently stuck.
+            await self._restore_queue_to_input(
+                "Restart did not complete; queued prompts were returned to the "
+                "input. Re-submit them to send on the current session.",
+                empty_notice=("Restart did not complete. Run `/restart` to try again."),
+            )
+        if failure is not None:
+            raise failure
+        return restarted
 
     async def _restart_server_manual(self) -> bool:
         """Respawn the app-owned LangGraph server for a user-initiated restart.
@@ -27208,7 +27590,7 @@ class DeepAgentsApp(App):
                 # The cwd prompt ran before the combined agent/thread restart
                 # so the new server would inherit the chosen project context.
                 # If the restart failed, put the surviving UI session back.
-                self._switch_process_cwd(previous_cwd)
+                await self._switch_process_cwd(previous_cwd)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -27324,16 +27706,47 @@ class DeepAgentsApp(App):
         except ScreenStackError:
             logger.debug("Screen stack empty during cwd sync", exc_info=True)
 
-    @staticmethod
-    def _refresh_project_context_after_cwd_switch(cwd: Path) -> None:
-        """Refresh project-scoped settings and caches after a cwd change."""
-        from deepagents_code.config import settings
+    async def _refresh_project_context_for_cwd_switch(
+        self,
+        cwd: Path,
+        *,
+        report_block: bool = True,
+    ) -> None:
+        """Serialize a project-scoped settings refresh for a cwd change.
+
+        Args:
+            cwd: Directory the project-scoped settings should resolve against.
+            report_block: Mount a managed-policy block for the user. The
+                rollback pass sets this to `False`: a block is a property of the
+                policy and not of the directory, so restoring the previous cwd
+                hits the same block and would mount the identical error a
+                second time.
+
+        Raises:
+            RuntimeError: If managed policy blocks the project refresh.
+        """
+        from deepagents_code import config as config_module
         from deepagents_code.model_config import clear_caches
 
-        changes = settings.reload_from_environment(start_path=cwd)
-        clear_caches()
+        async with self._environment_mutation_lock:
+            changes = await self._reload_settings_from_environment(
+                start_path=cwd,
+            )
+            blocked = config_module.managed_reload_block(changes)
+            if blocked is None:
+                # No cache clear on a block: policy refused the refresh, so the
+                # values behind those caches are the ones still in force.
+                clear_caches()
+        # A managed-policy block must reach the user, not just the log. The
+        # package installs its own handler at import time, so `logging`
+        # never falls back to stderr and a debug record is unreachable.
+        if blocked is not None:
+            if report_block:
+                await self._mount_message(ErrorMessage(blocked))
+            msg = blocked
+            raise RuntimeError(msg)
         if changes:
-            logger.debug("Refreshed project context after cwd switch: %s", changes)
+            logger.debug("Refreshed project context for cwd switch: %s", changes)
 
     def _schedule_skill_discovery_after_cwd_switch(self) -> None:
         """Refresh skill autocomplete after a cwd-dependent project switch."""
@@ -27348,28 +27761,84 @@ class DeepAgentsApp(App):
             group="startup-skill-discovery",
         )
 
-    def _switch_process_cwd(self, cwd: Path) -> None:
+    async def _switch_process_cwd(self, cwd: Path) -> None:
         """Change process cwd and synchronize cwd-aware app state.
 
-        Kept atomic with respect to the process cwd: if a post-`chdir` step
-        fails, the `os.chdir` is undone and any partial UI update is reverted so
-        the real cwd and the cached `self._cwd` never diverge. Rollback logic in
-        `_restore_cwd_after_failed_thread_switch` compares the two, and a
-        half-applied switch (process moved, `self._cwd` stale) would make that
-        comparison report a false match and silently skip the restore.
+        Kept atomic across three pieces of state: the process cwd, the cached
+        `self._cwd` behind the UI, and the project-scoped settings. The
+        settings refresh runs *before* `os.chdir` so a policy failure aborts
+        the switch without moving the process; if a later step fails, the
+        `chdir` is undone, the previous project context is restored, and any
+        partial UI update is reverted. Rollback logic in
+        `_restore_cwd_after_failed_thread_switch` compares the real cwd against
+        `self._cwd`, and a half-applied switch (process moved, `self._cwd`
+        stale) would make that comparison report a false match and silently
+        skip the restore.
+
+        Every failure is re-raised after the rollback, cancellation
+        included, so a caller never sees a partially applied switch.
+
+        Raises:
+            asyncio.CancelledError: If cancellation arrives while the previous
+                project context is being restored. The original failure is
+                recorded first, then the cancellation replaces it.
         """
         previous_cwd = Path(self._cwd)
-        os.chdir(cwd)
         try:
-            self._refresh_project_context_after_cwd_switch(cwd)
+            await self._refresh_project_context_for_cwd_switch(cwd)
+            os.chdir(cwd)
             self._apply_cwd_to_ui(cwd)
         except BaseException:
             with suppress(OSError):
                 os.chdir(previous_cwd)
-            # Re-sync UI state to the restored cwd. Best-effort: a failure here
-            # must not mask the original exception.
+            # Re-sync UI state before the awaited context restore. Cancellation
+            # delivered at that await is a `BaseException`, so it escapes
+            # `suppress(Exception)` -- doing the UI first keeps the real cwd and
+            # `self._cwd` in agreement even then, which is the divergence
+            # `_restore_cwd_after_failed_thread_switch` cannot detect.
+            # Best-effort: a failure here must not mask the original exception.
             with suppress(Exception):
                 self._apply_cwd_to_ui(previous_cwd)
+            # Restore the previous project context so a failed switch does not
+            # leave settings pointed at a directory the process never entered.
+            try:
+                await self._refresh_project_context_for_cwd_switch(
+                    previous_cwd,
+                    report_block=False,
+                )
+            except asyncio.CancelledError:
+                # `except Exception` skipped a cancellation delivered here, so
+                # the docstring's promise that every failure is recorded did
+                # not hold for the one failure that leaves no trace at all.
+                # Record it and honor the cancellation: mounting a message
+                # would need another await this task no longer has.
+                logger.warning(
+                    "Cancelled while restoring project context for %s after a "
+                    "failed cwd switch; settings may still reflect %s",
+                    previous_cwd,
+                    cwd,
+                )
+                raise
+            except Exception:
+                # Losing this leaves settings resolved against `cwd` while the
+                # process sits in `previous_cwd`, so it must reach the user and
+                # not only the unreachable log.
+                logger.warning(
+                    "Failed to restore project context for %s after a failed "
+                    "cwd switch; settings may still reflect %s",
+                    previous_cwd,
+                    cwd,
+                    exc_info=True,
+                )
+                with suppress(Exception):
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Could not restore the previous project settings "
+                            f"after a failed switch to {cwd}. Settings may "
+                            f"still reflect {cwd} while the session is in "
+                            f"{previous_cwd}. Run `/reload` to resynchronize.",
+                        ),
+                    )
             raise
         self._schedule_skill_discovery_after_cwd_switch()
 
@@ -27519,7 +27988,7 @@ class DeepAgentsApp(App):
                 timeout=10,
                 markup=False,
             )
-            self._switch_process_cwd(cwd)
+            await self._switch_process_cwd(cwd)
             return "continue"
 
         from deepagents_code.client.launch.server_manager import (
@@ -27538,7 +28007,7 @@ class DeepAgentsApp(App):
             self._agent = None
             self._sync_status_connection()
             self._preserve_launch_relative_server_paths(previous_cwd)
-            self._switch_process_cwd(cwd)
+            await self._switch_process_cwd(cwd)
 
             coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]
             if self._mcp_preload_kwargs is not None:
@@ -27600,8 +28069,8 @@ class DeepAgentsApp(App):
             # Roll back regardless of exception type so a cancelled restart does
             # not strand the app mid-switch.
             try:
-                self._switch_process_cwd(previous_cwd)
-            except OSError:
+                await self._switch_process_cwd(previous_cwd)
+            except Exception:
                 logger.warning(
                     "Failed to restore cwd to %s after failed server restart; "
                     "process cwd and app state are now inconsistent",
@@ -27814,7 +28283,7 @@ class DeepAgentsApp(App):
                 await self._retarget_hooks_after_cwd_switch(reload_manager=False)
                 return outcome
             self._preserve_launch_relative_server_paths(Path(self._cwd))
-            self._switch_process_cwd(target)
+            await self._switch_process_cwd(target)
             # Cross-agent resumes reload after the outgoing `SessionEnd`.
             await self._retarget_hooks_after_cwd_switch(
                 reload_manager=abort != "thread_switch"
@@ -27872,7 +28341,7 @@ class DeepAgentsApp(App):
             return
 
         try:
-            self._switch_process_cwd(previous_cwd)
+            await self._switch_process_cwd(previous_cwd)
         except OSError:
             logger.warning(
                 "Failed to restore cwd after failed thread switch to %s",

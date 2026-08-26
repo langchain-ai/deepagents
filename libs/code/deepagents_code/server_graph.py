@@ -443,7 +443,10 @@ def _build_runtime_factory(
                             require_healthy_managed_config,
                         )
 
-                        require_healthy_managed_config(refresh=True)
+                        await asyncio.to_thread(
+                            require_healthy_managed_config,
+                            refresh=True,
+                        )
                         runtime = await (builder or _make_graphs)()
                     except Exception as exc:  # noqa: BLE001  # startup barrier
                         emit_startup_failure(exc)

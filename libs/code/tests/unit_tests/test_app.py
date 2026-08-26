@@ -5596,6 +5596,329 @@ class TestMessageQueue:
             assert not app._pending_messages
             assert not app._queued_widgets
 
+    async def test_live_restart_task_keeps_queue_blocked_before_connecting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Turn cleanup must not dispatch to the old agent during config refresh."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            release_restart = asyncio.Event()
+
+            async def hold_restart() -> None:
+                await release_restart.wait()
+
+            restart_task = asyncio.create_task(hold_restart())
+            app._restart_respawn_task = restart_task
+            processed = AsyncMock()
+            monkeypatch.setattr(app, "_process_message", processed)
+
+            await app._submit_input("after restart", "normal")
+            assert [message.text for message in app._pending_messages] == [
+                "after restart"
+            ]
+            assert app._connecting is False
+
+            await app._process_next_from_queue()
+
+            processed.assert_not_awaited()
+            assert [message.text for message in app._pending_messages] == [
+                "after restart"
+            ]
+            release_restart.set()
+            await restart_task
+
+    async def test_restart_completion_redrains_queue_after_server_ready_race(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Restart completion retries a drain skipped while its task was live."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            restart_started = asyncio.Event()
+            release_restart = asyncio.Event()
+            drained = asyncio.Event()
+            processed = AsyncMock(side_effect=lambda *_args: drained.set())
+
+            async def race_server_ready(*, preserve_queue: bool = False) -> None:
+                del preserve_queue
+                restart_started.set()
+                await release_restart.wait()
+                # Simulate the session-start drain after `ServerReady`, before
+                # this detached restart task has mounted its completion message.
+                await app._process_next_from_queue()
+
+            monkeypatch.setattr(app, "_run_restart_command", race_server_ready)
+            monkeypatch.setattr(app, "_process_message", processed)
+
+            task = app._schedule_restart_command()
+            await restart_started.wait()
+            await app._submit_input("after restart", "normal")
+            release_restart.set()
+            await task
+            await asyncio.wait_for(drained.wait(), timeout=1)
+
+            processed.assert_awaited_once_with("after restart", "normal")
+            assert not app._pending_messages
+            assert not app._queued_widgets
+
+    async def test_failed_restart_returns_queued_prompts_to_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed respawn returns prompts queued mid-restart to the input.
+
+        Guards the stranded-queue failure: prompts queued while the restart
+        task is live have no `ServerReady` drain when `_restart_server_manual`
+        returns `False`, so `_run_restart_respawn` must hand them back to the
+        chat input rather than leaving them pending until the next submission.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(
+                app, "_restart_server_manual", AsyncMock(return_value=False)
+            )
+
+            restart_started = asyncio.Event()
+            release_reload = asyncio.Event()
+            original_reload = app._reload_configuration_for_restart
+
+            async def _slow_reload() -> bool:
+                restart_started.set()
+                # Hold the refresh open so the submission below lands while the
+                # restart task is live but before the respawn outcome is known;
+                # a bare `asyncio.sleep(0)` would let the refresh finish first
+                # and race the queue assertion.
+                await release_reload.wait()
+                return await original_reload()
+
+            monkeypatch.setattr(app, "_reload_configuration_for_restart", _slow_reload)
+
+            await app._handle_restart_command("/restart")
+            assert app._restart_respawn_task is not None
+            await restart_started.wait()
+            await app._submit_input("queued during restart", "normal")
+            assert [m.text for m in app._pending_messages] == ["queued during restart"]
+            assert len(app._queued_widgets) == 1
+            release_reload.set()
+
+            await app._restart_respawn_task
+            await pilot.pause()
+
+            assert not app._pending_messages
+            assert not app._queued_widgets
+            assert app._chat_input is not None
+            assert app._chat_input.value == "queued during restart"
+            notices = [str(w._content) for w in app.query(AppMessage)]
+            assert any("returned to the input" in n for n in notices)
+            assert not any("Restart complete" in n for n in notices)
+
+    async def test_failed_restart_without_queue_omits_restoration_claim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed restart must not claim that nonexistent prompts moved."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(
+                app, "_restart_server_manual", AsyncMock(return_value=False)
+            )
+
+            assert await app._run_restart_respawn() is False
+            await pilot.pause()
+
+            notices = [str(widget._content) for widget in app.query(AppMessage)]
+            assert any("Restart did not complete" in notice for notice in notices)
+            assert not any("returned to the input" in notice for notice in notices)
+
+    async def test_restart_config_failure_returns_queued_prompts_to_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed config refresh returns prompts queued during it.
+
+        Guards the earliest non-respawn exit in `_run_restart_command`: when
+        `_reload_configuration_for_restart` fails, the restart returns before
+        any respawn is scheduled, so prompts queued while the refresh ran must
+        go back to the chat input instead of stranding in `_pending_messages`.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            reload_started = asyncio.Event()
+            release_reload = asyncio.Event()
+
+            async def _failing_reload() -> bool:
+                reload_started.set()
+                # Hold the refresh open so the submission below lands in the
+                # queue while the restart task is still live; a bare
+                # `asyncio.sleep(0)` would let the refresh finish first and
+                # race the queue assertion.
+                await release_reload.wait()
+                return False
+
+            monkeypatch.setattr(
+                app, "_reload_configuration_for_restart", _failing_reload
+            )
+
+            await app._handle_restart_command("/restart")
+            assert app._restart_respawn_task is not None
+            await reload_started.wait()
+            await app._submit_input("queued during refresh", "normal")
+            assert [m.text for m in app._pending_messages] == ["queued during refresh"]
+            release_reload.set()
+
+            await app._restart_respawn_task
+            await pilot.pause()
+
+            assert not app._pending_messages
+            assert not app._queued_widgets
+            assert app._chat_input is not None
+            assert app._chat_input.value == "queued during refresh"
+            notices = [str(w._content) for w in app.query(AppMessage)]
+            assert any("returned to the input" in n for n in notices)
+
+    async def test_queue_restore_drains_submission_during_widget_removal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prompt queued while a placeholder is removed must also be restored."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            release_restart = asyncio.Event()
+
+            async def hold_restart() -> None:
+                await release_restart.wait()
+
+            restart_task = asyncio.create_task(hold_restart())
+            app._restart_respawn_task = restart_task
+            await app._submit_input("first prompt", "normal")
+            original_remove = QueuedUserMessage.remove
+            submitted_late = False
+
+            async def remove(widget: QueuedUserMessage) -> None:
+                nonlocal submitted_late
+                await original_remove(widget)
+                if not submitted_late:
+                    submitted_late = True
+                    await app._submit_input("late prompt", "normal")
+
+            monkeypatch.setattr(QueuedUserMessage, "remove", remove)
+
+            await app._restore_queue_to_input(
+                "Prompts restored.", empty_notice="No prompts to restore."
+            )
+
+            assert not app._pending_messages
+            assert not app._queued_widgets
+            assert app._chat_input is not None
+            assert app._chat_input.value == "first prompt\n\nlate prompt"
+            release_restart.set()
+            await restart_task
+
+    async def test_queue_restore_reports_prompts_the_input_cannot_take(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Prompts the input refuses are reproduced on screen, not just logged.
+
+        The queue and its placeholders are cleared before the text reaches the
+        input, and the notice mounted at the top of the restore says the prompts
+        were returned. A `logger.warning` on the failure path loses the user's
+        typed text with no trace: the package installs its own log handler at
+        import time, so nothing reaches the terminal.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            monkeypatch.setattr(
+                type(app._chat_input),
+                "set_value_at_end",
+                lambda _self, _value: False,
+            )
+            app._pending_messages.append(QueuedMessage("do not lose me", "normal"))
+
+            await app._restore_queue_to_input(
+                "Prompts restored.", empty_notice="No prompts to restore."
+            )
+
+            errors = [str(w._content) for w in app.query(ErrorMessage)]
+            assert any("do not lose me" in text for text in errors)
+            assert any("could not be returned" in text for text in errors)
+
+    async def test_queue_restore_preserves_existing_draft_whitespace(self) -> None:
+        """Returning queued prompts does not strip whitespace from a draft."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            draft = "    def example():\n        pass\n"
+            assert app._chat_input is not None
+            app._chat_input.set_value_at_end(draft)
+            app._pending_messages.append(QueuedMessage("queued prompt", "normal"))
+
+            await app._restore_queue_to_input(
+                "Prompts restored.", empty_notice="No prompts to restore."
+            )
+
+            assert app._chat_input.value == f"{draft}\n\nqueued prompt"
+
+    async def test_restart_remote_server_returns_queued_prompts_to_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A remote-server restart refusal returns queued prompts to the input.
+
+        Guards the `_server_kwargs is None` exit in `_run_restart_command`:
+        connected to a remote server there is no subprocess to respawn, so the
+        restart returns without any `ServerReady` drain and must restore
+        prompts queued during the config refresh.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_kwargs = None
+
+            reload_started = asyncio.Event()
+            release_reload = asyncio.Event()
+
+            async def _slow_reload() -> bool:
+                reload_started.set()
+                # Hold the refresh open so the submission below lands in the
+                # queue while the restart task is still live; a bare
+                # `asyncio.sleep(0)` would let the refresh finish first and
+                # race the queue assertion.
+                await release_reload.wait()
+                return True
+
+            monkeypatch.setattr(app, "_reload_configuration_for_restart", _slow_reload)
+
+            await app._handle_restart_command("/restart")
+            assert app._restart_respawn_task is not None
+            await reload_started.wait()
+            await app._submit_input("queued on remote", "normal")
+            assert [m.text for m in app._pending_messages] == ["queued on remote"]
+            release_reload.set()
+
+            await app._restart_respawn_task
+            await pilot.pause()
+
+            assert not app._pending_messages
+            assert not app._queued_widgets
+            assert app._chat_input is not None
+            assert app._chat_input.value == "queued on remote"
+            notices = [str(w._content) for w in app.query(AppMessage)]
+            assert any("remote LangGraph server" in n for n in notices)
+
     async def test_message_blocked_while_thread_switching(self) -> None:
         """Submissions should be ignored while thread switching is in-flight."""
         app = DeepAgentsApp()
@@ -23616,7 +23939,9 @@ class TestInstallExtraModelSwitch:
         result = await app._install_extra("baseten", auto_restart=True)
 
         assert result is False
-        app._restart_after_install.assert_awaited_once_with("baseten")  # ty: ignore
+        app._restart_after_install.assert_awaited_once_with(  # ty: ignore
+            "baseten", mutation_lock_held=True
+        )
         mounted = " ".join(
             str(c.args[0]._content)
             for c in app._mount_message.await_args_list  # ty: ignore
@@ -23660,7 +23985,9 @@ class TestInstallExtraModelSwitch:
         result = await app._install_extra("baseten", auto_restart=True)
 
         assert result is False
-        app._restart_after_install.assert_awaited_once_with("baseten")  # ty: ignore
+        app._restart_after_install.assert_awaited_once_with(  # ty: ignore
+            "baseten", mutation_lock_held=True
+        )
         mounted = [
             str(c.args[0]._content)
             for c in app._mount_message.await_args_list  # ty: ignore
@@ -23702,12 +24029,59 @@ class TestInstallExtraModelSwitch:
         result = await app._install_extra("baseten", auto_restart=True)
 
         assert result is True
-        app._restart_after_install.assert_awaited_once_with("baseten")  # ty: ignore
+        app._restart_after_install.assert_awaited_once_with(  # ty: ignore
+            "baseten", mutation_lock_held=True
+        )
         mounted = [
             str(c.args[0]._content)
             for c in app._mount_message.await_args_list  # ty: ignore
         ]
         assert not any("couldn't restart" in text.lower() for text in mounted)
+
+    async def test_install_extra_auto_restart_reuses_the_mutation_lock(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The restart task must not deadlock on the install's mutation lock."""
+        from deepagents_code import config as config_mod, update_check
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: False)
+        monkeypatch.setattr(
+            update_check, "create_update_log_path", lambda: tmp_path / "install.log"
+        )
+        monkeypatch.setattr(
+            update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        monkeypatch.setattr(
+            update_check,
+            "perform_install_extra",
+            AsyncMock(return_value=(True, "")),
+        )
+
+        app = DeepAgentsApp()
+        app._ensure_restart_prompt_loaded = MagicMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._server_proc = object()
+        app._server_kwargs = {"model_name": "openai:gpt-5.5"}
+        app._agent_running = False
+        app._connecting = False
+
+        async def restart_command(
+            *, preserve_queue: bool, propagate_errors: bool
+        ) -> bool:
+            assert preserve_queue is True
+            assert propagate_errors is True
+            assert app._environment_mutation_lock.locked()
+            await asyncio.sleep(0)
+            return True
+
+        app._run_restart_command = restart_command  # ty: ignore
+
+        result = await asyncio.wait_for(
+            app._install_extra("baseten", auto_restart=True), timeout=1
+        )
+
+        assert result is True
+        assert not app._environment_mutation_lock.locked()
 
     async def test_prompt_model_auth_not_needed_when_credentials_present(
         self, monkeypatch: pytest.MonkeyPatch
@@ -24029,6 +24403,63 @@ class TestRestartAfterInstall:
         app._mount_message = AsyncMock()  # ty: ignore
 
         assert await app._restart_after_install("baseten") is False
+
+    async def test_slow_refresh_gates_and_preserves_new_prompts(self) -> None:
+        """An accepted restart queues prompts before its remote refresh finishes."""
+        app = DeepAgentsApp()
+        app._server_proc = object()
+        app._server_kwargs = {}
+        app._agent_running = False
+        app._connecting = False
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._dismiss_startup_tip = AsyncMock()  # ty: ignore
+        refresh_started = asyncio.Event()
+        release_refresh = asyncio.Event()
+
+        async def reload_configuration() -> bool:
+            refresh_started.set()
+            await release_refresh.wait()
+            return False
+
+        app._reload_configuration_for_restart = reload_configuration  # ty: ignore
+
+        offered_restart = asyncio.create_task(app._restart_after_install("baseten"))
+        await refresh_started.wait()
+
+        restart_task = app._restart_respawn_task
+        assert restart_task is not None
+        assert not restart_task.done()
+        await app._submit_input("keep this prompt", mode="normal")
+        assert [message.text for message in app._pending_messages] == [
+            "keep this prompt"
+        ]
+
+        release_refresh.set()
+        assert await offered_restart is False
+
+    async def test_restart_does_not_reuse_a_task_waiting_on_the_held_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A post-install restart cannot await a task blocked on its own lock."""
+        app = DeepAgentsApp()
+        app._server_proc = object()
+        app._server_kwargs = {}
+        app._agent_running = False
+        app._connecting = False
+        run_restart = AsyncMock(return_value=True)
+        monkeypatch.setattr(app, "_run_restart_command", run_restart)
+
+        async with app._environment_mutation_lock:
+            active = app._schedule_restart_command()
+            await asyncio.sleep(0)
+            result = await asyncio.wait_for(
+                app._restart_after_install("baseten", mutation_lock_held=True),
+                timeout=1,
+            )
+
+        assert result is False
+        assert await active is True
+        run_restart.assert_awaited_once_with(preserve_queue=False)
 
     @pytest.mark.parametrize(
         ("proc", "kwargs", "deferred", "error", "expected"),
@@ -34597,6 +35028,315 @@ class TestParseReconnectArgs:
 class TestRestartCommand:
     """`/restart` slash command — config reload + server respawn."""
 
+    async def test_configuration_reload_runs_off_event_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A remote policy fetch cannot block Textual event dispatch."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp()
+        loop_thread_id = threading.get_ident()
+        reload_thread_ids: list[int] = []
+
+        def reload_from_environment() -> list[str]:
+            reload_thread_ids.append(threading.get_ident())
+            return []
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+        monkeypatch.setattr("deepagents_code.model_config.clear_caches", lambda: None)
+
+        assert await app._reload_configuration_for_restart() is True
+        assert reload_thread_ids
+        assert all(thread_id != loop_thread_id for thread_id in reload_thread_ids)
+
+    @pytest.mark.timeout(15)
+    async def test_remote_config_refresh_keeps_chat_input_responsive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A slow remote policy refresh cannot occupy the App message pump."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            app._chat_input.focus_input()
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            reload_started = threading.Event()
+            release_reload = threading.Event()
+
+            def slow_reload() -> list[str]:
+                reload_started.set()
+                assert release_reload.wait(timeout=5)
+                return []
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", slow_reload)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(
+                app,
+                "_restart_server_manual",
+                AsyncMock(return_value=False),
+            )
+
+            app.post_message(ChatInput.Submitted("/restart", "command"))
+            assert await asyncio.to_thread(reload_started.wait, 5)
+            await pilot.press("h", "i")
+            await pilot.pause()
+            typed = app._chat_input.value
+
+            release_reload.set()
+            assert app._restart_respawn_task is not None
+            await app._restart_respawn_task
+            assert typed == "hi"
+
+    @pytest.mark.timeout(15)
+    async def test_second_restart_is_refused_during_the_config_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One restart at a time, across the whole detached continuation.
+
+        The refresh can now spend the full remote-fetch timeout, so this window
+        did not exist before: the pre-respawn guards used to run synchronously
+        on the message pump. Without the gate both continuations would mutate
+        `_connecting`/`_reconnecting` and respawn the same subprocess.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            reload_started = threading.Event()
+            release_reload = threading.Event()
+            reloads = 0
+
+            def slow_reload() -> list[str]:
+                nonlocal reloads
+                reloads += 1
+                reload_started.set()
+                assert release_reload.wait(timeout=5)
+                return []
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", slow_reload)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            restart = AsyncMock(return_value=False)
+            monkeypatch.setattr(app, "_restart_server_manual", restart)
+
+            await app._handle_command("/restart")
+            assert await asyncio.to_thread(reload_started.wait, 5)
+            first = app._restart_respawn_task
+            assert first is not None
+
+            await app._handle_command("/restart")
+            assert app._restart_respawn_task is first
+            assert any(
+                "A server restart is already in progress" in str(message._content)
+                for message in app.query(AppMessage)
+            )
+
+            release_reload.set()
+            await first
+            assert reloads == 1
+            restart.assert_awaited_once()
+
+    @pytest.mark.timeout(15)
+    async def test_detached_restart_reports_an_unexpected_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raise in the detached continuation must reach the user.
+
+        Before the restart was detached these escaped into the awaiting command
+        handler. Now only `_log_task_exception` would see them, leaving a wedged
+        UI and no message.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def boom(*, preserve_queue: bool = False) -> None:
+                del preserve_queue
+                await asyncio.sleep(0)
+                msg = "restart exploded"
+                raise RuntimeError(msg)
+
+            monkeypatch.setattr(app, "_run_restart_command", boom)
+
+            task = app._schedule_restart_command()
+            await task
+
+            assert any(
+                "Restart failed: RuntimeError: restart exploded"
+                in str(message._content)
+                for message in app.query(ErrorMessage)
+            )
+
+    async def test_restart_reports_a_blocked_managed_policy_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A policy fetch failure must not read as a clean restart.
+
+        `_reload_values` catches `ManagedConfigError` and reports it as the
+        first change entry, so treating the reload as successful would respawn
+        the server on the previous policy generation and mount "Restart
+        complete." for a restart that applied no policy change.
+        """
+        from deepagents_code.config import (
+            MANAGED_RELOAD_BLOCKED_PREFIX,
+            settings,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            blocked = (
+                f"{MANAGED_RELOAD_BLOCKED_PREFIX}Managed config at /L/managed.toml "
+                "points to https://config.example.com/policy.toml, which is "
+                "UNREADABLE: remote source timed out."
+            )
+            monkeypatch.setattr(
+                settings,
+                "reload_from_environment",
+                lambda: [blocked],
+            )
+            clear_caches = MagicMock()
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", clear_caches
+            )
+
+            assert await app._reload_configuration_for_restart() is False
+            clear_caches.assert_not_called()
+            assert any(
+                blocked in str(message._content) for message in app.query(ErrorMessage)
+            )
+
+    async def test_blocked_managed_policy_refresh_stops_restart_before_respawn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blocked policy refresh must not respawn or report completion.
+
+        `_run_restart_command` gates the respawn on
+        `_reload_configuration_for_restart`; a `False` return has to stop the
+        restart before `_restart_server_manual` runs, return prompts queued
+        during the refresh to the chat input, and never mount "Restart
+        complete.".
+        """
+        from deepagents_code.config import (
+            MANAGED_RELOAD_BLOCKED_PREFIX,
+            settings,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            blocked = (
+                f"{MANAGED_RELOAD_BLOCKED_PREFIX}Managed config at /L/managed.toml "
+                "points to https://config.example.com/policy.toml, which is "
+                "UNREADABLE: remote source timed out."
+            )
+
+            reload_started = threading.Event()
+            release_reload = threading.Event()
+
+            def blocking_reload() -> list[str]:
+                reload_started.set()
+                # Hold the refresh open so the submission below lands in the
+                # queue while the restart task is live; a bare return would let
+                # the refresh finish first and race the queue assertion.
+                assert release_reload.wait(timeout=5)
+                return [blocked]
+
+            monkeypatch.setattr(settings, "reload_from_environment", blocking_reload)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            restart = AsyncMock(return_value=True)
+            monkeypatch.setattr(app, "_restart_server_manual", restart)
+
+            await app._handle_restart_command("/restart")
+            assert app._restart_respawn_task is not None
+            assert await asyncio.to_thread(reload_started.wait, 5)
+            await app._submit_input("queued during blocked refresh", "normal")
+            assert [m.text for m in app._pending_messages] == [
+                "queued during blocked refresh"
+            ]
+            release_reload.set()
+
+            await app._restart_respawn_task
+            await pilot.pause()
+
+            restart.assert_not_awaited()
+            assert not app._pending_messages
+            assert app._chat_input is not None
+            assert app._chat_input.value == "queued during blocked refresh"
+            assert any(
+                blocked in str(message._content) for message in app.query(ErrorMessage)
+            )
+            notices = [str(w._content) for w in app.query(AppMessage)]
+            assert not any("Restart complete" in n for n in notices)
+
+    @pytest.mark.timeout(15)
+    async def test_prompt_queues_during_restart_config_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prompt cannot reach the old agent during restart config refresh."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            reload_started = threading.Event()
+            release_reload = threading.Event()
+
+            def slow_reload() -> list[str]:
+                reload_started.set()
+                assert release_reload.wait(timeout=5)
+                return []
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", slow_reload)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(
+                app,
+                "_restart_server_manual",
+                AsyncMock(return_value=False),
+            )
+            dispatch = AsyncMock()
+            monkeypatch.setattr(app, "_dispatch_queued_message", dispatch)
+
+            await app._handle_restart_command("/restart")
+            assert await asyncio.to_thread(reload_started.wait, 5)
+            assert app._connecting is False
+            try:
+                await app._submit_input("keep this prompt", mode="normal")
+                dispatch.assert_not_awaited()
+                assert [item.text for item in app._pending_messages] == [
+                    "keep this prompt"
+                ]
+            finally:
+                release_reload.set()
+                assert app._restart_respawn_task is not None
+                await app._restart_respawn_task
+
     async def test_remote_server_mode_short_circuits(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -34880,12 +35620,12 @@ class TestRestartCommand:
             task = app._restart_respawn_task
             assert task is not None
             assert not status_started.is_set()
-            assert app._connecting is True
-            assert app._reconnecting is True
-            assert app._agent is None
 
             try:
                 await status_started.wait()
+                assert app._connecting is True
+                assert app._reconnecting is True
+                assert app._agent is None
                 await app._submit_input("queued during restart", mode="normal")
                 assert len(app._pending_messages) == 1
                 assert app._pending_messages[0].text == "queued during restart"
@@ -35661,8 +36401,14 @@ class TestRespawnServer:
         app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[removed])
         async with app.run_test() as pilot:
             await pilot.pause()
+            loop_thread_id = threading.get_ident()
+            reload_thread_ids: list[int] = []
             proc = await self._prepare(app)
             app._plugin_fingerprints = {}
+
+            def reload_from_environment() -> list[str]:
+                reload_thread_ids.append(threading.get_ident())
+                return []
 
             async def restart_manual() -> _ServerRespawnResult:
                 await app._restart_server_process(proc)
@@ -35672,7 +36418,11 @@ class TestRespawnServer:
                     mcp_status="fresh",
                 )
 
-            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                settings,
+                "reload_from_environment",
+                reload_from_environment,
+            )
             monkeypatch.setattr(
                 "deepagents_code.model_config.clear_caches", lambda: None
             )
@@ -35700,6 +36450,8 @@ class TestRespawnServer:
             await app._reload_task
 
             proc.restart.assert_awaited_once()
+            assert reload_thread_ids
+            assert all(thread_id != loop_thread_id for thread_id in reload_thread_ids)
             assert caller not in app._server_restart_tasks
             assert not app._server_restart_tasks
             reports = [str(message._content) for message in app.query(AppMessage)]
@@ -35709,6 +36461,103 @@ class TestRespawnServer:
                 "  - Removed: removed-plugin:server" in report
                 for report in reports
             )
+
+    async def test_reload_stops_when_managed_policy_refresh_is_blocked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retained policy snapshot must not be followed by a server restart."""
+        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX, settings
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+            blocked = (
+                f"{MANAGED_RELOAD_BLOCKED_PREFIX}remote managed config could "
+                "not be refreshed"
+            )
+            monkeypatch.setattr(
+                settings,
+                "reload_from_environment",
+                lambda: [blocked],
+            )
+            clear_caches = MagicMock()
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches",
+                clear_caches,
+            )
+            restart = AsyncMock()
+            monkeypatch.setattr(app, "_restart_server_manual_result", restart)
+
+            await app._run_reload()
+
+            clear_caches.assert_not_called()
+            restart.assert_not_awaited()
+            assert any(
+                blocked in str(message._content) for message in app.query(ErrorMessage)
+            )
+
+    async def test_reload_waits_for_environment_mutation_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/reload` cannot overlap a cwd switch or another environment mutation."""
+        from deepagents_code import config as config_module
+
+        app = DeepAgentsApp()
+        reload_started = asyncio.Event()
+
+        async def reload_settings() -> list[str]:
+            reload_started.set()
+            await asyncio.sleep(0)
+            return []
+
+        monkeypatch.setattr(app, "_reload_settings_from_environment", reload_settings)
+        monkeypatch.setattr(
+            config_module,
+            "managed_reload_block",
+            lambda _changes: "blocked",
+        )
+        monkeypatch.setattr(app, "_mount_message", AsyncMock())
+
+        async with app._environment_mutation_lock:
+            reload_task = asyncio.create_task(app._run_reload())
+            await asyncio.sleep(0)
+            assert not reload_started.is_set()
+        await reload_task
+
+        assert reload_started.is_set()
+
+    @pytest.mark.timeout(15)
+    async def test_cancelled_settings_reload_keeps_cancellation_if_worker_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A late worker error cannot replace the caller's cancellation."""
+        from deepagents_code.config import settings
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def failing_reload() -> list[str]:
+            started.set()
+            assert release.wait(timeout=5)
+            msg = "unreadable environment file"
+            raise OSError(msg)
+
+        monkeypatch.setattr(settings, "reload_from_environment", failing_reload)
+        reload_task = asyncio.create_task(
+            DeepAgentsApp._reload_settings_from_environment()
+        )
+        assert await asyncio.to_thread(started.wait, 5)
+        try:
+            reload_task.cancel()
+            await asyncio.sleep(0)
+            assert not reload_task.done()
+        finally:
+            release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await reload_task
 
     async def test_reload_preserves_queue_across_idle_server_restart(
         self, monkeypatch: pytest.MonkeyPatch
@@ -37407,9 +38256,12 @@ class TestResumeThreadCwdSwitch:
         target.mkdir()
         monkeypatch.chdir(current)
         app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        event_loop_thread = threading.get_ident()
+        reload_threads: list[int] = []
 
         def reload_from_environment(*, start_path: Path | None = None) -> list[str]:
             del start_path
+            reload_threads.append(threading.get_ident())
             return []
 
         monkeypatch.setattr(
@@ -37438,9 +38290,11 @@ class TestResumeThreadCwdSwitch:
             monkeypatch.setattr(app, "run_worker", run_worker)
 
             with patch("deepagents_code.model_config.clear_caches"):
-                app._switch_process_cwd(target)
+                await app._switch_process_cwd(target)
 
         assert scheduled_groups == ["startup-skill-discovery"]
+        assert reload_threads
+        assert reload_threads[0] != event_loop_thread
 
     async def test_offer_stay_warns_without_switching(
         self,
@@ -37607,9 +38461,9 @@ class TestResumeThreadCwdSwitch:
         monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
         replace_calls: list[Path] = []
 
-        def replace_server(cwd: Path) -> str:
+        async def replace_server(cwd: Path) -> str:
             replace_calls.append(cwd)
-            app._switch_process_cwd(cwd)
+            await app._switch_process_cwd(cwd)
             return "continue"
 
         app._replace_server_after_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
@@ -37934,6 +38788,44 @@ class TestResumeThreadCwdSwitch:
         ]
         old_server.stop.assert_not_called()
 
+    async def test_replace_server_restores_state_when_policy_rollback_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed policy rollback cannot leave the session disconnected."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        self._arm_server_backed_app(app, monkeypatch)
+        old_server = MagicMock()
+        old_agent = MagicMock()
+        app._server_proc = old_server
+        app._agent = old_agent
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._mcp_preload_kwargs = None
+        app._mcp_server_info = ["prev"]
+        switch = AsyncMock(
+            side_effect=[
+                RuntimeError("target policy unavailable"),
+                RuntimeError("previous policy unavailable"),
+            ]
+        )
+        monkeypatch.setattr(app, "_switch_process_cwd", switch)
+
+        result = await app._replace_server_after_cwd_switch(target)
+
+        assert result == "abort"
+        assert app._agent is old_agent
+        assert app._server_proc is old_server
+        assert app._mcp_server_info == ["prev"]
+        assert app._connecting is False
+        assert app._reconnecting is False
+        assert switch.await_args_list == [call(target), call(current)]
+        old_server.stop.assert_not_called()
+
     async def test_replace_server_failure_rolls_back_project_dotenv(
         self,
         tmp_path: Path,
@@ -38091,6 +38983,101 @@ class TestResumeThreadCwdSwitch:
 
     # --- _switch_process_cwd atomicity ---
 
+    async def test_cwd_refresh_waits_for_environment_mutation_lock(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cwd refresh cannot overlap another environment mutation."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(thread_id="t", cwd=tmp_path)
+        reload_started = threading.Event()
+
+        def reload_from_environment(*, start_path: Path) -> list[str]:
+            assert start_path == tmp_path
+            reload_started.set()
+            return []
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+        with patch("deepagents_code.model_config.clear_caches"):
+            async with app._environment_mutation_lock:
+                refresh = asyncio.create_task(
+                    app._refresh_project_context_for_cwd_switch(tmp_path)
+                )
+                await asyncio.sleep(0)
+                assert not reload_started.is_set()
+            await refresh
+
+        assert reload_started.is_set()
+
+    @pytest.mark.timeout(15)
+    async def test_cancelled_cwd_refresh_finishes_before_rollback(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cancellation cannot let a target reload outlive the rollback reload."""
+        from deepagents_code.config import settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        app._chat_input = None
+        app._status_bar = None
+        target_started = threading.Event()
+        target_finished = threading.Event()
+        release_target = threading.Event()
+        rollback_started = threading.Event()
+        reloads: list[tuple[str, Path]] = []
+
+        def reload_from_environment(*, start_path: Path) -> list[str]:
+            reloads.append(("start", start_path))
+            if start_path == target:
+                target_started.set()
+                assert release_target.wait(timeout=5)
+                target_finished.set()
+            else:
+                rollback_started.set()
+            reloads.append(("finish", start_path))
+            return []
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+        with patch("deepagents_code.model_config.clear_caches"):
+            switch = asyncio.create_task(app._switch_process_cwd(target))
+            assert await asyncio.to_thread(target_started.wait, 5)
+            switch.cancel()
+            rollback_raced = await asyncio.to_thread(rollback_started.wait, 0.1)
+            still_running = not switch.done()
+            lock_held = app._environment_mutation_lock.locked()
+            release_target.set()
+            with pytest.raises(asyncio.CancelledError):
+                await switch
+
+        assert await asyncio.to_thread(target_finished.wait, 5)
+        assert not rollback_raced
+        assert still_running
+        assert lock_held
+        assert reloads == [
+            ("start", target),
+            ("finish", target),
+            ("start", current),
+            ("finish", current),
+        ]
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+
     async def test_switch_process_cwd_restores_cwd_on_refresh_failure(
         self,
         tmp_path: Path,
@@ -38124,9 +39111,151 @@ class TestResumeThreadCwdSwitch:
             patch("deepagents_code.model_config.clear_caches"),
             pytest.raises(RuntimeError, match="reload failed"),
         ):
-            app._switch_process_cwd(target)
+            await app._switch_process_cwd(target)
 
         assert Path.cwd() == current
+        assert app._cwd == str(current)
+
+    async def test_switch_process_cwd_aborts_on_blocked_managed_policy_refresh(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A retained old-project policy must prevent the cwd from changing."""
+        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX, settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        app._chat_input = None
+        app._status_bar = None
+        mount = AsyncMock()
+        monkeypatch.setattr(app, "_mount_message", mount)
+        blocked = (
+            f"{MANAGED_RELOAD_BLOCKED_PREFIX}remote managed config could not "
+            "be refreshed"
+        )
+        reloads: list[Path | None] = []
+
+        def reload_from_environment(*, start_path: Path | None = None) -> list[str]:
+            reloads.append(start_path)
+            return [blocked] if start_path == target else []
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+
+        with (
+            patch("deepagents_code.model_config.clear_caches"),
+            pytest.raises(RuntimeError, match="could not be refreshed"),
+        ):
+            await app._switch_process_cwd(target)
+
+        assert reloads == [target, current]
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+        mounted = mount.await_args_list[0].args[0]
+        assert isinstance(mounted, ErrorMessage)
+        assert blocked in str(mounted._content)
+
+    async def test_switch_process_cwd_restores_settings_on_chdir_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed chdir reloads the previous project context.
+
+        The refresh runs before `os.chdir`, so a chdir failure would otherwise
+        leave settings and model caches pointing at a directory the process
+        never entered.
+        """
+        from deepagents_code.config import settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        app._chat_input = None
+        app._status_bar = None
+
+        reloads: list[Path | None] = []
+        original_reload = settings.reload_from_environment
+
+        def recording_reload(*, start_path: Path | None = None) -> list[str]:
+            reloads.append(start_path)
+            return original_reload(start_path=start_path)
+
+        monkeypatch.setattr(settings, "reload_from_environment", recording_reload)
+
+        def boom(_cwd: object) -> None:
+            msg = "cannot chdir"
+            raise OSError(msg)
+
+        with (
+            patch("deepagents_code.model_config.clear_caches"),
+            patch("os.chdir", boom),
+            pytest.raises(OSError, match="cannot chdir"),
+        ):
+            await app._switch_process_cwd(target)
+
+        # Target refresh, then the rollback refresh for the previous cwd.
+        assert reloads == [target, current]
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+
+    async def test_switch_process_cwd_resyncs_ui_when_rollback_is_cancelled(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cancellation mid-rollback still leaves cwd and `_cwd` in agreement.
+
+        The rollback context refresh is awaited, and `CancelledError` is a
+        `BaseException`, so it escapes `suppress(Exception)`. Re-syncing the UI
+        first is what keeps the divergence
+        `_restore_cwd_after_failed_thread_switch` cannot detect from happening.
+        """
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        app._chat_input = None
+        app._status_bar = None
+
+        refreshes: list[tuple[Path, bool]] = []
+
+        async def refresh(cwd: Path, *, report_block: bool = True) -> None:
+            refreshes.append((cwd, report_block))
+            await asyncio.sleep(0)
+            if len(refreshes) > 1:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(app, "_refresh_project_context_for_cwd_switch", refresh)
+
+        def boom(_cwd: object) -> None:
+            msg = "cannot chdir"
+            raise OSError(msg)
+
+        with (
+            patch("os.chdir", boom),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await app._switch_process_cwd(target)
+
+        # The rollback pass must not re-report a managed-policy block: a block
+        # is a property of the policy, not of the directory, so restoring the
+        # previous cwd hits the same one and would mount the identical error a
+        # second time.
+        assert refreshes == [(target, True), (current, False)]
         assert app._cwd == str(current)
 
     # --- _cwd_paths_equal (pure staticmethod) ---
@@ -38181,10 +39310,14 @@ class TestResumeThreadCwdSwitch:
         app._server_kwargs = None
         app._server_proc = None
         switch_calls: list[Path] = []
+
+        async def switch(cwd: Path) -> None:  # noqa: RUF029
+            switch_calls.append(cwd)
+
         monkeypatch.setattr(
             app,
             "_switch_process_cwd",
-            switch_calls.append,
+            switch,
         )
 
         await app._restore_cwd_after_failed_thread_switch(current)
@@ -38208,7 +39341,7 @@ class TestResumeThreadCwdSwitch:
         notify = MagicMock()
         app.notify = notify  # ty: ignore[invalid-assignment]
 
-        def boom(cwd: Path) -> None:
+        async def boom(cwd: Path) -> None:  # noqa: RUF029
             del cwd
             msg = "cannot chdir"
             raise OSError(msg)

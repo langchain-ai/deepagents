@@ -22,8 +22,10 @@ from deepagents_code._session_stats import (
     format_token_count,
     print_usage_table,
     record_message_usage,
+    record_model_usage_event,
     usage_table_enabled,
 )
+from deepagents_code.cost_tracking import MODEL_USAGE_EVENT_VERSION
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -845,6 +847,119 @@ class TestRecordMessageUsage:
 
         assert record_message_usage(stats, SimpleNamespace(usage_metadata=None)) is None
         assert record_message_usage(stats, SimpleNamespace()) is None
+        assert stats.request_count == 0
+
+
+class TestRecordModelUsageEvent:
+    """Nested usage custom events share ordinary message accounting."""
+
+    @staticmethod
+    def _event() -> dict[str, object]:
+        return {
+            "type": "model_usage",
+            "version": 1,
+            "request_id": "child-1",
+            "usage_metadata": {
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+                "input_token_details": {"cache_read": 800},
+            },
+            "model_name": "gpt-5.5",
+            "provider": "openai",
+            "thread_id": "thread-1",
+            "scope": "tools:task",
+        }
+
+    def test_records_subagent_usage_once(self) -> None:
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+
+        first = record_model_usage_event(
+            stats,
+            self._event(),
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+        )
+        replay = record_model_usage_event(
+            stats,
+            self._event(),
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+        )
+
+        assert first is not None
+        assert replay is None
+        assert stats.request_count == 1
+        assert stats.per_kind["subagent"].request_count == 1
+        assert stats.cache_read_tokens == 800
+        assert ("openai", "gpt-5.5") in stats.per_model
+
+    def test_deduplicates_with_ordinary_message(self) -> None:
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+        message = AIMessage(
+            content="done",
+            id="child-1",
+            usage_metadata={
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+            },
+            response_metadata={
+                "model_name": "gpt-5.5",
+                "model_provider": "openai",
+            },
+        )
+
+        record_message_usage(stats, message, kind="subagent", recorded_requests=ledger)
+        replay = record_model_usage_event(
+            stats,
+            self._event(),
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+        )
+
+        assert replay is None
+        assert stats.request_count == 1
+
+    @pytest.mark.parametrize(
+        "update",
+        [
+            {"version": True},
+            {"version": MODEL_USAGE_EVENT_VERSION + 1},
+            {"request_id": ""},
+            {"usage_metadata": "tokens"},
+            {"scope": ""},
+        ],
+    )
+    def test_rejects_malformed_event(self, update: dict[str, object]) -> None:
+        event = self._event() | update
+        stats = SessionStats()
+
+        assert (
+            record_model_usage_event(
+                stats,
+                event,
+                active_thread_id="thread-1",
+                recorded_requests={},
+            )
+            is None
+        )
+        assert stats.request_count == 0
+
+    def test_rejects_another_thread(self) -> None:
+        stats = SessionStats()
+
+        assert (
+            record_model_usage_event(
+                stats,
+                self._event(),
+                active_thread_id="other-thread",
+                recorded_requests={},
+            )
+            is None
+        )
         assert stats.request_count == 0
 
 

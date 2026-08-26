@@ -1399,11 +1399,14 @@ class TestCreateModelProfileExtraction:
         assert result.context_limit == 200000
 
     @patch("langchain.chat_models.init_chat_model")
-    def test_attaches_configured_provider_to_model_metadata(
+    def test_attaches_configured_identity_to_model_metadata(
         self, mock_init_chat_model: Mock
     ) -> None:
-        """Every request should retain the provider selected at construction."""
-        from deepagents_code.cost_tracking import _CONFIGURED_PROVIDER_METADATA_KEY
+        """Every request should retain the identity selected at construction."""
+        from deepagents_code.cost_tracking import (
+            _CONFIGURED_MODEL_METADATA_KEY,
+            _CONFIGURED_PROVIDER_METADATA_KEY,
+        )
 
         mock_model = Mock()
         mock_model.metadata = {"existing": "value"}
@@ -1414,6 +1417,7 @@ class TestCreateModelProfileExtraction:
 
         assert result.model.metadata == {
             "existing": "value",
+            _CONFIGURED_MODEL_METADATA_KEY: "claude-sonnet-4-5",
             _CONFIGURED_PROVIDER_METADATA_KEY: "anthropic",
         }
 

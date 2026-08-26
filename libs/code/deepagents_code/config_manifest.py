@@ -2790,6 +2790,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=False,
         env_var=_env_vars.DEBUG_MCP_PROJECT_TRUST,
     ),
+    ConfigOption(
+        key="debug.model_switch",
+        group="Debug",
+        summary=("Force the model-switch confirmation modal on every model change."),
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_MODEL_SWITCH,
+    ),
 )
 
 

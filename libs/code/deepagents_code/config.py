@@ -2654,11 +2654,19 @@ def managed_reload_block(changes: Sequence[str]) -> str | None:
     Args:
         changes: The list `reload_from_environment` or `preview_reload` returned.
 
+    Scans the whole list rather than only its first entry. The notice is
+    prepended today, so position would work -- but a caller that reads a
+    blocked reload as success mounts "Restart complete." on the previous policy
+    generation, and one future entry prepended ahead of the notice would cause
+    that at all four call sites at once. Scanning cannot regress that way, and
+    only this module produces the prefix.
+
     Returns:
         The notice, or `None` when managed policy did not block the reload.
     """
-    if changes and changes[0].startswith(MANAGED_RELOAD_BLOCKED_PREFIX):
-        return changes[0]
+    for change in changes:
+        if change.startswith(MANAGED_RELOAD_BLOCKED_PREFIX):
+            return change
     return None
 
 

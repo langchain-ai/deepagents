@@ -3450,3 +3450,24 @@ class TestDiagnosticDedupIsPerGeneration:
         assert config_manifest._warned_non_table_paths == set(), (
             "a rebuilt generation must re-arm the source diagnostics"
         )
+
+
+def test_managed_reload_block_is_found_behind_another_change_entry() -> None:
+    """The block notice is recovered by content, not by list position.
+
+    Every caller treats "no block" as "the reload applied", and `/restart`
+    mounts "Restart complete." on that basis. Reading only `changes[0]` made
+    all four call sites depend on the notice staying first, so one entry
+    prepended ahead of it would report a refused refresh as a successful one.
+    """
+    from deepagents_code.config import (
+        MANAGED_RELOAD_BLOCKED_PREFIX,
+        managed_reload_block,
+    )
+
+    notice = f"{MANAGED_RELOAD_BLOCKED_PREFIX}managed policy could not be refreshed"
+
+    assert managed_reload_block([notice]) == notice
+    assert managed_reload_block(["project_root changed", notice]) == notice
+    assert managed_reload_block(["project_root changed"]) is None
+    assert managed_reload_block([]) is None

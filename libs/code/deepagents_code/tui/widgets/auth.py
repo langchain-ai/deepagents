@@ -1379,6 +1379,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             changes = await app._reload_settings_from_environment_serialized()
             blocked = config_module.managed_reload_block(changes)
             if blocked is not None:
+                # No cache clear: policy refused the refresh, so the values
+                # behind those caches are the ones still in force. Matches
+                # `_run_reload_unlocked` and the cwd-switch refresh.
                 self.app.notify(blocked, severity="error", markup=False)
                 return
             clear_caches()

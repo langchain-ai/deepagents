@@ -5782,6 +5782,36 @@ class TestMessageQueue:
             release_restart.set()
             await restart_task
 
+    async def test_queue_restore_reports_prompts_the_input_cannot_take(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Prompts the input refuses are reproduced on screen, not just logged.
+
+        The queue and its placeholders are cleared before the text reaches the
+        input, and the notice mounted at the top of the restore says the prompts
+        were returned. A `logger.warning` on the failure path loses the user's
+        typed text with no trace: the package installs its own log handler at
+        import time, so nothing reaches the terminal.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            monkeypatch.setattr(
+                type(app._chat_input),
+                "set_value_at_end",
+                lambda _self, _value: False,
+            )
+            app._pending_messages.append(QueuedMessage("do not lose me", "normal"))
+
+            await app._restore_queue_to_input(
+                "Prompts restored.", empty_notice="No prompts to restore."
+            )
+
+            errors = [str(w._content) for w in app.query(ErrorMessage)]
+            assert any("do not lose me" in text for text in errors)
+            assert any("could not be returned" in text for text in errors)
+
     async def test_queue_restore_preserves_existing_draft_whitespace(self) -> None:
         """Returning queued prompts does not strip whitespace from a draft."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -39004,10 +39034,10 @@ class TestResumeThreadCwdSwitch:
         app._chat_input = None
         app._status_bar = None
 
-        refreshes: list[Path] = []
+        refreshes: list[tuple[Path, bool]] = []
 
-        async def refresh(cwd: Path) -> None:
-            refreshes.append(cwd)
+        async def refresh(cwd: Path, *, report_block: bool = True) -> None:
+            refreshes.append((cwd, report_block))
             await asyncio.sleep(0)
             if len(refreshes) > 1:
                 raise asyncio.CancelledError
@@ -39024,7 +39054,11 @@ class TestResumeThreadCwdSwitch:
         ):
             await app._switch_process_cwd(target)
 
-        assert refreshes == [target, current]
+        # The rollback pass must not re-report a managed-policy block: a block
+        # is a property of the policy, not of the directory, so restoring the
+        # previous cwd hits the same one and would mount the identical error a
+        # second time.
+        assert refreshes == [(target, True), (current, False)]
         assert app._cwd == str(current)
 
     # --- _cwd_paths_equal (pure staticmethod) ---

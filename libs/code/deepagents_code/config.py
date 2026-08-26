@@ -5817,9 +5817,9 @@ def create_model(
         model = _create_model_via_init(model_name, provider, kwargs)
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
-    from deepagents_code.cost_tracking import _set_configured_provider_metadata
+    from deepagents_code.cost_tracking import _set_configured_model_metadata
 
-    _set_configured_provider_metadata(model, resolved_provider)
+    _set_configured_model_metadata(model, model_name, resolved_provider)
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:

@@ -43,6 +43,7 @@ from deepagents_code.client.non_interactive import (
     _process_ai_message,
     _process_hitl_interrupts,
     _process_message_chunk,
+    _process_stream_chunk,
     _record_usage_from_message,
     _run_agent_loop,
     _run_startup_command,
@@ -77,6 +78,34 @@ from deepagents_code.tool_display import format_tool_message_content
 def console() -> Console:
     """Console that captures output."""
     return Console(quiet=True)
+
+
+def test_nested_usage_event_updates_headless_stats(console: Console) -> None:
+    state = StreamState(thread_id="thread-1")
+    event = {
+        "type": "model_usage",
+        "version": 1,
+        "request_id": "child-1",
+        "usage_metadata": {
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "total_tokens": 1_100,
+        },
+        "model_name": "gpt-5.5",
+        "provider": "openai",
+        "thread_id": "thread-1",
+        "scope": "tools:task",
+    }
+
+    _process_stream_chunk(
+        (("tools:task",), "custom", event),
+        state,
+        console,
+        FileOpTracker(assistant_id="assistant"),
+    )
+
+    assert state.stats.request_count == 1
+    assert state.stats.per_kind["subagent"].request_count == 1
 
 
 def test_subagent_summarization_does_not_signal_compaction() -> None:

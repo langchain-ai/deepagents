@@ -432,14 +432,114 @@ def test_non_retryable_raises_immediately() -> None:
     assert calls["n"] == 1
 
 
-def test_graph_bubble_up_is_never_handled() -> None:
+def test_graph_bubble_up_is_never_handled(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """See the async twin: the log assertion is what pins the clause."""
     mw = CodeModelRetryMiddleware(max_retries=5)
 
     def handler(_req_arg: object) -> str:
         raise GraphBubbleUp
 
-    with pytest.raises(GraphBubbleUp):
+    with (
+        caplog.at_level(logging.DEBUG, logger="deepagents_code.model_retry"),
+        pytest.raises(GraphBubbleUp),
+    ):
         mw.wrap_model_call(_req(), _handler(handler))
+
+    assert "non-transient" not in caplog.text
+
+
+async def test_async_graph_bubble_up_is_never_handled(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The async loop needs its own guard, and the server runs the async loop.
+
+    `_aretry_call` carries a separate `except GraphBubbleUp: raise` from its
+    sync twin, and only `wrap_model_call` was covered. Asserting propagation
+    alone does not pin the clause: without it `GraphBubbleUp` falls into
+    `except Exception`, is judged non-retryable, and is re-raised anyway. The
+    clause earns its place by keeping the give-up log out of it -- otherwise a
+    graph interrupt is reported as a "non-transient" model failure, burying
+    real control flow in a misleading line.
+    """
+    mw = CodeModelRetryMiddleware(max_retries=5)
+
+    async def handler(_req_arg: object) -> str:  # noqa: RUF029  # awaited by middleware; no internal await needed
+        raise GraphBubbleUp
+
+    with (
+        caplog.at_level(logging.DEBUG, logger="deepagents_code.model_retry"),
+        pytest.raises(GraphBubbleUp),
+    ):
+        await mw.awrap_model_call(_req(), _async_handler(handler))
+
+    assert "non-transient" not in caplog.text
+
+
+def _req_with_writer(writer: Callable[[dict[str, object]], None]) -> ModelRequest:
+    return cast(
+        "ModelRequest",
+        SimpleNamespace(
+            runtime=SimpleNamespace(stream_writer=writer), model=SimpleNamespace()
+        ),
+    )
+
+
+def test_writer_graph_bubble_up_propagates() -> None:
+    """A `GraphBubbleUp` from the stream writer is control flow, not a fault.
+
+    `_emit_retry_status` catches `Exception` to keep a broken writer from
+    failing the run, and `GraphBubbleUp` subclasses `Exception`, so the
+    narrower clause must come first. Deleting it left the suite green while
+    converting a LangGraph interrupt raised through the writer into a logged
+    warning that is then discarded -- the agent continues as if nothing
+    happened.
+    """
+    calls = {"n": 0}
+
+    def writer(_event: dict[str, object]) -> None:
+        raise GraphBubbleUp
+
+    def handler(_req_arg: object) -> str:
+        calls["n"] += 1
+        raise _READ_ERROR
+
+    mw = CodeModelRetryMiddleware(max_retries=5)
+    with pytest.raises(GraphBubbleUp):
+        mw.wrap_model_call(_req_with_writer(writer), _handler(handler))
+    # The interrupt must surface on the first failed attempt, not after the
+    # budget is spent.
+    assert calls["n"] == 1
+
+
+def test_writer_failure_is_logged_and_retry_proceeds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A broken writer costs the status event, never the retry itself."""
+
+    def writer(_event: dict[str, object]) -> None:
+        msg = "writer exploded"
+        raise RuntimeError(msg)
+
+    calls = {"n": 0}
+
+    def handler(_req_arg: object) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _READ_ERROR
+        return "ok"
+
+    mw = CodeModelRetryMiddleware(max_retries=5)
+    with (
+        caplog.at_level(logging.WARNING, logger="deepagents_code.model_retry"),
+        patch.object(model_retry.time, "sleep"),
+    ):
+        result = mw.wrap_model_call(_req_with_writer(writer), _handler(handler))
+
+    assert result == "ok"
+    assert calls["n"] == 2
+    assert "Failed to emit model_retry stream event" in caplog.text
 
 
 def test_zero_retries_calls_handler_once() -> None:
@@ -473,8 +573,8 @@ def test_retry_reinvokes_only_the_handler(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_backoff_grows_exponentially_and_is_capped() -> None:
-    mw = CodeModelRetryMiddleware(max_retries=12)
-    delays = [mw._compute_delay(n) for n in range(12)]  # policy under test
+    # The backoff curve is module policy, not middleware state.
+    delays = [model_retry._compute_backoff_delay(n) for n in range(12)]
 
     for n, delay in enumerate(delays):
         nominal = min(0.2 * (2.0**n), 10.0)
@@ -484,8 +584,7 @@ def test_backoff_grows_exponentially_and_is_capped() -> None:
 
 
 def test_backoff_jitter_varies_between_calls() -> None:
-    mw = CodeModelRetryMiddleware()
-    samples = {mw._compute_delay(5) for _ in range(20)}  # policy under test
+    samples = {model_retry._compute_backoff_delay(5) for _ in range(20)}
     assert len(samples) > 1
 
 

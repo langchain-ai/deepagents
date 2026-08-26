@@ -219,11 +219,16 @@ class _Row(NamedTuple):
 #     `Compositor.get_widget_and_offset_at` expects, which is a per-segment
 #     base offset plus the character index *within* that segment.
 #   - `Content._wrap_and_format` also honours the `text_align`,
-#     `text_overflow`, `text_wrap` and `line_pad` CSS rules, plus `\n`
-#     splitting and rstripping of non-final wrapped lines. None of those are
-#     reachable for diff rows today (nothing in `app.tcss` or any
-#     `DEFAULT_CSS` sets them on `.diff-line-*`), so the override ignores
-#     them — but setting one on a diff row later would silently do nothing.
+#     `text_overflow`, `text_wrap` and `line_pad` CSS rules. Nothing in
+#     `app.tcss` or any `DEFAULT_CSS` sets those on `.diff-line-*`, so the
+#     override ignores them — but setting one on a diff row later would
+#     silently do nothing. Its `\n` splitting is unreachable for a different
+#     reason: a `_Row.text` is one diff line and never contains a newline.
+#   - It also rstrips every wrapped line but the last, and that one *is*
+#     reachable. The override deliberately keeps those trailing spaces: they
+#     are real source text, and rstripping turns the cells they occupy into
+#     padding, which carries no selection style — so a drag across a wrap
+#     point would show an unhighlighted gap at every fold.
 #
 # Remove all of this if Textual grows a first-class "repeat a gutter on
 # wrapped lines" hook.
@@ -259,6 +264,10 @@ def _expanded_offsets(plain: str, base: int, tab_size: int = _TAB_SIZE) -> list[
     expanded text while reporting expanded indexes as selection offsets makes
     a wrapped tab-indented row copy the wrong characters, and run off the end
     of the string entirely on its last lines.
+
+    Only the custom wrapping path uses this. A row that falls back to Textual
+    (see `_DiffRowContent._wraps`) still reports Textual's own expanded
+    offsets, so a tab-indented `show_numbers=False` row keeps that bug.
 
     Args:
         plain: The raw (unexpanded) text.
@@ -341,7 +350,9 @@ class _WrappedLine(NamedTuple):
     Attributes:
         content: The line's tab-expanded text.
         offsets: Logical offset of each character of `content` in the row's
-            raw content, as produced by `_expanded_offsets`.
+            raw content, as produced by `_expanded_offsets`. Never empty, so
+            `offsets[0]` always names somewhere in the row for a synthetic
+            gutter to point at — see `_DiffRowContent._wrapped`.
     """
 
     content: Content
@@ -382,7 +393,14 @@ class _DiffRowContent(Content):
 
     @cached_property
     def _body(self) -> Content:
-        """The row's source text, gutter stripped and tabs expanded."""
+        """The row's source text, gutter stripped and tabs expanded.
+
+        Tab stops are measured from the body's first cell, not the row's, so a
+        tab-indented line indents the same however wide the gutter is.
+        Textual's own path expands the whole row and shifts the indent with the
+        line-number width instead, so the two disagree on tab-indented rows —
+        including within one diff, whose narrow rows take the fallback.
+        """
         return _expand_tabs(self[self.prefix_len :])
 
     @cached_property
@@ -422,7 +440,8 @@ class _DiffRowContent(Content):
             width: Total cell width available to the row, gutter included.
 
         Returns:
-            One `_WrappedLine` per visual line, always at least one.
+            One `_WrappedLine` per visual line, always at least one, each with
+            a non-empty `offsets`.
         """
         body = self._body
         body_width = width - self.prefix_len
@@ -430,8 +449,32 @@ class _DiffRowContent(Content):
             divide_line(body.plain, body_width) if body.cell_length > body_width else []
         )
         offsets = self._body_offsets
+
+        def line_offsets(start: int, length: int) -> list[int]:
+            """Offsets for the `length` characters of `body` from `start`.
+
+            An empty body — a bare `+`, `-` or blank context row — is the one
+            line that hits the fallback, and it renders no cells, so the
+            offset goes unread. A zero-length *continuation* would read it,
+            but needs `divide_line` to cut at the end of its input, which it
+            does not.
+
+            Args:
+                start: Index into `body` of the line's first character.
+                length: Number of characters on the line.
+
+            Returns:
+                One offset per character, and never empty: `render_strips`
+                reads `offsets[0]` to place a continuation's synthetic gutter,
+                and skipping offsetless lines there rather than here would
+                leave `get_height` one line ahead of the strips it must match.
+            """
+            return offsets[start : start + length] or [
+                offsets[start] if start < len(offsets) else len(self)
+            ]
+
         return [
-            _WrappedLine(line, offsets[start : start + len(line)])
+            _WrappedLine(line, line_offsets(start, len(line)))
             for line, start in zip(body.divide(cuts), [0, *cuts], strict=True)
         ]
 
@@ -523,7 +566,6 @@ class _DiffRowContent(Content):
                     options,
                 )
                 for line in lines[1:]
-                if line.offsets
             ),
         ]
         return strips if height is None else strips[:height]

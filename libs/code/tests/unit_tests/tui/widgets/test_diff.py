@@ -549,6 +549,28 @@ class TestComposeDiffLines:
 
         assert _visual_lines(widget, 12) == ["680 + abc"]
 
+    @pytest.mark.parametrize("text", ["", " ", "abcdefghijkl", "\tabc", "alpha beta"])
+    def test_every_visual_line_carries_an_offset(self, text: str) -> None:
+        """No visual line may end up with an empty offset list.
+
+        `render_strips` reads `offsets[0]` to point a continuation's synthetic
+        gutter at its line, and `get_height` counts the same lines it must
+        render. Skipping an offsetless line in only one of them desynchronises
+        the two, and `Static` is `height: auto`, so the row grows a blank line.
+        """
+        widget = next(
+            w
+            for w in _rendered(f"@@ -680 +680 @@\n+{text}\n+tail")
+            if _plain(w).endswith(text)
+        )
+        content = cast("_DiffRowContent", widget.render())
+
+        for width in range(7, 20):
+            lines = content._wrapped(width)
+            assert lines
+            assert all(line.offsets for line in lines), width
+            assert content.get_height({}, width) == len(_visual_lines(widget, width))
+
     def test_max_lines_truncates_with_marker(self) -> None:
         """Beyond `max_lines`, a truncation marker replaces remaining rows."""
         diff = "\n".join(["@@ -1,5 +1,5 @@", *(f"+line{i}" for i in range(5))])

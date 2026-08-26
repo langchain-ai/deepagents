@@ -21,6 +21,7 @@ from deepagents_code.diff_utils import (
 )
 from deepagents_code.tui.widgets import diff as diff_module
 from deepagents_code.tui.widgets.diff import (
+    _DiffRowContent,
     _DiffRowStatic,
     clamp_selection,
     compose_diff_lines,
@@ -384,6 +385,27 @@ class TestComposeDiffLines:
             # at the narrowest width even a single word folds mid-token.
             painted = "".join(lines).replace("…", "").replace(" ", "")
             assert painted == "680+alphabetagammadeltaepsilon", width
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "x" * (diff_module._MAX_WRAPPED_OFFSET_CHARS + 1),
+            "\t" * (diff_module._MAX_WRAPPED_OFFSET_CHARS // 8 + 1),
+        ],
+        ids=["plain", "tabs"],
+    )
+    def test_oversized_rows_do_not_cache_per_character_offsets(self, body: str) -> None:
+        """Large rows fall back before allocating custom offset tables."""
+        widget = next(
+            w
+            for w in _rendered(f"@@ -680 +680 @@\n+{body}")
+            if isinstance(w, _DiffRowStatic)
+        )
+        content = cast("_DiffRowContent", widget.render())
+
+        content.get_height({}, 12)
+        assert "_body" not in content.__dict__
+        assert "_body_offsets" not in content.__dict__
 
     def test_wrapped_tabbed_lines_keep_all_source_text(self) -> None:
         """Tab expansion cannot make wrapping discard trailing source."""

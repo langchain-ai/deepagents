@@ -69,6 +69,16 @@ one token per character on punctuation-dense lines — so minified JS or
 single-line JSON would stall the compose path. Longer lines render unemphasised.
 """
 
+_TAB_SIZE = 8
+
+_MAX_WRAPPED_OFFSET_CHARS = 20_000
+"""Largest expanded row body eligible for the custom wrapping path.
+
+That path retains one Python integer per rendered character and slices the list
+during layout and rendering. Beyond this bound, normal Textual wrapping avoids
+unbounded synchronous allocation at the cost of no repeated continuation gutter.
+"""
+
 MAX_HIGHLIGHT_CHARS = 100_000
 """Largest source prefix worth lexing for syntax highlighting.
 
@@ -219,7 +229,7 @@ class _Row(NamedTuple):
 # wrapped lines" hook.
 
 
-def _expand_tabs(content: Content, tab_size: int = 8) -> Content:
+def _expand_tabs(content: Content, tab_size: int = _TAB_SIZE) -> Content:
     """Expand tabs using terminal-cell positions, even without style spans.
 
     Args:
@@ -240,7 +250,7 @@ def _expand_tabs(content: Content, tab_size: int = 8) -> Content:
     return Content(plain)
 
 
-def _expanded_offsets(plain: str, base: int, tab_size: int = 8) -> list[int]:
+def _expanded_offsets(plain: str, base: int, tab_size: int = _TAB_SIZE) -> list[int]:
     """Map each tab-expanded character position back to a logical offset.
 
     Selections are extracted from a widget's *raw* content (`Content.plain`,
@@ -395,6 +405,10 @@ class _DiffRowContent(Content):
             `False` when the row must fall back to Textual's own rendering.
         """
         if self.continuation is None or width <= self.prefix_len:
+            return False
+        body_chars = len(self) - self.prefix_len
+        tabs = self.plain.count("\t", self.prefix_len)
+        if body_chars + (_TAB_SIZE - 1) * tabs > _MAX_WRAPPED_OFFSET_CHARS:
             return False
         # A body column narrower than the widest character cannot fit a single
         # cell of it, and `divide_line` would hand back chunks wider than the

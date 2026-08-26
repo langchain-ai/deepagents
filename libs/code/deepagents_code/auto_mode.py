@@ -98,6 +98,7 @@ _CLASSIFIER_CONSTRUCTION_TIMEOUT_SECONDS = 30.0
 # Share of the classifier budget one retry backoff may consume. A retry that
 # cannot fit gives up so the provider error, not a timeout, reaches the caller.
 _CLASSIFIER_RETRY_DELAY_FRACTION = 0.25
+"""Share of the classifier deadline that all retry backoff may consume."""
 _REASON_LIMIT = 512
 _TOTAL_DENIAL_FALLBACK = 20
 _CONSECUTIVE_DENIAL_FALLBACK = 3
@@ -2544,11 +2545,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 # The retry backoff sleeps inside this deadline, so an
                 # honoured `Retry-After` would be cancelled mid-wait and
                 # resurface as a classifier timeout -- a diagnosis pointing at
-                # the wrong subsystem. Cap the wait at a fraction of the budget
-                # so a rate limit surfaces as itself.
+                # the wrong subsystem. Cap the total retry sleep at a fraction
+                # of the budget so a rate limit surfaces as itself.
                 result = await aretry_model_call(
                     model,
-                    max_delay=(
+                    max_total_delay=(
                         self._classifier_timeout_seconds
                         * _CLASSIFIER_RETRY_DELAY_FRACTION
                     ),

@@ -587,10 +587,10 @@ def _auxiliary_max_retries(model: object) -> int:
     return DEFAULT_MODEL_RETRIES
 
 
-def _delay_ceiling_guard(
-    max_delay: float | None,
+def _delay_budget_guard(
+    max_total_delay: float | None,
 ) -> Callable[[Exception, int, float], bool]:
-    """Build a guard that gives up rather than sleeping past `max_delay`.
+    """Build a guard that keeps total retry sleep within `max_total_delay`.
 
     Callers that run under an enclosing deadline cannot afford an honoured
     `Retry-After` of up to `_MAX_RETRY_AFTER_SECONDS`: the sleep outlives the
@@ -598,16 +598,28 @@ def _delay_ceiling_guard(
     replaced by an unrelated `TimeoutError`. Refusing the retry surfaces the
     genuine cause instead, and avoids retrying a rate limit early.
 
+    The budget is cumulative, not per-delay. Capping each wait in isolation
+    bounds nothing: five waits that each clear a 5s ceiling still spend 25s,
+    which is exactly how a 20s classifier deadline was overrun by the retries
+    meant to fit inside it.
+
     Returns:
         A `retry_guard` callable for the shared retry loops.
     """
+    spent = 0.0
 
     def guard(exc: Exception, attempt: int, delay: float) -> bool:  # noqa: ARG001
-        if max_delay is None or delay <= max_delay:
+        nonlocal spent
+        if max_total_delay is None:
+            return True
+        if spent + delay <= max_total_delay:
+            spent += delay
             return True
         logger.warning(
-            "Auxiliary model retry would wait past the caller deadline; "
-            "surfacing %s instead",
+            "Auxiliary model retries would wait %.1fs past the caller deadline "
+            "budget of %.1fs; surfacing %s instead",
+            spent + delay - max_total_delay,
+            max_total_delay,
             type(exc).__name__,
         )
         return False
@@ -619,15 +631,16 @@ def retry_model_call[ResultT](
     model: object,
     call: Callable[[], ResultT],
     *,
-    max_delay: float | None = None,
+    max_total_delay: float | None = None,
 ) -> ResultT:
     """Run a non-streaming auxiliary model call with its configured retry budget.
 
     Args:
         model: Model carrying dcode retry metadata when dcode owns its SDK retries.
         call: Fresh invocation callable to run for each attempt.
-        max_delay: Longest backoff this caller can absorb, for callers running
-            under an enclosing deadline. `None` honours the full policy.
+        max_total_delay: Total time this caller can spend sleeping between
+            attempts, for callers running under an enclosing deadline. `None`
+            honours the full policy.
 
     Returns:
         The successful call result.
@@ -636,7 +649,7 @@ def retry_model_call[ResultT](
         call,
         max_retries=_auxiliary_max_retries(model),
         on_retry=_log_auxiliary_retry,
-        retry_guard=_delay_ceiling_guard(max_delay),
+        retry_guard=_delay_budget_guard(max_total_delay),
     )
 
 
@@ -644,15 +657,16 @@ async def aretry_model_call[ResultT](
     model: object,
     call: Callable[[], Awaitable[ResultT]],
     *,
-    max_delay: float | None = None,
+    max_total_delay: float | None = None,
 ) -> ResultT:
     """Run an asynchronous auxiliary model call with its configured retry budget.
 
     Args:
         model: Model carrying dcode retry metadata when dcode owns its SDK retries.
         call: Fresh async invocation callable to run for each attempt.
-        max_delay: Longest backoff this caller can absorb, for callers running
-            under an enclosing deadline. `None` honours the full policy.
+        max_total_delay: Total time this caller can spend sleeping between
+            attempts, for callers running under an enclosing deadline. `None`
+            honours the full policy.
 
     Returns:
         The successful call result.
@@ -661,7 +675,7 @@ async def aretry_model_call[ResultT](
         call,
         max_retries=_auxiliary_max_retries(model),
         on_retry=_log_auxiliary_retry,
-        retry_guard=_delay_ceiling_guard(max_delay),
+        retry_guard=_delay_budget_guard(max_total_delay),
     )
 
 

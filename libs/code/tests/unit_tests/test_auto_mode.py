@@ -55,6 +55,7 @@ from deepagents_code.approval_mode import (
     approval_mode_key,
 )
 from deepagents_code.auto_mode import (
+    _CLASSIFIER_RETRY_DELAY_FRACTION,
     _MAX_CLASSIFIER_MODEL_CACHE,
     _MAX_EMITTED_EVENT_SCOPES,
     _MAX_PENDING_EVENT_SCOPES,
@@ -4408,6 +4409,49 @@ async def test_classifier_retries_a_transient_invoke(
 
     assert model.attempts == 2
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_classifier_caps_total_retry_sleep_at_a_share_of_its_deadline(
+    tmp_path: Path,
+) -> None:
+    """A rate limit must surface as itself, not as a classifier timeout.
+
+    Without a cumulative cap the retries sleep out the whole `asyncio.timeout`
+    and the failure is reported as "the classifier did not respond", blaming
+    the wrong subsystem for a provider rate limit. Pins both that a cap is
+    passed and that it is a share of the configured deadline.
+    """
+    captured: list[float | None] = []
+
+    async def _record(
+        _model: object,
+        call: object,  # noqa: ARG001
+        *,
+        max_total_delay: float | None = None,
+    ) -> object:
+        captured.append(max_total_delay)
+        await asyncio.sleep(0)
+        msg = "rate limited"
+        raise TimeoutError(msg)
+
+    budget = 8.0
+    middleware = _middleware(tmp_path, classifier_timeout_seconds=budget)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    with patch("deepagents_code.model_retry.aretry_model_call", _record):
+        await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert captured == [budget * _CLASSIFIER_RETRY_DELAY_FRACTION]
 
 
 async def test_invoke_failure_evicts_cached_classifier(

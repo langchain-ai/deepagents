@@ -1103,7 +1103,7 @@ def test_max_delay_gives_up_rather_than_sleeping_past_a_deadline() -> None:
         raise _RateLimitError(_RETRY_AFTER_30)
 
     with pytest.raises(_RateLimitError):
-        retry_model_call(model, call, max_delay=5.0)
+        retry_model_call(model, call, max_total_delay=5.0)
     assert attempts == 1, "a 30s Retry-After must not be waited out under a 5s cap"
 
 
@@ -1120,7 +1120,7 @@ def test_max_delay_still_allows_a_retry_that_fits() -> None:
             raise _RateLimitError(_RETRY_AFTER_1)
         return "ok"
 
-    assert retry_model_call(model, call, max_delay=5.0) == "ok"
+    assert retry_model_call(model, call, max_total_delay=5.0) == "ok"
     assert attempts == 2
 
 
@@ -1282,7 +1282,7 @@ def test_deadline_guard_stays_quiet_for_a_non_retryable_error(
         caplog.at_level(logging.DEBUG, logger=model_retry.__name__),
         pytest.raises(ModelAuthenticationError),
     ):
-        retry_model_call(model, call, max_delay=0.0)
+        retry_model_call(model, call, max_total_delay=0.0)
 
     assert not [r for r in caplog.records if "past the caller deadline" in r.message]
     assert [r for r in caplog.records if "non-transient" in r.message]
@@ -1302,6 +1302,29 @@ def test_exhausted_budget_is_logged_even_under_a_deadline_cap(
         caplog.at_level(logging.DEBUG, logger=model_retry.__name__),
         pytest.raises(_RateLimitError),
     ):
-        retry_model_call(model, call, max_delay=0.0)
+        retry_model_call(model, call, max_total_delay=0.0)
 
     assert [r for r in caplog.records if "retries are disabled" in r.message]
+
+
+def test_retry_sleep_budget_is_cumulative_not_per_delay() -> None:
+    """Several waits that each fit the cap must not overrun it together.
+
+    A per-delay ceiling bounds nothing: the auto-mode classifier's five
+    retries each cleared a quarter of its 20s deadline and still spent the
+    whole budget sleeping, so the rate limit resurfaced as a classifier
+    timeout.
+    """
+    model = SimpleNamespace()
+    setattr(model, MODEL_RETRIES_ATTR, 5)
+    attempts = 0
+
+    def call() -> str:
+        nonlocal attempts
+        attempts += 1
+        raise _RateLimitError(_RETRY_AFTER_1)
+
+    with patch.object(model_retry.time, "sleep"), pytest.raises(_RateLimitError):
+        retry_model_call(model, call, max_total_delay=2.5)
+
+    assert attempts == 3, "a 1s Retry-After must run out a 2.5s total budget"

@@ -2585,6 +2585,39 @@ def _resolve_config_retry_count(
     return config.max_retries
 
 
+def _resolve_retry_param(
+    config: _RetryConfig, provider: str, model_kwargs: Mapping[str, Any]
+) -> str | None:
+    """Return the kwarg naming `provider`'s own retry count, if it is known.
+
+    Args:
+        config: Parsed retry configuration.
+        provider: Effective model provider.
+        model_kwargs: Constructor kwargs after all user overrides are merged.
+
+    Returns:
+        The kwarg dcode will force to the provider's disable value, or `None`
+        when the provider's retry control cannot be identified.
+    """
+    from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
+
+    # An explicit `[retries.<provider>].param` outranks the built-in registry:
+    # the user is correcting our knowledge of their provider's SDK, so honoring
+    # the registry instead would silently discard the directive.
+    provider_config = config.providers.get(provider)
+    retry_param = provider_config.param if provider_config is not None else None
+    if retry_param is None:
+        retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
+
+    # A custom provider that already exposes the conventional parameter has
+    # positively identified its retry control through model configuration. The
+    # value itself is replaced by the caller -- it is a detection signal, not a
+    # setting.
+    if retry_param is None and "max_retries" in model_kwargs:
+        retry_param = "max_retries"
+    return retry_param
+
+
 def _provider_retry_disable_kwargs(
     config: _RetryConfig,
     provider: str,
@@ -2601,24 +2634,9 @@ def _provider_retry_disable_kwargs(
         A one-item mapping that disables provider retries when the provider's
         retry control is known, otherwise an empty mapping.
     """
-    from deepagents_code.model_config import (
-        RETRY_DISABLE_VALUE_BY_PROVIDER,
-        RETRY_PARAM_BY_PROVIDER,
-    )
+    from deepagents_code.model_config import RETRY_DISABLE_VALUE_BY_PROVIDER
 
-    # An explicit `[retries.<provider>].param` outranks the built-in registry:
-    # the user is correcting our knowledge of their provider's SDK, so honoring
-    # the registry instead would silently discard the directive.
-    provider_config = config.providers.get(provider)
-    retry_param = provider_config.param if provider_config is not None else None
-    if retry_param is None:
-        retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
-
-    # A custom provider that already exposes the conventional parameter has
-    # positively identified its retry control through model configuration. The
-    # value itself is replaced below -- it is a detection signal, not a setting.
-    if retry_param is None and "max_retries" in model_kwargs:
-        retry_param = "max_retries"
+    retry_param = _resolve_retry_param(config, provider, model_kwargs)
     if retry_param is None:
         # The provider's own SDK retry loop can't be identified, so it stays
         # active and may multiply the middleware's attempts. Register the
@@ -2702,19 +2720,28 @@ def collect_retry_config_warnings() -> list[str]:
     return warnings
 
 
-def collect_retry_config_startup() -> tuple[list[str], set[str]]:
-    """Return retry diagnostics and configured provider parameter names.
+def collect_retry_config_startup(
+    provider: str | None = None,
+    model_kwargs: Mapping[str, Any] | None = None,
+) -> tuple[list[str], set[str]]:
+    """Return retry diagnostics and the retry kwarg dcode will force.
+
+    Args:
+        provider: Effective model provider, when it is already resolved.
+        model_kwargs: Constructor kwargs the run will supply, used to detect a
+            custom provider's retry control.
 
     Returns:
-        User-facing diagnostics and valid `[retries.<provider>].param` names.
+        User-facing diagnostics, and the retry kwarg names `create_model` will
+        override for `provider`. The set is empty when the provider is unknown
+        or its retry control cannot be identified, because a kwarg belonging to
+        some other provider is forwarded to the constructor untouched.
     """
     retry_config = _read_retry_config()
-    param_names = {
-        provider.param
-        for provider in retry_config.providers.values()
-        if provider.param is not None
-    }
-    return list(retry_config.warnings), param_names
+    if not provider:
+        return list(retry_config.warnings), set()
+    retry_param = _resolve_retry_param(retry_config, provider, model_kwargs or {})
+    return list(retry_config.warnings), {retry_param} if retry_param else set()
 
 
 _extra_skills_path_base: ContextVar[Path | None] = ContextVar(

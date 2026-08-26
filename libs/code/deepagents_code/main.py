@@ -4712,6 +4712,28 @@ def _config_provider_statuses() -> Mapping[int, "ProviderStatus"]:
     return get_config_resolver().provider_statuses()
 
 
+def _startup_model_provider(args: argparse.Namespace) -> str | None:
+    """Return the provider this run will build, without importing langchain.
+
+    Used only to scope startup diagnostics, so an unresolvable spec is not an
+    error here: the launch path reports it with far better context.
+
+    Returns:
+        The effective provider name, or `None` when it cannot be resolved yet.
+    """
+    from deepagents_code.config import _get_default_model_spec, detect_provider
+    from deepagents_code.model_config import ModelSpec
+
+    try:
+        spec = getattr(args, "model", None) or _get_default_model_spec()
+    except Exception:  # noqa: BLE001  # diagnostics only; the launch path reports
+        return None
+    if not spec:
+        return None
+    parsed = ModelSpec.try_parse(spec)
+    return parsed.provider if parsed else detect_provider(spec)
+
+
 def _apply_managed_runtime_exceptions(args: argparse.Namespace) -> None:
     """Force managed values into `args` for consumers that bypass the resolver.
 
@@ -5063,7 +5085,14 @@ def cli_main() -> None:
 
         from deepagents_code.config import collect_retry_config_startup
 
-        retry_config_warnings, configured_retry_params = collect_retry_config_startup()
+        # Scoped to the provider this run will actually build: `create_model`
+        # forces that provider's retry kwarg and forwards every other kwarg
+        # untouched, so a registry-wide set would report an override that never
+        # happens.
+        retry_config_warnings, forced_retry_params = collect_retry_config_startup(
+            _startup_model_provider(args),
+            model_params if isinstance(model_params, dict) else None,
+        )
 
         # dcode's model-node middleware owns the retry budget, so `create_model`
         # forces the provider's own retry kwarg to its disable value. A
@@ -5071,14 +5100,7 @@ def cli_main() -> None:
         # here: the override is logged into the debug buffer, which the user
         # never sees, and a silently ignored explicit flag reads as a bug.
         if isinstance(model_params, dict):
-            from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
-
-            retry_param_names = {
-                "max_retries",
-                *RETRY_PARAM_BY_PROVIDER.values(),
-                *configured_retry_params,
-            }
-            supplied = sorted(retry_param_names & set(model_params))
+            supplied = sorted(forced_retry_params & set(model_params))
             if supplied:
                 from rich.console import Console as _Console
                 from rich.text import Text as _Text

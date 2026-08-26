@@ -7883,10 +7883,40 @@ class TestCollectRetryConfigWarnings:
         config_path = tmp_path / "config.toml"
         config_path.write_text('[retries.foo]\nparam = "retry_attempts"\n')
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            warnings, param_names = collect_retry_config_startup()
+            warnings, param_names = collect_retry_config_startup("foo")
 
         assert warnings == []
         assert param_names == {"retry_attempts"}
+
+    def test_another_providers_param_is_not_reported_as_forced(
+        self, tmp_path: Path
+    ) -> None:
+        """A kwarg configured for a different provider is passed through.
+
+        `create_model` forces the retry kwarg of the provider it actually
+        builds. Reporting every configured name would tell the user their
+        `--model-params` value was ignored when it reaches the constructor
+        untouched -- the opposite of what happens.
+        """
+        from deepagents_code.config import collect_retry_config_startup
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.foo]\nparam = "retry_attempts"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            _warnings, param_names = collect_retry_config_startup("openai")
+
+        assert param_names == {"max_retries"}
+
+    def test_unresolved_provider_reports_no_forced_param(self, tmp_path: Path) -> None:
+        """Nothing can be claimed as overridden before the provider is known."""
+        from deepagents_code.config import collect_retry_config_startup
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.foo]\nparam = "retry_attempts"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            _warnings, param_names = collect_retry_config_startup(None)
+
+        assert param_names == set()
 
 
 class TestDeniedHomeKeyReporting:

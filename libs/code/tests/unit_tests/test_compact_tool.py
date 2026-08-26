@@ -434,7 +434,7 @@ class TestCLICompactionMiddleware:
     def test_runtime_model_builds_matching_summarizer(self) -> None:
         """A `/model` override selects the summarizer used by `/offload`."""
         startup = self._summarization()
-        middleware = CLICompactionMiddleware(startup)
+        middleware = CLICompactionMiddleware(startup, cli_max_retries=0)
         runtime = MagicMock()
         runtime.context = {
             "model": "provider:active-model",
@@ -460,6 +460,7 @@ class TestCLICompactionMiddleware:
             "provider:active-model",
             extra_kwargs={"temperature": 0},
             profile_overrides=None,
+            cli_max_retries=0,
         )
         create_summarization.assert_called_once()
         assert create_summarization.call_args.args[0] is active_model
@@ -501,6 +502,7 @@ class TestCLICompactionMiddleware:
             "provider:active-model",
             extra_kwargs=None,
             profile_overrides={"max_input_tokens": 32_000},
+            cli_max_retries=None,
         )
         assert active_model.profile["max_input_tokens"] == 24_000
         create_summarization.assert_called_once()
@@ -579,13 +581,16 @@ class TestCLICompactionMiddleware:
         with patch.object(
             om, "create_summarization_tool_middleware", return_value=sdk
         ) as factory:
-            result = om._create_cli_compaction_middleware("provider:model", backend)
+            result = om._create_cli_compaction_middleware(
+                "provider:model", backend, cli_max_retries=0
+            )
 
         factory.assert_called_once()
         assert isinstance(result, om.CLICompactionMiddleware)
         assert result.name == "SummarizationMiddleware"
         assert result.system_prompt == "SYSTEM PROMPT"
         assert result._summarization is sdk._summarization
+        assert result._cli_max_retries == 0
         assert isinstance(
             result._summarization._lc_helper._summary_model,
             _RetryingModelInvoker,

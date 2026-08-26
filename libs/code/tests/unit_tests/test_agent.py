@@ -5226,7 +5226,7 @@ class TestCreateCliAgentInterpreterWiring:
         from deepagents_code.model_retry import CodeModelRetryMiddleware
         from deepagents_code.offload_middleware import CLICompactionMiddleware
 
-        middleware = self._capture_middleware(tmp_path)
+        middleware = self._capture_middleware(tmp_path, cli_max_retries=0)
         compaction = next(
             item for item in middleware if isinstance(item, CLICompactionMiddleware)
         )
@@ -5234,6 +5234,7 @@ class TestCreateCliAgentInterpreterWiring:
             item for item in middleware if isinstance(item, CodeModelRetryMiddleware)
         )
 
+        assert compaction._cli_max_retries == 0
         # LangChain composes the first middleware as the outermost wrapper.
         assert middleware.index(compaction) < middleware.index(retry)
 

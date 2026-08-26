@@ -674,6 +674,24 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     used by the server-owned `/offload` operation.
     """
 
+    def __init__(
+        self,
+        summarization: SummarizationMiddleware,
+        *,
+        system_prompt: str | None = None,
+        cli_max_retries: int | None = None,
+    ) -> None:
+        """Initialize the CLI compaction middleware.
+
+        Args:
+            summarization: Summarization engine used by every compaction path.
+            system_prompt: Optional prompt fragment advertising the compact tool.
+            cli_max_retries: Explicit `--max-retries` value to retain when
+                rebuilding a runtime-selected model for `/offload`.
+        """
+        super().__init__(summarization, system_prompt=system_prompt)
+        self._cli_max_retries = cli_max_retries
+
     @property
     def name(self) -> str:
         """Replace the SDK auto-summarizer while retaining the compact tool."""
@@ -888,6 +906,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             config.model_spec,
             extra_kwargs=config.model_params or None,
             profile_overrides=config.profile_overrides or None,
+            cli_max_retries=self._cli_max_retries,
         ).model
         context_limit = config.context_limit
         if context_limit is not None:
@@ -1099,12 +1118,15 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 def _create_cli_compaction_middleware(
     model: str | BaseChatModel,
     backend: BackendProtocol,
+    *,
+    cli_max_retries: int | None = None,
 ) -> CLICompactionMiddleware:
     """Create the dcode compaction middleware from the SDK configuration.
 
     Args:
         model: Startup model or model specification.
         backend: Agent backend used for archive persistence.
+        cli_max_retries: Explicit `--max-retries` value for runtime rebuilds.
 
     Returns:
         CLI compaction middleware with the SDK's model-aware defaults.
@@ -1114,6 +1136,7 @@ def _create_cli_compaction_middleware(
     return CLICompactionMiddleware(
         sdk_middleware._summarization,
         system_prompt=sdk_middleware.system_prompt,
+        cli_max_retries=cli_max_retries,
     )
 
 

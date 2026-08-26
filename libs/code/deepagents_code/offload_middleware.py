@@ -117,8 +117,23 @@ class _RetryingModelInvoker(Runnable[LanguageModelInput, AIMessage]):
 
 
 def _install_summary_model_retries(summarization: SummarizationMiddleware) -> None:
-    """Replace LangChain's generic summary retries with dcode's exact policy."""
-    summarization._lc_helper._summary_model = _RetryingModelInvoker(summarization.model)
+    """Replace LangChain's generic summary retries with dcode's exact policy.
+
+    Raises:
+        AttributeError: If the SDK no longer exposes the summary-model slot.
+    """
+    helper = summarization._lc_helper
+    # Assigning to a renamed slot would create a new attribute nothing reads,
+    # leaving LangChain's unconditional three-attempt `with_retry` in place --
+    # a silent no-op that defeats `--max-retries 0` and reports nothing.
+    if not hasattr(helper, "_summary_model"):
+        msg = (
+            f"{type(helper).__name__} exposes no '_summary_model' slot, so dcode "
+            "cannot own compaction summarization retries. The SDK's "
+            "summarization internals have changed."
+        )
+        raise AttributeError(msg)
+    helper._summary_model = _RetryingModelInvoker(summarization.model)
 
 
 def _create_retrying_summarization_middleware(

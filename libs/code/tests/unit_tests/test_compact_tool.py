@@ -23,6 +23,7 @@ from deepagents_code.config import MODEL_RETRIES_ATTR
 from deepagents_code.offload_middleware import (
     CLICompactionMiddleware,
     _ArchiveReadGuard,
+    _install_summary_model_retries,
     _RetryingModelInvoker,
     _runtime_model_config,
 )
@@ -746,3 +747,18 @@ class TestRetryingModelInvoker:
             assert invoker.invoke("summarize this").content == "summary"
 
         assert calls == ["sync", "sync"]
+
+
+def test_summary_model_slot_rename_is_loud() -> None:
+    """A renamed SDK slot must fail, not silently keep LangChain's retries.
+
+    Plain assignment would create an unused attribute and leave the stock
+    three-attempt `with_retry` installed, so `--max-retries 0` would keep
+    retrying and nothing would say why.
+    """
+    summarization = cast(
+        "Any", SimpleNamespace(_lc_helper=SimpleNamespace(), model=SimpleNamespace())
+    )
+
+    with pytest.raises(AttributeError, match="_summary_model"):
+        _install_summary_model_retries(summarization)

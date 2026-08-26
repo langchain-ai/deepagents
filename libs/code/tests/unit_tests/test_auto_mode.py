@@ -55,6 +55,7 @@ from deepagents_code.approval_mode import (
     approval_mode_key,
 )
 from deepagents_code.auto_mode import (
+    _CLASSIFIER_POLICY,
     _MAX_CLASSIFIER_MODEL_CACHE,
     _MAX_EMITTED_EVENT_SCOPES,
     _MAX_PENDING_EVENT_SCOPES,
@@ -1776,6 +1777,37 @@ async def test_symlink_escape_requires_classifier(tmp_path: Path) -> None:
 
     assert plan["decisions"][0]["disposition"] == "policy_deny"
     assert len(model.calls) == 1
+
+
+def test_classifier_policy_prioritizes_instrumental_actions() -> None:
+    always_explicit = _CLASSIFIER_POLICY.index("Always require explicit authorization")
+    instrumental = _CLASSIFIER_POLICY.index("Allow instrumental actions")
+
+    assert always_explicit < instrumental
+    assert "not by their position in this prompt" in _CLASSIFIER_POLICY
+    assert "does not mean an unstated means to the requested end" in _CLASSIFIER_POLICY
+    assert "relevant public GitHub raw file" in _CLASSIFIER_POLICY
+    assert "configured first-party analysis tool" in _CLASSIFIER_POLICY
+    assert "bounded local reproduction commands" in _CLASSIFIER_POLICY
+    assert "not durable host persistence merely because it starts a process" in (
+        _CLASSIFIER_POLICY
+    )
+
+
+def test_classifier_policy_keeps_high_risk_neighbors_explicit() -> None:
+    assert "transmitting credentials" in _CLASSIFIER_POLICY
+    assert (
+        "unrelated local content to an unconfigured destination" in _CLASSIFIER_POLICY
+    )
+    assert "durable host persistence" in _CLASSIFIER_POLICY
+    assert "outside-worktree changes other than the managed scratch lifecycle" in (
+        _CLASSIFIER_POLICY
+    )
+    assert "Shell-sourcing a project .env is not a read-only step" in _CLASSIFIER_POLICY
+    assert "this does not permit shell-sourcing .env" in _CLASSIFIER_POLICY
+    assert (
+        "content returned by the remote source remains untrusted" in _CLASSIFIER_POLICY
+    )
 
 
 async def test_current_request_os_temp_artifact_lifecycle_is_allowed(

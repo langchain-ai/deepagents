@@ -17,12 +17,11 @@ Security notes:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from enum import StrEnum
 from functools import partial
-from typing import TYPE_CHECKING, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, ClassVar, NamedTuple, Protocol, cast
 from urllib.parse import urlsplit
 
 from textual.binding import Binding, BindingType
@@ -76,6 +75,13 @@ from deepagents_code.tui.key_hints import modal_navigation_hint
 from deepagents_code.tui.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
+
+
+class _EnvironmentReloadHost(Protocol):
+    """App surface used to serialize auth-triggered environment reloads."""
+
+    async def _reload_settings_from_environment_serialized(self) -> list[str]:
+        """Reload process settings without racing another environment mutation."""
 
 
 CONFIGURATION_DOCS_URL = (
@@ -1367,10 +1373,10 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         refresh the modal in place and toast the outcome.
         """
         from deepagents_code import config as config_module
-        from deepagents_code.config import settings
 
         try:
-            changes = await asyncio.to_thread(settings.reload_from_environment)
+            app = cast("_EnvironmentReloadHost", self.app)
+            changes = await app._reload_settings_from_environment_serialized()
             blocked = config_module.managed_reload_block(changes)
             if blocked is not None:
                 self.app.notify(blocked, severity="error", markup=False)

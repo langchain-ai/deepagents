@@ -16291,6 +16291,15 @@ class DeepAgentsApp(App):
             await reload_task
             raise
 
+    async def _reload_settings_from_environment_serialized(self) -> list[str]:
+        """Reload settings while excluding every other environment mutation.
+
+        Returns:
+            Human-readable descriptions of settings changes.
+        """
+        async with self._environment_mutation_lock:
+            return await self._reload_settings_from_environment()
+
     async def _run_reload_unlocked(self) -> None:
         """Run `/reload` while the environment mutation lock is held."""
         from deepagents_code import config as config_module

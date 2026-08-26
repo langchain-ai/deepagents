@@ -63,12 +63,20 @@ class _AuthHostApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
+        self._environment_mutation_lock = asyncio.Lock()
         self.prompt_result: AuthResult | None = None
         self.prompt_dismissed = False
         self.credential_saved_count = 0
         self.credential_deleted_count = 0
         self.last_saved_provider: str | None = None
         self.last_deleted_provider: str | None = None
+
+    async def _reload_settings_from_environment_serialized(self) -> list[str]:
+        """Use the production reload core while modeling its app-level lock."""
+        from deepagents_code.app import DeepAgentsApp
+
+        async with self._environment_mutation_lock:
+            return await DeepAgentsApp._reload_settings_from_environment()
 
     def compose(self) -> ComposeResult:
         """Render a placeholder root."""
@@ -1386,6 +1394,33 @@ api_key_url = "javascript:alert(1)"
             assert not reload_task.done()
             release.set()
             await reload_task
+
+    async def test_ctrl_r_reload_waits_for_environment_mutation_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An auth reload cannot overlap another shared environment mutation."""
+        reload_started = threading.Event()
+
+        def reload_from_environment() -> list[str]:
+            reload_started.set()
+            return []
+
+        monkeypatch.setattr(
+            "deepagents_code.config.settings.reload_from_environment",
+            reload_from_environment,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            screen = cast("AuthPromptScreen", app.screen)
+            async with app._environment_mutation_lock:
+                reload_task = asyncio.create_task(screen.action_reload_env())
+                await asyncio.sleep(0)
+                assert not reload_started.is_set()
+            await reload_task
+
+        assert reload_started.is_set()
 
     async def test_ctrl_r_reload_surfaces_managed_policy_block(
         self, monkeypatch: pytest.MonkeyPatch

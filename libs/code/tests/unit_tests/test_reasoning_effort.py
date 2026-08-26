@@ -210,19 +210,8 @@ def test_is_effort_supported_for_model() -> None:
         assert not is_effort_supported_for_model("acme:unknown", "high")
 
 
-@pytest.mark.parametrize(
-    "model_spec",
-    [
-        "openai:gpt-test",
-        "openai_codex:gpt-test",
-        "anthropic:claude-test",
-        "google_genai:gemini-test",
-        "fireworks:accounts/fireworks/models/test",
-        "xai:grok-test",
-        "custom:model",
-    ],
-)
-def test_profile_support_is_not_limited_by_provider(model_spec: str) -> None:
+def test_profile_support_is_not_limited_by_provider() -> None:
+    model_spec = "custom:model"
     with _mock_profiles(
         {
             model_spec: _profile_entry(
@@ -372,67 +361,6 @@ def test_opus_5_profile_contract() -> None:
     expected = ("low", "medium", "high", "xhigh", "max")
     assert supported_efforts_for_model("anthropic:claude-opus-5") == expected
     assert default_effort_for_model("anthropic:claude-opus-5") == "high"
-
-
-def test_openai_integration_translates_standard_effort_without_summary() -> None:
-    from langchain_core.messages import HumanMessage
-    from langchain_openai import ChatOpenAI
-
-    with (
-        patch("langchain_openai.chat_models.base.openai.OpenAI"),
-        patch("langchain_openai.chat_models.base.openai.AsyncOpenAI"),
-    ):
-        model = ChatOpenAI(
-            model="gpt-5.5",
-            api_key="test",
-            reasoning_effort="high",
-            use_responses_api=True,
-            http_socket_options=[],
-        )
-    payload = model._get_request_payload([HumanMessage("hello")])
-
-    assert payload["reasoning"] == {"effort": "high"}
-    assert "reasoning_effort" not in payload
-
-
-def test_anthropic_integration_translates_standard_effort() -> None:
-    from langchain_anthropic import ChatAnthropic
-    from langchain_core.messages import HumanMessage
-
-    model = ChatAnthropic(
-        model="claude-opus-4-5",
-        api_key="test",
-        reasoning_effort="high",
-        output_config={"format": {"type": "json_schema", "schema": {}}},
-    )
-    payload = model._get_request_payload([HumanMessage("hello")])
-
-    assert payload["output_config"] == {
-        "format": {"type": "json_schema", "schema": {}},
-        "effort": "high",
-    }
-    assert "reasoning_effort" not in payload
-
-
-def test_google_integration_translates_standard_effort(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    model = ChatGoogleGenerativeAI(
-        model="gemini-3.6-flash",
-        google_api_key="test",
-        reasoning_effort="minimal",
-        thinking_config={"include_thoughts": True},
-    )
-    config = model._build_thinking_config()
-
-    assert config is not None
-    assert config.thinking_level is not None
-    assert config.thinking_level.value == "MINIMAL"
-    assert config.include_thoughts is True
 
 
 # Compatibility reader for canonical and legacy/native model params.

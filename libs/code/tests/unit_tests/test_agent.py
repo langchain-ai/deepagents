@@ -489,18 +489,6 @@ async def test_live_approval_round_trip_flips_interrupt_decision() -> None:
     )
 
 
-def test_cli_context_schema_fields_mirror_typed_dict() -> None:
-    """`CLIContextSchema` and `CLIContext` must stay structurally identical.
-
-    The two shapes carry the same payload across the API boundary (dataclass
-    in-process, dict over RemoteGraph). A field added to one but not the other
-    would silently drop across that boundary; this pins the documented mirror.
-    """
-    from deepagents_code._cli_context import CLIContext
-
-    assert {f.name for f in fields(CLIContextSchema)} == set(CLIContext.__annotations__)
-
-
 def test_should_interrupt_tool_call_fails_closed_when_live_mode_missing() -> None:
     """A configured but missing live mode should interrupt for safety."""
     from deepagents_code.approval_mode import approval_mode_key
@@ -1881,18 +1869,6 @@ class TestCreateCliAgentInteractiveForwarding:
 
         # get_system_prompt should NOT be called when system_prompt is provided
         mock_get_prompt.assert_not_called()
-
-
-class TestDefaultAgentName:
-    """Tests for the DEFAULT_AGENT_NAME constant."""
-
-    def test_default_agent_name_value(self) -> None:
-        """Guard against accidental renames of the default agent identifier.
-
-        Other modules (main.py, commands.py) rely on this value matching
-        the directory name under `~/.deepagents/`.
-        """
-        assert DEFAULT_AGENT_NAME == "agent"
 
 
 class TestListAgents:

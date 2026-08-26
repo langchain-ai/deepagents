@@ -44,16 +44,12 @@ def prompt_search_hint() -> str:
     return sep.join(
         (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
-            "Tab/Shift+Tab page",
-            "Enter insert",
+            "Tab/Enter insert",
             "Ctrl+R full view",
             "Esc cancel",
         )
     )
 
-
-PROMPT_SEARCH_PAGE_SIZE = PROMPT_SEARCH_MAX_ROWS
-"""Rows Tab/Shift+Tab jump through the filtered list."""
 
 PROMPT_SEARCH_WINDOW = 50
 """Most rows rendered in the DOM at once, windowed around the selection.
@@ -127,39 +123,15 @@ class PromptSearchInput(Input):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        # The app binds these chords with priority, so they never reach a
-        # focused widget unless `check_action` steps them aside.
-        #
-        # `escape` and `shift+tab` get an explicit panel-aware clause there
-        # (see `DeepAgentsApp.check_action`). `tab` does not: its app binding
-        # is `approval_reject_with_reason`, which steps aside whenever an
-        # approval is pending *and* the chat input is unfocused. This works
-        # here only because `_is_input_focused()` walks `ChatInput`'s children
-        # and finds the query input -- narrowing it to the text area alone
-        # would silently break Tab paging with nothing to flag it.
         Binding("escape", "abandon_search", "Cancel", show=False, priority=True),
-        Binding("tab", "page(True)", "Page Down", show=False, priority=True),
-        Binding("shift+tab", "page(False)", "Page Up", show=False, priority=True),
     ]
 
     class AbandonSearch(Message):
         """Posted on Escape or empty-query Backspace, to close the search."""
 
-    class PageRequested(Message):
-        """Posted on Tab (older) or Shift+Tab (newer) to page the results."""
-
-        def __init__(self, *, older: bool) -> None:
-            """Initialize with the page direction."""
-            super().__init__()
-            self.older = older
-
     def action_abandon_search(self) -> None:
         """Forward Escape as an abandon request."""
         self.post_message(self.AbandonSearch())
-
-    def action_page(self, older: bool) -> None:
-        """Forward Tab/Shift+Tab as a page request."""
-        self.post_message(self.PageRequested(older=older))
 
     async def _on_key(self, event: events.Key) -> None:
         """Forward the empty-query Backspace chord; defer the rest to Input."""
@@ -557,8 +529,7 @@ class PromptSearchPanel(Vertical):
         """Update which row is selected, re-windowing the DOM when needed.
 
         Rows are windowed around the selection, so a move beyond the mounted
-        range (a Tab page, or arrows past the window edge) rebuilds the window
-        instead of just re-styling a row.
+        range rebuilds the window instead of just re-styling a row.
         """
         self._pending_selected = selected_index
         if self._selected_index == selected_index:

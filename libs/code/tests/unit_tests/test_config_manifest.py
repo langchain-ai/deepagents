@@ -195,8 +195,8 @@ def test_no_hand_rolled_ui_config_readers() -> None:
 
 
 # Readers that resolve an option but deliberately emit no ranked diagnostics.
-# Each reports what it rejected through its own channel: the two shared
-# primitives hand the `ResolvedValue` back for the caller to emit against,
+# Each reports what it rejected through its own channel: the shared primitive
+# hands the `ResolvedValue` back for the caller to emit against,
 # `dcode config` prints provenance per option, the managed validator inspects a
 # candidate generation not yet in force, and the sandbox, theme, and update
 # readers log their own rejections in terms of the setting they own.
@@ -209,7 +209,6 @@ _SILENT_RESOLVER_READERS = frozenset(
     {
         # The shared resolution primitives, not readers: each returns the
         # `ResolvedValue` and every caller emits against it.
-        "config_manifest.py:_resolve_option",
         "config_manifest.py:_resolve_option_without_managed",
         "client/commands/config.py:_option_provenance",
         "configuration/service.py:resolve_managed_option",
@@ -4291,6 +4290,60 @@ def test_config_surface_agrees_with_runtime_on_blank_env_classifier(
     assert displayed == runtime_spec
     assert source == f"env ({_env_vars.AUTO_CLASSIFIER_MODEL})"
     assert is_set is True
+    assert _display_value(option, is_set=is_set, value=displayed) == "(unset)"
+
+
+def test_classifier_cli_overrides_blank_env_on_config_surface(monkeypatch) -> None:
+    """An explicit classifier flag wins even when the environment is blank."""
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import (
+        install_cli_provider,
+        reset_config_resolver,
+    )
+
+    option = get_option("models.auto_classifier")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "")
+    install_cli_provider(
+        CliProvider({"auto_classifier_model": "anthropic:claude-haiku-4-5"})
+    )
+    try:
+        is_set, source, displayed = _resolve(
+            option,
+            toml_data={"models": {"auto_classifier": "openai:gpt-5"}},
+            managed_toml_data={},
+        )
+    finally:
+        reset_config_resolver()
+
+    assert is_set is True
+    assert source == "CLI argument"
+    assert displayed == "anthropic:claude-haiku-4-5"
+
+
+def test_blank_classifier_cli_displays_inheritance() -> None:
+    """A blank classifier flag must not expose its internal inherit sentinel."""
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import (
+        install_cli_provider,
+        reset_config_resolver,
+    )
+
+    option = get_option("models.auto_classifier")
+    assert option is not None
+    install_cli_provider(CliProvider({"auto_classifier_model": ""}))
+    try:
+        is_set, source, displayed = _resolve(
+            option,
+            toml_data={"models": {"auto_classifier": "openai:gpt-5"}},
+            managed_toml_data={},
+        )
+    finally:
+        reset_config_resolver()
+
+    assert is_set is True
+    assert source == "CLI argument"
+    assert displayed is None
     assert _display_value(option, is_set=is_set, value=displayed) == "(unset)"
 
 

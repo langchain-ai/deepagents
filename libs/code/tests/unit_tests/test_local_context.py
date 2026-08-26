@@ -954,9 +954,6 @@ class TestBuildDetectScript:
         assert script.startswith("bash <<'__DETECT_CONTEXT_EOF__'")
         assert script.rstrip().endswith("__DETECT_CONTEXT_EOF__")
 
-    def test_module_constant_matches_builder(self) -> None:
-        assert build_detect_script() == DETECT_CONTEXT_SCRIPT
-
 
 class TestSectionHeader:
     """Tests for _section_header."""

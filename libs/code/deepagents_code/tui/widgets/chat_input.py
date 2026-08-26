@@ -59,7 +59,6 @@ from deepagents_code.tui.widgets.autocomplete import (
 )
 from deepagents_code.tui.widgets.history import HistoryManager
 from deepagents_code.tui.widgets.prompt_search import (
-    PROMPT_SEARCH_PAGE_SIZE,
     PROMPT_SEARCH_PANEL_ROWS,
     PromptSearchInput,
     PromptSearchPanel,
@@ -3847,8 +3846,8 @@ class ChatInput(Vertical):
         )
         # Pass every filtered title, not just the first visible page: the panel
         # renders a window around the selection, and a row that is not mounted
-        # cannot be scrolled into view — which previously made arrow/Tab moves
-        # past row 5 invisible and left scrolling with nothing to do.
+        # cannot be scrolled into view — which previously made arrow moves past
+        # row 5 invisible and left scrolling with nothing to do.
         titles = [prompt_title(prompt) for prompt in self._prompt_search_filtered]
         empty: str | None
         if self._prompt_search_filtered:
@@ -3939,7 +3938,7 @@ class ChatInput(Vertical):
             event.stop()
             return True
 
-        if event.key == "enter":
+        if event.key in {"enter", "tab"}:
             event.prevent_default()
             event.stop()
             if self._prompt_search_filtered:
@@ -3967,30 +3966,6 @@ class ChatInput(Vertical):
 
         return False
 
-    def _page_prompt_search(self, *, older: bool) -> None:
-        """Move the selection one page through the filtered prompts."""
-        last = len(self._prompt_search_filtered) - 1
-        if last < 0:
-            return
-        new_index = (
-            max(0, self._prompt_search_index - PROMPT_SEARCH_PAGE_SIZE)
-            if not older
-            else min(last, self._prompt_search_index + PROMPT_SEARCH_PAGE_SIZE)
-        )
-        if new_index != self._prompt_search_index:
-            self._prompt_search_index = new_index
-            if self._prompt_search is not None:
-                self._prompt_search.update_selection(new_index)
-
-    def on_prompt_search_input_page_requested(
-        self, event: PromptSearchInput.PageRequested
-    ) -> None:
-        """Page the selection on Tab (older) or Shift+Tab (newer)."""
-        if not self._prompt_search_active:
-            return
-        event.stop()
-        self._page_prompt_search(older=event.older)
-
     def on_prompt_search_input_abandon_search(
         self, event: PromptSearchInput.AbandonSearch
     ) -> None:
@@ -4012,7 +3987,7 @@ class ChatInput(Vertical):
         self._refresh_prompt_search_panel()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Insert the selected prompt when the query input receives Enter."""
+        """Insert the selected prompt when the query input is submitted."""
         if not self._prompt_search_active:
             return
         if not isinstance(event.input, PromptSearchInput):

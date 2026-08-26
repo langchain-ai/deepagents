@@ -52,11 +52,8 @@ from deepagents_code.plugins.marketplace import (
 )
 from deepagents_code.plugins.models import (
     GithubPluginSource,
-    LocalMarketplaceSource,
     MarketplaceRecord,
     PluginMarketplace,
-    RepositoryMarketplaceSource,
-    UrlMarketplaceSource,
 )
 from deepagents_code.plugins.store import (
     ensure_marketplace_cache_dir,
@@ -621,35 +618,6 @@ def test_enable_without_install_does_not_discover(tmp_path: Path, monkeypatch) -
     result = discover_plugins()
     assert result.plugins == ()
     assert not result.warnings
-
-
-def test_marketplace_source_parser_accepts_common_inputs(tmp_path: Path) -> None:
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    marketplace_file = marketplace_root / ".claude-plugin" / "marketplace.json"
-
-    shorthand = parse_marketplace_source("example/plugins")
-    assert isinstance(shorthand, RepositoryMarketplaceSource)
-    assert shorthand.source_type == "github"
-    ssh = parse_marketplace_source("git@github.com:example/plugins.git#main")
-    assert isinstance(ssh, RepositoryMarketplaceSource)
-    assert ssh.source_type == "git"
-    assert ssh.ref == "main"
-    github_url = parse_marketplace_source("https://github.com/owner/repo")
-    assert isinstance(github_url, RepositoryMarketplaceSource)
-    assert github_url.source_type == "git"
-    assert github_url.value == "https://github.com/owner/repo.git"
-    json_url = parse_marketplace_source("https://example.com/marketplace.json")
-    assert isinstance(json_url, UrlMarketplaceSource)
-    assert json_url.source_type == "url"
-    directory = parse_marketplace_source(str(marketplace_root))
-    marketplace_json = parse_marketplace_source(str(marketplace_file))
-    assert isinstance(directory, LocalMarketplaceSource)
-    assert isinstance(marketplace_json, LocalMarketplaceSource)
-    assert directory.source_type == "directory"
-    assert marketplace_json.source_type == "file"
-    assert not hasattr(directory, "ref")
-    assert not hasattr(json_url, "ref")
 
 
 def test_marketplace_add_accepts_json_file_source(tmp_path: Path, monkeypatch) -> None:

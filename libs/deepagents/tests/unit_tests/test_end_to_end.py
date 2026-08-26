@@ -4340,7 +4340,7 @@ def test_summarization_clips_ls_batch_on_overflow() -> None:
     `ls` isn't read_file, so the tail-clip path falls through to
     `_offload_tool_message_content`: full content written under
     `/large_tool_results/{tcid}` and the message replaced with a
-    `TOO_LARGE_TOOL_MSG` stub.
+    large-tool-result stub.
     """
     fake_model = _OverflowOnLargeInputModel(messages=iter([AIMessage(content="summary text"), AIMessage(content="final response")]))
     fake_model.call_history = []

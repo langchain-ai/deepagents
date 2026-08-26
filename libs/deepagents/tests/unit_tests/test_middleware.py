@@ -32,6 +32,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.utils import (
     TOOL_RESULT_TOKEN_LIMIT,
     TRUNCATION_GUIDANCE,
+    TRUNCATION_MARKER_TEMPLATE,
     create_file_data,
     format_content_with_line_numbers,
     sanitize_tool_call_id,
@@ -43,6 +44,8 @@ from deepagents.middleware._message_eviction import (
     _build_evicted_content,
     _create_content_preview,
     _extract_text_from_message,
+    _preview_note,
+    _render_too_large_tool_msg,
 )
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
@@ -54,6 +57,7 @@ from deepagents.middleware.filesystem import (
     FilesystemPermission,
     FilesystemState,
     GrepSchema,
+    _build_truncated_human_message,
     supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -3163,25 +3167,103 @@ class TestFilesystemMiddleware:
 
         preview = _create_content_preview(content_str)
 
+        assert preview.lines_omitted is should_truncate
         if should_truncate:
             # Should have truncation notice
-            assert "truncated" in preview
+            assert "truncated" in preview.text
             # Should have head lines (0-4)
-            assert "line 0" in preview
-            assert "line 4" in preview
+            assert "line 0" in preview.text
+            assert "line 4" in preview.text
             # Should have tail lines
-            assert f"line {num_lines - 5}" in preview
-            assert f"line {num_lines - 1}" in preview
+            assert f"line {num_lines - 5}" in preview.text
+            assert f"line {num_lines - 1}" in preview.text
             # Should NOT have middle lines
             if num_lines > 11:
-                assert "line 5" not in preview
-                assert f"line {num_lines - 6}" not in preview
+                assert "line 5" not in preview.text
+                assert f"line {num_lines - 6}" not in preview.text
         else:
             # Should NOT have truncation notice
-            assert "truncated" not in preview
+            assert "truncated" not in preview.text
             # Should have all lines
             for i in range(num_lines):
-                assert f"line {i}" in preview
+                assert f"line {i}" in preview.text
+
+
+class TestPreviewNote:
+    def test_explains_marker_when_preview_omits_lines(self):
+        assert _preview_note(lines_omitted=True) == (
+            "Here is a preview showing the head and tail of the result "
+            "(lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):"
+        )
+
+    def test_omits_marker_explanation_when_nothing_omitted(self):
+        assert _preview_note(lines_omitted=False) == "Here is a preview of the result:"
+
+    def test_custom_subject(self):
+        assert _preview_note(lines_omitted=False, subject="content") == "Here is a preview of the content:"
+
+    def test_marker_explanation_quotes_the_shared_template(self):
+        """The shape the note describes comes from the marker's single source of truth."""
+        assert TRUNCATION_MARKER_TEMPLATE.format(omitted_lines="N") in _preview_note(lines_omitted=True)
+
+    def test_literal_marker_in_content_does_not_claim_omission(self):
+        """Content that literally contains a marker is not mistaken for a truncated preview."""
+        content = "header\n... [42 lines truncated] ...\nfooter"
+        preview = _create_content_preview(content)
+
+        assert preview.lines_omitted is False
+        assert _preview_note(lines_omitted=preview.lines_omitted) == "Here is a preview of the result:"
+        # The literal marker survives verbatim in the rendered preview -- with a
+        # line-number gutter, unlike an inserted marker, and with contiguous
+        # numbering that shows nothing was dropped.
+        assert "2  ... [42 lines truncated] ..." in preview.text
+
+    def test_offloaded_tool_message_explains_marker_when_lines_dropped(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=10)
+        tool_message = ToolMessage(content="\n".join(f"line {i}" for i in range(50)), tool_call_id="test_long")
+
+        result = middleware._intercept_large_tool_result(tool_message)
+
+        assert isinstance(result, ToolMessage)
+        assert "Here is a preview showing the head and tail of the result" in result.content
+        assert "lines of the form" in result.content
+
+
+class TestTruncatedHumanMessage:
+    """The truncated-human-message stub describes *content*, not a tool *result*."""
+
+    def test_explains_marker_and_names_content_as_the_subject(self):
+        message = HumanMessage(content="\n".join(f"line {i}" for i in range(50)), id="h1")
+
+        result = _build_truncated_human_message(message, "/evicted/h1")
+
+        assert "Here is a preview showing the head and tail of the content" in result.content
+        assert "lines of the form" in result.content
+        # The subject is "content" -- an evicted human message is not a result.
+        assert "head and tail of the result" not in result.content
+
+    def test_omits_marker_explanation_when_nothing_omitted(self):
+        message = HumanMessage(content="alpha\nbeta\ngamma", id="h2")
+
+        result = _build_truncated_human_message(message, "/evicted/h2")
+
+        assert "Here is a preview of the content:" in result.content
+        assert "lines of the form" not in result.content
+
+
+class TestTooLargeToolMessage:
+    def test_render_helper_pairs_note_with_its_own_preview(self):
+        rendered = _render_too_large_tool_msg(
+            tool_call_id="call_1",
+            file_path="/large_tool_results/call_1",
+            content_str="\n".join(f"line {i}" for i in range(50)),
+        )
+
+        assert "call_1" in rendered
+        assert "/large_tool_results/call_1" in rendered
+        assert "lines of the form" in rendered
+        assert "lines truncated] ..." in rendered
 
 
 class TestExtractTextFromMessage:

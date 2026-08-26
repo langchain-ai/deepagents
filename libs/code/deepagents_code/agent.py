@@ -3202,6 +3202,7 @@ def create_cli_agent(
     )
 
     grader_middleware: list[AgentMiddleware[Any, Any]] = [
+        CodeModelRetryMiddleware(max_retries=model_retries),
         _ContextToolCallBudgetMiddleware(
             # `read_file` is bounded separately by the grader's in-tool
             # working-directory counter, which excludes offloaded-result reads.
@@ -3236,6 +3237,12 @@ def create_cli_agent(
     # a policy check here would instead advise a fully qualified spec.
     if isinstance(rubric_model, str) and rubric_model.strip():
         model_policy.require_model_allowed(rubric_model)
+        if enforce_model_policy and _has_resolvable_model_provider(rubric_model):
+            resolved_rubric_model = _resolve_retry_owned_model(
+                rubric_model, cli_max_retries
+            )
+            if resolved_rubric_model is not None:
+                rubric_model = resolved_rubric_model
 
     # Rubric-driven self-evaluation. The middleware is a no-op until a
     # `rubric` is supplied on invocation state, so installing it is safe.

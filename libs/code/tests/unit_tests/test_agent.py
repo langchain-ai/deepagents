@@ -5479,6 +5479,26 @@ class TestCreateCliAgentInterpreterWiring:
                 rubric_model="openai:blocked",
             )
 
+    def test_resolves_rubric_model_with_retry_ownership(self, tmp_path: Path) -> None:
+        """A dedicated grader model disables provider retries before nesting."""
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        resolved_model = _make_fake_chat_model()
+        with patch(
+            "deepagents_code.agent._resolve_retry_owned_model",
+            return_value=resolved_model,
+        ) as resolve:
+            middleware = self._capture_middleware(
+                tmp_path,
+                model=_make_fake_chat_model(),
+                rubric_model="anthropic:grader-model",
+                cli_max_retries=0,
+            )
+
+        rubric = next(item for item in middleware if isinstance(item, RubricMiddleware))
+        assert rubric._model is resolved_model
+        resolve.assert_called_once_with("anthropic:grader-model", 0)
+
     def test_rejects_disallowed_primary_model_string(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -5598,6 +5618,8 @@ class TestCreateCliAgentInterpreterWiring:
         from deepagents.middleware.rubric import RubricMiddleware
         from langchain_core.tools import StructuredTool
 
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
         def inspect_resource(resource_id: str) -> str:
             return resource_id
 
@@ -5632,6 +5654,7 @@ class TestCreateCliAgentInterpreterWiring:
                 rubric_model="custom-grader-model",
                 rubric_max_iterations=5,
                 rubric_grader_tools=[mcp_read],
+                model_retries=0,
             )
 
         _, kwargs = mock_create.call_args
@@ -5654,6 +5677,12 @@ class TestCreateCliAgentInterpreterWiring:
         ]
         assert "`notion_fetch`" in rubrics[0]._system_prompt
         assert rubrics[0]._grader_context_schema is CLIContextSchema
+        retry_middleware = next(
+            middleware
+            for middleware in rubrics[0]._grader_middleware
+            if isinstance(middleware, CodeModelRetryMiddleware)
+        )
+        assert retry_middleware.max_retries == 0
         assert any(
             isinstance(middleware, AsyncApprovalHITLMiddleware)
             for middleware in rubrics[0]._grader_middleware

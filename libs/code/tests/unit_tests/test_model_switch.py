@@ -24,6 +24,7 @@ from deepagents_code.model_config import (
     ProviderAuthStatus,
     clear_caches,
 )
+from deepagents_code.runtime_state import get_runtime_state
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 from deepagents_code.tui.widgets.status import StatusBar
 
@@ -59,10 +60,10 @@ class _FakeModelResult:
 
     def apply_to_settings(self) -> None:
         """Mirror `ModelResult.apply_to_settings()` for test isolation."""
-        settings.model_name = self.model_name
-        settings.model_provider = self.provider
-        settings.model_context_limit = self.context_limit
-        settings.model_unsupported_modalities = self.unsupported_modalities
+        get_runtime_state().model_name = self.model_name
+        get_runtime_state().model_provider = self.provider
+        get_runtime_state().model_context_limit = self.context_limit
+        get_runtime_state().model_unsupported_modalities = self.unsupported_modalities
 
 
 @pytest.fixture(autouse=True)
@@ -71,16 +72,16 @@ def _restore_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[None]:
     """Save and restore global settings mutated by tests."""
-    original_name = settings.model_name
-    original_provider = settings.model_provider
-    original_context_limit = settings.model_context_limit
-    original_modalities = settings.model_unsupported_modalities
+    original_name = get_runtime_state().model_name
+    original_provider = get_runtime_state().model_provider
+    original_context_limit = get_runtime_state().model_context_limit
+    original_modalities = get_runtime_state().model_unsupported_modalities
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
     yield
-    settings.model_name = original_name
-    settings.model_provider = original_provider
-    settings.model_context_limit = original_context_limit
-    settings.model_unsupported_modalities = original_modalities
+    get_runtime_state().model_name = original_name
+    get_runtime_state().model_provider = original_provider
+    get_runtime_state().model_context_limit = original_context_limit
+    get_runtime_state().model_unsupported_modalities = original_modalities
 
 
 @pytest.fixture(autouse=True)
@@ -171,8 +172,8 @@ class TestModelSwitchWarning:
         app._model_switch_warning_threshold = 100_000
         app._push_screen_wait = AsyncMock()  # ty: ignore
         app._switch_model = AsyncMock()  # ty: ignore
-        settings.model_provider = "anthropic"
-        settings.model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
 
         await app._confirm_and_switch_model("openai:gpt-5.5")
 
@@ -186,8 +187,8 @@ class TestModelSwitchWarning:
         app._model_switch_warning_threshold = 100_000
         app._push_screen_wait = AsyncMock(return_value=True)  # ty: ignore
         app._switch_model = AsyncMock()  # ty: ignore
-        settings.model_provider = "anthropic"
-        settings.model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
 
         await app._confirm_and_switch_model("openai:gpt-5.5")
 
@@ -205,8 +206,8 @@ class TestModelSwitchWarning:
         app._model_switch_warning_threshold = 100_000
         app._push_screen_wait = AsyncMock(return_value=result)  # ty: ignore
         app._switch_model = AsyncMock()  # ty: ignore
-        settings.model_provider = "anthropic"
-        settings.model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
 
         await app._confirm_and_switch_model("openai:gpt-5.5")
 
@@ -219,8 +220,8 @@ class TestModelSwitchWarning:
         app._push_screen_wait = AsyncMock(side_effect=RuntimeError("boom"))  # ty: ignore
         app._switch_model = AsyncMock()  # ty: ignore
         app._mount_message = AsyncMock()  # ty: ignore
-        settings.model_provider = "anthropic"
-        settings.model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
 
         await app._confirm_and_switch_model("openai:gpt-5.5")
 
@@ -235,8 +236,8 @@ class TestModelSwitchWarning:
         app._model_switch_warning_threshold = 0
         app._push_screen_wait = AsyncMock()  # ty: ignore
         app._switch_model = AsyncMock()  # ty: ignore
-        settings.model_provider = "anthropic"
-        settings.model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
 
         await app._confirm_and_switch_model("openai:gpt-5.5")
 
@@ -249,8 +250,8 @@ class TestModelSwitchWarning:
         app._model_switch_warning_threshold = 100_000
         app._push_screen_wait = AsyncMock()  # ty: ignore
         app._switch_model = AsyncMock()  # ty: ignore
-        settings.model_provider = "anthropic"
-        settings.model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
 
         await app._confirm_and_switch_model("anthropic:claude-opus-4-5")
 
@@ -278,8 +279,8 @@ class TestModelSwitchNoOp:
         app._agent = _make_remote_agent()
 
         # Set current model
-        settings.model_name = "claude-opus-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         with patch(
             "deepagents_code.model_config.get_provider_auth_status",
@@ -308,8 +309,8 @@ class TestModelSwitchNoOp:
         app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "claude-opus-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         # Pin the clock inside the toast lifetime so suppression is asserted
         # deterministically rather than relying on real elapsed time.
@@ -345,8 +346,8 @@ class TestModelSwitchNoOp:
         app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "claude-opus-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         # Advance past NOTIFICATION_TIMEOUT between the two no-ops so the
         # second selection re-toasts instead of staying suppressed forever.
@@ -385,8 +386,8 @@ class TestModelSwitchNoOp:
         app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "claude-opus-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         clock = {"now": 100.0}
 
@@ -415,8 +416,8 @@ class TestModelSwitchNoOp:
         app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "claude-opus-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         with patch(
             "deepagents_code.model_config.get_provider_auth_status",
@@ -451,8 +452,8 @@ class TestModelSwitchNoOp:
         app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "claude-opus-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         # Hold the clock still so a second toast is attributable to the reset
         # rather than to the toast lifetime quietly expiring.
@@ -492,8 +493,8 @@ class TestModelSwitchNoOp:
         app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "claude-opus-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         with patch(
             "deepagents_code.model_config.get_provider_auth_status",
@@ -524,8 +525,8 @@ class TestModelSwitchNoOp:
         app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "claude-opus-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         with patch(
             "deepagents_code.model_config.get_provider_auth_status",
@@ -554,8 +555,8 @@ class TestModelSwitchNoOp:
         app._status_bar = Mock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         with patch(
             "deepagents_code.model_config.get_provider_auth_status",
@@ -588,8 +589,8 @@ class TestModelSwitchNoOp:
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "claude-opus-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         # Simulate a prior `/model <current> --model-params {...}` call.
         app._model_override = "anthropic:claude-opus-4-5"
@@ -608,8 +609,8 @@ class TestModelSwitchNoOp:
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
         model_config.save_effort_for_model(
             "anthropic:claude-opus-4-5",
             "high",
@@ -627,8 +628,8 @@ class TestModelSwitchNoOp:
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
         model_config.save_effort_for_model("openai:gpt-5.5", "high")
 
         with patch(
@@ -659,8 +660,8 @@ class TestModelSwitchErrorHandling:
         app._agent = _make_remote_agent()
 
         # Set a different current model
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
@@ -694,8 +695,8 @@ class TestModelSwitchErrorHandling:
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         captured_errors: list[str] = []
         original_err_init = ErrorMessage.__init__
@@ -737,8 +738,8 @@ class TestModelSwitchErrorHandling:
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
@@ -762,8 +763,8 @@ class TestModelSwitchErrorHandling:
         assert app._model_override == "anthropic:claude-sonnet-4-5"
         assert app._model_params_override is None
         mock_save.assert_called_once()
-        assert settings.model_name == "claude-sonnet-4-5"
-        assert settings.model_provider == "anthropic"
+        assert get_runtime_state().model_name == "claude-sonnet-4-5"
+        assert get_runtime_state().model_provider == "anthropic"
         assert any("Switched to" in m for m in captured_messages)
 
     async def test_remote_agent_refreshes_model_metadata(
@@ -775,9 +776,9 @@ class TestModelSwitchErrorHandling:
         app._agent = _make_remote_agent()
         app._profile_override = {"max_input_tokens": 180_000}
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
-        settings.model_context_limit = 128_000
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
+        get_runtime_state().model_context_limit = 128_000
 
         with (
             patch(
@@ -791,9 +792,9 @@ class TestModelSwitchErrorHandling:
                 extra_kwargs={"temperature": 0.7},
             )
 
-        assert settings.model_name == "claude-sonnet-4-5"
-        assert settings.model_provider == "anthropic"
-        assert settings.model_context_limit == 200_000
+        assert get_runtime_state().model_name == "claude-sonnet-4-5"
+        assert get_runtime_state().model_provider == "anthropic"
+        assert get_runtime_state().model_context_limit == 200_000
         mock_create_model.assert_called_once_with(
             "anthropic:claude-sonnet-4-5",
             extra_kwargs={"temperature": 0.7},
@@ -807,8 +808,8 @@ class TestModelSwitchErrorHandling:
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         with (
             patch(
@@ -834,8 +835,8 @@ class TestModelSwitchErrorHandling:
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
@@ -893,8 +894,8 @@ class TestModelSwitchConcurrencyGuard:
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         with (
             patch(
@@ -962,8 +963,8 @@ class TestModelSwitchSessionReadiness:
         app._agent = None
         app._connecting = True
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         with (
             patch(
@@ -983,8 +984,8 @@ class TestModelSwitchSessionReadiness:
 
         assert app._deferred_actions == []
         assert app._model_override == "anthropic:claude-sonnet-4-5"
-        assert settings.model_name == "claude-sonnet-4-5"
-        assert settings.model_provider == "anthropic"
+        assert get_runtime_state().model_name == "claude-sonnet-4-5"
+        assert get_runtime_state().model_provider == "anthropic"
         assert app._model_switching is False
 
 
@@ -1148,8 +1149,8 @@ api_key_env = "FIREWORKS_API_KEY"
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         captured_messages: list[str] = []
         original_app_init = AppMessage.__init__
@@ -1170,8 +1171,8 @@ api_key_env = "FIREWORKS_API_KEY"
 
         mock_save.assert_called_once_with("fireworks:llama-v3p1-70b")
         assert app._model_override == "fireworks:llama-v3p1-70b"
-        assert settings.model_name == "llama-v3p1-70b"
-        assert settings.model_provider == "fireworks"
+        assert get_runtime_state().model_name == "llama-v3p1-70b"
+        assert get_runtime_state().model_provider == "fireworks"
         # Should succeed, not show "Unknown provider"
         assert any(
             "Switched to fireworks:llama-v3p1-70b" in m for m in captured_messages
@@ -1190,8 +1191,8 @@ api_key_env = "FIREWORKS_API_KEY"
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         captured_errors: list[str] = []
         original_err_init = ErrorMessage.__init__
@@ -1223,8 +1224,8 @@ models = ["llama3"]
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         captured_messages: list[str] = []
         original_app_init = AppMessage.__init__
@@ -1244,8 +1245,8 @@ models = ["llama3"]
 
         mock_save.assert_called_once_with("ollama:llama3")
         assert app._model_override == "ollama:llama3"
-        assert settings.model_name == "llama3"
-        assert settings.model_provider == "ollama"
+        assert get_runtime_state().model_name == "llama3"
+        assert get_runtime_state().model_provider == "ollama"
         assert any("Switched to ollama:llama3" in m for m in captured_messages)
 
 
@@ -1258,8 +1259,8 @@ class TestModelSwitchBareModelName:
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "claude-sonnet-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-sonnet-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
@@ -1283,8 +1284,8 @@ class TestModelSwitchBareModelName:
 
         mock_save.assert_called_once_with("openai:gpt-5.5")
         assert app._model_override == "openai:gpt-5.5"
-        assert settings.model_name == "gpt-5.5"
-        assert settings.model_provider == "openai"
+        assert get_runtime_state().model_name == "gpt-5.5"
+        assert get_runtime_state().model_provider == "openai"
         assert any("Switched to openai:gpt-5.5" in m for m in captured_messages)
 
     async def test_fireworks_qualified_id_gets_provider_prefix(self) -> None:
@@ -1292,15 +1293,15 @@ class TestModelSwitchBareModelName:
 
         Without provider inference the raw ID would surface unprefixed in the
         confirmation message and the status bar (which reads
-        `settings.model_provider`). `detect_provider` recognizes the
+        `get_runtime_state().model_provider`). `detect_provider` recognizes the
         fully-qualified Fireworks ID so both reflect the `fireworks` provider.
         """
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "claude-sonnet-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-sonnet-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
@@ -1324,8 +1325,8 @@ class TestModelSwitchBareModelName:
 
         mock_save.assert_called_once_with(f"fireworks:{model_id}")
         assert app._model_override == f"fireworks:{model_id}"
-        assert settings.model_name == model_id
-        assert settings.model_provider == "fireworks"
+        assert get_runtime_state().model_name == model_id
+        assert get_runtime_state().model_provider == "fireworks"
         assert any(f"Switched to fireworks:{model_id}" in m for m in captured_messages)
 
     async def test_bare_model_name_missing_credentials(self) -> None:
@@ -1334,8 +1335,8 @@ class TestModelSwitchBareModelName:
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "claude-sonnet-4-5"
-        settings.model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-sonnet-4-5"
+        get_runtime_state().model_provider = "anthropic"
 
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
@@ -1372,8 +1373,8 @@ class TestModelSwitchBareModelName:
         app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         with (
             patch("deepagents_code.config.detect_provider", return_value="openai"),
@@ -1558,8 +1559,8 @@ class TestModelSwitchBusyIndicator:
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         async with _StatusBarHarness().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
@@ -1614,8 +1615,8 @@ class TestModelSwitchBusyIndicator:
         app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-5.5"
-        settings.model_provider = "openai"
+        get_runtime_state().model_name = "gpt-5.5"
+        get_runtime_state().model_provider = "openai"
 
         async with _StatusBarHarness().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)

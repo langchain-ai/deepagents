@@ -22,6 +22,7 @@ from deepagents_code._paths import PATHS
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import Settings
 from deepagents_code.offload import _ArtifactsStorage
+from deepagents_code.runtime_state import get_runtime_state
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Sequence
@@ -126,10 +127,10 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
         mock_s.get_project_agent_skills_dir.return_value = None
         mock_s.get_user_claude_skills_dir.return_value = tmp_path / "claude_skills"
         mock_s.get_project_claude_skills_dir.return_value = None
-        mock_s.model_name = _FIXED_MODEL_NAME
-        mock_s.model_provider = _FIXED_MODEL_PROVIDER
-        mock_s.model_context_limit = _FIXED_CONTEXT_LIMIT
-        mock_s.model_unsupported_modalities = frozenset()
+        get_runtime_state().model_name = _FIXED_MODEL_NAME
+        get_runtime_state().model_provider = _FIXED_MODEL_PROVIDER
+        get_runtime_state().model_context_limit = _FIXED_CONTEXT_LIMIT
+        get_runtime_state().model_unsupported_modalities = frozenset()
         mock_s.has_tavily = False
         mock_s.project_root = None
         mock_s.user_langchain_project = None

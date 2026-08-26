@@ -111,6 +111,7 @@ from deepagents_code.goal_state_notice import (
 )
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.media_utils import ImageData, VideoData
+from deepagents_code.runtime_state import get_runtime_state
 from deepagents_code.tui.modals.cold_cache import ColdCacheChoice
 from deepagents_code.tui.textual_adapter import RubricEvaluationEnd, TextualUIAdapter
 from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
@@ -226,11 +227,11 @@ async def test_context_prefers_checkpoint_total_after_offload(
 
     with (
         patch("deepagents_code.app.ContextUsageScreen") as screen_type,
-        patch("deepagents_code.config.settings") as settings,
+        patch("deepagents_code.config.settings") as _settings,
     ):
-        settings.model_provider = "anthropic"
-        settings.model_name = "claude-sonnet"
-        settings.model_context_limit = 2_000
+        get_runtime_state().model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-sonnet"
+        get_runtime_state().model_context_limit = 2_000
         await app._handle_command("/context")
 
     assert screen_type.call_args.kwargs["context_tokens"] == 1_000
@@ -446,11 +447,11 @@ class TestInitialPromptOnMount:
         app.run_worker = MagicMock(side_effect=_closing_run_worker_mock)  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.settings") as _mock_settings,
             patch("asyncio.create_task", side_effect=_closing_run_worker_mock),
         ):
-            mock_settings.model_provider = "openai"
-            mock_settings.model_name = "gpt-5.5"
+            get_runtime_state().model_provider = "openai"
+            get_runtime_state().model_name = "gpt-5.5"
             await app.on_mount()
 
         status_bar.set_model.assert_called_once_with(
@@ -475,9 +476,9 @@ class TestInitialPromptOnMount:
         status_bar = MagicMock(spec=StatusBar)
         app._status_bar = status_bar
 
-        with patch("deepagents_code.config.settings") as mock_settings:
-            mock_settings.model_provider = "anthropic"
-            mock_settings.model_name = "claude-opus-4-7"
+        with patch("deepagents_code.config.settings") as _mock_settings:
+            get_runtime_state().model_provider = "anthropic"
+            get_runtime_state().model_name = "claude-opus-4-7"
             app.on_deep_agents_app_server_ready(
                 app.ServerReady(
                     agent=MagicMock(),
@@ -536,11 +537,11 @@ class TestInitialPromptOnMount:
         app._status_bar = status_bar
 
         with (
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.settings") as _mock_settings,
             caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
         ):
-            mock_settings.model_provider = None
-            mock_settings.model_name = None
+            get_runtime_state().model_provider = None
+            get_runtime_state().model_name = None
             app.on_deep_agents_app_server_ready(
                 app.ServerReady(
                     agent=MagicMock(),
@@ -15650,8 +15651,8 @@ class TestActiveProvider:
         app._model_override = None
         # No model name → no full spec, so the settings fallback supplies the
         # provider directly.
-        monkeypatch.setattr(config.settings, "model_provider", "anthropic")
-        monkeypatch.setattr(config.settings, "model_name", "")
+        monkeypatch.setattr(get_runtime_state(), "model_provider", "anthropic")
+        monkeypatch.setattr(get_runtime_state(), "model_name", "")
         assert app._active_provider() == "anthropic"
 
     def test_none_when_unconfigured(self, monkeypatch) -> None:
@@ -15659,8 +15660,8 @@ class TestActiveProvider:
 
         app = DeepAgentsApp(agent=MagicMock())
         app._model_override = None
-        monkeypatch.setattr(config.settings, "model_provider", "")
-        monkeypatch.setattr(config.settings, "model_name", "")
+        monkeypatch.setattr(get_runtime_state(), "model_provider", "")
+        monkeypatch.setattr(get_runtime_state(), "model_name", "")
         assert app._active_provider() is None
 
 
@@ -24607,8 +24608,8 @@ class TestDispatchModelSwitch:
         app.notify = MagicMock()  # ty: ignore
         from deepagents_code.config import settings
 
-        settings.model_provider = "anthropic"
-        settings.model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
         app._dispatch_model_switch("openai:gpt-5.5")
         action = app._deferred_actions[0]
         app._context_tokens = 150_000
@@ -24629,8 +24630,8 @@ class TestDispatchModelSwitch:
         app.notify = MagicMock()  # ty: ignore
         from deepagents_code.config import settings
 
-        settings.model_provider = "anthropic"
-        settings.model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
 
         prompt_open = asyncio.Event()
         answer_prompt = asyncio.Event()
@@ -24688,8 +24689,8 @@ class TestDispatchModelSwitch:
         app._switch_model = AsyncMock()  # ty: ignore
         from deepagents_code.config import settings
 
-        settings.model_provider = "anthropic"
-        settings.model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
 
         async with app.run_test():
             await app._confirm_and_switch_model("openai:gpt-5.5")
@@ -24709,8 +24710,8 @@ class TestDispatchModelSwitch:
         app._switch_model = AsyncMock()  # ty: ignore
         from deepagents_code.config import settings
 
-        settings.model_provider = "anthropic"
-        settings.model_name = "claude-opus-4-5"
+        get_runtime_state().model_provider = "anthropic"
+        get_runtime_state().model_name = "claude-opus-4-5"
 
         async with app.run_test():
             await app._confirm_and_switch_model("openai:gpt-5.5")
@@ -37644,9 +37645,9 @@ class TestWelcomeBannerLiveUpdates:
         with patch.dict(os.environ, {SPLASH_SHOW_MODEL: "1"}):
             app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
             async with app.run_test() as pilot:
-                with patch("deepagents_code.config.settings") as mock_settings:
-                    mock_settings.model_provider = "openai"
-                    mock_settings.model_name = "gpt-5.5"
+                with patch("deepagents_code.config.settings") as _mock_settings:
+                    get_runtime_state().model_provider = "openai"
+                    get_runtime_state().model_name = "gpt-5.5"
                     app._sync_status_model()
                 await pilot.pause()
                 banner = app.query_one("#welcome-banner", WelcomeBanner)
@@ -37673,7 +37674,7 @@ class TestWelcomeBannerLiveUpdates:
         async with app.run_test() as pilot:
             await pilot.pause()
             with (
-                patch("deepagents_code.config.settings") as mock_settings,
+                patch("deepagents_code.config.settings") as _mock_settings,
                 patch.object(
                     app,
                     "query_one",
@@ -37681,8 +37682,8 @@ class TestWelcomeBannerLiveUpdates:
                 ),
                 caplog.at_level(logging.DEBUG, logger="deepagents_code.app"),
             ):
-                mock_settings.model_provider = "openai"
-                mock_settings.model_name = "gpt-5.5"
+                get_runtime_state().model_provider = "openai"
+                get_runtime_state().model_name = "gpt-5.5"
                 # Must not propagate — the guard exists precisely for this.
                 app._sync_status_model()
         assert "Screen stack empty during model sync" in caplog.text
@@ -37695,7 +37696,7 @@ class TestWelcomeBannerLiveUpdates:
         async with app.run_test() as pilot:
             await pilot.pause()
             with (
-                patch("deepagents_code.config.settings") as mock_settings,
+                patch("deepagents_code.config.settings") as _mock_settings,
                 patch.object(
                     app,
                     "query_one",
@@ -37703,8 +37704,8 @@ class TestWelcomeBannerLiveUpdates:
                 ),
                 caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
             ):
-                mock_settings.model_provider = "openai"
-                mock_settings.model_name = "gpt-5.5"
+                get_runtime_state().model_provider = "openai"
+                get_runtime_state().model_name = "gpt-5.5"
                 app._sync_status_model()
         assert "Welcome banner not found during model sync" in caplog.text
 

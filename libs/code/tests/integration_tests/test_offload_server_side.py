@@ -77,7 +77,8 @@ def _build_long_prompt(turn: int) -> str:
 
 async def _run_turn(agent, *, thread_id: str, assistant_id: str, prompt: str) -> None:
     """Execute one real remote agent turn and drain the stream to completion."""
-    from deepagents_code.config import build_stream_config, settings
+    from deepagents_code.config import build_stream_config
+    from deepagents_code.runtime_state import get_runtime_state
 
     config = build_stream_config(thread_id, assistant_id)
     stream_input = {"messages": [{"role": "user", "content": prompt}]}
@@ -89,7 +90,7 @@ async def _run_turn(agent, *, thread_id: str, assistant_id: str, prompt: str) ->
         stream_mode=["messages", "updates"],
         subgraphs=True,
         config=config,
-        context={"model_context_limit": settings.model_context_limit},
+        context={"model_context_limit": get_runtime_state().model_context_limit},
         durability="exit",
     ):
         pass

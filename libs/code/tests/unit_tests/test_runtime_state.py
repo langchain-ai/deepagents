@@ -3,7 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
-from deepagents_code.config import ModelResult, Settings
+from deepagents_code.config import ModelResult
 from deepagents_code.runtime_state import RuntimeState, get_runtime_state
 
 
@@ -21,29 +21,6 @@ def test_runtime_state_is_singleton_across_threads() -> None:
         states = list(pool.map(lambda _: get_runtime_state(), range(8)))
 
     assert all(state is states[0] for state in states)
-
-
-def test_settings_model_properties_delegate_to_runtime_state() -> None:
-    state = get_runtime_state()
-    settings = Settings(
-        openai_api_key=None,
-        anthropic_api_key=None,
-        google_api_key=None,
-        nvidia_api_key=None,
-        tavily_api_key=None,
-        google_cloud_project=None,
-        google_cloud_location=None,
-        deepagents_langchain_project=None,
-        user_langchain_project=None,
-    )
-    previous = state.model_name
-
-    try:
-        settings.model_name = "model"
-        assert state.model_name == "model"
-        assert settings.model_name == "model"
-    finally:
-        state.model_name = previous
 
 
 def test_model_result_updates_runtime_state() -> None:

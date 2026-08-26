@@ -3016,44 +3016,6 @@ class Settings:
     feature toggle.
     """
 
-    @property
-    def model_name(self) -> str | None:
-        """The active model name."""
-        return get_runtime_state().model_name
-
-    @model_name.setter
-    def model_name(self, value: str | None) -> None:  # noqa: PLR6301
-        get_runtime_state().model_name = value
-
-    @property
-    def model_provider(self) -> str | None:
-        """The active model provider."""
-        return get_runtime_state().model_provider
-
-    @model_provider.setter
-    def model_provider(self, value: str | None) -> None:  # noqa: PLR6301
-        get_runtime_state().model_provider = value
-
-    @property
-    def model_context_limit(self) -> int | None:
-        """The active model context limit."""
-        return get_runtime_state().model_context_limit
-
-    @model_context_limit.setter
-    def model_context_limit(self, value: int | None) -> None:  # noqa: PLR6301
-        get_runtime_state().model_context_limit = value
-
-    @property
-    def model_unsupported_modalities(self) -> frozenset[str]:
-        """Modalities unsupported by the active model."""
-        return get_runtime_state().model_unsupported_modalities
-
-    @model_unsupported_modalities.setter
-    def model_unsupported_modalities(  # noqa: PLR6301
-        self, value: frozenset[str]
-    ) -> None:
-        get_runtime_state().model_unsupported_modalities = value
-
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> Settings:
         """Create settings by detecting the current environment.

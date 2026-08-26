@@ -30,6 +30,7 @@ from deepagents_code.configurable_model import (
     _model_spec_from_model,
     _ResolvedModelRequest,
 )
+from deepagents_code.runtime_state import get_runtime_state
 
 
 def _make_model(name: str) -> MagicMock:
@@ -123,8 +124,8 @@ class TestCheckpointPersistence:
             "ls_provider": "deterministicintegrationchatmodel"
         }
         with (
-            patch.object(settings, "model_provider", "itest"),
-            patch.object(settings, "model_name", "fake"),
+            patch.object(get_runtime_state(), "model_provider", "itest"),
+            patch.object(get_runtime_state(), "model_name", "fake"),
         ):
             assert _model_spec_from_model(model) == "itest:fake"
 

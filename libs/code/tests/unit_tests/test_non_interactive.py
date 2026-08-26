@@ -2542,7 +2542,7 @@ class TestRunStartupCommand:
 class TestRecordUsageFromMessageStats:
     """`_record_usage_from_message` threads the active provider into usage stats.
 
-    Guards the wiring between `settings.model_provider` and
+    Guards the wiring between `get_runtime_state().model_provider` and
     `SessionStats.record_request` — the per-model API is unit-tested in
     isolation elsewhere, but these confirm the call site actually forwards the
     configured provider.

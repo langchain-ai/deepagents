@@ -3230,7 +3230,7 @@ class TestExecuteTaskTextualUsageStats:
     """`execute_task_textual` forwards the active provider into usage stats.
 
     The per-model recording API is unit-tested directly elsewhere; this guards
-    the call site actually reading `settings.model_provider` and threading it
+    the call site actually reading `get_runtime_state().model_provider` and threading it
     through `record_request`.
     """
 

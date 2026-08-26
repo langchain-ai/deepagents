@@ -14,6 +14,7 @@ from textual.widgets import Static
 from deepagents_code import theme
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
 from deepagents_code.config import reset_glyphs_cache
+from deepagents_code.runtime_state import get_runtime_state
 from deepagents_code.tui.widgets.status import (
     _PICKER_ACTIONS,
     _PICKER_STYLES,
@@ -688,7 +689,7 @@ class TestCostDisplay:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             # A `None` limit renders `--` only once tokens are non-zero, so pin
-            # the limit rather than inheriting `settings.model_context_limit`.
+            # the limit rather than inheriting `runtime state`.
             bar.set_context_limit(None)
             bar.set_tokens(5000)
             bar.set_cost(0.0)

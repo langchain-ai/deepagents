@@ -22,6 +22,7 @@ from textual.widgets._select import SelectCurrent
 
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.hooks.manager import HooksManager
+from deepagents_code.runtime_state import get_runtime_state
 from deepagents_code.sessions import ThreadInfo
 from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
 from deepagents_code.tui.widgets.message_store import MessageData
@@ -4636,8 +4637,8 @@ class TestResumeAdoptionFailureMessage:
         )
 
         with (
-            patch.object(settings, "model_provider", ""),
-            patch.object(settings, "model_name", ""),
+            patch.object(get_runtime_state(), "model_provider", ""),
+            patch.object(get_runtime_state(), "model_name", ""),
         ):
             await app._mount_resume_adoption_failure(
                 "anthropic:claude-opus-4-8", "the model could not be initialized"
@@ -4658,8 +4659,8 @@ class TestEffectiveModelSpec:
         app = DeepAgentsApp()
         app._model_override = "openai:gpt-5.1"
         with (
-            patch.object(settings, "model_provider", "anthropic"),
-            patch.object(settings, "model_name", "claude-sonnet-4-5"),
+            patch.object(get_runtime_state(), "model_provider", "anthropic"),
+            patch.object(get_runtime_state(), "model_name", "claude-sonnet-4-5"),
         ):
             assert app._effective_model_spec() == "openai:gpt-5.1"
 
@@ -4670,8 +4671,8 @@ class TestEffectiveModelSpec:
         app = DeepAgentsApp()
         app._model_override = None
         with (
-            patch.object(settings, "model_provider", "anthropic"),
-            patch.object(settings, "model_name", "claude-sonnet-4-5"),
+            patch.object(get_runtime_state(), "model_provider", "anthropic"),
+            patch.object(get_runtime_state(), "model_name", "claude-sonnet-4-5"),
         ):
             assert app._effective_model_spec() == "anthropic:claude-sonnet-4-5"
 
@@ -4682,8 +4683,8 @@ class TestEffectiveModelSpec:
         app = DeepAgentsApp()
         app._model_override = None
         with (
-            patch.object(settings, "model_provider", "anthropic"),
-            patch.object(settings, "model_name", ""),
+            patch.object(get_runtime_state(), "model_provider", "anthropic"),
+            patch.object(get_runtime_state(), "model_name", ""),
         ):
             assert app._effective_model_spec() is None
 

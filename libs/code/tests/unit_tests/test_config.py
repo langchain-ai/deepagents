@@ -77,6 +77,7 @@ from deepagents_code.project_utils import (
     find_project_root as _find_project_root,
     get_server_project_context,
 )
+from deepagents_code.runtime_state import get_runtime_state
 
 
 class TestRuntimeDotenvReload:
@@ -1647,19 +1648,19 @@ class TestModelResultApplyToSettings:
         )
         # `apply_to_settings` writes four fields to the process-global settings;
         # restore all of them or the values leak into every later test.
-        original_name = settings.model_name
-        original_provider = settings.model_provider
-        original_limit = settings.model_context_limit
-        original_modalities = settings.model_unsupported_modalities
+        original_name = get_runtime_state().model_name
+        original_provider = get_runtime_state().model_provider
+        original_limit = get_runtime_state().model_context_limit
+        original_modalities = get_runtime_state().model_unsupported_modalities
         try:
             model_result.apply_to_settings()
             expected = frozenset({"image", "audio"})
-            assert settings.model_unsupported_modalities == expected
+            assert get_runtime_state().model_unsupported_modalities == expected
         finally:
-            settings.model_name = original_name
-            settings.model_provider = original_provider
-            settings.model_context_limit = original_limit
-            settings.model_unsupported_modalities = original_modalities
+            get_runtime_state().model_name = original_name
+            get_runtime_state().model_provider = original_provider
+            get_runtime_state().model_context_limit = original_limit
+            get_runtime_state().model_unsupported_modalities = original_modalities
 
 
 class TestRetriesConfig:

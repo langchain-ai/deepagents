@@ -78,6 +78,8 @@ class ProviderStatus:
                 printable ASCII, or carries credentials, a query, or a
                 fragment.
         """
+        from urllib.parse import urlsplit
+
         source = self.remote_source
         if source is None:
             return
@@ -85,8 +87,25 @@ class ProviderStatus:
             not source.startswith("https://")
             or not source.isascii()
             or not source.isprintable()
-            or any(char in source for char in "@?# ")
+            or any(char in source for char in "?# ")
         ):
+            msg = "remote_source must be a validated absolute HTTPS URL"
+            raise ValueError(msg)
+        try:
+            parsed = urlsplit(source)
+        except ValueError as exc:
+            msg = "remote_source must be a validated absolute HTTPS URL"
+            raise ValueError(msg) from exc
+        # Credentials live in the authority's userinfo, so parse for them
+        # rather than banning "@": that character is also valid in a URL path,
+        # and `_validate_remote_url` accepts it there.
+        try:
+            has_credentials = parsed.username is not None or parsed.password is not None
+        except ValueError as exc:
+            # Invalid bracketed host or port; not a validated URL either.
+            msg = "remote_source must be a validated absolute HTTPS URL"
+            raise ValueError(msg) from exc
+        if has_credentials:
             msg = "remote_source must be a validated absolute HTTPS URL"
             raise ValueError(msg)
 

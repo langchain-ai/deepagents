@@ -6317,6 +6317,27 @@ def test_provider_status_rejects_an_unvalidated_remote_source() -> None:
     )
 
 
+def test_provider_status_accepts_at_sign_in_the_url_path() -> None:
+    """A valid URL path character must not crash status construction.
+
+    `@` is a legal path character and `_validate_remote_url` accepts it there,
+    rejecting only authority userinfo. Banning the character outright would
+    raise here for a descriptor that validated and fetched, turning startup
+    into a traceback instead of a health report.
+    """
+    from deepagents_code.configuration.types import ProviderStatus
+
+    source = "https://config.example.com/policy@v1.toml"
+    status = ProviderStatus(
+        "managed config",
+        None,
+        ProviderHealth.OK,
+        None,
+        remote_source=source,
+    )
+    assert status.remote_source == source
+
+
 def test_remote_source_longer_than_the_bound_is_rejected(
     tmp_path: Path,
 ) -> None:

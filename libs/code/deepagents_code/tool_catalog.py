@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -67,6 +67,9 @@ class ToolEntry:
 
     description: str
     """First non-empty line of the tool's description, whitespace-collapsed."""
+
+    schema: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+    """Provider-facing function definition used for context-cost estimates."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,17 +324,27 @@ def collect_tools_from_agent(agent: object) -> list[ToolEntry] | None:
             type(tool_node),
         )
         return None
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
     tools: list[ToolEntry] = []
     for name, tool in tools_by_name.items():
         if not isinstance(name, str):
             continue
         description = getattr(tool, "description", None)
+        try:
+            schema = convert_to_openai_tool(tool)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Could not serialize tool schema for %s", name, exc_info=True
+            )
+            schema = None
         tools.append(
             ToolEntry(
                 name=name,
                 description=_first_line(
                     description if isinstance(description, str) else None
                 ),
+                schema=schema,
             )
         )
     return tools

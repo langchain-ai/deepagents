@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from textual.timer import Timer
 
 from deepagents_code import _env_vars, theme
+from deepagents_code._paths import PATHS
 from deepagents_code.auth_display import format_auth_indicator
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
@@ -2217,8 +2218,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # `ModelNotAllowedError` for it, handled separately below, so this text
         # never has to account for `models.allowed`.
         write_remedy = (
-            "Could not update ~/.deepagents/config.toml. It may be unwritable "
-            "(check permissions for ~/.deepagents/) or malformed; see the log "
+            f"Could not update {PATHS.display(PATHS.profile.config_file)}. It may "
+            "be unwritable (check permissions for "
+            f"{PATHS.display(PATHS.profile.root)}) or malformed; see the log "
             "for the specific error."
         )
 

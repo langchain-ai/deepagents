@@ -52,13 +52,22 @@ from deepagents_code.main import (
     format_tool_warning_cli,
     run_textual_cli_async,
 )
-from deepagents_code.mcp_tools import ProjectServerSummary
+from deepagents_code.mcp_tools import (
+    DiscoveredMCPConfig,
+    MCPConfigScope,
+    ProjectServerSummary,
+)
 from deepagents_code.update_check import update_install_lock
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` and patch
 # `is_update_check_enabled()` to avoid accidental PyPI/DNS work. This module
 # tests startup update behavior itself, so each test must control those values.
 pytestmark = pytest.mark.self_managed_update_check
+
+
+def _project_mcp_source(path: Path, project_root: Path) -> DiscoveredMCPConfig:
+    """Build an explicitly project-scoped discovery fixture."""
+    return DiscoveredMCPConfig(path, MCPConfigScope.PROJECT, project_root)
 
 
 class TestTerminationSignalHandling:
@@ -1433,10 +1442,16 @@ class TestStartupAutoUpdate:
         """Text wider than the pane counts each wrapped row.
 
         Deliberately left unmocked: this is the canary that should fail if a
-        future Rich version changes how it wraps text, so its `options` must
-        stay real rather than being pinned to a forced width.
+        future Rich version changes how it wraps text. Pin both constructor
+        dimensions so Rich honors the requested width even under `TERM=dumb`.
         """
-        console = Console(file=StringIO(), force_terminal=True, no_color=True, width=10)
+        console = Console(
+            file=StringIO(),
+            force_terminal=True,
+            no_color=True,
+            width=10,
+            height=25,
+        )
         # 20 characters at width 10 wraps to exactly 2 rows.
         assert _terminal_row_count(console, "abcdefghijklmnopqrst") == 2
 
@@ -4032,12 +4047,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
                 return_value=[],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], []),
             ),
             patch("builtins.input", return_value="y"),
         ):
@@ -4072,12 +4083,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
                 return_value=[],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], []),
             ),
             patch(
                 "deepagents_code.main._select_trust_action",
@@ -4116,12 +4123,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
                 return_value=[],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], []),
             ),
             patch(
                 "deepagents_code.main._select_trust_action",
@@ -4153,12 +4156,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4201,12 +4200,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4259,12 +4254,11 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[lower_cfg, higher_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [lower_cfg, higher_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(lower_cfg, project_root),
+                    _project_mcp_source(higher_cfg, project_root),
+                ],
             ),
             patch("builtins.input", return_value="y"),
         ):
@@ -4310,12 +4304,11 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[lower, higher],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [lower, higher]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(lower, project_root),
+                    _project_mcp_source(higher, project_root),
+                ],
             ),
             patch("builtins.input", return_value="n"),
         ):
@@ -4357,12 +4350,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4416,12 +4405,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4474,12 +4459,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4550,12 +4531,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4622,12 +4599,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4683,12 +4656,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4755,12 +4726,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4811,12 +4780,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4885,12 +4852,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4948,12 +4913,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4999,12 +4962,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -5043,12 +5004,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -5102,12 +5061,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -6632,3 +6589,76 @@ class TestCheckMcpProjectTrustDedupe:
         combined = self._captured_prompt(capsys)
         assert combined.count('  "alpha" (stdio):') == 1, combined
         assert combined.count('  "beta" (stdio):') == 1, combined
+
+
+class TestCheckMcpProjectTrustScopeFilter:
+    """Only project-scoped configs may reach the approval prompt.
+
+    The user's own profile `.mcp.json` is already trusted. Listing its servers
+    in the "untrusted project servers" prompt would train users to approve
+    their own configuration, which is exactly the signal the prompt exists to
+    carry.
+    """
+
+    def _write_config(self, path: Path, servers: dict[str, Any]) -> None:
+        import json
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+    def test_user_scoped_servers_are_not_prompted(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A mixed source list prompts for the project server only."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        profile = tmp_path / "profile"
+        project = tmp_path / "repo"
+        user_cfg = profile / ".mcp.json"
+        project_cfg = project / ".mcp.json"
+        self._write_config(user_cfg, {"user_srv": {"command": "uvx", "args": ["u"]}})
+        self._write_config(
+            project_cfg, {"project_srv": {"command": "uvx", "args": ["p"]}}
+        )
+        monkeypatch.chdir(project)
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_config_sources",
+            return_value=[
+                DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+                _project_mcp_source(project_cfg, project),
+            ],
+        ):
+            result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is False
+        combined = capsys.readouterr()
+        text = combined.out + combined.err
+        assert "project_srv" in text
+        assert "user_srv" not in text
+
+    def test_only_user_scoped_sources_skip_the_prompt_entirely(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With nothing project-scoped there is nothing to approve."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        user_cfg = tmp_path / "profile" / ".mcp.json"
+        self._write_config(user_cfg, {"user_srv": {"command": "uvx", "args": ["u"]}})
+        monkeypatch.chdir(tmp_path)
+
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_config_sources",
+            return_value=[DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER)],
+        ):
+            result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is None
+        assert "user_srv" not in capsys.readouterr().err

@@ -14,6 +14,7 @@ from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
+from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs
 from deepagents_code.model_config import (
     ModelProfileEntry,
@@ -892,7 +893,7 @@ class TestDefaultModelScope:
         assert notified
         message, severity = notified[0]
         assert severity == "error"
-        assert "~/.deepagents/config.toml" in message
+        assert PATHS.display(PATHS.profile.config_file) in message
         assert "unwritable" in message
         assert "malformed" in message
 

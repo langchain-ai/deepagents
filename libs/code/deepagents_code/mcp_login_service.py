@@ -205,17 +205,15 @@ def resolve_mcp_config(
             describing why no usable config could be assembled.
     """
     from deepagents_code.mcp_tools import (
+        MCPConfigSources,
         _drop_invalid_mcp_config_servers,
         _load_mcp_config_top_level_with_error,
         _merge_mcp_configs_with_sources,
-        _resolve_project_config_base,
-        classify_discovered_configs,
-        discover_mcp_configs,
+        discover_mcp_config_sources,
         filter_trusted_project_servers,
         load_mcp_config,
         load_mcp_config_with_error,
         merge_mcp_configs,
-        project_root_for_mcp_config_path,
     )
 
     if config_path is not None:
@@ -231,7 +229,7 @@ def resolve_mcp_config(
             used_paths=(Path(config_path),),
         )
 
-    found = discover_mcp_configs()
+    found = discover_mcp_config_sources()
     if not found:
         return ConfigResolutionError(
             kind=ConfigErrorKind.NO_CONFIG_FOUND,
@@ -242,7 +240,10 @@ def resolve_mcp_config(
             ),
         )
 
-    user_paths, project_paths = classify_discovered_configs(found)
+    sources = MCPConfigSources.from_sources(found)
+    user_paths = sources.user_paths
+    project_paths = sources.project_paths
+    project_roots = sources.project_roots
     configs: list[dict[str, Any]] = []
     used_paths: list[Path] = []
     untrusted: tuple[Path, ...] = ()
@@ -270,7 +271,6 @@ def resolve_mcp_config(
         legacy_ignored = tuple(sorted(trust_lists.legacy_ignored))
         legacy_env_ignored = trust_lists.legacy_env_ignored
         malformed_approvals = trust_lists.malformed_approvals
-        project_base = _resolve_project_config_base(None)
         untrusted_paths: list[Path] = []
         if trust_lists.load_failed:
             # Whole-config trust and scoped TOML approvals fail closed. The
@@ -294,9 +294,8 @@ def resolve_mcp_config(
             kept: dict[str, Any] = {}
             for name, server in servers.items():
                 source = server_sources[name]
-                project_root = project_root_for_mcp_config_path(
-                    source, fallback=project_base
-                )
+                # Indexed, not `.get`: see `MCPConfigSources.project_roots`.
+                project_root = project_roots[source]
                 kept.update(
                     filter_trusted_project_servers(
                         {name: server},
@@ -335,7 +334,7 @@ def resolve_mcp_config(
             detail = "; ".join(f"{path}: {error}" for path, error in load_errors)
             message = f"No usable MCP config found (load errors: {detail})"
         else:
-            found_paths = ", ".join(str(path) for path in found)
+            found_paths = ", ".join(str(source.path) for source in found)
             message = f"No usable MCP config found in: {found_paths}"
         return ConfigResolutionError(
             kind=ConfigErrorKind.NO_USABLE_CONFIG,
@@ -402,9 +401,12 @@ def select_server(
 
 def _policy_error_message(policy_error: str) -> str:
     """Return the user-facing message for an unreadable trust policy."""
+    from deepagents_code._paths import PATHS
+
+    config_display = PATHS.display(PATHS.profile.config_file)
     return (
         f"Refusing to trust project MCP servers: {policy_error}. Fix "
-        "~/.deepagents/config.toml, or pass --mcp-config <path> to load "
+        f"{config_display}, or pass --mcp-config <path> to load "
         "a file explicitly."
     )
 

@@ -162,6 +162,32 @@ class TestDefaultCacheDir:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert default_cache_dir() == tmp_path / "AppData" / "Local"
 
+    @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
+    def test_unresolvable_home_uses_profile_state_cache(
+        self, platform: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An absolute profile remains usable when the OS has no home."""
+        monkeypatch.setattr(sys, "platform", platform)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.setattr(
+            Path, "home", MagicMock(side_effect=RuntimeError("home unavailable"))
+        )
+
+        assert default_cache_dir() == model_config.DEFAULT_STATE_DIR / "cache"
+
+    @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
+    def test_relative_home_uses_profile_state_cache(
+        self, platform: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relative home cannot redirect caches beneath the launch directory."""
+        monkeypatch.setattr(sys, "platform", platform)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: Path("relative-home"))
+
+        assert default_cache_dir() == model_config.DEFAULT_STATE_DIR / "cache"
+
 
 def _create_git_repository(root: Path) -> Path:
     """Create a worktree with an in-tree Git common directory."""

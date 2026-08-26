@@ -16,7 +16,7 @@ from deepagents_code.mcp_tools import (
     MCP_CONFIG_DISCOVERY_PATHS,
     MCPConfigError,
     MCPServerInfo,
-    discover_mcp_configs,
+    discover_mcp_config_sources,
     resolve_and_load_mcp_tools,
 )
 from deepagents_code.project_utils import ProjectContext
@@ -56,7 +56,10 @@ def discover_mcp_config_paths(config: TalonConfig) -> list[Path]:
     Returns:
         Existing files, ordered from lowest to highest precedence.
     """
-    return discover_mcp_configs(project_context=_project_context(config))
+    return [
+        source.path
+        for source in discover_mcp_config_sources(project_context=_project_context(config))
+    ]
 
 
 async def load_mcp_tools(config: TalonConfig) -> MCPTools:

@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
 from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
+from deepagents_code._paths import PATHS, get_deepagents_home
 from deepagents_code._version import __version__
 from deepagents_code.goal_state_limits import RUBRIC_CHAR_LIMIT, validate_rubric
 
@@ -850,6 +851,42 @@ def _run_startup_auto_update(console: "Console") -> None:
         console.print(message, markup=True, highlight=False)
 
 
+def _reject_reserved_agent_arg(name: str) -> None:
+    """Exit with a CLI-level message when `-a` names an app-owned directory.
+
+    Agent profiles are siblings of directories the app owns under the profile
+    root, so `get_agent_dir` rejects those names. It is called from several
+    places downstream of launch, so the failure is not attributable to the flag
+    that caused it. Reject the name here, at the point of entry, instead.
+
+    Note:
+        Exits the process with status 2 (argparse's usage-error status) when
+        `name` is reserved.
+    """
+    from deepagents_code._reserved_names import (
+        is_reserved_agent_dir_name,
+        reserved_agent_dir_names,
+    )
+
+    reserved = reserved_agent_dir_names()
+    if not is_reserved_agent_dir_name(name):
+        return
+    from deepagents_code.config import console
+
+    console.print(
+        f"[bold red]Error:[/bold red] Agent name {name!r} is reserved for "
+        f"dcode's own state.",
+        markup=True,
+        highlight=False,
+    )
+    console.print(
+        f"Reserved names: {', '.join(sorted(reserved))}.",
+        markup=False,
+        highlight=False,
+    )
+    sys.exit(2)
+
+
 def _resolve_agent_arg(args: argparse.Namespace) -> str:
     """Resolve the final agent identifier from parsed CLI args.
 
@@ -866,7 +903,7 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     5. `DEFAULT_AGENT_NAME` as the final fallback.
 
     Both `default` and `recent` are gated by `_recent_agent_is_valid` so a
-    stale entry pointing at a deleted agent directory is ignored.
+    stale entry pointing at a deleted or app-owned directory is ignored.
 
     Extracted from the `cli_main` body so it's unit-testable without
     constructing the full arg tree.
@@ -880,6 +917,7 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     from deepagents_code._constants import DEFAULT_AGENT_NAME
 
     if args.agent is not None:
+        _reject_reserved_agent_arg(args.agent)
         return args.agent
     if getattr(args, "resume_thread", None) is not None:
         return DEFAULT_AGENT_NAME
@@ -1534,25 +1572,36 @@ def _warn_if_interpreter_tools_without_interpreter(
 
 
 def _recent_agent_is_valid(name: str) -> bool:
-    """Return `True` when `~/.deepagents/<name>/` still exists on disk.
+    """Return whether `name` is a usable agent in the selected profile.
 
-    Used to guard against a stale `[agents].recent` entry pointing at an
-    agent the user has since deleted — in that case we silently fall back
-    to the hard-coded default instead of failing at server start.
+    Used to guard against a stale `[agents].recent` entry pointing at an agent
+    the user has since deleted, or at a name the app owns — in either case we
+    silently fall back to the hard-coded default instead of failing at server
+    start.
 
-    Path is rebuilt from `Path.home()` rather than `settings.user_deepagents_dir`
-    because `settings` is intentionally imported *after* argparse in `cli_main`
-    (per the startup-hot-path guidance there), and pulling it in here would
-    undo that deferral.
+    The path comes from the lightweight immutable launch snapshot rather than
+    `settings`, which is intentionally imported *after* argparse in `cli_main`
+    (per the startup-hot-path guidance there).
 
-    `is_dir()` is wrapped in `try/except OSError` so permission errors on
-    `~/.deepagents` (symlink loops, EACCES) don't crash the launch — we
+    `is_dir()` is wrapped in `try/except OSError` so permission errors on the
+    profile root (symlink loops, EACCES) don't crash the launch — we
     treat them the same as "not valid" and fall back to the default.
     """
-    from pathlib import Path as _Path
+    from deepagents_code._reserved_names import is_reserved_agent_dir_name
 
+    if is_reserved_agent_dir_name(name):
+        # `bin/` and `plugins/` are real directories under the profile root, so
+        # the `is_dir()` check below would accept them and the launch would
+        # then fail in `get_agent_dir`. A stale entry must fall back, never
+        # break every launch. On case-insensitive filesystems the check also
+        # catches a differently cased stale entry such as `Plugins`.
+        logger.warning(
+            "Stored agent %r names an app-owned directory; falling back to default",
+            name,
+        )
+        return False
     try:
-        return (_Path.home() / ".deepagents" / name).is_dir()
+        return (get_deepagents_home() / name).is_dir()
     except OSError:
         logger.warning(
             "Could not validate recent agent %r; falling back to default",
@@ -1593,14 +1642,101 @@ def check_cli_dependencies() -> None:
 _RIPGREP_URL = "https://github.com/BurntSushi/ripgrep#installation"
 """Fallback installation URL when no platform package manager is detected."""
 
-_SUPPRESS_HINT_CLI = (
-    'To suppress, edit ~/.deepagents/config.toml:\n\\[warnings]\nsuppress = \\["<key>"]'
-)
-"""Suppression hint for non-interactive output.
 
-Contains a `<key>` placeholder that callers replace with the warning key
-(e.g. `"ripgrep"`, `"tavily"`).
-"""
+def _rich_path_display(path: Path) -> str:
+    """Return an effective path escaped for Rich markup."""
+    from rich.markup import escape
+
+    return escape(PATHS.display(path))
+
+
+def _profile_permission_hint() -> str:
+    """Return the shared "check permissions" remediation for the profile root."""
+    return f"Check permissions for {_rich_path_display(PATHS.profile.root)}"
+
+
+def _configured_profile_notice() -> str | None:
+    """Return a launch notice naming a non-default profile, if one is selected.
+
+    A mistyped or stale `DEEPAGENTS_HOME` resolves to an empty directory, which
+    is indistinguishable from a first run: no credentials, no MCP tokens, no
+    config. Naming the profile, and saying whether it already existed,
+    identifies the cause. Without it the launch looks like data loss.
+
+    `classify_path` reports three states and each gets its own line. An
+    unreadable root is a permission problem, not a wrong profile, so it must
+    not be described as a new empty profile. `_reject_degenerate_root` normally
+    stops that root at capture time, but permissions can change after it.
+
+    Returns:
+        A Rich-markup line, or `None` when the default profile is in use.
+    """
+    from deepagents_code._paths import PathState, classify_path
+
+    if PATHS.uses_default_profile:
+        return None
+    root = _rich_path_display(PATHS.profile.root)
+    state = classify_path(PATHS.profile.root)
+    if state is PathState.EXISTS:
+        return f"[dim]Using profile {root} (DEEPAGENTS_HOME)[/dim]"
+    if state is PathState.UNREADABLE:
+        return (
+            f"[yellow]Note:[/yellow] the profile at {root} (DEEPAGENTS_HOME) "
+            "exists but cannot be read. Check the permissions on it and on its "
+            "parent directories."
+        )
+    return (
+        f"[yellow]Note:[/yellow] creating a new empty profile at {root} "
+        "(DEEPAGENTS_HOME). Existing settings and credentials live in a "
+        "different profile."
+    )
+
+
+def _print_configured_profile_notice() -> None:
+    """Print the configured-profile notice to stderr, if there is one.
+
+    Wrapped in its own error handling rather than sharing the optional-tools
+    `try`: a failure here must not be reported as "tool availability check
+    skipped", and must not stop the tool warnings from printing.
+    """
+    try:
+        notice = _configured_profile_notice()
+    except Exception:
+        # Nothing to fall back to: there is no notice text yet. Log and move
+        # on rather than failing a launch over a diagnostic line.
+        logger.warning("Could not build the profile notice", exc_info=True)
+        return
+    if notice is None:
+        return
+    try:
+        from rich.console import Console as _Console
+
+        _Console(stderr=True).print(notice)
+    except Exception:
+        logger.warning("Could not print the profile notice", exc_info=True)
+        # The point of the notice is that a silent wrong profile looks like
+        # lost settings, so fall back to plain stderr rather than dropping it.
+        # Strip the markup from the notice already computed instead of writing
+        # a different sentence: the "creating a new empty profile" case is the
+        # one that matters most, and a fixed "Using profile" line would state
+        # the opposite of it.
+        with contextlib.suppress(Exception):
+            from rich.markup import render
+
+            sys.stderr.write(f"{render(notice).plain}\n")
+
+
+def _suppress_hint_cli(key: str) -> str:
+    """Return a configured-path suppression hint for non-interactive output.
+
+    Args:
+        key: Warning key to place in the example TOML.
+
+    Returns:
+        Rich-safe instructions for editing the effective user config.
+    """
+    config_path = _rich_path_display(PATHS.profile.config_file)
+    return f'To suppress, edit {config_path}:\n\\[warnings]\nsuppress = \\["{key}"]'
 
 
 def _ripgrep_install_hint() -> str:
@@ -1850,7 +1986,7 @@ def format_tool_warning_cli(tool: str) -> str:
         hint = _ripgrep_install_hint()
         if hint.startswith("http"):
             hint = f"[link={hint}]{hint}[/link]"
-        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "ripgrep")
+        suppress = _suppress_hint_cli("ripgrep")
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
             f"Install: {hint}\n\n"
@@ -1858,7 +1994,7 @@ def format_tool_warning_cli(tool: str) -> str:
         )
     if tool == "tavily":
         url = "https://tavily.com"
-        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "tavily")
+        suppress = _suppress_hint_cli("tavily")
         return (
             "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
             f"Get a key at [link={url}]{url}[/link]\n\n"
@@ -2734,6 +2870,7 @@ def _resolve_and_validate_sandbox(
     from deepagents_code.integrations.sandbox_registry import SandboxRegistry
 
     registry = SandboxRegistry.load()
+    config_display = PATHS.display(PATHS.profile.config_file)
 
     def _config_note() -> str:
         """Build a breadcrumb when the config file failed to parse.
@@ -2744,7 +2881,7 @@ def _resolve_and_validate_sandbox(
         """
         if registry.config_error:
             return (
-                f"\n\nNote: ~/.deepagents/config.toml could not be used "
+                f"\n\nNote: {config_display} could not be used "
                 f"({registry.config_error}); any providers or default it "
                 "declares were ignored."
             )
@@ -2755,7 +2892,7 @@ def _resolve_and_validate_sandbox(
         if not default:
             parser.error(
                 "--sandbox was given with no value but no [sandboxes].default "
-                "is configured in ~/.deepagents/config.toml. Pass a provider "
+                f"is configured in {config_display}. Pass a provider "
                 "name explicitly or set [sandboxes].default." + _config_note()
             )
         args.sandbox = default
@@ -2769,7 +2906,7 @@ def _resolve_and_validate_sandbox(
             "publishes it and re-run:\n"
             "  /install <package-name> --package\n"
             f"or declare [sandboxes.providers.{args.sandbox}] in "
-            "~/.deepagents/config.toml." + _config_note()
+            f"{config_display}." + _config_note()
         )
 
     metadata = registry.get_metadata(args.sandbox)
@@ -4272,9 +4409,9 @@ def _check_mcp_project_trust(
             Ctrl+D to abort the launch.
     """
     from deepagents_code.mcp_tools import (
+        MCPConfigSources,
         ProjectServerSummary,
-        classify_discovered_configs,
-        discover_mcp_configs,
+        discover_mcp_config_sources,
         extract_project_server_summaries,
         load_merged_mcp_configs_lenient,
     )
@@ -4284,7 +4421,7 @@ def _check_mcp_project_trust(
 
     try:
         project_context = ProjectContext.from_user_cwd(Path.cwd())
-        config_paths = discover_mcp_configs(project_context=project_context)
+        config_sources = discover_mcp_config_sources(project_context=project_context)
     except (OSError, RuntimeError):
         logger.debug(
             "Could not discover MCP configs for project trust check",
@@ -4292,7 +4429,7 @@ def _check_mcp_project_trust(
         )
         return None
 
-    _, project_configs = classify_discovered_configs(config_paths)
+    project_configs = MCPConfigSources.from_sources(config_sources).project_paths
     if not project_configs and not debug_prompt:
         return None
 
@@ -5499,7 +5636,7 @@ def cli_main() -> None:
                 logger.warning("--auto-update failed: filesystem error", exc_info=True)
                 console.print(
                     "[bold red]Error:[/bold red] Failed to toggle auto-updates. "
-                    "Check permissions for ~/.deepagents/"
+                    + _profile_permission_hint()
                 )
                 sys.exit(1)
             except Exception:
@@ -5519,7 +5656,7 @@ def cli_main() -> None:
             else:
                 console.print(
                     "[bold red]Error:[/bold red] Could not clear default model. "
-                    "Check permissions for ~/.deepagents/"
+                    + _profile_permission_hint()
                 )
                 sys.exit(1)
             sys.exit(0)
@@ -5570,7 +5707,7 @@ def cli_main() -> None:
             else:
                 console.print(
                     "[bold red]Error:[/bold red] Could not save default model. "
-                    "Check permissions for ~/.deepagents/"
+                    + _profile_permission_hint()
                 )
                 sys.exit(1)
             sys.exit(0)
@@ -5683,6 +5820,7 @@ def cli_main() -> None:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
         elif args.non_interactive_message:
+            _print_configured_profile_notice()
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)
             # Check for optional tools before running agent (stderr so
@@ -5812,6 +5950,7 @@ def cli_main() -> None:
                 sys.exit(130)
             sys.exit(exit_code)
         else:
+            _print_configured_profile_notice()
             resume_thread = args.resume_thread  # "__MOST_RECENT__", "<id>", or None
             if resume_thread is None:
                 # A normal (non-resume) launch runs the update path and resets

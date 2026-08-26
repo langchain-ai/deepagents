@@ -6,7 +6,10 @@ import logging
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._constants import (
+    LOCAL_CONTEXT_MESSAGE_SOURCE,
+    SYSTEM_MESSAGE_PREFIX,
+)
 from deepagents_code.goal_state_limits import (
     GOAL_NOTICE_TEXT_CHAR_LIMIT,
     GOAL_OBJECTIVE_CHAR_LIMIT,
@@ -629,6 +632,10 @@ def test_internal_message_predicates_are_scope_specific() -> None:
         content="conversation summary",
         additional_kwargs={"lc_source": "summarization"},
     )
+    local_context = HumanMessage(
+        content="local context changed",
+        additional_kwargs={"lc_source": LOCAL_CONTEXT_MESSAGE_SOURCE},
+    )
     unknown = HumanMessage(
         content="connector message",
         additional_kwargs={"lc_source": "slack"},
@@ -639,6 +646,8 @@ def test_internal_message_predicates_are_scope_specific() -> None:
         assert is_conversation_control_message(message)
     assert is_internal_message(summary)
     assert not is_conversation_control_message(summary)
+    assert is_internal_message(local_context)
+    assert not is_conversation_control_message(local_context)
     assert not is_internal_message(unknown)
     assert not is_conversation_control_message(unknown)
     assert is_internal_message(HumanMessage(content="[SYSTEM] legacy marker"))

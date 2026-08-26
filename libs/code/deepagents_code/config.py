@@ -32,6 +32,11 @@ from deepagents_code._env_vars import (
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
+from deepagents_code._paths import (
+    DEEPAGENTS_HOME_ENV,
+    DEFAULT_PROFILE_MARKER_ENV,
+    PATHS,
+)
 from deepagents_code._version import __version__
 from deepagents_code.config_manifest import (
     INTERPRETER_ENABLE_DEFAULT,
@@ -120,6 +125,8 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "BASHOPTS",
         "CDPATH",
         "COMSPEC",
+        DEEPAGENTS_HOME_ENV,
+        DEFAULT_PROFILE_MARKER_ENV,
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
         "ENV",
@@ -150,13 +157,19 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         _INHERITED_PYTHONPATH_ENV,
     }
 )
-"""Environment keys that project `.env` files must not inject.
+"""Environment keys that no `.env` file may inject.
 
-A project `.env` is untrusted (it travels with a cloned repo), so it must not be
-able to set variables that turn loading the `.env` into code execution in the
-subprocesses Deep Agents Code spawns. The set spans four threat categories;
-every entry is here for one of these reasons, so do not remove one without
-checking which category it belongs to:
+Project dotenv files are untrusted (they travel with cloned repositories), and
+even the global dotenv is loaded after the launch profile has been selected.
+Neither may replace that profile/trust root. The remaining entries prevent a
+dotenv file from turning environment loading into code execution in child
+processes. Every entry belongs to one of these categories, so do not remove one
+without checking which category it belongs to:
+
+- Profile/trust relocation (`DEEPAGENTS_HOME`): this is captured from the
+    inherited environment before dotenv loading. Allowing either dotenv layer
+    to change it would make project-controlled configuration capable of moving
+    the files treated as user-trusted.
 
 - Dynamic-linker preload/audit (`DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`,
     `LD_AUDIT`, `LD_LIBRARY_PATH`, `LD_PRELOAD`): force a loader to map an
@@ -240,6 +253,43 @@ def _is_dotenv_denied_env_key(key: str) -> bool:
     )
 
 
+def _report_denied_env_key(key: str, dotenv_path: Path, *, is_project: bool) -> None:
+    """Report a denied dotenv key at a level matching who could have set it.
+
+    A project `.env` is untrusted, so a denied key there is expected and stays
+    at debug. The user's own global `.env` is trusted. Silently dropping a key
+    the user deliberately wrote leaves them with a setting that never takes
+    effect and no way to find out why, so every denied key from that file is
+    reported, not `DEEPAGENTS_HOME` alone.
+
+    The report goes to stderr as well as the logger. The package installs a
+    buffering handler at import, which stops `logging.lastResort` from writing
+    warnings to the terminal, so a `logger.warning` alone would be visible only
+    under `--debug`. `_debug` prints and logs for the same reason.
+
+    `DEEPAGENTS_HOME` gets its own sentence: it selects the profile that owns
+    this file, so it cannot be read from it.
+    """
+    if is_project:
+        # Log the key only — the value is attacker-controlled.
+        logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+        return
+    if key.upper() == DEEPAGENTS_HOME_ENV:
+        message = (
+            f"Ignoring {DEEPAGENTS_HOME_ENV} in {dotenv_path}: it selects the "
+            "profile that owns that file, so it must be set in the launching "
+            "shell environment instead (for example 'export "
+            f"{DEEPAGENTS_HOME_ENV}=...')."
+        )
+    else:
+        message = (
+            f"Ignoring {key!r} in {dotenv_path}: this variable cannot be set "
+            "from a .env file. Set it in your shell environment instead."
+        )
+    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201  # user-facing
+    logger.warning("%s", message)
+
+
 _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
         DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
@@ -312,11 +362,22 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     return None
 
 
-# Global user-level .env (~/.deepagents/.env); sentinel when Path.home() fails.
-try:
-    _GLOBAL_DOTENV_PATH = Path.home() / ".deepagents" / ".env"
-except RuntimeError:
-    _GLOBAL_DOTENV_PATH = Path("/nonexistent/.deepagents/.env")
+# Frozen before either dotenv layer is inspected.
+_GLOBAL_DOTENV_PATH = PATHS.profile.dotenv_file
+
+
+def _dotenv_files_are_same(first: Path | None, second: Path) -> bool:
+    """Return whether two dotenv paths identify the same file."""
+    if first is None:
+        return False
+    if first == second:
+        return True
+    try:
+        return first.samefile(second)
+    except OSError:
+        # Identity uncertainty must not let a project file become trusted by
+        # loading it again through the configured profile path.
+        return True
 
 
 def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]:
@@ -352,11 +413,12 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             )
             return
         for key, value in values.items():
-            if value is None or key in env:
+            if value is None:
                 continue
             if _is_dotenv_denied_env_key(key):
-                # Log the key only — the value is attacker-controlled.
-                logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+                _report_denied_env_key(key, dotenv_path, is_project=is_project)
+                continue
+            if key in env:
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
@@ -368,23 +430,21 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 continue
             env[key] = value
 
+    project_dotenv: Path | None = None
+    try:
+        project_dotenv = _find_dotenv_from_start_path(start_path or Path.cwd())
+    except OSError:
+        logger.warning(
+            "Could not inspect project dotenv at %s; previewed project env vars "
+            "may be incomplete",
+            start_path or "cwd",
+            exc_info=True,
+        )
+    global_is_project = _dotenv_files_are_same(project_dotenv, _GLOBAL_DOTENV_PATH)
+
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
     if resolve_read_project_dotenv():
-        project_dotenv: Path | None = None
-        try:
-            project_dotenv = (
-                _find_dotenv_from_start_path(start_path)
-                if start_path is not None
-                else _find_dotenv_from_start_path(Path.cwd())
-            )
-        except OSError:
-            logger.warning(
-                "Could not inspect project dotenv at %s; previewed project env "
-                "vars may be incomplete",
-                start_path or "cwd",
-                exc_info=True,
-            )
         apply_dotenv(project_dotenv, is_project=True)
     else:
         logger.debug(
@@ -403,7 +463,8 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             exc_info=True,
         )
         global_dotenv = None
-    apply_dotenv(global_dotenv, is_project=False)
+    if not global_is_project:
+        apply_dotenv(global_dotenv, is_project=False)
 
     return env
 
@@ -471,11 +532,12 @@ def _load_dotenv(
         values = dotenv.dotenv_values(dotenv_path=dotenv_path)
         applied = False
         for key, value in values.items():
-            if value is None or key in os.environ:
+            if value is None:
                 continue
             if _is_dotenv_denied_env_key(key):
-                # Log the key only — the value is attacker-controlled.
-                logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+                _report_denied_env_key(key, dotenv_path, is_project=is_project)
+                continue
+            if key in os.environ:
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # A committed project `.env` must not set a user-level trust
@@ -501,9 +563,26 @@ def _load_dotenv(
     # could pin the var true) before the trusted opt-out was ever seen.
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
+    project_dotenv: Path | None = None
+    try:
+        if start_path is None:
+            found = dotenv.find_dotenv(usecwd=True)
+            if found:
+                project_dotenv = Path(found)
+        else:
+            project_dotenv = _find_dotenv_from_start_path(start_path)
+    except (OSError, ValueError):
+        logger.warning(
+            "Could not inspect project dotenv at %s; project env vars will not "
+            "be loaded",
+            start_path or "cwd",
+            exc_info=True,
+        )
+    global_is_project = _dotenv_files_are_same(project_dotenv, _GLOBAL_DOTENV_PATH)
+
     global_toggle: dict[str, str] = {}
     try:
-        if _GLOBAL_DOTENV_PATH.is_file():
+        if not global_is_project and _GLOBAL_DOTENV_PATH.is_file():
             raw = dotenv.dotenv_values(dotenv_path=_GLOBAL_DOTENV_PATH).get(
                 READ_PROJECT_DOTENV
             )
@@ -517,23 +596,15 @@ def _load_dotenv(
         )
 
     read_project = resolve_read_project_dotenv(global_dotenv=global_toggle)
-    dotenv_path: Path | str | None = None
     if read_project:
         try:
-            if start_path is None:
-                found = dotenv.find_dotenv(usecwd=True)
-                if found:
-                    dotenv_path = found
-                    loaded = apply_dotenv(Path(found), is_project=True) or loaded
-            else:
-                dotenv_path = _find_dotenv_from_start_path(start_path)
-                if dotenv_path is not None:
-                    loaded = apply_dotenv(dotenv_path, is_project=True) or loaded
+            if project_dotenv is not None:
+                loaded = apply_dotenv(project_dotenv, is_project=True) or loaded
         except (OSError, ValueError):
             logger.warning(
                 "Could not read project dotenv at %s; project env vars will not "
                 "be loaded",
-                dotenv_path or start_path or "cwd",
+                project_dotenv or start_path or "cwd",
                 exc_info=True,
             )
     else:
@@ -547,8 +618,10 @@ def _load_dotenv(
     # try/except wraps both is_file() and load_dotenv() to cover the TOCTOU
     # window where the file can vanish between stat and open.
     try:
-        if _GLOBAL_DOTENV_PATH.is_file() and apply_dotenv(
-            _GLOBAL_DOTENV_PATH, is_project=False
+        if (
+            not global_is_project
+            and _GLOBAL_DOTENV_PATH.is_file()
+            and apply_dotenv(_GLOBAL_DOTENV_PATH, is_project=False)
         ):
             loaded = True
             logger.debug("Loaded global dotenv: %s", _GLOBAL_DOTENV_PATH)
@@ -1609,6 +1682,22 @@ def _format_lc_version(base_version: str, *, editable: bool) -> str:
     return _with_editable_local_version(base_version)
 
 
+def _contract_editable_path(path: str) -> str:
+    """Contract an editable path beneath a usable home directory.
+
+    Returns:
+        The contracted path, or the original path when no usable home exists.
+    """
+    try:
+        home_path = Path.home()
+    except RuntimeError:
+        return path
+    if not home_path.is_absolute():
+        return path
+    home = str(home_path)
+    return "~" + path[len(home) :] if path.startswith(home) else path
+
+
 def _resolve_editable_info() -> tuple[bool, str | None]:
     """Parse PEP 610 `direct_url.json` once and cache both results.
 
@@ -1633,10 +1722,7 @@ def _resolve_editable_info() -> tuple[bool, str | None]:
             if editable:
                 url = data.get("url", "")
                 if url.startswith("file://"):
-                    path = url2pathname(urlparse(url).path)
-                    home = str(Path.home())
-                    if path.startswith(home):
-                        path = "~" + path[len(home) :]
+                    path = _contract_editable_path(url2pathname(urlparse(url).path))
     except (PackageNotFoundError, FileNotFoundError, json.JSONDecodeError, TypeError):
         logger.debug(
             "Failed to read editable install info from PEP 610 metadata",
@@ -3251,26 +3337,35 @@ class Settings:
 
     @property
     def user_deepagents_dir(self) -> Path:
-        """Base user-level `.deepagents` directory.
+        """The immutable launch-time user profile root.
 
         Returns:
-            Path to `~/.deepagents`
+            The normalized `DEEPAGENTS_HOME`, defaulting to `~/.deepagents`.
         """
-        return Path.home() / ".deepagents"
+        return PATHS.profile.root
 
-    @staticmethod
-    def get_user_agent_md_path(agent_name: str) -> Path:
+    def get_user_agent_md_path(self, agent_name: str) -> Path:
         """Get user-level AGENTS.md path for a specific agent.
 
         Returns path regardless of whether the file exists.
+
+        Delegates to `get_agent_dir` so the name is held to one rule set.
+        Building the path directly would skip both the character check and the
+        reserved-name check: `onboarding.write_onboarding_name_memory` calls
+        this and then creates the parent, so an unchecked name here is exactly
+        how a marker lands in app-owned state.
 
         Args:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/AGENTS.md
+            Path to `{DEEPAGENTS_HOME}/{agent_name}/AGENTS.md`.
+
+        Note:
+            `ValueError` propagates from `get_agent_dir` when the agent name
+            contains invalid characters or names a directory the app owns.
         """
-        return Path.home() / ".deepagents" / agent_name / "AGENTS.md"
+        return self.get_agent_dir(agent_name) / "AGENTS.md"
 
     def get_project_agent_md_path(self) -> list[Path]:
         """Get project-level AGENTS.md paths.
@@ -3312,10 +3407,11 @@ class Settings:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}
+            Path to `{DEEPAGENTS_HOME}/{agent_name}`.
 
         Raises:
-            ValueError: If the agent name contains invalid characters.
+            ValueError: If the agent name contains invalid characters or names
+                a directory the app owns.
         """
         if not self._is_valid_agent_name(agent_name):
             msg = (
@@ -3323,7 +3419,22 @@ class Settings:
                 "contain letters, numbers, hyphens, underscores, and spaces."
             )
             raise ValueError(msg)
-        return Path.home() / ".deepagents" / agent_name
+        # Agent profiles live directly under the profile root, so an agent
+        # named after an app-owned directory would resolve onto app state. The
+        # picker already hides these names; reject them on the write path too
+        # rather than letting `dcode -a plugins` stamp a marker into it. The
+        # comparison is filesystem-aware so a case or trailing-dot alias that
+        # resolves onto the reserved directory is rejected as well.
+        # Imported from `_reserved_names`, not `agent`: this runs on the CLI
+        # startup path and `agent` pulls in LangChain at module level.
+        from deepagents_code._reserved_names import is_reserved_agent_dir_name
+
+        if is_reserved_agent_dir_name(agent_name):
+            msg = (
+                f"Invalid agent name: {agent_name!r} is reserved for dcode's own state."
+            )
+            raise ValueError(msg)
+        return PATHS.profile.agent_dir(agent_name)
 
     def ensure_agent_dir(self, agent_name: str) -> Path:
         """Ensure the global agent directory exists and return its path.
@@ -3332,17 +3443,13 @@ class Settings:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}
+            Path to `{DEEPAGENTS_HOME}/{agent_name}`.
 
-        Raises:
-            ValueError: If the agent name contains invalid characters.
+        Note:
+            `ValueError` propagates from `get_agent_dir` when the name contains
+            invalid characters or names a directory the app owns. Validation is
+            not repeated here, so there is one place it can change.
         """
-        if not self._is_valid_agent_name(agent_name):
-            msg = (
-                f"Invalid agent name: {agent_name!r}. Agent names can only "
-                "contain letters, numbers, hyphens, underscores, and spaces."
-            )
-            raise ValueError(msg)
         agent_dir = self.get_agent_dir(agent_name)
         agent_dir.mkdir(parents=True, exist_ok=True)
         return agent_dir
@@ -3354,7 +3461,7 @@ class Settings:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/skills/
+            Path to `{DEEPAGENTS_HOME}/{agent_name}/skills/`.
         """
         return self.get_agent_dir(agent_name) / "skills"
 
@@ -3365,7 +3472,7 @@ class Settings:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/skills/
+            Path to `{DEEPAGENTS_HOME}/{agent_name}/skills/`.
         """
         skills_dir = self.get_user_skills_dir(agent_name)
         skills_dir.mkdir(parents=True, exist_ok=True)
@@ -3402,7 +3509,7 @@ class Settings:
             agent_name: Name of the agent (e.g., "deepagents")
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/agents/
+            Path to `{DEEPAGENTS_HOME}/{agent_name}/agents/`.
         """
         return self.get_agent_dir(agent_name) / "agents"
 
@@ -3417,23 +3524,28 @@ class Settings:
         return self.project_root / ".deepagents" / "agents"
 
     @property
-    def user_agents_dir(self) -> Path:
+    def user_agents_dir(self) -> Path | None:
         """Base user-level `.agents` directory (`~/.agents`).
 
         Returns:
-            Path to `~/.agents`
+            Path to `~/.agents`, or `None` when the process has no resolvable
+                home directory.
         """
-        return Path.home() / ".agents"
+        if PATHS.launch_home is None:
+            return None
+        return PATHS.launch_home / ".agents"
 
-    def get_user_agent_skills_dir(self) -> Path:
+    def get_user_agent_skills_dir(self) -> Path | None:
         """Get user-level `~/.agents/skills/` directory.
 
         This is a generic alias path for skills that is tool-agnostic.
 
         Returns:
-            Path to `~/.agents/skills/`
+            Path to `~/.agents/skills/`, or `None` when the process has no
+                resolvable home directory.
         """
-        return self.user_agents_dir / "skills"
+        base = self.user_agents_dir
+        return None if base is None else base / "skills"
 
     def get_project_agent_skills_dir(self) -> Path | None:
         """Get project-level `.agents/skills/` directory.
@@ -3448,16 +3560,19 @@ class Settings:
         return self.project_root / ".agents" / "skills"
 
     @staticmethod
-    def get_user_claude_skills_dir() -> Path:
+    def get_user_claude_skills_dir() -> Path | None:
         """Get user-level `~/.claude/skills/` directory (experimental).
 
         Convenience bridge for cross-tool skill sharing with Claude Code.
         This is experimental and may be removed.
 
         Returns:
-            Path to `~/.claude/skills/`
+            Path to `~/.claude/skills/`, or `None` when the process has no
+                resolvable home directory.
         """
-        return Path.home() / ".claude" / "skills"
+        if PATHS.launch_home is None:
+            return None
+        return PATHS.launch_home / ".claude" / "skills"
 
     def get_project_claude_skills_dir(self) -> Path | None:
         """Get project-level `.claude/skills/` directory (experimental).

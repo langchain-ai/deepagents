@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from deepagents_code.tui.widgets.codex_auth import CodexSignedInAction
 
 from deepagents_code import auth_store, theme
+from deepagents_code._paths import PATHS
 from deepagents_code.auth_display import format_auth_badge
 from deepagents_code.config import (
     LANGSMITH_EU_ENDPOINT,
@@ -886,7 +887,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                         " (dcode only, highest priority) or ",
                         (self._env_var, TStyle(bold=True)),
                         " (shared, lowest priority). Put either in the project .env "
-                        "or ~/.deepagents/.env; press ",
+                        f"or {PATHS.display(PATHS.profile.dotenv_file)}; press ",
                         ("Ctrl+R", TStyle(bold=True)),
                         " in this dialog to reload. New shell exports require "
                         "restarting the app. ",
@@ -1736,7 +1737,8 @@ class AuthManagerScreen(ModalScreen[None]):
         )
         return Content.assemble(
             "Lists installed model providers, services like web search, and any "
-            "providers you've configured in ~/.deepagents/config.toml. Greyed-out "
+            "providers you've configured in "
+            f"{PATHS.display(PATHS.profile.config_file)}. Greyed-out "
             "providers aren't installed yet — select one to install it. ",
             ("Docs", link_style),
         )

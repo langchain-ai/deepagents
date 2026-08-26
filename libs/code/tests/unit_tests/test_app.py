@@ -66,6 +66,7 @@ from deepagents_code._constants import (
     SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
     SYSTEM_MESSAGE_PREFIX,
 )
+from deepagents_code._paths import PATHS
 from deepagents_code._session_stats import SessionStats
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
@@ -235,6 +236,47 @@ async def test_context_prefers_checkpoint_total_after_offload(
     assert screen_type.call_args.kwargs["context_tokens"] == 1_000
     push_screen.call_args.args[1](None)
     focus.assert_called_once_with()
+
+
+async def test_context_doctor_dispatches_to_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    handler = AsyncMock()
+    monkeypatch.setattr(app, "_handle_context_doctor_command", handler)
+
+    await app._handle_command("/context-doctor")
+
+    handler.assert_awaited_once_with("/context-doctor")
+
+
+@pytest.mark.parametrize("auto_save", [True, False])
+async def test_handle_context_doctor_command_renders_report(
+    monkeypatch: pytest.MonkeyPatch,
+    auto_save: bool,
+) -> None:
+    app = DeepAgentsApp()
+    app._server_kwargs = {"allow_fs_tools": ["read_file"]}
+    app._cwd = "/tmp"
+    app._discovered_skills = []
+    mount_message = AsyncMock()
+    monkeypatch.setattr(app, "_mount_message", mount_message)
+    monkeypatch.setattr(
+        app,
+        "_get_context_usage_counts",
+        AsyncMock(return_value=(100, 20)),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.config.is_memory_auto_save_enabled",
+        lambda: auto_save,
+    )
+
+    await app._handle_context_doctor_command("/context-doctor")
+
+    assert mount_message.await_count == 2
+    rendered_msg = mount_message.await_args_list[-1].args[0]
+    assert isinstance(rendered_msg, AppMessage)
+    assert "Fresh-session context audit" in str(rendered_msg._content)
 
 
 async def test_tokens_prompts_for_first_message_when_usage_is_empty(
@@ -16133,8 +16175,9 @@ class TestMessageTimestampFooters:
             await app._load_thread_history(
                 thread_id="t-spacer", preloaded_payload=payload
             )
-            await pilot.pause()
 
+            # Assert the synchronous restore window before the post-refresh
+            # prefetch is allowed to hydrate archived rows above it.
             assert app._message_store.total_count >= 5
             assert app._message_store.has_messages_above
             top = app.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", Static)
@@ -31580,7 +31623,8 @@ class TestLiveApprovalModeWrites:
 
         notify.assert_called_once_with(
             "Approval mode changed for this session, but the startup preference "
-            "could not be saved. Check permissions for ~/.deepagents/.",
+            "could not be saved. Check permissions for "
+            f"{PATHS.display(PATHS.profile.root)}.",
             severity="warning",
             markup=False,
         )

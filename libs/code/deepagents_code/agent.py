@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import inspect
 import logging
 import os
@@ -68,12 +67,14 @@ from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
     _GlmTerminalStallRecovery,
 )
+from deepagents_code._paths import PATHS
 from deepagents_code._repository_bounds import (
     REPOSITORY_GREP_MATCH_LIMIT,
     REPOSITORY_TOOL_CALL_LIMIT,
     REPOSITORY_TOOL_NAMES,
     RepositoryBounds,
 )
+from deepagents_code._reserved_names import is_reserved_agent_dir_name
 from deepagents_code.approval_mode import (
     ApprovalMode,
     aread_approval_mode_from_store,
@@ -1147,31 +1148,6 @@ and surface that directory as a selectable agent.
 """
 
 
-@functools.lru_cache(maxsize=1)
-def _reserved_agent_dir_names() -> frozenset[str]:
-    """Return non-agent directory names reserved by the app under `~/.deepagents/`.
-
-    These directories are created by the app for its own use and must never
-    appear in the agent picker — even if they contain an `AGENTS.md` file
-    (e.g. after `dcode -a plugins` stamps the marker via memory setup):
-
-    - `bin/` holds the managed `rg` binary (`managed_tools.BIN_DIR`).
-    - `plugins/` holds installed plugin state (`plugins.store`).
-    - `conversation_history/` holds offloaded per-thread archives (`offload`).
-
-    Each name is derived from its owning module so it stays a single source of
-    truth rather than being hardcoded here. The result is cached since the
-    reserved set is constant for the process.
-    """
-    from deepagents_code.managed_tools import BIN_DIR
-    from deepagents_code.offload import CONVERSATION_HISTORY_DIRNAME
-    from deepagents_code.plugins.store import DEFAULT_PLUGIN_DIRNAME
-
-    return frozenset(
-        {BIN_DIR.name, DEFAULT_PLUGIN_DIRNAME, CONVERSATION_HISTORY_DIRNAME},
-    )
-
-
 def _is_agent_dir_entry(entry: Path) -> bool:
     """Return whether a `~/.deepagents/` entry should be listed as an agent.
 
@@ -1189,7 +1165,7 @@ def _is_agent_dir_entry(entry: Path) -> bool:
     `OSError` from `is_dir`/`is_symlink`/`is_file` propagates so callers can
     log with the failing entry's name as context.
     """
-    if entry.name.startswith(".") or entry.name in _reserved_agent_dir_names():
+    if entry.name.startswith(".") or is_reserved_agent_dir_name(entry.name):
         return False
     if entry.is_symlink() or not entry.is_dir():
         return False
@@ -1255,10 +1231,13 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
 
             write_json("list", [])
             return
+        from rich.markup import escape as escape_markup
+
+        agents_display = escape_markup(PATHS.display(agents_dir))
         console.print("[yellow]No agents found.[/yellow]")
         console.print(
-            "[dim]Agents will be created in ~/.deepagents/ "
-            "when you first use them.[/dim]",
+            f"[dim]Agents will be created in {agents_display} when you first "
+            "use them.[/dim]",
             style=theme.MUTED,
         )
         return
@@ -1528,7 +1507,7 @@ def get_system_prompt(
     prompt_dir = Path(__file__).parent
     template = (prompt_dir / "system_prompt.md").read_text()
 
-    skills_path = f"~/.deepagents/{assistant_id}/skills"
+    skills_path = PATHS.display(PATHS.profile.agent_skills_dir(assistant_id))
 
     if interactive:
         mode_description = "an interactive TUI on the user's computer"
@@ -2225,6 +2204,68 @@ def _apply_inherited_pythonpath(env: dict[str, str]) -> None:
         env["PYTHONPATH"] = inherited
 
 
+def get_skill_sources(
+    assistant_id: str = DEFAULT_AGENT_NAME,
+    project_context: ProjectContext | None = None,
+) -> list[CodeSkillSource]:
+    """Return ordered skill sources for PluginSkillsMiddleware and audit tooling.
+
+    Lowest to highest precedence:
+    built-in -> plugins -> user .deepagents -> user .agents
+    -> project .deepagents -> project .agents
+    -> user .claude (experimental) -> project .claude (experimental)
+
+    Args:
+        assistant_id: Agent identifier for user skill directories.
+        project_context: Project context for resolving project skill directories.
+
+    Returns:
+        Ordered list of CodeSkillSource entries.
+    """
+    skills_dir = settings.ensure_user_skills_dir(assistant_id)
+    user_agent_skills_dir = settings.get_user_agent_skills_dir()
+    project_skills_dir = (
+        project_context.project_skills_dir()
+        if project_context is not None
+        else settings.get_project_skills_dir()
+    )
+    project_agent_skills_dir = (
+        project_context.project_agent_skills_dir()
+        if project_context is not None
+        else settings.get_project_agent_skills_dir()
+    )
+    sources: list[CodeSkillSource] = [
+        (str(settings.get_built_in_skills_dir()), "Built-in"),
+    ]
+    try:
+        from deepagents_code.plugins import discover_plugins
+        from deepagents_code.plugins.adapters.skills import plugin_skill_sources
+
+        plugin_result = discover_plugins()
+        if plugin_result.warnings:
+            logger.warning("Plugin discovery warnings: %s", plugin_result.warnings)
+        sources.extend(plugin_skill_sources(plugin_result.plugins))
+    except Exception:
+        logger.warning("Could not discover plugin skills", exc_info=True)
+    sources.append((str(skills_dir), "User Deepagents"))
+    if user_agent_skills_dir is not None:
+        sources.append((str(user_agent_skills_dir), "User Agents"))
+    if project_skills_dir:
+        sources.append((str(project_skills_dir), "Project Deepagents"))
+    if project_agent_skills_dir:
+        sources.append((str(project_agent_skills_dir), "Project Agents"))
+
+    # Experimental: Claude Code skill directories
+    user_claude_skills_dir = settings.get_user_claude_skills_dir()
+    if user_claude_skills_dir is not None and user_claude_skills_dir.exists():
+        sources.append((str(user_claude_skills_dir), "User Claude"))
+    project_claude_skills_dir = settings.get_project_claude_skills_dir()
+    if project_claude_skills_dir:
+        sources.append((str(project_claude_skills_dir), "Project Claude"))
+
+    return sources
+
+
 def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -2453,25 +2494,6 @@ def create_cli_agent(
             # Create empty file for user customizations
             # Base instructions are loaded fresh from get_system_prompt()
             agent_md.touch()
-
-    # Skills directories (if enabled)
-    skills_dir = None
-    user_agent_skills_dir = None
-    project_skills_dir = None
-    project_agent_skills_dir = None
-    if enable_skills:
-        skills_dir = settings.ensure_user_skills_dir(assistant_id)
-        user_agent_skills_dir = settings.get_user_agent_skills_dir()
-        project_skills_dir = (
-            project_context.project_skills_dir()
-            if project_context is not None
-            else settings.get_project_skills_dir()
-        )
-        project_agent_skills_dir = (
-            project_context.project_agent_skills_dir()
-            if project_context is not None
-            else settings.get_project_agent_skills_dir()
-        )
 
     # Load custom subagents from filesystem
     custom_subagents: list[SubAgent | CompiledSubAgent] = []
@@ -2736,47 +2758,10 @@ def create_cli_agent(
 
     # Add skills middleware
     if enable_skills:
-        # Lowest to highest precedence:
-        # built-in -> plugins -> user .deepagents -> user .agents
-        # -> project .deepagents -> project .agents
-        # -> user .claude (experimental) -> project .claude (experimental)
-        # Plugin skills are namespaced as `{plugin_id}:{skill_name}` to avoid
-        # collisions between plugins and user/project skills.
-        sources: list[CodeSkillSource] = [
-            (str(settings.get_built_in_skills_dir()), "Built-in"),
-        ]
-        try:
-            from deepagents_code.plugins import discover_plugins
-            from deepagents_code.plugins.adapters.skills import plugin_skill_sources
-
-            plugin_result = discover_plugins()
-            if plugin_result.warnings:
-                logger.warning("Plugin discovery warnings: %s", plugin_result.warnings)
-            sources.extend(plugin_skill_sources(plugin_result.plugins))
-        except Exception:
-            logger.warning("Could not discover plugin skills", exc_info=True)
-        sources.extend(
-            [
-                (str(skills_dir), "User Deepagents"),
-                (str(user_agent_skills_dir), "User Agents"),
-            ]
+        sources = get_skill_sources(
+            assistant_id=assistant_id,
+            project_context=project_context,
         )
-        if project_skills_dir:
-            sources.append((str(project_skills_dir), "Project Deepagents"))
-        if project_agent_skills_dir:
-            sources.append((str(project_agent_skills_dir), "Project Agents"))
-
-        # Experimental: Claude Code skill directories
-        user_claude_skills_dir = settings.get_user_claude_skills_dir()
-        if user_claude_skills_dir.exists():
-            sources.append((str(user_claude_skills_dir), "User Claude"))
-        project_claude_skills_dir = settings.get_project_claude_skills_dir()
-        if project_claude_skills_dir:
-            sources.append((str(project_claude_skills_dir), "Project Claude"))
-
-        # `PluginSkillsMiddleware` namespaces plugin skills before dedup while
-        # behaving like the SDK middleware when no plugin namespaces are
-        # present, so it is safe to use for all skill sources.
         agent_middleware.append(
             PluginSkillsMiddleware(
                 backend=FilesystemBackend(virtual_mode=False),

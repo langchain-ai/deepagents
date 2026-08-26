@@ -8,10 +8,12 @@ import stat
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
+from deepagents_code._constants import LOCAL_CONTEXT_MESSAGE_SOURCE
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.models.domain import (
     AgentIdentity,
@@ -246,12 +248,29 @@ def test_stream_recorder_collects_completed_main_and_identified_subagent(
         main_agent=False,
     )
     recorder.record(AIMessage(id="unstable", content="skip"), {}, main_agent=False)
-    for source in ("summarization", "auto_mode_classifier"):
+    for source in (
+        "summarization",
+        "auto_mode_classifier",
+        LOCAL_CONTEXT_MESSAGE_SOURCE,
+    ):
         recorder.record(
             AIMessage(id=source, content=f"hidden {source}"),
             {"lc_source": source},
             main_agent=True,
         )
+    recorder.record(
+        HumanMessage(
+            id="context-message",
+            content="hidden message metadata",
+            additional_kwargs={"lc_source": LOCAL_CONTEXT_MESSAGE_SOURCE},
+        ),
+        {},
+        main_agent=True,
+    )
+    chunk_without_metadata = Mock(spec=AIMessageChunk)
+    chunk_without_metadata.id = "mock-chunk"
+    chunk_without_metadata.content = "ignored"
+    recorder.record(chunk_without_metadata, {}, main_agent=True)  # ty: ignore[invalid-argument-type]
 
     main = runtime.transcripts.materialize("thread").path.read_text()
     agent = runtime.transcripts.materialize(
@@ -260,7 +279,36 @@ def test_stream_recorder_collects_completed_main_and_identified_subagent(
 
     assert '"content":"hello"' in main
     assert '"content":"research"' in agent
-    assert all(value not in main + agent for value in ("skip", "hidden"))
+    assert all(
+        value not in main + agent
+        for value in (
+            "skip",
+            "hidden summarization",
+            "hidden auto",
+            "hidden local",
+            "hidden message",
+        )
+    )
+
+
+def test_checkpoint_append_hides_local_context(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "transcripts")
+    store.append_messages(
+        "thread",
+        [
+            HumanMessage(
+                id="local-context",
+                content="hidden context",
+                additional_kwargs={"lc_source": LOCAL_CONTEXT_MESSAGE_SOURCE},
+            ),
+            HumanMessage(id="user", content="visible input"),
+        ],
+    )
+
+    transcript = store.materialize("thread").path.read_text()
+
+    assert "hidden context" not in transcript
+    assert "visible input" in transcript
 
 
 def test_runtime_stores_transcripts_outside_workspace(

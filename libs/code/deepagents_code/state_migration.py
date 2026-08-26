@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from deepagents_code._paths import harden_state_dir
 from deepagents_code.model_config import DEFAULT_CONFIG_DIR, DEFAULT_STATE_DIR
 from deepagents_code.onboarding import ONBOARDING_MARKER_FILENAME
 
@@ -112,13 +113,10 @@ def migrate_legacy_state(
     if not pending:
         return
 
-    try:
-        state_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
+    if not harden_state_dir(state_dir):
         logger.warning(
             "Could not create state directory %s; skipping state migration",
             state_dir,
-            exc_info=True,
         )
         return
 

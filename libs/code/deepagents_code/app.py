@@ -3514,7 +3514,7 @@ class DeepAgentsApp(App):
         something while it was open.
         """
 
-        self._restart_respawn_task: asyncio.Task[None] | None = None
+        self._restart_respawn_task: asyncio.Task[Any] | None = None
         """Strong reference to the detached restart task.
 
         `_schedule_restart_command` runs config refresh and server respawn off
@@ -26309,20 +26309,8 @@ class DeepAgentsApp(App):
                 label,
             )
             return False
-        if not await self._reload_configuration_for_restart():
-            return False
-        restarting = await self._mount_transient_app_message("Restarting server...")
-        restarted = False
-        try:
-            restarted = await self._restart_server_manual()
-        finally:
-            if restarting is not None:
-                with suppress(NoMatches, ScreenStackError):
-                    await restarting.remove()
-        if not restarted:
-            return False
-        await self._mount_message(AppMessage("Restart complete."))
-        return True
+        restart = self._schedule_restart_command(preserve_queue=True)
+        return await restart
 
     async def _reload_configuration_for_restart(self) -> bool:
         """Reload config state before respawning the owned server.
@@ -26409,7 +26397,7 @@ class DeepAgentsApp(App):
 
     def _schedule_restart_command(
         self, *, preserve_queue: bool = False
-    ) -> asyncio.Task[None]:
+    ) -> asyncio.Task[bool]:
         """Run config refresh and server respawn off the Textual message pump.
 
         `_schedule_off_message_pump` is reserved for modal continuations. A
@@ -26431,7 +26419,7 @@ class DeepAgentsApp(App):
         """
         active = self._restart_respawn_task
         if active is not None and not active.done():
-            return active
+            return cast("asyncio.Task[bool]", active)
         task = asyncio.create_task(
             self._run_restart_command_detached(preserve_queue=preserve_queue),
             name="restart",
@@ -26442,7 +26430,7 @@ class DeepAgentsApp(App):
         task.add_done_callback(self._finish_restart)
         return task
 
-    def _finish_restart(self, task: asyncio.Task[None]) -> None:
+    def _finish_restart(self, task: asyncio.Task[Any]) -> None:
         """Resume prompts whose server-ready drain raced restart completion."""
         if task is not self._restart_respawn_task:
             return
@@ -26460,18 +26448,21 @@ class DeepAgentsApp(App):
 
     async def _run_restart_command_detached(
         self, *, preserve_queue: bool = False
-    ) -> None:
+    ) -> bool:
         """Serialize and safely report a detached `/restart` continuation.
 
         Args:
             preserve_queue: Keep prompts submitted during an active reload.
+
+        Returns:
+            Whether the server restarted successfully.
 
         Raises:
             asyncio.CancelledError: If app teardown cancels the restart.
         """
         try:
             async with self._environment_mutation_lock:
-                await self._run_restart_command(preserve_queue=preserve_queue)
+                return await self._run_restart_command(preserve_queue=preserve_queue)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -26479,12 +26470,16 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Restart failed: {type(exc).__name__}: {exc}"),
             )
+            return False
 
-    async def _run_restart_command(self, *, preserve_queue: bool = False) -> None:
+    async def _run_restart_command(self, *, preserve_queue: bool = False) -> bool:
         """Validate and schedule a restart without echoing another command.
 
         Args:
             preserve_queue: Keep prompts submitted during an active reload.
+
+        Returns:
+            Whether the server restarted successfully.
         """
         # A respawn already driving the app through a reconnect must not be
         # re-entered: the destructive setup below would sever work bound to a
@@ -26502,7 +26497,7 @@ class DeepAgentsApp(App):
                     "will be sent once it finishes.",
                 ),
             )
-            return
+            return False
 
         # Sever in-flight work bound to the dying subprocess. A direct restart
         # drops the queued backlog, but a restart requested during `/reload`
@@ -26528,7 +26523,7 @@ class DeepAgentsApp(App):
                 "the input. Re-submit them or run `/restart` again after fixing "
                 "the configuration."
             )
-            return
+            return False
 
         if self._server_kwargs is None:
             await self._restore_queue_to_input(
@@ -26538,7 +26533,7 @@ class DeepAgentsApp(App):
                 "send on the current session, or relaunch dcode to fully "
                 "restart."
             )
-            return
+            return False
 
         # We own a server (`_server_kwargs is not None`) but it may not be
         # ready to respawn. `_server_proc` stays `None` until the startup
@@ -26582,7 +26577,7 @@ class DeepAgentsApp(App):
                     "Configuration was reloaded; queued prompts were returned "
                     "to the input. Relaunch dcode to start again."
                 )
-            return
+            return False
 
         # The whole restart continuation is already detached from the message
         # pump, including the potentially slow remote config fetch above.
@@ -26592,9 +26587,9 @@ class DeepAgentsApp(App):
         self._reconnecting = True
         self._agent = None
         self._sync_status_connection()
-        await self._run_restart_respawn()
+        return await self._run_restart_respawn()
 
-    async def _run_restart_respawn(self) -> None:
+    async def _run_restart_respawn(self) -> bool:
         """Respawn the server for `/restart`, detached from the message pump.
 
         Called from a detached restart continuation -- `/restart`'s own task,
@@ -26615,6 +26610,9 @@ class DeepAgentsApp(App):
         this the exception would reach only `_log_task_exception` and log a
         warning the interactive user never sees; `_log_task_exception` stays a
         last-resort backstop for anything that escapes even this handler.
+
+        Returns:
+            Whether the server restarted successfully.
         """
         restarting = None
         restarted = False
@@ -26646,6 +26644,7 @@ class DeepAgentsApp(App):
                 "Restart did not complete; queued prompts were returned to the "
                 "input. Re-submit them to send on the current session."
             )
+        return restarted
 
     async def _restart_server_manual(self) -> bool:
         """Respawn the app-owned LangGraph server for a user-initiated restart.

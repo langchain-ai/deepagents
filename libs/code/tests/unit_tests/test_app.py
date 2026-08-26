@@ -24263,6 +24263,39 @@ class TestRestartAfterInstall:
 
         assert await app._restart_after_install("baseten") is False
 
+    async def test_slow_refresh_gates_and_preserves_new_prompts(self) -> None:
+        """An accepted restart queues prompts before its remote refresh finishes."""
+        app = DeepAgentsApp()
+        app._server_proc = object()
+        app._server_kwargs = {}
+        app._agent_running = False
+        app._connecting = False
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._dismiss_startup_tip = AsyncMock()  # ty: ignore
+        refresh_started = asyncio.Event()
+        release_refresh = asyncio.Event()
+
+        async def reload_configuration() -> bool:
+            refresh_started.set()
+            await release_refresh.wait()
+            return False
+
+        app._reload_configuration_for_restart = reload_configuration  # ty: ignore
+
+        offered_restart = asyncio.create_task(app._restart_after_install("baseten"))
+        await refresh_started.wait()
+
+        restart_task = app._restart_respawn_task
+        assert restart_task is not None
+        assert not restart_task.done()
+        await app._submit_input("keep this prompt", mode="normal")
+        assert [message.text for message in app._pending_messages] == [
+            "keep this prompt"
+        ]
+
+        release_refresh.set()
+        assert await offered_restart is False
+
     @pytest.mark.parametrize(
         ("proc", "kwargs", "deferred", "error", "expected"),
         [

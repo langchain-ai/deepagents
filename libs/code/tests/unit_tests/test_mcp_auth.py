@@ -77,7 +77,7 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect `Path.home()` and `DEFAULT_STATE_DIR` into a temp directory.
 
     `Path.home` is patched for code that resolves it at call time;
-    `DEFAULT_STATE_DIR` is patched for code (like `mcp_auth._tokens_dir`)
+    `DEFAULT_STATE_DIR` is patched for code (like `mcp_auth.token_store_dir`)
     that pulls from the import-time-frozen constant in `model_config`.
     """
     fake = tmp_path / "home"

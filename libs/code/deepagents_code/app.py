@@ -73,6 +73,7 @@ from deepagents_code._git import (
 )
 from deepagents_code._invocation import invoked_name
 from deepagents_code._markdown import escape_markdown as _escape_markdown
+from deepagents_code._paths import PATHS
 from deepagents_code._session_stats import (
     USAGE_KIND_LABELS,
     USAGE_KIND_ORDER,
@@ -374,6 +375,28 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     """
     path = Path(path_arg).expanduser()
     return path, path.read_text(encoding="utf-8")
+
+
+def _load_non_negative_int_option(key: str, default: int, *, label: str) -> int:
+    """Resolve a non-negative integer config option.
+
+    Returns:
+        The configured value, or `default` when invalid.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    option = get_option(key)
+    if option is None:
+        logger.warning("Unknown config option %r; using the default", key)
+        return default
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    value = resolved.value
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        logger.warning("Invalid %s %r; using the default", label, value)
+        return default
+    return value
 
 
 def _load_float_option(
@@ -4211,8 +4234,16 @@ class DeepAgentsApp(App):
 
         from deepagents_code.config_manifest import (
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
+            MODEL_SWITCH_WARNING_THRESHOLD_DEFAULT,
             SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
         )
+
+        self._model_switch_warning_threshold = _load_non_negative_int_option(
+            "warnings.model_switch_token_threshold",
+            MODEL_SWITCH_WARNING_THRESHOLD_DEFAULT,
+            label="model-switch token threshold",
+        )
+        """Context size above which interactive model switches require confirmation."""
 
         self._session_cost_warning_threshold_usd = _load_float_option(
             "warnings.session_cost_threshold_usd",
@@ -9567,7 +9598,7 @@ class DeepAgentsApp(App):
             self.notify(
                 "Approval mode changed for this session, but the startup "
                 "preference could not be saved. Check permissions for "
-                "~/.deepagents/.",
+                f"{PATHS.display(PATHS.profile.root)}.",
                 severity="warning",
                 markup=False,
             )
@@ -10538,7 +10569,8 @@ class DeepAgentsApp(App):
         if not saved:
             self.notify(
                 "Could not save the goal criteria preference. Auto will keep "
-                "asking for review; edit ~/.deepagents/config.toml to change it.",
+                "asking for review; edit "
+                f"{PATHS.display(PATHS.profile.config_file)} to change it.",
                 severity="warning",
                 markup=False,
             )
@@ -10872,7 +10904,9 @@ class DeepAgentsApp(App):
 
             extra = provider_install_extra(provider)
             if extra is not None and not is_provider_package_installed(provider):
-                await self._install_extra_then_switch(extra, model_spec)
+                await self._install_extra_then_switch(
+                    extra, model_spec, interactive=False
+                )
                 return
         await self._switch_model(model_spec, announce_unchanged=False)
 
@@ -10979,7 +11013,8 @@ class DeepAgentsApp(App):
         if not ok:
             self.notify(
                 "Could not save onboarding state. Setup may run again next "
-                "launch — check permissions on ~/.deepagents/.state/.",
+                "launch — check permissions on "
+                f"{PATHS.display(PATHS.profile.state_dir)}.",
                 severity="warning",
                 markup=False,
             )
@@ -12652,6 +12687,130 @@ class DeepAgentsApp(App):
 
         await self._mount_message(
             AppMessage(self._render_tool_catalog(catalog), markdown=True)
+        )
+
+    async def _handle_context_doctor_command(self, command: str) -> None:
+        """Audit the estimated token cost of context injected into a session."""
+        from pathlib import Path
+
+        from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT
+
+        from deepagents_code._constants import DEFAULT_AGENT_NAME
+        from deepagents_code.agent import (
+            _MEMORY_READONLY_SYSTEM_PROMPT,
+            get_skill_sources,
+            get_system_prompt,
+        )
+        from deepagents_code.config import is_memory_auto_save_enabled, settings
+        from deepagents_code.context_doctor import (
+            build_context_doctor_report,
+            format_memory_prompt,
+            format_skills_prompt,
+            render_context_doctor_report,
+        )
+        from deepagents_code.tool_catalog import (
+            collect_built_in_tools,
+            collect_tools_from_agent,
+        )
+
+        await self._mount_message(UserMessage(command))
+        managed = self._server_kwargs is not None
+        system_prompt: str | None = None
+        memory_prompt: str | None = None
+        memory_contents: list[tuple[str, str]] = []
+        skill_sources = []
+        built_in = None
+
+        if managed:
+            try:
+                system_prompt = get_system_prompt(
+                    assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
+                    sandbox_type=self._sandbox_type,
+                    interactive=True,
+                    cwd=Path(self._cwd),
+                    fs_tools=self._server_kwargs.get("allow_fs_tools"),
+                )
+            except Exception:
+                logger.exception("Failed to build base prompt for /context-doctor")
+            memory_paths = [
+                settings.get_user_agent_md_path(
+                    self._assistant_id or DEFAULT_AGENT_NAME
+                ),
+                *settings.get_project_agent_md_path(),
+            ]
+            for path in memory_paths:
+                try:
+                    if path.is_file():
+                        memory_contents.append(
+                            (str(path), path.read_text(encoding="utf-8"))
+                        )
+                except OSError:
+                    logger.warning("Could not read memory metadata for %s", path)
+            template = (
+                MEMORY_SYSTEM_PROMPT
+                if is_memory_auto_save_enabled()
+                else _MEMORY_READONLY_SYSTEM_PROMPT
+            )
+            try:
+                memory_prompt = format_memory_prompt(memory_contents, template)
+            except Exception:
+                logger.exception("Failed to format memory for /context-doctor")
+            try:
+                skill_sources = get_skill_sources(
+                    assistant_id=self._assistant_id or DEFAULT_AGENT_NAME
+                )
+            except Exception:
+                logger.exception("Failed to resolve skill sources for /context-doctor")
+            try:
+                built_in = await asyncio.to_thread(
+                    collect_built_in_tools,
+                    assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
+                    enable_interpreter=bool(
+                        self._server_kwargs.get("enable_interpreter")
+                    ),
+                    fs_tools=self._server_kwargs.get("allow_fs_tools"),
+                )
+            except Exception:
+                logger.exception("Failed to enumerate tools for /context-doctor")
+        else:
+            try:
+                active_tools = (
+                    collect_tools_from_agent(self._agent)
+                    if self._agent is not None
+                    else None
+                )
+                if active_tools is not None:
+                    mcp_names = {
+                        tool.name
+                        for server in self._mcp_server_info_for_tools()
+                        for tool in server.tools
+                    }
+                    built_in = [
+                        tool for tool in active_tools if tool.name not in mcp_names
+                    ]
+            except Exception:
+                logger.exception("Failed to inspect custom agent for /context-doctor")
+
+        skills = list(self._discovered_skills)
+        skills_prompt = None
+        try:
+            skills_prompt = format_skills_prompt(skills, sources=skill_sources)
+        except Exception:
+            logger.exception("Failed to format skills for /context-doctor")
+        provider_tokens, conversation_tokens = await self._get_context_usage_counts()
+        report = build_context_doctor_report(
+            system_prompt=system_prompt,
+            memory_prompt=memory_prompt,
+            memory_files=len(memory_contents),
+            skills_prompt=skills_prompt,
+            skills=skills,
+            built_in_tools=built_in,
+            mcp_servers=self._mcp_server_info_for_tools(),
+            conversation_tokens=conversation_tokens,
+            provider_tokens=provider_tokens,
+        )
+        await self._mount_message(
+            AppMessage(render_context_doctor_report(report), markdown=False)
         )
 
     def _mcp_server_info_for_tools(self) -> list[MCPServerInfo]:
@@ -15736,6 +15895,8 @@ class DeepAgentsApp(App):
                 ),
                 lambda _result: self._focus_chat_input_after_refresh(),
             )
+        elif cmd == "/context-doctor":
+            await self._handle_context_doctor_command(command)
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:
@@ -15863,7 +16024,7 @@ class DeepAgentsApp(App):
             elif model_arg:
                 # Direct switch: /model claude-sonnet-4-5
                 await self._mount_message(UserMessage(command))
-                await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
+                self._dispatch_model_switch(model_arg, extra_kwargs=extra_kwargs)
             else:
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
         elif cmd == "/reload":
@@ -22469,45 +22630,120 @@ class DeepAgentsApp(App):
         *,
         extra_kwargs: dict[str, Any] | None = None,
     ) -> None:
-        """Switch to `model_spec` now, or defer until in-flight work finishes.
-
-        The deferral toast is shown only for genuine in-flight user work
-        (`_agent_running`/`_shell_running`). A switch deferred solely because the
-        server is reconnecting (`_connecting` — e.g. the transient restart during
-        install-then-switch) drains automatically once the server is ready and is
-        already confirmed by the following "Switched to ..." message, so the
-        "after current task completes" toast there is misleading noise.
-
-        Args:
-            model_spec: The `provider:model` spec to switch to.
-            extra_kwargs: Extra constructor kwargs from `--model-params`.
-        """
+        """Request a model switch now, or defer it until current work finishes."""
         from functools import partial
 
+        request = partial(
+            self._confirm_and_switch_model,
+            model_spec,
+            extra_kwargs=extra_kwargs,
+        )
         if self._agent_running or self._shell_running or self._connecting:
+            # The deferred action awaits the confirmation and the switch itself
+            # rather than detaching them. `_drain_deferred_actions` awaits each
+            # action to keep the queue serialized, so returning after only
+            # scheduling the prompt would let a queued thread switch (or any
+            # later deferred mutation) resume while `ModelSwitchWarningScreen`
+            # is still open: the prompt's token count would describe a thread
+            # the user has already left, and accepting it would mutate model
+            # state concurrently with that switch. The drain runs from worker
+            # or cleanup tasks, never the App message pump, so awaiting the
+            # modal here cannot starve it of key events — the pump stays free
+            # to route input to the screen.
             self._defer_action(
-                DeferredAction(
-                    kind="model_switch",
-                    execute=partial(
-                        self._switch_model,
-                        model_spec,
-                        extra_kwargs=extra_kwargs,
-                    ),
-                ),
+                DeferredAction(kind="model_switch", execute=request),
             )
             if self._agent_running or self._shell_running:
                 self.notify(
-                    "Model will switch after current task completes.",
+                    "Model switch will continue after the current task completes.",
                     timeout=3,
                 )
-        else:
-            self.call_later(
-                partial(
-                    self._switch_model,
-                    model_spec,
-                    extra_kwargs=extra_kwargs,
-                ),
+            return
+        self._schedule_off_message_pump(
+            self._confirm_and_switch_model(model_spec, extra_kwargs=extra_kwargs),
+            context="model-switch",
+        )
+
+    async def _confirm_and_switch_model(
+        self,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Confirm a large-context switch before mutating model state.
+
+        Deferred callers await this inline (see `_dispatch_model_switch`); idle
+        callers reach it through `_schedule_off_message_pump` because their
+        continuation starts on the App message pump.
+        """
+        from deepagents_code.config import detect_provider, settings
+        from deepagents_code.model_config import ModelSpec
+
+        target = model_spec.removeprefix(":")
+        parsed = ModelSpec.try_parse(target)
+        provider = parsed.provider if parsed else detect_provider(target)
+        model_name = parsed.model if parsed else target
+        if model_name == settings.model_name and (
+            not provider or provider == settings.model_provider
+        ):
+            await self._switch_model(target, extra_kwargs=extra_kwargs)
+            return
+
+        from deepagents_code._env_vars import DEBUG_MODEL_SWITCH, is_env_truthy
+
+        debug_forced = is_env_truthy(DEBUG_MODEL_SWITCH)
+        threshold = self._model_switch_warning_threshold
+        if debug_forced or (threshold > 0 and self._context_tokens > threshold):
+            from deepagents_code.tui.modals.model_switch import (
+                ModelSwitchWarningScreen,
             )
+
+            current = f"{settings.model_provider}:{settings.model_name}"
+            display = f"{provider}:{model_name}" if provider and not parsed else target
+            screen = ModelSwitchWarningScreen(
+                current_model=current,
+                target_model=display,
+                context_tokens=self._context_tokens,
+                threshold=threshold,
+                approximate=self._tokens_approximate,
+            )
+            try:
+                # Watchdog-bounded like every other confirmation modal: the
+                # deferred drain awaits this confirmation inline (see
+                # `_dispatch_model_switch`), so an await that never resolves
+                # (compose crash, programmatic teardown that skips the dismiss
+                # callback) would block every later deferred action for the
+                # rest of the session. A timeout fails closed — the switch is
+                # abandoned, never applied.
+                confirmed = await asyncio.wait_for(
+                    self._push_screen_wait(screen),
+                    timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Model-switch confirmation timed out; treating as cancel",
+                )
+                self._dismiss_orphaned_screen(screen)
+                self.notify(
+                    "The model-switch confirmation timed out, so the model was "
+                    "not switched. Run /model to try again.",
+                    severity="warning",
+                    timeout=8,
+                    markup=False,
+                )
+                return
+            except Exception:
+                logger.exception("Failed to show model-switch confirmation")
+                await self._mount_message(
+                    ErrorMessage(
+                        "Model switch cancelled because confirmation could not "
+                        "be shown."
+                    )
+                )
+                return
+            if confirmed is not True:
+                return
+        await self._switch_model(target, extra_kwargs=extra_kwargs)
 
     async def _install_extra_then_switch(
         self,
@@ -22515,6 +22751,7 @@ class DeepAgentsApp(App):
         model_spec: str,
         *,
         extra_kwargs: dict[str, Any] | None = None,
+        interactive: bool = True,
     ) -> None:
         """Install a provider's extra, then switch to its model on success.
 
@@ -22522,6 +22759,7 @@ class DeepAgentsApp(App):
             extra: The extra that installs the model's provider integration.
             model_spec: The `provider:model` spec to switch to once installed.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
+            interactive: Whether the switch was explicitly requested by the user.
         """
         # `_install_extra` already surfaced the reason on any failure.
         if not await self._install_extra(extra, auto_restart=True):
@@ -22539,7 +22777,10 @@ class DeepAgentsApp(App):
                 ),
             )
             return
-        self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
+        if interactive:
+            self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
+        else:
+            await self._switch_model(model_spec, extra_kwargs=extra_kwargs)
 
     async def _prompt_model_auth_if_needed(self, model_spec: str) -> bool:
         """Prompt for missing credentials before switching to `model_spec`.
@@ -24176,7 +24417,8 @@ class DeepAgentsApp(App):
             else:
                 self.notify(
                     "Could not save notification preference. "
-                    "Check file permissions for ~/.deepagents/config.toml.",
+                    "Check file permissions for "
+                    f"{PATHS.display(PATHS.profile.config_file)}.",
                     severity="warning",
                     timeout=6,
                     markup=False,
@@ -28628,7 +28870,8 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(
                         "Model switched for this session, but could not save "
-                        "preference. Check permissions for ~/.deepagents/",
+                        "preference. Check permissions for "
+                        f"{PATHS.display(PATHS.profile.root)}",
                     ),
                 )
             else:
@@ -28813,7 +29056,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(
                     "Could not save default model. "
-                    "Check permissions for ~/.deepagents/",
+                    f"Check permissions for {PATHS.display(PATHS.profile.root)}",
                 ),
             )
 
@@ -28836,7 +29079,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(
                     "Could not clear default model. "
-                    "Check permissions for ~/.deepagents/",
+                    f"Check permissions for {PATHS.display(PATHS.profile.root)}",
                 ),
             )
 

@@ -48,6 +48,7 @@ from mcp.shared.auth import (
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from deepagents_code._paths import PATHS
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
@@ -247,8 +248,8 @@ def _token_file_lock(path: Path) -> LockType:
         return lock
 
 
-def _tokens_dir() -> Path:
-    """Return `~/.deepagents/.state/mcp-tokens/`.
+def token_store_dir() -> Path:
+    """Return the selected profile's MCP OAuth token-store directory.
 
     The deferred import lets tests redirect token storage into a temp
     directory by patching `deepagents_code.model_config.DEFAULT_STATE_DIR`.
@@ -302,21 +303,22 @@ async def _join_task_deferring_cancellation[T](
 
 
 class FileTokenStorage(TokenStorage):
-    """File-backed `TokenStorage` under `~/.deepagents/.state/mcp-tokens/`."""
+    """File-backed `TokenStorage` under the selected profile's state directory."""
 
     def __init__(self, server_name: str, *, server_url: str | None = None) -> None:
         """Bind this storage to a configured MCP server identity.
 
         Raises:
             ValueError: If `server_name` contains characters that would let
-                it escape the `~/.deepagents/.state/mcp-tokens/` directory
-                when used as the token-file basename.
+                it escape the MCP token-store directory when used as the
+                token-file basename.
         """
         if not _SAFE_SERVER_NAME_RE.fullmatch(server_name):
+            tokens_dir = PATHS.display(token_store_dir())
             msg = (
                 f"Invalid MCP server name {server_name!r}: token storage "
                 "names must match [A-Za-z0-9_-]+ to keep the on-disk path "
-                "inside ~/.deepagents/.state/mcp-tokens/."
+                f"inside {tokens_dir}."
             )
             raise ValueError(msg)
         self._server_name = server_name
@@ -326,7 +328,7 @@ class FileTokenStorage(TokenStorage):
     def path(self) -> Path:
         """On-disk token file path for this server."""
         stem = _token_file_stem(self._server_name, self._server_url)
-        return _tokens_dir() / f"{stem}.json"
+        return token_store_dir() / f"{stem}.json"
 
     @property
     def refresh_lock_path(self) -> Path:

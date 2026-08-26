@@ -3751,7 +3751,11 @@ async def test_unreadable_managed_policy_disables_every_mcp_server(
     )
     load = AsyncMock(return_value=([], None, []))
     monkeypatch.setattr(mcp_tools, "_load_tools_from_config", load)
-    monkeypatch.setattr(mcp_tools, "discover_mcp_configs", MagicMock(return_value=[]))
+    monkeypatch.setattr(
+        mcp_tools,
+        "discover_mcp_config_sources",
+        MagicMock(return_value=[]),
+    )
     try:
         tools, manager, infos = await mcp_tools.resolve_and_load_mcp_tools(
             explicit_config_path=str(explicit),

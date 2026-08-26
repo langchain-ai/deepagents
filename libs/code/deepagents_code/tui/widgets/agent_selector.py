@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_code import theme
+from deepagents_code._paths import PATHS
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_code.model_config import clear_default_agent, save_default_agent
 from deepagents_code.tui.key_hints import modal_navigation_hint
@@ -143,9 +144,11 @@ class AgentSelectorScreen(ModalScreen[str | None]):
                 help_text = self._help_text(glyphs)
             else:
                 yield Static(
-                    "No agents found in ~/.deepagents/.\n"
+                    "No agents found in "
+                    f"{PATHS.display(PATHS.profile.root)}.\n"
                     "Run dcode with -a <name> to create one.",
                     classes="agent-selector-help",
+                    markup=False,
                 )
                 help_text = f"{glyphs.bullet} Esc close"
             yield Static(help_text, classes="agent-selector-help", id="agent-help")

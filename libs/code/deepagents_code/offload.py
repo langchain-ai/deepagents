@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
+from deepagents_code._paths import get_deepagents_home
+
 logger = logging.getLogger(__name__)
 
 _FALLBACK_ARTIFACTS_ROOT = "/dcode-artifacts-fallback"
@@ -161,28 +163,32 @@ def _artifacts_root() -> _ArtifactsStorage:
 def _offload_fallback_root() -> Path:
     """Return a writable base directory for offloaded conversation history.
 
-    Prefers the persistent per-user `~/.deepagents` directory so offloaded
-    history survives across sessions and is easy to locate; falls back to a
-    private temporary directory when the home directory cannot be resolved or
-    written. This is the live root for the local-mode `conversation_history`
-    backend in `agent.py`.
+    Prefers the persistent profile root (`DEEPAGENTS_HOME`, default
+    `~/.deepagents`) so offloaded history survives across sessions and is easy
+    to locate; falls back to a private temporary directory when that root
+    cannot be created or written. The profile root itself is resolved at launch
+    and cannot fail here, so an unwritable or unmounted configured root is now
+    the only way to reach the fallback -- and history then does not persist,
+    which `_EPHEMERAL_OFFLOAD_STORAGE` records so callers can say so. This is
+    the live root for the local-mode `conversation_history` backend in
+    `agent.py`.
 
     Archives always live in the `conversation_history` subdirectory of the
     returned root. The `0o700` hardening therefore targets that subdirectory,
-    never the shared `~/.deepagents` config root -- which also houses
-    `config.toml`, `hooks.json`, `.env`, and `.state/`, whose permissions this
-    must not disturb. A temporary fallback root is created solely for offload,
-    so the whole directory is hardened in that case.
+    never the shared profile root -- which also houses `config.toml`,
+    `hooks.json`, `.env`, and `.state/`, whose permissions this must not
+    disturb. A temporary fallback root is created solely for offload, so the
+    whole directory is hardened in that case.
 
     Note: the `S_ISDIR` check below (which uses `lstat`, deliberately not
     following the link) guards the paths it is applied to -- the
     `conversation_history` subdirectory and, in the fallback case, the temp
-    root -- not `~/.deepagents` itself, which is created with a plain `mkdir`.
+    root -- not the profile root itself, which is created with a plain `mkdir`.
     So a `conversation_history` (or temp root) that is itself a symlink is
-    rejected, whereas a symlinked `~/.deepagents` pointing at a directory the
+    rejected, whereas a symlinked profile root pointing at a directory the
     current user owns is followed transparently and archives persist normally.
-    (A dangling `~/.deepagents` symlink still falls through to temporary
-    storage, but via `mkdir` raising, not via this check.)
+    (A dangling profile-root symlink still falls through to temporary storage,
+    but via `mkdir` raising, not via this check.)
 
     Returns:
         A directory whose `conversation_history` subdirectory is private and
@@ -190,7 +196,7 @@ def _offload_fallback_root() -> Path:
     """
 
     def _prepare_user_dir() -> Path:
-        base = Path.home() / ".deepagents"
+        base = get_deepagents_home()
         # Ensure the shared config root exists and is usable, but leave its
         # permissions untouched -- hardening belongs on the archive subdir only.
         base.mkdir(parents=True, exist_ok=True)

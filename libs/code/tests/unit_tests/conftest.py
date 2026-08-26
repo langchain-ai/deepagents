@@ -5,9 +5,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import tempfile
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
+
+# Select a synthetic launch profile before pytest imports any test module (and
+# therefore before any `deepagents_code` module can freeze `PATHS`). Function-
+# scoped fixtures are too late for this launch-time setting. Keep the temporary
+# directory alive for the worker process; its contents are synthetic fixtures,
+# never the developer's real profile or dotenv files.
+_TEST_PROFILE_HOME = tempfile.TemporaryDirectory(prefix="deepagents-code-tests-")
+os.environ["DEEPAGENTS_HOME"] = _TEST_PROFILE_HOME.name
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Generator, Iterator, Mapping
@@ -16,6 +25,7 @@ if TYPE_CHECKING:
     from textual.pilot import Pilot
     from textual.screen import Screen
 
+    from deepagents_code._paths import DeepAgentsPathSnapshot
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.config_manifest import ConfigOption
 
@@ -441,7 +451,13 @@ def _skip_managed_tool_downloads(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_behavior_override_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent developer behavior overrides from changing default-path tests."""
+    """Prevent developer behavior overrides from changing default-path tests.
+
+    `DEEPAGENTS_HOME` is deliberately *not* cleared here. This module sets it
+    at collection time so nothing touches the developer's real profile, and any
+    subprocess a test spawns inherits `os.environ`. Deleting it would send such
+    a child back to `~/.deepagents`.
+    """
     for key in (
         "DEEPAGENTS_CODE_CURSOR_STYLE",
         "DEEPAGENTS_CODE_EXPERIMENTAL",
@@ -623,10 +639,9 @@ def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         tmp_path / "config.toml",
     )
     monkeypatch.setattr("deepagents_code.onboarding.DEFAULT_STATE_DIR", state_dir)
-    # Resolved from `DEFAULT_STATE_DIR` at import time, so patching the module
-    # constant above doesn't move it. Left unpatched, any test reaching the
-    # upgrade path would create a lock file in the developer's real home and
-    # contend with a genuinely running dcode.
+    # Installation-scoped and resolved at import time, so patching profile state
+    # above does not move it. Left unpatched, update-path tests would contend
+    # with this checkout's real tool-environment lock.
     monkeypatch.setattr(
         "deepagents_code.update_check.UPDATE_LOCK_FILE",
         state_dir / "update.lock",
@@ -854,3 +869,86 @@ def resolve_option_for_test(
     )
     _emit_ranked_diagnostics(option, resolved)
     return resolved.value, _ranked_source(resolved)
+
+
+_PATHS_BINDING_MODULES: tuple[str, ...] = (
+    "agent",
+    "app",
+    "client.launch.server",
+    "config",
+    "main",
+    "managed_tools",
+    "mcp_auth",
+    "mcp_tools",
+    "model_config",
+    "skills.commands",
+    "tui.widgets.agent_selector",
+    "tui.widgets.auth",
+    "tui.widgets.launch_init",
+    "tui.widgets.model_selector",
+    "tui.widgets.notification_center",
+    "ui",
+    "update_check",
+)
+"""Modules that bind `PATHS` with `from ... import PATHS` at import time.
+
+Those bindings are made once, so patching `deepagents_code._paths.PATHS` alone
+does **not** reach them — only the late-bound `get_deepagents_home()` readers
+follow it. `install_profile_snapshot` patches every name here so a test does
+not have to know which binding style its subject uses.
+
+Do not maintain this by hand.
+`test_paths.TestPathsBindingModulesDrift` parses every module under
+`deepagents_code` and fails when this tuple does not match what it finds. A
+module missing here is the dangerous direction: `install_profile_snapshot`
+would silently not patch it, and the test using the fixture would read the
+developer's real profile and still pass.
+"""
+
+
+class InstallProfileSnapshot(Protocol):
+    """Install a synthetic frozen path snapshot for the duration of a test."""
+
+    def __call__(
+        self,
+        root: Path | str | None,
+        *,
+        launch_home: Path,
+    ) -> DeepAgentsPathSnapshot:
+        """Install the snapshot and return it."""
+        ...
+
+
+@pytest.fixture
+def install_profile_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> InstallProfileSnapshot:
+    """Return a callable that installs a synthetic `PATHS` snapshot.
+
+    `PATHS` is a frozen launch-time snapshot, so a test that needs a different
+    profile root must replace the whole object — in `_paths` *and* in every
+    module that bound it at import.
+
+    Returns:
+        A callable taking the configured `DEEPAGENTS_HOME` value (or `None` for
+        the default profile) plus the launch home, returning the snapshot.
+    """
+    import sys
+
+    from deepagents_code._paths import _capture_paths
+
+    def _install(
+        root: Path | str | None, *, launch_home: Path
+    ) -> DeepAgentsPathSnapshot:
+        configured = None if root is None else str(root)
+        snapshot = _capture_paths(configured, launch_home=launch_home)
+        monkeypatch.setattr("deepagents_code._paths.PATHS", snapshot)
+        # Patch only what is already imported. Importing the rest would pull
+        # `app`/`main` into every test that just needs a profile root.
+        for name in _PATHS_BINDING_MODULES:
+            module = sys.modules.get(f"deepagents_code.{name}")
+            if module is not None:
+                monkeypatch.setattr(module, "PATHS", snapshot, raising=False)
+        return snapshot
+
+    return _install

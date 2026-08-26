@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from deepagents_code import model_config
+from deepagents_code._paths import _capture_paths
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator
@@ -30,9 +31,14 @@ from deepagents_code.mcp_tools import (
     _MCP_STDERR_DRAIN_JOIN_TIMEOUT,
     _MCP_STDERR_LINE_LIMIT,
     _MCP_STDERR_TRUNCATION_MARKER,
+    DiscoveredMCPConfig,
+    MCPConfigIdentity,
+    MCPConfigScope,
+    MCPConfigSources,
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
+    _append_discovered_config,
     _apply_tool_filter,
     _check_remote_server,
     _check_stdio_server,
@@ -42,9 +48,9 @@ from deepagents_code.mcp_tools import (
     _load_tools_from_config,
     _MCPStderrSink,
     _normalize_mcp_arguments,
+    _same_config_location,
     _warm_mcp_adapter_imports,
-    classify_discovered_configs,
-    discover_mcp_configs,
+    discover_mcp_config_sources,
     extract_project_server_summaries,
     extract_stdio_server_commands,
     get_mcp_tools,
@@ -55,6 +61,35 @@ from deepagents_code.mcp_tools import (
     resolve_and_load_mcp_tools,
 )
 from deepagents_code.project_utils import ProjectContext
+
+
+def _set_profile_root(
+    monkeypatch: pytest.MonkeyPatch, root: Path, *, launch_home: Path
+) -> None:
+    """Install a synthetic frozen profile snapshot for a unit test.
+
+    Patches `mcp_tools.PATHS` as well as `_paths.PATHS`: this module binds
+    `PATHS` at import, so patching only `_paths` would leave discovery reading
+    the real profile. See `install_profile_snapshot` in `conftest` for the
+    general-purpose version.
+    """
+    snapshot = _capture_paths(str(root), launch_home=launch_home)
+    monkeypatch.setattr("deepagents_code._paths.PATHS", snapshot)
+    monkeypatch.setattr("deepagents_code.mcp_tools.PATHS", snapshot)
+
+
+def _discovered_paths(*, project_context: ProjectContext | None = None) -> list[Path]:
+    """Return discovered MCP config paths in precedence order."""
+    return [
+        source.path
+        for source in discover_mcp_config_sources(project_context=project_context)
+    ]
+
+
+def _raise_oserror() -> Path:
+    """Raise a synthetic path-resolution error."""
+    msg = "permission denied"
+    raise PermissionError(msg)
 
 
 def _make_mcp_tool(
@@ -135,7 +170,7 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect `Path.home()` and `DEFAULT_STATE_DIR` into a temp directory.
 
     `Path.home` is patched for code that resolves it at call time;
-    `DEFAULT_STATE_DIR` is patched for code (like `mcp_auth._tokens_dir`)
+    `DEFAULT_STATE_DIR` is patched for code (like `mcp_auth.token_store_dir`)
     that pulls from the import-time-frozen constant in `model_config`.
     Without the second patch, `FileTokenStorage` reads/writes the real
     `~/.deepagents/.state/mcp-tokens/` directory, which leaks token state
@@ -676,15 +711,32 @@ class TestDiscoverMcpConfigs:
         (project / ".deepagents").mkdir(parents=True)
         (project / ".deepagents" / ".mcp.json").write_text("{}")
         (project / ".mcp.json").write_text("{}")
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        _set_profile_root(monkeypatch, home / ".deepagents", launch_home=home)
         monkeypatch.setattr(
             "deepagents_code.project_utils.find_project_root",
             lambda: project,
         )
 
-        paths = discover_mcp_configs()
+        paths = _discovered_paths()
         assert len(paths) == 3
         assert any(str(p).endswith(".mcp.json") for p in paths)
+
+    def test_deepagents_home_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """User config discovery follows `DEEPAGENTS_HOME`."""
+        configured = tmp_path / "custom-home"
+        configured.mkdir()
+        user_config = configured / ".mcp.json"
+        user_config.write_text("{}")
+        _set_profile_root(monkeypatch, configured, launch_home=tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.project_utils.find_project_root",
+            lambda: None,
+        )
+        monkeypatch.chdir(tmp_path)
+
+        assert _discovered_paths() == [user_config]
 
     def test_no_configs_returns_empty(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -692,13 +744,13 @@ class TestDiscoverMcpConfigs:
         """No discovered files yields an empty list without error."""
         home = tmp_path / "h"
         home.mkdir()
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        _set_profile_root(monkeypatch, home / ".deepagents", launch_home=home)
         monkeypatch.setattr(
             "deepagents_code.project_utils.find_project_root",
             lambda: None,
         )
         monkeypatch.chdir(tmp_path)
-        assert discover_mcp_configs() == []
+        assert _discovered_paths() == []
 
     def test_explicit_project_context_overrides_cwd(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -709,10 +761,10 @@ class TestDiscoverMcpConfigs:
         project = tmp_path / "p"
         (project / ".deepagents").mkdir(parents=True)
         (project / ".deepagents" / ".mcp.json").write_text("{}")
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        _set_profile_root(monkeypatch, home / ".deepagents", launch_home=home)
 
         ctx = ProjectContext(user_cwd=project, project_root=project)
-        paths = discover_mcp_configs(project_context=ctx)
+        paths = _discovered_paths(project_context=ctx)
         assert any(".deepagents" in str(p) for p in paths)
 
 
@@ -2363,7 +2415,7 @@ class TestResolveAndLoadMcpTools:
         assert infos == []
 
     @patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_no_adapter_warmup_when_no_active_servers(
         self,
         mock_discover: MagicMock,
@@ -2385,7 +2437,7 @@ class TestResolveAndLoadMcpTools:
         mock_warm.assert_not_called()
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_explicit_path_merges_with_discovery(
         self,
         mock_discover: MagicMock,
@@ -2401,7 +2453,9 @@ class TestResolveAndLoadMcpTools:
         explicit.write_text(
             json.dumps({"mcpServers": {"search": {"command": "brave", "args": []}}})
         )
-        mock_discover.return_value = [discovered]
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(discovered, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], MCPSessionManager(), [])
 
         await resolve_and_load_mcp_tools(
@@ -2414,7 +2468,7 @@ class TestResolveAndLoadMcpTools:
         assert "search" in merged["mcpServers"]
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_stateless_and_manager_forwarded(
         self,
         mock_discover: MagicMock,
@@ -2427,7 +2481,9 @@ class TestResolveAndLoadMcpTools:
             json.dumps({"mcpServers": {"fs": {"command": "npx", "args": []}}})
         )
         manager = MCPSessionManager()
-        mock_discover.return_value = [cfg]
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
 
         await resolve_and_load_mcp_tools(
@@ -2455,12 +2511,10 @@ class TestResolveAndLoadMcpTools:
             await resolve_and_load_mcp_tools(explicit_config_path=str(bad))
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.classify_discovered_configs")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_malformed_project_config_without_summaries_is_nonfatal(
         self,
         mock_discover: MagicMock,
-        mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
     ) -> None:
@@ -2469,8 +2523,9 @@ class TestResolveAndLoadMcpTools:
         project_cfg.write_text(
             json.dumps({"mcpServers": {"bad": ["not", "a", "dict"]}})
         )
-        mock_discover.return_value = [project_cfg]
-        mock_classify.return_value = ([], [project_cfg])
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
 
         tools, manager, infos = await resolve_and_load_mcp_tools(
@@ -2486,12 +2541,10 @@ class TestResolveAndLoadMcpTools:
         assert "must be a dictionary" in (infos[0].error or "")
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.classify_discovered_configs")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_untrusted_project_remote_dropped_when_flag_false(
         self,
         mock_discover: MagicMock,
-        mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -2520,8 +2573,9 @@ class TestResolveAndLoadMcpTools:
                 }
             )
         )
-        mock_discover.return_value = [project_cfg]
-        mock_classify.return_value = ([], [project_cfg])
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
@@ -2548,12 +2602,10 @@ class TestResolveAndLoadMcpTools:
         assert "; docs-langchain" not in caplog.text
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.classify_discovered_configs")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_untrusted_project_remote_dropped_without_trust_flag(
         self,
         mock_discover: MagicMock,
-        mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
     ) -> None:
@@ -2571,8 +2623,9 @@ class TestResolveAndLoadMcpTools:
                 }
             )
         )
-        mock_discover.return_value = [project_cfg]
-        mock_classify.return_value = ([], [project_cfg])
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
 
         await resolve_and_load_mcp_tools(trust_project_mcp=None)
@@ -2580,12 +2633,10 @@ class TestResolveAndLoadMcpTools:
         assert mock_load.call_count == 0
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.classify_discovered_configs")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_trusted_project_remote_passes_through(
         self,
         mock_discover: MagicMock,
-        mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
     ) -> None:
@@ -2603,8 +2654,9 @@ class TestResolveAndLoadMcpTools:
                 }
             )
         )
-        mock_discover.return_value = [project_cfg]
-        mock_classify.return_value = ([], [project_cfg])
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
 
         await resolve_and_load_mcp_tools(trust_project_mcp=True)
@@ -2613,7 +2665,7 @@ class TestResolveAndLoadMcpTools:
         assert "remote" in merged["mcpServers"]
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_disabled_server_is_split_off(
         self,
         mock_discover: MagicMock,
@@ -2633,7 +2685,9 @@ class TestResolveAndLoadMcpTools:
                 },
             ),
         )
-        mock_discover.return_value = [cfg]
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
         monkeypatch.setattr(
             "deepagents_code.mcp_disabled.get_disabled_servers",
@@ -2653,7 +2707,7 @@ class TestResolveAndLoadMcpTools:
         assert disabled[0].transport == "stdio"
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_all_servers_disabled_short_circuits_loader(
         self,
         mock_discover: MagicMock,
@@ -2668,7 +2722,9 @@ class TestResolveAndLoadMcpTools:
                 {"mcpServers": {"fs": {"command": "npx", "args": []}}},
             ),
         )
-        mock_discover.return_value = [cfg]
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
         monkeypatch.setattr(
             "deepagents_code.mcp_disabled.get_disabled_servers",
@@ -2685,7 +2741,7 @@ class TestResolveAndLoadMcpTools:
         assert [i.name for i in infos if i.status == "disabled"] == ["fs"]
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_disabled_non_dict_config_gets_unknown_transport(
         self,
         mock_discover: MagicMock,
@@ -2701,7 +2757,9 @@ class TestResolveAndLoadMcpTools:
         cfg.write_text(
             json.dumps({"mcpServers": {"weird": {"command": "x"}}}),
         )
-        mock_discover.return_value = [cfg]
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
         mock_load.return_value = ([], None, [])
         monkeypatch.setattr(
             "deepagents_code.mcp_disabled.get_disabled_servers",
@@ -2725,46 +2783,145 @@ class TestResolveAndLoadMcpTools:
 class TestDiscoveryHelpers:
     """Test config discovery and merge helpers."""
 
-    def test_discover_mcp_configs_finds_standard_paths(
+    def test_discovery_preserves_scope_when_home_is_project_ancestor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project config below the profile root remains project-scoped."""
+        # The profile must not *be* the launch home — that is rejected outright
+        # — so nest a checkout underneath a real profile directory instead.
+        profile = tmp_path / "profile"
+        project = profile / "repo"
+        project.mkdir(parents=True)
+        user_cfg = profile / ".mcp.json"
+        project_cfg = project / ".mcp.json"
+        user_cfg.write_text("{}")
+        project_cfg.write_text("{}")
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
+
+        sources = discover_mcp_config_sources(project_context=context)
+
+        assert sources == [
+            DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, project),
+        ]
+
+    def test_discovery_preserves_scope_when_home_is_inside_project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The standard project config is not promoted by an inner profile."""
+        project = tmp_path / "repo"
+        profile = project / "profile"
+        profile.mkdir(parents=True)
+        user_cfg = profile / ".mcp.json"
+        project_cfg = project / ".mcp.json"
+        user_cfg.write_text("{}")
+        project_cfg.write_text("{}")
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
+
+        sources = discover_mcp_config_sources(project_context=context)
+
+        assert [source.scope for source in sources] == [
+            MCPConfigScope.USER,
+            MCPConfigScope.PROJECT,
+        ]
+        assert sources[1].path == project_cfg
+
+    @pytest.mark.parametrize("profile_suffix", [".", ".deepagents"])
+    def test_project_scope_wins_profile_location_collision(
         self,
+        profile_suffix: str,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Discovery checks user and project config locations in order."""
-        fake_home = tmp_path / "home"
-        fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        """A project-standard path cannot self-promote through profile overlap."""
+        project = tmp_path / "repo"
+        project.mkdir()
+        profile = project if profile_suffix == "." else project / profile_suffix
+        profile.mkdir(exist_ok=True)
+        config = profile / ".mcp.json"
+        config.write_text("{}")
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
+
+        assert discover_mcp_config_sources(project_context=context) == [
+            DiscoveredMCPConfig(config, MCPConfigScope.PROJECT, project)
+        ]
+
+    def test_profile_collision_preserves_project_config_precedence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The root project config still overrides the nested project config."""
+        project = tmp_path / "repo"
+        nested = project / ".deepagents"
+        nested.mkdir(parents=True)
+        nested_cfg = nested / ".mcp.json"
+        root_cfg = project / ".mcp.json"
+        nested_cfg.write_text(
+            '{"mcpServers":{"docs":{"command":"echo","args":["nested"]}}}'
+        )
+        root_cfg.write_text(
+            '{"mcpServers":{"docs":{"command":"echo","args":["root"]}}}'
+        )
+        _set_profile_root(monkeypatch, project, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
+
+        sources = discover_mcp_config_sources(project_context=context)
+        merged = load_merged_mcp_configs_lenient([source.path for source in sources])
+
+        assert [source.path for source in sources] == [nested_cfg, root_cfg]
+        assert merged == {"mcpServers": {"docs": {"command": "echo", "args": ["root"]}}}
+
+    def test_symlink_collision_keeps_project_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A user-path symlink to a project config does not bypass trust."""
+        profile = tmp_path / "profile"
+        project = tmp_path / "repo"
+        profile.mkdir()
+        project.mkdir()
+        project_cfg = project / ".mcp.json"
+        project_cfg.write_text("{}")
+        (profile / ".mcp.json").symlink_to(project_cfg)
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
+
+        assert discover_mcp_config_sources(project_context=context) == [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, project)
+        ]
+
+    def test_resolution_error_demotes_user_config_without_dropping_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An indeterminate identity demotes to project scope, losing nothing.
+
+        The paths may be two distinct files, so the user config must still load
+        — just without user-level trust. Dropping it would silently remove the
+        user's own MCP servers from both lists.
+        """
+        profile = tmp_path / "profile"
+        project = tmp_path / "repo"
+        profile.mkdir()
+        project.mkdir()
+        user_cfg = profile / ".mcp.json"
+        user_cfg.write_text("{}")
+        project_cfg = project / ".mcp.json"
+        project_cfg.write_text("{}")
+        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
+        context = ProjectContext(user_cwd=project, project_root=project)
         monkeypatch.setattr(
-            "deepagents_code.project_utils.find_project_root",
-            lambda: tmp_path / "repo",
+            Path, "samefile", lambda *_args, **_kwargs: _raise_oserror()
         )
 
-        user_cfg = fake_home / ".deepagents" / ".mcp.json"
-        user_cfg.parent.mkdir(parents=True)
-        user_cfg.write_text("{}")
+        sources = discover_mcp_config_sources(project_context=context)
 
-        project_cfg = tmp_path / "repo" / ".mcp.json"
-        project_cfg.parent.mkdir(parents=True)
-        project_cfg.write_text("{}")
-
-        assert discover_mcp_configs() == [user_cfg, project_cfg]
-
-    def test_classify_discovered_configs_splits_user_and_project(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Configs under `~/.deepagents` are user-level."""
-        fake_home = tmp_path / "home"
-        fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-
-        user_cfg = fake_home / ".deepagents" / ".mcp.json"
-        project_cfg = tmp_path / "repo" / ".mcp.json"
-        user, project = classify_discovered_configs([user_cfg, project_cfg])
-
-        assert user == [user_cfg]
-        assert project == [project_cfg]
+        assert sources == [
+            DiscoveredMCPConfig(user_cfg, MCPConfigScope.PROJECT, project),
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, project),
+        ]
+        # The point of the demotion: no path keeps user trust.
+        assert all(s.scope is MCPConfigScope.PROJECT for s in sources)
 
     def test_extract_stdio_server_commands(self) -> None:
         """Only stdio entries are extracted."""
@@ -4884,12 +5041,10 @@ class TestSelectiveProjectMcpTrust:
     ) -> None:
         """A server defined only in `<root>/.deepagents/.mcp.json` loads.
 
-        This exercises the two independent project-root derivations together:
-        the approval is keyed to `<root>` (write side), while the runtime
-        reconstructs the root from the `.deepagents` config path via
-        `project_root_for_mcp_config_path` (read side). If that `.deepagents`
-        unwrap drifted from the write-side root, the scoped approval would
-        silently stop matching for the entire subdir-config layout.
+        The approval is keyed to `<root>` (write side) and the runtime reads the
+        root back from the discovery record's `project_root` (read side). Both
+        must agree, or the scoped approval silently stops matching for the
+        entire subdir-config layout.
         """
         project = tmp_path / "project"
         nested = project / ".deepagents"
@@ -5736,48 +5891,6 @@ class TestSelectiveProjectMcpTrust:
         )
 
 
-class TestProjectRootForMcpConfigPath:
-    """Map a discovered config path back to its owning project root.
-
-    The loader derives its read-side project root from the config path via this
-    function, while the prompt persists the approval under the raw project root.
-    Both discovery layouts must yield the same root or a saved approval never
-    matches on reload (re-prompting forever).
-    """
-
-    def test_root_level_config(self, tmp_path: Path) -> None:
-        """`<root>/.mcp.json` resolves to `<root>`."""
-        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
-
-        root = tmp_path / "proj"
-        assert project_root_for_mcp_config_path(root / ".mcp.json") == root
-
-    def test_deepagents_subdir_config(self, tmp_path: Path) -> None:
-        """`<root>/.deepagents/.mcp.json` resolves to `<root>`, not the subdir."""
-        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
-
-        root = tmp_path / "proj"
-        nested = root / ".deepagents" / ".mcp.json"
-        assert project_root_for_mcp_config_path(nested) == root
-
-    def test_relative_path_uses_fallback_base(self, tmp_path: Path) -> None:
-        """A relative config path anchors to the fallback base."""
-        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
-
-        base = tmp_path / "proj"
-        assert (
-            project_root_for_mcp_config_path(Path(".mcp.json"), fallback=base) == base
-        )
-
-    def test_relative_deepagents_path_uses_fallback_base(self, tmp_path: Path) -> None:
-        """A relative `.deepagents/.mcp.json` anchors to the base, then unwraps."""
-        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
-
-        base = tmp_path / "proj"
-        rel = Path(".deepagents") / ".mcp.json"
-        assert project_root_for_mcp_config_path(rel, fallback=base) == base
-
-
 class TestFilterTrustedProjectServers:
     """Direct contract for the shared per-server trust filter.
 
@@ -5860,3 +5973,183 @@ class TestFilterTrustedProjectServers:
         )
 
         assert list(kept) == ["z", "a", "m"]
+
+
+class TestDiscoveryFailureModes:
+    """Branches that only run when the filesystem misbehaves."""
+
+    def test_an_unreadable_candidate_does_not_disturb_later_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An EACCES on the user config must not change project scoping."""
+        from deepagents_code._paths import PATHS
+
+        project_root = tmp_path / "repo"
+        (project_root / ".deepagents").mkdir(parents=True)
+        (project_root / ".mcp.json").write_text("{}")
+        real_is_file = Path.is_file
+
+        def flaky_is_file(self: Path) -> bool:
+            if self == PATHS.profile.mcp_config_file:
+                msg = "Permission denied"
+                raise OSError(msg)
+            return real_is_file(self)
+
+        monkeypatch.setattr(Path, "is_file", flaky_is_file)
+
+        found = discover_mcp_config_sources(
+            project_context=ProjectContext(
+                user_cwd=project_root, project_root=project_root
+            )
+        )
+
+        assert [c.scope for c in found] == [MCPConfigScope.PROJECT]
+        assert found[0].project_root == project_root
+
+    def test_unresolvable_same_scope_collision_keeps_both_configs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two project configs that cannot be told apart must both load.
+
+        The `continue` this covers is what stops the higher-precedence root
+        config being dropped when `Path.samefile` fails.
+        """
+        root = tmp_path / "repo"
+
+        def unresolvable(self: Path, other: Path) -> bool:
+            msg = "cannot resolve"
+            raise OSError(msg)
+
+        monkeypatch.setattr(Path, "samefile", unresolvable)
+
+        found: list[DiscoveredMCPConfig] = []
+        first = DiscoveredMCPConfig(
+            root / ".deepagents" / ".mcp.json", MCPConfigScope.PROJECT, root
+        )
+        second = DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root)
+        _append_discovered_config(found, first)
+        _append_discovered_config(found, second)
+
+        assert found == [first, second]
+
+    def test_samefile_identity_collapses_a_case_alias(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Filesystem identity wins when resolved spellings retain their case."""
+        first = tmp_path / "Profile" / ".mcp.json"
+        second = tmp_path / "profile" / ".mcp.json"
+        monkeypatch.setattr(Path, "samefile", lambda *_args: True)
+
+        assert _same_config_location(first, second) is MCPConfigIdentity.SAME
+
+
+class TestMCPConfigSourcesTotality:
+    """`project_roots` is the key project trust approvals are checked against.
+
+    A `.get(source, re-derived_base)` fallback there would silently check trust
+    against a root the approval was never granted for — the failure
+    `DiscoveredMCPConfig.__post_init__` exists to make impossible.
+    """
+
+    def test_project_roots_is_total_over_project_paths(self, tmp_path: Path) -> None:
+        """Every project path can be indexed without a fallback."""
+        root = tmp_path / "repo"
+        sources = MCPConfigSources.from_sources(
+            [
+                DiscoveredMCPConfig(tmp_path / "user.json", MCPConfigScope.USER),
+                DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root),
+            ]
+        )
+
+        assert [sources.project_roots[p] for p in sources.project_paths] == [root]
+
+    def test_project_roots_cannot_be_mutated(self, tmp_path: Path) -> None:
+        """A frozen dataclass must not hand out a mutable mapping."""
+        root = tmp_path / "repo"
+        sources = MCPConfigSources.from_sources(
+            [DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root)]
+        )
+
+        # The annotation already forbids this; cast so the runtime guarantee
+        # is what gets tested, not the type checker.
+        mutable = cast("dict[Path, Path]", sources.project_roots)
+        with pytest.raises(TypeError):
+            mutable[root / "other.json"] = root
+
+
+class TestUserConfigMustBeDiscoveredFirst:
+    """Collision handling has no user-scope branch, so ordering is load-bearing.
+
+    If a user candidate ever arrived after another entry it would fall through
+    the collision loop and be dropped silently, contradicting the documented
+    "never drops a config".
+    """
+
+    def test_a_late_user_candidate_is_rejected_loudly(self, tmp_path: Path) -> None:
+        """The precondition fails fast instead of dropping the config."""
+        root = tmp_path / "repo"
+        found = [DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root)]
+
+        with pytest.raises(AssertionError, match="discovered first"):
+            _append_discovered_config(
+                found,
+                DiscoveredMCPConfig(tmp_path / "user.json", MCPConfigScope.USER),
+            )
+
+    def test_the_first_user_candidate_is_appended(self, tmp_path: Path) -> None:
+        """The ordinary case is unchanged."""
+        found: list[DiscoveredMCPConfig] = []
+        candidate = DiscoveredMCPConfig(tmp_path / "user.json", MCPConfigScope.USER)
+
+        _append_discovered_config(found, candidate)
+
+        assert found == [candidate]
+
+
+class TestDiscoveredMCPConfigInvariant:
+    """`project_root` presence must track the trust scope.
+
+    `project_root` is the key project-trust approvals are recorded against, so
+    a `PROJECT` record without one would silently be checked against a
+    re-derived fallback root instead of failing.
+    """
+
+    def test_project_scope_requires_a_root(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="requires a project root"):
+            DiscoveredMCPConfig(tmp_path / ".mcp.json", MCPConfigScope.PROJECT)
+
+    def test_user_scope_rejects_a_root(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="must not carry a project root"):
+            DiscoveredMCPConfig(tmp_path / ".mcp.json", MCPConfigScope.USER, tmp_path)
+
+    def test_valid_combinations_construct(self, tmp_path: Path) -> None:
+        assert DiscoveredMCPConfig(tmp_path / "u.json", MCPConfigScope.USER)
+        assert DiscoveredMCPConfig(
+            tmp_path / "p.json", MCPConfigScope.PROJECT, tmp_path
+        )
+
+
+class TestMCPConfigSourcesPartition:
+    """The shared partition replaces three copies of the same split."""
+
+    def test_partitions_by_scope_with_total_root_mapping(self, tmp_path: Path) -> None:
+        user = tmp_path / "u.json"
+        project = tmp_path / "p.json"
+        sources = MCPConfigSources.from_sources(
+            [
+                DiscoveredMCPConfig(user, MCPConfigScope.USER),
+                DiscoveredMCPConfig(project, MCPConfigScope.PROJECT, tmp_path),
+            ]
+        )
+
+        assert sources.user_paths == (user,)
+        assert sources.project_paths == (project,)
+        # Total over `project_paths`, so consumers need no fallback root.
+        assert all(path in sources.project_roots for path in sources.project_paths)
+        assert sources.project_roots[project] == tmp_path
+
+    def test_empty_discovery_yields_empty_views(self) -> None:
+        sources = MCPConfigSources.from_sources([])
+        assert sources.user_paths == ()
+        assert sources.project_paths == ()
+        assert not sources.project_roots

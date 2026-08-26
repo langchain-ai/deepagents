@@ -376,6 +376,28 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     return path, path.read_text(encoding="utf-8")
 
 
+def _load_non_negative_int_option(key: str, default: int, *, label: str) -> int:
+    """Resolve a non-negative integer config option.
+
+    Returns:
+        The configured value, or `default` when invalid.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    option = get_option(key)
+    if option is None:
+        logger.warning("Unknown config option %r; using the default", key)
+        return default
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    value = resolved.value
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        logger.warning("Invalid %s %r; using the default", label, value)
+        return default
+    return value
+
+
 def _load_float_option(
     key: str,
     default: float,
@@ -4209,8 +4231,16 @@ class DeepAgentsApp(App):
 
         from deepagents_code.config_manifest import (
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
+            MODEL_SWITCH_WARNING_THRESHOLD_DEFAULT,
             SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
         )
+
+        self._model_switch_warning_threshold = _load_non_negative_int_option(
+            "warnings.model_switch_token_threshold",
+            MODEL_SWITCH_WARNING_THRESHOLD_DEFAULT,
+            label="model-switch token threshold",
+        )
+        """Context size above which interactive model switches require confirmation."""
 
         self._session_cost_warning_threshold_usd = _load_float_option(
             "warnings.session_cost_threshold_usd",
@@ -10867,7 +10897,9 @@ class DeepAgentsApp(App):
 
             extra = provider_install_extra(provider)
             if extra is not None and not is_provider_package_installed(provider):
-                await self._install_extra_then_switch(extra, model_spec)
+                await self._install_extra_then_switch(
+                    extra, model_spec, interactive=False
+                )
                 return
         await self._switch_model(model_spec, announce_unchanged=False)
 
@@ -15857,7 +15889,7 @@ class DeepAgentsApp(App):
             elif model_arg:
                 # Direct switch: /model claude-sonnet-4-5
                 await self._mount_message(UserMessage(command))
-                await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
+                self._dispatch_model_switch(model_arg, extra_kwargs=extra_kwargs)
             else:
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
         elif cmd == "/reload":
@@ -22280,45 +22312,98 @@ class DeepAgentsApp(App):
         *,
         extra_kwargs: dict[str, Any] | None = None,
     ) -> None:
-        """Switch to `model_spec` now, or defer until in-flight work finishes.
-
-        The deferral toast is shown only for genuine in-flight user work
-        (`_agent_running`/`_shell_running`). A switch deferred solely because the
-        server is reconnecting (`_connecting` — e.g. the transient restart during
-        install-then-switch) drains automatically once the server is ready and is
-        already confirmed by the following "Switched to ..." message, so the
-        "after current task completes" toast there is misleading noise.
-
-        Args:
-            model_spec: The `provider:model` spec to switch to.
-            extra_kwargs: Extra constructor kwargs from `--model-params`.
-        """
+        """Request a model switch now, or defer it until current work finishes."""
         from functools import partial
 
+        request = partial(
+            self._schedule_model_switch_confirmation,
+            model_spec,
+            extra_kwargs=extra_kwargs,
+        )
         if self._agent_running or self._shell_running or self._connecting:
             self._defer_action(
-                DeferredAction(
-                    kind="model_switch",
-                    execute=partial(
-                        self._switch_model,
-                        model_spec,
-                        extra_kwargs=extra_kwargs,
-                    ),
-                ),
+                DeferredAction(kind="model_switch", execute=request),
             )
             if self._agent_running or self._shell_running:
                 self.notify(
-                    "Model will switch after current task completes.",
+                    "Model switch will continue after the current task completes.",
                     timeout=3,
                 )
-        else:
-            self.call_later(
-                partial(
-                    self._switch_model,
-                    model_spec,
-                    extra_kwargs=extra_kwargs,
-                ),
+            return
+        self._schedule_off_message_pump(
+            self._confirm_and_switch_model(model_spec, extra_kwargs=extra_kwargs),
+            context="model-switch",
+        )
+
+    async def _schedule_model_switch_confirmation(
+        self,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Detach a deferred model-switch confirmation from its caller."""
+        coroutine = self._confirm_and_switch_model(
+            model_spec, extra_kwargs=extra_kwargs
+        )
+        task = self._schedule_off_message_pump(coroutine, context="model-switch")
+        if task is None:
+            await self._mount_message(
+                ErrorMessage(
+                    "Model switch did not occur because another confirmation is "
+                    "active. Try again after answering it."
+                )
             )
+
+    async def _confirm_and_switch_model(
+        self,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Confirm a large-context switch before mutating model state."""
+        from deepagents_code.config import detect_provider, settings
+        from deepagents_code.model_config import ModelSpec
+
+        target = model_spec.removeprefix(":")
+        parsed = ModelSpec.try_parse(target)
+        provider = parsed.provider if parsed else detect_provider(target)
+        model_name = parsed.model if parsed else target
+        if model_name == settings.model_name and (
+            not provider or provider == settings.model_provider
+        ):
+            await self._switch_model(target, extra_kwargs=extra_kwargs)
+            return
+
+        threshold = self._model_switch_warning_threshold
+        if threshold > 0 and self._context_tokens > threshold:
+            from deepagents_code.tui.modals.model_switch import (
+                ModelSwitchWarningScreen,
+            )
+
+            current = f"{settings.model_provider}:{settings.model_name}"
+            display = f"{provider}:{model_name}" if provider and not parsed else target
+            try:
+                confirmed = await self._push_screen_wait(
+                    ModelSwitchWarningScreen(
+                        current_model=current,
+                        target_model=display,
+                        context_tokens=self._context_tokens,
+                        threshold=threshold,
+                        approximate=self._tokens_approximate,
+                    )
+                )
+            except Exception:
+                logger.exception("Failed to show model-switch confirmation")
+                await self._mount_message(
+                    ErrorMessage(
+                        "Model switch cancelled because confirmation could not "
+                        "be shown."
+                    )
+                )
+                return
+            if confirmed is not True:
+                return
+        await self._switch_model(target, extra_kwargs=extra_kwargs)
 
     async def _install_extra_then_switch(
         self,
@@ -22326,6 +22411,7 @@ class DeepAgentsApp(App):
         model_spec: str,
         *,
         extra_kwargs: dict[str, Any] | None = None,
+        interactive: bool = True,
     ) -> None:
         """Install a provider's extra, then switch to its model on success.
 
@@ -22333,6 +22419,7 @@ class DeepAgentsApp(App):
             extra: The extra that installs the model's provider integration.
             model_spec: The `provider:model` spec to switch to once installed.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
+            interactive: Whether the switch was explicitly requested by the user.
         """
         # `_install_extra` already surfaced the reason on any failure.
         if not await self._install_extra(extra, auto_restart=True):
@@ -22350,7 +22437,10 @@ class DeepAgentsApp(App):
                 ),
             )
             return
-        self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
+        if interactive:
+            self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
+        else:
+            await self._switch_model(model_spec, extra_kwargs=extra_kwargs)
 
     async def _prompt_model_auth_if_needed(self, model_spec: str) -> bool:
         """Prompt for missing credentials before switching to `model_spec`.

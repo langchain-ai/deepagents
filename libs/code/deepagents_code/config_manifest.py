@@ -120,6 +120,9 @@ COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
 Zero or negative disables the suggestion.
 """
 
+MODEL_SWITCH_WARNING_THRESHOLD_DEFAULT = 100_000
+"""Context size above which a user-initiated model switch requires confirmation."""
+
 HISTORY_RETENTION_DAYS_DEFAULT = 30
 """Default number of days an offloaded conversation-history archive is retained.
 
@@ -2482,6 +2485,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("warnings", "trusted_cache_endpoints"),
+    ),
+    ConfigOption(
+        key="warnings.model_switch_token_threshold",
+        group="Warnings",
+        summary=("Confirm model switches above this context size (0 disables)."),
+        kind=OptionKind.NON_NEGATIVE_INT,
+        default=MODEL_SWITCH_WARNING_THRESHOLD_DEFAULT,
+        toml_keys=("warnings", "model_switch_token_threshold"),
     ),
     ConfigOption(
         key="warnings.session_cost_threshold_usd",

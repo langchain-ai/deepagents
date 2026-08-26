@@ -1947,6 +1947,7 @@ class TestStartupSequence:
         app._install_extra_then_switch.assert_awaited_once_with(  # ty: ignore
             "baseten",
             "baseten:zai-org/GLM-5.2",
+            interactive=False,
         )
         app._switch_model.assert_not_awaited()  # ty: ignore
 
@@ -24041,13 +24042,13 @@ class TestDispatchModelSwitch:
         app._connecting = False
         setattr(app, flag, True)
         app._defer_action = MagicMock()  # ty: ignore
-        app.call_later = MagicMock()  # ty: ignore
+        app._schedule_off_message_pump = MagicMock()  # ty: ignore
         app.notify = MagicMock()  # ty: ignore
 
         app._dispatch_model_switch("openai:gpt-5.5")
 
         app._defer_action.assert_called_once()  # ty: ignore
-        app.call_later.assert_not_called()  # ty: ignore
+        app._schedule_off_message_pump.assert_not_called()  # ty: ignore
         assert app.notify.call_count == (1 if should_notify else 0)  # ty: ignore
 
     async def test_switches_immediately_when_idle(self) -> None:
@@ -24057,12 +24058,13 @@ class TestDispatchModelSwitch:
         app._shell_running = False
         app._connecting = False
         app._defer_action = MagicMock()  # ty: ignore
-        app.call_later = MagicMock()  # ty: ignore
+        app._schedule_off_message_pump = MagicMock()  # ty: ignore
 
         app._dispatch_model_switch("openai:gpt-5.5")
 
         app._defer_action.assert_not_called()  # ty: ignore
-        app.call_later.assert_called_once()  # ty: ignore
+        app._schedule_off_message_pump.assert_called_once()  # ty: ignore
+        app._schedule_off_message_pump.call_args.args[0].close()  # ty: ignore
 
     async def test_defers_switch_while_busy(self) -> None:
         """A busy app queues the switch and notifies the user."""
@@ -24071,14 +24073,14 @@ class TestDispatchModelSwitch:
         app._shell_running = False
         app._connecting = False
         app._defer_action = MagicMock()  # ty: ignore
-        app.call_later = MagicMock()  # ty: ignore
+        app._schedule_off_message_pump = MagicMock()  # ty: ignore
         app.notify = MagicMock()  # ty: ignore
 
         app._dispatch_model_switch("openai:gpt-5.5")
 
         app._defer_action.assert_called_once()  # ty: ignore
         app.notify.assert_called_once()  # ty: ignore
-        app.call_later.assert_not_called()  # ty: ignore
+        app._schedule_off_message_pump.assert_not_called()  # ty: ignore
 
     async def test_toasts_when_busy_and_connecting(self) -> None:
         """In-flight work toasts even while also reconnecting.
@@ -24092,14 +24094,14 @@ class TestDispatchModelSwitch:
         app._shell_running = False
         app._connecting = True
         app._defer_action = MagicMock()  # ty: ignore
-        app.call_later = MagicMock()  # ty: ignore
+        app._schedule_off_message_pump = MagicMock()  # ty: ignore
         app.notify = MagicMock()  # ty: ignore
 
         app._dispatch_model_switch("openai:gpt-5.5")
 
         app._defer_action.assert_called_once()  # ty: ignore
         app.notify.assert_called_once()  # ty: ignore
-        app.call_later.assert_not_called()  # ty: ignore
+        app._schedule_off_message_pump.assert_not_called()  # ty: ignore
 
     async def test_defers_silently_while_only_connecting(self) -> None:
         """A reconnect-only defer queues the switch without a toast."""
@@ -24108,14 +24110,52 @@ class TestDispatchModelSwitch:
         app._shell_running = False
         app._connecting = True
         app._defer_action = MagicMock()  # ty: ignore
-        app.call_later = MagicMock()  # ty: ignore
+        app._schedule_off_message_pump = MagicMock()  # ty: ignore
         app.notify = MagicMock()  # ty: ignore
 
         app._dispatch_model_switch("openai:gpt-5.5")
 
         app._defer_action.assert_called_once()  # ty: ignore
         app.notify.assert_not_called()  # ty: ignore
-        app.call_later.assert_not_called()  # ty: ignore
+        app._schedule_off_message_pump.assert_not_called()  # ty: ignore
+
+    async def test_deferred_request_reports_when_another_modal_is_active(self) -> None:
+        app = DeepAgentsApp()
+        app._schedule_off_message_pump = MagicMock(return_value=None)  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+
+        await app._schedule_model_switch_confirmation("openai:gpt-5.5")
+
+        app._mount_message.assert_awaited_once()  # ty: ignore
+        app._schedule_off_message_pump.call_args.args[0].close()  # ty: ignore
+
+    async def test_deferred_request_uses_latest_context_tokens(self) -> None:
+        """Deferred confirmation reads context after the active turn completes."""
+        app = DeepAgentsApp()
+        app._agent_running = True
+        app._shell_running = False
+        app._connecting = False
+        app._context_tokens = 50_000
+        app._model_switch_warning_threshold = 100_000
+        app._push_screen_wait = AsyncMock(return_value=False)  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+        from deepagents_code.config import settings
+
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+        app._dispatch_model_switch("openai:gpt-5.5")
+        action = app._deferred_actions[0]
+        app._context_tokens = 150_000
+
+        async with app.run_test():
+            await action.execute()
+            task = app._modal_command_tasks["model-switch"]
+            await task
+
+        screen = app._push_screen_wait.await_args.args[0]  # ty: ignore
+        assert screen._context_tokens == 150_000
+        app._switch_model.assert_not_awaited()  # ty: ignore
 
 
 class TestDeferredActions:

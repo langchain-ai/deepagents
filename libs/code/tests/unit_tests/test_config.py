@@ -1709,7 +1709,7 @@ class TestRetriesConfig:
             config = _read_retry_config()
 
         assert config.providers["custom_provider"].param == "max_retries"
-        assert not any("is not a known provider" in text for text in config.warnings)
+        assert not any("unrecognized provider" in text for text in config.warnings)
 
     def test_read_retries_warns_unknown_provider_without_param(
         self, tmp_path: Path
@@ -1722,7 +1722,11 @@ class TestRetriesConfig:
             config = _read_retry_config()
 
         assert config.providers["custom_provider"].max_retries == 2
-        assert any("is not a known provider" in text for text in config.warnings)
+        # Kept, not dropped: the diagnostic must not claim an override that
+        # never happens, since the table still applies if that provider is the
+        # one the langchain registry builds.
+        assert any("unrecognized provider" in text for text in config.warnings)
+        assert not any("Ignoring [retries." in text for text in config.warnings)
 
     def test_resolve_config_retry_count_provider_override_wins(self) -> None:
         """Provider retry config beats the global model-node retry count."""
@@ -1923,7 +1927,8 @@ class TestRetriesConfig:
 
         assert "fireworks" in config.providers
         assert any(
-            "'fireorks' is not a known provider" in text for text in config.warnings
+            "[retries.fireorks]" in text and "unrecognized provider" in text
+            for text in config.warnings
         )
         # The correctly spelled provider table must not be flagged.
         assert not any("[retries.fireworks]" in text for text in config.warnings)
@@ -1937,7 +1942,7 @@ class TestRetriesConfig:
             config = _read_retry_config()
 
         assert config.providers["bedrock"].max_retries == 3
-        assert not any("is not a known provider" in text for text in config.warnings)
+        assert not any("unrecognized provider" in text for text in config.warnings)
 
 
 class TestResolveModelRetries:

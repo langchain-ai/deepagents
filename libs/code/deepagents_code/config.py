@@ -2497,9 +2497,14 @@ def _parse_retry_config(
             and provider not in known_providers
             and "param" not in raw
         ):
+            # Kept, not dropped: a provider dcode does not list can still be
+            # the one the langchain registry builds, and discarding the table
+            # would silently ignore a setting that does apply. Say that, rather
+            # than claiming an override that never happens.
             diagnostics.append(
-                f"Ignoring [retries.{provider}] in config.toml; "
-                f"{provider!r} is not a known provider"
+                f"[retries.{provider}] in config.toml names an unrecognized "
+                f"provider; it applies only if {provider!r} is the provider "
+                "dcode builds"
             )
         for key, value in raw.items():
             if key not in {"max_retries", "param"}:

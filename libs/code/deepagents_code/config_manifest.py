@@ -2544,18 +2544,11 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("extensions", "trust"),
     ),
     ConfigOption(
-        key="extensions.extra_files",
+        key="extensions.extra_paths",
         group="Extensions",
-        summary="Additional user-authorized Python extension files.",
+        summary="Additional user-authorized Python extension files or directories.",
         kind=OptionKind.STRUCTURED,
-        toml_keys=("extensions", "extra_files"),
-    ),
-    ConfigOption(
-        key="extensions.extra_dirs",
-        group="Extensions",
-        summary="Additional user-authorized Python extension directories.",
-        kind=OptionKind.STRUCTURED,
-        toml_keys=("extensions", "extra_dirs"),
+        toml_keys=("extensions", "extra_paths"),
     ),
     # --- Goals ----------------------------------------------------------
     ConfigOption(

@@ -67,8 +67,7 @@ def _prepare(
         logger.warning("Plugin extension discovery: %s", warning)
     discovery = discover_extensions(
         plugins=plugin_result.plugins,
-        config_files=settings.extra_files,
-        config_dirs=settings.extra_dirs,
+        config_paths=settings.extra_paths,
         cli_paths=cli_paths,
         project_dir=project_dir,
     )

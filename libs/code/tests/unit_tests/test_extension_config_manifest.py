@@ -1,5 +1,6 @@
 """Tests for extension entries in the configuration catalog."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -19,8 +20,7 @@ def test_extension_options_are_cataloged() -> None:
 
     assert enabled is not None
     assert enabled.kind is OptionKind.BOOL
-    assert get_option("extensions.extra_files") is not None
-    assert get_option("extensions.extra_dirs") is not None
+    assert get_option("extensions.extra_paths") is not None
     assert trust is not None
     assert trust.kind is OptionKind.EXTENSION_TRUST_DELEGATE
 
@@ -39,6 +39,7 @@ def test_invalid_trust_env_matches_runtime_fallback() -> None:
 
 
 def test_runtime_settings_honor_managed_policy(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Managed extension policy must override user and environment values."""
@@ -52,7 +53,14 @@ def test_runtime_settings_honor_managed_policy(
             "managed config", {"extensions": {"enabled": False, "trust": "never"}}
         ),
         user=TomlSnapshot.from_table(
-            "config.toml", {"extensions": {"enabled": True, "trust": "always"}}
+            "config.toml",
+            {
+                "extensions": {
+                    "enabled": True,
+                    "trust": "always",
+                    "extra_paths": [str(tmp_path / "one.py"), str(tmp_path / "more")],
+                }
+            },
         ),
     )
     monkeypatch.setattr(settings_module, "get_config_resolver", lambda: resolver)
@@ -63,3 +71,4 @@ def test_runtime_settings_honor_managed_policy(
 
     assert not settings.enabled
     assert settings.trust is TrustPolicy.NEVER
+    assert settings.extra_paths == (tmp_path / "one.py", tmp_path / "more")

@@ -34,11 +34,8 @@ class ExtensionSettings:
     trust: TrustPolicy = TrustPolicy.ASK
     """Fallback policy for project extension code."""
 
-    extra_files: tuple[Path, ...] = ()
-    """Explicit files from trusted user configuration."""
-
-    extra_dirs: tuple[Path, ...] = ()
-    """Explicit directories from trusted user configuration."""
+    extra_paths: tuple[Path, ...] = ()
+    """Explicit files or directories from trusted user configuration."""
 
 
 def _read_config_section(resolver: ConfigResolver) -> dict[str, object]:
@@ -114,6 +111,5 @@ def load_extension_settings() -> ExtensionSettings:
     return ExtensionSettings(
         enabled=enabled,
         trust=trust,
-        extra_files=_parse_paths(section.get("extra_files"), name="extra_files"),
-        extra_dirs=_parse_paths(section.get("extra_dirs"), name="extra_dirs"),
+        extra_paths=_parse_paths(section.get("extra_paths"), name="extra_paths"),
     )

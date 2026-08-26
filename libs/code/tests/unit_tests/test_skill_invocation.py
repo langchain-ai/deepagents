@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -885,21 +886,6 @@ class TestDiscoverSkillsAndRoots:
     as-is, is caught.
     """
 
-    def _settings_with_no_builtin_roots(self, extra: list[Path]) -> MagicMock:
-        settings = MagicMock()
-        for getter in (
-            "get_built_in_skills_dir",
-            "get_user_skills_dir",
-            "get_project_skills_dir",
-            "get_user_agent_skills_dir",
-            "get_project_agent_skills_dir",
-            "get_user_claude_skills_dir",
-            "get_project_claude_skills_dir",
-        ):
-            getattr(settings, getter).return_value = None
-        settings.get_extra_skills_dirs.return_value = extra
-        return settings
-
     def test_persisted_trust_added_as_is_while_extra_dirs_resolved(
         self, tmp_path: Path
     ) -> None:
@@ -922,11 +908,15 @@ class TestDiscoverSkillsAndRoots:
         real_extra.mkdir()
         link_extra = tmp_path / "link_extra"
         link_extra.symlink_to(real_extra, target_is_directory=True)
+        (tmp_path / "config.toml").write_text(
+            f'[skills]\nextra_allowed_dirs = ["{link_extra}"]\n',
+            encoding="utf-8",
+        )
 
         with (
             patch(
                 "deepagents_code.config.settings",
-                self._settings_with_no_builtin_roots([link_extra]),
+                SimpleNamespace(project_root=tmp_path),
             ),
             patch("deepagents_code.skills.load.list_skills", return_value=[]),
             patch(

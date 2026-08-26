@@ -207,7 +207,7 @@ def coerce_environment_value[T](
 
         try:
             return _found_for(option, _parse_extra_skills_dirs(raw, None))
-        except (ValueError, RuntimeError):
+        except (OSError, ValueError, RuntimeError):
             return Invalid(f"Ignoring {name} (could not resolve a path)")
     if kind is OptionKind.THEME_DELEGATE:
         # Theme names are resolved by the theme-aware provider path. Keep this

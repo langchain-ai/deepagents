@@ -391,6 +391,7 @@ class TestServerGraph:
             enable_skills=True,
             enable_shell=True,
             enable_interpreter=False,
+            interpreter_config=None,
             rubric_model=None,
             rubric_max_iterations=None,
             auto_classifier_model=None,
@@ -445,25 +446,22 @@ class TestServerGraph:
         resolve_mcp_tools.assert_not_awaited()
 
     async def test_interpreter_settings_apply_before_agent_construction(self) -> None:
-        """Server config settings writes should be visible to `create_cli_agent`."""
+        """Server PTC overrides should reach the interpreter snapshot."""
         graph_obj = object()
         model_obj = object()
         observed: dict[str, object] = {}
 
-        def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
-            from deepagents_code.config import settings
+        def create_cli_agent_side_effect(**kwargs: object) -> tuple[object, object]:
+            from deepagents_code.configuration.interpreter import InterpreterConfig
 
-            observed["interpreter_ptc"] = settings.interpreter_ptc
-            observed["acknowledge"] = settings.interpreter_ptc_acknowledge_unsafe
-            observed["enable_interpreter"] = settings.enable_interpreter
+            interpreter = kwargs["interpreter_config"]
+            assert isinstance(interpreter, InterpreterConfig)
+            observed["interpreter_ptc"] = interpreter.ptc
+            observed["acknowledge"] = interpreter.ptc_acknowledge_unsafe
+            observed["enable_interpreter"] = kwargs["enable_interpreter"]
             return graph_obj, _backend_with_offload(object())
 
-        settings_obj = SimpleNamespace(
-            has_tavily=False,
-            interpreter_ptc=None,
-            interpreter_ptc_acknowledge_unsafe=False,
-            enable_interpreter=False,
-        )
+        settings_obj = SimpleNamespace(has_tavily=False)
         config_module = _module_with_attrs(
             "deepagents_code.config",
             configure_langsmith_secret_redaction=MagicMock(),

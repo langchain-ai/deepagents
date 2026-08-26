@@ -77,6 +77,7 @@ from deepagents_code.config import (
     settings,
     validate_model_capabilities,
 )
+from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.model_config import (
     ModelConfig,
     ModelConfigError,
@@ -7533,18 +7534,28 @@ class TestDetectModePrefix:
 class TestInterpreterSettings:
     """Tests for `[interpreter]` config.toml loading and validation."""
 
+    @staticmethod
+    def _resolve() -> tuple[bool, InterpreterConfig]:
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        option = get_option("interpreter.enable_interpreter")
+        assert option is not None
+        enabled = bool(get_config_resolver().get(option).value)
+        return enabled, InterpreterConfig.from_resolver()
+
     def test_defaults_when_config_absent(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"  # does not exist
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            enabled, interpreter = self._resolve()
 
-        assert settings_obj.enable_interpreter is True
-        assert settings_obj.interpreter_timeout_seconds == pytest.approx(5.0)
-        assert settings_obj.interpreter_memory_limit_mb == 64
-        assert settings_obj.interpreter_max_ptc_calls == 256
-        assert settings_obj.interpreter_max_result_chars == 4000
-        assert settings_obj.interpreter_ptc == "safe"
-        assert settings_obj.interpreter_ptc_acknowledge_unsafe is False
+        assert enabled is True
+        assert interpreter.timeout_seconds == pytest.approx(5.0)
+        assert interpreter.memory_limit_mb == 64
+        assert interpreter.max_ptc_calls == 256
+        assert interpreter.max_result_chars == 4000
+        assert interpreter.ptc == "safe"
+        assert interpreter.ptc_acknowledge_unsafe is False
 
     def test_round_trip_through_toml(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
@@ -7561,15 +7572,15 @@ ptc_acknowledge_unsafe = true
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            enabled, interpreter = self._resolve()
 
-        assert settings_obj.enable_interpreter is True
-        assert settings_obj.interpreter_timeout_seconds == pytest.approx(12.5)
-        assert settings_obj.interpreter_memory_limit_mb == 128
-        assert settings_obj.interpreter_max_ptc_calls == 64
-        assert settings_obj.interpreter_max_result_chars == 8000
-        assert settings_obj.interpreter_ptc == "safe"
-        assert settings_obj.interpreter_ptc_acknowledge_unsafe is True
+        assert enabled is True
+        assert interpreter.timeout_seconds == pytest.approx(12.5)
+        assert interpreter.memory_limit_mb == 128
+        assert interpreter.max_ptc_calls == 64
+        assert interpreter.max_result_chars == 8000
+        assert interpreter.ptc == "safe"
+        assert interpreter.ptc_acknowledge_unsafe is True
 
     def test_ptc_explicit_list_round_trip(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
@@ -7580,9 +7591,9 @@ ptc = ["grep", "read_file"]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            _, interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == ["grep", "read_file"]
+        assert interpreter.ptc == ["grep", "read_file"]
 
     def test_invalid_ptc_list_entry_falls_back(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
@@ -7593,9 +7604,9 @@ ptc = [""]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            _, interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == "safe"
+        assert interpreter.ptc == "safe"
 
     def test_ptc_list_with_safe_preset_round_trip(self, tmp_path: Path) -> None:
         """`"safe"` is preserved as a list entry until agent-build expansion."""
@@ -7607,9 +7618,9 @@ ptc = ["safe", "task"]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            _, interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == ["safe", "task"]
+        assert interpreter.ptc == ["safe", "task"]
 
     def test_ptc_list_with_all_falls_back(self, tmp_path: Path) -> None:
         """`"all"` inside a list is rejected, falling back to the default."""
@@ -7621,9 +7632,9 @@ ptc = ["all", "task"]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            _, interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == "safe"
+        assert interpreter.ptc == "safe"
 
 
 class TestCreateModelCodex:

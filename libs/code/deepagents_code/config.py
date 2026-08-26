@@ -40,19 +40,17 @@ from deepagents_code._paths import (
     PATHS,
 )
 from deepagents_code._version import __version__
-from deepagents_code.config_manifest import (
-    INTERPRETER_ENABLE_DEFAULT,
-    INTERPRETER_MAX_PTC_CALLS_DEFAULT,
-    INTERPRETER_MAX_RESULT_CHARS_DEFAULT,
-    INTERPRETER_MEMORY_LIMIT_MB_DEFAULT,
-    INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT,
-    INTERPRETER_PTC_DEFAULT,
-    INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
-    RECURSION_LIMIT_DEFAULT,
-)
+from deepagents_code.config_manifest import RECURSION_LIMIT_DEFAULT
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
+
+    from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.resolver import (
+        ConfigResolver,
+        RankedProviderValue,
+    )
+    from deepagents_code.configuration.types import ProviderStatus
 
 logger = logging.getLogger(__name__)
 
@@ -2885,8 +2883,6 @@ _RELOADABLE_FIELDS = (
     "google_cloud_location",
     "deepagents_langchain_project",
     "project_root",
-    "shell_allow_list",
-    "extra_skills_dirs",
 )
 """Fields refreshed on `/reload` and cwd switches.
 
@@ -2903,6 +2899,158 @@ _API_KEY_FIELDS = frozenset(
 Derived from `_RELOADABLE_FIELDS` so new `*_api_key` fields are picked up
 automatically.
 """
+
+_RESOLVER_RELOAD_FIELDS = (
+    "shell_allow_list",
+    "extra_skills_dirs",
+)
+"""Resolver-backed values included in reload previews and change reports."""
+
+_RELOAD_CHANGE_FIELDS = (*_RELOADABLE_FIELDS, *_RESOLVER_RELOAD_FIELDS)
+"""Stable display order for every reload-owned change report entry."""
+
+_resolver_reload_snapshot: dict[str, object] = {
+    "shell_allow_list": None,
+    "extra_skills_dirs": None,
+}
+_resolver_reload_snapshot_lock = threading.Lock()
+
+
+@dataclass(slots=True)
+class _ReloadOverrideProvider:
+    """Retain resolver values when one reload candidate cannot be applied."""
+
+    name: str = "retained reload value"
+    rank: int = 350
+    _values: dict[str, object] = dataclass_field(default_factory=dict)
+    _lock: threading.Lock = dataclass_field(default_factory=threading.Lock)
+
+    @property
+    def durable(self) -> bool:
+        """The retained generation exists only for this process lifetime."""
+        return False
+
+    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+        """Return a retained typed value or leave the option unset."""
+        from deepagents_code.configuration.resolver import RankedProviderValue
+        from deepagents_code.configuration.types import (
+            Found,
+            ProviderHealth,
+            ProviderStatus,
+            Unset,
+        )
+
+        with self._lock:
+            result = (
+                Found(self._values[option.key])
+                if option.key in self._values
+                else Unset()
+            )
+        return RankedProviderValue(
+            self.rank,
+            self.durable,
+            ProviderStatus(self.name, None, ProviderHealth.OK),
+            result,
+        )
+
+    def status(self) -> ProviderStatus:
+        """Return the health of the in-memory retained generation."""
+        from deepagents_code.configuration.types import ProviderHealth, ProviderStatus
+
+        return ProviderStatus(self.name, None, ProviderHealth.OK)
+
+    def reload(self) -> None:
+        """Keep the accepted in-memory generation unchanged."""
+
+    def replace(self, values: Mapping[str, object]) -> None:
+        """Atomically replace the options whose previous values stay in force."""
+        with self._lock:
+            self._values = dict(values)
+
+
+_reload_override_provider = _ReloadOverrideProvider()
+
+
+def _resolver_with_reload_overrides() -> ConfigResolver:
+    """Return the shared resolver with the reload-retention tier installed."""
+    from deepagents_code.configuration.resolver import (
+        RELOAD_RANK,
+        get_config_resolver,
+    )
+
+    resolver = get_config_resolver()
+    if RELOAD_RANK not in resolver.provider_statuses():
+        resolver.install_provider(_reload_override_provider)
+    return resolver
+
+
+def _sync_reload_overrides(
+    values: Mapping[str, object], *, path_base: Path | None
+) -> None:
+    """Retain values that the refreshed resolver generation cannot reproduce."""
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import RELOAD_RANK
+
+    resolver = _resolver_with_reload_overrides()
+    retained: dict[str, object] = {}
+    option_keys = {
+        "shell_allow_list": "shell.allow_list",
+        "extra_skills_dirs": "skills.extra_allowed_dirs",
+    }
+    with _use_extra_skills_path_base(path_base):
+        for field, key in option_keys.items():
+            option = get_option(key)
+            if option is None:
+                continue
+            try:
+                candidate = resolver.get_without_ranks(option, {RELOAD_RANK}).value
+            except (OSError, RuntimeError, ValueError):
+                candidate = object()
+            if candidate != values[field]:
+                retained[key] = values[field]
+    _reload_override_provider.replace(retained)
+
+
+def _remember_resolver_reload_values(values: Mapping[str, object]) -> None:
+    """Remember the accepted resolver generation for future change reports."""
+    with _resolver_reload_snapshot_lock:
+        for field in _RESOLVER_RELOAD_FIELDS:
+            _resolver_reload_snapshot[field] = values[field]
+
+
+def _remembered_resolver_reload_values() -> dict[str, object]:
+    """Return the resolver generation currently accepted by runtime reload."""
+    with _resolver_reload_snapshot_lock:
+        return dict(_resolver_reload_snapshot)
+
+
+def _current_resolver_reload_values(*, path_base: Path | None) -> dict[str, object]:
+    """Snapshot resolver-backed values before a preview or accepted reload.
+
+    Returns:
+        Resolver values keyed by their stable reload-report field names.
+
+    Raises:
+        RuntimeError: If either reload-owned option is absent from the manifest.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+
+    options = tuple(
+        option
+        for key in ("shell.allow_list", "skills.extra_allowed_dirs")
+        if (option := get_option(key)) is not None
+    )
+    if len(options) != len(_RESOLVER_RELOAD_FIELDS):
+        msg = "reload options are missing from the configuration manifest"
+        raise RuntimeError(msg)
+    with _use_extra_skills_path_base(path_base):
+        resolved = _resolver_with_reload_overrides().resolve_options(options)
+    for option in options:
+        _emit_ranked_diagnostics(option, resolved[option.key])
+    return {
+        "shell_allow_list": resolved["shell.allow_list"].value,
+        "extra_skills_dirs": resolved["skills.extra_allowed_dirs"].value,
+    }
 
 
 @dataclass
@@ -2963,76 +3111,6 @@ class Settings:
     project_root: Path | None = None
     """Current project root directory, or `None` if not in a git project."""
 
-    shell_allow_list: list[str] | None = None
-    """Shell commands that don't require user approval."""
-
-    extra_skills_dirs: list[Path] | None = None
-    """Extra directories added to the skill path containment allowlist.
-
-    These do NOT add new skill discovery locations — skills are still only
-    discovered from the standard directories. They exist so that symlinks inside
-    standard skill directories can point to targets in these additional
-    locations without being rejected by the containment check
-    in `load_skill_content`.
-
-    Set via `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` env var (colon-separated) or
-    `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
-    """
-
-    enable_interpreter: bool = INTERPRETER_ENABLE_DEFAULT
-    """Wire `CodeInterpreterMiddleware` from `langchain-quickjs` into the main
-    agent. Local-mode only; raises `ValueError` at agent-build time when a
-    remote sandbox is active. Subagents never receive the interpreter in v1.
-
-    `langchain-quickjs` is installed as a core dependency.
-
-    Defaults are owned by `config_manifest` (the canonical config surface) so
-    they are defined in exactly one place.
-    """
-
-    interpreter_timeout_seconds: float = INTERPRETER_TIMEOUT_SECONDS_DEFAULT
-    """Per-`js_eval`-call wall-clock timeout (seconds) for the QuickJS REPL."""
-
-    interpreter_memory_limit_mb: int = INTERPRETER_MEMORY_LIMIT_MB_DEFAULT
-    """QuickJS heap memory cap (MB), shared across all calls within a session."""
-
-    interpreter_max_ptc_calls: int = INTERPRETER_MAX_PTC_CALLS_DEFAULT
-    """Maximum `tools.*` host-bridge invocations allowed per `js_eval` call.
-
-    PTC calls bypass `interrupt_on`/HITL approval — this budget is the only
-    runtime limiter on bursty tool fan-out from inside the REPL.
-    """
-
-    interpreter_max_result_chars: int = INTERPRETER_MAX_RESULT_CHARS_DEFAULT
-    """Independent cap (chars) on `js_eval` result and stdout blocks before
-    truncation."""
-
-    interpreter_ptc: str | bool | list[str] = INTERPRETER_PTC_DEFAULT
-    """Programmatic tool calling allowlist for `js_eval`.
-
-    Accepted values:
-
-    - `False` or `[]`: pure REPL, no `tools.*` bridge.
-    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET` (the default).
-    - `"all"`: every tool passed to `create_cli_agent` is exposed. Requires
-        `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
-    - `list[str]`: explicit tool names. The list may also include the `"safe"`
-        preset (expanded to `INTERPRETER_PTC_SAFE_PRESET`); `"all"` is rejected
-        inside a list. Names are matched against the live tool registry at
-        runtime, so names not present are simply not exposed.
-    """
-
-    interpreter_ptc_acknowledge_unsafe: bool = (
-        INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT
-    )
-    """Explicit acknowledgement required when `interpreter_ptc="all"` is set
-    without `auto_approve`.
-
-    `"all"` exposes every host tool to `tools.*` calls from inside the REPL,
-    bypassing HITL approval — this flag is a deliberate sanity gate, not a
-    feature toggle.
-    """
-
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> Settings:
         """Create settings by detecting the current environment.
@@ -3043,9 +3121,6 @@ class Settings:
         Returns:
             Settings instance with detected configuration
 
-        Raises:
-            RuntimeError: If the manifest is missing an enforced managed key, so
-                resolving it from the environment alone would bypass policy.
         """
         # Detect API keys (normalize empty strings to None).
         from deepagents_code.model_config import resolve_env_var
@@ -3079,70 +3154,10 @@ class Settings:
         from deepagents_code.project_utils import find_project_root
 
         project_root = find_project_root(start_path)
-
-        from deepagents_code.config_manifest import (
-            _emit_ranked_diagnostics,
-            get_config_options,
-            get_option,
+        _reload_override_provider.replace({})
+        _remember_resolver_reload_values(
+            _current_resolver_reload_values(path_base=start_path)
         )
-        from deepagents_code.configuration.resolver import get_config_resolver
-
-        # Resolve only the options this constructor reads. `resolve_all()`
-        # would also resolve `display.theme`, whose `THEME_DELEGATE` coercion
-        # reaches the theme registry and imports Textual (~470ms) — see
-        # `libs/code/AGENTS.md` on the startup hot path. Four CLI entry points
-        # in `skills/commands.py` build `Settings` without ever drawing a UI.
-        wanted = tuple(
-            option
-            for option in get_config_options()
-            if option.key in {"shell.allow_list", "skills.extra_allowed_dirs"}
-            or (option.group == "Interpreter" and option.settings_field is not None)
-        )
-        with _use_extra_skills_path_base(start_path):
-            resolved_config = get_config_resolver().resolve_options(wanted)
-
-        # No `is None` fallback for either enforced key below. The manifest is a
-        # module-level constant, so a missing option is a programming error, not
-        # a runtime condition — and resolving from the environment alone would
-        # bypass managed policy for a key that grants shell auto-approval or
-        # widens the skill-content allowlist. Failing loudly beats escalating
-        # quietly. `test_every_enforced_managed_key_resolves_to_a_manifest_option`
-        # keeps this unreachable.
-        shell_option = get_option("shell.allow_list")
-        if shell_option is None:
-            msg = "manifest is missing shell.allow_list; refusing to resolve it alone"
-            raise RuntimeError(msg)
-        shell_resolved = resolved_config[shell_option.key]
-        _emit_ranked_diagnostics(shell_option, shell_resolved)
-        # `parse_shell_allow_list_items` is the only producer for this
-        # option on every tier, and it yields `list[str] | None`.
-        shell_allow_list = cast("list[str] | None", shell_resolved.value)
-
-        # Parse extra skill containment roots from managed policy, the env
-        # var, or config.toml. These extend the path allowlist for
-        # load_skill_content but do not add new skill discovery locations.
-        skills_option = get_option("skills.extra_allowed_dirs")
-        if skills_option is None:
-            msg = (
-                "manifest is missing skills.extra_allowed_dirs; refusing to "
-                "resolve it alone"
-            )
-            raise RuntimeError(msg)
-        skills_resolved = resolved_config[skills_option.key]
-        _emit_ranked_diagnostics(skills_option, skills_resolved)
-        extra_skills_dirs = cast("list[Path] | None", skills_resolved.value)
-
-        # Only the Interpreter group is manifest-resolved here. Credentials,
-        # the shell allow-list, and the LangSmith project keep their dedicated
-        # loaders above: their empty-string-to-`None` and reload semantics do
-        # not fit the generic resolver.
-        interpreter_kwargs: dict[str, Any] = {}
-        for option in get_config_options():
-            if option.group != "Interpreter" or option.settings_field is None:
-                continue
-            resolved = resolved_config[option.key]
-            _emit_ranked_diagnostics(option, resolved)
-            interpreter_kwargs[option.settings_field] = resolved.value
 
         return cls(
             openai_api_key=openai_key,
@@ -3155,9 +3170,6 @@ class Settings:
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
             project_root=project_root,
-            shell_allow_list=shell_allow_list,
-            extra_skills_dirs=extra_skills_dirs,
-            **interpreter_kwargs,
         )
 
     @staticmethod
@@ -3230,6 +3242,7 @@ class Settings:
         )
         from deepagents_code.configuration.resolver import (
             CLI_RANK,
+            RELOAD_RANK,
             USER_RANK,
             get_config_resolver,
             resolver_from_snapshots,
@@ -3254,7 +3267,8 @@ class Settings:
         # `config.toml` the user just edited deserves the same treatment, and
         # more so -- they are staring at the edit that did not take.
         user_notice: str | None = None
-        user_status = resolver.provider_statuses().get(USER_RANK)
+        provider_statuses = resolver.provider_statuses()
+        user_status = provider_statuses.get(USER_RANK)
         if user_status is not None and not user_status.usable:
             detail = user_status.detail or user_status.health.value
             user_notice = f"Kept previous config.toml: {detail}"
@@ -3271,11 +3285,6 @@ class Settings:
 
         candidate_resolver = resolver
         if not refresh_managed:
-            # The shared resolver's cached user snapshot may predate the edit
-            # being previewed. Read the user file fresh when possible, but fall
-            # back to the retained snapshot when that read is unusable, matching
-            # the real reload. Keep the current managed snapshot because a
-            # preview must not refresh policy the process is enforcing.
             from deepagents_code.configuration.providers import TomlFileProvider
             from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
@@ -3287,9 +3296,6 @@ class Settings:
                 )
                 user_notice = None
             else:
-                # The preview's own read failed, so report that rather than
-                # the shared resolver's status: the file on disk right now is
-                # what the user would be accepting.
                 detail = (
                     user_candidate.status.detail or user_candidate.status.health.value
                 )
@@ -3297,17 +3303,10 @@ class Settings:
 
         shell_option = get_option("shell.allow_list")
         if shell_option is not None:
-            # Accepting an *env*-tier hit would defeat the `env` argument this
-            # method exists to honor: the resolver's env provider reads
-            # `os.environ` directly, so a preview of a `.env` edit reported the
-            # value live in the process instead of the one being previewed.
-            # Managed policy, the session CLI, and the user's file are safe to
-            # take from their resolvers; the env tier stays with the
-            # `env`-derived value computed above. Check the shared resolver
-            # first because the preview's candidate resolver -- built from the
-            # managed snapshot and a *freshly parsed* user file -- deliberately
-            # carries no process-local CLI provider.
-            shell_resolved = resolver.get(shell_option)
+            shell_resolved = resolver.get_without_ranks(
+                shell_option,
+                {RELOAD_RANK},
+            )
             _emit_ranked_diagnostics(shell_option, shell_resolved)
             shell_source = _ranked_source(shell_resolved)
             if (
@@ -3341,7 +3340,14 @@ class Settings:
                 resolved_skills: list[Path] | None = None
                 skills_managed = False
                 if skills_option is not None:
-                    skills_resolved = candidate_resolver.get(skills_option)
+                    skills_resolved = (
+                        candidate_resolver.get_without_ranks(
+                            skills_option,
+                            {RELOAD_RANK},
+                        )
+                        if candidate_resolver is resolver
+                        else candidate_resolver.get(skills_option)
+                    )
                     _emit_ranked_diagnostics(skills_option, skills_resolved)
                     if managed_decided(_ranked_source(skills_resolved)):
                         skills_managed = True
@@ -3360,11 +3366,7 @@ class Settings:
                     if skills_managed or not env_skills
                     else _parse_extra_skills_dirs(env_skills)
                 )
-        except (OSError, ValueError):
-            # Path resolution can fail (e.g. broken symlink loop). Keep the
-            # previous value rather than letting the failure escape reload --
-            # callers such as the cwd switch run this after `os.chdir`, where an
-            # uncaught error would strand the process in a half-applied cwd.
+        except (OSError, RuntimeError, ValueError):
             logger.warning(
                 "Could not resolve %s during reload; keeping previous value",
                 EXTRA_SKILLS_DIRS,
@@ -3407,7 +3409,7 @@ class Settings:
             return str(value)
 
         changes: list[str] = []
-        for field in _RELOADABLE_FIELDS:
+        for field in _RELOAD_CHANGE_FIELDS:
             old_value = previous[field]
             new_value = refreshed[field]
             if old_value != new_value:
@@ -3430,6 +3432,7 @@ class Settings:
             `reload_from_environment`.
         """
         previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
+        previous.update(_remembered_resolver_reload_values())
         env = _preview_dotenv_environ(start_path=start_path)
         refreshed, blocked = self._reload_values(
             start_path=start_path,
@@ -3444,8 +3447,9 @@ class Settings:
         """Reload selected settings from environment variables and project files.
 
         This refreshes only fields that are expected to change at runtime
-        (API keys, Google Cloud project, project root, shell allow-list, and
-        LangSmith tracing project).
+        (API keys, Google Cloud project, project root, and LangSmith tracing
+        project). Resolver-backed configuration is refreshed separately by the
+        shared `ConfigResolver` generation.
 
         Runtime model metadata lives in `RuntimeState` and is never touched by
         this method. The original user LangSmith project
@@ -3467,17 +3471,20 @@ class Settings:
             A list of human-readable change descriptions. Empty when nothing
             changed; a single notice when managed policy blocked the reload.
         """
-        _load_dotenv(start_path=start_path, refresh_loaded=True)
-
         previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
+        previous.update(_remembered_resolver_reload_values())
+        _resolver_with_reload_overrides()
+        _load_dotenv(start_path=start_path, refresh_loaded=True)
         refreshed, blocked = self._reload_values(
             start_path=start_path,
             env=dict(os.environ),
             previous=previous,
         )
 
-        for field, value in refreshed.items():
-            setattr(self, field, value)
+        for field in _RELOADABLE_FIELDS:
+            setattr(self, field, refreshed[field])
+        _remember_resolver_reload_values(refreshed)
+        _sync_reload_overrides(refreshed, path_base=start_path)
 
         # Sync the LANGSMITH_PROJECT env var so LangSmith tracing picks up
         # the change
@@ -3532,17 +3539,6 @@ class Settings:
     def has_tavily(self) -> bool:
         """Check if Tavily API key is configured."""
         return self.tavily_api_key is not None
-
-    def get_extra_skills_dirs(self) -> list[Path]:
-        """Get user-configured extra skill directories.
-
-        Set via `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` (colon-separated paths) or
-        `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
-
-        Returns:
-            List of extra skill directory paths, or empty list if not configured.
-        """
-        return self.extra_skills_dirs or []
 
 
 DANGEROUS_SHELL_PATTERNS = (

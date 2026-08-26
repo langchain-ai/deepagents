@@ -35,6 +35,9 @@ MANAGED_RANK = 200
 CLI_RANK = 300
 """Parsed command-line argument rank."""
 
+RELOAD_RANK = 350
+"""Retained runtime-reload value rank."""
+
 ENVIRONMENT_RANK = 400
 """Process-environment rank."""
 

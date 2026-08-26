@@ -404,6 +404,27 @@ def _load_non_negative_int_option(key: str, default: int, *, label: str) -> int:
     return value
 
 
+def _load_shell_allow_list() -> list[str] | None:
+    """Resolve the shell command allow-list from the shared resolver.
+
+    Returns:
+        The configured allow-list, or `None` when shell access is disabled.
+
+    Raises:
+        RuntimeError: If the option is absent from the manifest.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    option = get_option("shell.allow_list")
+    if option is None:
+        msg = "shell.allow_list is missing from the configuration manifest"
+        raise RuntimeError(msg)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return cast("list[str] | None", resolved.value)
+
+
 def _load_float_option(
     key: str,
     default: float,
@@ -4806,17 +4827,25 @@ class DeepAgentsApp(App):
         in `main._warn_if_interpreter_disabled_by_sandbox`.
 
         Gated on the raw `--interpreter` tri-state (`self._interpreter_arg`) so an
-        explicit `--no-interpreter` opt-out stays quiet, and on the local default
-        from `settings` so users who disabled the interpreter in config are not
-        nagged.
+        explicit `--no-interpreter` opt-out stays quiet, and on the resolver-backed
+        local default so users who disabled the interpreter in config are not nagged.
         """
         from deepagents_code._server_config import _interpreter_suppressed_by_sandbox
-        from deepagents_code.config import settings
+        from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        option = get_option("interpreter.enable_interpreter")
+        if option is None:
+            logger.error("Interpreter enable option is missing from the manifest")
+            return
+        resolved = get_config_resolver().get(option)
+        _emit_ranked_diagnostics(option, resolved)
+        local_default = bool(resolved.value)
 
         if not _interpreter_suppressed_by_sandbox(
             enable_interpreter=self._interpreter_arg,
             sandbox_type=self._sandbox_type,
-            local_default=settings.enable_interpreter,
+            local_default=local_default,
         ):
             return
         self.notify(
@@ -9366,7 +9395,6 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.config import (
             is_shell_command_allowed,
-            settings,
         )
 
         loop = asyncio.get_running_loop()
@@ -9377,14 +9405,15 @@ class DeepAgentsApp(App):
             and request["description"].startswith("Auto human fallback")
             for request in action_requests or []
         )
-        if settings.shell_allow_list and action_requests and not is_auto_fallback:
+        shell_allow_list = _load_shell_allow_list()
+        if shell_allow_list and action_requests and not is_auto_fallback:
             all_auto_approved = True
             approved_commands = []
 
             for req in action_requests:
                 if req.get("name") == "execute":
                     command = req.get("args", {}).get("command", "")
-                    if is_shell_command_allowed(command, settings.shell_allow_list):
+                    if is_shell_command_allowed(command, shell_allow_list):
                         approved_commands.append(command)
                     else:
                         all_auto_approved = False

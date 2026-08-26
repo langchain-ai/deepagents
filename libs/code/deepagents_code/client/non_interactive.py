@@ -72,7 +72,6 @@ from deepagents_code.config import (
     create_model,
     is_shell_command_allowed,
     runtime_state,
-    settings,
 )
 from deepagents_code.file_ops import FileOpTracker, record_display_caveat
 from deepagents_code.hooks import (
@@ -1064,6 +1063,27 @@ def _process_stream_chunk(
         )
 
 
+def _resolve_shell_allow_list() -> list[str] | None:
+    """Resolve the non-interactive shell policy.
+
+    Returns:
+        The configured allow-list, or `None` when shell access is disabled.
+
+    Raises:
+        RuntimeError: If the option is absent from the manifest.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    option = get_option("shell.allow_list")
+    if option is None:
+        msg = "shell.allow_list is missing from the configuration manifest"
+        raise RuntimeError(msg)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return cast("list[str] | None", resolved.value)
+
+
 def _make_hitl_decision(
     action_request: ActionRequest, console: Console
 ) -> dict[str, str]:
@@ -1095,7 +1115,8 @@ def _make_hitl_decision(
     action_name = action_request.get("name", "")
 
     if action_name == "execute":
-        if not settings.shell_allow_list:
+        shell_allow_list = _resolve_shell_allow_list()
+        if not shell_allow_list:
             command = action_request.get("args", {}).get("command", "")
             console.print(
                 f"\n[red]Shell command rejected (no allow-list configured): "
@@ -1112,11 +1133,11 @@ def _make_hitl_decision(
 
         command = action_request.get("args", {}).get("command", "")
 
-        if is_shell_command_allowed(command, settings.shell_allow_list):
+        if is_shell_command_allowed(command, shell_allow_list):
             console.print(f"[dim]✓ Auto-approved: {escape_markup(command)}[/dim]")
             return {"type": "approve"}
 
-        allowed_list_str = ", ".join(settings.shell_allow_list)
+        allowed_list_str = ", ".join(shell_allow_list)
         console.print(f"\n[red]Shell command rejected:[/red] {escape_markup(command)}")
         console.print(
             f"[yellow]Allowed commands:[/yellow] {escape_markup(allowed_list_str)}"
@@ -1970,8 +1991,7 @@ async def run_non_interactive(
             silently skipped.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware
             on the main agent. `None` uses the sandbox-aware default.
-        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC
-            allowlist for `js_eval`).
+        interpreter_ptc: Invocation-scoped PTC allowlist override for `js_eval`.
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
@@ -2158,10 +2178,9 @@ async def run_non_interactive(
         from deepagents_code.hooks.models.domain import HookEvent
         from deepagents_code.hooks.trust import WorkspaceTrust
 
-        enable_shell = bool(settings.shell_allow_list)
-        shell_is_unrestricted = isinstance(
-            settings.shell_allow_list, type(SHELL_ALLOW_ALL)
-        )
+        shell_allow_list = _resolve_shell_allow_list()
+        enable_shell = bool(shell_allow_list)
+        shell_is_unrestricted = isinstance(shell_allow_list, type(SHELL_ALLOW_ALL))
         # Currently, non-shell tools have no HITL handler in non-interactive
         # mode, so interrupting on them just fragments LangSmith traces
         # without adding value. Gate only shell execution via middleware.
@@ -2199,10 +2218,9 @@ async def run_non_interactive(
             enable_shell and not shell_is_unrestricted and not has_permission_hooks
         )
         # Extract the concrete allow-list to forward to the server subprocess.
-        # settings.shell_allow_list is already validated at this point.
         restrictive_allow_list: list[str] | None = (
-            list(settings.shell_allow_list)
-            if use_interrupt_shell_only and settings.shell_allow_list
+            list(shell_allow_list)
+            if use_interrupt_shell_only and shell_allow_list
             else None
         )
 

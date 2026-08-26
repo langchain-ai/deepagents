@@ -2669,23 +2669,19 @@ class TestLangsmithKeyShadowedByEmptyOverride:
 class TestLangsmithSecretRedaction:
     """Tests for LangSmith trace secret redaction configuration."""
 
-    @pytest.fixture(autouse=True)
-    def _enable_redaction(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
+    def test_redaction_enabled_by_default(self) -> None:
+        """LangSmith trace redaction defaults to enabled."""
+        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
+            assert is_langsmith_redaction_enabled() is True
 
-    def test_redaction_disabled_by_default(
+    def test_redaction_can_be_disabled_by_env(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """LangSmith trace redaction defaults to disabled."""
-        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
+        """The redaction env var can opt out for local debugging."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
         with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
             assert is_langsmith_redaction_enabled() is False
-
-    def test_redaction_can_be_enabled_by_env(self) -> None:
-        """The redaction env var can opt in to secret redaction."""
-        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
-            assert is_langsmith_redaction_enabled() is True
 
     def test_configures_langsmith_client_with_secret_anonymizer(
         self,
@@ -2714,14 +2710,14 @@ class TestLangsmithSecretRedaction:
         assert secret not in redacted
         assert "[SECRET_DETECTED]" in redacted
 
-    def test_skips_client_configuration_by_default(
+    def test_skips_client_configuration_when_redaction_disabled(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Tracing leaves the LangSmith client untouched until redaction is enabled."""
+        """Opting out leaves the LangSmith client untouched."""
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
-        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
 
         with (
             patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
@@ -3013,17 +3009,17 @@ class TestLangsmithSecretRedaction:
         assert "api_key" not in kwargs
         assert "anonymizer" in kwargs
 
-    def test_redaction_can_be_enabled_by_toml(
+    def test_redaction_can_be_disabled_by_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """A `[tracing] langsmith_redact = true` in config.toml opts in."""
-        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
+        """A `[tracing] langsmith_redact = false` in config.toml opts out."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", raising=False)
         (tmp_path / "config.toml").write_text(
-            "[tracing]\nlangsmith_redact = true\n", encoding="utf-8"
+            "[tracing]\nlangsmith_redact = false\n", encoding="utf-8"
         )
-        assert is_langsmith_redaction_enabled() is True
+        assert is_langsmith_redaction_enabled() is False
 
     def test_env_redaction_toggle_overrides_toml(
         self,
@@ -3031,11 +3027,11 @@ class TestLangsmithSecretRedaction:
         tmp_path: Path,
     ) -> None:
         """The redaction env var takes precedence over a conflicting config.toml."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
         (tmp_path / "config.toml").write_text(
-            "[tracing]\nlangsmith_redact = true\n", encoding="utf-8"
+            "[tracing]\nlangsmith_redact = false\n", encoding="utf-8"
         )
-        assert is_langsmith_redaction_enabled() is False
+        assert is_langsmith_redaction_enabled() is True
 
     def test_fail_closed_clears_env_when_sdk_disable_also_fails(
         self,

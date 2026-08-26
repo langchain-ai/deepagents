@@ -5679,6 +5679,24 @@ class TestMessageQueue:
             assert any("returned to the input" in n for n in notices)
             assert not any("Restart complete" in n for n in notices)
 
+    async def test_failed_restart_without_queue_omits_restoration_claim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed restart must not claim that nonexistent prompts moved."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(
+                app, "_restart_server_manual", AsyncMock(return_value=False)
+            )
+
+            assert await app._run_restart_respawn() is False
+            await pilot.pause()
+
+            notices = [str(widget._content) for widget in app.query(AppMessage)]
+            assert any("Restart did not complete" in notice for notice in notices)
+            assert not any("returned to the input" in notice for notice in notices)
+
     async def test_restart_config_failure_returns_queued_prompts_to_input(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -5753,7 +5771,9 @@ class TestMessageQueue:
 
             monkeypatch.setattr(QueuedUserMessage, "remove", remove)
 
-            await app._restore_queue_to_input("Prompts restored.")
+            await app._restore_queue_to_input(
+                "Prompts restored.", empty_notice="No prompts to restore."
+            )
 
             assert not app._pending_messages
             assert not app._queued_widgets
@@ -5772,7 +5792,9 @@ class TestMessageQueue:
             app._chat_input.set_value_at_end(draft)
             app._pending_messages.append(QueuedMessage("queued prompt", "normal"))
 
-            await app._restore_queue_to_input("Prompts restored.")
+            await app._restore_queue_to_input(
+                "Prompts restored.", empty_notice="No prompts to restore."
+            )
 
             assert app._chat_input.value == f"{draft}\n\nqueued prompt"
 

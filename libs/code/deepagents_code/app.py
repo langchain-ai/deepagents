@@ -19763,7 +19763,12 @@ class DeepAgentsApp(App):
         self._deferred_actions.clear()
         self._sync_status_queued()
 
-    async def _restore_queue_to_input(self, notice: str) -> None:
+    async def _restore_queue_to_input(
+        self,
+        notice: str,
+        *,
+        empty_notice: str,
+    ) -> None:
         """Return every queued prompt to the chat input and drop the queue.
 
         For restart outcomes that neither respawn the server nor hand the queue
@@ -19780,14 +19785,16 @@ class DeepAgentsApp(App):
         matches. Skips the queue-clearing work entirely when nothing is queued.
 
         Args:
-            notice: User-facing explanation mounted after the restore. No-op
-                when the queue was empty, so callers can pass the message
-                unconditionally without rewording it for that case.
+            notice: User-facing explanation when prompts are queued.
+            empty_notice: Outcome wording that does not claim prompts were
+                restored, used when the queue is empty before the first await.
         """
         # Mount first so a submission landing during this await is included in
         # the restore. The restart task remains the busy gate until this method
         # returns, so every submission in the remaining await windows queues.
-        await self._mount_message(AppMessage(notice))
+        has_queued_prompts = bool(self._pending_messages or self._queued_widgets)
+        message = notice if has_queued_prompts else empty_notice
+        await self._mount_message(AppMessage(message))
         texts: list[str] = []
         while self._pending_messages or self._queued_widgets:
             texts.extend(msg.text for msg in self._pending_messages)
@@ -26591,7 +26598,11 @@ class DeepAgentsApp(App):
             await self._restore_queue_to_input(
                 "Configuration reload failed; queued prompts were returned to "
                 "the input. Re-submit them or run `/restart` again after fixing "
-                "the configuration."
+                "the configuration.",
+                empty_notice=(
+                    "Configuration reload failed. Fix the configuration, then "
+                    "run `/restart` again."
+                ),
             )
             return False
 
@@ -26601,7 +26612,12 @@ class DeepAgentsApp(App):
                 "server (no owned subprocess). Configuration was reloaded; "
                 "queued prompts were returned to the input. Re-submit them to "
                 "send on the current session, or relaunch dcode to fully "
-                "restart."
+                "restart.",
+                empty_notice=(
+                    "Cannot restart: this app is connected to a remote LangGraph "
+                    "server (no owned subprocess). Configuration was reloaded; "
+                    "relaunch dcode to fully restart."
+                ),
             )
             return False
 
@@ -26623,14 +26639,25 @@ class DeepAgentsApp(App):
                     "reloaded; queued prompts were returned to the input. Set "
                     "credentials with `/auth`, reload the environment with "
                     "`/reload`, or pick a model with `/model` to start the "
-                    "server."
+                    "server.",
+                    empty_notice=(
+                        "Server startup is waiting for a model. Configuration was "
+                        "reloaded. Set credentials with `/auth`, reload the "
+                        "environment with `/reload`, or pick a model with `/model` "
+                        "to start the server."
+                    ),
                 )
             elif self._connecting:
                 await self._restore_queue_to_input(
                     "The server is still starting. Configuration was reloaded "
                     "and will apply once it finishes connecting; queued prompts "
                     "were returned to the input. Re-submit them to send on the "
-                    "current session, or run `/restart` again afterward."
+                    "current session, or run `/restart` again afterward.",
+                    empty_notice=(
+                        "The server is still starting. Configuration was reloaded "
+                        "and will apply once it finishes connecting; run `/restart` "
+                        "again afterward."
+                    ),
                 )
             elif self._server_startup_error is not None:
                 await self._restore_queue_to_input(
@@ -26640,12 +26667,23 @@ class DeepAgentsApp(App):
                     "needed, then pick a model with `/model` to try again. You "
                     "can also relaunch dcode.\n\n"
                     f"Last error: {self._server_startup_error}",
+                    empty_notice=(
+                        "Cannot restart yet because the server did not finish "
+                        "starting. Configuration was reloaded. Update credentials "
+                        "with `/auth` if needed, then pick a model with `/model` to "
+                        "try again. You can also relaunch dcode.\n\n"
+                        f"Last error: {self._server_startup_error}"
+                    ),
                 )
             else:
                 await self._restore_queue_to_input(
                     "Cannot restart yet because the server is not running. "
                     "Configuration was reloaded; queued prompts were returned "
-                    "to the input. Relaunch dcode to start again."
+                    "to the input. Relaunch dcode to start again.",
+                    empty_notice=(
+                        "Cannot restart yet because the server is not running. "
+                        "Configuration was reloaded. Relaunch dcode to start again."
+                    ),
                 )
             return False
 
@@ -26717,7 +26755,8 @@ class DeepAgentsApp(App):
             # visible and editable instead of silently stuck.
             await self._restore_queue_to_input(
                 "Restart did not complete; queued prompts were returned to the "
-                "input. Re-submit them to send on the current session."
+                "input. Re-submit them to send on the current session.",
+                empty_notice=("Restart did not complete. Run `/restart` to try again."),
             )
         if failure is not None:
             raise failure

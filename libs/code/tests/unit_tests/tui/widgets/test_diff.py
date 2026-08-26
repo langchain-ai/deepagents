@@ -268,6 +268,32 @@ class TestComposeDiffLines:
             offsets.add(segment.style.meta["offset"])
         assert offsets == {(12, 0)}
 
+    def test_narrow_width_uses_normal_wrapping_without_clipping(self) -> None:
+        """Rows narrower than the gutter still render every source cell."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdef") if "abc" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+        lines = _visual_lines(widget, 5)
+
+        assert lines == ["680 +", "abcde", "f"]
+        assert content.get_height({}, 5) == len(lines)
+
+    def test_wrapped_tabbed_lines_keep_all_source_text(self) -> None:
+        """Tab expansion cannot make wrapping discard trailing source."""
+        widget = next(
+            w
+            for w in _rendered("@@ -680 +680 @@\n+\tabcdefghijkl")
+            if "abc" in _plain(w)
+        )
+
+        assert _visual_lines(widget, 12) == [
+            "680 +       ",
+            "  …     abcd",
+            "  …   efghij",
+            "  …   kl",
+        ]
+
     def test_ascii_continuation_fits_the_line_number_column(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

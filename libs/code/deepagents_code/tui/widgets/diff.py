@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 
 from rich.segment import Segment
 from rich.style import Style as RichStyle
-from textual.content import Content
+from textual.content import Content, divide_line
 from textual.geometry import Offset
 from textual.highlight import highlight
 from textual.selection import Selection
@@ -222,15 +222,16 @@ class _DiffRowContent(Content):
 
     def _wrapped(self, width: int) -> list[tuple[Content, int]]:
         """Return wrapped lines with their offsets in the logical content."""
+        content = Content(self.plain, list(self.spans), self.cell_length)
         if (
             self.continuation is None
             or self.cell_length <= width
             or width <= self.prefix_len
         ):
-            content = Content(self.plain, list(self.spans), self.cell_length)
             return [(content, 0)]
         prefix = self[: self.prefix_len]
-        body_lines = self[self.prefix_len :].fold(width - self.prefix_len)
+        body = self[self.prefix_len :].expand_tabs()
+        body_lines = body.divide(divide_line(body.plain, width - self.prefix_len))
         starts = accumulate(
             (len(line) for line in body_lines[:-1]), initial=self.prefix_len
         )
@@ -280,6 +281,8 @@ class _DiffRowContent(Content):
         Returns:
             One strip per visual line.
         """
+        if width <= self.prefix_len:
+            return super().render_strips(width, height, style, options)
         first, *continuations = self._wrapped(width)
         lines = [
             first[0].render_strips(width, 1, style, options)[0],
@@ -292,7 +295,8 @@ class _DiffRowContent(Content):
 
     def get_height(self, rules: RulesMap, width: int) -> int:
         """Return the number of wrapped visual lines."""
-        del rules
+        if width <= self.prefix_len:
+            return super().get_height(rules, width)
         return len(self._wrapped(width))
 
 

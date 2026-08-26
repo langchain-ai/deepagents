@@ -284,11 +284,8 @@ def _is_transient_sdk_error(exc: Exception) -> bool:
     return any(base.__name__ in _TRANSIENT_SDK_EXC_NAMES for base in type(exc).__mro__)
 
 
-def _is_retryable_model_error(exc: Exception) -> bool:
-    """Return whether a model error is transient and safe to retry."""
-    if isinstance(exc, ModelError):
-        return exc.is_retryable
-
+def _is_http_transport_error(exc: BaseException) -> bool:
+    """Return whether `exc` is a transient HTTP response transport failure."""
     # Optional dependency: httpx ships with the HTTP-based providers but keep the
     # import lazy so classification never forces it at startup.
     httpx_transient: tuple[type[BaseException], ...] = ()
@@ -318,6 +315,35 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     if isinstance(exc, httpx_transient):
         return True
 
+    error_type = type(exc)
+    if error_type.__module__.startswith("httpcore") and error_type.__name__ in {
+        "ReadError",
+        "RemoteProtocolError",
+    }:
+        return True
+    return (
+        error_type.__module__ == "aiohttp.http_exceptions"
+        and error_type.__name__ == "TransferEncodingError"
+        and "Not enough data to satisfy transfer length header" in str(exc)
+    )
+
+
+def _direct_model_error_retryability(exc: BaseException) -> bool | None:
+    """Classify one exception before inspecting any wrapped failures.
+
+    Returns:
+        Whether the exception is retryable, or `None` when it has no direct
+        signal and its group members or chain should be inspected.
+    """
+    if isinstance(exc, ModelError):
+        return exc.is_retryable
+
+    if _is_http_transport_error(exc):
+        return True
+
+    if not isinstance(exc, Exception):
+        return None
+
     # A status-bearing provider error is decided solely by its code: retry only
     # 408/409/429/5xx, and never fall through to broader heuristics for a 4xx
     # that would otherwise be misclassified as a bare connection error.
@@ -331,7 +357,31 @@ def _is_retryable_model_error(exc: Exception) -> bool:
         return True
 
     # Stdlib transport faults raised directly (rare, but cheap to cover).
-    return isinstance(exc, (TimeoutError, ConnectionError))
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    return None
+
+
+def _is_retryable_model_error(exc: Exception) -> bool:
+    """Return whether a model error tree contains a transient failure."""
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        retryable = _direct_model_error_retryability(current)
+        if retryable is not None:
+            if retryable:
+                return True
+            continue
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        cause = current.__cause__ or current.__context__
+        if cause is not None:
+            pending.append(cause)
+    return False
 
 
 def format_retry_status(attempt: int, max_retries: int) -> str:

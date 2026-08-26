@@ -88,6 +88,12 @@ class AuthenticationError(Exception):
         self.status_code = 401
 
 
+def _typed_error(module: str, name: str, message: str = "boom") -> Exception:
+    """Build an exception whose type mimics an optional transport library."""
+    error_type = type(name, (Exception,), {"__module__": module})
+    return error_type(message)
+
+
 class _GoogleAPICoreError(Exception):
     code: int
 
@@ -256,6 +262,52 @@ def test_model_taxonomy_takes_precedence_over_legacy_fallback() -> None:
     ],
 )
 def test_predicate_retryable(exc: Exception) -> None:
+    assert _is_retryable_model_error(exc) is True
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(_typed_error("httpcore", "ReadError"), id="httpcore-read"),
+        pytest.param(
+            _typed_error("httpcore._exceptions", "RemoteProtocolError"),
+            id="httpcore-remote-protocol",
+        ),
+        pytest.param(
+            _typed_error(
+                "aiohttp.http_exceptions",
+                "TransferEncodingError",
+                "Not enough data to satisfy transfer length header",
+            ),
+            id="aiohttp-incomplete-transfer",
+        ),
+    ],
+)
+def test_predicate_retries_lower_level_transport_errors(exc: Exception) -> None:
+    assert _is_retryable_model_error(exc) is True
+
+
+def test_predicate_retries_transport_error_in_exception_group() -> None:
+    exc = ExceptionGroup("request failed", [ValueError("bad"), _READ_ERROR])
+
+    assert _is_retryable_model_error(exc) is True
+
+
+def test_predicate_retries_transport_error_in_context_chain() -> None:
+    exc = RuntimeError("request failed")
+    exc.__context__ = _typed_error("httpcore", "RemoteProtocolError")
+
+    assert _is_retryable_model_error(exc) is True
+
+
+def test_predicate_retries_transport_error_in_cause_chain() -> None:
+    exc = RuntimeError("request failed")
+    exc.__cause__ = _typed_error(
+        "aiohttp.http_exceptions",
+        "TransferEncodingError",
+        "Not enough data to satisfy transfer length header",
+    )
+
     assert _is_retryable_model_error(exc) is True
 
 

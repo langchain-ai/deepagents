@@ -199,6 +199,21 @@ persist trust decisions.
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
+DEBUG_MODEL_SWITCH = "DEEPAGENTS_CODE_DEBUG_MODEL_SWITCH"
+"""Force the model-switch confirmation modal on every model change.
+
+Set to a truthy value when launching the interactive TUI to make
+`_confirm_and_switch_model` show `ModelSwitchWarningScreen` for every switch
+to a different model, bypassing the `warnings.model_switch_token_threshold`
+gate. Lets the modal — including the deferred path that queues behind an
+active turn — be exercised without growing a thread past the token threshold.
+The modal shows the real current/target models and the live context-token
+count, which may be 0.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
+as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
+"""
+
 DEBUG_NOTIFICATIONS = "DEEPAGENTS_CODE_DEBUG_NOTIFICATIONS"
 """Inject sample missing-dependency notifications at launch so the notification
 center UI can be exercised without waiting for real conditions.

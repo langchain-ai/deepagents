@@ -22371,8 +22371,11 @@ class DeepAgentsApp(App):
             await self._switch_model(target, extra_kwargs=extra_kwargs)
             return
 
+        from deepagents_code._env_vars import DEBUG_MODEL_SWITCH, is_env_truthy
+
+        debug_forced = is_env_truthy(DEBUG_MODEL_SWITCH)
         threshold = self._model_switch_warning_threshold
-        if threshold > 0 and self._context_tokens > threshold:
+        if debug_forced or (threshold > 0 and self._context_tokens > threshold):
             from deepagents_code.tui.modals.model_switch import (
                 ModelSwitchWarningScreen,
             )

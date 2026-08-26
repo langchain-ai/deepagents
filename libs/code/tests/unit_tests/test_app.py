@@ -24202,6 +24202,48 @@ class TestDispatchModelSwitch:
         assert order == ["thread_switch"]
         app._switch_model.assert_awaited_once()  # ty: ignore
 
+    async def test_debug_env_var_forces_confirmation_below_threshold(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`DEEPAGENTS_CODE_DEBUG_MODEL_SWITCH` prompts with no context at all."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_MODEL_SWITCH", "1")
+        app = DeepAgentsApp()
+        app._context_tokens = 0
+        app._model_switch_warning_threshold = 0
+        app._push_screen_wait = AsyncMock(return_value=True)  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        from deepagents_code.config import settings
+
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+
+        async with app.run_test():
+            await app._confirm_and_switch_model("openai:gpt-5.5")
+
+        app._push_screen_wait.assert_awaited_once()  # ty: ignore
+        app._switch_model.assert_awaited_once()  # ty: ignore
+
+    async def test_debug_env_var_unset_keeps_threshold_gate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Below the threshold, a switch without the debug flag skips the modal."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_MODEL_SWITCH", raising=False)
+        app = DeepAgentsApp()
+        app._context_tokens = 10_000
+        app._model_switch_warning_threshold = 100_000
+        app._push_screen_wait = AsyncMock()  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        from deepagents_code.config import settings
+
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+
+        async with app.run_test():
+            await app._confirm_and_switch_model("openai:gpt-5.5")
+
+        app._push_screen_wait.assert_not_awaited()  # ty: ignore
+        app._switch_model.assert_awaited_once()  # ty: ignore
+
 
 class TestDeferredActions:
     """Test deferred action queueing and draining."""

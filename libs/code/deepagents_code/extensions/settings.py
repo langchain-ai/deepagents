@@ -95,7 +95,7 @@ def load_extension_settings() -> ExtensionSettings:
     Raises:
         RuntimeError: If the extension manifest options are unavailable.
     """
-    from deepagents_code.config_manifest import get_option
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
 
     resolver = get_config_resolver()
     enabled_option = get_option("extensions.enabled")
@@ -103,8 +103,12 @@ def load_extension_settings() -> ExtensionSettings:
     if enabled_option is None or trust_option is None:
         msg = "Extension options are missing from the config manifest"
         raise RuntimeError(msg)
-    enabled = cast("bool", resolver.get(enabled_option).value)
-    trust = TrustPolicy(cast("str", resolver.get(trust_option).value))
+    enabled_resolved = resolver.get(enabled_option)
+    _emit_ranked_diagnostics(enabled_option, enabled_resolved)
+    trust_resolved = resolver.get(trust_option)
+    _emit_ranked_diagnostics(trust_option, trust_resolved)
+    enabled = cast("bool", enabled_resolved.value)
+    trust = TrustPolicy(cast("str", trust_resolved.value))
     section = _read_config_section(resolver)
 
     return ExtensionSettings(

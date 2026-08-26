@@ -46,7 +46,10 @@ dependencies = [
     # UI/Terminal
     # Textual 8.2.8 handles colon-separated Kitty associated text.
     # Textualize/textual#6378 remains unresolved; its Alt-key workaround and
-    # the remaining Kitty fixes live in `_textual_patches.py`.
+    # the remaining Kitty fixes live in `_textual_patches.py`. The upper bound
+    # also protects `tui/widgets/diff.py`, which reproduces part of
+    # `Content._wrap_and_format` and the compositor's offset metadata contract
+    # to repeat a diff row's gutter on wrapped lines.
     "textual>=8.2.8,<9.0.0",
     "textual-autocomplete>=4.0.6,<5.0.0",
     "textual-speedups>=0.2.1,<1.0.0",

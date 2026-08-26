@@ -429,18 +429,7 @@ def _build_overrides(
     # Param merge
     model_params = ctx.model_params
     if model_params:
-        from deepagents_code.config import CLI_MAX_RETRIES_KEY
-
-        provider_settings = {
-            key: value
-            for key, value in model_params.items()
-            if key != CLI_MAX_RETRIES_KEY
-        }
-        if provider_settings:
-            overrides["model_settings"] = {
-                **request.model_settings,
-                **provider_settings,
-            }
+        overrides["model_settings"] = {**request.model_settings, **model_params}
 
     # Inject the provider's prompt-cache routing hint from the active thread.
     # Only one provider path applies per call; both share the fetch/guard/log
@@ -530,26 +519,27 @@ def _build_overrides(
     return request.override(**overrides)
 
 
-def _model_creation_kwargs(ctx: CLIContextSchema) -> dict[str, dict[str, Any]]:
+def _model_creation_kwargs(
+    ctx: CLIContextSchema, cli_max_retries: int | None
+) -> dict[str, Any]:
     """Build constructor kwargs needed for a runtime model switch.
 
     Returns:
         Keyword arguments for `create_model`.
     """
-    from deepagents_code.config import CLI_MAX_RETRIES_KEY
-
-    kwargs: dict[str, dict[str, Any]] = {}
-    if CLI_MAX_RETRIES_KEY in ctx.model_params:
-        kwargs["extra_kwargs"] = {
-            CLI_MAX_RETRIES_KEY: ctx.model_params[CLI_MAX_RETRIES_KEY]
-        }
+    kwargs: dict[str, Any] = {}
+    if cli_max_retries is not None:
+        kwargs["cli_max_retries"] = cli_max_retries
     if ctx.profile_overrides:
         kwargs["profile_overrides"] = ctx.profile_overrides
     return kwargs
 
 
 def _apply_overrides(
-    request: ModelRequest, *, openai_prompt_cache_key: bool
+    request: ModelRequest,
+    *,
+    openai_prompt_cache_key: bool,
+    cli_max_retries: int | None,
 ) -> _ResolvedModelRequest:
     """Apply model/param overrides and return checkpoint persistence metadata.
 
@@ -563,6 +553,7 @@ def _apply_overrides(
         request: The incoming model request from the middleware chain.
         openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
             opt-out, threaded through to `_build_overrides`.
+        cli_max_retries: Explicit CLI retry count retained across model switches.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
@@ -582,7 +573,7 @@ def _apply_overrides(
         from deepagents_code.model_config import ModelConfigError, ModelNotAllowedError
 
         logger.debug("Overriding model to %s", model)
-        model_kwargs = _model_creation_kwargs(ctx)
+        model_kwargs = _model_creation_kwargs(ctx, cli_max_retries)
         try:
             model_result = create_model(model, **model_kwargs)
         except ModelNotAllowedError:
@@ -623,7 +614,10 @@ def _apply_overrides(
 
 
 async def _apply_overrides_async(
-    request: ModelRequest, *, openai_prompt_cache_key: bool
+    request: ModelRequest,
+    *,
+    openai_prompt_cache_key: bool,
+    cli_max_retries: int | None,
 ) -> _ResolvedModelRequest:
     """Async variant of `_apply_overrides` that offloads model construction.
 
@@ -631,6 +625,7 @@ async def _apply_overrides_async(
         request: The incoming model request from the middleware chain.
         openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
             opt-out, threaded through to `_build_overrides`.
+        cli_max_retries: Explicit CLI retry count retained across model switches.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
@@ -650,7 +645,7 @@ async def _apply_overrides_async(
         from deepagents_code.model_config import ModelConfigError, ModelNotAllowedError
 
         logger.debug("Overriding model to %s", model)
-        model_kwargs = _model_creation_kwargs(ctx)
+        model_kwargs = _model_creation_kwargs(ctx, cli_max_retries)
         try:
             model_result = await asyncio.to_thread(
                 create_model,
@@ -856,6 +851,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         *,
         persist_model_state: bool = True,
         openai_prompt_cache_key: bool | None = None,
+        cli_max_retries: int | None = None,
     ) -> None:
         """Initialize the middleware.
 
@@ -874,8 +870,11 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 `_resolve_openai_prompt_cache_key_enabled` re-raises rather than
                 masks. Pass an explicit bool to bypass the config read (mainly
                 for tests).
+            cli_max_retries: Explicit `--max-retries` value to retain across
+                runtime model switches.
         """
         self._persist_model_state = persist_model_state
+        self._cli_max_retries = cli_max_retries
         self._openai_prompt_cache_key = (
             _resolve_openai_prompt_cache_key_enabled()
             if openai_prompt_cache_key is None
@@ -894,7 +893,9 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = _apply_overrides(
-            request, openai_prompt_cache_key=self._openai_prompt_cache_key
+            request,
+            openai_prompt_cache_key=self._openai_prompt_cache_key,
+            cli_max_retries=self._cli_max_retries,
         )
         request_started_at = _utc_now_iso()
         response = handler(resolved.request)
@@ -928,7 +929,9 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = await _apply_overrides_async(
-            request, openai_prompt_cache_key=self._openai_prompt_cache_key
+            request,
+            openai_prompt_cache_key=self._openai_prompt_cache_key,
+            cli_max_retries=self._cli_max_retries,
         )
         request_started_at = _utc_now_iso()
         response = await handler(resolved.request)

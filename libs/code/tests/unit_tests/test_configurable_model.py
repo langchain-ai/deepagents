@@ -1856,10 +1856,12 @@ class TestModelIdentityPatch:
 
 
 class TestRuntimeModelRetryBudget:
-    """A `/model` switch must carry the retry budget and hide its carrier."""
+    """A `/model` switch must carry the explicit CLI retry budget."""
 
     @staticmethod
-    def _switch(model_params: dict[str, Any]) -> tuple[MagicMock, ModelRequest]:
+    def _switch(
+        model_params: dict[str, Any], *, cli_max_retries: int | None = None
+    ) -> tuple[MagicMock, ModelRequest]:
         """Drive a runtime model switch and return the `create_model` mock.
 
         Returns:
@@ -1874,10 +1876,14 @@ class TestRuntimeModelRetryBudget:
         replacement = _make_model("claude-sonnet-4-6")
         replacement._get_ls_params.return_value = {"ls_provider": "anthropic"}
         captured: list[ModelRequest] = []
+        middleware = ConfigurableModelMiddleware(
+            openai_prompt_cache_key=True,
+            cli_max_retries=cli_max_retries,
+        )
         with patch(
             _PATCH_CREATE, return_value=_make_model_result(replacement)
         ) as create:
-            _mw.wrap_model_call(
+            middleware.wrap_model_call(
                 request, lambda r: (captured.append(r), _make_response())[1]
             )
         return create, captured[0]
@@ -1888,35 +1894,27 @@ class TestRuntimeModelRetryBudget:
         `--max-retries 0` or a raised budget would silently stop applying the
         moment the user ran `/model`.
         """
-        from deepagents_code.config import CLI_MAX_RETRIES_KEY
-
-        create, _request = self._switch({CLI_MAX_RETRIES_KEY: 2})
+        create, _request = self._switch({}, cli_max_retries=2)
         _args, kwargs = create.call_args
-        assert kwargs["extra_kwargs"] == {CLI_MAX_RETRIES_KEY: 2}
+        assert kwargs["cli_max_retries"] == 2
 
-    def test_carrier_key_never_reaches_model_settings(self) -> None:
-        """The sentinel is internal; a provider API would reject it as a param."""
-        from deepagents_code.config import CLI_MAX_RETRIES_KEY
+    def test_cli_budget_stays_separate_from_model_settings(self) -> None:
+        """The explicit retry field is never a provider request parameter."""
+        _create, request = self._switch({"top_p": 1}, cli_max_retries=2)
+        assert request.model_settings == {"top_p": 1}
 
-        _create, request = self._switch({CLI_MAX_RETRIES_KEY: 2})
-        assert CLI_MAX_RETRIES_KEY not in (request.model_settings or {})
-
-    def test_sentinel_only_params_leave_settings_untouched(self) -> None:
-        """A lone sentinel must not override `model_settings` with an empty dict."""
-        from deepagents_code.config import CLI_MAX_RETRIES_KEY
-
-        _create, request = self._switch({CLI_MAX_RETRIES_KEY: 2})
+    def test_cli_budget_alone_leaves_settings_untouched(self) -> None:
+        """A retry override alone must not create model settings."""
+        _create, request = self._switch({}, cli_max_retries=2)
         assert not request.model_settings
 
     def test_real_params_still_merge(self) -> None:
-        """Filtering the sentinel must not drop the user's actual overrides."""
-        from deepagents_code.config import CLI_MAX_RETRIES_KEY
-
-        _create, request = self._switch({CLI_MAX_RETRIES_KEY: 2, "top_p": 1})
+        """The explicit retry field must not drop actual model overrides."""
+        _create, request = self._switch({"top_p": 1}, cli_max_retries=2)
         assert (request.model_settings or {})["top_p"] == 1
 
     def test_absent_sentinel_sends_no_extra_kwargs(self) -> None:
         """A model with no flag set must resolve its own configured budget."""
         create, _request = self._switch({"top_p": 1})
         _args, kwargs = create.call_args
-        assert "extra_kwargs" not in kwargs
+        assert "cli_max_retries" not in kwargs

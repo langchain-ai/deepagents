@@ -1562,6 +1562,7 @@ def create_goal_criteria_agent(
     repository_root: str = "/",
     context_tools: Sequence[BaseTool | Callable[..., Any]],
     model_retries: int = DEFAULT_MODEL_RETRIES,
+    cli_max_retries: int | None = None,
 ) -> Any:  # noqa: ANN401
     """Create the ephemeral server-side criteria agent graph.
 
@@ -1572,6 +1573,7 @@ def create_goal_criteria_agent(
         repository_root: Absolute path that bounds reads on `repository_backend`.
         context_tools: Loaded `fetch_url`, optional `web_search`, and MCP tools.
         model_retries: Model-node retry attempts after the first call.
+        cli_max_retries: Explicit `--max-retries` value for runtime model switches.
 
     Returns:
         Compiled criteria agent graph.
@@ -1586,6 +1588,7 @@ def create_goal_criteria_agent(
         context_tools=context_tools,
         auto_mode_enabled=True,
         model_retries=model_retries,
+        cli_max_retries=cli_max_retries,
     )
 
 
@@ -1598,6 +1601,7 @@ def _create_goal_criteria_agent(
     auto_mode_enabled: bool,
     fs_tools: list[FsToolName] | None = None,
     model_retries: int = DEFAULT_MODEL_RETRIES,
+    cli_max_retries: int | None = None,
 ) -> Any:  # noqa: ANN401
     """Build a criteria agent with the parent runtime's Auto eligibility.
 
@@ -1612,6 +1616,7 @@ def _create_goal_criteria_agent(
             The criteria agent exposes only the allowed subset of its read-only
             repository tools.
         model_retries: Model-node retry attempts after the first call.
+        cli_max_retries: Explicit `--max-retries` value for runtime model switches.
 
     Returns:
         Compiled criteria agent graph.
@@ -1651,7 +1656,10 @@ def _create_goal_criteria_agent(
         msg = f"Context tool names conflict with criteria-agent tools: {names}."
         raise ValueError(msg)
     middleware: list[AgentMiddleware[Any, Any]] = [
-        ConfigurableModelMiddleware(persist_model_state=False),
+        ConfigurableModelMiddleware(
+            persist_model_state=False,
+            cli_max_retries=cli_max_retries,
+        ),
         _GoalContextFallbackMiddleware(),
         _WebSearchBudgetMiddleware(),
         _CriteriaContextBudgetMiddleware(),
@@ -1713,6 +1721,7 @@ def create_goal_criteria_fallback_agent(
     *,
     model: str | BaseChatModel,
     model_retries: int = DEFAULT_MODEL_RETRIES,
+    cli_max_retries: int | None = None,
 ) -> Any:  # noqa: ANN401
     """Create the goal-only fallback agent for criteria generation.
 
@@ -1726,6 +1735,7 @@ def create_goal_criteria_fallback_agent(
     Args:
         model: Chat model or model identifier used by the server graph.
         model_retries: Model-node retry attempts after the first call.
+        cli_max_retries: Explicit `--max-retries` value for runtime model switches.
 
     Returns:
         Compiled goal-only criteria agent graph.
@@ -1738,7 +1748,10 @@ def create_goal_criteria_fallback_agent(
     from deepagents_code.model_retry import CodeModelRetryMiddleware
 
     middleware: list[AgentMiddleware[Any, Any]] = [
-        ConfigurableModelMiddleware(persist_model_state=False),
+        ConfigurableModelMiddleware(
+            persist_model_state=False,
+            cli_max_retries=cli_max_retries,
+        ),
         CodeModelRetryMiddleware(max_retries=model_retries),
     ]
     return create_agent(

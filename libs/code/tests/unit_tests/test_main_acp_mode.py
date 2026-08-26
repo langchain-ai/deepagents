@@ -256,6 +256,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server(
         None,
         extra_kwargs={"temperature": 0.2},
         profile_overrides={"max_input_tokens": 4096},
+        cli_max_retries=None,
     )
     resolve_mcp_tools.assert_awaited_once_with(
         explicit_config_path=None,

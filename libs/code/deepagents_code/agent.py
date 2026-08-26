@@ -2223,14 +2223,11 @@ def _resolve_retry_owned_model(
         The concrete model prepared by dcode's model factory, or `None` when it
         cannot be built here and the caller should pass the spec through.
     """
-    from deepagents_code.config import CLI_MAX_RETRIES_KEY, create_model
+    from deepagents_code.config import create_model
     from deepagents_code.model_config import MissingCredentialsError
 
-    extra_kwargs = (
-        {} if cli_max_retries is None else {CLI_MAX_RETRIES_KEY: cli_max_retries}
-    )
     try:
-        return create_model(model_spec, extra_kwargs=extra_kwargs).model
+        return create_model(model_spec, cli_max_retries=cli_max_retries).model
     except MissingCredentialsError:
         # Taking ownership of retries is an optimization, not a precondition for
         # launching. A subagent declaring a provider the user has not
@@ -2598,7 +2595,12 @@ def create_cli_agent(
         if resolved_interrupt_on is not None:
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
-            middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
+            middleware.append(
+                ConfigurableModelMiddleware(
+                    persist_model_state=False,
+                    cli_max_retries=cli_max_retries,
+                )
+            )
         # Checkpoint nested spend before HITL can pause the subgraph, then hand
         # the completed delta back through owner-scoped state for the parent
         # graph to add to its durable total.
@@ -2748,7 +2750,7 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
-        ConfigurableModelMiddleware(),
+        ConfigurableModelMiddleware(cli_max_retries=cli_max_retries),
     ]
     if not interactive:
         agent_middleware.append(_GlmTerminalStallRecovery())
@@ -3125,10 +3127,12 @@ def create_cli_agent(
             auto_mode_enabled=auto_mode_enabled,
             fs_tools=fs_tools,
             model_retries=model_retries,
+            cli_max_retries=cli_max_retries,
         )
         criteria_fallback_agent = create_goal_criteria_fallback_agent(
             model=model,
             model_retries=model_retries,
+            cli_max_retries=cli_max_retries,
         )
         agent_middleware.append(
             GoalCriteriaMiddleware(criteria_agent, criteria_fallback_agent)

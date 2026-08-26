@@ -31,7 +31,6 @@ from langgraph.errors import GraphBubbleUp
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-    from pathlib import Path
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain_core.callbacks import (
@@ -39,15 +38,12 @@ if TYPE_CHECKING:
         CallbackManagerForLLMRun,
     )
 
-from deepagents_code import model_config, model_retry
+from deepagents_code import model_retry
 from deepagents_code.config import (
     ASCII_GLYPHS,
     DEFAULT_MODEL_RETRIES,
     MODEL_RETRIES_ATTR,
     UNICODE_GLYPHS,
-    _read_config_toml_retries,
-    _resolve_config_retry_count,
-    _resolve_model_retries_from_section,
 )
 from deepagents_code.model_retry import (
     _JITTER_FRACTION,
@@ -61,7 +57,6 @@ from deepagents_code.model_retry import (
 )
 
 _UNSET = object()
-"""Sentinel for "no retry budget stamped on the model" in `_req`."""
 
 _READ_ERROR = httpx.ReadError("connection dropped")
 _CONNECT_ERROR = httpx.ConnectError("connection refused")
@@ -81,7 +76,7 @@ class _ResponseStatusError(Exception):
 
 
 class APIConnectionError(Exception):
-    """Name mirrors provider SDK transient errors matched by class name."""
+    pass
 
 
 class AuthenticationError(Exception):
@@ -91,8 +86,6 @@ class AuthenticationError(Exception):
 
 
 class _GoogleAPICoreError(Exception):
-    """Stand in for optional `google.api_core.exceptions` status errors."""
-
     code: int
 
     def __init__(self, code: int) -> None:
@@ -104,12 +97,10 @@ _GoogleAPICoreError.__module__ = "google.api_core.exceptions"
 
 
 class ResourceExhausted(Exception):  # noqa: N818  # mirrors the Google SDK name
-    """Name mirrors Google API Core's transient quota exception."""
+    pass
 
 
 class _RetryingStreamingModel(BaseChatModel):
-    """Emit one orphaned chunk, fail, then complete on the retry."""
-
     attempts: int = 0
 
     @property
@@ -144,8 +135,6 @@ class _RetryingStreamingModel(BaseChatModel):
 
 
 class _LiveStreamingModel(BaseChatModel):
-    """Pause after the first chunk so tests can observe live delivery."""
-
     gate: asyncio.Event
 
     @property
@@ -177,28 +166,11 @@ class _LiveStreamingModel(BaseChatModel):
         )
 
 
-def _write_config(tmp_path: Path, text: str) -> Path:
-    p = tmp_path / "config.toml"
-    p.write_text(text)
-    return p
-
-
 def _req(
     events: list[dict[str, object]] | None = None,
     *,
     model_retries: object = _UNSET,
 ) -> ModelRequest:
-    """Build a stub model request.
-
-    Args:
-        events: Collector for `model_retry` stream events, or `None` for no writer.
-        model_retries: Value to stamp on `request.model` under
-            `MODEL_RETRIES_ATTR`. Left off entirely when unset, so the
-            middleware falls back to its startup budget.
-
-    Returns:
-        A stub standing in for a `ModelRequest`.
-    """
     writer = (lambda event: events.append(event)) if events is not None else None
     model = SimpleNamespace()
     if model_retries is not _UNSET:
@@ -221,88 +193,8 @@ def _async_handler(
     return cast("Callable[[ModelRequest], Awaitable[ModelResponse]]", function)
 
 
-# --- retry budget config resolution ---
-
-
-def _resolve_retries(provider: str, *, cli_max_retries: int | None = None) -> int:
-    """Resolve a budget the way `create_model` does.
-
-    `create_model` reads the `[retries]` section once and passes it to
-    `_resolve_model_retries_from_section`, so the tests take that same path
-    rather than a wrapper production never calls.
-
-    Args:
-        provider: Effective model provider.
-        cli_max_retries: The `--max-retries` value, or `None` when unset.
-
-    Returns:
-        The effective retry count.
-    """
-    return _resolve_model_retries_from_section(
-        _read_config_toml_retries(), provider, cli_max_retries
-    )
-
-
-def test_default_retries_is_five(tmp_path: Path) -> None:
-    with patch.object(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "none.toml"):
-        assert _resolve_retries("openai") == 5
-    assert DEFAULT_MODEL_RETRIES == 5
-
-
-def test_cli_zero_disables(tmp_path: Path) -> None:
-    with patch.object(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "none.toml"):
-        assert _resolve_retries("openai", cli_max_retries=0) == 0
-
-
-def test_cli_overrides_config(tmp_path: Path) -> None:
-    cfg = _write_config(tmp_path, "[retries]\nmax_retries = 3\n")
-    with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
-        assert _resolve_retries("openai", cli_max_retries=1) == 1
-
-
-def test_global_config_applies(tmp_path: Path) -> None:
-    cfg = _write_config(tmp_path, "[retries]\nmax_retries = 3\n")
-    with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
-        assert _resolve_retries("openai") == 3
-
-
-def test_global_zero_disables(tmp_path: Path) -> None:
-    cfg = _write_config(tmp_path, "[retries]\nmax_retries = 0\n")
-    with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
-        assert _resolve_retries("openai") == 0
-
-
-def test_provider_overrides_global(tmp_path: Path) -> None:
-    cfg = _write_config(
-        tmp_path,
-        "[retries]\nmax_retries = 3\n[retries.openai]\nmax_retries = 7\n",
-    )
-    with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
-        assert _resolve_retries("openai") == 7
-        assert _resolve_retries("anthropic") == 3
-
-
-def test_param_key_does_not_disturb_the_count(tmp_path: Path) -> None:
-    """`param` names the SDK kwarg to disable; it never alters our budget.
-
-    The two keys are read by different resolvers: `max_retries` here, `param`
-    by `_provider_retry_disable_kwargs`. Neither warns on this path.
-    """
-    cfg = _write_config(
-        tmp_path,
-        '[retries.openai]\nparam = "num_retries"\nmax_retries = 2\n',
-    )
-    with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
-        assert _resolve_retries("openai") == 2
-
-
-def test_resolve_config_retry_count_direct() -> None:
-    assert _resolve_config_retry_count(None, "openai") is None
-    assert _resolve_config_retry_count({"max_retries": 2}, "openai") == 2
-    assert _resolve_config_retry_count({"max_retries": 0}, "openai") == 0
-
-
-# --- retry predicate ---
+async def _no_sleep(*_args: object, **_kwargs: object) -> None:
+    pass
 
 
 @pytest.mark.parametrize(
@@ -332,7 +224,7 @@ def test_predicate_uses_non_retryable_model_taxonomy(exc: Exception) -> None:
 
 
 class _RetryableTransportModelError(httpx.ReadError, ModelInvalidRequestError):
-    """Model taxonomy must win over broader transport inheritance."""
+    pass
 
 
 def test_model_taxonomy_takes_precedence_over_legacy_fallback() -> None:
@@ -344,6 +236,7 @@ def test_model_taxonomy_takes_precedence_over_legacy_fallback() -> None:
     [
         httpx.ReadError("x"),
         httpx.ConnectError("x"),
+        httpx.WriteError("x"),
         httpx.RemoteProtocolError("x"),
         httpx.ConnectTimeout("x"),
         httpx.ReadTimeout("x"),
@@ -404,42 +297,18 @@ def test_predicate_not_retryable(exc: Exception) -> None:
     ],
 )
 def test_permanent_transport_errors_are_not_retried(exc: Exception) -> None:
-    """`TransportError` subclasses that can never succeed on a retry.
-
-    A mistyped `base_url` scheme, a malformed request, or a misconfigured proxy
-    is knowable on the first attempt; retrying spends the whole budget to
-    surface the same config error.
-    """
     assert isinstance(exc, httpx.TransportError)
     assert _is_retryable_model_error(exc) is False
-
-
-@pytest.mark.parametrize(
-    "exc",
-    [
-        pytest.param(httpx.ReadError("dropped"), id="read"),
-        pytest.param(httpx.ConnectError("refused"), id="connect"),
-        pytest.param(httpx.WriteError("broken"), id="write"),
-        pytest.param(httpx.PoolTimeout("pool"), id="pool-timeout"),
-        pytest.param(httpx.ConnectTimeout("connect"), id="connect-timeout"),
-        pytest.param(httpx.RemoteProtocolError("server broke"), id="remote-protocol"),
-    ],
-)
-def test_transient_transport_errors_are_still_retried(exc: Exception) -> None:
-    """Narrowing the predicate must not drop the genuinely transient faults."""
-    assert _is_retryable_model_error(exc) is True
-
-
-# --- middleware behavior ---
 
 
 def test_middleware_defaults() -> None:
     mw = CodeModelRetryMiddleware()
     assert mw.max_retries == DEFAULT_MODEL_RETRIES
-    assert mw.on_failure == "error"
-    assert mw.initial_delay == pytest.approx(0.2)
-    assert mw.backoff_factor == pytest.approx(2.0)
-    assert mw.max_delay == pytest.approx(10.0)
+
+
+def test_middleware_rejects_negative_budget() -> None:
+    with pytest.raises(ValueError, match="max_retries must be >= 0"):
+        CodeModelRetryMiddleware(max_retries=-1)
 
 
 def test_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -463,7 +332,6 @@ def test_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_auxiliary_call_uses_model_retry_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Direct classifier/compaction calls honor the model's stamped budget."""
     monkeypatch.setattr(
         "deepagents_code.model_retry._retry_delay_seconds", lambda *_: 0
     )
@@ -534,12 +402,6 @@ def test_zero_retries_calls_handler_once() -> None:
 
 
 def test_retry_reinvokes_only_the_handler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A retry re-runs the wrapped handler with the same request object.
-
-    Where the retry boundary sits in the middleware stack is a property of
-    installation order, covered by
-    `test_agent.py::test_model_retry_wraps_only_inside_compaction`.
-    """
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
     seen_requests: list[object] = []
 
@@ -555,36 +417,24 @@ def test_retry_reinvokes_only_the_handler(monkeypatch: pytest.MonkeyPatch) -> No
     assert seen_requests == [request, request]
 
 
-# --- backoff curve ---
-
-
 def test_backoff_grows_exponentially_and_is_capped() -> None:
-    """The curve doubles from 200ms and stops at the 10s ceiling.
-
-    Asserted on the values rather than the constructor attributes: without
-    this, removing the cap or making growth linear passes the suite.
-    """
     mw = CodeModelRetryMiddleware(max_retries=12)
     delays = [mw._compute_delay(n) for n in range(12)]  # policy under test
 
-    # Nominal curve is 0.2 * 2**n with +-10% jitter, capped at 10s.
     for n, delay in enumerate(delays):
         nominal = min(0.2 * (2.0**n), 10.0)
         assert delay == pytest.approx(nominal, rel=_JITTER_FRACTION)
     assert delays[-1] <= 10.0 * (1 + _JITTER_FRACTION)
-    # Growth, not a constant.
     assert delays[3] > delays[0]
 
 
 def test_backoff_jitter_varies_between_calls() -> None:
-    """Jitter is applied, so a thundering herd desynchronizes."""
     mw = CodeModelRetryMiddleware()
     samples = {mw._compute_delay(5) for _ in range(20)}  # policy under test
     assert len(samples) > 1
 
 
 def test_retry_uses_the_computed_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The loop sleeps for the curve's values, in order."""
     slept: list[float] = []
     monkeypatch.setattr(
         "deepagents_code.model_retry.time.sleep", lambda seconds: slept.append(seconds)
@@ -603,12 +453,7 @@ def test_retry_uses_the_computed_backoff(monkeypatch: pytest.MonkeyPatch) -> Non
     assert slept[0] < slept[1] < slept[2]
 
 
-# --- Retry-After ---
-
-
 class _RateLimitError(Exception):
-    """Carries a 429 and a `Retry-After` header the way provider SDKs do."""
-
     def __init__(self, retry_after: str = "1") -> None:
         super().__init__("rate limited")
         self.response = SimpleNamespace(
@@ -631,7 +476,6 @@ def test_retry_after_seconds_parses_delta(header: str, expected: float) -> None:
 
 
 def test_retry_after_seconds_parses_http_date() -> None:
-    """The header may be an HTTP-date instead of a delta."""
     when = datetime.now(UTC) + timedelta(seconds=20)
     header = format_datetime(when, usegmt=True)
     result = _retry_after_seconds(_RateLimitError(header))
@@ -640,7 +484,6 @@ def test_retry_after_seconds_parses_http_date() -> None:
 
 
 def test_retry_after_seconds_past_date_clamps_to_zero() -> None:
-    """A stale date means retry now, not a negative sleep."""
     when = datetime.now(UTC) - timedelta(seconds=30)
     header = format_datetime(when, usegmt=True)
     assert _retry_after_seconds(_RateLimitError(header)) == pytest.approx(0.0)
@@ -672,7 +515,6 @@ _RATE_LIMIT_18S = _RateLimitError("18")
 def test_retry_after_overrides_the_backoff_curve(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A rate limit waits as long as the provider asked, not ~0.2s."""
     slept: list[float] = []
     monkeypatch.setattr(
         "deepagents_code.model_retry.time.sleep", lambda seconds: slept.append(seconds)
@@ -693,10 +535,9 @@ def test_retry_after_overrides_the_backoff_curve(
 async def test_async_retry_after_overrides_the_backoff_curve(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The async path honors the header too."""
     slept: list[float] = []
 
-    async def _record(seconds: float, *_a: object, **_k: object) -> None:  # noqa: RUF029  # async stub replacing asyncio.sleep
+    async def _record(seconds: float, *_a: object, **_k: object) -> None:  # noqa: RUF029
         slept.append(seconds)
 
     monkeypatch.setattr(asyncio, "sleep", _record)
@@ -713,13 +554,9 @@ async def test_async_retry_after_overrides_the_backoff_curve(
     assert slept == [pytest.approx(18.0)]
 
 
-# --- give-up diagnostics ---
-
-
 def test_exhaustion_logs_the_attempt_count(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """An exhausted budget is recorded; the bare re-raise carries no count."""
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
 
     def handler(_req_arg: object) -> str:
@@ -739,8 +576,6 @@ def test_exhaustion_logs_the_attempt_count(
 def test_non_transient_failure_is_not_logged_as_exhaustion(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A deterministic error never spent the budget, so don't claim it did."""
-
     def handler(_req_arg: object) -> str:
         raise _VALUE_ERROR
 
@@ -757,11 +592,6 @@ def test_non_transient_failure_is_not_logged_as_exhaustion(
 async def test_async_exhaustion_logs_the_attempt_count(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The async path reports exhaustion too."""
-
-    async def _no_sleep(*_a: object, **_k: object) -> None:  # noqa: RUF029  # async stub replacing asyncio.sleep
-        return None
-
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
 
     async def handler(_req_arg: object) -> str:  # noqa: RUF029  # awaited by middleware; no internal await needed
@@ -777,13 +607,9 @@ async def test_async_exhaustion_logs_the_attempt_count(
     assert "after 2 attempts" in caplog.text
 
 
-# --- per-request retry budget carried on the model ---
-
-
 def test_model_budget_overrides_startup_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A budget stamped on `request.model` wins over the constructor value."""
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
     calls = {"n": 0}
 
@@ -794,18 +620,12 @@ def test_model_budget_overrides_startup_fallback(
     mw = CodeModelRetryMiddleware(max_retries=5)
     with pytest.raises(httpx.ReadError):
         mw.wrap_model_call(_req(model_retries=1), _handler(handler))
-    # One retry, not the constructor's five.
     assert calls["n"] == 2
 
 
 def test_zero_startup_budget_still_retries_runtime_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A `/model` switch to a provider with a non-zero budget still retries.
-
-    This is why `create_cli_agent` keeps the middleware installed when the
-    startup budget is zero.
-    """
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
     events: list[dict[str, object]] = []
     calls = {"n": 0}
@@ -823,7 +643,6 @@ def test_zero_startup_budget_still_retries_runtime_model(
 
 
 def test_model_budget_zero_disables_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A zero budget on the model overrides a non-zero startup fallback."""
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
     calls = {"n": 0}
 
@@ -849,11 +668,6 @@ def test_model_budget_zero_disables_retries(monkeypatch: pytest.MonkeyPatch) -> 
 def test_invalid_model_budget_falls_back(
     monkeypatch: pytest.MonkeyPatch, stamped: object
 ) -> None:
-    """A malformed stamp is ignored in favor of the startup fallback.
-
-    `True` is the sharp case: `isinstance(True, int)` holds, so without the
-    explicit bool guard it would be read as a budget of one.
-    """
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
     calls = {"n": 0}
 
@@ -870,7 +684,6 @@ def test_invalid_model_budget_falls_back(
 def test_request_without_model_uses_startup_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A request carrying no model at all falls back rather than raising."""
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
     calls = {"n": 0}
 
@@ -891,11 +704,6 @@ def test_request_without_model_uses_startup_budget(
 async def test_async_model_budget_overrides_startup_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The async path reads the same per-request budget."""
-
-    async def _no_sleep(*_a: object, **_k: object) -> None:  # noqa: RUF029  # async stub replacing asyncio.sleep
-        return None
-
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     calls = {"n": 0}
 
@@ -910,9 +718,6 @@ async def test_async_model_budget_overrides_startup_fallback(
 
 
 async def test_async_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _no_sleep(*_a: object, **_k: object) -> None:  # noqa: RUF029  # async stub replacing asyncio.sleep
-        return None
-
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     calls = {"n": 0}
 
@@ -928,7 +733,6 @@ async def test_async_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 async def test_successful_stream_chunks_are_delivered_live() -> None:
-    """The first chunk reaches the consumer before the model call completes."""
     gate = asyncio.Event()
     agent = create_agent(
         _LiveStreamingModel(gate=gate),
@@ -958,11 +762,6 @@ async def test_successful_stream_chunks_are_delivered_live() -> None:
 async def test_failed_attempt_is_not_retried_after_streaming(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A visible partial answer is not followed by a replayed retry."""
-
-    async def _no_sleep(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029
-        return None
-
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     model = _RetryingStreamingModel()
     agent = create_agent(
@@ -992,8 +791,6 @@ async def test_failed_attempt_is_not_retried_after_streaming(
 
 
 def test_status_helpers() -> None:
-    # No trailing ellipsis: the TUI spinner widget appends its own, and the
-    # status must not claim a dropped connection for a rate limit or a 5xx.
     status = format_retry_status(1, 5)
     assert status == "Retrying model request 1/5"
     assert not status.endswith((UNICODE_GLYPHS.ellipsis, ASCII_GLYPHS.ellipsis))
@@ -1005,13 +802,6 @@ def test_status_helpers() -> None:
 
 
 def test_stream_tracker_setup_failure_preserves_the_model_error() -> None:
-    """A broken stream tracker must not mask why the model call failed.
-
-    `_track_message_streams` reconstructs a private LangGraph handler. If that
-    reconstruction ever breaks, the retry loop still has to report the model
-    failure rather than dying on a half-initialised tracker.
-    """
-
     class _TrackerSetupError(Exception):
         pass
 
@@ -1038,12 +828,6 @@ def test_stream_tracker_setup_failure_preserves_the_model_error() -> None:
 def test_transient_failure_with_retries_disabled_says_so(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A zero budget must not report a transient fault as non-transient.
-
-    Auxiliary model calls fall back to a zero budget when the model carries no
-    retry metadata, so this is the branch that explains most give-ups.
-    """
-
     def handler(_req_arg: object) -> str:
         msg = "connection reset"
         raise ModelConnectionError(msg)
@@ -1073,14 +857,12 @@ def test_transient_failure_with_retries_disabled_says_so(
 def test_malformed_retry_event_is_rejected_and_logged(
     event: dict[str, object], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A malformed payload is a producer bug, so it must leave a trace."""
     with caplog.at_level(logging.WARNING, logger="deepagents_code.model_retry"):
-        assert retry_status_from_event(event) is None
+        assert retry_status_from_event(event) == "Retrying model request"
     assert "malformed model_retry payload" in caplog.text
 
 
 def test_valid_retry_event_renders_the_shared_status() -> None:
-    """Both clients must render exactly what the producer formats."""
     event = build_retry_event(2, 5)
     assert retry_status_from_event(event) == format_retry_status(2, 5)
 
@@ -1089,14 +871,6 @@ def test_valid_retry_event_renders_the_shared_status() -> None:
     "handler_name", ["StreamMessagesHandler", "StreamMessagesHandlerV2"]
 )
 def test_tracked_dedup_ids_reach_the_original_handler(handler_name: str) -> None:
-    """Ids recorded during an attempt must survive back to the real handler.
-
-    Only the tracked copy is installed while the model runs, so ids it records
-    would otherwise be dropped when the attempt ends, and the original handler's
-    `on_chain_end` would re-emit the finished message. The v1 and v2 handlers
-    record ids from different places and with different payload shapes, so both
-    are pinned here.
-    """
     from langchain_core.callbacks import BaseCallbackManager as _Manager
     from langgraph.pregel import _messages as _lg_messages
 
@@ -1111,8 +885,6 @@ def test_tracked_dedup_ids_reach_the_original_handler(handler_name: str) -> None
     assert isinstance(tracked, handler_cls)
     assert tracked is not source
 
-    # Stand in for whichever bookkeeping path the handler uses; the tracker must
-    # not need to know which one ran.
     tracked.seen.add("msg-1")
     assert "msg-1" not in source.seen
 

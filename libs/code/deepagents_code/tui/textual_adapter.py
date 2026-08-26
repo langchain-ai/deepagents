@@ -137,24 +137,6 @@ _hitl_adapter_cache: TypeAdapter | None = None
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
 
 
-def _format_model_retry_status(event: dict[object, object]) -> str:
-    """Build retry spinner text from validated numeric event fields.
-
-    Args:
-        event: Untrusted custom-stream payload.
-
-    Returns:
-        A retry status, or a cause-free fallback for malformed payloads.
-    """
-    # Delegate to the producer so the two never drift, and so the spinner does
-    # not render its own "... " suffix on top of a status ending in an ellipsis.
-    from deepagents_code.model_retry import retry_status_from_event
-
-    # The fallback must not name a cause: the retry may be a rate limit or a 5xx,
-    # and "Reconnecting" would claim a dropped connection.
-    return retry_status_from_event(event) or "Retrying model request"
-
-
 def _permission_tool_calls(
     interrupt_id: str,
     action_requests: Sequence[ActionRequest],
@@ -1913,7 +1895,11 @@ async def execute_task_textual(
 
                     if isinstance(data, dict) and data.get("type") == "model_retry":
                         if is_main_agent and adapter._set_spinner is not None:
-                            await adapter._set_spinner(_format_model_retry_status(data))
+                            from deepagents_code.model_retry import (
+                                retry_status_from_event,
+                            )
+
+                            await adapter._set_spinner(retry_status_from_event(data))
                         continue
 
                     auto_review_event = _parse_auto_mode_review_event(

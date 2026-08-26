@@ -284,6 +284,7 @@ async def _make_graphs() -> ServerRuntime:
         config.model,
         extra_kwargs=config.model_params,
         profile_overrides=config.profile_overrides,
+        cli_max_retries=config.cli_max_retries,
     )
     result.apply_to_settings()
 

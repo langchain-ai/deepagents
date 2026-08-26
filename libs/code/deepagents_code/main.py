@@ -3026,6 +3026,7 @@ async def run_textual_cli_async(
     sandbox_setup: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    cli_max_retries: int | None = None,
     profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
     resume_thread: str | None = None,
@@ -3065,6 +3066,7 @@ async def run_textual_cli_async(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
+        cli_max_retries: Explicit `--max-retries` value.
         profile_override: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides.
@@ -3224,6 +3226,7 @@ async def run_textual_cli_async(
             "model_spec": model_name or resolved_spec,
             "extra_kwargs": model_params,
             "profile_overrides": profile_override,
+            "cli_max_retries": cli_max_retries,
         }
 
     # Build kwargs for deferred server startup. Approval mode remains a live
@@ -3232,6 +3235,7 @@ async def run_textual_cli_async(
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
         "model_params": model_params,
+        "cli_max_retries": cli_max_retries,
         "profile_overrides": profile_override,
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
@@ -3308,6 +3312,7 @@ async def _run_acp_cli_async(
     agent_server_cls: type[Any],
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    cli_max_retries: int | None = None,
     profile_override: dict[str, Any] | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
@@ -3326,6 +3331,7 @@ async def _run_acp_cli_async(
         agent_server_cls: ACP server class constructor.
         model_name: Optional model name to use.
         model_params: Extra kwargs from `--model-params` to pass to the model.
+        cli_max_retries: Explicit `--max-retries` value.
         profile_override: Extra profile fields from `--profile-override`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
         no_mcp: Disable all MCP tool loading.
@@ -3366,6 +3372,7 @@ async def _run_acp_cli_async(
             model_name,
             extra_kwargs=model_params,
             profile_overrides=profile_override,
+            cli_max_retries=cli_max_retries,
         )
     except ModelConfigError as exc:
         sys.stderr.write(f"Error: {exc}\n")
@@ -3464,6 +3471,7 @@ async def _run_acp_cli_async(
                         selected_model,
                         extra_kwargs=model_params,
                         profile_overrides=profile_override,
+                        cli_max_retries=cli_max_retries,
                     )
                 )
                 session_model.apply_to_settings()
@@ -5076,15 +5084,6 @@ def cli_main() -> None:
                 )
 
         max_retries = getattr(args, "max_retries", None)
-        if max_retries is not None:
-            from deepagents_code.config import CLI_MAX_RETRIES_KEY
-
-            if model_params is None:
-                model_params = {}
-            # Carry the flag value under an internal key; `create_model` uses it
-            # as dcode's middleware budget while independently forcing the
-            # resolved provider's internal retry count to zero.
-            model_params[CLI_MAX_RETRIES_KEY] = max_retries
 
         profile_override: dict[str, Any] | None = None
         raw_profile = getattr(args, "profile_override", None)
@@ -5167,6 +5166,7 @@ def cli_main() -> None:
                     agent_server_cls=AgentServerACP,
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
+                    cli_max_retries=max_retries,
                     profile_override=profile_override,
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
@@ -5312,10 +5312,7 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
-        # `[retries]` problems are reported by `logger.warning`, which the
-        # in-memory debug buffer swallows (see `collect_retry_config_warnings`).
-        # Print them here so a typo'd provider key or a non-integer budget is
-        # visible before the TUI takes over the screen.
+        # Print retry-config diagnostics before the TUI takes over the screen.
         from deepagents_code.config import collect_retry_config_warnings
 
         retry_config_warnings = collect_retry_config_warnings()
@@ -5945,6 +5942,7 @@ def cli_main() -> None:
                             assistant_id=assistant_id,
                             model_name=getattr(args, "model", None),
                             model_params=model_params,
+                            cli_max_retries=max_retries,
                             profile_override=profile_override,
                             sandbox_type=args.sandbox,
                             sandbox_id=args.sandbox_id,
@@ -6118,6 +6116,7 @@ def cli_main() -> None:
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,
+                        cli_max_retries=max_retries,
                         profile_override=profile_override,
                         thread_id=thread_id,
                         resume_thread=resume_thread,

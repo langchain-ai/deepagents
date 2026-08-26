@@ -1045,7 +1045,7 @@ def _process_stream_chunk(
             # bolding the "1/5", which would cancel the `dim`.
             if state.spinner:
                 state.spinner.stop()
-            status = retry_status_from_event(data) or "Retrying model request"
+            status = retry_status_from_event(data)
             console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
         else:
             _process_rubric_event(cast("dict[str, Any]", data), state, console)
@@ -1887,6 +1887,7 @@ async def run_non_interactive(
     sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     *,
+    cli_max_retries: int | None = None,
     initial_skill: str | None = None,
     startup_cmd: str | None = None,
     profile_override: dict[str, Any] | None = None,
@@ -1930,6 +1931,7 @@ async def run_non_interactive(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
+        cli_max_retries: Explicit `--max-retries` value.
         sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
             `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
         sandbox_id: Optional existing sandbox ID to reuse.
@@ -2102,6 +2104,7 @@ async def run_non_interactive(
             model_name,
             extra_kwargs=model_params,
             profile_overrides=profile_override,
+            cli_max_retries=cli_max_retries,
         )
     except ModelConfigError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
@@ -2213,6 +2216,7 @@ async def run_non_interactive(
             assistant_id=assistant_id,
             model_name=model_name,
             model_params=model_params,
+            cli_max_retries=cli_max_retries,
             profile_overrides=profile_override,
             auto_approve=use_auto_approve,
             interrupt_shell_only=use_interrupt_shell_only,

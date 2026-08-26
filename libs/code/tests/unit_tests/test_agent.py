@@ -135,8 +135,6 @@ def _keep_model_spec(model_spec: str, _model_retries: int) -> BaseChatModel:
 
 def test_resolve_retry_owned_model_uses_dcode_factory() -> None:
     """String models receive the middleware budget through `create_model`."""
-    from deepagents_code.config import CLI_MAX_RETRIES_KEY
-
     fake_model = _make_fake_chat_model()
     with patch(
         "deepagents_code.config.create_model",
@@ -147,7 +145,7 @@ def test_resolve_retry_owned_model_uses_dcode_factory() -> None:
     assert resolved is fake_model
     mock_create.assert_called_once_with(
         "anthropic:claude-test",
-        extra_kwargs={CLI_MAX_RETRIES_KEY: 3},
+        cli_max_retries=3,
     )
 
 
@@ -6858,7 +6856,7 @@ class TestSubagentRetryBudgetResolution:
     """`_resolve_retry_owned_model` must not forge the `--max-retries` flag."""
 
     @staticmethod
-    def _captured_extra_kwargs(cli_max_retries: int | None) -> dict[str, object]:
+    def _captured_kwargs(cli_max_retries: int | None) -> dict[str, object]:
         from deepagents_code.agent import _resolve_retry_owned_model
 
         captured: dict[str, object] = {}
@@ -6867,7 +6865,7 @@ class TestSubagentRetryBudgetResolution:
             spec: str,  # noqa: ARG001  # positional spec is not under test here
             **kwargs: object,
         ) -> SimpleNamespace:
-            captured.update(cast("dict[str, object]", kwargs["extra_kwargs"]))
+            captured.update(kwargs)
             return SimpleNamespace(model=SimpleNamespace())
 
         with patch("deepagents_code.config.create_model", _fake_create_model):
@@ -6881,16 +6879,12 @@ class TestSubagentRetryBudgetResolution:
         `[retries.<provider>].max_retries`, so a subagent on another provider
         could never use its own configured value.
         """
-        assert self._captured_extra_kwargs(None) == {}
+        assert self._captured_kwargs(None) == {"cli_max_retries": None}
 
     def test_explicit_flag_still_reaches_the_subagent(self) -> None:
         """An explicit `--max-retries` remains a global override."""
-        from deepagents_code.config import CLI_MAX_RETRIES_KEY
-
-        assert self._captured_extra_kwargs(2) == {CLI_MAX_RETRIES_KEY: 2}
+        assert self._captured_kwargs(2) == {"cli_max_retries": 2}
 
     def test_zero_flag_is_forwarded_not_treated_as_unset(self) -> None:
         """`--max-retries 0` disables retries; it is not an absent flag."""
-        from deepagents_code.config import CLI_MAX_RETRIES_KEY
-
-        assert self._captured_extra_kwargs(0) == {CLI_MAX_RETRIES_KEY: 0}
+        assert self._captured_kwargs(0) == {"cli_max_retries": 0}

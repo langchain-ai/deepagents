@@ -1587,15 +1587,10 @@ class TestModelParamsArgument:
 
 
 class TestMaxRetriesForwarding:
-    """`--max-retries` rides the forwarded model_params under an internal key.
+    """`--max-retries` stays separate from provider model parameters."""
 
-    The value is carried under `CLI_MAX_RETRIES_KEY` rather than a literal
-    `max_retries` so `create_model` can use it for dcode's middleware budget
-    while disabling provider-owned retries independently.
-    """
-
-    def _run_model_params(self, argv: list[str]) -> dict[str, object] | None:
-        """Drive `cli_main` and return the `model_params` passed downstream."""
+    def _run_model_kwargs(self, argv: list[str]) -> dict[str, object]:
+        """Drive `cli_main` and return model-related downstream arguments."""
         from deepagents_code.main import cli_main
 
         mock_stdin = MagicMock()
@@ -1618,25 +1613,21 @@ class TestMaxRetriesForwarding:
             cli_main()
         await_args = mock_run.await_args
         assert await_args is not None
-        return await_args.kwargs["model_params"]  # ty: ignore
+        return {
+            "model_params": await_args.kwargs["model_params"],
+            "cli_max_retries": await_args.kwargs["cli_max_retries"],
+        }
 
-    def test_folds_into_model_params(self) -> None:
-        """`--max-retries` creates model_params when no `--model-params` is given."""
-        from deepagents_code.config import CLI_MAX_RETRIES_KEY
-
+    def test_forwards_explicit_field(self) -> None:
+        """`--max-retries` does not create provider model parameters."""
         argv = ["deepagents", "-n", "task", "--max-retries", "4"]
-        assert self._run_model_params(argv) == {CLI_MAX_RETRIES_KEY: 4}
+        assert self._run_model_kwargs(argv) == {
+            "model_params": None,
+            "cli_max_retries": 4,
+        }
 
-    def test_carried_alongside_model_params(self) -> None:
-        """`--max-retries` rides next to `--model-params` without clobbering it.
-
-        The flag value is stashed under the internal key, leaving any explicit
-        `--model-params` entries (including a literal `max_retries`) untouched in
-        the forwarded dict. `create_model` later uses the internal value for
-        dcode's budget and forces the provider's retry parameter to zero.
-        """
-        from deepagents_code.config import CLI_MAX_RETRIES_KEY
-
+    def test_separate_from_model_params(self) -> None:
+        """The explicit retry field does not clobber provider parameters."""
         argv = [
             "deepagents",
             "-n",
@@ -1646,16 +1637,18 @@ class TestMaxRetriesForwarding:
             "--max-retries",
             "4",
         ]
-        assert self._run_model_params(argv) == {
-            "max_retries": 1,
-            "temperature": 0.5,
-            CLI_MAX_RETRIES_KEY: 4,
+        assert self._run_model_kwargs(argv) == {
+            "model_params": {"max_retries": 1, "temperature": 0.5},
+            "cli_max_retries": 4,
         }
 
     def test_absent_leaves_model_params_untouched(self) -> None:
         """Without `--max-retries`, model_params reflects only `--model-params`."""
         argv = ["deepagents", "-n", "task", "--model-params", '{"temperature": 0.5}']
-        assert self._run_model_params(argv) == {"temperature": 0.5}
+        assert self._run_model_kwargs(argv) == {
+            "model_params": {"temperature": 0.5},
+            "cli_max_retries": None,
+        }
 
 
 class TestProfileOverrideArgument:

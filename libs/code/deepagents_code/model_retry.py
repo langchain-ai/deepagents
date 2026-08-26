@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
 
-from langchain.agents.middleware import ModelRetryMiddleware
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.callbacks import BaseCallbackManager
 from langchain_core.exceptions import ModelError
 from langchain_core.runnables.config import var_child_runnable_config
@@ -39,7 +39,6 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain_core.callbacks import BaseCallbackHandler
-    from langchain_core.messages import AIMessage
     from langgraph.pregel.protocol import StreamChunk
 
 logger = logging.getLogger(__name__)
@@ -54,34 +53,13 @@ __all__ = [
     "retry_status_from_event",
 ]
 
-# Curve parameters mirror Codex's retry defaults: a first retry fast enough to
-# stay under human-perceptible latency, then plain exponential growth.
+# Curve parameters mirror Codex's retry defaults.
 _INITIAL_DELAY_SECONDS = 0.2
-"""First backoff delay: fast enough that one retry is not felt as a stall."""
-
 _BACKOFF_FACTOR = 2.0
-"""Exponential backoff multiplier."""
-
 _MAX_DELAY_SECONDS = 10.0
-"""Cap on a single backoff delay so exponential growth stays bounded."""
-
 _MAX_RETRY_AFTER_SECONDS = 60.0
-"""Cap on a server-requested `Retry-After` wait.
-
-Providers routinely ask for 20-60s on a rate limit, well past the exponential
-curve. Honoring the request beats hammering the same quota, but an unbounded
-wait would stall the turn indefinitely on a hostile or mistaken header.
-
-This bounds one wait, not the turn: a full budget of header-honored retries can
-hold a turn for `max_retries` times this value.
-"""
-
 _JITTER_FRACTION = 0.1
-"""Multiplicative jitter of +-10%, spreading retries from concurrent callers."""
-
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
-"""Non-5xx statuses worth retrying (timeout, provider lock conflict, rate limit)."""
-
 _TRANSIENT_SDK_EXC_NAMES = frozenset(
     {
         "APITimeoutError",
@@ -97,15 +75,10 @@ _TRANSIENT_SDK_EXC_NAMES = frozenset(
         "ServiceUnavailable",
     }
 )
-"""Provider SDK exception class names that signal a transient network fault.
-
-Matched by class name across the MRO so optional provider packages (openai,
-anthropic, ...) never have to be imported to classify their errors. These are
-distinct from `APIStatusError`, which carries an HTTP status handled separately.
-"""
 
 _HTTP_SERVER_ERROR_FLOOR = 500
 _HTTP_SERVER_ERROR_CEILING = 600
+_RETRY_STATUS_FALLBACK = "Retrying model request"
 
 
 def _google_api_core_status_code(exc: Exception) -> int | None:
@@ -119,12 +92,7 @@ def _google_api_core_status_code(exc: Exception) -> int | None:
 
 
 class _MessageStreamTracker:
-    """Forward LangGraph message-stream callbacks and record visible output.
-
-    Retries only cover failures before the first token. Once a chunk has
-    reached the user it cannot be withdrawn, so the retry loop stops rather
-    than replaying a partial answer.
-    """
+    """Track whether a model attempt emitted visible output."""
 
     def __init__(self) -> None:
         self.has_streamed = False
@@ -133,15 +101,6 @@ class _MessageStreamTracker:
     def callbacks_with_tracked_messages(
         self, callbacks: BaseCallbackManager
     ) -> BaseCallbackManager | None:
-        """Return a callback-manager copy that tracks message-stream delivery.
-
-        Args:
-            callbacks: The run's callback manager.
-
-        Returns:
-            A copy with every `StreamMessagesHandler` wrapped, or `None` when
-            the run has none and the caller should leave the config alone.
-        """
         replacements: dict[int, StreamMessagesHandler] = {}
 
         def forward(source: StreamMessagesHandler, chunk: StreamChunk) -> None:
@@ -171,20 +130,7 @@ class _MessageStreamTracker:
         return tracked_callbacks if replacements else None
 
     def merge_seen(self) -> None:
-        """Copy de-duplication ids recorded this attempt back to the originals.
-
-        Only the tracked copies are installed while the model runs, so every id
-        they record lands on them and not on the handlers that stay installed
-        for the rest of the graph run. Without this the original handler's
-        `on_chain_end` re-emits the finalized message and the answer renders
-        twice.
-
-        The whole set is copied rather than ids picked out of each chunk: the
-        handlers record ids from several places (`on_llm_end` for a streamed
-        run, `on_stream_event` for a v2 `message-start`) and the payload shape
-        differs between the v1 and v2 handlers. Copying the set needs to know
-        neither.
-        """
+        """Merge tracked de-duplication IDs into the original handlers."""
         for source, tracked in self._tracked:
             source.seen.update(tracked.seen)
 
@@ -193,17 +139,6 @@ class _MessageStreamTracker:
 def _track_message_streams(
     tracker: _MessageStreamTracker,
 ) -> Iterator[_MessageStreamTracker]:
-    """Track whether one model attempt has emitted visible message output.
-
-    The caller owns `tracker` so the retry loop can read it even when this
-    context manager fails before yielding.
-
-    Args:
-        tracker: Attempt-local tracker to record message-stream delivery on.
-
-    Yields:
-        The tracker passed in by the caller.
-    """
     try:
         from langgraph.config import get_config
 
@@ -232,19 +167,7 @@ def _track_message_streams(
 
 
 def _extract_status_code(exc: Exception) -> int | None:
-    """Return an HTTP status code carried by a provider error, if any.
-
-    Inspects the common attributes used across SDKs (`status_code`, Google API
-    Core's numeric `code`, `response.status_code`, `http_status`) plus botocore's
-    `response["ResponseMetadata"]["HTTPStatusCode"]` mapping defensively, so a
-    missing or non-integer value simply yields `None`.
-
-    Args:
-        exc: The exception raised by the model call.
-
-    Returns:
-        The integer status code, or `None` when the exception carries none.
-    """
+    """Return an HTTP status carried by a provider error, if any."""
     status = getattr(exc, "status_code", None)
     if isinstance(status, bool):
         return None
@@ -277,21 +200,7 @@ def _extract_status_code(exc: Exception) -> int | None:
 
 
 def _retry_after_seconds(exc: Exception) -> float | None:
-    """Return the server-requested retry delay carried by `exc`, if any.
-
-    Reads the `Retry-After` response header, which providers set on 429 and 503
-    in either delta-seconds or HTTP-date form. Our exponential curve tops out
-    capped at `_MAX_DELAY_SECONDS` and reaches only ~3s at the default budget, so
-    ignoring the header means retrying well before the quota resets and spending
-    the whole budget for nothing.
-
-    Args:
-        exc: The exception raised by the model call.
-
-    Returns:
-        A non-negative delay in seconds capped at `_MAX_RETRY_AFTER_SECONDS`,
-        or `None` when the exception carries no usable header.
-    """
+    """Return a capped `Retry-After` response delay, if present."""
     headers = getattr(getattr(exc, "response", None), "headers", None)
     if headers is None:
         return None
@@ -327,25 +236,7 @@ def _backoff_delay(
     max_delay: float,
     jitter: bool,
 ) -> float:
-    """Return the exponential backoff delay after a zero-indexed attempt.
-
-    The one place the curve is computed. The middleware reads its own mutable
-    attributes and the auxiliary helpers read the module constants, so both pass
-    their parameters in rather than keeping a second copy of the arithmetic.
-
-    Jitter is applied *after* the cap, so a returned delay can exceed
-    `max_delay` by the jitter fraction.
-
-    Args:
-        attempt: The 0-indexed attempt that just failed.
-        initial: Delay before the first retry.
-        factor: Multiplier applied per attempt.
-        max_delay: Ceiling applied before jitter.
-        jitter: Whether to spread the delay by `_JITTER_FRACTION`.
-
-    Returns:
-        Delay in seconds, never negative.
-    """
+    """Return a capped exponential delay, with optional post-cap jitter."""
     delay = min(initial * (factor**attempt), max_delay)
     if jitter and delay > 0:
         jitter_amount = delay * _JITTER_FRACTION
@@ -354,14 +245,7 @@ def _backoff_delay(
 
 
 def _compute_backoff_delay(attempt: int) -> float:
-    """Return the jittered exponential delay after a zero-indexed attempt.
-
-    Args:
-        attempt: The 0-indexed attempt that just failed.
-
-    Returns:
-        Delay in seconds from the module's fixed curve.
-    """
+    """Return the configured backoff after a zero-indexed attempt."""
     return _backoff_delay(
         attempt,
         initial=_INITIAL_DELAY_SECONDS,
@@ -390,34 +274,11 @@ def _model_max_retries(model: object, fallback: int) -> int:
 
 
 def _is_transient_sdk_error(exc: Exception) -> bool:
-    """Return whether `exc` is a name-matched transient provider SDK error.
-
-    Args:
-        exc: The exception raised by the model call.
-
-    Returns:
-        `True` when any class in the exception's MRO is a known transient
-            provider timeout/connection error.
-    """
     return any(base.__name__ in _TRANSIENT_SDK_EXC_NAMES for base in type(exc).__mro__)
 
 
 def _is_retryable_model_error(exc: Exception) -> bool:
-    """Return whether a model-node exception is a transient error worth retrying.
-
-    LangChain's standard `ModelError.is_retryable` classification is authoritative.
-    For integrations that do not yet emit standard model errors, falls back to
-    transient transport/timeout faults and provider status errors that indicate an
-    overloaded or momentarily unavailable backend (408, lock-timeout 409, 429,
-    5xx). Deterministic client errors and dcode model-setup/config errors are
-    never retried.
-
-    Args:
-        exc: The exception raised by the model call.
-
-    Returns:
-        `True` when the error is transient and should be retried.
-    """
+    """Return whether a model error is transient and safe to retry."""
     if isinstance(exc, ModelError):
         return exc.is_retryable
 
@@ -478,24 +339,13 @@ def format_retry_status(attempt: int, max_retries: int) -> str:
         max_retries: The configured maximum retry count.
 
     Returns:
-        A short status line, e.g. ``"Retrying model request 1/5"``.
+        A short status line, e.g. `"Retrying model request 1/5"`.
     """
     return f"Retrying model request {attempt}/{max_retries}"
 
 
 def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
-    """Record why the retry loop stopped before re-raising.
-
-    `on_failure="error"` re-raises the original exception, which carries no
-    trace of the attempts spent on it. Without this the caller sees a bare
-    provider error and cannot tell a first-attempt failure from an exhausted
-    budget.
-
-    Args:
-        exc: The exception about to be re-raised.
-        attempts: Total model calls made, including the initial one.
-        max_retries: Retry budget resolved for this model request.
-    """
+    """Log why the retry loop stopped before re-raising."""
     if not _is_retryable_model_error(exc):
         logger.debug(
             "Model call failed with a non-transient %s; not retrying",
@@ -519,6 +369,98 @@ def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
         )
 
 
+def _retry_call[ResultT](
+    call: Callable[[], ResultT],
+    *,
+    max_retries: int,
+    on_retry: Callable[[int, int], None],
+    retry_guard: Callable[[Exception, int], bool] | None = None,
+    delay_for: Callable[[int, Exception], float] | None = None,
+) -> ResultT:
+    """Run one synchronous call under the shared retry policy.
+
+    Returns:
+        The successful call result.
+
+    Raises:
+        GraphBubbleUp: If the graph signals control flow.
+        RuntimeError: If the retry loop exits unexpectedly.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            return call()
+        except GraphBubbleUp:
+            raise
+        except Exception as exc:  # classified by _is_retryable_model_error
+            if retry_guard is not None and not retry_guard(exc, attempt + 1):
+                raise
+            if not _is_retryable_model_error(exc) or attempt >= max_retries:
+                _log_give_up(exc, attempt + 1, max_retries)
+                raise
+            on_retry(attempt + 1, max_retries)
+            delay = (delay_for or _retry_delay_seconds)(attempt, exc)
+            if delay:
+                time.sleep(delay)
+    msg = "Unexpected: retry loop completed without returning"
+    raise RuntimeError(msg)
+
+
+async def _aretry_call[ResultT](
+    call: Callable[[], Awaitable[ResultT]],
+    *,
+    max_retries: int,
+    on_retry: Callable[[int, int], None],
+    retry_guard: Callable[[Exception, int], bool] | None = None,
+    delay_for: Callable[[int, Exception], float] | None = None,
+) -> ResultT:
+    """Run one asynchronous call under the shared retry policy.
+
+    Returns:
+        The successful call result.
+
+    Raises:
+        GraphBubbleUp: If the graph signals control flow.
+        RuntimeError: If the retry loop exits unexpectedly.
+    """
+    import asyncio
+
+    for attempt in range(max_retries + 1):
+        try:
+            return await call()
+        except GraphBubbleUp:
+            raise
+        except Exception as exc:  # classified by _is_retryable_model_error
+            if retry_guard is not None and not retry_guard(exc, attempt + 1):
+                raise
+            if not _is_retryable_model_error(exc) or attempt >= max_retries:
+                _log_give_up(exc, attempt + 1, max_retries)
+                raise
+            on_retry(attempt + 1, max_retries)
+            delay = (delay_for or _retry_delay_seconds)(attempt, exc)
+            if delay:
+                await asyncio.sleep(delay)
+    msg = "Unexpected: retry loop completed without returning"
+    raise RuntimeError(msg)
+
+
+def _log_auxiliary_retry(_attempt: int, _max_retries: int) -> None:
+    """Log one auxiliary-model retry."""
+    logger.warning("Auxiliary model call failed; retrying")
+
+
+def _allow_retry_after_stream(
+    tracker: _MessageStreamTracker, exc: Exception, attempt: int
+) -> bool:
+    if not tracker.has_streamed:
+        return True
+    logger.warning(
+        "Model stream failed after output began; not retrying attempt %d",
+        attempt,
+        exc_info=exc,
+    )
+    return False
+
+
 def retry_model_call[ResultT](model: object, call: Callable[[], ResultT]) -> ResultT:
     """Run a non-streaming auxiliary model call with its configured retry budget.
 
@@ -528,33 +470,18 @@ def retry_model_call[ResultT](model: object, call: Callable[[], ResultT]) -> Res
 
     Returns:
         The successful call result.
-
-    Raises:
-        GraphBubbleUp: Propagates LangGraph control flow immediately.
-        RuntimeError: If the retry loop exits without returning (unreachable in
-            practice). Exhausted and non-transient errors propagate unchanged.
     """
-    max_retries = _model_max_retries(model, 0)
-    for attempt in range(max_retries + 1):
-        try:
-            return call()
-        except GraphBubbleUp:
-            raise
-        except Exception as exc:  # classified by _is_retryable_model_error
-            if not _is_retryable_model_error(exc) or attempt >= max_retries:
-                _log_give_up(exc, attempt + 1, max_retries)
-                raise
-            logger.warning("Auxiliary model call failed; retrying")
-            if delay := _retry_delay_seconds(attempt, exc):
-                time.sleep(delay)
-    msg = "Unexpected: auxiliary retry loop completed without returning"
-    raise RuntimeError(msg)
+    return _retry_call(
+        call,
+        max_retries=_model_max_retries(model, 0),
+        on_retry=_log_auxiliary_retry,
+    )
 
 
 async def aretry_model_call[ResultT](
     model: object, call: Callable[[], Awaitable[ResultT]]
 ) -> ResultT:
-    """Async variant of `retry_model_call`.
+    """Run an asynchronous auxiliary model call with its configured retry budget.
 
     Args:
         model: Model carrying dcode retry metadata when dcode owns its SDK retries.
@@ -562,32 +489,15 @@ async def aretry_model_call[ResultT](
 
     Returns:
         The successful call result.
-
-    Raises:
-        GraphBubbleUp: Propagates LangGraph control flow immediately.
-        RuntimeError: If the retry loop exits without returning (unreachable in
-            practice). Exhausted and non-transient errors propagate unchanged.
     """
-    import asyncio
-
-    max_retries = _model_max_retries(model, 0)
-    for attempt in range(max_retries + 1):
-        try:
-            return await call()
-        except GraphBubbleUp:
-            raise
-        except Exception as exc:  # classified by _is_retryable_model_error
-            if not _is_retryable_model_error(exc) or attempt >= max_retries:
-                _log_give_up(exc, attempt + 1, max_retries)
-                raise
-            logger.warning("Auxiliary model call failed; retrying")
-            if delay := _retry_delay_seconds(attempt, exc):
-                await asyncio.sleep(delay)
-    msg = "Unexpected: auxiliary retry loop completed without returning"
-    raise RuntimeError(msg)
+    return await _aretry_call(
+        call,
+        max_retries=_model_max_retries(model, 0),
+        on_retry=_log_auxiliary_retry,
+    )
 
 
-def retry_status_from_event(event: Mapping[Any, object]) -> str | None:
+def retry_status_from_event(event: Mapping[Any, object]) -> str:
     """Return retry status text for an untrusted `model_retry` payload.
 
     Both the TUI and the headless client render this event, so the validation
@@ -598,8 +508,7 @@ def retry_status_from_event(event: Mapping[Any, object]) -> str | None:
         event: Custom-stream payload, not trusted to hold sane numbers.
 
     Returns:
-        The status line, or `None` when the payload is malformed. A malformed
-        payload is a producer bug, so it is logged rather than passed through.
+        The validated status line, or a cause-free fallback for malformed data.
     """
     attempt = event.get("attempt")
     max_retries = event.get("max_retries")
@@ -612,7 +521,7 @@ def retry_status_from_event(event: Mapping[Any, object]) -> str | None:
     ):
         return format_retry_status(attempt, max_retries)
     logger.warning("Ignoring malformed model_retry payload: %r", dict(event))
-    return None
+    return _RETRY_STATUS_FALLBACK
 
 
 def build_retry_event(attempt: int, max_retries: int) -> dict[str, object]:
@@ -633,16 +542,8 @@ def build_retry_event(attempt: int, max_retries: int) -> dict[str, object]:
     }
 
 
-class CodeModelRetryMiddleware(ModelRetryMiddleware):
-    """Retry the model node on transient errors with Codex-style backoff.
-
-    Subclasses LangChain's `ModelRetryMiddleware` to add a user-facing status
-    (`model_retry` custom-stream event) before each backoff sleep, since the base
-    class exposes no on-retry hook. Retries wrap only the model node, so a retry
-    never replays completed tool calls. `on_failure="error"` is fixed, so an
-    exhausted retry re-raises the original exception rather than returning an
-    error `AIMessage`.
-    """
+class CodeModelRetryMiddleware(AgentMiddleware):
+    """Retry transient model-node failures without replaying completed tools."""
 
     def __init__(self, *, max_retries: int = DEFAULT_MODEL_RETRIES) -> None:
         """Initialize the middleware with the resolved retry count.
@@ -651,71 +552,28 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             max_retries: Startup fallback for retry attempts after the initial
                 call. `0` disables retries unless the request's runtime-selected
                 model carries a different provider-specific budget.
+
+        Raises:
+            ValueError: If `max_retries` is negative.
         """
-        # `retry_on`, `max_delay` and `jitter` are passed for base-class
-        # consistency only. Both loops are overridden below and classify with
-        # `_is_retryable_model_error` directly; `_compute_delay` re-reads the
-        # delay attributes. Editing `self.retry_on` alone would have no effect.
-        super().__init__(
-            max_retries=max_retries,
-            retry_on=_is_retryable_model_error,
-            on_failure="error",
-            backoff_factor=_BACKOFF_FACTOR,
-            initial_delay=_INITIAL_DELAY_SECONDS,
-            max_delay=_MAX_DELAY_SECONDS,
-            jitter=True,
-        )
+        if max_retries < 0:
+            msg = "max_retries must be >= 0"
+            raise ValueError(msg)
+        self.max_retries = max_retries
 
     def _retry_delay(self, attempt: int, exc: Exception) -> float:
-        """Return the wait before the retry following `attempt`.
-
-        A server-requested `Retry-After` wins over the local curve: the
-        provider knows when its quota resets, and retrying sooner just spends
-        the budget against a closed door.
-
-        Args:
-            attempt: The 0-indexed attempt that just failed.
-            exc: The exception that attempt raised.
-
-        Returns:
-            Delay in seconds.
-        """
         retry_after = _retry_after_seconds(exc)
         return retry_after if retry_after is not None else self._compute_delay(attempt)
 
-    def _compute_delay(self, attempt: int) -> float:
-        """Return the backoff delay before the retry following `attempt`.
-
-        Args:
-            attempt: The 0-indexed attempt that just failed.
-
-        Returns:
-            Delay in seconds from `self.max_delay`, with +-10% jitter applied
-            after the cap, so the result can exceed the cap by that fraction.
-        """
-        return _backoff_delay(
-            attempt,
-            initial=self.initial_delay,
-            factor=self.backoff_factor,
-            max_delay=self.max_delay,
-            jitter=self.jitter,
-        )
+    @staticmethod
+    def _compute_delay(attempt: int) -> float:
+        """Return the local backoff after a zero-indexed attempt."""
+        return _compute_backoff_delay(attempt)
 
     @staticmethod
     def _emit_retry_status(
         request: ModelRequest, attempt: int, max_retries: int
     ) -> None:
-        """Surface a concise retry status without leaking a stack trace.
-
-        Args:
-            request: The in-flight model request (carries the runtime writer).
-            attempt: The 1-indexed retry number about to be attempted.
-            max_retries: Retry budget resolved for this model request.
-
-        Raises:
-            GraphBubbleUp: Propagates LangGraph control flow raised through the
-                writer rather than treating it as a writer fault.
-        """
         event = build_retry_event(attempt, max_retries)
         logger.warning("Model call failed; %s", event["message"])
         writer = getattr(getattr(request, "runtime", None), "stream_writer", None)
@@ -732,113 +590,66 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             logger.warning("Failed to emit model_retry stream event", exc_info=True)
 
     def _request_max_retries(self, request: ModelRequest) -> int:
-        """Resolve the retry budget attached to this request's model.
-
-        Args:
-            request: Model request after runtime model selection.
-
-        Returns:
-            The model-specific non-negative retry count, or the middleware's
-            startup fallback when the model carries no valid metadata.
-        """
         return _model_max_retries(getattr(request, "model", None), self.max_retries)
 
     def wrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse | AIMessage:
-        """Retry the model node on transient errors, surfacing status per retry.
-
-        Args:
-            request: Model request to execute (may be re-run on retry).
-            handler: Callable that executes the model node.
+    ) -> ModelResponse:
+        """Retry a synchronous model-node call without replaying visible output.
 
         Returns:
-            The successful `ModelResponse`.
-
-        Raises:
-            GraphBubbleUp: Propagates LangGraph control-flow exceptions immediately.
-            RuntimeError: If the retry loop exits without returning (unreachable
-                in practice). Exhausted or non-transient errors are re-raised by
-                the inherited `on_failure="error"` handling.
+            The successful model response.
         """
         max_retries = self._request_max_retries(request)
-        for attempt in range(max_retries + 1):
+        stream_tracker = _MessageStreamTracker()
+
+        def call() -> ModelResponse:
+            nonlocal stream_tracker
             stream_tracker = _MessageStreamTracker()
-            try:
-                with _track_message_streams(stream_tracker):
-                    response = handler(request)
-            except GraphBubbleUp:
-                raise
-            except Exception as exc:  # classified by _is_retryable_model_error
-                if stream_tracker.has_streamed:
-                    logger.warning(
-                        "Model stream failed after output began; "
-                        "not retrying attempt %d",
-                        attempt + 1,
-                        exc_info=exc,
-                    )
-                    raise
-                if not _is_retryable_model_error(exc) or attempt >= max_retries:
-                    _log_give_up(exc, attempt + 1, max_retries)
-                    return self._handle_failure(exc, attempt + 1)
-                self._emit_retry_status(request, attempt + 1, max_retries)
-                delay = self._retry_delay(attempt, exc)
-                if delay > 0:
-                    time.sleep(delay)
-            else:
-                return response
-        msg = "Unexpected: retry loop completed without returning"
-        raise RuntimeError(msg)
+            with _track_message_streams(stream_tracker):
+                return handler(request)
+
+        return _retry_call(
+            call,
+            max_retries=max_retries,
+            on_retry=lambda attempt, budget: self._emit_retry_status(
+                request, attempt, budget
+            ),
+            retry_guard=lambda exc, attempt: _allow_retry_after_stream(
+                stream_tracker, exc, attempt
+            ),
+            delay_for=self._retry_delay,
+        )
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse | AIMessage:
-        """Async variant of `wrap_model_call`.
-
-        Args:
-            request: Model request to execute (may be re-run on retry).
-            handler: Async callable that executes the model node.
+    ) -> ModelResponse:
+        """Retry an asynchronous model-node call without replaying visible output.
 
         Returns:
-            The successful `ModelResponse`.
-
-        Raises:
-            GraphBubbleUp: Propagates LangGraph control-flow exceptions immediately.
-            RuntimeError: If the retry loop exits without returning (unreachable
-                in practice). Exhausted or non-transient errors are re-raised by
-                the inherited `on_failure="error"` handling.
+            The successful model response.
         """
-        import asyncio
-
         max_retries = self._request_max_retries(request)
-        for attempt in range(max_retries + 1):
+        stream_tracker = _MessageStreamTracker()
+
+        async def call() -> ModelResponse:
+            nonlocal stream_tracker
             stream_tracker = _MessageStreamTracker()
-            try:
-                with _track_message_streams(stream_tracker):
-                    response = await handler(request)
-            except GraphBubbleUp:
-                raise
-            except Exception as exc:  # classified by _is_retryable_model_error
-                if stream_tracker.has_streamed:
-                    logger.warning(
-                        "Model stream failed after output began; "
-                        "not retrying attempt %d",
-                        attempt + 1,
-                        exc_info=exc,
-                    )
-                    raise
-                if not _is_retryable_model_error(exc) or attempt >= max_retries:
-                    _log_give_up(exc, attempt + 1, max_retries)
-                    return self._handle_failure(exc, attempt + 1)
-                self._emit_retry_status(request, attempt + 1, max_retries)
-                delay = self._retry_delay(attempt, exc)
-                if delay > 0:
-                    await asyncio.sleep(delay)
-            else:
-                return response
-        msg = "Unexpected: retry loop completed without returning"
-        raise RuntimeError(msg)
+            with _track_message_streams(stream_tracker):
+                return await handler(request)
+
+        return await _aretry_call(
+            call,
+            max_retries=max_retries,
+            on_retry=lambda attempt, budget: self._emit_retry_status(
+                request, attempt, budget
+            ),
+            retry_guard=lambda exc, attempt: _allow_retry_after_stream(
+                stream_tracker, exc, attempt
+            ),
+            delay_for=self._retry_delay,
+        )

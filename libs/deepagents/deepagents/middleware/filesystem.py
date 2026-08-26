@@ -24,6 +24,8 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     ResponseT,
+    TracePolicy,
+    omit_payload,
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -1089,6 +1091,15 @@ class FilesystemState(AgentState):
     """Files in the filesystem. Uses DeltaChannel with snapshots every ~50 pregel steps to bound read depth."""
 
 
+def _uses_state_backend(backend: BackendProtocol) -> bool:
+    """Return whether a backend stores any files in agent state."""
+    if isinstance(backend, StateBackend):
+        return True
+    if not isinstance(backend, CompositeBackend):
+        return False
+    return _uses_state_backend(backend.default) or any(_uses_state_backend(route) for route in backend.routes.values())
+
+
 GREP_GLOB_DESCRIPTION = (
     "Glob pattern (NOT regex) limiting which files are searched (e.g. '*.py', "
     "'*.ts'). A pattern without '/' matches the file name at any depth; a pattern "
@@ -1225,7 +1236,7 @@ class ExecuteSchema(BaseModel):
 
     timeout: int | None = Field(
         default=None,
-        description="Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
+        description="Optional timeout in seconds for this command. Overrides the default timeout.",
     )
 
 
@@ -1326,7 +1337,7 @@ _EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated 
 Usage:
 - Quote paths containing spaces (e.g. cd "/path/with spaces").
 - Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
-- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default (0 disables it on backends that support that).
+- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.
 - {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}
 
 Only available on backends implementing SandboxBackendProtocol; otherwise it returns an error."""
@@ -1625,7 +1636,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ```
     """
 
-    state_schema = FilesystemState
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
+    state_schema: type[FilesystemState]
 
     def __init__(
         self,
@@ -1696,6 +1710,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 "CompositeBackend(...), or another BackendProtocol instance instead."
             )
             raise TypeError(msg)
+        self.state_schema = cast(
+            "type[FilesystemState]",
+            FilesystemState if _uses_state_backend(self.backend) else AgentState,
+        )
         if _permissions and supports_execution(self.backend) and not _all_paths_scoped_to_routes(_permissions, self.backend):
             msg = (
                 "FilesystemMiddleware does not yet support permissions with backends that "

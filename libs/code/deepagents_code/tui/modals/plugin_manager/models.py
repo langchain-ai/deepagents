@@ -14,6 +14,23 @@ PluginManagerView = Literal[
     "marketplace_details",
     "confirm_remove_marketplace",
 ]
+PluginManagerAction = Literal["reload", "later", "check_failed"]
+"""Action the manager asks the app to take once it closes."""
+
+PluginManagerResult = PluginManagerAction | None
+"""Value the plugin manager dismisses with.
+
+`None` means no action is needed: the close check found no pending changes, or
+no checker was wired. Textual also produces `None` for a bare `dismiss()`, so
+handling of `None` has to stay a safe no-op.
+"""
+
+PluginClosePhase = Literal["browsing", "checking", "reload_prompt"]
+"""Where the manager is in its close sequence.
+
+`checking` runs the close check with the manager still painted; `reload_prompt`
+shows the inline reload confirmation in place of the browsing chrome.
+"""
 PluginLoadState = Literal["disabled", "pending_reload", "enabled", "error"]
 
 

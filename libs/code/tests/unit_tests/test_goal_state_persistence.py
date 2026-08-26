@@ -1,5 +1,6 @@
 """Tests for persisted goal-state notice reconciliation."""
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -187,6 +188,113 @@ async def test_compaction_cutoff_repins_once() -> None:
     ):
         assert await app._ensure_goal_state_notice()
     updater.aupdate_state.assert_not_awaited()
+
+
+@pytest.mark.parametrize("cutoff_index", [-1, 99, "1", True, None])
+async def test_out_of_range_cutoff_treats_a_matching_notice_as_visible(
+    cutoff_index: object,
+) -> None:
+    """An unusable cutoff must not discount a notice the model can see.
+
+    `_summarization_cutoff` is called with `message_count`, so an out-of-range,
+    negative, or non-int cutoff degrades to `0` rather than being trusted.
+    Without that, a stale index would mark the tail notice invisible and the
+    predicate would rewrite it on every turn. Dropping the `message_count`
+    argument breaks nothing else in the suite, so this pins it.
+    """
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    state = _active_state()
+    notice = build_goal_state_notice(state, event_id="goal-event-current")
+    checkpoint = {
+        **state,
+        "messages": [HumanMessage(content="continue", id="user-1"), notice],
+        "_summarization_event": {
+            "summary_message": HumanMessage(content="summary"),
+            "cutoff_index": cutoff_index,
+        },
+    }
+
+    with patch.object(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value=checkpoint),
+    ):
+        assert await app._ensure_goal_state_notice()
+
+    updater.aupdate_state.assert_not_awaited()
+
+
+async def test_unusable_cutoff_is_logged_by_the_notice_predicate(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Degrading the cutoff to 0 changes the outcome, so it must be visible.
+
+    A collapsed cutoff makes the `latest[0] >= cutoff` freshness test trivially
+    true, so a stale notice counts as visible and the durable write is skipped.
+    The middleware logs the same discard; staying silent here would leave the two
+    sides disagreeing for no discoverable reason.
+    """
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    state = _active_state()
+    notice = build_goal_state_notice(state, event_id="goal-event-current")
+    checkpoint = {
+        **state,
+        "messages": [HumanMessage(content="continue", id="user-1"), notice],
+        "_summarization_event": {
+            "summary_message": HumanMessage(content="summary"),
+            "cutoff_index": "not-an-int",
+        },
+    }
+
+    with (
+        patch.object(
+            app,
+            "_get_thread_state_values",
+            AsyncMock(return_value=checkpoint),
+        ),
+        caplog.at_level(logging.WARNING, logger="deepagents_code.goal_state_notice"),
+    ):
+        assert await app._ensure_goal_state_notice()
+
+    assert "Discarding malformed `_summarization_event`" in caplog.text
+
+
+async def test_usable_cutoff_is_not_logged_as_a_discard(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The normal path must stay quiet, or the warning means nothing."""
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    state = _active_state()
+    notice = build_goal_state_notice(state, event_id="goal-event-current")
+    checkpoint = {
+        **state,
+        "messages": [HumanMessage(content="continue", id="user-1"), notice],
+        "_summarization_event": {
+            "summary_message": HumanMessage(content="summary"),
+            "cutoff_index": 1,
+        },
+    }
+
+    with (
+        patch.object(
+            app,
+            "_get_thread_state_values",
+            AsyncMock(return_value=checkpoint),
+        ),
+        caplog.at_level(logging.WARNING, logger="deepagents_code.goal_state_notice"),
+    ):
+        assert await app._ensure_goal_state_notice()
+
+    assert "Discarding malformed" not in caplog.text
 
 
 @pytest.mark.parametrize("parallel_calls", [False, True])

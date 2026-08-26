@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware, AgentState
+from langchain.agents.middleware import AgentMiddleware, AgentState, TracePolicy, omit_payload
 from langchain_core.messages import AIMessage, AnyMessage, RemoveMessage, ToolMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
@@ -10,6 +10,9 @@ from langgraph.runtime import Runtime
 
 class PatchToolCallsMiddleware(AgentMiddleware):
     """Middleware to patch dangling tool calls in the messages history."""
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def before_agent(self, state: AgentState, runtime: Runtime[Any]) -> dict[str, Any] | None:  # noqa: ARG002
         """Before the agent runs, handle dangling tool calls from any AIMessage."""

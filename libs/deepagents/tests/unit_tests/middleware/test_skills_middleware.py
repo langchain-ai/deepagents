@@ -989,7 +989,7 @@ def test_format_skills_locations_builtin_leaf() -> None:
     """`built_in_skills` collapses to `Built-in Skills` rather than the raw leaf."""
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore[arg-type]
-        sources=["/pkg/deepagents_cli/built_in_skills"],
+        sources=["/pkg/deepagents_code/built_in_skills"],
     )
 
     result = middleware._format_skills_locations()

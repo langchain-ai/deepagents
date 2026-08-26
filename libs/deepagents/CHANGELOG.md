@@ -2,6 +2,31 @@
 
 # Deep Agents Changelog
 
+## [0.7.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.8...deepagents==0.7.9) (2026-08-25)
+
+### Features
+
+- Disabled tracing inputs on middleware. ([#5377](https://github.com/langchain-ai/deepagents/issues/5377))
+
+### Bug fixes
+
+- Exclude tools from execution when `excluded_tools` is set in harness profiles. ([#5809](https://github.com/langchain-ai/deepagents/issues/5809))
+- Enforce full criterion coverage in `RubricMiddleware`. ([#5234](https://github.com/langchain-ai/deepagents/issues/5234))
+- Clarified zero execute-timeout semantics. ([#5752](https://github.com/langchain-ai/deepagents/issues/5752))
+
+## [0.7.8](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.7...deepagents==0.7.8) (2026-08-20)
+
+### Bug Fixes
+
+- Add `files` state only for state backends ([#5643](https://github.com/langchain-ai/deepagents/issues/5643))
+
+## [0.7.7](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.6...deepagents==0.7.7) (2026-08-18)
+
+### Bug fixes
+
+- Batched concurrent `ContextHubBackend` mutations to improve SDK backend behavior ([#5471](https://github.com/langchain-ai/deepagents/issues/5471)) ([822f7c9](https://github.com/langchain-ai/deepagents/commit/822f7c9b02e6d99bdb46b5545bb2543783c01769)).
+- Made `BackendProtocol.glob` recursive for bare patterns ([#5026](https://github.com/langchain-ai/deepagents/issues/5026)) ([32f35d5](https://github.com/langchain-ai/deepagents/commit/32f35d5e01f460549c10365eb569978909f5c969)).
+
 ## [0.7.6](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.5...deepagents==0.7.6) (2026-08-13)
 
 ### Bug Fixes

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 
@@ -355,3 +356,19 @@ class TestExtractOnboardingNameBlock:
     def test_no_markers_returns_none(self) -> None:
         """Text without markers has no managed block."""
         assert extract_onboarding_name_block("## Notes\n\nfreeform\n") is None
+
+
+class TestOnboardingSkipsReservedAgents:
+    """The marker write is the path that would stamp `AGENTS.md` into app state."""
+
+    def test_a_reserved_agent_name_writes_nothing(self, tmp_path: Path) -> None:
+        from deepagents_code.onboarding import write_onboarding_name_memory
+
+        with patch("deepagents_code.config.settings") as mock_settings:
+            mock_settings.get_user_agent_md_path.side_effect = ValueError(
+                "Invalid agent name: 'plugins' is reserved for dcode's own state.",
+            )
+
+            assert write_onboarding_name_memory("plugins", "Mason") is False
+
+        assert list(tmp_path.iterdir()) == []

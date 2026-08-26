@@ -48,6 +48,8 @@ from deepagents_code._session_stats import (
     finalize_recorded_requests,
     print_usage_table,
     record_message_usage,
+    record_model_usage_event,
+    usage_table_enabled,
 )
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
@@ -61,6 +63,7 @@ from deepagents_code._tool_stream import (
     normalize_tool_status,
     tool_call_buffer_key,
 )
+from deepagents_code._tracing import stream_trace_config
 from deepagents_code._version import __version__
 from deepagents_code.agent import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
@@ -387,6 +390,9 @@ def _plain_hook_notice(console: Console) -> HookNoticeCallback:
 @dataclass
 class StreamState:
     """Mutable state accumulated while iterating over the agent stream."""
+
+    thread_id: str = ""
+    """Thread whose streamed usage this state accepts."""
 
     quiet: bool = False
     """When `True`, stream-time diagnostics (the tool-call and file-operation
@@ -1000,7 +1006,16 @@ def _process_stream_chunk(
 
     # Nested agent spend still counts even when chat rendering is skipped.
     if not is_main_agent:
-        if (
+        if stream_mode == "custom":
+            record_model_usage_event(
+                state.stats,
+                data,
+                active_thread_id=state.thread_id,
+                fallback_model=settings.model_name or "",
+                fallback_provider=settings.model_provider or "",
+                recorded_requests=state.recorded_usage_requests,
+            )
+        elif (
             stream_mode == "messages"
             and isinstance(data, tuple)
             and len(data) == (_MESSAGE_DATA_LENGTH)
@@ -1241,7 +1256,7 @@ async def _stream_agent(
             stream_input,
             stream_mode=["messages", "updates", "custom"],
             subgraphs=True,
-            config=config,
+            config=stream_trace_config(config, stream_input),
             context=context,
             durability="exit",
         ):
@@ -1455,7 +1470,9 @@ async def _run_agent_loop(
         ClientHookStopError: If a client-owned hook stops processing.
     """
     spinner = None if quiet else _ConsoleSpinner(console)
+    thread_id = config.get("configurable", {}).get("thread_id", "")
     state = StreamState(
+        thread_id=thread_id if isinstance(thread_id, str) else "",
         quiet=quiet,
         stream=stream,
         spinner=spinner,
@@ -1471,7 +1488,7 @@ async def _run_agent_loop(
     if rubric is not None:
         stream_input["rubric"] = rubric
 
-    thread_id = config.get("configurable", {}).get("thread_id", "")
+    thread_id = state.thread_id
     # An empty or missing thread ID carries no session identity, so leave it
     # unset in context rather than passing a blank string to model middleware.
     context_thread_id = thread_id if isinstance(thread_id, str) and thread_id else None
@@ -1699,7 +1716,12 @@ async def _run_agent_loop(
             )
             console.print(link_text)
         console.print("[green]✓ Task completed[/green]")
-        print_usage_table(state.stats, wall_time, console)
+        # Inside `if not quiet:` on purpose — `--quiet` suppresses the table
+        # regardless of the option. `usage_table_enabled` fails open rather
+        # than raising here, because an escape would skip the
+        # `AGENT_COMPLETED` notification and the `session.end` hooks below.
+        if usage_table_enabled():
+            print_usage_table(state.stats, wall_time, console)
 
     notification_stop: ClientHookStopError | None = None
     try:

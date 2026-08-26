@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
 
+from deepagents_code._paths import harden_state_dir
 from deepagents_code.goal_state_notice import is_internal_message
 
 if TYPE_CHECKING:
@@ -354,7 +355,10 @@ def get_db_path() -> Path:
         return _db_path
     from deepagents_code.model_config import DEFAULT_STATE_DIR
 
-    DEFAULT_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # Pass the directory rather than letting it default to
+    # `PATHS.profile.state_dir`: the database has always been located from
+    # `DEFAULT_STATE_DIR`, and tests patch that name on its own.
+    harden_state_dir(DEFAULT_STATE_DIR)
     _db_path = DEFAULT_STATE_DIR / "sessions.db"
     return _db_path
 
@@ -1603,7 +1607,8 @@ async def list_threads_command(
             the default.
         sort_by: Sort field — `"updated"` or `"created"`.
 
-            When `None`, reads from config (`~/.deepagents/config.toml`).
+            When `None`, reads the merged managed and user config
+            (`managed_config.toml` over `~/.deepagents/config.toml`).
         branch: Only show threads from this git branch.
         cwd: Only show threads whose stored `cwd` metadata equals this path
             (exact string match — no normalization or prefix matching). When
@@ -1612,7 +1617,8 @@ async def list_threads_command(
         verbose: When `True`, show all columns (branch, created, prompt).
         relative: Show timestamps as relative time (e.g., '5m ago').
 
-            When `None`, reads from config (`~/.deepagents/config.toml`).
+            When `None`, reads the merged managed and user config
+            (`managed_config.toml` over `~/.deepagents/config.toml`).
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
     from deepagents_code.model_config import (

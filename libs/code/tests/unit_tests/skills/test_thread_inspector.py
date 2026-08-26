@@ -478,10 +478,41 @@ def test_connect_read_only_rejects_unsupported_schema(
 def test_default_db_path_prefers_env_override(
     inspector: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from deepagents_code._paths import PATHS
+
     monkeypatch.setenv("DEEPAGENTS_SESSIONS_DB", "/tmp/custom/sessions.db")
     assert inspector._default_db_path() == Path("/tmp/custom/sessions.db")
     monkeypatch.delenv("DEEPAGENTS_SESSIONS_DB")
-    assert inspector._default_db_path() == Path.home() / ".deepagents" / ".state" / (
+    assert inspector._default_db_path() == PATHS.profile.sessions_file
+    monkeypatch.setenv("DEEPAGENTS_HOME", "~/custom-dcode")
+    assert inspector._default_db_path() == PATHS.profile.sessions_file
+
+
+@pytest.mark.parametrize("configured", ["~/custom-dcode", "~//custom-dcode"])
+def test_default_db_path_without_package(
+    inspector: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: str,
+) -> None:
+    """The standalone script resolves the root before re-execing into dcode."""
+    real_import = __import__
+
+    def import_module(
+        name: str,
+        globals_: dict[str, object] | None = None,
+        locals_: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> object:
+        if name == "deepagents_code._paths":
+            msg = "No module named 'deepagents_code'"
+            raise ModuleNotFoundError(msg)
+        return real_import(name, globals_, locals_, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", import_module)
+    monkeypatch.setenv("DEEPAGENTS_HOME", configured)
+
+    assert inspector._default_db_path() == Path.home() / "custom-dcode" / ".state" / (
         "sessions.db"
     )
 

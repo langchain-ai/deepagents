@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
+from deepagents_code._paths import PATHS
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import Settings
 from deepagents_code.offload import _ArtifactsStorage
@@ -129,6 +130,7 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
         mock_s.model_provider = _FIXED_MODEL_PROVIDER
         mock_s.model_context_limit = _FIXED_CONTEXT_LIMIT
         mock_s.model_unsupported_modalities = frozenset()
+        mock_s.has_tavily = False
         mock_s.project_root = None
         mock_s.user_langchain_project = None
         mock_s.shell_allow_list = None
@@ -199,6 +201,7 @@ def test_system_prompt_snapshot(
     actual = actual.replace(
         str(Settings.get_built_in_skills_dir()), "<built_in_skills_dir>"
     )
+    actual = actual.replace(str(PATHS.profile.root), "<deepagents_home>")
 
     _assert_snapshot(
         snapshots_dir / "system_prompt_interactive_local.md",

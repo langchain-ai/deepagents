@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -25,8 +25,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-HookNoticeSeverity: TypeAlias = Literal["information", "warning", "error"]
-DiagnosticKey: TypeAlias = tuple[str, str, str, str | None, str | None]
+type HookNoticeSeverity = Literal["information", "warning", "error"]
+type DiagnosticKey = tuple[str, str, str, str | None, str | None]
 
 
 class HookNoticeCallback(Protocol):

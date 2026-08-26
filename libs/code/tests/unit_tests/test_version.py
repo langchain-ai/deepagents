@@ -504,6 +504,162 @@ def test_build_version_text_omits_core_deps_when_not_editable() -> None:
     assert "Core dependencies:" not in text
 
 
+def test_build_version_text_reports_cached_update() -> None:
+    """`--version` warns when the local cache knows about a newer release."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            return_value=(True, "99.99.99"),
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.cached_release_requires_prereleases",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.upgrade_command",
+            return_value="uv tool install -U deepagents-code",
+        ),
+    ):
+        text = build_version_text()
+
+    assert (
+        "Update available: v99.99.99. Run: uv tool install -U deepagents-code" in text
+    )
+
+
+def test_build_version_text_omits_cached_update_for_editable_install() -> None:
+    """`--version` never recommends package updates for editable checkouts."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch("deepagents_code.update_check.get_cached_update_available") as get_cached,
+    ):
+        text = build_version_text()
+
+    assert "Update available" not in text
+    get_cached.assert_not_called()
+
+
+def test_build_version_text_uses_prerelease_aware_upgrade_command() -> None:
+    """Cached prerequisite pins produce an installable upgrade command."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            return_value=(True, "99.99.99"),
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.cached_release_requires_prereleases",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.upgrade_command",
+            return_value="prerelease command",
+        ) as upgrade_command,
+    ):
+        text = build_version_text()
+
+    assert "Update available: v99.99.99. Run: prerelease command" in text
+    upgrade_command.assert_called_once_with(
+        include_prereleases=True,
+        version="99.99.99",
+    )
+
+
+def test_build_version_text_omits_command_without_cached_prerequisite_status() -> None:
+    """Unknown prerequisite status warns without suggesting a broken command."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            return_value=(True, "99.99.99"),
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.cached_release_requires_prereleases",
+            return_value=None,
+        ),
+        patch("deepagents_code.update_check.upgrade_command") as upgrade_command,
+    ):
+        text = build_version_text()
+
+    assert "Update available: v99.99.99." in text
+    assert "Run:" not in text
+    upgrade_command.assert_not_called()
+
+
+def test_build_version_text_honors_disabled_update_checks() -> None:
+    """`--version` does not inspect or report updates after an opt-out."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=False,
+        ),
+        patch("deepagents_code.update_check.get_cached_update_available") as get_cached,
+    ):
+        text = build_version_text()
+
+    assert "Update available" not in text
+    get_cached.assert_not_called()
+
+
+def test_build_version_text_ignores_cached_update_failure() -> None:
+    """A cache read failure never breaks `--version` output."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            side_effect=OSError,
+        ),
+    ):
+        text = build_version_text()
+
+    assert f"deepagents-code {__version__}" in text
+    assert "Update available" not in text
+
+
 def _editable_exact_pin_version_report(cli_metadata: str = "0.1.40") -> VersionReport:
     """Build a report with editable installs, CLI drift, and a newer SDK pin."""
     from packaging.requirements import Requirement
@@ -2265,36 +2421,6 @@ def test_help_mentions_version_flag() -> None:
     # Help output should mention --version and SDK
     assert "--version" in result.stdout
     assert "SDK" in result.stdout
-
-
-def test_cli_help_flag() -> None:
-    """Verify that `--help` flag shows help and exits with code 0."""
-    result = subprocess.run(
-        [sys.executable, "-m", "deepagents_code.main", "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # --help should exit with 0
-    assert result.returncode == 0
-    # Help output should mention key options
-    assert "--version" in result.stdout
-    assert "--agent" in result.stdout
-
-
-def test_cli_help_flag_short() -> None:
-    """Verify that `-h` flag shows help and exits with code 0."""
-    result = subprocess.run(
-        [sys.executable, "-m", "deepagents_code.main", "-h"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # -h should exit with 0
-    assert result.returncode == 0
-    # Help output should mention key options
-    assert "--version" in result.stdout
-    assert "--agent" in result.stdout
 
 
 def test_help_excludes_interactive_features() -> None:

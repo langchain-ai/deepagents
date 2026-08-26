@@ -26,7 +26,7 @@ import stat
 import threading
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, override
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -47,8 +47,8 @@ from mcp.shared.auth import (
     OAuthToken,
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
-from typing_extensions import override
 
+from deepagents_code._paths import PATHS
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
@@ -248,8 +248,8 @@ def _token_file_lock(path: Path) -> LockType:
         return lock
 
 
-def _tokens_dir() -> Path:
-    """Return `~/.deepagents/.state/mcp-tokens/`.
+def token_store_dir() -> Path:
+    """Return the selected profile's MCP OAuth token-store directory.
 
     The deferred import lets tests redirect token storage into a temp
     directory by patching `deepagents_code.model_config.DEFAULT_STATE_DIR`.
@@ -272,11 +272,8 @@ def _token_file_stem(server_name: str, server_url: str | None) -> str:
     return f"{server_name}-{digest}"
 
 
-_T = TypeVar("_T")
-
-
-async def _join_task_deferring_cancellation(
-    task: asyncio.Task[_T],
+async def _join_task_deferring_cancellation[T](
+    task: asyncio.Task[T],
 ) -> asyncio.CancelledError | None:
     """Join `task` without letting caller cancellation cancel the task.
 
@@ -306,21 +303,22 @@ async def _join_task_deferring_cancellation(
 
 
 class FileTokenStorage(TokenStorage):
-    """File-backed `TokenStorage` under `~/.deepagents/.state/mcp-tokens/`."""
+    """File-backed `TokenStorage` under the selected profile's state directory."""
 
     def __init__(self, server_name: str, *, server_url: str | None = None) -> None:
         """Bind this storage to a configured MCP server identity.
 
         Raises:
             ValueError: If `server_name` contains characters that would let
-                it escape the `~/.deepagents/.state/mcp-tokens/` directory
-                when used as the token-file basename.
+                it escape the MCP token-store directory when used as the
+                token-file basename.
         """
         if not _SAFE_SERVER_NAME_RE.fullmatch(server_name):
+            tokens_dir = PATHS.display(token_store_dir())
             msg = (
                 f"Invalid MCP server name {server_name!r}: token storage "
                 "names must match [A-Za-z0-9_-]+ to keep the on-disk path "
-                "inside ~/.deepagents/.state/mcp-tokens/."
+                f"inside {tokens_dir}."
             )
             raise ValueError(msg)
         self._server_name = server_name
@@ -330,7 +328,7 @@ class FileTokenStorage(TokenStorage):
     def path(self) -> Path:
         """On-disk token file path for this server."""
         stem = _token_file_stem(self._server_name, self._server_url)
-        return _tokens_dir() / f"{stem}.json"
+        return token_store_dir() / f"{stem}.json"
 
     @property
     def refresh_lock_path(self) -> Path:
@@ -766,6 +764,40 @@ class FileTokenStorage(TokenStorage):
                     path,
                     exc,
                 )
+
+
+class _FreshLoginTokenStorage(FileTokenStorage):
+    """`FileTokenStorage` that hides stored tokens to force a full re-auth.
+
+    An explicit login must re-run the authorization flow even when the
+    persisted access token is still valid. Without this, the SDK loads that
+    token, the handshake succeeds without ever prompting, and the user is
+    told they logged in again when nothing happened.
+
+    Tokens are hidden rather than deleted so an aborted or failed flow leaves
+    the working credential on disk untouched. Only the token getters are
+    overridden: client registration, OAuth metadata, and the loopback port
+    still come from disk, so the handshake reuses the existing registration
+    instead of re-running DCR against a new redirect URI. A successful flow
+    writes through `set_tokens`, replacing the hidden token.
+    """
+
+    @override
+    async def get_tokens(self) -> OAuthToken | None:
+        """Return `None` so the provider runs a full authorization flow."""
+        return None
+
+    @override
+    async def get_tokens_with_expiry(
+        self,
+    ) -> tuple[OAuthToken | None, float | None]:
+        """Return no token and no expiry, matching `get_tokens`."""
+        return None, None
+
+    @override
+    async def get_expires_at(self) -> float | None:
+        """Return `None` so no hidden token looks refreshable."""
+        return None
 
 
 RedirectHandler = Callable[[str], Awaitable[None]]
@@ -2163,10 +2195,14 @@ async def login(
         await ui.show_success(success_message)
         return
 
+    # Hide any still-valid stored token so this login actually re-authorizes
+    # instead of silently succeeding on the existing credential. `run_login`
+    # above keeps the real storage — providers preseed client info and tokens
+    # through it.
     provider = build_oauth_provider(
         server_name=server_name,
         server_url=resolved_config["url"],
-        storage=storage,
+        storage=_FreshLoginTokenStorage(server_name, server_url=resolved_config["url"]),
         extra_auth_params=result.extra_auth_params or None,
         ui=ui,
     )

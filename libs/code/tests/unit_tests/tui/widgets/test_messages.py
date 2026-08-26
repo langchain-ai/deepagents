@@ -2,10 +2,11 @@
 
 import asyncio
 import logging
+from pathlib import Path
 from time import time
 from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from deepagents.backends.utils import (
@@ -18,6 +19,7 @@ from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.widgets import Markdown, Static
 
+import deepagents_code
 from deepagents_code import theme
 from deepagents_code._ask_user_types import ASK_USER_ANSWERED_SUMMARY
 from deepagents_code.diff_utils import DiffStats
@@ -29,6 +31,7 @@ from deepagents_code.tool_display import (
 )
 from deepagents_code.tui.widgets.message_store import MessageData
 from deepagents_code.tui.widgets.messages import (
+    _TOOL_ROW_ACTION_CLASS,
     AppMessage,
     AssistantMessage,
     DiffMessage,
@@ -337,8 +340,8 @@ class _AssistantMessageApp(App[None]):
         yield widget
 
 
-class TestAssistantMessageLinkPointer:
-    """Tests for the pointer cursor shown when hovering markdown links."""
+class TestAssistantMessagePointer:
+    """Tests for pointer shapes over assistant-message content."""
 
     @staticmethod
     def _move_event(
@@ -346,9 +349,10 @@ class TestAssistantMessageLinkPointer:
     ) -> SimpleNamespace:
         """Build a minimal mouse-move-like event exposing the hovered style.
 
-        The handlers only read `event.style.link` and `event.style.meta`, so a
-        namespace is enough; the assertions run against the real `Markdown`
-        widget mounted by `_AssistantMessageApp`.
+        A namespace is enough because the handlers only read `event.style.link`
+        and `event.style.meta`. It cannot validate the hitbox itself, though: it
+        hard-codes the same `offset` key the implementation reads, so the
+        `test_real_hover_*` cases below are what actually pin that behavior.
         """
         return SimpleNamespace(style=SimpleNamespace(link=link, meta=meta or {}))
 
@@ -359,8 +363,7 @@ class TestAssistantMessageLinkPointer:
 
             msg.on_mouse_move(self._move_event(meta={"@click": "link('https://x')"}))  # ty: ignore
 
-            assert msg._markdown is not None
-            assert msg._markdown.styles.pointer == "pointer"
+            assert msg.styles.pointer == "pointer"
 
     async def test_hovering_osc8_link_sets_pointer_cursor(self) -> None:
         """An OSC 8 `Style(link=...)` span also switches the pointer to pointer."""
@@ -369,29 +372,106 @@ class TestAssistantMessageLinkPointer:
 
             msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
 
-            assert msg._markdown is not None
-            assert msg._markdown.styles.pointer == "pointer"
+            assert msg.styles.pointer == "pointer"
 
     async def test_hovering_text_sets_text_pointer(self) -> None:
-        """Plain markdown text keeps the text pointer."""
+        """A cell carrying Textual's selection offset uses the text pointer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+
+            msg.on_mouse_move(self._move_event(meta={"offset": (0, 0)}))  # ty: ignore
+
+            assert msg.styles.pointer == "text"
+
+    async def test_hovering_blank_space_sets_default_pointer(self) -> None:
+        """A cell without rendered text uses the default pointer."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
 
             msg.on_mouse_move(self._move_event())  # ty: ignore
 
-            assert msg._markdown is not None
-            assert msg._markdown.styles.pointer == "text"
+            assert msg.styles.pointer == "default"
 
     async def test_leave_resets_pointer(self) -> None:
-        """Leaving the message resets the pointer to text after a link hover."""
+        """Leaving the message resets the pointer after a link hover."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
             msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
 
             msg.on_leave()
 
-            assert msg._markdown is not None
-            assert msg._markdown.styles.pointer == "text"
+            assert msg.styles.pointer == "default"
+
+    async def test_real_hover_limits_text_pointer_to_rendered_cells(self) -> None:
+        """Real mouse routing distinguishes message text from trailing blank space."""
+        async with _AssistantMessageApp().run_test(size=(80, 24)) as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            await msg.set_content("hello")
+            await msg.write_initial_content()
+            await pilot.pause()
+
+            assert msg.styles.pointer == "default"
+
+            await pilot.hover("#assistant-content", offset=(0, 0))
+            assert msg.styles.pointer == "text"
+
+            # The boundary itself: `hello` ends at column 4, so column 5 is the
+            # first cell an off-by-one in the hitbox would still claim as text.
+            await pilot.hover("#assistant-content", offset=(4, 0))
+            assert msg.styles.pointer == "text"
+
+            await pilot.hover("#assistant-content", offset=(5, 0))
+            assert msg.styles.pointer == "default"
+
+    async def test_real_hover_over_markdown_link_sets_pointer_cursor(self) -> None:
+        """A rendered markdown link really resolves to the hand pointer.
+
+        The fake-event cases above assert that `@click` meta means "link",
+        which is an assumption about what Textual's `Markdown` attaches rather
+        than a fact about rendered output. This drives the real span, so a
+        change in Markdown's link metadata cannot pass silently.
+        """
+        async with _AssistantMessageApp().run_test(size=(80, 24)) as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            await msg.set_content("see [docs](https://example.com) now")
+            await msg.write_initial_content()
+            await pilot.pause()
+
+            # Renders as `see docs now`, putting the link on columns 4-7.
+            await pilot.hover("#assistant-content", offset=(1, 0))
+            assert msg.styles.pointer == "text"
+
+            await pilot.hover("#assistant-content", offset=(4, 0))
+            assert msg.styles.pointer == "pointer"
+
+            # Back onto plain text without leaving the widget: `on_leave` never
+            # fires here, so only the handler's non-link branch can clear the
+            # hand cursor.
+            await pilot.hover("#assistant-content", offset=(9, 0))
+            assert msg.styles.pointer == "text"
+
+    async def test_real_hover_over_multi_block_content(self) -> None:
+        """Blank inter-block rows read as blank space; fenced code reads as text."""
+        async with _AssistantMessageApp().run_test(size=(60, 24)) as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            await msg.set_content("para one\n\n```python\nx = 1\n```\n")
+            await msg.write_initial_content()
+            await pilot.pause()
+
+            await pilot.hover("#assistant-content", offset=(0, 0))
+            assert msg.styles.pointer == "text"
+
+            # The margin row separating the paragraph from the fence.
+            await pilot.hover("#assistant-content", offset=(0, 1))
+            assert msg.styles.pointer == "default"
+
+            # Fenced code renders through `MarkdownFence` rather than the prose
+            # path, and sits two columns inside its block.
+            await pilot.hover("#assistant-content", offset=(2, 3))
+            assert msg.styles.pointer == "text"
+
+            await pilot.hover("#assistant-content", offset=(0, 3))
+            assert msg.styles.pointer == "default"
 
     async def test_markdown_open_links_is_disabled(self) -> None:
         """The app handles Markdown links so it can show URL-opened toasts."""
@@ -463,8 +543,8 @@ class TestAssistantMessageLinkPointer:
 class TestAssistantMessageStreamCoalescing:
     """Tests for the throttled streaming flush that keeps input responsive."""
 
-    async def test_append_buffers_until_flush(self) -> None:
-        """Tokens accumulate in `_content` but defer the markdown write."""
+    async def test_first_append_flushes_immediately(self) -> None:
+        """The first fragment renders immediately while later text is buffered."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
             stream = MagicMock()
@@ -472,16 +552,17 @@ class TestAssistantMessageStreamCoalescing:
             msg._stream = stream
 
             await msg.append_content("hello ")
+            stream.write.assert_awaited_once_with("hello ")
+
             await msg.append_content("world")
 
-            # No immediate write — tokens are buffered for the timer.
-            stream.write.assert_not_awaited()
+            assert stream.write.await_count == 1
             assert msg._content == "hello world"
-            assert msg._pending_append == "hello world"
+            assert msg._pending_append == "world"
             assert msg._flush_timer is not None
 
-    async def test_timer_flushes_coalesced_text_once(self) -> None:
-        """The throttled timer writes buffered tokens as a single fragment."""
+    async def test_timer_flushes_later_text(self) -> None:
+        """The throttled timer coalesces fragments after the immediate first write."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
             stream = MagicMock()
@@ -493,7 +574,7 @@ class TestAssistantMessageStreamCoalescing:
             await asyncio.sleep(msg._STREAM_FLUSH_INTERVAL * 2)
             await pilot.pause()
 
-            stream.write.assert_awaited_once_with("foobar")
+            assert stream.write.await_args_list[:2] == [call("foo"), call("bar")]
             assert msg._pending_append == ""
 
     async def test_stop_stream_flushes_and_cancels_timer(self) -> None:
@@ -538,8 +619,9 @@ class TestAssistantMessageStreamCoalescing:
 
             assert msg._flush_timer is None
             assert msg._pending_append == ""
-            # Buffered token must not bleed into the replacement render.
-            stream.write.assert_not_awaited()
+            # The initial fragment rendered immediately and must not bleed into
+            # the replacement render again.
+            stream.write.assert_awaited_once_with("buffered")
             markdown.update.assert_awaited_once_with("replacement")
 
     async def test_timer_created_once_across_appends(self) -> None:
@@ -604,7 +686,8 @@ class TestAssistantMessageStreamCoalescing:
             # via the Textual timer's exception handler.
             await msg._flush_pending_append()
 
-            stream.write.assert_awaited_once_with("kept")
+            assert stream.write.await_count == 2
+            stream.write.assert_awaited_with("kept")
             assert msg._pending_append == "kept"
 
             # Text arriving after the failure queues behind the retried fragment.
@@ -937,6 +1020,9 @@ class TestToolCallMessageDuration:
             content = status._Static__content  # ty: ignore
             assert isinstance(content, Content)
             assert content.plain == "Took 4.9s"
+            assert app.msg._preview_row is not None
+            children = list(app.msg.children)
+            assert children.index(status) > children.index(app.msg._preview_row)
 
     async def test_execute_shows_fractional_seconds(self) -> None:
         """Sub-minute `execute` runs report tenths — `elapsed` is a float.
@@ -1475,6 +1561,12 @@ class _ToolMsgApp(App[None]):
         yield self.msg
 
 
+class _AsciiToolMsgApp(_ToolMsgApp):
+    """Tool-message app that loads the app-level ASCII overrides."""
+
+    CSS_PATH = Path(deepagents_code.__file__).resolve().parent / "app.tcss"
+
+
 def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
     """Build a single-`ToolCallMessage` Textual app for pilot-driven tests.
 
@@ -1486,6 +1578,288 @@ def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
         An unmounted `App` exposing the message as `app.msg`.
     """
     return _ToolMsgApp(tool_name, args)
+
+
+class TestToolCallMessageAppearance:
+    """Tool rows align their prefix and hover affordance with real actions."""
+
+    async def test_has_flush_left_glyph_with_right_padding(self) -> None:
+        """The tool prefix has no left inset while content keeps its right inset."""
+        app = _tool_msg_app("read_file", {"file_path": "example.py"})
+        async with app.run_test():
+            assert app.msg.styles.padding.left == 0
+            assert app.msg.styles.padding.right == 1
+
+    async def test_output_prefix_aligns_with_tool_name(self) -> None:
+        """The output prefix starts beneath the tool name after its marker."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test():
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_row.styles.margin.left == 2
+
+    async def test_short_execute_output_has_no_actionable_hover(self) -> None:
+        """Fully visible shell output must not advertise a dead row action."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("hi")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_not_called()
+            assert app.msg._expanded is False
+
+    async def test_expandable_execute_output_has_actionable_hover(self) -> None:
+        """Truncated shell output opts the row into hover and click expansion."""
+        output = "\n".join(f"line {index}" for index in range(10))
+        app = _tool_msg_app("execute", {"command": "printf lots"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._expanded is True
+
+    async def test_emptied_output_drops_the_actionable_hover(self) -> None:
+        """Losing the output must release the hover border, not just the click.
+
+        `_update_output_display` bails out early when `_output` is empty, so the
+        row would otherwise keep the class its expandable output added and
+        advertise a click that `on_click` now refuses.
+        """
+        output = "\n".join(f"line {index}" for index in range(30))
+        app = _tool_msg_app("read_file", {"file_path": "example.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+            assert app.msg.has_class("-row-actionable")
+
+            app.msg.set_error("")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_not_called()
+
+    async def test_hover_rule_targets_the_row_action_class(self) -> None:
+        """The CSS selector and the constant must not drift apart.
+
+        Renaming one without the other leaves hover permanently dead with the
+        whole suite green, since nothing else reads the selector.
+        """
+        assert (
+            f"ToolCallMessage.{_TOOL_ROW_ACTION_CLASS}:hover"
+            in ToolCallMessage.DEFAULT_CSS
+        )
+
+    async def test_long_execute_command_is_actionable_without_expandable_output(
+        self,
+    ) -> None:
+        """A truncated command carries the row action even when output is short.
+
+        Guards the `has_expandable_args` term of `has_row_action`: dropping it
+        leaves this row unclickable, because `on_click` returns before reaching
+        its args fallthrough.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        app = _tool_msg_app("execute", {"command": command})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("hi")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._args_expanded is True
+
+    async def test_multiline_js_eval_is_actionable_without_expandable_output(
+        self,
+    ) -> None:
+        """A short `js_eval` result still leaves its code block clickable."""
+        app = _tool_msg_app("js_eval", {"code": "const a = 1;\nreturn a;"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("1")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_long_task_description_is_actionable_without_other_expansions(
+        self,
+    ) -> None:
+        """A truncated `task` description alone earns the row action.
+
+        Guards the `has_expandable_task_desc` term: without it this row loses
+        both its hover border and its click.
+        """
+        app = _tool_msg_app("task", {"description": "d" * 300})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_expandable_args is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._task_desc_expanded is True
+
+    async def test_short_task_description_is_not_actionable(self) -> None:
+        """A `task` row with nothing truncated advertises no row action."""
+        app = _tool_msg_app("task", {"description": "short"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_pending_row_is_actionable_before_output_arrives(self) -> None:
+        """A long command is clickable while the tool is still running.
+
+        Covers the `on_mount` sync, the only path that classes a row whose
+        output has never been set.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        app = _tool_msg_app("execute", {"command": command})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_pending_short_row_is_not_actionable(self) -> None:
+        """A pending row with nothing to reveal stays inert."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_short_read_file_output_is_actionable(self) -> None:
+        """Collapse-by-default output is actionable regardless of its size.
+
+        The counter-example to "short output means no action": `read_file`
+        hides its whole body because the header already names the path, so a
+        five-character result still expands. Covers the
+        `_COLLAPSE_OUTPUT_BY_DEFAULT` return in `_update_output_display`, which
+        exits before the shared sync at the end.
+        """
+        app = _tool_msg_app("read_file", {"file_path": "example.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("x = 1")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    @pytest.mark.parametrize(
+        ("tool_name", "output"),
+        [("grep", "No matches found"), ("glob", "No files found")],
+    )
+    async def test_empty_search_result_is_not_actionable(
+        self, tool_name: str, output: str
+    ) -> None:
+        """A terminal no-result message renders inline, so nothing can expand."""
+        app = _tool_msg_app(tool_name, {"pattern": "zzz"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_short_error_row_is_force_expanded_without_row_action(self) -> None:
+        """A force-expanded short error offers no collapse to advertise."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error("boom")
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_row_action_class_survives_rehydration(self) -> None:
+        """A row rebuilt from stored data re-derives its action from its args.
+
+        The hydrated path never calls `set_success`, so the class comes solely
+        from the `on_mount` sync after `_restore_deferred_state`. Also pins that
+        the store keeps `tool_args`: without them the row loses its action.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        source = _tool_msg_app("execute", {"command": command})
+        async with source.run_test() as pilot:
+            await pilot.pause()
+            source.msg.set_success("hi")
+            await pilot.pause()
+            data = MessageData.from_widget(source.msg)
+
+        assert data is not None
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+
+        class _RestoredApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _RestoredApp().run_test() as pilot:
+            await pilot.pause()
+
+            assert restored.has_row_action is True
+            assert restored.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_ascii_hover_requires_actionable_row(self) -> None:
+        """ASCII borders brighten only when clicking the row has an effect."""
+        app = _AsciiToolMsgApp("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            app.msg.set_success("hi")
+            app.msg.add_class("-ascii")
+            await pilot.pause()
+            default_border = app.msg.styles.border_left
+
+            await pilot.hover(app.msg)
+
+            assert app.msg.mouse_hover
+            assert app.msg.styles.border_left == default_border
+
+        output = "\n".join(f"line {index}" for index in range(10))
+        app = _AsciiToolMsgApp("execute", {"command": "printf lots"})
+        async with app.run_test() as pilot:
+            app.msg.set_success(output)
+            app.msg.add_class("-ascii")
+            await pilot.pause()
+            default_border = app.msg.styles.border_left
+
+            await pilot.hover(app.msg)
+
+            assert app.msg.mouse_hover
+            assert app.msg.styles.border_left != default_border
 
 
 class TestToolCallMessageOutputGutter:
@@ -2277,6 +2651,61 @@ class TestToolCallMessageAskUserOutput:
 
         assert result.content.plain == "User answered"
         assert result.truncation == "2 answers"
+
+    def test_expanded_renders_the_transcript_literally(self) -> None:
+        msg = ToolCallMessage("ask_user", self._ARGS)
+
+        result = msg._format_ask_user_output(self._TRANSCRIPT, is_preview=False)
+
+        assert result.content.plain == self._TRANSCRIPT
+
+    def test_expanded_unpacks_a_multi_select_answer_for_the_reader(self) -> None:
+        """The row must not show the model's JSON array to the user."""
+        args = {
+            "questions": [
+                {"question": "Where?", "type": "multi_select", "choices": []},
+            ]
+        }
+        transcript = 'Q: Where?\nA: ["Boston, MA", "Austin"]'
+        msg = ToolCallMessage("ask_user", args)
+
+        result = msg._format_ask_user_output(transcript, is_preview=False)
+
+        assert result.content.plain == "Q: Where?\nA: Boston, MA\nAustin"
+
+    def test_preview_stays_a_summary_for_multi_select_args(self) -> None:
+        """The unpacking is expanded-only: collapsed rows keep the summary.
+
+        Unpacking above the preview branch would put the whole transcript in the
+        one-line row.
+        """
+        args = {
+            "questions": [
+                {"question": "Where?", "type": "multi_select", "choices": []},
+            ]
+        }
+        msg = ToolCallMessage("ask_user", args)
+
+        result = msg._format_ask_user_output(
+            'Q: Where?\nA: ["Austin"]', is_preview=True
+        )
+
+        assert result.content.plain == "User answered"
+        assert result.truncation == "1 answer"
+
+    def test_expanded_keeps_an_undecodable_multi_select_answer_verbatim(self) -> None:
+        """A cancelled prompt has placeholders, not JSON, in every slot."""
+        args = {
+            "questions": [
+                {"question": "Where?", "type": "multi_select", "choices": []},
+            ]
+        }
+        transcript = "Q: Where?\nA: (cancelled)"
+        msg = ToolCallMessage("ask_user", args)
+
+        result = msg._format_ask_user_output(transcript, is_preview=False)
+
+        assert result.content.plain == transcript
 
     async def test_fallback_summary_suppression_survives_rehydration(self) -> None:
         """A rebuilt fallback row still advertises no expansion.
@@ -4845,8 +5274,8 @@ class _AppMessageApp(App[None]):
         yield AppMessage("Resumed thread: tid-1", id="app-msg")
 
 
-class TestAppMessageLinkPointer:
-    """Tests for the pointer cursor shown when hovering embedded links."""
+class TestAppMessagePointer:
+    """Tests for pointer shapes over app-message content."""
 
     @staticmethod
     def _move_event(
@@ -4864,14 +5293,23 @@ class TestAppMessageLinkPointer:
 
             assert msg.styles.pointer == "pointer"
 
-    async def test_hovering_text_keeps_text_pointer(self) -> None:
-        """Plain message text keeps the text pointer."""
+    async def test_hovering_text_sets_text_pointer(self) -> None:
+        """A cell carrying Textual's selection offset uses the text pointer."""
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+
+            msg.on_mouse_move(self._move_event(meta={"offset": (0, 0)}))  # ty: ignore
+
+            assert msg.styles.pointer == "text"
+
+    async def test_hovering_blank_space_sets_default_pointer(self) -> None:
+        """A cell without rendered text uses the default pointer."""
         async with _AppMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#app-msg", AppMessage)
 
             msg.on_mouse_move(self._move_event())  # ty: ignore
 
-            assert msg.styles.pointer == "text"
+            assert msg.styles.pointer == "default"
 
     async def test_leave_resets_pointer(self) -> None:
         """Leaving the message resets the pointer after a link hover."""
@@ -4881,7 +5319,7 @@ class TestAppMessageLinkPointer:
 
             msg.on_leave()
 
-            assert msg.styles.pointer == "text"
+            assert msg.styles.pointer == "default"
 
     async def test_link_then_text_resets_pointer_without_leaving(self) -> None:
         """Moving off a link onto plain text resets the pointer without leaving.
@@ -4895,7 +5333,7 @@ class TestAppMessageLinkPointer:
             msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
             assert msg.styles.pointer == "pointer"
 
-            msg.on_mouse_move(self._move_event())  # ty: ignore
+            msg.on_mouse_move(self._move_event(meta={"offset": (0, 0)}))  # ty: ignore
 
             assert msg.styles.pointer == "text"
 
@@ -4946,6 +5384,77 @@ class TestAppMessagePointerEventDelivery:
 
             await pilot.hover("#app-msg", offset=(prefix_x, 0))
             assert msg.styles.pointer == "text"
+
+            # Past the end of the rendered line the widget is blank, so the
+            # I-beam must not follow the mouse across the rest of the row.
+            blank_x = len(_LinkedAppMessageApp.PREFIX) + len("tid-123") + 2
+            await pilot.hover("#app-msg", offset=(blank_x, 0))
+            assert msg.styles.pointer == "default"
+
+
+def _pointer_probe_app(widget: Static) -> App[None]:
+    """Wrap a message widget in a bare app so its hover shapes can be probed.
+
+    Args:
+        widget: The message widget to mount, which is given the id `msg`.
+
+    Returns:
+        An app mounting only that widget.
+    """
+    widget.id = "msg"
+
+    class _ProbeApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield widget
+
+    return _ProbeApp()
+
+
+class TestMessageWidgetsDropTextPointerOverBlankSpace:
+    """Every message widget resolves its pointer per cell, not per widget.
+
+    These widgets used to declare `pointer: text` in CSS, which Textual applies
+    across a widget's whole rectangle — so a short line showed an I-beam over
+    the empty remainder of its row. One real hover on either side of the text
+    covers each widget; the offsets account for the differing border and
+    padding declared in each widget's own `DEFAULT_CSS`.
+    """
+
+    @pytest.mark.parametrize(
+        ("widget", "text_offset", "blank_offset"),
+        [
+            # `UserMessage` pads vertically, so its body sits on row 1.
+            pytest.param(UserMessage("hi"), (2, 1), (10, 1), id="user"),
+            pytest.param(QueuedUserMessage("hi"), (2, 0), (10, 0), id="queued"),
+            # `ErrorMessage` pads vertically, so its body sits on row 1.
+            pytest.param(ErrorMessage("hi"), (2, 1), (15, 1), id="error"),
+            pytest.param(
+                DiffMessage("--- a\n+++ b\n+hi\n", "f.py"),
+                (2, 0),
+                (16, 0),
+                id="diff",
+            ),
+            pytest.param(AppMessage("hi"), (1, 0), (10, 0), id="app"),
+            pytest.param(
+                SummarizationMessage("hi"), (2, 0), (10, 0), id="summarization"
+            ),
+        ],
+    )
+    async def test_text_pointer_stops_at_end_of_rendered_text(
+        self,
+        widget: Static,
+        text_offset: tuple[int, int],
+        blank_offset: tuple[int, int],
+    ) -> None:
+        """Rendered cells get the I-beam; the blank rest of the row does not."""
+        async with _pointer_probe_app(widget).run_test(size=(40, 24)) as pilot:
+            msg = pilot.app.query_one("#msg", Static)
+
+            await pilot.hover("#msg", offset=text_offset)
+            assert msg.styles.pointer == "text"
+
+            await pilot.hover("#msg", offset=blank_offset)
+            assert msg.styles.pointer == "default"
 
 
 class TestMountMessageIdSync:
@@ -5056,6 +5565,22 @@ class TestStripFrontmatter:
         assert _strip_frontmatter(text) == ""
 
 
+class TestSkillMessageAppearance:
+    """Skill invocation rows align their slash marker with the transcript edge."""
+
+    async def test_has_flush_left_marker_with_right_padding(self) -> None:
+        """The skill slash has no left inset while content keeps its right inset."""
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield SkillMessage(skill_name="web-research")
+
+        async with _Harness().run_test() as pilot:
+            message = pilot.app.query_one(SkillMessage)
+            assert message.styles.padding.left == 0
+            assert message.styles.padding.right == 1
+
+
 class TestSkillMessageMarkupSafety:
     """Test SkillMessage handles content with brackets safely."""
 
@@ -5159,6 +5684,67 @@ class TestStripSuccessExitLine:
         msg = ToolCallMessage("execute", {"command": "echo hi"})
         msg.set_success("hi\n[Command succeeded with exit code 0]")
         assert msg._output == "hi"
+
+
+class TestUserMessageAppearance:
+    """User prompts remain visually distinct from transcript output."""
+
+    async def test_has_distinct_padded_flush_left_surface(self) -> None:
+        """A user prompt has a padded tint with its glyph at the left edge."""
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield UserMessage("hello")
+
+        async with _Harness().run_test() as pilot:
+            message = pilot.app.query_one(UserMessage)
+            assert message.styles.background.a == pytest.approx(0.15)
+            assert message.styles.padding.top == 1
+            assert message.styles.padding.right == 1
+            assert message.styles.padding.bottom == 1
+            assert message.styles.padding.left == 0
+
+    @pytest.mark.parametrize(
+        ("content", "prefix", "body"),
+        [
+            (
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+                "> ",
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "!0123456789abcdefghijklmnopqrstuvwxyz",
+                "$ ",
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "/0123456789abcdefghijklmnopqrstuvwxyz",
+                "/ ",
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+            ),
+        ],
+    )
+    async def test_wrapped_body_keeps_prompt_gutter(
+        self,
+        content: str,
+        prefix: str,
+        body: str,
+    ) -> None:
+        """Every continuation starts beneath the body, never beneath its glyph."""
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield UserMessage(content)
+
+        async with _Harness().run_test(size=(18, 12)) as pilot:
+            message = pilot.app.query_one(UserMessage)
+            lines = [
+                message.render_line(y).text for y in range(message.content_size.height)
+            ]
+            assert len(lines) > 1
+            assert lines[0].startswith(prefix)
+            assert all(line.startswith("  ") for line in lines[1:])
+            assert lines[0][2:] + "".join(line[2:] for line in lines[1:]) == body
 
 
 class TestUserMessageCancelled:
@@ -6520,14 +7106,16 @@ class TestUserMessageTruncation:
         # tail all fit on screen — `pilot.click` refuses off-screen targets.
         async with app.run_test(size=(200, 50)) as pilot:
             await pilot.pause()
-            # Locate the affordance in the wrapped output rather than computing
-            # it from the body length, which depends on terminal width.
+            # Locate the affordance in the wrapped content rather than computing
+            # it from the body length, which depends on terminal width. Pilot
+            # offsets include the widget's padding, while render_line rows do not.
             hint_row = next(
                 y
                 for y in range(msg.size.height)
                 if "show full message" in msg.render_line(y).text
             )
-            await pilot.click(UserMessage, offset=Offset(4, hint_row))
+            click_row = hint_row + msg.styles.padding.top
+            await pilot.click(UserMessage, offset=Offset(4, click_row))
             await pilot.pause()
             assert msg._expanded is True
 

@@ -276,12 +276,12 @@ class TestFormatToolDisplay:
         result = format_tool_display("execute", {"command": "ls -la"})
         assert 'execute("ls -la")' in result
 
-    def test_execute_shows_timeout_when_non_default(self) -> None:
-        non_default = DEFAULT_EXECUTE_TIMEOUT + 180
+    @pytest.mark.parametrize("timeout", [300, "300"])
+    def test_execute_shows_timeout_when_non_default(self, timeout: int | str) -> None:
         result = format_tool_display(
-            "execute", {"command": "sleep 5", "timeout": non_default}
+            "execute", {"command": "sleep 5", "timeout": timeout}
         )
-        assert f"timeout={_format_timeout(non_default)}" in result
+        assert "timeout=5m" in result
 
     def test_execute_omits_timeout_when_default(self) -> None:
         result = format_tool_display(
@@ -406,9 +406,10 @@ class TestFormatToolDisplay:
         result = format_tool_display("ask_user", {"questions": ["What?"]})
         assert "1 question" in result
 
-    def test_ask_user_plural(self) -> None:
-        result = format_tool_display("ask_user", {"questions": ["Q1", "Q2", "Q3"]})
-        assert "3 questions" in result
+    @pytest.mark.parametrize("count", [0, 2])
+    def test_ask_user_plural(self, count: int) -> None:
+        result = format_tool_display("ask_user", {"questions": ["Q"] * count})
+        assert f"{count} questions" in result
 
     def test_ask_user_missing_questions_falls_back(self) -> None:
         result = format_tool_display("ask_user", {})
@@ -453,12 +454,19 @@ class TestFormatToolDisplay:
 
     # --- Unicode sanitization in tool args ---
 
-    def test_hidden_unicode_in_command_stripped(self) -> None:
-        result = format_tool_display("execute", {"command": "echo he\u200bllo"})
-        assert _HIDDEN_CHAR_MARKER in result
-
-    def test_hidden_unicode_in_file_path_stripped(self) -> None:
-        result = format_tool_display("read_file", {"file_path": "/tmp/fi\u200ble.py"})
+    @pytest.mark.parametrize(
+        ("tool_name", "args"),
+        [
+            ("execute", {"command": "echo he\u200bllo"}),
+            ("read_file", {"file_path": "/tmp/fi\u200ble.py"}),
+            ("fetch_url", {"url": "https://exa\u200bmple.com"}),
+        ],
+    )
+    def test_hidden_unicode_stripped(
+        self, tool_name: str, args: dict[str, object]
+    ) -> None:
+        result = format_tool_display(tool_name, args)
+        assert "\u200b" not in result
         assert _HIDDEN_CHAR_MARKER in result
 
 
@@ -501,11 +509,23 @@ class TestFormatContentBlock:
         result = _format_content_block({"type": "image", "base64": "AAAA"})
         assert "[Image: image," in result
 
-    def test_image_block_non_str_base64_falls_through_to_json(self) -> None:
-        # Non-str base64 fails the isinstance check → JSON fallback, no placeholder.
-        result = _format_content_block({"type": "image", "base64": 123})
+    @pytest.mark.parametrize(
+        ("block", "expected_fragment"),
+        [
+            ({"type": "image", "base64": 123}, '"base64": 123'),
+            (
+                {"type": "image", "url": "https://example.com/image.png"},
+                '"url": "https://example.com/image.png"',
+            ),
+        ],
+    )
+    def test_image_block_without_string_base64_falls_through_to_json(
+        self, block: dict[str, object], expected_fragment: str
+    ) -> None:
+        result = _format_content_block(block)
         assert "[Image" not in result
-        assert '"base64": 123' in result
+        assert '"type": "image"' in result
+        assert expected_fragment in result
 
     def test_plain_dict_serialized_as_json(self) -> None:
         result = _format_content_block({"type": "text", "text": "hello"})
@@ -550,9 +570,10 @@ class TestFormatToolMessageContent:
 
     def test_list_with_image_block_shows_placeholder(self) -> None:
         result = format_tool_message_content(
-            [{"type": "image", "base64": "AAAA", "mime_type": "image/png"}]
+            [{"type": "image", "base64": "A" * 4000, "mime_type": "image/png"}]
         )
         assert "[Image:" in result
+        assert "AAAA" not in result
 
     def test_mixed_list_string_and_dict(self) -> None:
         result = format_tool_message_content(

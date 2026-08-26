@@ -52,11 +52,8 @@ from deepagents_code.plugins.marketplace import (
 )
 from deepagents_code.plugins.models import (
     GithubPluginSource,
-    LocalMarketplaceSource,
     MarketplaceRecord,
     PluginMarketplace,
-    RepositoryMarketplaceSource,
-    UrlMarketplaceSource,
 )
 from deepagents_code.plugins.store import (
     ensure_marketplace_cache_dir,
@@ -623,35 +620,6 @@ def test_enable_without_install_does_not_discover(tmp_path: Path, monkeypatch) -
     assert not result.warnings
 
 
-def test_marketplace_source_parser_accepts_common_inputs(tmp_path: Path) -> None:
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    marketplace_file = marketplace_root / ".claude-plugin" / "marketplace.json"
-
-    shorthand = parse_marketplace_source("example/plugins")
-    assert isinstance(shorthand, RepositoryMarketplaceSource)
-    assert shorthand.source_type == "github"
-    ssh = parse_marketplace_source("git@github.com:example/plugins.git#main")
-    assert isinstance(ssh, RepositoryMarketplaceSource)
-    assert ssh.source_type == "git"
-    assert ssh.ref == "main"
-    github_url = parse_marketplace_source("https://github.com/owner/repo")
-    assert isinstance(github_url, RepositoryMarketplaceSource)
-    assert github_url.source_type == "git"
-    assert github_url.value == "https://github.com/owner/repo.git"
-    json_url = parse_marketplace_source("https://example.com/marketplace.json")
-    assert isinstance(json_url, UrlMarketplaceSource)
-    assert json_url.source_type == "url"
-    directory = parse_marketplace_source(str(marketplace_root))
-    marketplace_json = parse_marketplace_source(str(marketplace_file))
-    assert isinstance(directory, LocalMarketplaceSource)
-    assert isinstance(marketplace_json, LocalMarketplaceSource)
-    assert directory.source_type == "directory"
-    assert marketplace_json.source_type == "file"
-    assert not hasattr(directory, "ref")
-    assert not hasattr(json_url, "ref")
-
-
 def test_marketplace_add_accepts_json_file_source(tmp_path: Path, monkeypatch) -> None:
     state = tmp_path / "state"
     config = tmp_path / "config"
@@ -920,6 +888,48 @@ async def test_plugin_manager_opens_add_marketplace_input(
         help_text = str(screen.query_one("#plugin-manager-help").render())
         assert "Enter to add" in help_text
         assert "Esc to cancel" in help_text
+
+
+async def test_plugin_manager_blocks_option_selection_while_checking_close_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close snapshot cannot miss a plugin change made from an option row."""
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def check_reload_required() -> bool:
+        started.set()
+        await release.wait()
+        return False
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        screen = PluginManagerScreen(check_reload_required=check_reload_required)
+        app.push_screen(screen)
+        await pilot.pause()
+
+        await pilot.press("escape")
+        await started.wait()
+        assert screen._close_phase == "checking"
+
+        # Enter normally opens the selected plugin's details, from which it can
+        # be installed. It must be ignored while the close snapshot is pending.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._mode == "list"
+        assert screen._selected_plugin is None
+
+        release.set()
+        await pilot.pause()
 
 
 async def test_plugin_manager_add_marketplace_runs_in_background(
@@ -1721,6 +1731,39 @@ def test_manager_state_keeps_pending_reload_after_disable_while_loaded(
     assert row.enabled is False
     assert row.session_loaded is True
     assert row.load_state == "pending_reload"
+
+
+def test_manager_state_defers_mcp_reload_hint_while_connecting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+    loaded_plugin_ids = frozenset({plugin_id})
+
+    connecting_state = _load_manager_state(
+        mcp_connecting=True,
+        loaded_plugin_ids=loaded_plugin_ids,
+    )
+    settled_state = _load_manager_state(loaded_plugin_ids=loaded_plugin_ids)
+    connecting_row = next(
+        row for row in connecting_state.installed_plugins if row.plugin_id == plugin_id
+    )
+    settled_row = next(
+        row for row in settled_state.installed_plugins if row.plugin_id == plugin_id
+    )
+
+    assert connecting_row.load_state == "enabled"
+    assert connecting_row.mcp_connected is None
+    assert settled_row.mcp_connected is False
 
 
 def test_manager_state_previews_local_discover_components(

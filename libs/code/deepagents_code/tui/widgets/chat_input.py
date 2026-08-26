@@ -5,22 +5,26 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from rich.cells import cell_len
 from rich.segment import Segment
+from rich.style import Style
+from rich.text import Text
 from textual.app import NoScreen
 from textual.color import Color
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.geometry import Offset, Size
+from textual.highlight import highlight
 from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
-from textual.widgets import Static, TextArea
+from textual.widgets import Input, Static, TextArea
 
 from deepagents_code import theme
 from deepagents_code.command_registry import CommandEntry, get_slash_commands
@@ -31,7 +35,10 @@ from deepagents_code.config import (
     get_glyphs,
     is_ascii_mode,
 )
-from deepagents_code.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
+from deepagents_code.input import (
+    IMAGE_PLACEHOLDER_PATTERN,
+    VIDEO_PLACEHOLDER_PATTERN,
+)
 from deepagents_code.paste_collapse import (
     PASTE_PLACEHOLDER_PATTERN,
     PastedContent,
@@ -51,6 +58,13 @@ from deepagents_code.tui.widgets.autocomplete import (
     SlashCommandController,
 )
 from deepagents_code.tui.widgets.history import HistoryManager
+from deepagents_code.tui.widgets.prompt_search import (
+    PROMPT_SEARCH_PANEL_ROWS,
+    PromptSearchInput,
+    PromptSearchPanel,
+    filter_prompts,
+    prompt_title,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +117,16 @@ leave the box's corner glyphs visible.
 """
 
 _CHAT_INPUT_BOX_MAX_HEIGHT = 25
-"""Rows the bordered input box may occupy, including its border and any popup.
+"""Rows the bordered input box may occupy for its own content and border.
 
-`ChatInputBox._apply_manual_height` subtracts the gutter and the completion
-popup from this to derive the composer budget, so it is load-bearing arithmetic
-rather than a cosmetic cap. Interpolated into `ChatInput.DEFAULT_CSS` as the
-`#input-box` `max-height`.
+`ChatInputBox._apply_manual_height` subtracts the gutter and every inline panel
+row (completion popup and prompt search) from this to derive the composer
+budget, so it is load-bearing arithmetic rather than a cosmetic cap.
+
+This is the composer's budget, not the box's rendered ceiling: the `#input-box`
+`max-height` in `ChatInput.DEFAULT_CSS` interpolates
+`_CHAT_INPUT_BOX_MAX_HEIGHT + PROMPT_SEARCH_PANEL_ROWS`, so a fully expanded
+prompt search panel fits inside the border instead of pushing the draft out.
 """
 
 _CHAT_INPUT_MANUAL_MAX_HEIGHT = 20
@@ -577,31 +595,6 @@ class ChatTextArea(PasteBurstTextArea):
     class HistoryNext(Message):
         """Request next history entry."""
 
-    class PastedPaths(Message):
-        """Message sent when paste payload resolves to file paths."""
-
-        def __init__(self, raw_text: str, paths: list[Path]) -> None:
-            """Initialize with raw pasted text and parsed file paths."""
-            self.raw_text = raw_text
-            self.paths = paths
-            super().__init__()
-
-    class PastedText(Message):
-        """Message sent when a paste is large enough to be collapsed.
-
-        The full text is carried in the message so `ChatInput` can store it
-        and insert a compact placeholder into the text area instead.
-        """
-
-        def __init__(self, text: str) -> None:
-            """Initialize with the full pasted text.
-
-            Args:
-                text: The complete pasted text content.
-            """
-            self.text = text
-            super().__init__()
-
     class Typing(Message):
         """Posted when the user presses a printable key or backspace.
 
@@ -620,6 +613,7 @@ class ChatTextArea(PasteBurstTextArea):
         self._chat_input_owner: ChatInput | None = None
         self._skip_history_change_events = 0
         self._completion_active = False
+        self._burst_payload_keeps_leading_slash = False
         # Paste-burst and backslash-pending state is initialized by
         # PasteBurstTextArea.__init__.
         # Tracks terminal focus so a click that re-focuses the window only
@@ -627,6 +621,134 @@ class ChatTextArea(PasteBurstTextArea):
         # `_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS`.
         self._app_blurred = False
         self._refocus_time: float | None = None
+        self._shell_highlighting = False
+        self._highlighted_source = ""
+        self._highlighted_lines: list[Content] | None = None
+
+    def set_shell_highlighting(self, *, enabled: bool) -> None:
+        """Enable or disable shell syntax highlighting for this text area.
+
+        Args:
+            enabled: Whether to style input as shell syntax.
+        """
+        if self._shell_highlighting == enabled:
+            return
+        self._shell_highlighting = enabled
+        self._highlighted_source = ""
+        self._highlighted_lines = None
+        self._line_cache.clear()
+        self.refresh()
+
+    def on_focus(self) -> None:
+        """Keep an open prompt search focused when the composer is clicked."""
+        owner = self._chat_input_owner
+        if owner is not None and owner._prompt_search_active:
+            owner.focus_input()
+
+    def _render_line(self, y: int) -> Strip:
+        """Render a line, keeping shell token colors visible on the cursor line.
+
+        `TextArea._render_line` stylizes the whole cursor line with
+        `theme.cursor_line_style`, which under the default `css` theme resolves
+        to a style carrying the widget's text color. That foreground is painted
+        after (and on top of) the shell syntax spans produced by `get_line`,
+        flattening every token on the cursor line to a single color. Clear just
+        the foreground while shell highlighting is active so the cursor-line
+        background tint - and any text styles such as bold - still apply over
+        the token colors.
+
+        Mutating the theme in place is safe because `TextArea._set_theme` keeps
+        a per-widget copy (`dataclasses.replace`), so this never touches the
+        shared builtin theme or another `TextArea`. Rendering is synchronous
+        and `apply_css` runs outside this window, so the `finally` restore is
+        sufficient.
+
+        Args:
+            y: Y coordinate of the line relative to the widget region.
+
+        Returns:
+            The rendered line.
+        """
+        theme = self._theme
+        cursor_line_style = theme.cursor_line_style if theme else None
+        if (
+            not self._shell_highlighting
+            or cursor_line_style is None
+            or cursor_line_style.color is None
+        ):
+            return super()._render_line(y)
+
+        # Restore on the exception path too; otherwise the widget keeps a
+        # foreground-less cursor line for the rest of the session.
+        theme.cursor_line_style = cursor_line_style.without_color + Style(
+            bgcolor=cursor_line_style.bgcolor
+        )
+        try:
+            return super()._render_line(y)
+        finally:
+            theme.cursor_line_style = cursor_line_style
+
+    def get_line(self, line_index: int) -> Text:
+        """Return one input line, with shell syntax styles when enabled.
+
+        Args:
+            line_index: Index of the line to return.
+
+        Returns:
+            The line as Rich text, styled per shell token when highlighting is
+            active. Falls back to the unstyled base implementation if
+            highlighting fails, so the text shown always matches the document.
+        """
+        if not self._shell_highlighting:
+            return super().get_line(line_index)
+
+        source = self.text
+        lines = self._highlighted_lines
+        if lines is None or source != self._highlighted_source:
+            language = "batch" if sys.platform == "win32" else "sh"
+            try:
+                # `tab_size=1` keeps span offsets aligned with the document's
+                # raw character offsets: Pygments expands tabs (default 8),
+                # while `_render_line` does its own tab expansion downstream.
+                highlighted = highlight(source, language=language, tab_size=1)
+                lines = list(highlighted.split("\n", allow_blank=True))
+            except Exception:
+                # This runs inside the render loop, where an uncaught exception
+                # tears down the whole app. Degrade to unhighlighted text and
+                # stop retrying every frame.
+                logger.exception(
+                    "Shell highlighting failed for a %d-character draft; "
+                    "falling back to unhighlighted text",
+                    len(source),
+                )
+                self._shell_highlighting = False
+                self._highlighted_source = ""
+                self._highlighted_lines = None
+                return super().get_line(line_index)
+            # `highlight()` normalizes via `"\n".join(code.splitlines())`, which
+            # drops the trailing empty line that `Document` keeps. Pad so line
+            # indices stay in step with the document.
+            lines.extend([Content("")] * max(0, self.document.line_count - len(lines)))
+            # Only commit the cache marker once both fallible steps succeeded;
+            # advancing it earlier would serve the previous draft's lines
+            # forever on the cache-hit path.
+            self._highlighted_source = source
+            self._highlighted_lines = lines
+
+        if not 0 <= line_index < len(lines):
+            logger.warning(
+                "Shell highlight covers %d lines, not line %d (document has "
+                "%d); rendering it unhighlighted",
+                len(lines),
+                line_index,
+                self.document.line_count,
+            )
+            return super().get_line(line_index)
+
+        line = Text(end="", no_wrap=True)
+        for segment in lines[line_index].render_segments(self.visual_style):
+            line.append(segment.text, segment.style)
+        return line
 
     def render_line(self, y: int) -> Strip:
         """Render a single line, appending any argument hint at line end.
@@ -824,8 +946,8 @@ class ChatTextArea(PasteBurstTextArea):
         regain only restores focus and leaves the cursor where it was.
 
         Deliberately shadows Textual's private `TextArea._on_mouse_down` to gate
-        cursor positioning; verified against Textual 8.2.7. If the base handler
-        changes, re-verify that early-returning before `super()` still leaves no
+        cursor positioning; verified against Textual 8.2.8. Re-verify on every
+        Textual bump that early-returning before `super()` still leaves no
         selection/capture state set.
         """
         if self._consume_refocus_click():
@@ -866,8 +988,8 @@ class ChatTextArea(PasteBurstTextArea):
         untouched.
 
         Deliberately overrides Textual's private `_refresh_scrollbars` and
-        swaps the private `_container_size`; verified against Textual 8.2.7.
-        Re-verify on major Textual upgrades.
+        swaps the private `_container_size`; verified against Textual 8.2.8.
+        Re-verify these attribute names on every Textual bump.
         """
         bound = self._settled_content_height()
         if bound is None:
@@ -969,10 +1091,25 @@ class ChatTextArea(PasteBurstTextArea):
     async def _dispatch_burst_payload(self, payload: str) -> None:
         """Route a flushed burst through dropped-path and large-paste checks.
 
-        When parsing fails, the buffered text is inserted unchanged so regular
-        typing behavior is preserved.
+        Routed payloads are applied through the owner synchronously rather than
+        posted to it, so the payload is in the document before this returns. A
+        posted message lands at the tail of this widget's queue, behind any
+        keystroke the terminal has already delivered, which would insert that
+        character ahead of the paste.
+
+        When parsing fails, or there is no owner to route through, the buffered
+        text is inserted unchanged so regular typing behavior is preserved.
         """
         from deepagents_code.input import parse_pasted_path_payload
+
+        keeps_leading_slash = self._burst_payload_keeps_leading_slash
+        self._burst_payload_keeps_leading_slash = False
+        owner = self._chat_input_owner
+        if owner is not None:
+            # Cleared up front so the verbatim-insert path below cannot leave a
+            # previous payload's answer standing for
+            # `_payload_supplied_trailing_space`.
+            owner._paste_appended_trailing_space = False
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
@@ -989,15 +1126,104 @@ class ChatTextArea(PasteBurstTextArea):
                 exc_info=True,
             )
             parsed = None
-        if parsed is not None:
-            self.post_message(self.PastedPaths(payload, parsed.paths))
-            return
+        if owner is not None:
+            if parsed is not None:
+                applied = owner.apply_paste_payload(payload, parsed.paths)
+            elif self._paste_collapse_enabled() and _should_collapse_chat_paste(
+                payload
+            ):
+                applied = owner.apply_paste_payload(payload, None)
+            else:
+                applied = False
+            if applied:
+                return
 
-        if self._paste_collapse_enabled() and _should_collapse_chat_paste(payload):
-            self.post_message(self.PastedText(payload))
-            return
-
+        if keeps_leading_slash and owner is not None:
+            # Consumed by the change handler this insert triggers, suppressing the
+            # mode re-detection that would otherwise strip the restored `/`.
+            owner.suppress_next_prefix_detection()
         self.insert(payload)
+        # A multi-line payload adds rows the same way `action_insert_newline`
+        # does, and needs the same post-refresh scroll for the same reason: the
+        # built-in scroll sees stale dimensions and leaves the cursor off screen.
+        if "\n" in payload:
+            self.call_after_refresh(self.scroll_cursor_visible)
+
+    def _burst_run_payload_for_dispatch(self, payload: str) -> str:
+        """Restore a virtual command prefix when a burst is an absolute path.
+
+        A `/` typed at offset 0 switches the input into command mode and is never
+        inserted, so a dropped absolute path replayed as key events loses its
+        leading separator. Restoring it lets the run be recognized as a path.
+
+        The restore is deliberately narrow, because a payload rewritten here is
+        also what takes the input *out* of command mode
+        (`_on_burst_run_promoted`). Asking `looks_like_dropped_payload` about the
+        `/`-prefixed candidate cannot decide this — that function is a leading-
+        token check, so prepending `/` makes it vacuously true for any text. Three
+        conditions stand in for it instead:
+
+        - The run must start at document offset 0, i.e. it is the text that
+          directly followed the consumed `/` rather than a later burst.
+        - The payload must contain its own separator, so `help` stays a command
+          name while `private/tmp/x` reads as a path tail.
+        - Nothing before that separator may be whitespace, which keeps a command
+          with a path argument (`read src/main.py`) from qualifying.
+
+        Returns:
+            The payload with the consumed leading slash restored, or the payload
+            unchanged when it does not look like the tail of an absolute path.
+        """
+        owner = self._chat_input_owner
+        if owner is None or owner.mode != "command":
+            return payload
+        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
+        if cursor_offset != len(payload) or not self.text.startswith(payload):
+            return payload
+        head, separator, _ = payload.partition("/")
+        if not separator or any(char.isspace() for char in head):
+            return payload
+        # Exactly one `/` was consumed, so exactly one is restored: `lstrip("/")`
+        # would eat a second leading slash and silently drop a character from a
+        # `//host/share` payload.
+        return f"/{payload}"
+
+    def _on_burst_run_promoted(
+        self, visible_payload: str, dispatch_payload: str
+    ) -> None:
+        """Leave command mode when promotion recovered a leading path slash."""
+        if visible_payload == dispatch_payload:
+            return
+        # The payload now leads with the restored `/`, so re-inserting it at
+        # offset 0 would trip mode-prefix detection a second time and strip the
+        # slash again — losing the character for good on the paths that do not
+        # resolve on disk. Flag it so the insert suppresses that detection.
+        self._burst_payload_keeps_leading_slash = True
+        owner = self._chat_input_owner
+        if owner is not None and owner.mode == "command":
+            owner.mode = "normal"
+
+    def _reset_paste_burst_state(self) -> None:
+        """Reset burst tracking, including the restored-slash flag.
+
+        The flag describes the buffered payload that `super()` is about to
+        discard, so it must not outlive it: a stale `True` would suppress the next
+        burst's legitimate mode re-detection.
+        """
+        self._burst_payload_keeps_leading_slash = False
+        super()._reset_paste_burst_state()
+
+    def _payload_supplied_trailing_space(self) -> bool:
+        """Return whether the flush appended a trailing space of its own.
+
+        An attached dropped-path payload gets a trailing space from
+        `_build_path_replacement`; inserting the pending space as well would
+        double it. The question is what the flush *did*, not what the document
+        happens to end with — a verbatim payload that merely ends in a space
+        would otherwise swallow the user's real keystroke.
+        """
+        owner = self._chat_input_owner
+        return owner is not None and owner._paste_appended_trailing_space
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
@@ -1029,8 +1255,32 @@ class ChatTextArea(PasteBurstTextArea):
         if event.key == "space" and event.character is None:
             event.prevent_default()
             event.stop()
+            # This branch bypasses the burst helpers below, so it has to drive
+            # them itself: a space inside a replayed paste must reach the buffer
+            # (if one is live) or the run tracker (if not), otherwise the
+            # tracker's text diverges from the document and the run is discarded,
+            # losing grouping for that stretch of the paste.
+            space_now = time.monotonic()
+            if self._paste_burst_buffer and self._append_recent_paste_burst_text(
+                " ", space_now
+            ):
+                self.post_message(self.Typing())
+                return
+            # The burst (if any) had gone idle, so this space follows the paste
+            # rather than belonging to it. Flushing applies the payload before it
+            # returns, so the space inserted next lands after it.
+            if self._paste_burst_buffer:
+                await self._flush_paste_burst()
+                if self._payload_supplied_trailing_space():
+                    self.post_message(self.Typing())
+                    return
             self.insert(" ")
+            self._note_printable_burst_keystroke(" ", space_now)
             self.post_message(self.Typing())
+            # The space is in the document, so the run may now qualify — a path
+            # payload can end on a space, and a long single-line paste can cross
+            # the length threshold here.
+            self._check_burst_run_for_promotion()
             return
 
         now = time.monotonic()
@@ -1040,22 +1290,24 @@ class ChatTextArea(PasteBurstTextArea):
         if event.is_printable or event.key == "backspace":
             self.post_message(self.Typing())
 
-        if await self._absorb_key_into_burst(event, now):
+        # While the inline prompt search is open, printable keys feed the
+        # panel's query -- the focused `PromptSearchInput` consumes them and
+        # `ChatInput.on_input_changed` re-filters -- so they must never be
+        # mistaken for paste-burst replay.
+        prompt_search_active = (
+            self._chat_input_owner is not None
+            and self._chat_input_owner._prompt_search_active
+        )
+
+        if not prompt_search_active and await self._absorb_key_into_burst(event, now):
             event.prevent_default()
             event.stop()
             return
 
-        if self._maybe_start_burst(event, now):
-            event.prevent_default()
-            event.stop()
-            return
-
-        # Promote rapid keystroke runs into the paste buffer so terminals without
-        # bracketed paste still get newline grouping and large-paste collapsing.
-        if self._track_burst_run(event, now):
-            event.prevent_default()
-            event.stop()
-            return
+        # Track rapid keystroke runs so terminals without bracketed paste keep
+        # embedded newlines grouped without delaying ordinary text insertion.
+        if not prompt_search_active:
+            self._track_burst_run(event, now)
 
         # A mode trigger (`!`, `!!`, `/`) typed at the very start of an
         # unselected input switches modes. Handle it before TextArea inserts the
@@ -1071,6 +1323,10 @@ class ChatTextArea(PasteBurstTextArea):
         ):
             event.prevent_default()
             event.stop()
+            # `_track_burst_run` above already counted this character, but it is
+            # consumed as a mode switch rather than inserted. Drop the run so the
+            # tracker does not claim a character the document never received.
+            self._reset_paste_burst_run()
             return
 
         # Some terminals (e.g. VSCode built-in) send a literal backslash
@@ -1093,6 +1349,21 @@ class ChatTextArea(PasteBurstTextArea):
             event.stop()
             return
 
+        # While the inline prompt search is open, the panel owns the keyboard.
+        # Route the key to the search handler before TextArea defaults (Enter
+        # newline, printable insertion) consume it; the draft stays frozen for
+        # the whole session.
+        if prompt_search_active:
+            if (
+                self._chat_input_owner is not None
+                and self._chat_input_owner._handle_prompt_search_key(event)
+            ):
+                return
+            # Keys the search ignores must not edit the draft either.
+            event.prevent_default()
+            event.stop()
+            return
+
         # If completion is active, let parent handle navigation keys.
         # Space is included so that slash-command completion can accept the
         # selected suggestion via the same code path as Tab (avoiding a
@@ -1109,16 +1380,24 @@ class ChatTextArea(PasteBurstTextArea):
             # Prevent TextArea's default behavior (e.g., Enter inserting newline)
             # but let event bubble to ChatInput for completion handling
             event.prevent_default()
+            # `space` is the one printable key here, so `_track_burst_run` above
+            # counted it while this branch inserts nothing. Drop the run so the
+            # tracker does not claim a character the document never received —
+            # the same reason as the mode-prefix branch above.
+            if event.is_printable:
+                self._reset_paste_burst_run()
             return
 
         # Plain Enter submits, unless a recent keystroke burst suggests this
-        # newline is part of a paste replayed as key events; then insert a
-        # newline and keep the window alive so the rest of the paste stays
-        # grouped instead of submitting mid-stream.
+        # newline is part of a paste replayed as key events. In that case the
+        # visible run is pulled off screen into the paste buffer along with this
+        # newline, and the window is kept alive so the rest of the paste stays
+        # grouped instead of submitting mid-stream. The text reappears when the
+        # burst flushes — possibly as a `[Pasted text #N]` placeholder.
         if event.key == "enter":
             event.prevent_default()
             event.stop()
-            if self._consume_enter_as_burst_newline(now):
+            if not prompt_search_active and self._consume_enter_as_burst_newline(now):
                 return
             if (
                 self._chat_input_owner is not None
@@ -1131,6 +1410,11 @@ class ChatTextArea(PasteBurstTextArea):
             return
 
         await super()._on_key(event)
+
+        # Must follow `super()._on_key`: promotion verifies the run against the
+        # document, so the current character has to be in it already.
+        if not prompt_search_active:
+            self._check_burst_run_for_promotion()
 
     def action_delete_right(self) -> None:
         """Delete a bound placeholder atomically or the next character."""
@@ -1300,19 +1584,25 @@ class ChatTextArea(PasteBurstTextArea):
                 exc_info=True,
             )
             parsed = None
-        if parsed is not None:
+        owner = self._chat_input_owner
+        if parsed is not None and owner is not None:
             event.prevent_default()
             event.stop()
-            self.post_message(self.PastedPaths(event.text, parsed.paths))
+            owner.apply_paste_payload(event.text, parsed.paths)
             return
 
-        if self._paste_collapse_enabled() and _should_collapse_chat_paste(event.text):
+        if (
+            owner is not None
+            and self._paste_collapse_enabled()
+            and _should_collapse_chat_paste(event.text)
+        ):
             # Intercept the paste so Textual's default _on_paste doesn't insert
-            # the full text. ChatInput stores the content and inserts a compact
-            # placeholder instead.
+            # the full text. The owner stores the content and inserts a compact
+            # placeholder instead — applied here rather than posted, so a
+            # keystroke queued behind this paste cannot overtake it.
             event.prevent_default()
             event.stop()
-            self.post_message(self.PastedText(event.text))
+            owner.apply_paste_payload(event.text, None)
             return
 
         # Don't call super() here — Textual's MRO dispatch already calls
@@ -1424,7 +1714,7 @@ class _CompletionViewAdapter:
 
 
 def _manual_height_ceiling(screen_height: int) -> int:
-    """Return the largest composer height a drag may request.
+    """Return the largest composer height a manual resize may request.
 
     Args:
         screen_height: Current screen height in rows.
@@ -1478,6 +1768,7 @@ class ChatInputBox(Vertical):
         """Initialize sizing state."""
         super().__init__(**kwargs)
         self._completion_rows = 0
+        self._prompt_search_rows = 0
         self._requested_height: int | None = None
         self._applied_height: int | None = None
 
@@ -1551,10 +1842,10 @@ class ChatInputBox(Vertical):
 
         - the screen ceiling, which reserves rows for the rest of the app;
         - the box ceiling, `_CHAT_INPUT_BOX_MAX_HEIGHT` minus the border gutter
-          and any completion popup, so the popup renders inside the border
-          rather than overflowing it;
-        - the same screen budget again but with the popup subtracted, since a
-          popup adds rows to the box that the plain screen ceiling ignores.
+          and any inline panels (completion popup, prompt search), so a panel
+          renders inside the border rather than overflowing it;
+        - the same screen budget again but with the panels subtracted, since a
+          panel adds rows to the box that the plain screen ceiling ignores.
 
         The result is then floored by the visible draft, so a manual height
         never hides text. Both `height` and `max_height` are set because
@@ -1566,20 +1857,18 @@ class ChatInputBox(Vertical):
         screen_height = self._screen_height()
         if text_area is None or screen_height is None:
             return
+        panel_rows = self._completion_rows + self._prompt_search_rows
         # The plain screen cap already allows for the composer's own gutter; a
-        # popup needs it reserved explicitly because it adds rows to the box.
-        popup_gutter = self.gutter.height if self._completion_rows else 0
+        # panel needs it reserved explicitly because it adds rows to the box.
+        panel_gutter = self.gutter.height if panel_rows else 0
         screen_available = (
-            screen_height
-            - _CHAT_INPUT_RESERVED_SCREEN_ROWS
-            - self._completion_rows
-            - popup_gutter
+            screen_height - _CHAT_INPUT_RESERVED_SCREEN_ROWS - panel_rows - panel_gutter
         )
         available = min(
             _manual_height_ceiling(screen_height),
             max(
                 1,
-                _CHAT_INPUT_BOX_MAX_HEIGHT - self.gutter.height - self._completion_rows,
+                _CHAT_INPUT_BOX_MAX_HEIGHT - self.gutter.height - panel_rows,
             ),
             max(1, screen_available),
         )
@@ -1606,28 +1895,54 @@ class ChatInputBox(Vertical):
         text_area.styles.max_height = _CHAT_INPUT_AUTO_MAX_HEIGHT
         text_area.call_after_refresh(text_area.scroll_cursor_visible)
 
-    def toggle_expanded(self) -> None:
-        """Toggle between the maximum manual height and automatic sizing.
+    def _manual_height_is_visible(self) -> bool:
+        """Whether a manual height renders taller than automatic sizing would.
 
-        Branches on whether the composer is already at its maximum rather than
-        on whether a manual height exists at all, so a drag of a row or two
-        (including the incidental jitter of a double-click) still leaves the
-        next double-click meaning "expand".
+        A drag that lands at or below the draft's own height is floored by
+        `_content_height_floor`, so it renders exactly as automatic sizing does
+        even though a request is stored. Distinguishing the two keeps a toggle
+        from having no visible effect.
+
+        Returns:
+            True when a manual height is set and is what pins the composer.
         """
-        screen_height = self._screen_height()
-        if screen_height is None:
-            return
-        maximum = _manual_height_ceiling(screen_height)
-        if self._requested_height == maximum:
+        text_area = self._composer()
+        if self._requested_height is None or self._applied_height is None:
+            return False
+        if text_area is None:
+            return False
+        return self._applied_height > _content_height_floor(text_area)
+
+    def toggle_expanded(self) -> None:
+        """Expand to the manual-height ceiling, or drop a manual height.
+
+        Keys off whether a manual height is *visible* rather than merely stored.
+        A request floored by the draft renders identically to automatic sizing,
+        so collapsing it would leave the composer where it already is and the
+        gesture would read as broken -- expanding is the only move that
+        responds. That also covers the stray row of travel a press can emit
+        before the second half of a double-click lands.
+        """
+        if self._manual_height_is_visible():
             self._reset_height()
         else:
-            self.set_manual_height(maximum)
+            # Clamped to the screen ceiling inside `set_manual_height`, so
+            # asking for the absolute maximum lands on whatever fits now.
+            self.set_manual_height(_CHAT_INPUT_MANUAL_MAX_HEIGHT)
 
     def on_completion_popup_rows_changed(
         self, event: CompletionPopup.RowsChanged
     ) -> None:
         """Fit a manual composer around the completion popup."""
         self._completion_rows = event.rows
+        self._apply_manual_height()
+        event.stop()
+
+    def on_prompt_search_panel_rows_changed(
+        self, event: PromptSearchPanel.RowsChanged
+    ) -> None:
+        """Fit a manual composer around the prompt search panel."""
+        self._prompt_search_rows = event.rows
         self._apply_manual_height()
         event.stop()
 
@@ -1735,8 +2050,9 @@ class ChatInputResizeHandle(Static):
         delta = self._drag_start_y - event.screen_y
         # A double-click registers only when both presses land on the same cell,
         # which is exactly when the pointer drifts away and back — emitting a
-        # zero-delta move. Reporting it would establish a manual height and flip
-        # the meaning of the click that follows.
+        # zero-delta move. Reporting it would pin the composer to a manual height
+        # the user never asked for, freezing the auto-growth they expect as they
+        # keep typing.
         if delta:
             self.post_message(self.Dragged(delta))
         event.stop()
@@ -1806,8 +2122,9 @@ class ChatInput(Vertical):
     - Enter to submit, modifier key for newlines (see `config.newline_shortcut`)
     - Up/Down arrows for command history at input boundaries (start/end of text)
     - Autocomplete for @ (files) and / (commands)
-    - Drag the top border to resize the composer; double-click it to toggle
-      between the maximum height and content-driven sizing
+    - Drag the top border to resize the composer; double-click it to expand to
+      the maximum height, or to drop a manual height back to content-driven
+      sizing
     """
 
     DEFAULT_CSS = (
@@ -1918,7 +2235,7 @@ class ChatInput(Vertical):
        `ChatInputBox`. Appended rather than inlined above to keep the rest of
        this block free of doubled braces. */
     ChatInput #input-box {{
-        max-height: {_CHAT_INPUT_BOX_MAX_HEIGHT};
+        max-height: {_CHAT_INPUT_BOX_MAX_HEIGHT + PROMPT_SEARCH_PANEL_ROWS};
     }}
 
     ChatInput ChatTextArea {{
@@ -2020,6 +2337,11 @@ class ChatInput(Vertical):
         # immediately recurse into the same replacement path.
         self._applying_inline_path_replacement = False
 
+        # Whether the most recent `apply_paste_payload` appended its own
+        # trailing space. Read by `ChatTextArea._payload_supplied_trailing_space`
+        # to decide whether a pending space keystroke would double it.
+        self._paste_appended_trailing_space = False
+
         # Text area content from the previous Changed event. Used to skip
         # blocking filesystem path-detection on single-keystroke edits while
         # still detecting replacement edits that insert a full path payload.
@@ -2034,6 +2356,21 @@ class ChatInput(Vertical):
         # Runtime hints that depend on session state, kept separate so rebuilding
         # slash commands after skill discovery cannot replace them.
         self._argument_hint_overrides: dict[str, str] = {}
+
+        # Inline prompt search (first Ctrl+R tier). `None` draft means inactive;
+        # the snapshot is what Escape restores. The panel widget itself is
+        # grabbed in `on_mount` (it is composed with the input box).
+        self._prompt_search: PromptSearchPanel | None = None
+        self._prompt_search_draft: str | None = None
+        self._prompt_search_cursor: tuple[int, int] | None = None
+        self._prompt_search_query = ""
+        self._prompt_search_prompts: tuple[str, ...] = ()
+        self._prompt_search_filtered: list[str] = []
+        self._prompt_search_index = 0
+        # Latches once the "history is not being saved" warning has been shown,
+        # so a read-only home directory costs one toast rather than one per
+        # submission.
+        self._warned_history_unwritable = False
 
         # Set up history manager
         if history_file is None:
@@ -2055,6 +2392,7 @@ class ChatInput(Vertical):
                 yield Static(">", classes="input-prompt", id="prompt")
                 yield ChatTextArea(id="chat-input")
             yield CompletionPopup(id="completion-popup")
+            yield PromptSearchPanel(id="prompt-search-panel")
 
         yield ChatInputResizeHandle(id="input-resize-handle")
 
@@ -2087,7 +2425,11 @@ class ChatInput(Vertical):
 
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
+        self._prompt_search = self.query_one("#prompt-search-panel", PromptSearchPanel)
         self._text_area._chat_input_owner = self
+        self._text_area.set_shell_highlighting(
+            enabled=self.mode in {"shell", "shell_incognito"}
+        )
 
         # Both controllers implement the CompletionController protocol but have
         # different concrete types; the list-item warning is a false positive.
@@ -2113,8 +2455,13 @@ class ChatInput(Vertical):
             self._refresh_file_cache,
         )
         self.call_after_refresh(self._sync_resize_handle_geometry)
+        self.watch(self.app, "theme", self._on_theme_change, init=False)
         self._sync_resize_handle_color()
         self._text_area.focus()
+
+    def _on_theme_change(self) -> None:
+        """Recolor the resize handle when the app theme changes."""
+        self._sync_resize_handle_color()
 
     def _sync_resize_handle_geometry(self) -> None:
         """Inset the resize handle so border corners remain visible."""
@@ -2203,7 +2550,7 @@ class ChatInput(Vertical):
     def on_chat_input_resize_handle_toggle_expanded(
         self, event: ChatInputResizeHandle.ToggleExpanded
     ) -> None:
-        """Toggle maximum and automatic composer sizing."""
+        """Expand the composer, or drop a manual height back to automatic."""
         if self._input_box is not None:
             self._input_box.toggle_expanded()
         event.stop()
@@ -2584,6 +2931,14 @@ class ChatInput(Vertical):
             True if the keystroke was consumed as a mode selector without
             inserting the character, otherwise False.
         """
+        # The first slash enters command mode without being inserted. A second
+        # slash at the same offset can be the leading separator of a UNC-style
+        # path replayed as key events, so retain it rather than consuming both
+        # characters as mode triggers.
+        if char == "/" and self.mode == "command":
+            self.suppress_next_prefix_detection()
+            return False
+
         detected_prefix = detect_mode_prefix(char)
         if detected_prefix is None:
             return False
@@ -2763,6 +3118,7 @@ class ChatInput(Vertical):
             )
 
         self._history.add(value)
+        self._warn_if_history_unwritable()
         self.post_message(self.Submitted(value, mode))
 
         if self._text_area:
@@ -2853,26 +3209,42 @@ class ChatInput(Vertical):
         else:
             self.app.bell()
 
-    def on_chat_text_area_pasted_paths(self, event: ChatTextArea.PastedPaths) -> None:
-        """Handle paste payloads that resolve to dropped file paths."""
-        if not self._text_area:
-            return
+    def apply_paste_payload(self, text: str, paths: list[Path] | None) -> bool:
+        """Apply an already-parsed paste payload to the input.
 
-        self._insert_pasted_paths(event.raw_text, event.paths)
-
-    def on_chat_text_area_pasted_text(self, event: ChatTextArea.PastedText) -> None:
-        """Handle large pastes by collapsing into a compact placeholder.
-
-        Stores the full text in `_pasted_contents` and inserts a
-        `[Pasted text #N +M lines]` placeholder into the text area instead
-        of the raw content, keeping the input box compact.
+        Callers apply a payload through this method rather than posting it as a
+        message so it reaches the document synchronously. Textual appends a
+        posted message to the tail of the receiving widget's FIFO queue, so a
+        keystroke the terminal already delivered would be handled first and land
+        ahead of the paste.
 
         Args:
-            event: The `PastedText` message carrying the full pasted text.
+            text: Raw payload text.
+            paths: Resolved dropped paths, or `None` to collapse `text` into a
+                `[Pasted text #N]` placeholder.
+
+        Returns:
+            `True` when the payload was applied. `False` when there is no text
+            area to apply it to, in which case the caller still owns the text.
         """
         if not self._text_area:
-            return
-        self._collapse_and_insert_paste(event.text)
+            return False
+        if paths is not None:
+            self._paste_appended_trailing_space = self._insert_pasted_paths(text, paths)
+        else:
+            self._collapse_and_insert_paste(text)
+            self._paste_appended_trailing_space = False
+        return True
+
+    def suppress_next_prefix_detection(self) -> None:
+        """Skip mode-prefix detection for the next text change.
+
+        Used when inserting text that legitimately starts with a mode trigger, so
+        the change handler does not consume that character. Shares the guard with
+        `_strip_mode_prefix`, which reports a guard left uncleared by a missed
+        change event.
+        """
+        self._stripping_prefix = True
 
     def handle_external_paste(self, pasted: str) -> bool:
         """Handle paste text from app-level routing when input is not focused.
@@ -2893,9 +3265,9 @@ class ChatInput(Vertical):
 
         parsed = self._parse_dropped_path_payload(pasted)
         if parsed is not None:
-            self._insert_pasted_paths(pasted, parsed.paths)
+            self.apply_paste_payload(pasted, parsed.paths)
         elif self._collapse_pastes and _should_collapse_chat_paste(pasted):
-            self._collapse_and_insert_paste(pasted)
+            self.apply_paste_payload(pasted, None)
         else:
             self._text_area.insert(pasted)
 
@@ -2971,22 +3343,28 @@ class ChatInput(Vertical):
         self._text_area.move_cursor_to_end()
         return True
 
-    def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> None:
+    def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> bool:
         """Insert pasted path payload, attaching images when possible.
 
         Args:
             raw_text: Original paste payload text.
             paths: Resolved file paths parsed from the payload.
+
+        Returns:
+            `True` when the inserted text carries a trailing space that
+            `_build_path_replacement` appended. Unattached payloads are inserted
+            verbatim, so they never do.
         """
         if not self._text_area:
-            return
+            return False
         replacement, attached = self._build_path_replacement(
             raw_text, paths, add_trailing_space=True
         )
         if attached:
             self._text_area.insert(replacement)
-            return
+            return replacement.endswith(" ")
         self._text_area.insert(raw_text)
+        return False
 
     def _build_path_replacement(
         self,
@@ -3136,6 +3514,17 @@ class ChatInput(Vertical):
         if not self._completion_manager or not self._text_area:
             return
 
+        # The inline prompt search owns the keyboard while open; this must run
+        # before completion routing so arrows/enter reach the panel rather
+        # than the autocomplete controllers. Returning unconditionally matters:
+        # a key the search does not own (Backspace with a non-empty query) must
+        # still bubble to the query input's own bindings rather than fall
+        # through to the mode-exit branch and the completion manager, which
+        # would edit the composer behind the open panel.
+        if self._prompt_search_active:
+            self._handle_prompt_search_key(event)
+            return
+
         # Backspace at the start of a mode prompt exits the current mode. Prefix
         # characters are mode selectors, not hidden draft text, so exiting the
         # mode does not restore `/`, `!`, or `!!` into the input.
@@ -3214,6 +3603,10 @@ class ChatInput(Vertical):
         # Keep inline argument hints in sync for mode-only transitions
         # (for example, exiting command mode via Escape or backspace).
         self._update_argument_hint()
+        if self._text_area is not None:
+            self._text_area.set_shell_highlighting(
+                enabled=mode in {"shell", "shell_incognito"}
+            )
 
         glyph = MODE_DISPLAY_GLYPHS.get(mode)
         if not glyph and mode != "normal":
@@ -3266,6 +3659,13 @@ class ChatInput(Vertical):
 
     def focus_input(self) -> None:
         """Focus the input field."""
+        if self._prompt_search_active and self._prompt_search is not None:
+            if self._prompt_search.focus_query():
+                return
+            # The session is open but the query input is not mounted yet, so
+            # keys would route into a panel the user cannot type in. Worth a
+            # trace: this combination is a lifecycle bug, not a normal state.
+            logger.warning("Prompt search is active but its query input is not mounted")
         if self._text_area:
             self._text_area.focus()
 
@@ -3300,6 +3700,318 @@ class ChatInput(Vertical):
         self._text_area.text = val
         self._text_area.move_cursor_to_end()
         return True
+
+    def recent_prompts(self) -> tuple[str, ...]:
+        """Refresh and return submitted prompts in newest-first order.
+
+        Returns:
+            An immutable snapshot of recent unique prompts.
+        """
+        return self._history.recent_prompts()
+
+    def prompt_history_error(self) -> str | None:
+        """Describe why the last prompt refresh came back empty, if it failed.
+
+        Returns:
+            A message naming the unreadable history file, or `None` when the
+            file was read (including when it does not exist yet).
+        """
+        if not self._history.history_unreadable:
+            return None
+        return f"Could not read prompt history from {self._history.history_file}"
+
+    def insert_at_cursor(self, text: str) -> bool:
+        """Insert text at the current cursor through the undoable edit path.
+
+        Returns:
+            Whether the text area was available for insertion.
+        """
+        if not self._text_area:
+            return False
+        self._text_area.insert(text)
+        return True
+
+    @property
+    def _prompt_search_active(self) -> bool:
+        """Whether the inline prompt search panel is open.
+
+        A `None` draft is the discriminator: the snapshot only exists for the
+        lifetime of a search session.
+        """
+        return self._prompt_search_draft is not None
+
+    def open_prompt_search(self) -> Literal["inline", "modal", "noop"]:
+        """Open the inline prompt search, or escalate an open one to the modal.
+
+        First call shows the inline panel with a fresh prompt snapshot, seeds
+        its filter from the current draft, and saves that draft for
+        cancel-restore; a call while the panel is already open means the second
+        Ctrl+R tier.
+
+        Returns:
+            `"inline"` when the panel opened, `"modal"` when the caller should
+            open the full `PromptClipboardScreen`, or `"noop"` when the
+            composer is unavailable.
+        """
+        if self._text_area is None or self._prompt_search is None:
+            return "noop"
+        if self._prompt_search_active:
+            return "modal"
+        if self._current_suggestions:
+            # Completion owns the shared panel rows; inserting the search panel
+            # between the popup and the input row would break the completion
+            # flow's keyboard assumptions, so the modal serves this case.
+            return "modal"
+
+        self._prompt_search_draft = self._text_area.text
+        self._prompt_search_cursor = self._text_area.cursor_location
+        # Both tiers go through the public accessor so they always show the
+        # same snapshot.
+        self._prompt_search_prompts = self.recent_prompts()
+        self._prompt_search_query = self._text_area.text
+        self._prompt_search_index = 0
+        self._warn_if_history_unreadable()
+        self._refresh_prompt_search_panel()
+        # The query field is a real Input, so the blinking cursor lives in it
+        # while the search is open rather than in the frozen draft above.
+        self._prompt_search.focus_query()
+        return "inline"
+
+    def escalate_prompt_search(self) -> str:
+        """Return the modal filter and close any open inline panel.
+
+        An active inline search supplies its current query. When autocomplete
+        sends Ctrl+R directly to the modal tier, the current chat input is the
+        query instead.
+
+        Returns:
+            The text to seed the modal's filter with.
+        """
+        query = (
+            self._prompt_search_query
+            if self._prompt_search_active
+            else (self._text_area.text if self._text_area is not None else "")
+        )
+        self._close_prompt_search(restore_draft=False, refocus=False)
+        return query
+
+    def _close_prompt_search(
+        self, *, restore_draft: bool, refocus: bool = True
+    ) -> None:
+        """Hide the inline panel and clear search state.
+
+        Args:
+            restore_draft: Whether to restore the cursor from the
+                `open_prompt_search` snapshot. Escape and empty-query Backspace
+                do; insert and modal escalation leave the composer alone.
+            refocus: Whether to return focus to the composer. Escalating to the
+                modal skips this so the modal's own filter input takes focus.
+        """
+        draft = self._prompt_search_draft
+        cursor = self._prompt_search_cursor
+        self._prompt_search_draft = None
+        self._prompt_search_cursor = None
+        self._prompt_search_query = ""
+        self._prompt_search_prompts = ()
+        self._prompt_search_filtered = []
+        self._prompt_search_index = 0
+        if self._prompt_search is not None:
+            self._prompt_search.hide()
+        # Only the cursor needs restoring. Edits made while the panel was open
+        # are kept, and in the unedited case the text already equals the
+        # snapshot -- assigning it back would be a no-op that clears the undo
+        # history, because `TextArea.text` aliases `load_text`. The cursor goes
+        # back to the snapshot position, matching readline/codex cancel
+        # semantics rather than jumping to the end.
+        if (
+            restore_draft
+            and draft is not None
+            and cursor is not None
+            and self._text_area is not None
+            and self._text_area.text == draft
+        ):
+            self._text_area.move_cursor(cursor)
+        if refocus:
+            self.focus_input()
+
+    def _refresh_prompt_search_panel(self) -> None:
+        """Filter the snapshot by the query and re-render the panel."""
+        if self._prompt_search is None:
+            return
+        self._prompt_search_filtered = filter_prompts(
+            self._prompt_search_prompts, self._prompt_search_query
+        )
+        self._prompt_search_index = max(
+            0, min(self._prompt_search_index, len(self._prompt_search_filtered) - 1)
+        )
+        # Pass every filtered title, not just the first visible page: the panel
+        # renders a window around the selection, and a row that is not mounted
+        # cannot be scrolled into view — which previously made arrow moves past
+        # row 5 invisible and left scrolling with nothing to do.
+        titles = [prompt_title(prompt) for prompt in self._prompt_search_filtered]
+        empty: str | None
+        if self._prompt_search_filtered:
+            empty = None
+        elif self._prompt_search_prompts:
+            empty = "No matching prompts."
+        else:
+            # Never claim the history is empty when it is only unreadable.
+            empty = (
+                self.prompt_history_error()
+                or "No prompts yet. Submitted prompts appear here."
+            )
+        self._prompt_search.update_state(
+            self._prompt_search_query, titles, self._prompt_search_index, empty
+        )
+
+    def _warn_if_history_unreadable(self) -> None:
+        """Warn when the shown prompts are a degraded fallback.
+
+        The empty-state message already names an unreadable history file, but
+        only when there is nothing to list. `recent_prompts` falls back to this
+        session's entries on a read failure, so the usual outcome is a
+        *non-empty* list that looks like a complete history and is silently
+        truncated. Warn whenever the read failed and there is something to
+        show, since that is the case the empty state cannot cover.
+        """
+        error = self.prompt_history_error()
+        if error is None or not self._prompt_search_prompts:
+            return
+        self.app.notify(
+            f"{error}; showing this session's prompts only",
+            severity="warning",
+            markup=False,
+        )
+
+    def _warn_if_history_unwritable(self) -> None:
+        """Say once that prompts are no longer being saved.
+
+        A failed append keeps the entry in memory, so up-arrow and the prompt
+        clipboard keep working and nothing on screen suggests a problem. The
+        prompts are still lost at exit, and the clipboard advertises itself as
+        durable history, so the loss has to be stated rather than only logged.
+        """
+        if self._warned_history_unwritable or not self._history.history_unwritable:
+            return
+        self._warned_history_unwritable = True
+        self.app.notify(
+            f"Could not save prompt history to {self._history.history_file}; "
+            "this session's prompts will be lost when it ends",
+            severity="warning",
+            markup=False,
+        )
+
+    def _prompt_search_insert_selected(self) -> None:
+        """Insert the selected prompt into the draft and close the panel."""
+        prompt = self._prompt_search_filtered[self._prompt_search_index]
+        self._close_prompt_search(restore_draft=False)
+        if self._text_area is not None:
+            self._text_area.insert(prompt)
+            self._text_area.scroll_cursor_visible()
+
+    def _handle_prompt_search_key(self, event: events.Key) -> bool:
+        """Handle one key while the inline prompt search is open.
+
+        Runs from `ChatInput.on_key` (ahead of completion routing) and from
+        `ChatTextArea._on_key` (ahead of the TextArea's own editing defaults,
+        which is what the no-`await` rule below protects); it may not
+        `await`, because the panel rebuild it triggers is already message-pumped
+        through `PromptSearchPanel.call_next`, so synchronous handling loses
+        no frames.
+
+        Args:
+            event: The key event, bubbling from either the search query input
+                (the usual case, since `open_prompt_search` focuses it) or the
+                text area when focus never moved.
+
+        Returns:
+            `True` when the panel consumed the key and stopped it here.
+                `False` means the panel does not own the key and the caller
+                decides: `ChatInput.on_key` lets it bubble to the query
+                input's own bindings, while `ChatTextArea._on_key` suppresses
+                it so an unrecognized key cannot edit the frozen draft behind
+                the panel.
+        """
+        if event.key == "escape":
+            self._close_prompt_search(restore_draft=True)
+            event.prevent_default()
+            event.stop()
+            return True
+
+        if event.key in {"enter", "tab"}:
+            event.prevent_default()
+            event.stop()
+            if self._prompt_search_filtered:
+                self._prompt_search_insert_selected()
+            elif self.app is not None:
+                self.app.bell()
+            return True
+
+        if event.key in {"up", "down"}:
+            event.prevent_default()
+            event.stop()
+            last = len(self._prompt_search_filtered) - 1
+            if last < 0:
+                return True
+            new_index = (
+                max(0, self._prompt_search_index - 1)
+                if event.key == "up"
+                else min(last, self._prompt_search_index + 1)
+            )
+            if new_index != self._prompt_search_index:
+                self._prompt_search_index = new_index
+                if self._prompt_search is not None:
+                    self._prompt_search.update_selection(new_index)
+            return True
+
+        return False
+
+    def on_prompt_search_input_abandon_search(
+        self, event: PromptSearchInput.AbandonSearch
+    ) -> None:
+        """Close the search, restoring the draft, on empty-query Backspace."""
+        if not self._prompt_search_active:
+            return
+        event.stop()
+        self._close_prompt_search(restore_draft=True)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Filter prompts as the query input's text changes."""
+        if not self._prompt_search_active:
+            return
+        if not isinstance(event.input, PromptSearchInput):
+            return
+        self.post_message(self.Typing())
+        self._prompt_search_query = event.value
+        self._prompt_search_index = 0
+        self._refresh_prompt_search_panel()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Insert the selected prompt when the query input is submitted."""
+        if not self._prompt_search_active:
+            return
+        if not isinstance(event.input, PromptSearchInput):
+            return
+        event.stop()
+        if self._prompt_search_filtered:
+            self._prompt_search_insert_selected()
+        elif self.app is not None:
+            self.app.bell()
+
+    def on_prompt_search_panel_option_selected(
+        self, event: PromptSearchPanel.OptionSelected
+    ) -> None:
+        """Select a clicked prompt row; Enter is still required to insert."""
+        event.stop()
+        if not self._prompt_search_active:
+            return
+        if (
+            0 <= event.index < len(self._prompt_search_filtered)
+            and event.index != self._prompt_search_index
+        ):
+            self._prompt_search_index = event.index
+            if self._prompt_search is not None:
+                self._prompt_search.update_selection(event.index)
 
     def discard_text(self) -> bool:
         """Clear the draft, keeping it restorable via undo (ctrl+z).

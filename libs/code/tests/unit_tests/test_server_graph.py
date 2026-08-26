@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,6 +30,15 @@ def _module_with_attrs(name: str, **attrs: object) -> ModuleType:
     return module
 
 
+def _backend_with_offload(default: object) -> SimpleNamespace:
+    """Build a minimal backend carrying the server operation resource."""
+    from deepagents_code.offload_middleware import OffloadOperation
+
+    backend = SimpleNamespace(default=default)
+    backend._dcode_offload_operation = OffloadOperation(MagicMock(), MagicMock())
+    return backend
+
+
 class TestServerGraph:
     """Tests for server-mode graph bootstrap."""
 
@@ -38,12 +48,67 @@ class TestServerGraph:
         module = _import_fresh_server_graph()
 
         with patch.object(
-            module, "_make_graph", new=AsyncMock(return_value=graph_obj)
+            module,
+            "_make_graphs",
+            new=AsyncMock(
+                return_value=module.ServerRuntime(graph_obj, object(), object())
+            ),
         ) as make_graph:
             assert await module.make_graph() is graph_obj
             assert await module.make_graph() is graph_obj
 
         make_graph.assert_awaited_once_with()
+
+    async def test_concurrent_resolution_builds_one_runtime(self) -> None:
+        """Concurrent requests share the single graph runtime."""
+        import asyncio
+
+        module = _import_fresh_server_graph()
+        graph_obj = object()
+        calls = 0
+
+        async def build() -> object:
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0)
+            return module.ServerRuntime(graph_obj, object(), object())
+
+        factory = module._build_graph_factory(build)
+        results = await asyncio.gather(factory(), factory(), factory())
+
+        assert calls == 1
+        assert results == [graph_obj, graph_obj, graph_obj]
+
+    async def test_managed_health_gate_runs_off_event_loop(self) -> None:
+        """A remote managed policy cannot stall server scheduling."""
+        from deepagents_code.configuration import service
+
+        module = _import_fresh_server_graph()
+        loop_thread_id = threading.get_ident()
+        health_thread_ids: list[int] = []
+
+        def require_healthy_managed_config(*, refresh: bool = False) -> None:
+            assert refresh is True
+            health_thread_ids.append(threading.get_ident())
+
+        async def build() -> object:  # noqa: RUF029  # async factory contract
+            return module.ServerRuntime(object(), object(), object())
+
+        with patch.object(
+            service,
+            "require_healthy_managed_config",
+            require_healthy_managed_config,
+        ):
+            await module._build_runtime_factory(build)()
+
+        assert health_thread_ids
+        assert all(thread_id != loop_thread_id for thread_id in health_thread_ids)
+
+    def test_server_runtime_slots_are_named(self) -> None:
+        """Both opaque runtime slots are named to prevent transposition."""
+        module = _import_fresh_server_graph()
+
+        assert module.ServerRuntime._fields == ("agent", "backend", "offload")
 
     def test_criteria_context_tools_use_identity_allowlist_in_tool_order(self) -> None:
         """Criteria tools should be known context objects in main-tool order."""
@@ -120,7 +185,7 @@ class TestServerGraph:
         with (
             patch.object(
                 module,
-                "_make_graph",
+                "_make_graphs",
                 new=AsyncMock(side_effect=ValueError("boom: bad model")),
             ),
             pytest.raises(SystemExit) as exc_info,
@@ -154,7 +219,7 @@ class TestServerGraph:
 
         def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
             create_cli_agent_thread_ids.append(threading.get_ident())
-            return graph_obj, SimpleNamespace(default=repository_backend)
+            return graph_obj, _backend_with_offload(repository_backend)
 
         def create_model_side_effect(*_: object, **__: object) -> object:
             create_model_thread_ids.append(threading.get_ident())
@@ -225,7 +290,7 @@ class TestServerGraph:
             # Non-default allowlist so the `fs_tools=` assertion below is
             # load-bearing: it round-trips through `to_env()`/`from_env()` and
             # must reach `create_cli_agent`. With the `None` default this
-            # assertion passed whether or not `_make_graph` read
+            # assertion passed whether or not `_make_graphs` read
             # `config.allow_fs_tools`, so a dropped read would go unnoticed.
             allow_fs_tools=["ls", "read_file"],
         )
@@ -254,13 +319,15 @@ class TestServerGraph:
                 return_value=(),
             ),
         ):
-            for suffix in (
-                "MCP_CONFIG_PATH",
-                "TRUST_PROJECT_MCP",
-                "CWD",
-                "PROJECT_ROOT",
-            ):
-                os.environ.pop(f"{SERVER_ENV_PREFIX}{suffix}", None)
+            # Drop every ambient `DEEPAGENTS_CODE_SERVER_*` the round-trip did
+            # not set. With `clear=False` an exported value (e.g.
+            # `AUTO_CLASSIFIER_MODEL` from a developer shell) would survive
+            # into `ServerConfig.from_env()` and break the strict
+            # `create_cli_agent` kwargs assertion below, even though the test
+            # never configured it.
+            for key in list(os.environ):
+                if key.startswith(SERVER_ENV_PREFIX) and key not in env_overrides:
+                    os.environ.pop(key)
 
             module = _import_fresh_server_graph()
             resolve_mcp_tools.assert_not_awaited()
@@ -378,7 +445,7 @@ class TestServerGraph:
             observed["interpreter_ptc"] = settings.interpreter_ptc
             observed["acknowledge"] = settings.interpreter_ptc_acknowledge_unsafe
             observed["enable_interpreter"] = settings.enable_interpreter
-            return graph_obj, SimpleNamespace(default=object())
+            return graph_obj, _backend_with_offload(object())
 
         settings_obj = SimpleNamespace(
             has_tavily=False,

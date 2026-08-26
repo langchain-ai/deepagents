@@ -50,7 +50,7 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 
 ## Tool Use (`tool_use`) (60 evals)
 
-- [`test_auto_mode_instrumental_action_authorization`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_auto_mode_authorization.py#L174) — `tests/evals/test_auto_mode_authorization.py:174`
+- [`test_auto_mode_instrumental_action_authorization`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_auto_mode_authorization.py#L326) — `tests/evals/test_auto_mode_authorization.py:326`
 - [`test_nexus`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L75) — `tests/evals/test_external_benchmarks.py:75`
 - [`test_bfcl_v3`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L83) — `tests/evals/test_external_benchmarks.py:83`
 - [`test_no_goal_trivial_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L89) — `tests/evals/test_goal_tools.py:89`

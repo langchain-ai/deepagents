@@ -2488,7 +2488,10 @@ def parse_args() -> argparse.Namespace:
         type=non_negative_int,
         default=None,
         metavar="N",
-        help="Override max retries for transient model errors.",
+        help=(
+            "Retries after a failed model request; 0 disables them. "
+            "Overrides [retries] in config.toml."
+        ),
     )
 
     parser.add_argument(

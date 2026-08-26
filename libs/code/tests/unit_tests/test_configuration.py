@@ -518,6 +518,51 @@ def test_remote_toml_provider_bounds_a_stalled_open(
     assert response.closed.wait(timeout=1)
 
 
+def test_remote_toml_provider_does_not_accumulate_stalled_open_threads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated reloads fail closed behind one unfinished blocking open."""
+    from deepagents_code.configuration import providers
+
+    entered = Event()
+    release = Event()
+    response = _RemoteResponse(b'[startup]\nmode = "manual"\n')
+    open_count = 0
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            nonlocal open_count
+            assert timeout > 0
+            open_count += 1
+            entered.set()
+            assert release.wait(timeout=1)
+            return response
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    monkeypatch.setattr(providers, "REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS", 0.05)
+    provider = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    )
+    try:
+        snapshots = [provider.load() for _ in range(5)]
+    finally:
+        release.set()
+
+    assert entered.is_set()
+    assert open_count == 1
+    assert all(
+        snapshot.status.health is ProviderHealth.UNREADABLE for snapshot in snapshots
+    )
+    assert any(
+        "_RemoteOpenInProgressError" in (snapshot.status.detail or "")
+        for snapshot in snapshots[1:]
+    )
+    assert response.closed.wait(timeout=1)
+
+
 def test_remote_toml_provider_closes_late_http_error_response(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

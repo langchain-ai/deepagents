@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 import tomllib
 from dataclasses import dataclass, field, replace
@@ -642,6 +643,8 @@ def _validate_remote_url(source: str) -> str:
 
 
 _READ_CHUNK_SIZE = 65536
+_remote_open_lock = threading.Lock()
+_remote_open_future: Future[HTTPResponse] | None = None
 
 
 def _fail_if_expired(deadline: float) -> None:
@@ -696,6 +699,79 @@ def _close_completed_response(future: Future[HTTPResponse]) -> None:
     response.close()
 
 
+class _RemoteOpenInProgressError(OSError):
+    """Raised when an unfinished blocking open already owns the worker slot."""
+
+
+def _run_remote_open(
+    future: Future[HTTPResponse],
+    opener: _RemoteOpener,
+    request: Request,
+) -> None:
+    """Publish one blocking opener result to its waiting caller."""
+    from http.client import HTTPException
+
+    try:
+        response = opener.open(
+            request,
+            timeout=REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS,
+        )
+    except (HTTPException, OSError, ValueError) as exc:
+        future.set_exception(exc)
+    else:
+        future.set_result(response)
+
+
+def _release_remote_open(future: Future[HTTPResponse]) -> None:
+    """Release the single worker slot after its blocking open returns."""
+    global _remote_open_future  # noqa: PLW0603  # guarded module state
+
+    with _remote_open_lock:
+        if _remote_open_future is future:
+            _remote_open_future = None
+
+
+def _start_remote_open(
+    opener: _RemoteOpener,
+    request: Request,
+) -> Future[HTTPResponse]:
+    """Start one bounded blocking open, rejecting overlap while it is stuck.
+
+    Returns:
+        Future carrying the response opened by the bounded worker.
+
+    Raises:
+        _RemoteOpenInProgressError: If an earlier blocking open has not returned.
+        OSError: If the daemon worker cannot be started.
+    """
+    from concurrent.futures import Future
+    from threading import Thread
+
+    global _remote_open_future  # noqa: PLW0603  # guarded module state
+
+    with _remote_open_lock:
+        active = _remote_open_future
+        if active is not None and not active.done():
+            msg = "another remote source open is still in progress"
+            raise _RemoteOpenInProgressError(msg)
+        future: Future[HTTPResponse] = Future()
+        _remote_open_future = future
+        future.add_done_callback(_release_remote_open)
+    worker = Thread(
+        target=_run_remote_open,
+        args=(future, opener, request),
+        name="managed-config-open",
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except RuntimeError as exc:
+        msg = "remote source open worker could not start"
+        future.set_exception(OSError(msg))
+        raise OSError(msg) from exc
+    return future
+
+
 def _open_response_with_deadline(
     opener: _RemoteOpener,
     request: Request,
@@ -710,24 +786,7 @@ def _open_response_with_deadline(
     Raises:
         TimeoutError: If setup does not finish within the deadline.
     """
-    from concurrent.futures import Future
-    from http.client import HTTPException
-    from threading import Thread
-
-    future: Future[HTTPResponse] = Future()
-
-    def open_response() -> None:
-        try:
-            response = opener.open(
-                request,
-                timeout=REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS,
-            )
-        except (HTTPException, OSError, ValueError) as exc:
-            future.set_exception(exc)
-        else:
-            future.set_result(response)
-
-    Thread(target=open_response, name="managed-config-open", daemon=True).start()
+    future = _start_remote_open(opener, request)
     try:
         response = future.result(timeout=_remaining_timeout(deadline))
     except TimeoutError:

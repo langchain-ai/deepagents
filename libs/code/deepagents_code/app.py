@@ -716,6 +716,7 @@ def _create_model_with_deepagents_import_lock(
     *,
     extra_kwargs: dict[str, Any] | None = None,
     profile_overrides: dict[str, Any] | None = None,
+    cli_max_retries: int | None = None,
 ) -> ModelResult:
     """Create a model while serializing Deep Agents SDK import entry.
 
@@ -723,6 +724,7 @@ def _create_model_with_deepagents_import_lock(
         model_spec: Model specification in `provider:model` format.
         extra_kwargs: Extra model constructor kwargs.
         profile_overrides: Model profile metadata overrides.
+        cli_max_retries: Explicit `--max-retries` value.
 
     Returns:
         Created model and resolved metadata.
@@ -734,6 +736,7 @@ def _create_model_with_deepagents_import_lock(
             model_spec,
             extra_kwargs=extra_kwargs,
             profile_overrides=profile_overrides,
+            cli_max_retries=cli_max_retries,
         )
 
 

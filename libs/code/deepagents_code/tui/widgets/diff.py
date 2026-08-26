@@ -15,6 +15,7 @@ from functools import cached_property, lru_cache
 from itertools import accumulate, groupby, pairwise
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 
+from rich.cells import get_character_cell_size
 from rich.segment import Segment
 from rich.style import Style as RichStyle
 from textual.content import Content, divide_line
@@ -379,6 +380,11 @@ class _DiffRowContent(Content):
         """Logical offset of each character of `_body`."""
         return _expanded_offsets(self[self.prefix_len :].plain, self.prefix_len)
 
+    @cached_property
+    def _widest_body_cell(self) -> int:
+        """Cell width of the body's widest individual character."""
+        return max(map(get_character_cell_size, self._body.plain), default=1)
+
     def _wraps(self, width: int) -> bool:
         """Whether this row should render through the gutter-repeating path.
 
@@ -393,9 +399,7 @@ class _DiffRowContent(Content):
         # A body column narrower than the widest character cannot fit a single
         # cell of it, and `divide_line` would hand back chunks wider than the
         # target that render as blank. Let Textual's own folding handle that.
-        body = self._body
-        widest = 2 if body.cell_length > len(body.plain) else 1
-        return width - self.prefix_len >= widest
+        return width - self.prefix_len >= self._widest_body_cell
 
     def _wrapped(self, width: int) -> list[_WrappedLine]:
         """Divide the row's source text into visual lines.

@@ -355,6 +355,18 @@ class TestComposeDiffLines:
             assert "".join(lines).count("字") == 2, width
             assert content.get_height({}, width) == len(lines), width
 
+    def test_wide_character_with_zero_width_suffix_survives(self) -> None:
+        """A zero-width suffix cannot hide the preceding wide character."""
+        text = "漢\ufe0f"
+        widget = next(
+            w for w in _rendered(f"@@ -680 +680 @@\n+{text}") if "漢" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+        lines = _visual_lines(widget, 7)
+
+        assert "漢" in "".join(lines)
+        assert content.get_height({}, 7) == len(lines)
+
     def test_word_wrapped_rows_report_the_height_they_render(self) -> None:
         """`Static` is `height: auto`, so a short count clips the last lines."""
         widget = next(

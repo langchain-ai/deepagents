@@ -468,13 +468,17 @@ def _retry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
+            # Settle eligibility before consulting the guard. A guard that
+            # ran first would blame the streaming scope or the caller deadline
+            # for an error that was never going to be retried, and would skip
+            # the exhausted-budget log entirely.
+            if not _is_retryable_model_error(exc) or attempt >= max_retries:
+                _log_give_up(exc, attempt + 1, max_retries)
+                raise
             # Drawn once: the backoff carries jitter, so re-deriving it for the
             # guard would authorise one delay and then sleep a different one.
             delay = (delay_for or _retry_delay_seconds)(attempt, exc)
             if retry_guard is not None and not retry_guard(exc, attempt + 1, delay):
-                raise
-            if not _is_retryable_model_error(exc) or attempt >= max_retries:
-                _log_give_up(exc, attempt + 1, max_retries)
                 raise
             on_retry(attempt + 1, max_retries, exc)
             if delay:
@@ -508,13 +512,17 @@ async def _aretry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
+            # Settle eligibility before consulting the guard. A guard that
+            # ran first would blame the streaming scope or the caller deadline
+            # for an error that was never going to be retried, and would skip
+            # the exhausted-budget log entirely.
+            if not _is_retryable_model_error(exc) or attempt >= max_retries:
+                _log_give_up(exc, attempt + 1, max_retries)
+                raise
             # Drawn once: the backoff carries jitter, so re-deriving it for the
             # guard would authorise one delay and then sleep a different one.
             delay = (delay_for or _retry_delay_seconds)(attempt, exc)
             if retry_guard is not None and not retry_guard(exc, attempt + 1, delay):
-                raise
-            if not _is_retryable_model_error(exc) or attempt >= max_retries:
-                _log_give_up(exc, attempt + 1, max_retries)
                 raise
             on_retry(attempt + 1, max_retries, exc)
             if delay:

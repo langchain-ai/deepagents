@@ -1259,3 +1259,49 @@ def test_predicate_finds_a_transport_fault_beside_a_permanent_member() -> None:
     )
 
     assert _is_retryable_model_error(exc) is True
+
+
+def test_deadline_guard_stays_quiet_for_a_non_retryable_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A permanent error must not be reported as a deadline give-up.
+
+    The guard used to run before the eligibility check, so an authentication
+    failure raised under a tight cap was logged as a retry that would have
+    waited past the caller deadline -- pointing the reader at the classifier
+    budget instead of the invalid credentials.
+    """
+    model = SimpleNamespace()
+    setattr(model, MODEL_RETRIES_ATTR, 5)
+    permanent = ModelAuthenticationError("bad key")
+
+    def call() -> str:
+        raise permanent
+
+    with (
+        caplog.at_level(logging.DEBUG, logger=model_retry.__name__),
+        pytest.raises(ModelAuthenticationError),
+    ):
+        retry_model_call(model, call, max_delay=0.0)
+
+    assert not [r for r in caplog.records if "past the caller deadline" in r.message]
+    assert [r for r in caplog.records if "non-transient" in r.message]
+
+
+def test_exhausted_budget_is_logged_even_under_a_deadline_cap(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Budget exhaustion must stay visible when a guard is also installed."""
+    model = SimpleNamespace()
+    setattr(model, MODEL_RETRIES_ATTR, 0)
+
+    def call() -> str:
+        raise _RateLimitError(_RETRY_AFTER_30)
+
+    with (
+        caplog.at_level(logging.DEBUG, logger=model_retry.__name__),
+        pytest.raises(_RateLimitError),
+    ):
+        retry_model_call(model, call, max_delay=0.0)
+
+    assert [r for r in caplog.records if "retries are disabled" in r.message]

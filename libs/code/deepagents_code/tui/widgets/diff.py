@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from functools import lru_cache
 from itertools import accumulate, groupby, pairwise
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 
+from rich.segment import Segment
+from rich.style import Style as RichStyle
 from textual.content import Content
 from textual.geometry import Offset
 from textual.highlight import highlight
 from textual.selection import Selection
+from textual.strip import Strip
 from textual.widgets import Static
 
 from deepagents_code import theme
@@ -33,6 +36,9 @@ from deepagents_code.diff_utils import (
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.css.styles import RulesMap
+    from textual.style import Style
+    from textual.visual import RenderOptions
     from textual.widget import Widget
 
 logger = logging.getLogger(__name__)
@@ -187,6 +193,109 @@ class _Row(NamedTuple):
     number: int | None
 
 
+def _with_offset(strip: Strip, offset: int) -> Strip:
+    """Return a strip whose selection metadata starts at `offset`."""
+    offset_style = RichStyle.from_meta({"offset": (offset, 0)})
+    return Strip(
+        [
+            Segment(
+                segment.text,
+                segment.style + offset_style if segment.style is not None else None,
+                segment.control,
+            )
+            for segment in strip
+        ],
+        strip.cell_count,
+    )
+
+
+class _DiffRowContent(Content):
+    """Diff content whose wrapped lines repeat a decorative gutter."""
+
+    def __init__(
+        self, content: Content, prefix_len: int, continuation: Content | None
+    ) -> None:
+        """Initialize the row content."""
+        super().__init__(content.plain, list(content.spans), content.cell_length)
+        self.prefix_len = prefix_len
+        self.continuation = continuation
+
+    def _wrapped(self, width: int) -> list[tuple[Content, int]]:
+        """Return wrapped lines with their offsets in the logical content."""
+        if (
+            self.continuation is None
+            or self.cell_length <= width
+            or width <= self.prefix_len
+        ):
+            content = Content(self.plain, list(self.spans), self.cell_length)
+            return [(content, 0)]
+        prefix = self[: self.prefix_len]
+        body_lines = self[self.prefix_len :].fold(width - self.prefix_len)
+        starts = accumulate(
+            (len(line) for line in body_lines[:-1]), initial=self.prefix_len
+        )
+        first, *rest = zip(body_lines, starts, strict=True)
+        return [(prefix + first[0], 0), *rest]
+
+    def _continuation_strip(
+        self,
+        line: Content,
+        logical_offset: int,
+        width: int,
+        style: Style,
+        options: RenderOptions,
+    ) -> Strip:
+        """Render one continuation with a synthetic gutter.
+
+        Returns:
+            The continuation line as a strip.
+        """
+        continuation = self.continuation
+        if continuation is None:
+            return line.render_strips(width, 1, style, options)[0]
+        selection = options.selection
+        if selection is not None and options.selection_style is not None:
+            start, end = selection.get_span(0) or (0, 0)
+            end = len(self) if end == -1 else end
+            local_start = max(0, start - logical_offset)
+            local_end = min(len(line), end - logical_offset)
+            if local_start < local_end:
+                line = line.stylize(options.selection_style, local_start, local_end)
+        source_options = replace(options, selection=None)
+        source_strip = line.render_strips(
+            width - self.prefix_len, 1, style, source_options
+        )[0]
+        source_strip = _with_offset(source_strip, logical_offset)
+        gutter_strip = continuation.render_strips(
+            self.prefix_len, 1, style, source_options
+        )[0]
+        gutter_strip = _with_offset(gutter_strip, logical_offset)
+        return Strip.join([gutter_strip, source_strip])
+
+    def render_strips(
+        self, width: int, height: int | None, style: Style, options: RenderOptions
+    ) -> list[Strip]:
+        """Render wrapped lines with a synthetic continuation gutter.
+
+        Returns:
+            One strip per visual line.
+        """
+        first, *continuations = self._wrapped(width)
+        lines = [
+            first[0].render_strips(width, 1, style, options)[0],
+            *(
+                self._continuation_strip(line, offset, width, style, options)
+                for line, offset in continuations
+            ),
+        ]
+        return lines if height is None else lines[:height]
+
+    def get_height(self, rules: RulesMap, width: int) -> int:
+        """Return the number of wrapped visual lines."""
+        del rules
+        return len(self._wrapped(width))
+
+
 class _DiffRowStatic(Static):
     """A numbered diff row whose gutter is excluded from text selections.
 
@@ -231,13 +340,9 @@ def clamp_selection(widget: Widget, selection: Selection) -> Selection | None:
       inside the gutter forward to its end; a range that then collapses
       (wholly gutter) is `None`.
 
-    An endpoint counts as "inside the gutter" only on the row's first visual
-    line (`y == 0`). A row wrapped by Textual continues at column 0 of each
-    following visual line, where the gutter no longer exists — an `x` there
-    already indexes source text, so a continuation coordinate must pass through
-    untouched or a drag starting on a continuation would skip its first
-    gutter-width characters, and one ending within them would drop source the
-    user visibly selected.
+    Selection endpoints use offsets in the row's logical content, not visual
+    screen coordinates. Synthetic continuation gutters map to the first source
+    character on that visual line, so they need no separate clamping rule.
 
     Args:
         widget: The row the selection applies to. Anything that is not a
@@ -445,8 +550,15 @@ def _compose_diff_content(
         # The selectable prefix is everything before the source text: the
         # padded number and a space, plus the marker and a space.
         prefix_len = (width + 1 if numbered else 0) + 2
+        content = Content.assemble(*parts)
+        continuation = None
+        if numbered:
+            continuation = Content.assemble(
+                (f"{glyphs.line_continuation:>{width}}", style.gutter),
+                " " * 3,
+            )
         yield _DiffRowStatic(
-            Content.assemble(*parts),
+            _DiffRowContent(content, prefix_len, continuation),
             prefix_len,
             classes=f"diff-line-{row.kind}" if row.kind != "context" else "",
         )

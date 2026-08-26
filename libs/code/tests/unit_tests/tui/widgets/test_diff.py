@@ -8,9 +8,11 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from textual.geometry import Offset
 from textual.selection import Selection
+from textual.style import Color, Style
+from textual.visual import RenderOptions
 from textual.widgets import Static
 
-from deepagents_code.config import get_glyphs
+from deepagents_code.config import ASCII_GLYPHS, get_glyphs
 from deepagents_code.diff_utils import (
     DiffStats,
     count_diff_change_lines,
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
 
     from textual.app import ComposeResult
     from textual.content import Content
+    from textual.strip import Strip
 
 
 @pytest.fixture(autouse=True)
@@ -125,6 +128,23 @@ def _texts(widgets: list[Static]) -> list[str]:
         The plain-text rendering of each widget, in order.
     """
     return [_plain(w) for w in widgets]
+
+
+def _visual_strips(
+    widget: Static,
+    width: int,
+    selection: Selection | None = None,
+    selection_style: Style | None = None,
+) -> list[Strip]:
+    """Render a diff widget at `width` and return its visual strips."""
+    content = cast("Content", widget.render())
+    options = RenderOptions(lambda _: Style.null(), {}, selection, selection_style)
+    return content.render_strips(width, None, Style.null(), options)
+
+
+def _visual_lines(widget: Static, width: int) -> list[str]:
+    """Render a diff widget at `width` and return its visual lines."""
+    return [strip.text for strip in _visual_strips(widget, width)]
 
 
 # A diff exercising file headers, a hunk header, and context/add/remove lines.
@@ -233,6 +253,53 @@ class TestComposeDiffLines:
         # The gutter glyph, right-aligned line number, and separator must be
         # the same width on every row so the diff body lines up vertically.
         assert ctx.index("ctx") == removed.index("removed") == added1.index("added1")
+
+    def test_wrapped_lines_replace_line_numbers_with_ellipsis(self) -> None:
+        """Continuation text stays aligned under source, not the gutter."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+
+        assert _visual_lines(widget, 12) == ["680 + abcdef", "  …   ghijkl"]
+        segments = tuple(_visual_strips(widget, 12)[1])
+        offsets = set()
+        for segment in segments:
+            assert segment.style is not None
+            offsets.add(segment.style.meta["offset"])
+        assert offsets == {(12, 0)}
+
+    def test_ascii_continuation_fits_the_line_number_column(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ASCII mode uses one dot, preserving the gutter width."""
+        monkeypatch.setattr(diff_module, "get_glyphs", lambda: ASCII_GLYPHS)
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+
+        assert _visual_lines(widget, 12) == ["680 + abcdef", "  .   ghijkl"]
+
+    def test_selection_style_reaches_wrapped_source(self) -> None:
+        """Logical selections remain visibly highlighted after wrapping."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+        style = Style(background=Color(1, 2, 3))
+
+        continuation = _visual_strips(
+            widget, 12, Selection(Offset(12, 0), None), style
+        )[1]
+        source = tuple(continuation)[-1]
+        assert source.style is not None
+        assert source.style.bgcolor == style.rich_style.bgcolor
+
+    def test_unwrapped_lines_keep_the_original_gutter(self) -> None:
+        """A row that fits is unchanged by continuation support."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abc") if "abc" in _plain(w)
+        )
+
+        assert _visual_lines(widget, 12) == ["680 + abc"]
 
     def test_max_lines_truncates_with_marker(self) -> None:
         """Beyond `max_lines`, a truncation marker replaces remaining rows."""
@@ -580,27 +647,17 @@ class TestClampSelection:
         selection = Selection(Offset(7, 0), None)
         assert clamp_selection(row, selection) == selection
 
-    def test_wrapped_row_keeps_continuation_coordinates(self) -> None:
-        """A wrapped row's gutter exists only on its first visual line.
-
-        Continuation lines restart at column 0 with source text, so a small
-        `x` on a `y > 0` line already indexes source and must not be clamped.
-        """
+    def test_wrapped_row_keeps_logical_continuation_offsets(self) -> None:
+        """Continuation selections already point into the logical source row."""
         row = self._row("added1")
         prefix = row.selection_prefix
+        start = Offset(prefix + 2, 0)
 
-        # A drag starting on a continuation: skip nothing.
-        start = Offset(2, 1)
         assert clamp_selection(row, Selection(start, None)) == Selection(start, None)
-
-        # A selection from above ending on a continuation keeps the row.
-        selection = Selection(None, Offset(2, 1))
-        assert clamp_selection(row, selection) == Selection(
-            Offset(prefix, 0), Offset(2, 1)
+        assert clamp_selection(row, Selection(None, start)) == Selection(
+            Offset(prefix, 0), start
         )
-
-        # A range wholly inside a continuation is likewise untouched.
-        selection = Selection(Offset(1, 1), Offset(3, 1))
+        selection = Selection(start, Offset(prefix + 4, 0))
         assert clamp_selection(row, selection) == selection
 
     def test_non_diff_widgets_are_untouched(self) -> None:

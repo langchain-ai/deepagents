@@ -1536,6 +1536,7 @@ class Glyphs:
 
     # Diff-specific
     hunk_break: str  # ⋮ vs :
+    line_continuation: str  # … vs .
 
     # Status bar
     git_branch: str  # "↗" vs "git:"
@@ -1570,6 +1571,7 @@ UNICODE_GLYPHS = Glyphs(
     box_horizontal_heavy="━",
     # Diff-specific
     hunk_break="⋮",
+    line_continuation="…",
     # Status bar
     git_branch="↗",
 )
@@ -1604,6 +1606,7 @@ ASCII_GLYPHS = Glyphs(
     box_horizontal_heavy="=",
     # Diff-specific
     hunk_break=":",
+    line_continuation=".",
     # Status bar
     git_branch="git:",
 )

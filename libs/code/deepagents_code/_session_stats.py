@@ -892,6 +892,76 @@ def record_message_usage(
     )
 
 
+def record_model_usage_event(
+    stats: SessionStats,
+    data: object,
+    *,
+    active_thread_id: str = "",
+    fallback_model: str = "",
+    fallback_provider: str = "",
+    recorded_requests: dict[str, RecordedRequest] | None = None,
+) -> RecordedUsage | None:
+    """Record a validated provisional usage event from a nested model call.
+
+    Returns:
+        The recorded usage delta, or `None` when the event is invalid or duplicate.
+    """
+    from deepagents_code.cost_tracking import (
+        MODEL_USAGE_EVENT_TYPE,
+        MODEL_USAGE_EVENT_VERSION,
+    )
+
+    if not isinstance(data, Mapping) or data.get("type") != MODEL_USAGE_EVENT_TYPE:
+        return None
+    request_id = data.get("request_id")
+    thread_id = data.get("thread_id")
+    scope = data.get("scope")
+    version = data.get("version")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version != MODEL_USAGE_EVENT_VERSION
+        or not isinstance(request_id, str)
+        or not request_id
+        or not isinstance(thread_id, str)
+        or not thread_id
+        or not isinstance(scope, str)
+        or not scope
+    ):
+        return None
+    if active_thread_id and thread_id != active_thread_id:
+        return None
+    usage = data.get("usage_metadata")
+    model_name, provider = data.get("model_name"), data.get("provider")
+    if not isinstance(usage, Mapping) or not usage:
+        return None
+    if not isinstance(model_name, str) or not isinstance(provider, str):
+        return None
+    try:
+        from langchain_core.messages import AIMessage
+
+        message = AIMessage(
+            content="",
+            id=request_id,
+            usage_metadata=cast("Any", dict(usage)),
+            response_metadata={
+                "model_name": model_name,
+                "model_provider": provider,
+            },
+        )
+    except (TypeError, ValueError):
+        logger.debug("Rejected malformed nested model usage", exc_info=True)
+        return None
+    return record_message_usage(
+        stats,
+        message,
+        fallback_model=fallback_model,
+        fallback_provider=fallback_provider,
+        kind="subagent",
+        recorded_requests=recorded_requests,
+    )
+
+
 def format_token_count(count: int) -> str:
     """Format a token count into a human-readable short string.
 

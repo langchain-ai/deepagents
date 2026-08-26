@@ -91,6 +91,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+MODEL_USAGE_EVENT_TYPE = "model_usage"
+"""Custom-stream event type carrying provisional nested model usage."""
+
+MODEL_USAGE_EVENT_VERSION = 1
+"""Current shape version for nested model-usage events."""
+
 SESSION_COST_EVENT_TYPE = "session_cost"
 """Custom-stream event type carrying the thread's absolute cumulative cost.
 
@@ -1593,6 +1599,32 @@ class _ModelCallContext:
     """Checkpoint namespace of the graph that owns this request."""
 
 
+def _emit_model_usage(
+    record: _ModelCallRecord,
+    context: _ModelCallContext,
+) -> None:
+    """Best-effort stream provisional usage for one identified nested call."""
+    if not context.scope or record.message_id is None:
+        return
+    try:
+        from langgraph.config import get_stream_writer
+
+        get_stream_writer()(
+            {
+                "type": MODEL_USAGE_EVENT_TYPE,
+                "version": MODEL_USAGE_EVENT_VERSION,
+                "request_id": record.message_id,
+                "usage_metadata": dict(record.usage_metadata),
+                "model_name": record.model_name,
+                "provider": record.provider,
+                "thread_id": context.thread_id,
+                "scope": context.scope,
+            }
+        )
+    except Exception:
+        logger.debug("Could not emit nested model usage", exc_info=True)
+
+
 def _parent_checkpoint_scope(namespace: object) -> str:
     """Return the graph namespace containing a checkpointed node.
 
@@ -1779,6 +1811,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
                     "their cost is missing from the session total.",
                     dropped,
                 )
+        _emit_model_usage(record, context)
 
     def on_llm_error(
         self,

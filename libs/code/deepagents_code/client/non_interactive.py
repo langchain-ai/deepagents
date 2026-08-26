@@ -48,6 +48,7 @@ from deepagents_code._session_stats import (
     finalize_recorded_requests,
     print_usage_table,
     record_message_usage,
+    record_model_usage_event,
     usage_table_enabled,
 )
 from deepagents_code._tool_stream import (
@@ -389,6 +390,9 @@ def _plain_hook_notice(console: Console) -> HookNoticeCallback:
 @dataclass
 class StreamState:
     """Mutable state accumulated while iterating over the agent stream."""
+
+    thread_id: str = ""
+    """Thread whose streamed usage this state accepts."""
 
     quiet: bool = False
     """When `True`, stream-time diagnostics (the tool-call and file-operation
@@ -1002,7 +1006,16 @@ def _process_stream_chunk(
 
     # Nested agent spend still counts even when chat rendering is skipped.
     if not is_main_agent:
-        if (
+        if stream_mode == "custom":
+            record_model_usage_event(
+                state.stats,
+                data,
+                active_thread_id=state.thread_id,
+                fallback_model=settings.model_name or "",
+                fallback_provider=settings.model_provider or "",
+                recorded_requests=state.recorded_usage_requests,
+            )
+        elif (
             stream_mode == "messages"
             and isinstance(data, tuple)
             and len(data) == (_MESSAGE_DATA_LENGTH)
@@ -1457,7 +1470,9 @@ async def _run_agent_loop(
         ClientHookStopError: If a client-owned hook stops processing.
     """
     spinner = None if quiet else _ConsoleSpinner(console)
+    thread_id = config.get("configurable", {}).get("thread_id", "")
     state = StreamState(
+        thread_id=thread_id if isinstance(thread_id, str) else "",
         quiet=quiet,
         stream=stream,
         spinner=spinner,
@@ -1473,7 +1488,7 @@ async def _run_agent_loop(
     if rubric is not None:
         stream_input["rubric"] = rubric
 
-    thread_id = config.get("configurable", {}).get("thread_id", "")
+    thread_id = state.thread_id
     # An empty or missing thread ID carries no session identity, so leave it
     # unset in context rather than passing a blank string to model middleware.
     context_thread_id = thread_id if isinstance(thread_id, str) and thread_id else None

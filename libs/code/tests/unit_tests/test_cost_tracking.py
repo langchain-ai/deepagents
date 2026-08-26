@@ -47,6 +47,7 @@ from deepagents_code._fake_models import _ToolBindingFakeModel
 from deepagents_code.cost_tracking import (
     _CONFIGURED_PROVIDER_METADATA_KEY,
     _RECORDER_VAR,
+    MODEL_USAGE_EVENT_TYPE,
     SESSION_COST_EVENT_TYPE,
     CostState,
     CostTrackingMiddleware,
@@ -3037,6 +3038,69 @@ class TestSessionCostRecorder:
 
         assert len(recorder.drain(THREAD_ID)) == 1
         assert recorder.drain(THREAD_ID) == []
+
+    def test_nested_request_emits_provisional_usage(
+        self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[dict[str, Any]] = []
+        monkeypatch.setattr("langgraph.config.get_stream_writer", lambda: events.append)
+
+        _collect(
+            recorder,
+            _record(message_id="child-1", usage=_usage(cache_read=200)),
+            checkpoint_ns="tools:task|model:call",
+        )
+
+        assert events == [
+            {
+                "type": MODEL_USAGE_EVENT_TYPE,
+                "version": 1,
+                "request_id": "child-1",
+                "usage_metadata": _usage(cache_read=200),
+                "model_name": KNOWN_MODEL,
+                "provider": KNOWN_PROVIDER,
+                "thread_id": THREAD_ID,
+                "scope": "tools:task",
+            }
+        ]
+        assert [record.message_id for record in recorder.drain(THREAD_ID)] == [
+            "child-1"
+        ]
+
+    def test_root_or_unidentified_request_does_not_emit(
+        self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[dict[str, Any]] = []
+        monkeypatch.setattr("langgraph.config.get_stream_writer", lambda: events.append)
+
+        _collect(recorder, _record(message_id="root"))
+        _collect(
+            recorder,
+            _record(message_id=None),
+            checkpoint_ns="tools:task|model:call",
+        )
+
+        assert events == []
+        assert len(recorder.drain(THREAD_ID)) == 2
+
+    def test_usage_writer_failure_keeps_the_durable_record(
+        self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fail(_: object) -> None:
+            msg = "stream closed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr("langgraph.config.get_stream_writer", lambda: fail)
+
+        _collect(
+            recorder,
+            _record(message_id="child-1"),
+            checkpoint_ns="tools:task|model:call",
+        )
+
+        assert [record.message_id for record in recorder.drain(THREAD_ID)] == [
+            "child-1"
+        ]
 
     def test_thread_comes_from_the_ambient_config_when_metadata_omits_it(
         self, recorder: _SessionCostRecorder

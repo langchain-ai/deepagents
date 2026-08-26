@@ -1821,6 +1821,41 @@ async def execute_task_textual(
                 # nested custom events never reach the panel; forwarding must
                 # never raise into the stream loop.
                 if current_stream_mode == "custom":
+                    try:
+                        from deepagents_code.config import settings
+
+                        recorded_usage = (
+                            _session_stats.record_model_usage_event(
+                                turn_stats,
+                                data,
+                                active_thread_id=thread_id,
+                                fallback_model=settings.model_name or "",
+                                fallback_provider=settings.model_provider or "",
+                                recorded_requests=recorded_usage_requests,
+                            )
+                            if not is_main_agent
+                            else None
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Nested model usage event handling failed", exc_info=True
+                        )
+                        recorded_usage = None
+                    if recorded_usage is not None:
+                        if adapter._on_usage_update:
+                            adapter._on_usage_update()
+                        if (
+                            recorded_usage.cost_usd is not None
+                            and adapter._on_provisional_cost
+                        ):
+                            try:
+                                adapter._on_provisional_cost(recorded_usage.cost_usd)
+                            except Exception:
+                                logger.warning(
+                                    "on_provisional_cost callback failed", exc_info=True
+                                )
+                        continue
+
                     # The graph owns the cumulative thread cost and streams the
                     # new absolute total after each step it charges, because the
                     # channel is schema-private and never reaches the state

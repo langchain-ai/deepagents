@@ -4,32 +4,28 @@
 
 ## [0.1.62](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.61...deepagents-code==0.1.62) (2026-08-26)
 
-
 ### Features
 
-* **code:** `/context-doctor` ([#5830](https://github.com/langchain-ai/deepagents/issues/5830)) ([80719ce](https://github.com/langchain-ai/deepagents/commit/80719ceee8d12060d7ffcdfff880777dc3aaf212))
-* **code:** CLI config provider ([#5774](https://github.com/langchain-ai/deepagents/issues/5774)) ([951a1cf](https://github.com/langchain-ai/deepagents/commit/951a1cf54b9fa373f1853685b21a084512ab2937))
-* **code:** confirm model switches with large context ([#5829](https://github.com/langchain-ai/deepagents/issues/5829)) ([acc3d33](https://github.com/langchain-ai/deepagents/commit/acc3d33f357c027ec298bf7682d407a15249e706))
-* **code:** default the stale editable-deps prompt to `Refresh environment now` ([#5810](https://github.com/langchain-ai/deepagents/issues/5810)) ([de60958](https://github.com/langchain-ai/deepagents/commit/de60958a7d79bd4f63b678e8b4e3f02230060879))
-* **code:** enable secret redaction by default ([#5816](https://github.com/langchain-ai/deepagents/issues/5816)) ([fd7d268](https://github.com/langchain-ai/deepagents/commit/fd7d2682271cc36180f361f89d1a69557637a03f))
-* **code:** show cached updates in version output ([#5817](https://github.com/langchain-ai/deepagents/issues/5817)) ([b6a7792](https://github.com/langchain-ai/deepagents/commit/b6a77921ceafbe5b6db576e62b5f3f1609e4ebe9))
-* **code:** show Escape hint in model picker ([#5775](https://github.com/langchain-ai/deepagents/issues/5775)) ([a103a88](https://github.com/langchain-ai/deepagents/commit/a103a88f8a93ef318d64fa9e3bcdd2007cf7a45c))
-* **code:** support `DEEPAGENTS_HOME` ([#5773](https://github.com/langchain-ai/deepagents/issues/5773)) ([feb5736](https://github.com/langchain-ai/deepagents/commit/feb5736dfb7309008674020442c943ac3e2dc19d))
-
+- Added `/context-doctor` for inspecting and troubleshooting context issues ([#5830](https://github.com/langchain-ai/deepagents/issues/5830)).
+- Added warning when switching models mid-session ([#5829](https://github.com/langchain-ai/deepagents/issues/5829)).
+- Added support for `DEEPAGENTS_HOME` ([#5773](https://github.com/langchain-ai/deepagents/issues/5773)).
+- (Re-)Enabled secret redaction by default ([#5816](https://github.com/langchain-ai/deepagents/issues/5816)).
+- Improved update visibility by showing cached updates in version output ([#5817](https://github.com/langchain-ai/deepagents/issues/5817)).
+- Improved prompts and pickers: the stale editable-deps prompt now defaults to `Refresh environment now`, and the model picker shows an Escape hint ([#5810](https://github.com/langchain-ai/deepagents/issues/5810), [#5775](https://github.com/langchain-ai/deepagents/issues/5775)).
+- Added CLI config provider support ([#5774](https://github.com/langchain-ai/deepagents/issues/5774)).
 
 ### Bug Fixes
 
-* **code:** append refreshed local context after compaction ([#5828](https://github.com/langchain-ai/deepagents/issues/5828)) ([3a78de7](https://github.com/langchain-ai/deepagents/commit/3a78de7c3feeea4bc180e91003f6a43ee1a29064))
-* **code:** ensure rubric coverage ([#5369](https://github.com/langchain-ai/deepagents/issues/5369)) ([442933d](https://github.com/langchain-ai/deepagents/commit/442933da662d4497a29558f889ca972cd36b5488))
-* **code:** make prompt clipboard Tab insert ([#5820](https://github.com/langchain-ai/deepagents/issues/5820)) ([8e03e9c](https://github.com/langchain-ai/deepagents/commit/8e03e9c37f80a348a14fb87ef875bc2f9b5b3ee9))
-* **code:** preserve goal notice history for prompt caching ([#5823](https://github.com/langchain-ai/deepagents/issues/5823)) ([aa8ae71](https://github.com/langchain-ai/deepagents/commit/aa8ae718644dac19d7f1cdc3febe2740a79fa058))
-* **code:** protect TUI from native stderr writes ([#5813](https://github.com/langchain-ai/deepagents/issues/5813)) ([a4d9b8a](https://github.com/langchain-ai/deepagents/commit/a4d9b8aa7dfde39f37a4fa40aac8b149e2f66b00))
-* **code:** resolve origin from worktree common Git dir ([#5818](https://github.com/langchain-ai/deepagents/issues/5818)) ([a8ae714](https://github.com/langchain-ai/deepagents/commit/a8ae71480f767aac0f0f7cf754ec49e6fd9bf826))
-
+- Fixed refreshed local context handling after compaction to reduce cache busts ([#5828](https://github.com/langchain-ai/deepagents/issues/5828)).
+- Preserved goal notice history for prompt caching ([#5823](https://github.com/langchain-ai/deepagents/issues/5823)).
+- Improved rubric coverage checks ([#5369](https://github.com/langchain-ai/deepagents/issues/5369)).
+- Protected the TUI from native stderr writes ([#5813](https://github.com/langchain-ai/deepagents/issues/5813)).
+- Fixed Git origin resolution from worktree common Git directories ([#5818](https://github.com/langchain-ai/deepagents/issues/5818)).
+- Fixed prompt clipboard behavior so Tab inserts instead of pages ([#5820](https://github.com/langchain-ai/deepagents/issues/5820)).
 
 ### Performance Improvements
 
-* **code:** omit middleware trace inputs ([#5815](https://github.com/langchain-ai/deepagents/issues/5815)) ([39b760f](https://github.com/langchain-ai/deepagents/commit/39b760f12452e1b04bcd0fa15850662ce83ceee8))
+- Reduced tracing overhead by omitting middleware trace inputs ([#5815](https://github.com/langchain-ai/deepagents/issues/5815)).
 
 ## [0.1.61](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.60...deepagents-code==0.1.61) (2026-08-24)
 

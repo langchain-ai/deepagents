@@ -16,7 +16,7 @@ import pytest
 from deepagents_code.offload_middleware import OffloadExecution, OffloadResult
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from deepagents_code.offload_middleware import _PendingArchive
 
@@ -1495,6 +1495,64 @@ class TestLifespan:
         )
         assert orphan.daemon
         assert orphan.is_alive()
+
+    @pytest.mark.parametrize("cancel_waiter", [False, True])
+    async def test_late_flush_completion_is_ignored(self, cancel_waiter: bool) -> None:
+        """A late thread result cannot complete a timed-out or cancelled future."""
+        from deepagents_code import offload_api
+
+        loop = asyncio.get_running_loop()
+        call_soon_threadsafe = loop.call_soon_threadsafe
+        started = asyncio.Event()
+        completion_deferred = asyncio.Event()
+        release = threading.Event()
+        deferred: list[tuple[Callable[..., object], tuple[object, ...]]] = []
+
+        def flush(**_kwargs: object) -> None:
+            call_soon_threadsafe(started.set)
+            release.wait()
+
+        def defer_completion(
+            callback: Callable[..., object], *args: object, **_kwargs: object
+        ) -> None:
+            deferred.append((callback, args))
+            call_soon_threadsafe(completion_deferred.set)
+
+        client = self._client()
+        client.flush.side_effect = flush
+        errors: list[dict[str, object]] = []
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: errors.append(context))
+
+        try:
+            with (
+                patch.object(offload_api, "_TRACE_FLUSH_TIMEOUT", 0.0),
+                patch.object(offload_api, "_TRACE_FLUSH_GRACE", 0.0),
+                patch.object(
+                    loop, "call_soon_threadsafe", side_effect=defer_completion
+                ),
+            ):
+                waiter = asyncio.create_task(offload_api._await_flush_thread(client))
+                await started.wait()
+                if cancel_waiter:
+                    waiter.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await waiter
+                else:
+                    with pytest.raises(TimeoutError):
+                        await waiter
+
+                release.set()
+                await completion_deferred.wait()
+
+            callback, args = deferred.pop()
+            loop.call_soon(callback, *args)
+            await asyncio.sleep(0)
+        finally:
+            release.set()
+            loop.set_exception_handler(previous_handler)
+
+        assert errors == []
 
     async def test_flush_failure_does_not_block_shutdown(
         self, caplog: pytest.LogCaptureFixture

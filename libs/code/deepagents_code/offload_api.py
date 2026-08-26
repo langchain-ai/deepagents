@@ -135,14 +135,28 @@ async def _await_flush_thread(client: Client) -> None:
     done = loop.create_future()
     event = threading.Event()
 
+    def complete(error: Exception | None = None) -> None:
+        if done.done():
+            return
+        if error is None:
+            done.set_result(False)
+        else:
+            done.set_exception(error)
+
+    def dispatch_completion(error: Exception | None = None) -> None:
+        try:
+            loop.call_soon_threadsafe(complete, error)
+        except RuntimeError:
+            if not loop.is_closed():
+                raise
+
     def flush() -> None:
         try:
             client.flush(timeout=_TRACE_FLUSH_TIMEOUT)
         except Exception as exc:  # noqa: BLE001  # relayed to the waiter below
-            if not done.done():
-                loop.call_soon_threadsafe(done.set_exception, exc)
+            dispatch_completion(exc)
         else:
-            loop.call_soon_threadsafe(done.set_result, False)
+            dispatch_completion()
         finally:
             event.set()
 

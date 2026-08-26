@@ -3206,8 +3206,8 @@ class TestCheckOptionalTools:
     def _tavily_available(self) -> Iterator[None]:
         """Patch settings.has_tavily to True so ripgrep-only tests stay isolated."""
         with patch(
-            "deepagents_code.config.settings",
-            SimpleNamespace(has_tavily=True),
+            "deepagents_code.credentials.get_credentials",
+            return_value=SimpleNamespace(has_tavily=True),
         ):
             yield
 
@@ -3286,8 +3286,8 @@ class TestCheckOptionalTools:
         with (
             patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"),
             patch(
-                "deepagents_code.config.settings",
-                SimpleNamespace(has_tavily=False),
+                "deepagents_code.credentials.get_credentials",
+                return_value=SimpleNamespace(has_tavily=False),
             ),
         ):
             missing = check_optional_tools(config_path=config_path)
@@ -3309,8 +3309,8 @@ class TestCheckOptionalTools:
         with (
             patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"),
             patch(
-                "deepagents_code.config.settings",
-                SimpleNamespace(has_tavily=False),
+                "deepagents_code.credentials.get_credentials",
+                return_value=SimpleNamespace(has_tavily=False),
             ),
         ):
             missing = check_optional_tools(config_path=config_path)

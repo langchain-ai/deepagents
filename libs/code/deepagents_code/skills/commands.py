@@ -156,14 +156,15 @@ def _list(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_code.config import Settings, console, get_glyphs
+    from deepagents_code.config import console, get_glyphs
+    from deepagents_code.credentials import get_credentials
     from deepagents_code.skills.load import list_skills
 
-    settings = Settings.from_environment()
+    project_root = get_credentials().project_root
     user_skills_dir = get_user_skills_dir(agent)
-    project_skills_dir = get_project_skills_dir(settings.project_root)
+    project_skills_dir = get_project_skills_dir(project_root)
     user_agent_skills_dir = get_user_agent_skills_dir()
-    project_agent_skills_dir = get_project_agent_skills_dir(settings.project_root)
+    project_agent_skills_dir = get_project_agent_skills_dir(project_root)
 
     # If --project flag is used, only show project skills
     if project:
@@ -421,7 +422,8 @@ def _create(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_code.config import Settings, console, get_glyphs
+    from deepagents_code.config import console, get_glyphs
+    from deepagents_code.credentials import get_credentials
 
     # Validate skill name first (per Agent Skills spec)
     is_valid, error_msg = _validate_name(skill_name)
@@ -436,9 +438,9 @@ def _create(
         raise SystemExit(1)
 
     # Determine target directory
-    settings = Settings.from_environment()
+    project_root = get_credentials().project_root
     if project:
-        if not settings.project_root:
+        if not project_root:
             console.print("[bold red]Error:[/bold red] Not in a project directory.")
             console.print(
                 "[dim]Project skills require a .git directory "
@@ -446,7 +448,7 @@ def _create(
                 style=theme.MUTED,
             )
             raise SystemExit(1)
-        skills_dir = ensure_project_skills_dir(settings.project_root)
+        skills_dir = ensure_project_skills_dir(project_root)
         if skills_dir is None:
             console.print(
                 "[bold red]Error:[/bold red] Could not create project skills directory."
@@ -551,14 +553,15 @@ def _info(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_code.config import Settings, console
+    from deepagents_code.config import console
+    from deepagents_code.credentials import get_credentials
     from deepagents_code.skills.load import list_skills
 
-    settings = Settings.from_environment()
+    project_root = get_credentials().project_root
     user_skills_dir = get_user_skills_dir(agent)
-    project_skills_dir = get_project_skills_dir(settings.project_root)
+    project_skills_dir = get_project_skills_dir(project_root)
     user_agent_skills_dir = get_user_agent_skills_dir()
-    project_agent_skills_dir = get_project_agent_skills_dir(settings.project_root)
+    project_agent_skills_dir = get_project_agent_skills_dir(project_root)
 
     # Load skills based on --project flag
     if project:
@@ -697,7 +700,8 @@ def _delete(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_code.config import Settings, console, get_glyphs
+    from deepagents_code.config import console, get_glyphs
+    from deepagents_code.credentials import get_credentials
     from deepagents_code.skills.load import list_skills
 
     # Validate skill name first (per Agent Skills spec)
@@ -706,11 +710,11 @@ def _delete(
         console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
         raise SystemExit(1)
 
-    settings = Settings.from_environment()
+    project_root = get_credentials().project_root
     user_skills_dir = get_user_skills_dir(agent)
-    project_skills_dir = get_project_skills_dir(settings.project_root)
+    project_skills_dir = get_project_skills_dir(project_root)
     user_agent_skills_dir = get_user_agent_skills_dir()
-    project_agent_skills_dir = get_project_agent_skills_dir(settings.project_root)
+    project_agent_skills_dir = get_project_agent_skills_dir(project_root)
 
     # Load skills based on --project flag
     if project:

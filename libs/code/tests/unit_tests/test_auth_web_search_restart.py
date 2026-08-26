@@ -38,7 +38,7 @@ class TestNoteWebSearchRestart:
         from deepagents_code.config import settings
 
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         _fake_tavily_export(monkeypatch)
 
         app = DeepAgentsApp()
@@ -53,7 +53,7 @@ class TestNoteWebSearchRestart:
         """Model-provider keys don't gate a spawn-time tool, so no offer."""
         from deepagents_code.config import settings
 
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         _fake_tavily_export(monkeypatch)
 
         app = DeepAgentsApp()
@@ -70,7 +70,7 @@ class TestNoteWebSearchRestart:
         """A server spawned with Tavily already bound `web_search`."""
         from deepagents_code.config import settings
 
-        monkeypatch.setattr(settings, "tavily_api_key", "tvly-existing")
+        monkeypatch.setattr(settings.active, "tavily_api_key", "tvly-existing")
 
         app = DeepAgentsApp()
         app._server_proc = MagicMock()
@@ -84,7 +84,7 @@ class TestNoteWebSearchRestart:
         """With no owned subprocess there is nothing to respawn."""
         from deepagents_code.config import settings
 
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         _fake_tavily_export(monkeypatch)
 
         app = DeepAgentsApp()
@@ -107,7 +107,7 @@ class TestNoteWebSearchRestart:
         from deepagents_code.config import settings
 
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         monkeypatch.setattr(
             "deepagents_code.model_config.apply_stored_service_credentials",
             lambda: None,
@@ -144,7 +144,7 @@ class TestNoteWebSearchRestart:
         from deepagents_code.config import settings
 
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         _fake_tavily_export(monkeypatch)
 
         app = DeepAgentsApp()
@@ -165,7 +165,7 @@ class TestNoteWebSearchRestart:
         from deepagents_code.config import settings
 
         monkeypatch.setenv("TAVILY_API_KEY", "tvly-from-shell")
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         _fake_tavily_export(monkeypatch)
 
         app = DeepAgentsApp()
@@ -236,7 +236,7 @@ class TestOfferRestartForWebSearch:
         """A remote/not-owned server can't be `/restart`ed — recommend relaunch."""
         from deepagents_code.config import settings
 
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
         app._server_proc = None
         app._server_kwargs = None
@@ -258,7 +258,7 @@ class TestOfferRestartForWebSearch:
         """An owned-but-busy server points at `/restart`, never a relaunch."""
         from deepagents_code.config import settings
 
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "anthropic:fake"}
@@ -281,7 +281,7 @@ class TestOfferRestartForWebSearch:
         """Choosing restart respawns the owned server via `_restart_after_install`."""
         from deepagents_code.config import settings
 
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "anthropic:fake"}
@@ -303,7 +303,7 @@ class TestOfferRestartForWebSearch:
         """A chosen restart that can't run surfaces a web-search fallback hint."""
         from deepagents_code.config import settings
 
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "anthropic:fake"}
@@ -332,7 +332,7 @@ class TestOfferRestartForWebSearch:
         """
         from deepagents_code.config import settings
 
-        monkeypatch.setattr(settings, "tavily_api_key", "tvly-now-configured")
+        monkeypatch.setattr(settings.active, "tavily_api_key", "tvly-now-configured")
         app = DeepAgentsApp()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "anthropic:fake"}
@@ -359,7 +359,7 @@ class TestOfferRestartForWebSearch:
         """
         from deepagents_code.config import settings
 
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "anthropic:fake"}
@@ -380,7 +380,7 @@ class TestOfferRestartForWebSearch:
         """A prompt that never resolves is bounded by the watchdog → manual hint."""
         from deepagents_code.config import settings
 
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "anthropic:fake"}
@@ -406,7 +406,7 @@ class TestOfferRestartForWebSearch:
         """If the modal can't be mounted at all, degrade to the manual hint."""
         from deepagents_code.config import settings
 
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "anthropic:fake"}
@@ -440,7 +440,7 @@ class TestCredentialSavedHandler:
         from deepagents_code.tui.widgets.auth import AuthManagerScreen
 
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(settings.active, "tavily_api_key", None)
         _fake_tavily_export(monkeypatch)
 
         app = DeepAgentsApp()

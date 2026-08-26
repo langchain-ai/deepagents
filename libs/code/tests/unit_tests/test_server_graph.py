@@ -264,7 +264,10 @@ class TestServerGraph:
             create_model=create_model,
             is_memory_auto_save_enabled=MagicMock(return_value=True),
             resolve_interpreter_config=resolve_interpreter_config,
-            settings=SimpleNamespace(
+        )
+        credentials_module = _module_with_attrs(
+            "deepagents_code.credentials",
+            get_credentials=lambda: SimpleNamespace(
                 has_tavily=True,
                 reload_from_environment=reload_from_environment,
             ),
@@ -316,6 +319,7 @@ class TestServerGraph:
                 {
                     "deepagents_code.agent": agent_module,
                     "deepagents_code.config": config_module,
+                    "deepagents_code.credentials": credentials_module,
                     "deepagents_code.tools": tools_module,
                     "deepagents_code.mcp_tools": mcp_module,
                 },

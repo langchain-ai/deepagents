@@ -918,7 +918,7 @@ class TestDiscoverSkillsAndRoots:
             "PATHS",
             _capture_paths(str(tmp_path / "profile"), launch_home=tmp_path),
         )
-        monkeypatch.setattr(settings, "project_root", None, raising=False)
+        monkeypatch.setattr(settings.active, "project_root", None, raising=False)
         with (
             patch(
                 "deepagents_code.config.get_extra_skills_dirs",

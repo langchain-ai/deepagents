@@ -51,17 +51,19 @@ def discover_skills_and_roots(
         get_user_claude_skills_dir,
         get_user_skills_dir,
     )
-    from deepagents_code.config import get_extra_skills_dirs, settings
+    from deepagents_code.config import get_extra_skills_dirs
+    from deepagents_code.credentials import get_credentials
     from deepagents_code.skills.load import list_skills
     from deepagents_code.skills.trust import load_trusted_skill_dirs
 
+    project_root = get_credentials().project_root
     built_in_skills_dir = get_built_in_skills_dir()
     user_skills_dir = get_user_skills_dir(assistant_id)
-    project_skills_dir = get_project_skills_dir(settings.project_root)
+    project_skills_dir = get_project_skills_dir(project_root)
     user_agent_skills_dir = get_user_agent_skills_dir()
-    project_agent_skills_dir = get_project_agent_skills_dir(settings.project_root)
+    project_agent_skills_dir = get_project_agent_skills_dir(project_root)
     user_claude_skills_dir = get_user_claude_skills_dir()
-    project_claude_skills_dir = get_project_claude_skills_dir(settings.project_root)
+    project_claude_skills_dir = get_project_claude_skills_dir(project_root)
     skills = list_skills(
         built_in_skills_dir=built_in_skills_dir,
         plugin_skill_sources=plugin_skill_sources,

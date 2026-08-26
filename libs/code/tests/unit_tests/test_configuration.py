@@ -4490,7 +4490,7 @@ def test_saving_past_a_malformed_ui_policy_says_it_was_rejected(
 
 def _reload_previous() -> dict[str, object]:
     """Return a `previous` mapping shaped like the reloadable settings."""
-    from deepagents_code.config import _RELOADABLE_FIELDS
+    from deepagents_code.credentials import _RELOADABLE_FIELDS
 
     previous: dict[str, object] = dict.fromkeys(_RELOADABLE_FIELDS)
     previous["shell.allow_list"] = ["ls"]

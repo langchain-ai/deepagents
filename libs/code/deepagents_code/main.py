@@ -1824,9 +1824,11 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     ):
         missing.append("ripgrep")
 
-    from deepagents_code.config import settings
+    from deepagents_code.credentials import get_credentials
 
-    if not settings.has_tavily and not is_warning_suppressed("tavily", config_path):
+    if not get_credentials().has_tavily and not is_warning_suppressed(
+        "tavily", config_path
+    ):
         missing.append("tavily")
 
     return missing
@@ -3361,8 +3363,8 @@ async def _run_acp_cli_async(
     from deepagents_code.config import (
         create_model,
         is_memory_auto_save_enabled,
-        settings,
     )
+    from deepagents_code.credentials import get_credentials
     from deepagents_code.model_config import (
         ModelConfigError,
         ModelNotAllowedError,
@@ -3421,7 +3423,7 @@ async def _run_acp_cli_async(
     ]
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
-    if settings.has_tavily:
+    if get_credentials().has_tavily:
         tools.append(web_search)
 
     mcp_session_manager = None
@@ -5069,14 +5071,17 @@ def cli_main() -> None:
                 exc_info=True,
             )
 
-        # Import console/settings AFTER arg parsing and after the bare-help
-        # fast path so neither argparse's `--help`/`-h` exit nor
-        # `deepagents <group>` pays the settings bootstrap cost. `settings`
-        # must be named here even though this scope does not read it: the
-        # import is what triggers `_ensure_bootstrap()` (dotenv loading), and
-        # commands dispatched below — notably `auth status` — resolve
-        # credentials from the environment expecting `.env` to be loaded.
-        from deepagents_code.config import console, settings  # noqa: F401
+        # Bootstrap AFTER arg parsing and after the bare-help fast path so
+        # neither argparse's `--help`/`-h` exit nor `deepagents <group>` pays
+        # the settings bootstrap cost. `get_credentials()` must be called even
+        # though this scope does not read it: the call is what triggers
+        # `_ensure_bootstrap()` (dotenv loading), and commands dispatched
+        # below — notably `auth status` — resolve credentials from the
+        # environment expecting `.env` to be loaded.
+        from deepagents_code.config import console
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         if command is None:
             # The health gate already ran above, for every command, so the

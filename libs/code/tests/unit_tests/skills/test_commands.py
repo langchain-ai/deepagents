@@ -1036,10 +1036,12 @@ class TestDeleteSkill:
         ]
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             _delete("test-skill", agent="agent", project=False, force=True)
 
         assert not skill_dir.exists()
@@ -1076,11 +1078,13 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
             patch("deepagents_code.config.console") as mock_console,
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             mock_console.print = capture_print
             with pytest.raises(SystemExit) as exc_info:
                 _delete("nonexistent-skill", agent="agent", project=False, force=True)
@@ -1120,10 +1124,12 @@ class TestDeleteSkill:
         ]
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             with patch("builtins.input", return_value=response):
                 _delete("test-skill", agent="agent", project=False, force=False)
 
@@ -1157,10 +1163,12 @@ class TestDeleteSkill:
         ]
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             with patch("builtins.input", return_value="n"):
                 _delete("test-skill", agent="agent", project=False, force=False)
 
@@ -1194,10 +1202,12 @@ class TestDeleteSkill:
         ]
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             with patch("builtins.input", return_value=""):
                 _delete("test-skill", agent="agent", project=False, force=False)
 
@@ -1231,10 +1241,12 @@ class TestDeleteSkill:
         ]
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             with patch("builtins.input", side_effect=KeyboardInterrupt):
                 _delete("test-skill", agent="agent", project=False, force=False)
 
@@ -1268,10 +1280,12 @@ class TestDeleteSkill:
         ]
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             with patch("builtins.input", side_effect=EOFError):
                 _delete("test-skill", agent="agent", project=False, force=False)
 
@@ -1311,11 +1325,13 @@ class TestDeleteSkill:
             output.clear()
 
             with (
-                patch("deepagents_code.config.Settings") as mock_settings_cls,
+                patch(
+                    "deepagents_code.credentials.get_credentials"
+                ) as mock_get_credentials,
                 _patch_skills_commands(*dir_patches),
                 patch("deepagents_code.config.console") as mock_console,
             ):
-                mock_settings_cls.from_environment.return_value = mock_settings
+                mock_get_credentials.return_value = mock_settings
                 mock_console.print = capture_print
                 with pytest.raises(SystemExit) as exc_info:
                     _delete(invalid_name, agent="agent", project=False, force=True)
@@ -1354,10 +1370,12 @@ class TestDeleteSkill:
         ]
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             _delete("project-skill", agent="agent", project=True, force=True)
 
         assert not skill_dir.exists()
@@ -1380,11 +1398,13 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
             patch("deepagents_code.config.console") as mock_console,
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             mock_console.print = capture_print
             with pytest.raises(SystemExit) as exc_info:
                 _delete("any-skill", agent="agent", project=True, force=True)
@@ -1429,10 +1449,12 @@ class TestDeleteSkill:
         ]
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             _delete("complex-skill", agent="agent", project=False, force=True)
 
         assert not skill_dir.exists()
@@ -1470,10 +1492,12 @@ class TestDeleteSkill:
         ]
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             _delete("shared-skill", agent="agent1", project=False, force=True)
 
         assert not skill_dir_agent1.exists()
@@ -1512,12 +1536,14 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
             patch("deepagents_code.config.console") as mock_console,
             patch("shutil.rmtree", side_effect=OSError("Permission denied")),
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             mock_console.print = capture_print
             with pytest.raises(SystemExit) as exc_info:
                 _delete("test-skill", agent="agent", project=False, force=True)
@@ -1560,11 +1586,13 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
             patch("deepagents_code.config.console") as mock_console,
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             mock_console.print = capture_print
             with pytest.raises(SystemExit) as exc_info:
                 _delete("orphan-skill", agent="agent", project=False, force=True)
@@ -1658,11 +1686,13 @@ class TestDeleteArgparsing:
             output.append(" ".join(str(a) for a in args_p))
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch(
+                "deepagents_code.credentials.get_credentials"
+            ) as mock_get_credentials,
             _patch_skills_commands(*dir_patches),
             patch("deepagents_code.config.console") as mock_console,
         ):
-            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_get_credentials.return_value = mock_settings
             mock_console.print = capture_print
             with pytest.raises(SystemExit) as exc_info:
                 execute_skills_command(args)

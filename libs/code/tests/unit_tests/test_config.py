@@ -2414,9 +2414,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as get_creds,
         ):
-            mock_settings.deepagents_langchain_project = "settings-project"
+            get_creds.return_value.deepagents_langchain_project = "settings-project"
             assert get_langsmith_project_name() == "settings-project"
 
     def test_falls_back_to_env_project(self) -> None:
@@ -2428,9 +2428,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as get_creds,
         ):
-            mock_settings.deepagents_langchain_project = None
+            get_creds.return_value.deepagents_langchain_project = None
             assert get_langsmith_project_name() == "env-project"
 
     def test_falls_back_to_default(self) -> None:
@@ -2443,9 +2443,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as get_creds,
         ):
-            mock_settings.deepagents_langchain_project = None
+            get_creds.return_value.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_accepts_langchain_api_key(self) -> None:
@@ -2459,9 +2459,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as get_creds,
         ):
-            mock_settings.deepagents_langchain_project = None
+            get_creds.return_value.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_agrees_with_config_manifest_resolution(self) -> None:
@@ -2511,9 +2511,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", bare_env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as get_creds,
         ):
-            mock_settings.deepagents_langchain_project = None
+            get_creds.return_value.deepagents_langchain_project = None
             manifest_value = resolve()
             assert get_langsmith_project_name() == manifest_value == "parity-bare"
 
@@ -2526,9 +2526,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", default_env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as get_creds,
         ):
-            mock_settings.deepagents_langchain_project = None
+            get_creds.return_value.deepagents_langchain_project = None
             manifest_value = resolve()
             assert (
                 get_langsmith_project_name()
@@ -5904,7 +5904,9 @@ max_tokens = 1024
         monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
         monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-east5")
         runtime_settings = Settings.from_environment()
-        monkeypatch.setattr(config_module, "_get_settings", lambda: runtime_settings)
+        monkeypatch.setattr(
+            "deepagents_code.credentials.get_credentials", lambda: runtime_settings
+        )
         sync_client = Mock()
         async_client = Mock()
         monkeypatch.setattr(anthropic, "AnthropicVertex", sync_client)
@@ -5928,8 +5930,8 @@ max_tokens = 1024
         """Explicit model params outrank Google Cloud environment defaults."""
         mock_init_chat_model.return_value = _make_init_chat_model_mock()
         with (
-            patch.object(settings, "google_cloud_project", "env-project"),
-            patch.object(settings, "google_cloud_location", "us-east5"),
+            patch.object(settings.active, "google_cloud_project", "env-project"),
+            patch.object(settings.active, "google_cloud_location", "us-east5"),
         ):
             create_model(
                 "google_anthropic_vertex:claude-sonnet-4-6",
@@ -5942,8 +5944,8 @@ max_tokens = 1024
     def test_google_anthropic_vertex_requires_location(self) -> None:
         """Missing Claude-on-Vertex location produces an actionable error."""
         with (
-            patch.object(settings, "google_cloud_project", "test-project"),
-            patch.object(settings, "google_cloud_location", None),
+            patch.object(settings.active, "google_cloud_project", "test-project"),
+            patch.object(settings.active, "google_cloud_location", None),
             pytest.raises(
                 ModelConfigError,
                 match=r"GOOGLE_CLOUD_LOCATION.*DEEPAGENTS_CODE_GOOGLE_CLOUD_LOCATION",
@@ -6001,11 +6003,11 @@ class TestCreateModelEdgeCaseParsing:
         mock_model.profile = None
         mock_init_chat_model.return_value = mock_model
 
-        settings.anthropic_api_key = "test"
+        settings.active.anthropic_api_key = "test"
         try:
             result = create_model(":claude-opus-4-6")
         finally:
-            settings.anthropic_api_key = None
+            settings.active.anthropic_api_key = None
 
         # Should have detected 'anthropic' provider and used 'claude-opus-4-6'
         assert result.model_name == "claude-opus-4-6"
@@ -6423,53 +6425,53 @@ class TestDetectProvider:
         """detect_provider returns the correct provider for known patterns."""
         # Ensure both Anthropic and Google credentials are "available" so the
         # default paths are taken (not the Vertex AI fallbacks).
-        settings.anthropic_api_key = "test"
-        settings.google_api_key = "test"
+        settings.active.anthropic_api_key = "test"
+        settings.active.google_api_key = "test"
         try:
             assert detect_provider(model_name) == expected
         finally:
-            settings.anthropic_api_key = None
-            settings.google_api_key = None
+            settings.active.anthropic_api_key = None
+            settings.active.google_api_key = None
 
     def test_claude_falls_back_to_vertex_when_no_anthropic(self) -> None:
         """Claude models route to Anthropic Vertex when only Vertex is configured."""
-        settings.anthropic_api_key = None
-        settings.google_cloud_project = "my-project"
-        settings.google_api_key = None
+        settings.active.anthropic_api_key = None
+        settings.active.google_cloud_project = "my-project"
+        settings.active.google_api_key = None
         try:
             assert detect_provider("claude-sonnet-4-5") == "google_anthropic_vertex"
         finally:
-            settings.google_cloud_project = None
+            settings.active.google_cloud_project = None
 
     def test_gemini_falls_back_to_vertex_when_no_google(self) -> None:
         """Gemini models route to google_vertexai when only Vertex AI is configured."""
-        settings.google_api_key = None
-        settings.google_cloud_project = "my-project"
+        settings.active.google_api_key = None
+        settings.active.google_cloud_project = "my-project"
         try:
             assert detect_provider("gemini-3-pro") == "google_vertexai"
         finally:
-            settings.google_cloud_project = None
+            settings.active.google_cloud_project = None
 
     def test_gemini_prefers_google_genai_when_both_available(self) -> None:
         """Gemini prefers google_genai when both Google and Vertex AI are configured."""
-        settings.google_api_key = "test"
-        settings.google_cloud_project = "my-project"
+        settings.active.google_api_key = "test"
+        settings.active.google_cloud_project = "my-project"
         try:
             # has_vertex_ai is False when google_api_key is set, so this
             # tests the google_genai path which is preferred.
             assert detect_provider("gemini-3-pro") == "google_genai"
         finally:
-            settings.google_api_key = None
-            settings.google_cloud_project = None
+            settings.active.google_api_key = None
+            settings.active.google_cloud_project = None
 
     def test_case_insensitive(self) -> None:
         """detect_provider is case-insensitive."""
-        settings.anthropic_api_key = "test"
+        settings.active.anthropic_api_key = "test"
         try:
             assert detect_provider("Claude-Sonnet-4-5") == "anthropic"
             assert detect_provider("gpt-5.5") == "openai"
         finally:
-            settings.anthropic_api_key = None
+            settings.active.anthropic_api_key = None
 
 
 class TestLazyModuleAttributes:

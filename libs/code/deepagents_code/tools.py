@@ -292,12 +292,13 @@ def _get_tavily_client() -> TavilyClient | None:
     if _tavily_client is not _UNSET:
         return _tavily_client  # ty: ignore[invalid-return-type]  # narrowed by sentinel check
 
-    from deepagents_code.config import settings
+    from deepagents_code.credentials import get_credentials
 
-    if settings.has_tavily:
+    credentials = get_credentials()
+    if credentials.has_tavily:
         from tavily import TavilyClient as _TavilyClient
 
-        _tavily_client = _TavilyClient(api_key=settings.tavily_api_key)
+        _tavily_client = _TavilyClient(api_key=credentials.tavily_api_key)
     else:
         _tavily_client = None
     return _tavily_client

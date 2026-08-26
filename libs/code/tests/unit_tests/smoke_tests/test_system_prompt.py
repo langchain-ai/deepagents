@@ -114,7 +114,7 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
     skills_dir.mkdir(parents=True)
 
     with (
-        patch("deepagents_code.agent.settings") as mock_s,
+        patch("deepagents_code.agent.get_credentials") as mock_get_credentials,
         patch("deepagents_code.agent.ensure_agent_dir", return_value=agent_dir),
         patch("deepagents_code.agent.ensure_user_skills_dir", return_value=skills_dir),
         patch("deepagents_code.agent.get_project_skills_dir", return_value=None),
@@ -147,6 +147,7 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
         get_runtime_state().model_provider = _FIXED_MODEL_PROVIDER
         get_runtime_state().model_context_limit = _FIXED_CONTEXT_LIMIT
         get_runtime_state().model_unsupported_modalities = frozenset()
+        mock_s = mock_get_credentials.return_value
         mock_s.has_tavily = False
         mock_s.project_root = None
         mock_s.user_langchain_project = None

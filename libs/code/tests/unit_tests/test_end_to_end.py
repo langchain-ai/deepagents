@@ -90,7 +90,7 @@ def mock_settings(
     # Patch settings and the path helpers the agent module now imports
     # directly from `deepagents_code._paths`.
     with (
-        patch("deepagents_code.agent.settings") as mock_settings_obj,
+        patch("deepagents_code.agent.get_credentials") as mock_settings_obj,
         patch(
             "deepagents_code.agent._offload_fallback_root",
             return_value=tmp_path / ".deepagents",

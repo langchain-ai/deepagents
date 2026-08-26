@@ -1463,7 +1463,7 @@ class TestReloadableFieldConstants:
 
     def test_api_key_fields_derived_from_reloadable(self) -> None:
         """`_API_KEY_FIELDS` is the `*_api_key` subset of `_RELOADABLE_FIELDS`."""
-        from deepagents_code.config import _API_KEY_FIELDS, _RELOADABLE_FIELDS
+        from deepagents_code.credentials import _API_KEY_FIELDS, _RELOADABLE_FIELDS
 
         assert {
             "openai_api_key",

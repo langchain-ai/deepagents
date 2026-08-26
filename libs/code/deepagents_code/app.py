@@ -6251,7 +6251,7 @@ class DeepAgentsApp(App):
             copy_selection_to_clipboard,  # noqa: F401
         )
         from deepagents_code.command_registry import ALWAYS_IMMEDIATE  # noqa: F401
-        from deepagents_code.config import settings  # noqa: F401
+        from deepagents_code.credentials import get_credentials  # noqa: F401
         from deepagents_code.hooks import dispatch_hook  # noqa: F401
         from deepagents_code.model_config import ModelSpec  # noqa: F401
         from deepagents_code.tui.textual_adapter import TextualUIAdapter  # noqa: F401
@@ -10932,9 +10932,9 @@ class DeepAgentsApp(App):
         spawn-time tools, so web search takes full effect on the next launch (or
         after a restart).
         """
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
 
-        if settings.has_tavily:
+        if get_credentials().has_tavily:
             return
 
         from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult
@@ -12712,13 +12712,14 @@ class DeepAgentsApp(App):
             get_skill_sources,
             get_system_prompt,
         )
-        from deepagents_code.config import is_memory_auto_save_enabled, settings
+        from deepagents_code.config import is_memory_auto_save_enabled
         from deepagents_code.context_doctor import (
             build_context_doctor_report,
             format_memory_prompt,
             format_skills_prompt,
             render_context_doctor_report,
         )
+        from deepagents_code.credentials import get_credentials
         from deepagents_code.tool_catalog import (
             collect_built_in_tools,
             collect_tools_from_agent,
@@ -12745,7 +12746,7 @@ class DeepAgentsApp(App):
                 logger.exception("Failed to build base prompt for /context-doctor")
             memory_paths = [
                 get_user_agent_md_path(self._assistant_id or DEFAULT_AGENT_NAME),
-                *get_project_agent_md_paths(settings.project_root),
+                *get_project_agent_md_paths(get_credentials().project_root),
             ]
             for path in memory_paths:
                 try:
@@ -16444,13 +16445,14 @@ class DeepAgentsApp(App):
         Raises:
             asyncio.CancelledError: After any active reload thread has settled.
         """
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
 
+        credentials = get_credentials()
         if start_path is None:
-            reload_work = asyncio.to_thread(settings.reload_from_environment)
+            reload_work = asyncio.to_thread(credentials.reload_from_environment)
         else:
             reload_work = asyncio.to_thread(
-                settings.reload_from_environment,
+                credentials.reload_from_environment,
                 start_path=start_path,
             )
         reload_task = asyncio.create_task(reload_work, name="settings-reload")
@@ -23033,9 +23035,9 @@ class DeepAgentsApp(App):
 
         if provider != TAVILY_SERVICE:
             return
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
 
-        if settings.has_tavily:
+        if get_credentials().has_tavily:
             return
         if self._server_proc is None or self._server_kwargs is None:
             return
@@ -26479,9 +26481,9 @@ class DeepAgentsApp(App):
         post-install offer: same guards, watchdog, and fallback messaging, with
         web-search-specific copy.
         """
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
 
-        if settings.has_tavily:
+        if get_credentials().has_tavily:
             # A respawn happened between arming the offer and now — e.g. an
             # install-on-select in the same `/auth` session auto-restarted the
             # server, which reloaded config and rebound `web_search`. The
@@ -28147,11 +28149,11 @@ class DeepAgentsApp(App):
     @staticmethod
     async def _preview_project_settings_change(cwd: Path) -> bool:
         """Return whether switching cwd would refresh project settings."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
 
         try:
             changes = await asyncio.to_thread(
-                settings.preview_reload_from_environment,
+                get_credentials().preview_reload_from_environment,
                 start_path=cwd,
             )
         except (OSError, ValueError):

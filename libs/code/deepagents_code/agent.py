@@ -111,9 +111,9 @@ from deepagents_code.config import (
     resolve_shell_allow_list,
     restore_user_tracing_api_keys,
     restore_user_tracing_env,
-    settings,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
+from deepagents_code.credentials import get_credentials
 from deepagents_code.integrations.sandbox_factory import get_default_working_dir
 from deepagents_code.local_context import (
     LocalContextMiddleware,
@@ -1574,7 +1574,9 @@ def get_system_prompt(
         unsupported_modalities=runtime_state.model_unsupported_modalities,
     )
     filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
-    web_search_tool_guidance = _WEB_SEARCH_TOOL_GUIDANCE if settings.has_tavily else ""
+    web_search_tool_guidance = (
+        _WEB_SEARCH_TOOL_GUIDANCE if get_credentials().has_tavily else ""
+    )
 
     # Build working directory section (local vs sandbox)
     if sandbox_type:
@@ -2296,12 +2298,12 @@ def get_skill_sources(
     project_skills_dir = (
         project_context.project_skills_dir()
         if project_context is not None
-        else get_project_skills_dir(settings.project_root)
+        else get_project_skills_dir(get_credentials().project_root)
     )
     project_agent_skills_dir = (
         project_context.project_agent_skills_dir()
         if project_context is not None
-        else get_project_agent_skills_dir(settings.project_root)
+        else get_project_agent_skills_dir(get_credentials().project_root)
     )
     sources: list[CodeSkillSource] = [
         (str(get_built_in_skills_dir()), "Built-in"),
@@ -2328,7 +2330,9 @@ def get_skill_sources(
     user_claude_skills_dir = get_user_claude_skills_dir()
     if user_claude_skills_dir is not None and user_claude_skills_dir.exists():
         sources.append((str(user_claude_skills_dir), "User Claude"))
-    project_claude_skills_dir = get_project_claude_skills_dir(settings.project_root)
+    project_claude_skills_dir = get_project_claude_skills_dir(
+        get_credentials().project_root
+    )
     if project_claude_skills_dir:
         sources.append((str(project_claude_skills_dir), "Project Claude"))
 
@@ -2346,7 +2350,7 @@ def _settings_shell_allow_list() -> Any:  # noqa: ANN401  # list[str] | _ShellAl
     Returns:
         The configured allow-list, the `SHELL_ALLOW_ALL` sentinel, or `None`.
     """
-    configured = getattr(settings, "shell_allow_list", None)
+    configured = getattr(get_credentials(), "shell_allow_list", None)
     if configured is not None:
         return configured
     return resolve_shell_allow_list()
@@ -2628,7 +2632,7 @@ def create_cli_agent(
     project_agents_dir = (
         project_context.project_agents_dir()
         if project_context is not None
-        else get_project_agents_dir(settings.project_root)
+        else get_project_agents_dir(get_credentials().project_root)
     )
 
     def _subagent_cli_middleware(
@@ -2846,7 +2850,7 @@ def create_cli_agent(
         project_agent_md_paths = (
             project_context.project_agent_md_paths()
             if project_context is not None
-            else get_project_agent_md_paths(settings.project_root)
+            else get_project_agent_md_paths(get_credentials().project_root)
         )
         memory_sources.extend(str(p) for p in project_agent_md_paths)
 
@@ -2899,8 +2903,9 @@ def create_cli_agent(
             # `deepagents-code` default applied at bootstrap) entirely so shell
             # commands don't inherit it.
             shell_env = os.environ.copy()
-            if settings.user_langchain_project is not None:
-                shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
+            user_langchain_project = get_credentials().user_langchain_project
+            if user_langchain_project is not None:
+                shell_env["LANGSMITH_PROJECT"] = user_langchain_project
             else:
                 shell_env.pop("LANGSMITH_PROJECT", None)
             restore_user_tracing_env(shell_env)
@@ -2982,7 +2987,7 @@ def create_cli_agent(
                 backend=backend,
                 mcp_server_info=mcp_server_info,
                 tracing_project=get_langsmith_project_name(),
-                user_tracing_project=settings.user_langchain_project,
+                user_tracing_project=get_credentials().user_langchain_project,
             )
         )
 

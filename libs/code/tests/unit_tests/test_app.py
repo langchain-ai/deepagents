@@ -2308,7 +2308,10 @@ class TestStartupSequence:
         app._push_screen_wait = AsyncMock(side_effect=capture_prompt)  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.credentials.get_credentials",
+                return_value=SimpleNamespace(has_tavily=False),
+            ),
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials"
             ) as apply_credentials,
@@ -2340,7 +2343,10 @@ class TestStartupSequence:
         app._push_screen_wait = AsyncMock(return_value=AuthResult.CANCELLED)  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.credentials.get_credentials",
+                return_value=SimpleNamespace(has_tavily=False),
+            ),
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials"
             ) as apply_credentials,
@@ -2356,7 +2362,10 @@ class TestStartupSequence:
         app._push_screen_wait = push_screen_wait  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=True)),
+            patch(
+                "deepagents_code.credentials.get_credentials",
+                return_value=SimpleNamespace(has_tavily=True),
+            ),
             patch("deepagents_code.auth_store.set_stored_key") as set_stored_key,
         ):
             await app._prompt_launch_tavily()
@@ -2381,7 +2390,10 @@ class TestStartupSequence:
             monkeypatch.setenv("TAVILY_API_KEY", "tvly-real-key")
 
         with (
-            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.credentials.get_credentials",
+                return_value=SimpleNamespace(has_tavily=False),
+            ),
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials",
                 side_effect=export_key,
@@ -2408,7 +2420,10 @@ class TestStartupSequence:
         app.notify = notify_mock  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.credentials.get_credentials",
+                return_value=SimpleNamespace(has_tavily=False),
+            ),
             # No side_effect: the export is a no-op, so `TAVILY_API_KEY` stays
             # unset (the autouse `_clear_tavily_env` fixture cleared it).
             patch(
@@ -38841,7 +38856,8 @@ class TestResumeThreadCwdSwitch:
         import os
 
         import deepagents_code.config as config_mod
-        from deepagents_code.config import _RELOADABLE_FIELDS, Settings, settings
+        from deepagents_code.config import Settings, settings
+        from deepagents_code.credentials import _RELOADABLE_FIELDS
 
         current = tmp_path / "current"
         target = tmp_path / "target"
@@ -38861,7 +38877,7 @@ class TestResumeThreadCwdSwitch:
             tmp_path / "missing-global.env",
         )
         config_mod._dotenv_loaded_values.clear()
-        saved = {field: getattr(settings, field) for field in _RELOADABLE_FIELDS}
+        saved = {field: getattr(settings.active, field) for field in _RELOADABLE_FIELDS}
 
         try:
             app = DeepAgentsApp(thread_id="t", cwd=current)
@@ -38897,7 +38913,7 @@ class TestResumeThreadCwdSwitch:
             assert os.environ["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-current"
         finally:
             for field, value in saved.items():
-                setattr(settings, field, value)
+                setattr(settings.active, field, value)
             config_mod._dotenv_loaded_values.clear()
 
     async def test_replace_server_propagates_non_exception_after_rollback(

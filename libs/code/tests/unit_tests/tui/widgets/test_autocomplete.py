@@ -264,9 +264,9 @@ class TestSlashCommandController:
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/quit" in s[0] for s in suggestions)
 
-    def test_substring_description_match_new(self, controller, mock_view):
-        """Typing 'new' surfaces /clear via substring on 'start new thread'."""
-        controller.on_text_changed("/new", 4)
+    def test_substring_description_match_fresh(self, controller, mock_view):
+        """Typing 'fresh' surfaces /clear via substring on 'Start a fresh thread'."""
+        controller.on_text_changed("/fresh", 6)
 
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]

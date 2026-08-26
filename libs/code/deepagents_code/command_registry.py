@@ -115,7 +115,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/clear",
-        description="Clear the chat and start a new thread",
+        description="Start a fresh thread",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="reset",
     ),
@@ -144,7 +144,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/force-clear",
-        description="Stop active work, clear the chat, and start a new thread",
+        description="Recover a stuck session with a fresh thread",
         bypass_tier=BypassTier.ALWAYS,
         hidden_keywords="reset interrupt",
     ),

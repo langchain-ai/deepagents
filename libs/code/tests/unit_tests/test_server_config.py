@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -520,6 +521,45 @@ class TestServerConfigEdgeCases:
             restored = ServerConfig.from_env()
 
         assert restored.recursion_limit == 3000
+
+    @pytest.mark.parametrize("budget", [0, 2])
+    def test_cli_max_retries_round_trips(self, budget: int) -> None:
+        """`--max-retries` survives the server env boundary.
+
+        This env var is the only channel carrying the flag into the server
+        subprocess, which is the default TUI path. A dropped key makes the flag
+        a silent no-op for most invocations. `0` is covered separately from a
+        raised budget because it is falsy: a `to_env` that tested truthiness
+        would disable the one value whose whole purpose is to disable retries.
+        """
+        original = ServerConfig(cli_max_retries=budget)
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.cli_max_retries == budget
+
+    def test_cli_max_retries_unset_stays_none(self) -> None:
+        """No flag must restore as `None`, not as a budget of zero."""
+        original = ServerConfig()
+        env_dict = original.to_env()
+        assert env_dict["MAX_RETRIES"] is None
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.cli_max_retries is None
+
+    @pytest.mark.parametrize("invalid", [True, -1])
+    def test_cli_max_retries_rejects_impossible_budgets(self, invalid: object) -> None:
+        """`True` must not pass as a budget of one."""
+        with pytest.raises((TypeError, ValueError)):
+            ServerConfig(cli_max_retries=cast("int", invalid))
 
     def test_recursion_limit_unset_defaults_to_none(self) -> None:
         """No recursion-limit env var restores as `None` (resolve at build time)."""

@@ -16,6 +16,7 @@ downloaded and executed. Refresh all three together when bumping the version.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import sys
@@ -31,6 +32,7 @@ from deepagents_code._paths import (
 )
 
 if TYPE_CHECKING:
+    import tempfile
     import zipfile
 
 logger = logging.getLogger(__name__)
@@ -109,6 +111,11 @@ A system or root-owned install prefix (`pip install --break-system-packages`,
 a packaged interpreter) leaves `BIN_DIR` unwritable for a normal user, which
 would otherwise mean no managed ripgrep at all.
 """
+
+_FALLBACK_SHIM: (
+    tuple[tempfile.TemporaryDirectory[str], tuple[str, tuple[int, int, int]]] | None
+) = None
+"""Process-private `PATH` shim and the fallback binary identity it exposes."""
 
 
 def managed_bin_dirs() -> tuple[Path, ...]:
@@ -317,27 +324,23 @@ def prefers_system_ripgrep() -> bool:
 
 
 def prepend_managed_bin_to_path() -> None:
-    """Idempotently prepend the active managed bin dir to `os.environ["PATH"]`.
+    """Idempotently expose managed ripgrep through `os.environ["PATH"]`.
 
-    Safe to call on every startup. Only the directory that holds the managed
-    binary is prepended, and the other managed directory is removed from the
-    rest of `PATH` so a stale copy cannot shadow it.
+    Safe to call on every startup. The installation-scoped directory is
+    prepended directly. A verified profile fallback is exposed through a
+    process-private shim containing only `rg`, because the profile may be
+    repository-controlled. Both managed directories are removed from the rest
+    of `PATH` so neither a stale copy nor a fallback sibling can shadow it.
 
     Prepending only one directory matters for the profile fallback. TB14
     permits a `DEEPAGENTS_HOME` inside a checkout, so `<profile>/bin` can be a
-    repository-controlled directory. Prepending it unconditionally would put
-    committed executables ahead of the system `PATH` for every subprocess the
-    agent starts, even when no managed binary was ever installed there. The
-    active directory is `BIN_DIR` unless a managed binary really does live in
-    the profile.
+    repository-controlled directory. Verifying `rg` does not make siblings
+    such as `git` trustworthy, so that directory never enters `PATH`.
     """
     candidate = managed_rg_path()
     active_dir = candidate.parent
-    if active_dir == FALLBACK_BIN_DIR and not _managed_binary_is_verified(candidate):
-        # A profile can live inside a checkout, so a repository can provide
-        # `<profile>/bin/rg`. Never put that directory on PATH until the binary
-        # matches the pinned upstream bytes.
-        active_dir = BIN_DIR
+    if active_dir == FALLBACK_BIN_DIR:
+        active_dir = _verified_fallback_shim(candidate) or BIN_DIR
     active = str(active_dir)
     managed = {str(directory) for directory in managed_bin_dirs()}
     current = os.environ.get("PATH", "")
@@ -346,6 +349,71 @@ def prepend_managed_bin_to_path() -> None:
     if parts == desired:
         return
     os.environ["PATH"] = os.pathsep.join(desired)
+
+
+def _verified_fallback_shim(binary: Path) -> Path | None:
+    """Return a private directory exposing only a checksum-verified `binary`."""
+    global _FALLBACK_SHIM  # noqa: PLW0603  # process-lifetime shim cache
+
+    identity = _binary_identity(binary)
+    if identity is None:
+        return None
+    source = (str(binary), identity)
+    if _FALLBACK_SHIM is not None and _FALLBACK_SHIM[1] == source:
+        return Path(_FALLBACK_SHIM[0].name)
+    shim = _create_verified_fallback_shim(binary)
+    if shim is None:
+        return None
+    previous = _FALLBACK_SHIM
+    _FALLBACK_SHIM = (shim, source)
+    if previous is not None:
+        previous[0].cleanup()
+    return Path(shim.name)
+
+
+def _create_verified_fallback_shim(
+    binary: Path,
+) -> tempfile.TemporaryDirectory[str] | None:
+    """Create a private shim that contains no profile-controlled siblings.
+
+    Returns:
+        The live temporary directory, or `None` if the entrypoint cannot be
+        created and verified.
+    """
+    import shutil
+    import tempfile
+
+    shim = tempfile.TemporaryDirectory(
+        prefix="deepagents-rg-shim-", ignore_cleanup_errors=True
+    )
+    target = Path(shim.name) / managed_rg_filename()
+    try:
+        if os.name == "nt":
+            shutil.copy2(binary, target)
+        else:
+            target.symlink_to(binary)
+        if _managed_binary_is_verified(target):
+            return shim
+    except OSError:
+        logger.warning(
+            "Could not create an isolated PATH shim for ripgrep at %s",
+            binary,
+            exc_info=True,
+        )
+    shim.cleanup()
+    return None
+
+
+def _cleanup_fallback_shim() -> None:
+    """Remove the process-private fallback shim at interpreter shutdown."""
+    global _FALLBACK_SHIM  # noqa: PLW0603  # process-lifetime shim cache
+
+    if _FALLBACK_SHIM is not None:
+        _FALLBACK_SHIM[0].cleanup()
+        _FALLBACK_SHIM = None
+
+
+atexit.register(_cleanup_fallback_shim)
 
 
 def _path_without_managed_bin() -> str | None:

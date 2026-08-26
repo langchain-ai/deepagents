@@ -13,6 +13,7 @@ import tarfile
 import zipfile
 from email.message import Message
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest import mock
 from unittest.mock import patch
 
@@ -26,6 +27,9 @@ from deepagents_code.managed_tools import (
     ManagedToolUnavailableError,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 _EXPECTED_PLATFORM_ARCHS = {
     ("darwin", "arm64"),
     ("darwin", "x86_64"),
@@ -34,6 +38,16 @@ _EXPECTED_PLATFORM_ARCHS = {
     ("win32", "arm64"),
     ("win32", "x86_64"),
 }
+
+
+@pytest.fixture
+def _isolated_fallback_shim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Keep the process-lifetime shim cache isolated and explicitly cleaned."""
+    monkeypatch.setattr(managed_tools, "_FALLBACK_SHIM", None)
+    yield
+    managed_tools._cleanup_fallback_shim()
 
 
 def test_managed_bin_is_installation_scoped() -> None:
@@ -1005,6 +1019,7 @@ def test_download_to_rejects_non_200_status(
     assert dest.read_bytes() == b""
 
 
+@pytest.mark.usefixtures("_isolated_fallback_shim")
 class TestManagedBinDirFallback:
     """A root-owned install prefix must not mean "no managed ripgrep".
 
@@ -1126,7 +1141,7 @@ class TestManagedBinDirFallback:
     async def test_current_fallback_shadows_stale_shared_binary(
         self, tmp_path: Path
     ) -> None:
-        """A verified fallback avoids repeat installs and leads `PATH`."""
+        """A verified fallback avoids repeat installs and gets a private shim."""
         shared = tmp_path / "shared"
         profile = tmp_path / "profile"
         shared.mkdir()
@@ -1149,7 +1164,7 @@ class TestManagedBinDirFallback:
             patch.object(
                 managed_tools,
                 "_managed_binary_is_verified",
-                side_effect=lambda candidate: candidate == current,
+                return_value=True,
             ),
             patch.object(managed_tools, "_install_ripgrep_sync", install),
             patch.dict(os.environ, {"PATH": "/usr/bin", OFFLINE: ""}, clear=False),
@@ -1158,10 +1173,10 @@ class TestManagedBinDirFallback:
             managed_tools.prepend_managed_bin_to_path()
             assert managed_tools.managed_rg_path() == current
             parts = os.environ["PATH"].split(os.pathsep)
-            # The directory holding the current binary leads. The stale one is
-            # removed outright so it cannot shadow it later in `PATH`.
-            assert parts[0] == str(profile)
+            assert parts[0] not in {str(profile), str(shared)}
+            assert (Path(parts[0]) / name).read_text() == current.read_text()
             assert str(shared) not in parts
+            assert str(profile) not in parts
         install.assert_not_called()
 
     async def test_unverified_fallback_is_replaced_without_execution(
@@ -1200,11 +1215,42 @@ class TestManagedBinDirFallback:
             ) as probe,
         ):
             assert await managed_tools.ensure_ripgrep() == candidate
-            assert os.environ["PATH"].split(os.pathsep)[0] == str(fallback)
+            active = Path(os.environ["PATH"].split(os.pathsep)[0])
+            assert active != fallback
+            exposed = active / managed_tools.managed_rg_filename()
+            assert exposed.read_bytes() == replacement
 
         probe.assert_not_called()
         installed.assert_called_once()
         assert candidate.read_bytes() == replacement
+
+    def test_verified_fallback_keeps_profile_siblings_off_path(
+        self, tmp_path: Path
+    ) -> None:
+        """A pinned `rg` does not make a repository-provided `git` trusted."""
+        shared = tmp_path / "shared"
+        profile = tmp_path / "checkout" / "profile" / "bin"
+        profile.mkdir(parents=True)
+        rg = profile / managed_tools.managed_rg_filename()
+        rg.write_bytes(b"pinned-rg")
+        (profile / "git").write_bytes(b"repository-controlled sibling")
+
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            patch.object(
+                managed_tools, "_managed_binary_is_verified", return_value=True
+            ),
+            patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False),
+        ):
+            managed_tools.prepend_managed_bin_to_path()
+            parts = os.environ["PATH"].split(os.pathsep)
+            shim = Path(parts[0])
+
+            assert shim != profile
+            assert {entry.name for entry in shim.iterdir()} == {rg.name}
+            assert (shim / rg.name).read_bytes() == rg.read_bytes()
+            assert str(profile) not in parts
 
     def test_path_prepends_only_the_active_location(self, tmp_path: Path) -> None:
         """With no binary installed, only the preferred directory is added.

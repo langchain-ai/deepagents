@@ -26331,7 +26331,10 @@ class DeepAgentsApp(App):
                 label,
             )
             return False
-        restart = self._schedule_restart_command(preserve_queue=True)
+        restart = self._schedule_restart_command(
+            preserve_queue=True,
+            propagate_errors=True,
+        )
         return await restart
 
     async def _reload_configuration_for_restart(self) -> bool:
@@ -26418,7 +26421,10 @@ class DeepAgentsApp(App):
         self._schedule_restart_command()
 
     def _schedule_restart_command(
-        self, *, preserve_queue: bool = False
+        self,
+        *,
+        preserve_queue: bool = False,
+        propagate_errors: bool = False,
     ) -> asyncio.Task[bool]:
         """Run config refresh and server respawn off the Textual message pump.
 
@@ -26435,6 +26441,8 @@ class DeepAgentsApp(App):
 
         Args:
             preserve_queue: Keep prompts submitted during an active reload.
+            propagate_errors: Preserve offered-restart exception behavior for
+                callers that await the returned task.
 
         Returns:
             The restart task, so tests and shutdown can await it.
@@ -26443,7 +26451,10 @@ class DeepAgentsApp(App):
         if active is not None and not active.done():
             return cast("asyncio.Task[bool]", active)
         task = asyncio.create_task(
-            self._run_restart_command_detached(preserve_queue=preserve_queue),
+            self._run_restart_command_detached(
+                preserve_queue=preserve_queue,
+                propagate_errors=propagate_errors,
+            ),
             name="restart",
         )
         self._restart_respawn_task = task
@@ -26469,12 +26480,17 @@ class DeepAgentsApp(App):
             drain.add_done_callback(_log_task_exception)
 
     async def _run_restart_command_detached(
-        self, *, preserve_queue: bool = False
+        self,
+        *,
+        preserve_queue: bool = False,
+        propagate_errors: bool = False,
     ) -> bool:
         """Serialize and safely report a detached `/restart` continuation.
 
         Args:
             preserve_queue: Keep prompts submitted during an active reload.
+            propagate_errors: Re-raise unexpected restart failures to an
+                awaiting offered-restart caller.
 
         Returns:
             Whether the server restarted successfully.
@@ -26484,21 +26500,32 @@ class DeepAgentsApp(App):
         """
         try:
             async with self._environment_mutation_lock:
-                return await self._run_restart_command(preserve_queue=preserve_queue)
+                return await self._run_restart_command(
+                    preserve_queue=preserve_queue,
+                    propagate_errors=propagate_errors,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if propagate_errors:
+                raise
             logger.exception("Manual /restart failed unexpectedly")
             await self._mount_message(
                 ErrorMessage(f"Restart failed: {type(exc).__name__}: {exc}"),
             )
             return False
 
-    async def _run_restart_command(self, *, preserve_queue: bool = False) -> bool:
+    async def _run_restart_command(
+        self,
+        *,
+        preserve_queue: bool = False,
+        propagate_errors: bool = False,
+    ) -> bool:
         """Validate and schedule a restart without echoing another command.
 
         Args:
             preserve_queue: Keep prompts submitted during an active reload.
+            propagate_errors: Re-raise unexpected respawn failures.
 
         Returns:
             Whether the server restarted successfully.
@@ -26609,9 +26636,9 @@ class DeepAgentsApp(App):
         self._reconnecting = True
         self._agent = None
         self._sync_status_connection()
-        return await self._run_restart_respawn()
+        return await self._run_restart_respawn(propagate_errors=propagate_errors)
 
-    async def _run_restart_respawn(self) -> bool:
+    async def _run_restart_respawn(self, *, propagate_errors: bool = False) -> bool:
         """Respawn the server for `/restart`, detached from the message pump.
 
         Called from a detached restart continuation -- `/restart`'s own task,
@@ -26625,27 +26652,32 @@ class DeepAgentsApp(App):
         `_connecting`/`_reconnecting` flags the caller pre-set (on success the
         `ServerReady` handler clears them once the new server is live).
 
-        An *unexpected* raise — distinct from the handled `return False` path,
-        which posts `ServerStartFailed` so the recovery UI gives the user
-        feedback — is caught here and surfaced as an `ErrorMessage`, mirroring
-        `_reconnect_from_viewer_safe`, which detaches the same respawn. Without
-        this the exception would reach only `_log_task_exception` and log a
-        warning the interactive user never sees; `_log_task_exception` stays a
-        last-resort backstop for anything that escapes even this handler.
+        By default an *unexpected* raise — distinct from the handled `return
+        False` path — is caught and surfaced as an `ErrorMessage`, mirroring
+        `_reconnect_from_viewer_safe`. Offered restarts preserve their earlier
+        exception contract instead: they request propagation after this helper
+        clears reconnect state, removes the transient, and restores the queue.
+
+        Args:
+            propagate_errors: Re-raise unexpected respawn failures after cleanup.
 
         Returns:
             Whether the server restarted successfully.
         """
         restarting = None
         restarted = False
+        failure: Exception | None = None
         try:
             restarting = await self._mount_transient_app_message("Restarting server...")
             restarted = await self._restart_server_manual()
         except Exception as exc:
-            logger.exception("Manual /restart of server raised unexpectedly")
-            await self._mount_message(
-                ErrorMessage(f"Restart failed: {type(exc).__name__}: {exc}"),
-            )
+            if propagate_errors:
+                failure = exc
+            else:
+                logger.exception("Manual /restart of server raised unexpectedly")
+                await self._mount_message(
+                    ErrorMessage(f"Restart failed: {type(exc).__name__}: {exc}"),
+                )
         finally:
             if not restarted:
                 self._connecting = False
@@ -26666,6 +26698,8 @@ class DeepAgentsApp(App):
                 "Restart did not complete; queued prompts were returned to the "
                 "input. Re-submit them to send on the current session."
             )
+        if failure is not None:
+            raise failure
         return restarted
 
     async def _restart_server_manual(self) -> bool:

@@ -2,6 +2,22 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.63](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.62...deepagents-code==0.1.63) (2026-08-26)
+
+### Features
+
+- Added Baseten `zai-org/GLM-5.3-Flash` to the model switcher ([#5844](https://github.com/langchain-ai/deepagents/issues/5844)).
+- Added support for loading managed config from a remote source ([#5776](https://github.com/langchain-ai/deepagents/issues/5776)).
+- Added retry middleware for transient model errors in model nodes ([#4569](https://github.com/langchain-ai/deepagents/issues/4569)).
+
+### Fixes
+
+- Fixed live cost tracking for dynamic subagents ([#5833](https://github.com/langchain-ai/deepagents/issues/5833)).
+- Improved `clear` command descriptions ([#5841](https://github.com/langchain-ai/deepagents/issues/5841)).
+- Allowed instrumental Auto actions ([#5832](https://github.com/langchain-ai/deepagents/issues/5832)).
+- Ensured traces are flushed before server shutdown ([#5837](https://github.com/langchain-ai/deepagents/issues/5837)).
+- Made the debug log path click-to-copy ([#5845](https://github.com/langchain-ai/deepagents/issues/5845)).
+
 ## [0.1.62](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.61...deepagents-code==0.1.62) (2026-08-26)
 
 ### Features

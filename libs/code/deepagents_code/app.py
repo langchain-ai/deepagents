@@ -26500,9 +26500,13 @@ class DeepAgentsApp(App):
         """
         try:
             async with self._environment_mutation_lock:
+                if not propagate_errors:
+                    return await self._run_restart_command(
+                        preserve_queue=preserve_queue
+                    )
                 return await self._run_restart_command(
                     preserve_queue=preserve_queue,
-                    propagate_errors=propagate_errors,
+                    propagate_errors=True,
                 )
         except asyncio.CancelledError:
             raise

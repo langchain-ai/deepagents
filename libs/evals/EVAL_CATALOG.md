@@ -10,7 +10,7 @@ Categories (for `--eval-category` filtering):
 file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,langchain/middleware
 ```
 
-**135 evals** across **8 categories**
+**136 evals** across **8 categories**
 
 ## File Ops (`file_operations`) (21 evals)
 
@@ -48,8 +48,9 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 - [`test_identify_quote_author_from_directory_parallel_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L594) — `tests/evals/test_file_operations.py:594`
 - [`test_identify_quote_author_from_directory_unprompted_efficiency`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L669) — `tests/evals/test_file_operations.py:669`
 
-## Tool Use (`tool_use`) (59 evals)
+## Tool Use (`tool_use`) (60 evals)
 
+- [`test_auto_mode_instrumental_action_authorization`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_auto_mode_authorization.py#L326) — `tests/evals/test_auto_mode_authorization.py:326`
 - [`test_nexus`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L75) — `tests/evals/test_external_benchmarks.py:75`
 - [`test_bfcl_v3`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L83) — `tests/evals/test_external_benchmarks.py:83`
 - [`test_no_goal_trivial_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L89) — `tests/evals/test_goal_tools.py:89`

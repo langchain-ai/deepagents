@@ -3160,9 +3160,35 @@ class TestUpdateLogs:
 
         assert success is False
         assert installed is None
-        assert "remains at v1.0.0" in output
-        assert "v1.1.0 may not have reached the package index yet" in output
-        assert "Updated dependencies only" in output
+        assert output == (
+            "v1.1.0 is still propagating to the package index; "
+            "dcode remains on v1.0.0. Try again in a few minutes."
+        )
+
+    async def test_perform_upgrade_brew_skips_running_prefix_readback(self) -> None:
+        """Homebrew's running process cannot verify the newly relinked Cellar."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="brew",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which", return_value="/opt/brew"
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            patch(
+                "deepagents_code.update_check.read_installed_distribution_version",
+            ) as readback_mock,
+        ):
+            success, _output, installed = await perform_upgrade(target_version="1.1.0")
+
+        assert success is True
+        assert installed == "1.1.0"
+        readback_mock.assert_not_called()
 
     async def test_perform_upgrade_falls_back_to_target_when_readback_fails(
         self, cache_file

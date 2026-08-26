@@ -1897,8 +1897,8 @@ def test_managed_skill_dirs_outrank_environment_override(
     monkeypatch.setenv(EXTRA_SKILLS_DIRS, str(env_dir))
     service.invalidate_config_sources()
     try:
-        settings = config.Settings.from_environment(start_path=tmp_path)
-        assert settings.extra_skills_dirs == [managed_dir]
+        config.Settings.from_environment(start_path=tmp_path)
+        assert config.get_extra_skills_dirs() == [managed_dir]
     finally:
         service.invalidate_config_sources()
 
@@ -2650,11 +2650,13 @@ def test_reload_keeps_a_user_shell_allow_list(
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
+        from deepagents_code import config
+
         runtime = Settings.from_environment(start_path=tmp_path)
-        before = runtime.shell_allow_list
+        before = config.resolve_shell_allow_list()
         assert before is not None
         runtime.reload_from_environment(start_path=tmp_path)
-        assert runtime.shell_allow_list == before
+        assert config.resolve_shell_allow_list() == before
     finally:
         service.invalidate_config_sources()
 
@@ -2677,9 +2679,11 @@ def test_managed_shell_allow_list_still_wins_a_reload(
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
+        from deepagents_code import config
+
         runtime = Settings.from_environment(start_path=tmp_path)
         runtime.reload_from_environment(start_path=tmp_path)
-        assert runtime.shell_allow_list == ["ls"]
+        assert config.resolve_shell_allow_list() == ["ls"]
     finally:
         service.invalidate_config_sources()
 
@@ -4489,8 +4493,8 @@ def _reload_previous() -> dict[str, object]:
     from deepagents_code.config import _RELOADABLE_FIELDS
 
     previous: dict[str, object] = dict.fromkeys(_RELOADABLE_FIELDS)
-    previous["shell_allow_list"] = ["ls"]
-    previous["extra_skills_dirs"] = []
+    previous["shell.allow_list"] = ["ls"]
+    previous["skills.extra_allowed_dirs"] = []
     return previous
 
 

@@ -71,6 +71,7 @@ from deepagents_code.config import (
     build_langsmith_thread_url,
     create_model,
     is_shell_command_allowed,
+    resolve_shell_allow_list,
     settings,
 )
 from deepagents_code.file_ops import FileOpTracker, record_display_caveat
@@ -1066,6 +1067,22 @@ def _process_stream_chunk(
         )
 
 
+def _shell_allow_list() -> Any:  # noqa: ANN401  # list[str] | _ShellAllowAll | None
+    """Resolve the shell allow-list from the config tiers in force.
+
+    A module-level seam rather than inline `resolve_shell_allow_list()` calls
+    so tests that patch `non_interactive.settings` with a
+    `shell_allow_list`-attributed stand-in keep working.
+
+    Returns:
+        The configured allow-list, the `SHELL_ALLOW_ALL` sentinel, or `None`.
+    """
+    configured = getattr(settings, "shell_allow_list", None)
+    if configured is not None:
+        return configured
+    return resolve_shell_allow_list()
+
+
 def _make_hitl_decision(
     action_request: ActionRequest, console: Console
 ) -> dict[str, str]:
@@ -1097,7 +1114,8 @@ def _make_hitl_decision(
     action_name = action_request.get("name", "")
 
     if action_name == "execute":
-        if not settings.shell_allow_list:
+        shell_allow_list = _shell_allow_list()
+        if not shell_allow_list:
             command = action_request.get("args", {}).get("command", "")
             console.print(
                 f"\n[red]Shell command rejected (no allow-list configured): "
@@ -1114,11 +1132,11 @@ def _make_hitl_decision(
 
         command = action_request.get("args", {}).get("command", "")
 
-        if is_shell_command_allowed(command, settings.shell_allow_list):
+        if is_shell_command_allowed(command, shell_allow_list):
             console.print(f"[dim]✓ Auto-approved: {escape_markup(command)}[/dim]")
             return {"type": "approve"}
 
-        allowed_list_str = ", ".join(settings.shell_allow_list)
+        allowed_list_str = ", ".join(shell_allow_list)
         console.print(f"\n[red]Shell command rejected:[/red] {escape_markup(command)}")
         console.print(
             f"[yellow]Allowed commands:[/yellow] {escape_markup(allowed_list_str)}"
@@ -1972,7 +1990,7 @@ async def run_non_interactive(
             silently skipped.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware
             on the main agent. `None` uses the sandbox-aware default.
-        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC
+        interpreter_ptc: Override for the resolved `interpreter.ptc` (PTC
             allowlist for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
@@ -2160,10 +2178,9 @@ async def run_non_interactive(
         from deepagents_code.hooks.models.domain import HookEvent
         from deepagents_code.hooks.trust import WorkspaceTrust
 
-        enable_shell = bool(settings.shell_allow_list)
-        shell_is_unrestricted = isinstance(
-            settings.shell_allow_list, type(SHELL_ALLOW_ALL)
-        )
+        shell_allow_list = _shell_allow_list()
+        enable_shell = bool(shell_allow_list)
+        shell_is_unrestricted = isinstance(shell_allow_list, type(SHELL_ALLOW_ALL))
         # Currently, non-shell tools have no HITL handler in non-interactive
         # mode, so interrupting on them just fragments LangSmith traces
         # without adding value. Gate only shell execution via middleware.
@@ -2201,10 +2218,10 @@ async def run_non_interactive(
             enable_shell and not shell_is_unrestricted and not has_permission_hooks
         )
         # Extract the concrete allow-list to forward to the server subprocess.
-        # settings.shell_allow_list is already validated at this point.
+        # The resolved allow-list is already validated at this point.
         restrictive_allow_list: list[str] | None = (
-            list(settings.shell_allow_list)
-            if use_interrupt_shell_only and settings.shell_allow_list
+            list(shell_allow_list)
+            if use_interrupt_shell_only and shell_allow_list
             else None
         )
 

@@ -20,7 +20,6 @@ from deepagents_code._server_config import (
     _read_env_optional_bool,
     _read_env_str,
 )
-from deepagents_code.config import settings
 
 # ------------------------------------------------------------------
 # _read_env_bool
@@ -258,13 +257,19 @@ class TestServerConfigInterpreterDefault:
         )
 
     def test_local_none_false_uses_settings_default(self) -> None:
-        with patch.object(settings, "enable_interpreter", False):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=False,
+        ):
             config = self._build(sandbox_type="none", enable_interpreter=None)
 
         assert config.enable_interpreter is False
 
     def test_local_none_true_uses_settings_default(self) -> None:
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             config = self._build(sandbox_type="none", enable_interpreter=None)
 
         assert config.enable_interpreter is True
@@ -272,7 +277,10 @@ class TestServerConfigInterpreterDefault:
     def test_local_explicit_false_is_preserved(self) -> None:
         # An explicit `False` must win over a `True` config default rather than
         # falling through to the settings lookup.
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             config = self._build(sandbox_type="none", enable_interpreter=False)
 
         assert config.enable_interpreter is False
@@ -280,13 +288,19 @@ class TestServerConfigInterpreterDefault:
     def test_empty_sandbox_is_treated_as_local(self) -> None:
         # An empty-string sandbox is falsy and must not be mistaken for a remote
         # backend, which would silently disable the interpreter.
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             config = self._build(sandbox_type="", enable_interpreter=None)
 
         assert config.enable_interpreter is True
 
     def test_remote_none_disables_interpreter(self) -> None:
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             config = self._build(sandbox_type="daytona", enable_interpreter=None)
 
         assert config.enable_interpreter is False

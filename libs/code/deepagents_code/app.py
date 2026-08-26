@@ -4809,16 +4809,16 @@ class DeepAgentsApp(App):
 
         Gated on the raw `--interpreter` tri-state (`self._interpreter_arg`) so an
         explicit `--no-interpreter` opt-out stays quiet, and on the local default
-        from `settings` so users who disabled the interpreter in config are not
-        nagged.
+        resolved from `interpreter.enable_interpreter` so users who disabled the
+        interpreter in config are not nagged.
         """
         from deepagents_code._server_config import _interpreter_suppressed_by_sandbox
-        from deepagents_code.config import settings
+        from deepagents_code.config import resolve_enable_interpreter_default
 
         if not _interpreter_suppressed_by_sandbox(
             enable_interpreter=self._interpreter_arg,
             sandbox_type=self._sandbox_type,
-            local_default=settings.enable_interpreter,
+            local_default=resolve_enable_interpreter_default(),
         ):
             return
         self.notify(
@@ -9366,25 +9366,26 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.config import (
             is_shell_command_allowed,
-            settings,
+            resolve_shell_allow_list,
         )
 
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
+        shell_allow_list = resolve_shell_allow_list()
 
         is_auto_fallback = any(
             isinstance(request.get("description"), str)
             and request["description"].startswith("Auto human fallback")
             for request in action_requests or []
         )
-        if settings.shell_allow_list and action_requests and not is_auto_fallback:
+        if shell_allow_list and action_requests and not is_auto_fallback:
             all_auto_approved = True
             approved_commands = []
 
             for req in action_requests:
                 if req.get("name") == "execute":
                     command = req.get("args", {}).get("command", "")
-                    if is_shell_command_allowed(command, settings.shell_allow_list):
+                    if is_shell_command_allowed(command, shell_allow_list):
                         approved_commands.append(command)
                     else:
                         all_auto_approved = False

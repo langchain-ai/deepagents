@@ -58,6 +58,7 @@ from deepagents_code.agent import (
     load_async_subagents,
 )
 from deepagents_code.config import Settings, get_glyphs
+from deepagents_code.configuration.types import InterpreterConfig
 from deepagents_code.managed_tools import BIN_DIR
 from deepagents_code.offload import (
     _FALLBACK_ARTIFACTS_ROOT,
@@ -5353,13 +5354,26 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.project_root = None
         mock_settings.shell_allow_list = None
         mock_settings.user_langchain_project = None
-        mock_settings.interpreter_timeout_seconds = 5.0
-        mock_settings.interpreter_memory_limit_mb = 64
-        mock_settings.interpreter_max_ptc_calls = 256
-        mock_settings.interpreter_max_result_chars = 4000
-        mock_settings.interpreter_ptc = False
-        mock_settings.interpreter_ptc_acknowledge_unsafe = False
         return mock_settings
+
+    @staticmethod
+    def _interpreter_config(
+        *,
+        ptc: str | bool | list[str] = False,
+        ptc_acknowledge_unsafe: bool = False,
+    ) -> InterpreterConfig:
+        """Frozen interpreter snapshot standing in for the manifest defaults."""
+        from deepagents_code.configuration.types import InterpreterConfig
+
+        return InterpreterConfig(
+            enable_interpreter=True,
+            timeout_seconds=5.0,
+            memory_limit_mb=64,
+            max_ptc_calls=256,
+            max_result_chars=4000,
+            ptc=ptc,
+            ptc_acknowledge_unsafe=ptc_acknowledge_unsafe,
+        )
 
     def _capture_middleware(
         self,
@@ -6761,7 +6775,7 @@ class TestCreateCliAgentInterpreterWiring:
         from langchain_quickjs import CodeInterpreterMiddleware
 
         mock_settings = self._build_mock_settings(tmp_path)
-        mock_settings.interpreter_ptc = ["nope", "grep"]
+        interpreter_config = self._interpreter_config(ptc=["nope", "grep"])
         fake_model = _make_fake_chat_model()
 
         @tool
@@ -6792,6 +6806,7 @@ class TestCreateCliAgentInterpreterWiring:
                 enable_skills=False,
                 enable_shell=False,
                 enable_interpreter=True,
+                interpreter_config=interpreter_config,
                 tools=[grep],
             )
 
@@ -6806,8 +6821,6 @@ class TestCreateCliAgentInterpreterWiring:
         from langchain_core.tools import tool
 
         mock_settings = self._build_mock_settings(tmp_path)
-        mock_settings.interpreter_ptc = "all"
-        mock_settings.interpreter_ptc_acknowledge_unsafe = False
         fake_model = _make_fake_chat_model()
 
         @tool
@@ -6833,6 +6846,7 @@ class TestCreateCliAgentInterpreterWiring:
                 enable_skills=False,
                 enable_shell=False,
                 enable_interpreter=True,
+                interpreter_config=self._interpreter_config(ptc="all"),
                 tools=[grep],
             )
 
@@ -6849,7 +6863,7 @@ class TestCreateCliAgentInterpreterWiring:
         from langchain_quickjs import CodeInterpreterMiddleware
 
         mock_settings = self._build_mock_settings(tmp_path)
-        mock_settings.interpreter_ptc = "safe"
+        interpreter_config = self._interpreter_config(ptc="safe")
         fake_model = _make_fake_chat_model()
 
         @tool
@@ -6885,6 +6899,7 @@ class TestCreateCliAgentInterpreterWiring:
                 enable_skills=False,
                 enable_shell=False,
                 enable_interpreter=True,
+                interpreter_config=interpreter_config,
                 tools=[grep, read_file],
             )
 

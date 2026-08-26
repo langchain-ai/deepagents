@@ -148,6 +148,11 @@ class ConfigResolver:
         self._providers = ordered
         self._lock = threading.RLock()
 
+    @property
+    def providers(self) -> tuple[ConfigProvider, ...]:
+        """The provider chain, in precedence order, for inspection."""
+        return self._providers
+
     def get(self, option: ConfigOption) -> ResolvedValue[object]:
         """Resolve one option through every provider.
 

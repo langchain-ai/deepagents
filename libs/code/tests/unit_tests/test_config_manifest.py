@@ -211,6 +211,10 @@ _SILENT_RESOLVER_READERS = frozenset(
         # `ResolvedValue` and every caller emits against it.
         "config_manifest.py:_resolve_option_without_managed",
         "client/commands/config.py:_option_provenance",
+        # `_reload_values` only matches the guard's heuristic: its `.get` call
+        # reads `provider_statuses()` (provider health, not an option), and
+        # option reads moved to `_resolve_report_options`, which emits.
+        "config.py:_reload_values",
         "configuration/service.py:resolve_managed_option",
         "integrations/sandbox_config.py:load",
         "theme.py:_load_user_themes",
@@ -1667,19 +1671,23 @@ def test_charset_auto_display_value_includes_effective_glyph_mode() -> None:
 # --- Single-source defaults -------------------------------------------------
 
 
-def test_interpreter_defaults_match_settings() -> None:
-    """Manifest interpreter defaults are the same objects `Settings` uses.
+def test_interpreter_defaults_match_interpreter_config() -> None:
+    """Manifest interpreter defaults resolve into `InterpreterConfig` unchanged.
 
-    This is what makes the manifest the single source of truth: the dataclass
-    default and the manifest default cannot diverge because they are one value.
+    This is what makes the manifest the single source of truth: the resolved
+    snapshot and the manifest default cannot diverge when no tier declares a
+    value.
     """
-    from deepagents_code.config import Settings
+    from deepagents_code.config import (
+        _INTERPRETER_OPTION_KEYS,
+        resolve_interpreter_config,
+    )
 
-    settings = Settings.from_environment()
-    for opt in get_config_options():
-        if opt.group != "Interpreter" or opt.settings_field is None:
-            continue
-        assert getattr(settings, opt.settings_field) == opt.default
+    interpreter = resolve_interpreter_config()
+    for field, key in _INTERPRETER_OPTION_KEYS.items():
+        option = get_option(key)
+        assert option is not None
+        assert getattr(interpreter, field) == option.default
 
 
 def test_every_settings_field_names_a_real_settings_attribute() -> None:

@@ -919,13 +919,11 @@ class TestDiscoverSkillsAndRoots:
             _capture_paths(str(tmp_path / "profile"), launch_home=tmp_path),
         )
         monkeypatch.setattr(settings, "project_root", None, raising=False)
-        monkeypatch.setattr(
-            settings,
-            "extra_skills_dirs",
-            [link_extra],
-            raising=False,
-        )
         with (
+            patch(
+                "deepagents_code.config.get_extra_skills_dirs",
+                return_value=[link_extra],
+            ),
             patch("deepagents_code.skills.load.list_skills", return_value=[]),
             patch(
                 "deepagents_code.skills.trust.load_trusted_skill_dirs",

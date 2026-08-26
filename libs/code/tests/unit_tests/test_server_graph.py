@@ -14,6 +14,7 @@ import pytest
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
+from deepagents_code.config import resolve_interpreter_config
 
 
 def _import_fresh_server_graph() -> ModuleType:
@@ -262,6 +263,7 @@ class TestServerGraph:
             configure_langsmith_secret_redaction=configure_redaction,
             create_model=create_model,
             is_memory_auto_save_enabled=MagicMock(return_value=True),
+            resolve_interpreter_config=resolve_interpreter_config,
             settings=SimpleNamespace(
                 has_tavily=True,
                 reload_from_environment=reload_from_environment,
@@ -391,6 +393,7 @@ class TestServerGraph:
             enable_skills=True,
             enable_shell=True,
             enable_interpreter=False,
+            interpreter_config=resolve_interpreter_config(),
             rubric_model=None,
             rubric_max_iterations=None,
             auto_classifier_model=None,
@@ -444,26 +447,17 @@ class TestServerGraph:
         assert mcp_tools == []
         resolve_mcp_tools.assert_not_awaited()
 
-    async def test_interpreter_settings_apply_before_agent_construction(self) -> None:
-        """Server config settings writes should be visible to `create_cli_agent`."""
+    async def test_interpreter_snapshot_passed_to_agent_construction(self) -> None:
+        """`ServerConfig` interpreter overrides reach `create_cli_agent`.
+
+        They travel in a local frozen snapshot; the global `Settings` object
+        is never mutated.
+        """
+        from dataclasses import FrozenInstanceError
+
         graph_obj = object()
         model_obj = object()
-        observed: dict[str, object] = {}
 
-        def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
-            from deepagents_code.config import settings
-
-            observed["interpreter_ptc"] = settings.interpreter_ptc
-            observed["acknowledge"] = settings.interpreter_ptc_acknowledge_unsafe
-            observed["enable_interpreter"] = settings.enable_interpreter
-            return graph_obj, _backend_with_offload(object())
-
-        settings_obj = SimpleNamespace(
-            has_tavily=False,
-            interpreter_ptc=None,
-            interpreter_ptc_acknowledge_unsafe=False,
-            enable_interpreter=False,
-        )
         config_module = _module_with_attrs(
             "deepagents_code.config",
             configure_langsmith_secret_redaction=MagicMock(),
@@ -476,11 +470,14 @@ class TestServerGraph:
                 ),
             ),
             is_memory_auto_save_enabled=MagicMock(return_value=True),
-            settings=settings_obj,
+            resolve_interpreter_config=resolve_interpreter_config,
+            settings=SimpleNamespace(has_tavily=False),
         )
         agent_module = _module_with_attrs(
             "deepagents_code.agent",
-            create_cli_agent=MagicMock(side_effect=create_cli_agent_side_effect),
+            create_cli_agent=MagicMock(
+                return_value=(graph_obj, _backend_with_offload(object()))
+            ),
             load_async_subagents=MagicMock(return_value=None),
         )
         tools_module = _module_with_attrs(
@@ -519,11 +516,11 @@ class TestServerGraph:
             module = _import_fresh_server_graph()
             assert await module.make_graph() is graph_obj
 
-        assert observed == {
-            "interpreter_ptc": ["js_eval"],
-            "acknowledge": True,
-            "enable_interpreter": True,
-        }
+        snapshot = agent_module.create_cli_agent.call_args.kwargs["interpreter_config"]
+        assert snapshot.ptc == ["js_eval"]
+        assert snapshot.ptc_acknowledge_unsafe is True
+        with pytest.raises(FrozenInstanceError):
+            snapshot.ptc = ["other"]
 
     async def test_build_tools_delegates_mcp_loading_to_resolver(self) -> None:
         """`_build_tools` should defer all MCP work to the resolver.

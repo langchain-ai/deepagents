@@ -151,6 +151,24 @@ class ProviderStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class InterpreterConfig:
+    """Frozen snapshot of the `interpreter.*` manifest group for agent builds.
+
+    `create_cli_agent` receives one of these instead of reaching into the
+    global `Settings`, so every callsite resolves the group from the config
+    tiers in force at the time of the build.
+    """
+
+    enable_interpreter: bool
+    timeout_seconds: float
+    memory_limit_mb: int
+    max_ptc_calls: int
+    max_result_chars: int
+    ptc: str | bool | list[str]
+    ptc_acknowledge_unsafe: bool
+
+
+@dataclass(frozen=True, slots=True)
 class TomlSnapshot:
     """One parsed TOML source and its health.
 

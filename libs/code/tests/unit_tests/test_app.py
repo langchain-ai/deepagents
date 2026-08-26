@@ -19232,8 +19232,6 @@ class TestRequestApprovalBranching:
     """_request_approval should show a placeholder when the user is typing."""
 
     async def test_auto_fallback_skips_shell_allow_list(self) -> None:
-        from deepagents_code.config import settings
-
         app = DeepAgentsApp(agent=MagicMock())
         app._last_typed_at = None
         action_requests = [
@@ -19245,7 +19243,10 @@ class TestRequestApprovalBranching:
         ]
 
         with (
-            patch.object(settings, "shell_allow_list", ["echo"]),
+            patch(
+                "deepagents_code.config.resolve_shell_allow_list",
+                return_value=["echo"],
+            ),
             patch.object(app, "_mount_approval_widget", new=AsyncMock()) as mount,
             patch.object(app, "_reveal_pending_tool_calls"),
             patch.object(app, "_pause_loading_spinner_for_approval"),
@@ -39771,7 +39772,10 @@ class TestNotifyInterpreterDisabledBySandbox:
         notify_mock = MagicMock()
         app.notify = notify_mock  # ty: ignore
 
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             app._notify_interpreter_disabled_by_sandbox()
 
         notify_mock.assert_called_once()
@@ -39794,7 +39798,10 @@ class TestNotifyInterpreterDisabledBySandbox:
         notify_mock = MagicMock()
         app.notify = notify_mock  # ty: ignore
 
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             app._notify_interpreter_disabled_by_sandbox()
 
         notify_mock.assert_not_called()
@@ -39815,7 +39822,10 @@ class TestNotifyInterpreterDisabledBySandbox:
         notify_mock = MagicMock()
         app.notify = notify_mock  # ty: ignore
 
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             app._notify_interpreter_disabled_by_sandbox()
 
         notify_mock.assert_not_called()
@@ -39836,7 +39846,10 @@ class TestNotifyInterpreterDisabledBySandbox:
         notify_mock = MagicMock()
         app.notify = notify_mock  # ty: ignore
 
-        with patch.object(settings, "enable_interpreter", False):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=False,
+        ):
             app._notify_interpreter_disabled_by_sandbox()
 
         notify_mock.assert_not_called()

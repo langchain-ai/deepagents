@@ -190,16 +190,16 @@ def _resolve_enable_interpreter(
     Returns:
         The explicit `enable_interpreter` value when not `None`; `False` for
             remote-sandbox defaults; otherwise the configured local default
-            (`settings.enable_interpreter`).
+            (`resolve_enable_interpreter_default()`).
     """
     if enable_interpreter is not None:
         return enable_interpreter
     if sandbox_type and sandbox_type != "none":
         return False
 
-    from deepagents_code.config import settings
+    from deepagents_code.config import resolve_enable_interpreter_default
 
-    return settings.enable_interpreter
+    return resolve_enable_interpreter_default()
 
 
 def _interpreter_suppressed_by_sandbox(
@@ -223,9 +223,9 @@ def _interpreter_suppressed_by_sandbox(
             `True`, `--no-interpreter` → `False`, unset → `None`).
         sandbox_type: Sandbox backend identifier. Any falsy value (`None`, `""`)
             or `"none"` is treated as local execution.
-        local_default: The local-mode default (`settings.enable_interpreter`);
-            gating on it keeps the advisory quiet for users who disabled the
-            interpreter in config.
+        local_default: The local-mode default (resolved from
+            `interpreter.enable_interpreter`); gating on it keeps the advisory
+            quiet for users who disabled the interpreter in config.
 
     Returns:
         `True` when the advisory should be shown, otherwise `False`.
@@ -301,26 +301,25 @@ class ServerConfig:
     caller option via `_resolve_enable_interpreter` before constructing the
     config, so the `bool | None` "defer to default" sentinel never reaches this
     field. The `False` default here is only the bare-constructor/`from_env`
-    fallback; the user-facing default (on in local mode) lives in
-    `settings.enable_interpreter`.
+    fallback; the user-facing default (on in local mode) resolves from
+    `interpreter.enable_interpreter` via `resolve_enable_interpreter_default()`.
 
     Local-mode only; the server graph raises if a sandbox is configured and
     this flag is `True`.
     """
 
     interpreter_ptc: str | list[str] | None = None
-    """Override for `settings.interpreter_ptc`.
+    """Override for the resolved `interpreter.ptc` value.
 
-    `None` means "fall through to whatever `settings.interpreter_ptc` resolves
-    to from `~/.deepagents/config.toml`". A string is one of `"safe"`/`"all"`;
-    a list is an explicit allowlist of tool names that may also include the
-    `"safe"` preset (expanded at agent-build time); `"all"` is rejected inside
-    a list.
+    `None` means "fall through to whatever `interpreter.ptc` resolves to from
+    `~/.deepagents/config.toml`". A string is one of `"safe"`/`"all"`; a list
+    is an explicit allowlist of tool names that may also include the `"safe"`
+    preset (expanded at agent-build time); `"all"` is rejected inside a list.
     """
 
     interpreter_ptc_acknowledge_unsafe: bool = False
-    """Mirror of `settings.interpreter_ptc_acknowledge_unsafe` — required when
-    `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
+    """Mirror of the resolved `interpreter.ptc_acknowledge_unsafe` — required
+    when `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
     """
 
     allow_fs_tools: list[FsToolName] | None = None
@@ -635,9 +634,9 @@ class ServerConfig:
             enable_ask_user: Enable ask_user tool.
             enable_interpreter: Enable `CodeInterpreterMiddleware` on the main
                 agent. `None` uses the sandbox-aware default.
-            interpreter_ptc: Override for `settings.interpreter_ptc`.
-            interpreter_ptc_acknowledge_unsafe: Mirror of
-                `settings.interpreter_ptc_acknowledge_unsafe`.
+            interpreter_ptc: Override for the resolved `interpreter.ptc`.
+            interpreter_ptc_acknowledge_unsafe: Mirror of the resolved
+                `interpreter.ptc_acknowledge_unsafe`.
             allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools`
                 param to forward to the server subprocess. `None` leaves the
                 SDK default (all tools).

@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from langgraph.store.base import BaseStore
     from langgraph.types import Command
 
+    from deepagents_code.configuration.types import InterpreterConfig
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
     from deepagents_code.plugins.adapters.skills import CodeSkillSource
@@ -107,6 +108,7 @@ from deepagents_code.config import (
     get_default_coding_instructions,
     get_glyphs,
     get_langsmith_project_name,
+    resolve_shell_allow_list,
     restore_user_tracing_api_keys,
     restore_user_tracing_env,
     settings,
@@ -948,15 +950,16 @@ def _resolve_ptc_option(
     silently exposes no tool rather than raising.)
 
     Args:
-        ptc: Raw `interpreter_ptc` value from settings or CLI. Accepts
-            `False`/`[]`, `"safe"`, `"all"`, or a list of names. A list may
-            include `"safe"`, which expands to `INTERPRETER_PTC_SAFE_PRESET`;
-            `"all"` is rejected inside a list.
+        ptc: Raw `interpreter.ptc` value from the resolved interpreter config
+            or the CLI. Accepts `False`/`[]`, `"safe"`, `"all"`, or a list of
+            names. A list may include `"safe"`, which expands to
+            `INTERPRETER_PTC_SAFE_PRESET`; `"all"` is rejected inside a list.
         tools: Tools passed to `create_cli_agent`. Used only to enumerate
             `"all"`, which is therefore limited to these explicitly-passed
             tools (the SDK runtime built-ins cannot be enumerated here).
-        acknowledge_unsafe: Mirrors `settings.interpreter_ptc_acknowledge_unsafe`;
-            required when `ptc="all"` and `auto_approve` is `False`.
+        acknowledge_unsafe: Mirrors `interpreter.ptc_acknowledge_unsafe` from
+            the resolved interpreter config; required when `ptc="all"` and
+            `auto_approve` is `False`.
         auto_approve: Whether HITL approval is globally disabled. When `True`,
             `"all"` does not require `acknowledge_unsafe` because every host
             tool already runs without prompting.
@@ -2332,6 +2335,23 @@ def get_skill_sources(
     return sources
 
 
+def _settings_shell_allow_list() -> Any:  # noqa: ANN401  # list[str] | _ShellAllowAll | None
+    """Shell allow-list for this build, from settings stand-in or the tiers.
+
+    Reads `settings.shell_allow_list` first so test doubles that attribute a
+    patched `settings` keep their meaning; the production `Settings` no longer
+    carries the field, so the fall-through resolves `shell.allow_list` from
+    the config tiers in force.
+
+    Returns:
+        The configured allow-list, the `SHELL_ALLOW_ALL` sentinel, or `None`.
+    """
+    configured = getattr(settings, "shell_allow_list", None)
+    if configured is not None:
+        return configured
+    return resolve_shell_allow_list()
+
+
 def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -2353,6 +2373,7 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_interpreter: bool = False,
+    interpreter_config: InterpreterConfig | None = None,
     rubric_model: str | BaseChatModel | None = None,
     rubric_max_iterations: int | None = None,
     auto_classifier_model: str | BaseChatModel | None = None,
@@ -2427,8 +2448,9 @@ def create_cli_agent(
             disabled) or when `shell_allow_list` is `SHELL_ALLOW_ALL`.
         shell_allow_list: Explicit restrictive shell allow-list forwarded from
             the CLI process. When provided (and `interrupt_shell_only` is
-            `True`), used directly instead of reading `settings.shell_allow_list`
-            (which may not be set in the server subprocess environment).
+            `True`), used directly instead of resolving `shell.allow_list` from
+            the config tiers (which may not be set in the server subprocess
+            environment).
         fs_tools: Allowlist of filesystem tools to expose to the agent, from
             `--allow-fs-tools`. `None` (default; also what `--allow-fs-tools
             all` parses to) leaves `FilesystemMiddleware` at its SDK default
@@ -2465,18 +2487,22 @@ def create_cli_agent(
             receive the interpreter in v1.
 
             PTC (`tools.*` host bridge) calls bypass `interrupt_on`/HITL
-            approval, so `settings.interpreter_ptc` is the only effective
-            control over which host tools can be invoked from inside the
-            REPL. `js_eval` itself is intentionally not gated by HITL —
+            approval, so the `ptc` value in `interpreter_config` is the only
+            effective control over which host tools can be invoked from inside
+            the REPL. `js_eval` itself is intentionally not gated by HITL —
             per-call approval would be unusably noisy and would not block
             PTC fan-out anyway. The `"safe"` preset is therefore restricted
             to tools that are already non-HITL outside the REPL (read-only
             file inspection); exposing HITL-gated tools — network fetch,
             subagent dispatch, shell, file writes — requires an explicit
-            list or `interpreter_ptc="all"` with
-            `interpreter_ptc_acknowledge_unsafe=True`.
+            list or `interpreter.ptc="all"` with
+            `interpreter.ptc_acknowledge_unsafe=True`.
 
             Requires the core `langchain-quickjs` dependency.
+        interpreter_config: Frozen interpreter snapshot applied when
+            `enable_interpreter=True`. When `None`, resolved here from the
+            manifest tiers in force (`[interpreter]` in `config.toml`, managed
+            policy, and defaults) via `resolve_interpreter_config`.
         rubric_model: Grader model for `RubricMiddleware`.
 
             A `'provider:model'` string or `BaseChatModel`.
@@ -2537,9 +2563,9 @@ def create_cli_agent(
 
     Raises:
         ValueError: When `enable_interpreter=True` is paired with a
-            non-`None` `sandbox`, when `settings.interpreter_ptc` contains
-            unknown tool names, or when `interpreter_ptc="all"` is used
-            without `auto_approve` or `interpreter_ptc_acknowledge_unsafe`.
+            non-`None` `sandbox`, when `interpreter_config.ptc` contains
+            unknown tool names, or when `interpreter.ptc="all"` is used
+            without `auto_approve` or `interpreter.ptc_acknowledge_unsafe`.
         ModelNotAllowedError: When `model`, `auto_classifier_model`,
             `rubric_model`, or a subagent's frontmatter `model` is a string
             outside the effective `models.allowed` policy. Model strings are
@@ -2578,10 +2604,10 @@ def create_cli_agent(
         # the server subprocess path.
         if shell_allow_list:
             restrictive_shell_allow_list = list(shell_allow_list)
-        elif settings.shell_allow_list and not isinstance(
-            settings.shell_allow_list, _ShellAllowAll
+        elif (resolved_shell_allow_list := _settings_shell_allow_list()) and (
+            not isinstance(resolved_shell_allow_list, _ShellAllowAll)
         ):
-            restrictive_shell_allow_list = list(settings.shell_allow_list)
+            restrictive_shell_allow_list = list(resolved_shell_allow_list)
         else:
             logger.warning(
                 "interrupt_shell_only=True but no restrictive shell allow-list "
@@ -2921,10 +2947,14 @@ def create_cli_agent(
         )
         from langchain_quickjs import CodeInterpreterMiddleware, PTCOption
 
+        if interpreter_config is None:
+            from deepagents_code.config import resolve_interpreter_config
+
+            interpreter_config = resolve_interpreter_config()
         ptc_names = _resolve_ptc_option(
-            settings.interpreter_ptc,
+            interpreter_config.ptc,
             tools=tools,
-            acknowledge_unsafe=settings.interpreter_ptc_acknowledge_unsafe,
+            acknowledge_unsafe=interpreter_config.ptc_acknowledge_unsafe,
             auto_approve=auto_approve,
         )
         ptc_option: PTCOption | None = (
@@ -2937,10 +2967,10 @@ def create_cli_agent(
             agent_middleware.append(
                 CodeInterpreterMiddleware(
                     tool_name="js_eval",
-                    timeout=settings.interpreter_timeout_seconds,
-                    memory_limit=settings.interpreter_memory_limit_mb * 1024 * 1024,
-                    max_ptc_calls=settings.interpreter_max_ptc_calls,
-                    max_result_chars=settings.interpreter_max_result_chars,
+                    timeout=interpreter_config.timeout_seconds,
+                    memory_limit=interpreter_config.memory_limit_mb * 1024 * 1024,
+                    max_ptc_calls=interpreter_config.max_ptc_calls,
+                    max_result_chars=interpreter_config.max_result_chars,
                     ptc=ptc_option,
                 )
             )
@@ -2973,7 +3003,7 @@ def create_cli_agent(
     interrupt_on: dict[str, bool | InterruptOnConfig] = {}
     auto_mode_config: tuple[Path, list[str]] | None = None
     if resolved_interrupt_on is not None and auto_mode_enabled:
-        configured_allow_list = shell_allow_list or settings.shell_allow_list
+        configured_allow_list = shell_allow_list or _settings_shell_allow_list()
         narrow_allow_list = (
             configured_allow_list if isinstance(configured_allow_list, list) else []
         )

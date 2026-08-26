@@ -270,7 +270,7 @@ async def _make_graphs() -> ServerRuntime:
         load_async_subagents,
         create_model,
         is_memory_auto_save_enabled,
-        settings,
+        _settings,
         configure_langsmith_secret_redaction,
     ) = await asyncio.to_thread(_resolve_project_context_and_settings)
     configure_langsmith_secret_redaction()
@@ -348,14 +348,24 @@ async def _make_graphs() -> ServerRuntime:
         async_subagents = load_async_subagents() or None
         auto_mode_enabled = config.interactive and sandbox_backend is None
 
-        # These process-global settings writes are safe here because `make_graph`
-        # is lock-serialized and caches one graph for the server process lifetime.
+        # Build the interpreter snapshot locally and hand it to the agent
+        # build; `ServerConfig` overrides replace the resolved value. No
+        # process-global `Settings` mutation happens here: the server owns its
+        # own snapshot, and the config tiers it resolves from are the same
+        # shared resolver every other callsite reads.
+        from dataclasses import replace as _replace
+
+        from deepagents_code.config import resolve_interpreter_config
+
+        interpreter_config = resolve_interpreter_config()
         if config.interpreter_ptc is not None:
-            settings.interpreter_ptc = config.interpreter_ptc
+            interpreter_config = _replace(
+                interpreter_config, ptc=config.interpreter_ptc
+            )
         if config.interpreter_ptc_acknowledge_unsafe:
-            settings.interpreter_ptc_acknowledge_unsafe = True
-        if config.enable_interpreter:
-            settings.enable_interpreter = True
+            interpreter_config = _replace(
+                interpreter_config, ptc_acknowledge_unsafe=True
+            )
 
         agent, composite_backend = create_cli_agent(
             model=result.model,
@@ -377,6 +387,7 @@ async def _make_graphs() -> ServerRuntime:
             enable_skills=config.enable_skills,
             enable_shell=config.enable_shell,
             enable_interpreter=config.enable_interpreter,
+            interpreter_config=interpreter_config,
             rubric_model=config.rubric_model,
             rubric_max_iterations=config.rubric_max_iterations,
             auto_classifier_model=config.auto_classifier_model,

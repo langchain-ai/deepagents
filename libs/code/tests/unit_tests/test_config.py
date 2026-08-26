@@ -65,6 +65,7 @@ from deepagents_code.config import (
     settings,
     validate_model_capabilities,
 )
+from deepagents_code.configuration.types import InterpreterConfig
 from deepagents_code.model_config import (
     ModelConfig,
     ModelConfigError,
@@ -834,18 +835,24 @@ class TestProjectAgentMdFinding:
         assert result[0].is_relative_to(link_root.resolve())
 
 
-class TestSettingsGetExtraSkillsDirs:
-    """`get_extra_skills_dirs` stays on Settings until PR3."""
+class TestGetExtraSkillsDirs:
+    """`get_extra_skills_dirs` resolves `skills.extra_allowed_dirs` at the callsite."""
 
     def test_defaults_to_empty(self) -> None:
-        s = Settings.__new__(Settings)
-        s.extra_skills_dirs = None
-        assert s.get_extra_skills_dirs() == []
+        from deepagents_code.config import get_extra_skills_dirs
+
+        assert get_extra_skills_dirs() == []
 
     def test_returns_configured_dirs(self, tmp_path: Path) -> None:
-        s = Settings.__new__(Settings)
-        s.extra_skills_dirs = [tmp_path / "extra"]
-        assert s.get_extra_skills_dirs() == [tmp_path / "extra"]
+        from deepagents_code.config import get_extra_skills_dirs
+
+        extra = tmp_path / "extra"
+        extra.mkdir()
+        with patch(
+            "deepagents_code.config._resolve_manifest_options",
+            return_value={"skills.extra_allowed_dirs": [extra]},
+        ):
+            assert get_extra_skills_dirs() == [extra]
 
 
 class TestNewlineShortcut:
@@ -7424,18 +7431,29 @@ class TestDetectModePrefix:
 class TestInterpreterSettings:
     """Tests for `[interpreter]` config.toml loading and validation."""
 
+    @staticmethod
+    def _resolve() -> InterpreterConfig:
+        from deepagents_code.config import resolve_interpreter_config
+        from deepagents_code.configuration.resolver import reset_config_resolver
+
+        reset_config_resolver()
+        try:
+            return resolve_interpreter_config()
+        finally:
+            reset_config_resolver()
+
     def test_defaults_when_config_absent(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"  # does not exist
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            interpreter = self._resolve()
 
-        assert settings_obj.enable_interpreter is True
-        assert settings_obj.interpreter_timeout_seconds == pytest.approx(5.0)
-        assert settings_obj.interpreter_memory_limit_mb == 64
-        assert settings_obj.interpreter_max_ptc_calls == 256
-        assert settings_obj.interpreter_max_result_chars == 4000
-        assert settings_obj.interpreter_ptc == "safe"
-        assert settings_obj.interpreter_ptc_acknowledge_unsafe is False
+        assert interpreter.enable_interpreter is True
+        assert interpreter.timeout_seconds == pytest.approx(5.0)
+        assert interpreter.memory_limit_mb == 64
+        assert interpreter.max_ptc_calls == 256
+        assert interpreter.max_result_chars == 4000
+        assert interpreter.ptc == "safe"
+        assert interpreter.ptc_acknowledge_unsafe is False
 
     def test_round_trip_through_toml(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
@@ -7452,15 +7470,15 @@ ptc_acknowledge_unsafe = true
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            interpreter = self._resolve()
 
-        assert settings_obj.enable_interpreter is True
-        assert settings_obj.interpreter_timeout_seconds == pytest.approx(12.5)
-        assert settings_obj.interpreter_memory_limit_mb == 128
-        assert settings_obj.interpreter_max_ptc_calls == 64
-        assert settings_obj.interpreter_max_result_chars == 8000
-        assert settings_obj.interpreter_ptc == "safe"
-        assert settings_obj.interpreter_ptc_acknowledge_unsafe is True
+        assert interpreter.enable_interpreter is True
+        assert interpreter.timeout_seconds == pytest.approx(12.5)
+        assert interpreter.memory_limit_mb == 128
+        assert interpreter.max_ptc_calls == 64
+        assert interpreter.max_result_chars == 8000
+        assert interpreter.ptc == "safe"
+        assert interpreter.ptc_acknowledge_unsafe is True
 
     def test_ptc_explicit_list_round_trip(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
@@ -7471,9 +7489,9 @@ ptc = ["grep", "read_file"]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == ["grep", "read_file"]
+        assert interpreter.ptc == ["grep", "read_file"]
 
     def test_invalid_ptc_list_entry_falls_back(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
@@ -7484,9 +7502,9 @@ ptc = [""]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == "safe"
+        assert interpreter.ptc == "safe"
 
     def test_ptc_list_with_safe_preset_round_trip(self, tmp_path: Path) -> None:
         """`"safe"` is preserved as a list entry until agent-build expansion."""
@@ -7498,9 +7516,9 @@ ptc = ["safe", "task"]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == ["safe", "task"]
+        assert interpreter.ptc == ["safe", "task"]
 
     def test_ptc_list_with_all_falls_back(self, tmp_path: Path) -> None:
         """`"all"` inside a list is rejected, falling back to the default."""
@@ -7512,9 +7530,9 @@ ptc = ["all", "task"]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == "safe"
+        assert interpreter.ptc == "safe"
 
 
 class TestCreateModelCodex:

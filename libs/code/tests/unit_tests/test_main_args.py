@@ -1353,7 +1353,10 @@ def test_cli_main_installs_the_shell_allow_list_before_dispatch() -> None:
         resolved = get_config_resolver().get(option)
         seen["value"] = resolved.value
         seen["ranks"] = resolved.ranks
-        seen["settings"] = Settings.from_environment().shell_allow_list
+        Settings.from_environment()
+        from deepagents_code.config import resolve_shell_allow_list
+
+        seen["settings"] = resolve_shell_allow_list()
         return 0
 
     mock_stdin = MagicMock()
@@ -3550,9 +3553,15 @@ class TestResolveInterpreterEnabled:
 
         with mock_argv("-n", "task"):
             args = parse_args()
-        with patch.object(settings, "enable_interpreter", False):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=False,
+        ):
             assert _resolve_interpreter_enabled(args) is False
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             assert _resolve_interpreter_enabled(args) is True
 
     def test_sandbox_defaults_disabled(self, mock_argv: MockArgvType) -> None:
@@ -3561,7 +3570,10 @@ class TestResolveInterpreterEnabled:
 
         with mock_argv("-n", "task", "--sandbox", "daytona"):
             args = parse_args()
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             assert _resolve_interpreter_enabled(args) is False
 
     def test_explicit_flag_with_remote_sandbox_is_a_visible_error(
@@ -3594,7 +3606,10 @@ class TestResolveInterpreterEnabled:
 
         with mock_argv("-n", "task", "--no-interpreter"):
             args = parse_args()
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             assert _resolve_interpreter_enabled(args) is False
 
     def test_empty_sandbox_treated_as_local(self) -> None:
@@ -3611,7 +3626,10 @@ class TestResolveInterpreterEnabled:
         from deepagents_code.main import _resolve_interpreter_enabled
 
         args = argparse.Namespace(interpreter=None, sandbox="")
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             assert _resolve_interpreter_enabled(args) is True
 
     def test_managed_false_revokes_an_explicit_interpreter_flag(
@@ -3777,7 +3795,10 @@ class TestResolveInterpreterEnabled:
         service.invalidate_config_sources()
         try:
             args = argparse.Namespace(interpreter=None, sandbox="daytona")
-            with patch.object(settings, "enable_interpreter", True):
+            with patch(
+                "deepagents_code.config.resolve_enable_interpreter_default",
+                return_value=True,
+            ):
                 assert _resolve_interpreter_enabled(args) is False
         finally:
             service.invalidate_config_sources()
@@ -3937,7 +3958,10 @@ class TestWarnInterpreterDisabledBySandbox:
 
         with mock_argv("-n", "task", "--sandbox", "daytona"):
             args = parse_args()
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             _warn_if_interpreter_disabled_by_sandbox(args)
         assert "unavailable under a remote sandbox" in capsys.readouterr().err
 
@@ -3950,7 +3974,10 @@ class TestWarnInterpreterDisabledBySandbox:
 
         with mock_argv("-n", "task"):
             args = parse_args()
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             _warn_if_interpreter_disabled_by_sandbox(args)
         assert capsys.readouterr().err == ""
 
@@ -3963,7 +3990,10 @@ class TestWarnInterpreterDisabledBySandbox:
 
         with mock_argv("-n", "task", "--sandbox", "daytona", "--no-interpreter"):
             args = parse_args()
-        with patch.object(settings, "enable_interpreter", True):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=True,
+        ):
             _warn_if_interpreter_disabled_by_sandbox(args)
         assert capsys.readouterr().err == ""
 
@@ -3976,7 +4006,10 @@ class TestWarnInterpreterDisabledBySandbox:
 
         with mock_argv("-n", "task", "--sandbox", "daytona"):
             args = parse_args()
-        with patch.object(settings, "enable_interpreter", False):
+        with patch(
+            "deepagents_code.config.resolve_enable_interpreter_default",
+            return_value=False,
+        ):
             _warn_if_interpreter_disabled_by_sandbox(args)
         assert capsys.readouterr().err == ""
 
@@ -4000,7 +4033,10 @@ class TestWarnInterpreterDisabledBySandbox:
                 "deepagents_code.main._should_ensure_managed_ripgrep",
                 return_value=False,
             ),
-            patch.object(settings, "enable_interpreter", True),
+            patch(
+                "deepagents_code.config.resolve_enable_interpreter_default",
+                return_value=True,
+            ),
             patch(
                 "deepagents_code.client.non_interactive.run_non_interactive", run_mock
             ),
@@ -4034,7 +4070,10 @@ class TestWarnInterpreterDisabledBySandbox:
             patch(
                 "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
             ),
-            patch.object(settings, "enable_interpreter", True),
+            patch(
+                "deepagents_code.config.resolve_enable_interpreter_default",
+                return_value=True,
+            ),
             patch(
                 "deepagents_code.client.non_interactive.run_non_interactive", run_mock
             ),
@@ -4078,7 +4117,10 @@ class TestWarnInterpreterDisabledBySandbox:
             patch(
                 "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
             ),
-            patch.object(settings, "enable_interpreter", True),
+            patch(
+                "deepagents_code.config.resolve_enable_interpreter_default",
+                return_value=True,
+            ),
             patch(
                 "deepagents_code.client.non_interactive.run_non_interactive", run_mock
             ),

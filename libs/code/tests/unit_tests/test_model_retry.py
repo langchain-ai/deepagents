@@ -1236,3 +1236,26 @@ def test_predicate_ignores_stdlib_timeout_reached_only_through_context() -> None
 def test_predicate_still_retries_a_stdlib_timeout_raised_directly() -> None:
     """The narrowing must not stop the raised exception from classifying."""
     assert _is_retryable_model_error(TimeoutError("transient")) is True
+
+
+def test_predicate_lets_a_definite_verdict_decide_its_own_branch() -> None:
+    """A non-retryable taxonomy verdict outranks whatever it wraps.
+
+    A provider that raises an authentication failure while handling a dropped
+    connection must not be retried: the credentials will not become valid, and
+    the wrapped transport fault is incidental. Descending past a definite
+    verdict would turn every such failure into a full budget of doomed calls.
+    """
+    exc = ModelAuthenticationError("bad key")
+    exc.__context__ = _READ_ERROR
+
+    assert _is_retryable_model_error(exc) is False
+
+
+def test_predicate_finds_a_transport_fault_beside_a_permanent_member() -> None:
+    """A definite verdict decides its own branch only, not its siblings."""
+    exc = ExceptionGroup(
+        "request failed", [ModelAuthenticationError("bad key"), _READ_ERROR]
+    )
+
+    assert _is_retryable_model_error(exc) is True

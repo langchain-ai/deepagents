@@ -752,8 +752,8 @@ def default_cache_dir() -> Path:
     absolute path (falling back to `~/.cache`). The XDG spec treats relative
     `XDG_CACHE_HOME` values as invalid, so they are ignored rather than
     resolved against the launch directory. If the OS home directory cannot be
-    resolved, caches fall back to the selected profile's `.state/cache`
-    directory so an absolute `DEEPAGENTS_HOME` remains usable.
+    resolved to an absolute path, caches fall back to the selected profile's
+    `.state/cache` directory so an absolute `DEEPAGENTS_HOME` remains usable.
 
     Platform-native locations are the convention for a long-lived app (this is
     what `platformdirs` codifies and what `uv` itself does — its own cache is
@@ -779,6 +779,8 @@ def default_cache_dir() -> Path:
     try:
         home = Path.home()
     except RuntimeError:
+        return DEFAULT_STATE_DIR / "cache"
+    if not home.is_absolute():
         return DEFAULT_STATE_DIR / "cache"
     if sys.platform == "win32":
         return home / "AppData" / "Local"

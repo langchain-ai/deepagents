@@ -1328,3 +1328,13 @@ def test_retry_sleep_budget_is_cumulative_not_per_delay() -> None:
         retry_model_call(model, call, max_total_delay=2.5)
 
     assert attempts == 3, "a 1s Retry-After must run out a 2.5s total budget"
+
+
+def test_middleware_rejects_a_bool_budget() -> None:
+    """`True` must not pass as a retry budget of one.
+
+    `True >= 0` holds and `range(True + 1)` runs a single retry, so an
+    unchecked bool silently becomes a budget nobody asked for.
+    """
+    with pytest.raises(TypeError, match="max_retries"):
+        CodeModelRetryMiddleware(max_retries=cast("int", True))

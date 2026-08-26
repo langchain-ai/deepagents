@@ -736,8 +736,15 @@ class CodeModelRetryMiddleware(AgentMiddleware):
                 model carries a different provider-specific budget.
 
         Raises:
+            TypeError: If `max_retries` is a bool.
             ValueError: If `max_retries` is negative.
         """
+        # `True >= 0` passes and `range(True + 1)` yields one attempt, so an
+        # unchecked bool reads as a budget of one. Every other budget check in
+        # dcode rejects it; this one is the outlier if it does not.
+        if isinstance(max_retries, bool):
+            msg = f"max_retries must be an int, got {type(max_retries).__name__}"
+            raise TypeError(msg)
         if max_retries < 0:
             msg = "max_retries must be >= 0"
             raise ValueError(msg)

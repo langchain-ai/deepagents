@@ -258,25 +258,30 @@ class ConfigResolver:
 
         Raises:
             ValueError: If a replacement rank is not in this resolver, or a
-                replacement's source is not usable.
+                replacement is not serving a usable snapshot.
         """
+        from deepagents_code.configuration.providers import TomlFileProvider
+
         with self._lock:
             ranks = {provider.rank for provider in self._providers}
             unknown = replacements.keys() - ranks
             if unknown:
                 msg = f"cannot replace unknown provider ranks: {sorted(unknown)}"
                 raise ValueError(msg)
-            # A replacement bypasses `reload`, and with it the guarantee that a
-            # snapshot the source cannot use never displaces the last usable
-            # one. An unusable snapshot carries an empty table, which resolves
-            # as "this source declares nothing" -- so installing one at
-            # `MANAGED_RANK` silently drops policy and lets lower ranks win.
-            # Today's only caller validates first; the contract should not
-            # depend on that.
+            # A replacement bypasses `reload`, so require a usable generation
+            # behind it. Its latest status may still be unusable when it safely
+            # retains the previous snapshot; rejecting that state would erase
+            # the failed-refresh diagnostic. A provider whose served snapshot
+            # is itself unusable would resolve as "this source declares
+            # nothing" and silently let lower ranks win.
             unusable = sorted(
                 rank
                 for rank, provider in replacements.items()
                 if not provider.status().usable
+                and (
+                    not isinstance(provider, TomlFileProvider)
+                    or not provider.current_snapshot().status.usable
+                )
             )
             if unusable:
                 msg = (
@@ -521,17 +526,47 @@ def get_config_resolver(
             return resolver
         resolver.reload_with_replacements(
             {
-                MANAGED_RANK: TomlFileProvider(
-                    name=managed.status.name,
-                    path=managed.status.path,
-                    rank=MANAGED_RANK,
-                    durable=True,
-                    snapshot=managed,
-                    loader=_reload_enforceable_managed_snapshot,
+                MANAGED_RANK: _managed_replacement_provider(
+                    resolver,
+                    managed,
                 )
             }
         )
         return resolver
+
+
+def _managed_replacement_provider(
+    resolver: ConfigResolver,
+    candidate: TomlSnapshot,
+) -> ConfigProvider:
+    """Build a managed replacement that retains a failed refresh safely.
+
+    Args:
+        resolver: Resolver currently serving the previous generation.
+        candidate: Snapshot fetched before taking the resolver lock.
+
+    Returns:
+        Replacement carrying the candidate or its failed-refresh status.
+
+    Raises:
+        RuntimeError: If the shared resolver has no managed TOML provider.
+    """
+    from deepagents_code.configuration.providers import TomlFileProvider
+
+    installed = resolver.toml_snapshot(MANAGED_RANK)
+    if installed is None:
+        msg = "shared config resolver has no managed TOML provider"
+        raise RuntimeError(msg)
+    replacement = TomlFileProvider(
+        name=candidate.status.name,
+        path=candidate.status.path,
+        rank=MANAGED_RANK,
+        durable=True,
+        snapshot=installed,
+        loader=_reload_enforceable_managed_snapshot,
+    )
+    replacement.reload_from_snapshot(candidate)
+    return replacement
 
 
 def reset_config_resolver() -> None:

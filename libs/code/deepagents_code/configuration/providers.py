@@ -1494,6 +1494,14 @@ class TomlFileProvider:
         disk.
         """
         snapshot = self.loader() if self.loader is not None else self.load()
+        self.reload_from_snapshot(snapshot)
+
+    def reload_from_snapshot(self, snapshot: TomlSnapshot) -> None:
+        """Install an already-read candidate with normal retention semantics.
+
+        Args:
+            snapshot: Candidate loaded before the resolver generation lock.
+        """
         if snapshot.status.usable:
             self._state.value = snapshot
             self._state.failure = None

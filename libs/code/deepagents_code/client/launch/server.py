@@ -55,13 +55,12 @@ _HEALTH_POLL_INTERVAL_REMOTE = 0.3
 
 _HEALTH_TIMEOUT = 60
 
-_SHUTDOWN_TIMEOUT = 3
+_SHUTDOWN_TIMEOUT = 5
 """Seconds to wait for a graceful exit before escalating to a hard kill.
 
-The server flushes buffered LangSmith traces inside this window, so
-`offload_api._TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE` must stay under it.
-Nothing imports across the two processes, so lowering this value would
-silently truncate that flush; `TestFlushBudget` asserts the inequality.
+The server spends up to two seconds flushing buffered LangSmith traces inside
+this window. The remaining margin lets LangGraph finish its own lifespan
+teardown before dcode escalates; `TestFlushBudget` guards that margin.
 """
 
 _SIGKILL_TIMEOUT = 2

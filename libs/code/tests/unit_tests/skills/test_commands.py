@@ -3,6 +3,11 @@
 import argparse
 import io
 import re
+from contextlib import AbstractContextManager, ExitStack, contextmanager
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +26,17 @@ from deepagents_code.skills.commands import (
     _validate_skill_path,
     execute_skills_command,
 )
+
+
+@contextmanager
+def _patch_skills_commands(
+    *patches: AbstractContextManager[object],
+) -> "Generator[None, None, None]":
+    """Enter several `_paths`-targeted patches together."""
+    with ExitStack() as stack:
+        for p_ in patches:
+            stack.enter_context(p_)
+        yield
 
 
 class TestValidateSkillName:
@@ -595,20 +611,32 @@ class TestInfoShadowWarning:
         self._make_skill_dir(user_dir, "web-research", "User version")
         self._make_skill_dir(project_dir, "web-research", "Project version")
 
-        mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
-            return_value=type(
-                "FakeSettings",
-                (),
-                {
-                    "get_built_in_skills_dir": staticmethod(lambda: None),
-                    "get_user_skills_dir": lambda _, _a: user_dir,
-                    "get_project_skills_dir": lambda _: project_dir,
-                    "get_user_agent_skills_dir": lambda _: None,
-                    "get_project_agent_skills_dir": lambda _: None,
-                },
-            )(),
-        )
+        mock_settings = [
+            patch(
+                "deepagents_code.skills.commands.get_built_in_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=project_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.config.Settings.from_environment",
+                return_value=MagicMock(project_root=None),
+            ),
+        ]
 
         output: list[str] = []
 
@@ -616,7 +644,7 @@ class TestInfoShadowWarning:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            mock_settings,
+            _patch_skills_commands(*mock_settings),
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_console.print = capture_print
@@ -631,20 +659,32 @@ class TestInfoShadowWarning:
         project_dir = tmp_path / "project_skills"
         self._make_skill_dir(user_dir, "web-research", "User only skill")
 
-        mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
-            return_value=type(
-                "FakeSettings",
-                (),
-                {
-                    "get_built_in_skills_dir": staticmethod(lambda: None),
-                    "get_user_skills_dir": lambda _, _a: user_dir,
-                    "get_project_skills_dir": lambda _: project_dir,
-                    "get_user_agent_skills_dir": lambda _: None,
-                    "get_project_agent_skills_dir": lambda _: None,
-                },
-            )(),
-        )
+        mock_settings = [
+            patch(
+                "deepagents_code.skills.commands.get_built_in_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=project_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.config.Settings.from_environment",
+                return_value=MagicMock(project_root=None),
+            ),
+        ]
 
         output: list[str] = []
 
@@ -652,7 +692,7 @@ class TestInfoShadowWarning:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            mock_settings,
+            _patch_skills_commands(*mock_settings),
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_console.print = capture_print
@@ -685,20 +725,31 @@ class TestInfoBuiltInSkill:
         built_in_dir = tmp_path / "built_in_skills"
         self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
 
-        mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
-            return_value=type(
-                "FakeSettings",
-                (),
-                {
-                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
-                    "get_user_skills_dir": lambda _, _a: None,
-                    "get_project_skills_dir": lambda _: None,
-                    "get_user_agent_skills_dir": lambda _: None,
-                    "get_project_agent_skills_dir": lambda _: None,
-                },
-            )(),
-        )
+        mock_settings = [
+            patch(
+                "deepagents_code.skills.commands.get_built_in_skills_dir",
+                return_value=built_in_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir", return_value=None
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.config.Settings.from_environment",
+                return_value=MagicMock(project_root=None),
+            ),
+        ]
 
         output: list[str] = []
 
@@ -706,7 +757,7 @@ class TestInfoBuiltInSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            mock_settings,
+            _patch_skills_commands(*mock_settings),
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_console.print = capture_print
@@ -723,20 +774,32 @@ class TestInfoBuiltInSkill:
         self._make_skill_dir(built_in_dir, "shared-skill", "Built-in version")
         self._make_skill_dir(user_dir, "shared-skill", "User version")
 
-        mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
-            return_value=type(
-                "FakeSettings",
-                (),
-                {
-                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
-                    "get_user_skills_dir": lambda _, _a: user_dir,
-                    "get_project_skills_dir": lambda _: None,
-                    "get_user_agent_skills_dir": lambda _: None,
-                    "get_project_agent_skills_dir": lambda _: None,
-                },
-            )(),
-        )
+        mock_settings = [
+            patch(
+                "deepagents_code.skills.commands.get_built_in_skills_dir",
+                return_value=built_in_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.config.Settings.from_environment",
+                return_value=MagicMock(project_root=None),
+            ),
+        ]
 
         output: list[str] = []
 
@@ -744,7 +807,7 @@ class TestInfoBuiltInSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            mock_settings,
+            _patch_skills_commands(*mock_settings),
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_console.print = capture_print
@@ -772,20 +835,31 @@ class TestListBuiltInSkillsDisplay:
         built_in_dir = tmp_path / "built_in_skills"
         self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
 
-        mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
-            return_value=type(
-                "FakeSettings",
-                (),
-                {
-                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
-                    "get_user_skills_dir": lambda _, _a: None,
-                    "get_project_skills_dir": lambda _: None,
-                    "get_user_agent_skills_dir": lambda _: None,
-                    "get_project_agent_skills_dir": lambda _: None,
-                },
-            )(),
-        )
+        mock_settings = [
+            patch(
+                "deepagents_code.skills.commands.get_built_in_skills_dir",
+                return_value=built_in_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir", return_value=None
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.config.Settings.from_environment",
+                return_value=MagicMock(project_root=None),
+            ),
+        ]
 
         output: list[str] = []
 
@@ -793,7 +867,7 @@ class TestListBuiltInSkillsDisplay:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            mock_settings,
+            _patch_skills_commands(*mock_settings),
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_console.print = capture_print
@@ -808,20 +882,31 @@ class TestListBuiltInSkillsDisplay:
         built_in_dir = tmp_path / "built_in_skills"
         self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
 
-        mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
-            return_value=type(
-                "FakeSettings",
-                (),
-                {
-                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
-                    "get_user_skills_dir": lambda _, _a: None,
-                    "get_project_skills_dir": lambda _: None,
-                    "get_user_agent_skills_dir": lambda _: None,
-                    "get_project_agent_skills_dir": lambda _: None,
-                },
-            )(),
-        )
+        mock_settings = [
+            patch(
+                "deepagents_code.skills.commands.get_built_in_skills_dir",
+                return_value=built_in_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir", return_value=None
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.config.Settings.from_environment",
+                return_value=MagicMock(project_root=None),
+            ),
+        ]
 
         output: list[str] = []
 
@@ -829,7 +914,7 @@ class TestListBuiltInSkillsDisplay:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            mock_settings,
+            _patch_skills_commands(*mock_settings),
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_console.print = capture_print
@@ -848,20 +933,31 @@ class TestSkillsLsDispatch:
         built_in_dir = tmp_path / "built_in_skills"
         built_in_dir.mkdir()
 
-        mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
-            return_value=type(
-                "FakeSettings",
-                (),
-                {
-                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
-                    "get_user_skills_dir": lambda _, _a: None,
-                    "get_project_skills_dir": lambda _: None,
-                    "get_user_agent_skills_dir": lambda _: None,
-                    "get_project_agent_skills_dir": lambda _: None,
-                },
-            )(),
-        )
+        mock_settings = [
+            patch(
+                "deepagents_code.skills.commands.get_built_in_skills_dir",
+                return_value=built_in_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir", return_value=None
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.config.Settings.from_environment",
+                return_value=MagicMock(project_root=None),
+            ),
+        ]
 
         args = argparse.Namespace(skills_command="ls", agent="agent", project=False)
 
@@ -871,7 +967,7 @@ class TestSkillsLsDispatch:
             output.append(" ".join(str(a) for a in args_p))
 
         with (
-            mock_settings,
+            _patch_skills_commands(*mock_settings),
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_console.print = capture_print
@@ -919,12 +1015,30 @@ class TestDeleteSkill:
         assert skill_dir.exists()
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
-        with patch("deepagents_code.config.Settings") as mock_settings_cls:
+        with (
+            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
+        ):
             mock_settings_cls.from_environment.return_value = mock_settings
             _delete("test-skill", agent="agent", project=False, force=True)
 
@@ -936,10 +1050,25 @@ class TestDeleteSkill:
         user_skills_dir.mkdir(parents=True)
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
         output: list[str] = []
 
@@ -948,6 +1077,7 @@ class TestDeleteSkill:
 
         with (
             patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -969,12 +1099,30 @@ class TestDeleteSkill:
         assert skill_dir.exists()
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
-        with patch("deepagents_code.config.Settings") as mock_settings_cls:
+        with (
+            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
+        ):
             mock_settings_cls.from_environment.return_value = mock_settings
             with patch("builtins.input", return_value=response):
                 _delete("test-skill", agent="agent", project=False, force=False)
@@ -988,12 +1136,30 @@ class TestDeleteSkill:
         assert skill_dir.exists()
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
-        with patch("deepagents_code.config.Settings") as mock_settings_cls:
+        with (
+            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
+        ):
             mock_settings_cls.from_environment.return_value = mock_settings
             with patch("builtins.input", return_value="n"):
                 _delete("test-skill", agent="agent", project=False, force=False)
@@ -1007,12 +1173,30 @@ class TestDeleteSkill:
         assert skill_dir.exists()
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
-        with patch("deepagents_code.config.Settings") as mock_settings_cls:
+        with (
+            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
+        ):
             mock_settings_cls.from_environment.return_value = mock_settings
             with patch("builtins.input", return_value=""):
                 _delete("test-skill", agent="agent", project=False, force=False)
@@ -1026,12 +1210,30 @@ class TestDeleteSkill:
         assert skill_dir.exists()
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
-        with patch("deepagents_code.config.Settings") as mock_settings_cls:
+        with (
+            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
+        ):
             mock_settings_cls.from_environment.return_value = mock_settings
             with patch("builtins.input", side_effect=KeyboardInterrupt):
                 _delete("test-skill", agent="agent", project=False, force=False)
@@ -1045,12 +1247,30 @@ class TestDeleteSkill:
         assert skill_dir.exists()
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
-        with patch("deepagents_code.config.Settings") as mock_settings_cls:
+        with (
+            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
+        ):
             mock_settings_cls.from_environment.return_value = mock_settings
             with patch("builtins.input", side_effect=EOFError):
                 _delete("test-skill", agent="agent", project=False, force=False)
@@ -1063,8 +1283,17 @@ class TestDeleteSkill:
         user_skills_dir.mkdir(parents=True)
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+        ]
 
         invalid_names = [
             "../../../etc/passwd",
@@ -1083,6 +1312,7 @@ class TestDeleteSkill:
 
             with (
                 patch("deepagents_code.config.Settings") as mock_settings_cls,
+                _patch_skills_commands(*dir_patches),
                 patch("deepagents_code.config.console") as mock_console,
             ):
                 mock_settings_cls.from_environment.return_value = mock_settings
@@ -1104,12 +1334,29 @@ class TestDeleteSkill:
 
         mock_settings = MagicMock()
         user_dir = tmp_path / ".deepagents" / "agent" / "skills"
-        mock_settings.get_user_skills_dir.return_value = user_dir
-        mock_settings.get_project_skills_dir.return_value = project_skills_dir
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=project_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
-        with patch("deepagents_code.config.Settings") as mock_settings_cls:
+        with (
+            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
+        ):
             mock_settings_cls.from_environment.return_value = mock_settings
             _delete("project-skill", agent="agent", project=True, force=True)
 
@@ -1118,9 +1365,14 @@ class TestDeleteSkill:
     def test_delete_project_skill_not_in_project(self, tmp_path: Path) -> None:
         """Test deleting a project skill when not in a project directory."""
         mock_settings = MagicMock()
+        mock_settings.project_root = None
         user_dir = tmp_path / ".deepagents" / "agent" / "skills"
-        mock_settings.get_user_skills_dir.return_value = user_dir
-        mock_settings.get_project_skills_dir.return_value = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_dir,
+            ),
+        ]
 
         output: list[str] = []
 
@@ -1129,6 +1381,7 @@ class TestDeleteSkill:
 
         with (
             patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1155,12 +1408,30 @@ class TestDeleteSkill:
         assert (skill_dir / "subdir" / "nested.txt").exists()
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
-        with patch("deepagents_code.config.Settings") as mock_settings_cls:
+        with (
+            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
+        ):
             mock_settings_cls.from_environment.return_value = mock_settings
             _delete("complex-skill", agent="agent", project=False, force=True)
 
@@ -1178,12 +1449,30 @@ class TestDeleteSkill:
         assert skill_dir_agent2.exists()
 
         mock_settings = MagicMock()
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_skills_dir.return_value = agent1_skills_dir
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=agent1_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
-        with patch("deepagents_code.config.Settings") as mock_settings_cls:
+        with (
+            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
+        ):
             mock_settings_cls.from_environment.return_value = mock_settings
             _delete("shared-skill", agent="agent1", project=False, force=True)
 
@@ -1197,10 +1486,25 @@ class TestDeleteSkill:
         assert skill_dir.exists()
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
         output: list[str] = []
 
@@ -1209,6 +1513,7 @@ class TestDeleteSkill:
 
         with (
             patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
             patch("deepagents_code.config.console") as mock_console,
             patch("shutil.rmtree", side_effect=OSError("Permission denied")),
         ):
@@ -1230,10 +1535,24 @@ class TestDeleteSkill:
         self._create_test_skill(agent_skills_dir, "orphan-skill")
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = None
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = agent_skills_dir
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir", return_value=None
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=agent_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
         output: list[str] = []
 
@@ -1242,6 +1561,7 @@ class TestDeleteSkill:
 
         with (
             patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1303,10 +1623,25 @@ class TestDeleteArgparsing:
         user_skills_dir.mkdir(parents=True)
 
         mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.project_root = None
+        dir_patches = [
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=user_skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
+        ]
 
         args = argparse.Namespace(
             skills_command="delete",
@@ -1324,6 +1659,7 @@ class TestDeleteArgparsing:
 
         with (
             patch("deepagents_code.config.Settings") as mock_settings_cls,
+            _patch_skills_commands(*dir_patches),
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_settings_cls.from_environment.return_value = mock_settings

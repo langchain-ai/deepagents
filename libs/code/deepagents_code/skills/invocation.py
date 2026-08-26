@@ -42,31 +42,47 @@ def discover_skills_and_roots(
     Returns:
         Tuple of `(skill metadata list, pre-resolved containment roots)`.
     """
+    from deepagents_code._paths import (
+        get_built_in_skills_dir,
+        get_project_agent_skills_dir,
+        get_project_claude_skills_dir,
+        get_project_skills_dir,
+        get_user_agent_skills_dir,
+        get_user_claude_skills_dir,
+        get_user_skills_dir,
+    )
     from deepagents_code.config import settings
     from deepagents_code.skills.load import list_skills
     from deepagents_code.skills.trust import load_trusted_skill_dirs
 
+    built_in_skills_dir = get_built_in_skills_dir()
+    user_skills_dir = get_user_skills_dir(assistant_id)
+    project_skills_dir = get_project_skills_dir(settings.project_root)
+    user_agent_skills_dir = get_user_agent_skills_dir()
+    project_agent_skills_dir = get_project_agent_skills_dir(settings.project_root)
+    user_claude_skills_dir = get_user_claude_skills_dir()
+    project_claude_skills_dir = get_project_claude_skills_dir(settings.project_root)
     skills = list_skills(
-        built_in_skills_dir=settings.get_built_in_skills_dir(),
+        built_in_skills_dir=built_in_skills_dir,
         plugin_skill_sources=plugin_skill_sources,
-        user_skills_dir=settings.get_user_skills_dir(assistant_id),
-        project_skills_dir=settings.get_project_skills_dir(),
-        user_agent_skills_dir=settings.get_user_agent_skills_dir(),
-        project_agent_skills_dir=settings.get_project_agent_skills_dir(),
-        user_claude_skills_dir=settings.get_user_claude_skills_dir(),
-        project_claude_skills_dir=settings.get_project_claude_skills_dir(),
+        user_skills_dir=user_skills_dir,
+        project_skills_dir=project_skills_dir,
+        user_agent_skills_dir=user_agent_skills_dir,
+        project_agent_skills_dir=project_agent_skills_dir,
+        user_claude_skills_dir=user_claude_skills_dir,
+        project_claude_skills_dir=project_claude_skills_dir,
     )
     roots = [
         path.resolve()
         for path in (
-            settings.get_built_in_skills_dir(),
+            built_in_skills_dir,
             *plugin_skill_roots,
-            settings.get_user_skills_dir(assistant_id),
-            settings.get_project_skills_dir(),
-            settings.get_user_agent_skills_dir(),
-            settings.get_project_agent_skills_dir(),
-            settings.get_user_claude_skills_dir(),
-            settings.get_project_claude_skills_dir(),
+            user_skills_dir,
+            project_skills_dir,
+            user_agent_skills_dir,
+            project_agent_skills_dir,
+            user_claude_skills_dir,
+            project_claude_skills_dir,
         )
         if path is not None
     ]

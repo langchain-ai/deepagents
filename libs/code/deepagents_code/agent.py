@@ -69,7 +69,22 @@ from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
     _GlmTerminalStallRecovery,
 )
-from deepagents_code._paths import PATHS
+from deepagents_code._paths import (
+    PATHS,
+    ensure_agent_dir,
+    ensure_user_skills_dir,
+    get_built_in_skills_dir,
+    get_project_agent_md_paths,
+    get_project_agent_skills_dir,
+    get_project_agents_dir,
+    get_project_claude_skills_dir,
+    get_project_skills_dir,
+    get_user_agent_md_path,
+    get_user_agent_skills_dir,
+    get_user_agents_dir,
+    get_user_claude_skills_dir,
+    user_deepagents_dir,
+)
 from deepagents_code._repository_bounds import (
     REPOSITORY_GREP_MATCH_LIMIT,
     REPOSITORY_TOOL_CALL_LIMIT,
@@ -1197,7 +1212,7 @@ def get_available_agent_names() -> list[str]:
         Sorted list of agent names. Empty when no agents exist yet or the
             directory is unreadable (see log for the underlying cause).
     """
-    agents_dir = settings.user_deepagents_dir
+    agents_dir = user_deepagents_dir()
     try:
         entries = list(agents_dir.iterdir())
     except FileNotFoundError:
@@ -1227,7 +1242,7 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
     Args:
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
-    agents_dir = settings.user_deepagents_dir
+    agents_dir = user_deepagents_dir()
     names = get_available_agent_names()
 
     if not names:
@@ -1307,7 +1322,7 @@ def reset_agent(
     Raises:
         SystemExit: If the source agent is not found.
     """
-    agents_dir = settings.user_deepagents_dir
+    agents_dir = user_deepagents_dir()
     agent_dir = agents_dir / agent_name
 
     if source_agent:
@@ -2273,20 +2288,20 @@ def get_skill_sources(
     Returns:
         Ordered list of CodeSkillSource entries.
     """
-    skills_dir = settings.ensure_user_skills_dir(assistant_id)
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
+    skills_dir = ensure_user_skills_dir(assistant_id)
+    user_agent_skills_dir = get_user_agent_skills_dir()
     project_skills_dir = (
         project_context.project_skills_dir()
         if project_context is not None
-        else settings.get_project_skills_dir()
+        else get_project_skills_dir(settings.project_root)
     )
     project_agent_skills_dir = (
         project_context.project_agent_skills_dir()
         if project_context is not None
-        else settings.get_project_agent_skills_dir()
+        else get_project_agent_skills_dir(settings.project_root)
     )
     sources: list[CodeSkillSource] = [
-        (str(settings.get_built_in_skills_dir()), "Built-in"),
+        (str(get_built_in_skills_dir()), "Built-in"),
     ]
     try:
         from deepagents_code.plugins import discover_plugins
@@ -2307,10 +2322,10 @@ def get_skill_sources(
         sources.append((str(project_agent_skills_dir), "Project Agents"))
 
     # Experimental: Claude Code skill directories
-    user_claude_skills_dir = settings.get_user_claude_skills_dir()
+    user_claude_skills_dir = get_user_claude_skills_dir()
     if user_claude_skills_dir is not None and user_claude_skills_dir.exists():
         sources.append((str(user_claude_skills_dir), "User Claude"))
-    project_claude_skills_dir = settings.get_project_claude_skills_dir()
+    project_claude_skills_dir = get_project_claude_skills_dir(settings.project_root)
     if project_claude_skills_dir:
         sources.append((str(project_claude_skills_dir), "Project Claude"))
 
@@ -2546,7 +2561,7 @@ def create_cli_agent(
 
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:
-        agent_dir = settings.ensure_agent_dir(assistant_id)
+        agent_dir = ensure_agent_dir(assistant_id)
         agent_md = agent_dir / "AGENTS.md"
         if not agent_md.exists():
             # Create empty file for user customizations
@@ -2583,11 +2598,11 @@ def create_cli_agent(
         else None
     )
 
-    user_agents_dir = settings.get_user_agents_dir(assistant_id)
+    user_agents_dir = get_user_agents_dir(assistant_id)
     project_agents_dir = (
         project_context.project_agents_dir()
         if project_context is not None
-        else settings.get_project_agents_dir()
+        else get_project_agents_dir(settings.project_root)
     )
 
     def _subagent_cli_middleware(
@@ -2642,9 +2657,7 @@ def create_cli_agent(
             from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
 
             middleware.append(
-                ManagedMemoryGuardMiddleware(
-                    [settings.get_user_agent_md_path(assistant_id)]
-                )
+                ManagedMemoryGuardMiddleware([get_user_agent_md_path(assistant_id)])
             )
         return middleware
 
@@ -2803,11 +2816,11 @@ def create_cli_agent(
 
     # Add memory middleware
     if enable_memory:
-        memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
+        memory_sources = [str(get_user_agent_md_path(assistant_id))]
         project_agent_md_paths = (
             project_context.project_agent_md_paths()
             if project_context is not None
-            else settings.get_project_agent_md_path()
+            else get_project_agent_md_paths(settings.project_root)
         )
         memory_sources.extend(str(p) for p in project_agent_md_paths)
 
@@ -2833,9 +2846,7 @@ def create_cli_agent(
         from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
 
         agent_middleware.append(
-            ManagedMemoryGuardMiddleware(
-                [settings.get_user_agent_md_path(assistant_id)]
-            )
+            ManagedMemoryGuardMiddleware([get_user_agent_md_path(assistant_id)])
         )
 
     # Add skills middleware

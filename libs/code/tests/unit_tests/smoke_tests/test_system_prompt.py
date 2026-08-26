@@ -18,9 +18,8 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
-from deepagents_code._paths import PATHS
+from deepagents_code._paths import PATHS, get_built_in_skills_dir
 from deepagents_code.agent import create_cli_agent
-from deepagents_code.config import Settings
 from deepagents_code.offload import _ArtifactsStorage
 from deepagents_code.runtime_state import get_runtime_state
 
@@ -114,19 +113,36 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir(parents=True)
 
-    with patch("deepagents_code.agent.settings") as mock_s:
-        mock_s.ensure_agent_dir.return_value = agent_dir
-        mock_s.ensure_user_skills_dir.return_value = skills_dir
-        mock_s.get_project_skills_dir.return_value = None
-        mock_s.get_built_in_skills_dir.return_value = Settings.get_built_in_skills_dir()
-        mock_s.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
-        mock_s.get_project_agent_md_path.return_value = []
-        mock_s.get_user_agents_dir.return_value = tmp_path / "agents"
-        mock_s.get_project_agents_dir.return_value = None
-        mock_s.get_user_agent_skills_dir.return_value = tmp_path / "agents_skills"
-        mock_s.get_project_agent_skills_dir.return_value = None
-        mock_s.get_user_claude_skills_dir.return_value = tmp_path / "claude_skills"
-        mock_s.get_project_claude_skills_dir.return_value = None
+    with (
+        patch("deepagents_code.agent.settings") as mock_s,
+        patch("deepagents_code.agent.ensure_agent_dir", return_value=agent_dir),
+        patch("deepagents_code.agent.ensure_user_skills_dir", return_value=skills_dir),
+        patch("deepagents_code.agent.get_project_skills_dir", return_value=None),
+        patch(
+            "deepagents_code.agent.get_built_in_skills_dir",
+            return_value=get_built_in_skills_dir(),
+        ),
+        patch(
+            "deepagents_code.agent.get_user_agent_md_path",
+            return_value=agent_dir / "AGENTS.md",
+        ),
+        patch("deepagents_code.agent.get_project_agent_md_paths", return_value=[]),
+        patch(
+            "deepagents_code.agent.get_user_agents_dir",
+            return_value=tmp_path / "agents",
+        ),
+        patch("deepagents_code.agent.get_project_agents_dir", return_value=None),
+        patch(
+            "deepagents_code.agent.get_user_agent_skills_dir",
+            return_value=tmp_path / "agents_skills",
+        ),
+        patch("deepagents_code.agent.get_project_agent_skills_dir", return_value=None),
+        patch(
+            "deepagents_code.agent.get_user_claude_skills_dir",
+            return_value=tmp_path / "claude_skills",
+        ),
+        patch("deepagents_code.agent.get_project_claude_skills_dir", return_value=None),
+    ):
         get_runtime_state().model_name = _FIXED_MODEL_NAME
         get_runtime_state().model_provider = _FIXED_MODEL_PROVIDER
         get_runtime_state().model_context_limit = _FIXED_CONTEXT_LIMIT
@@ -199,9 +215,7 @@ def test_system_prompt_snapshot(
     # Redact machine-specific paths so the snapshot is reproducible across
     # machines and CI checkouts with different repo roots.
     actual = actual.replace(str(tmp_path), "<tmp_path>")
-    actual = actual.replace(
-        str(Settings.get_built_in_skills_dir()), "<built_in_skills_dir>"
-    )
+    actual = actual.replace(str(get_built_in_skills_dir()), "<built_in_skills_dir>")
     actual = actual.replace(str(PATHS.profile.root), "<deepagents_home>")
 
     _assert_snapshot(

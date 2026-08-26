@@ -87,31 +87,35 @@ def mock_settings(
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir(parents=True)
 
-    # Patch settings
+    # Patch settings and the path helpers the agent module now imports
+    # directly from `deepagents_code._paths`.
     with (
         patch("deepagents_code.agent.settings") as mock_settings_obj,
         patch(
             "deepagents_code.agent._offload_fallback_root",
             return_value=tmp_path / ".deepagents",
         ),
+        patch("deepagents_code.agent.ensure_agent_dir", return_value=agent_dir),
+        patch("deepagents_code.agent.ensure_user_skills_dir", return_value=skills_dir),
+        patch("deepagents_code.agent.get_project_skills_dir", return_value=None),
+        patch(
+            "deepagents_code.agent.get_user_agent_md_path",
+            side_effect=lambda agent_id: tmp_path / "agents" / agent_id / "agent.md",
+        ),
+        patch("deepagents_code.agent.get_project_agent_md_paths", return_value=[]),
+        patch(
+            "deepagents_code.agent.get_user_agents_dir",
+            return_value=tmp_path / "agents",
+        ),
+        patch("deepagents_code.agent.get_project_agents_dir", return_value=None),
+        patch(
+            "deepagents_code.agent.get_user_agent_skills_dir",
+            return_value=tmp_path / "agents_skills",
+        ),
+        patch("deepagents_code.agent.get_project_agent_skills_dir", return_value=None),
+        patch("deepagents_code.agent.get_user_claude_skills_dir", return_value=None),
+        patch("deepagents_code.agent.get_project_claude_skills_dir", return_value=None),
     ):
-        mock_settings_obj.user_deepagents_dir = tmp_path / "agents"
-        mock_settings_obj.ensure_agent_dir.return_value = agent_dir
-        mock_settings_obj.ensure_user_skills_dir.return_value = skills_dir
-        mock_settings_obj.get_project_skills_dir.return_value = None
-
-        # Mock methods that get called during agent execution to return
-        # real Path objects. This prevents MagicMock objects from being
-        # stored in state (which would fail serialization)
-        def get_user_agent_md_path(agent_id: str) -> Path:
-            return tmp_path / "agents" / agent_id / "agent.md"
-
-        def get_agent_dir(agent_id: str) -> Path:
-            return tmp_path / "agents" / agent_id
-
-        mock_settings_obj.get_user_agent_md_path = get_user_agent_md_path
-        mock_settings_obj.get_project_agent_md_path.return_value = []
-        mock_settings_obj.get_agent_dir = get_agent_dir
         mock_settings_obj.project_root = None
 
         # Model identity settings (used in system prompt generation)

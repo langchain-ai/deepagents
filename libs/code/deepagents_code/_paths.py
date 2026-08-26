@@ -21,6 +21,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import re
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -49,12 +50,29 @@ __all__ = [
     "ProfilePaths",
     "ProjectPaths",
     "classify_path",
+    "ensure_agent_dir",
+    "ensure_project_skills_dir",
+    "ensure_user_skills_dir",
     "export_profile_env",
     "first_writable",
+    "get_agent_dir",
+    "get_built_in_skills_dir",
     "get_deepagents_home",
+    "get_project_agent_md_paths",
+    "get_project_agent_skills_dir",
+    "get_project_agents_dir",
+    "get_project_claude_skills_dir",
+    "get_project_skills_dir",
+    "get_user_agent_md_path",
+    "get_user_agent_skills_dir",
+    "get_user_agents_dir",
+    "get_user_claude_skills_dir",
+    "get_user_skills_dir",
     "harden_state_dir",
+    "is_valid_agent_name",
     "probe_writable",
     "project_paths",
+    "user_deepagents_dir",
 ]
 
 DEEPAGENTS_HOME_ENV = "DEEPAGENTS_HOME"
@@ -799,3 +817,293 @@ export_profile_env(os.environ)
 def get_deepagents_home() -> Path:
     """Return the immutable launch-time user profile root."""
     return PATHS.profile.root
+
+
+def user_deepagents_dir() -> Path:
+    """The immutable launch-time user profile root.
+
+    Returns:
+        The normalized `DEEPAGENTS_HOME`, defaulting to `~/.deepagents`.
+    """
+    return PATHS.profile.root
+
+
+def is_valid_agent_name(agent_name: str) -> bool:
+    """Validate to prevent invalid filesystem paths and security issues.
+
+    Returns:
+        True if the agent name is valid, False otherwise.
+    """
+    if not agent_name or not agent_name.strip():
+        return False
+    # Allow only alphanumeric, hyphens, underscores, and whitespace
+    return bool(re.match(r"^[a-zA-Z0-9_\-\s]+$", agent_name))
+
+
+def get_agent_dir(agent_name: str) -> Path:
+    """Get the global agent directory path.
+
+    Args:
+        agent_name: Name of the agent
+
+    Returns:
+        Path to `{DEEPAGENTS_HOME}/{agent_name}`.
+
+    Raises:
+        ValueError: If the agent name contains invalid characters or names
+            a directory the app owns.
+    """
+    if not is_valid_agent_name(agent_name):
+        msg = (
+            f"Invalid agent name: {agent_name!r}. Agent names can only "
+            "contain letters, numbers, hyphens, underscores, and spaces."
+        )
+        raise ValueError(msg)
+    # Agent profiles live directly under the profile root, so an agent
+    # named after an app-owned directory would resolve onto app state. The
+    # picker already hides these names; reject them on the write path too
+    # rather than letting `dcode -a plugins` stamp a marker into it. The
+    # comparison is filesystem-aware so a case or trailing-dot alias that
+    # resolves onto the reserved directory is rejected as well.
+    # Imported from `_reserved_names`, not `agent`: this runs on the CLI
+    # startup path and `agent` pulls in LangChain at module level.
+    from deepagents_code._reserved_names import is_reserved_agent_dir_name
+
+    if is_reserved_agent_dir_name(agent_name):
+        msg = f"Invalid agent name: {agent_name!r} is reserved for dcode's own state."
+        raise ValueError(msg)
+    return PATHS.profile.agent_dir(agent_name)
+
+
+def ensure_agent_dir(agent_name: str) -> Path:
+    """Ensure the global agent directory exists and return its path.
+
+    Args:
+        agent_name: Name of the agent
+
+    Returns:
+        Path to `{DEEPAGENTS_HOME}/{agent_name}`.
+
+    Note:
+        `ValueError` propagates from `get_agent_dir` when the name contains
+        invalid characters or names a directory the app owns. Validation is
+        not repeated here, so there is one place it can change.
+    """
+    agent_dir = get_agent_dir(agent_name)
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    return agent_dir
+
+
+def get_user_agent_md_path(agent_name: str) -> Path:
+    """Get user-level AGENTS.md path for a specific agent.
+
+    Returns path regardless of whether the file exists.
+
+    Delegates to `get_agent_dir` so the name is held to one rule set.
+    Building the path directly would skip both the character check and the
+    reserved-name check: `onboarding.write_onboarding_name_memory` calls
+    this and then creates the parent, so an unchecked name here is exactly
+    how a marker lands in app-owned state.
+
+    Args:
+        agent_name: Name of the agent
+
+    Returns:
+        Path to `{DEEPAGENTS_HOME}/{agent_name}/AGENTS.md`.
+
+    Note:
+        `ValueError` propagates from `get_agent_dir` when the agent name
+        contains invalid characters or names a directory the app owns.
+    """
+    return get_agent_dir(agent_name) / "AGENTS.md"
+
+
+def get_project_agent_md_paths(project_root: Path | None) -> list[Path]:
+    """Get project-level AGENTS.md paths.
+
+    Checks both `{project_root}/.deepagents/AGENTS.md` and
+    `{project_root}/AGENTS.md`, returning all that exist. If both are
+    present, both are loaded and their instructions are combined, with
+    `.deepagents/AGENTS.md` first.
+
+    Args:
+        project_root: Resolved project root, or `None` when not in a project.
+
+    Returns:
+        Existing AGENTS.md paths.
+
+        Empty if neither file exists or not in a project, one entry if
+        only one is present, or two entries if both locations have the
+        file.
+    """
+    if not project_root:
+        return []
+    from deepagents_code.project_utils import find_project_agent_md
+
+    return find_project_agent_md(project_root)
+
+
+def get_user_skills_dir(agent_name: str) -> Path:
+    """Get user-level skills directory path for a specific agent.
+
+    Args:
+        agent_name: Name of the agent
+
+    Returns:
+        Path to `{DEEPAGENTS_HOME}/{agent_name}/skills/`.
+    """
+    return get_agent_dir(agent_name) / "skills"
+
+
+def ensure_user_skills_dir(agent_name: str) -> Path:
+    """Ensure user-level skills directory exists and return its path.
+
+    Args:
+        agent_name: Name of the agent
+
+    Returns:
+        Path to `{DEEPAGENTS_HOME}/{agent_name}/skills/`.
+    """
+    skills_dir = get_user_skills_dir(agent_name)
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    return skills_dir
+
+
+def get_project_skills_dir(project_root: Path | None) -> Path | None:
+    """Get project-level skills directory path.
+
+    Args:
+        project_root: Resolved project root, or `None` when not in a project.
+
+    Returns:
+        Path to {project_root}/.deepagents/skills/, or None if not in a project
+    """
+    if not project_root:
+        return None
+    return project_root / ".deepagents" / "skills"
+
+
+def ensure_project_skills_dir(project_root: Path | None) -> Path | None:
+    """Ensure project-level skills directory exists and return its path.
+
+    Args:
+        project_root: Resolved project root, or `None` when not in a project.
+
+    Returns:
+        Path to {project_root}/.deepagents/skills/, or None if not in a project
+    """
+    if not project_root:
+        return None
+    skills_dir = get_project_skills_dir(project_root)
+    if skills_dir is None:
+        return None
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    return skills_dir
+
+
+def get_user_agents_dir(agent_name: str) -> Path:
+    """Get user-level agents directory path for custom subagent definitions.
+
+    Args:
+        agent_name: Name of the agent (e.g., "deepagents")
+
+    Returns:
+        Path to `{DEEPAGENTS_HOME}/{agent_name}/agents/`.
+    """
+    return get_agent_dir(agent_name) / "agents"
+
+
+def get_project_agents_dir(project_root: Path | None) -> Path | None:
+    """Get project-level agents directory path for custom subagent definitions.
+
+    Args:
+        project_root: Resolved project root, or `None` when not in a project.
+
+    Returns:
+        Path to {project_root}/.deepagents/agents/, or None if not in a project
+    """
+    if not project_root:
+        return None
+    return project_root / ".deepagents" / "agents"
+
+
+def user_agents_dir() -> Path | None:
+    """Base user-level `.agents` directory (`~/.agents`).
+
+    Returns:
+        Path to `~/.agents`, or `None` when the process has no resolvable
+            home directory.
+    """
+    if PATHS.launch_home is None:
+        return None
+    return PATHS.launch_home / ".agents"
+
+
+def get_user_agent_skills_dir() -> Path | None:
+    """Get user-level `~/.agents/skills/` directory.
+
+    This is a generic alias path for skills that is tool-agnostic.
+
+    Returns:
+        Path to `~/.agents/skills/`, or `None` when the process has no
+            resolvable home directory.
+    """
+    base = user_agents_dir()
+    return None if base is None else base / "skills"
+
+
+def get_project_agent_skills_dir(project_root: Path | None) -> Path | None:
+    """Get project-level `.agents/skills/` directory.
+
+    This is a generic alias path for skills that is tool-agnostic.
+
+    Args:
+        project_root: Resolved project root, or `None` when not in a project.
+
+    Returns:
+        Path to `{project_root}/.agents/skills/`, or `None` if not in a project
+    """
+    if not project_root:
+        return None
+    return project_root / ".agents" / "skills"
+
+
+def get_user_claude_skills_dir() -> Path | None:
+    """Get user-level `~/.claude/skills/` directory (experimental).
+
+    Convenience bridge for cross-tool skill sharing with Claude Code.
+    This is experimental and may be removed.
+
+    Returns:
+        Path to `~/.claude/skills/`, or `None` when the process has no
+            resolvable home directory.
+    """
+    if PATHS.launch_home is None:
+        return None
+    return PATHS.launch_home / ".claude" / "skills"
+
+
+def get_project_claude_skills_dir(project_root: Path | None) -> Path | None:
+    """Get project-level `.claude/skills/` directory (experimental).
+
+    Convenience bridge for cross-tool skill sharing with Claude Code.
+    This is experimental and may be removed.
+
+    Args:
+        project_root: Resolved project root, or `None` when not in a project.
+
+    Returns:
+        Path to `{project_root}/.claude/skills/`, or `None` if not in a project.
+    """
+    if not project_root:
+        return None
+    return project_root / ".claude" / "skills"
+
+
+def get_built_in_skills_dir() -> Path:
+    """Get the directory containing built-in skills that ship with the app.
+
+    Returns:
+        Path to the `built_in_skills/` directory within the package.
+    """
+    return Path(__file__).parent / "built_in_skills"

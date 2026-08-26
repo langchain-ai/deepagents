@@ -885,23 +885,8 @@ class TestDiscoverSkillsAndRoots:
     as-is, is caught.
     """
 
-    def _settings_with_no_builtin_roots(self, extra: list[Path]) -> MagicMock:
-        settings = MagicMock()
-        for getter in (
-            "get_built_in_skills_dir",
-            "get_user_skills_dir",
-            "get_project_skills_dir",
-            "get_user_agent_skills_dir",
-            "get_project_agent_skills_dir",
-            "get_user_claude_skills_dir",
-            "get_project_claude_skills_dir",
-        ):
-            getattr(settings, getter).return_value = None
-        settings.get_extra_skills_dirs.return_value = extra
-        return settings
-
     def test_persisted_trust_added_as_is_while_extra_dirs_resolved(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Trusted dirs join roots verbatim; `extra_allowed_dirs` are resolved.
 
@@ -912,6 +897,9 @@ class TestDiscoverSkillsAndRoots:
         real (non-symlink) dir could not tell these apart because `resolve()`
         would be idempotent.
         """
+        import deepagents_code._paths as paths_module
+        from deepagents_code._paths import _capture_paths
+        from deepagents_code.config import settings
         from deepagents_code.skills.invocation import discover_skills_and_roots
 
         real_trusted = tmp_path / "real_trusted"
@@ -923,11 +911,21 @@ class TestDiscoverSkillsAndRoots:
         link_extra = tmp_path / "link_extra"
         link_extra.symlink_to(real_extra, target_is_directory=True)
 
+        # A synthetic profile keeps the built-in/home skill roots inside
+        # tmp_path; only the extra/trusted dirs under test appear outside it.
+        monkeypatch.setattr(
+            paths_module,
+            "PATHS",
+            _capture_paths(str(tmp_path / "profile"), launch_home=tmp_path),
+        )
+        monkeypatch.setattr(settings, "project_root", None, raising=False)
+        monkeypatch.setattr(
+            settings,
+            "extra_skills_dirs",
+            [link_extra],
+            raising=False,
+        )
         with (
-            patch(
-                "deepagents_code.config.settings",
-                self._settings_with_no_builtin_roots([link_extra]),
-            ),
             patch("deepagents_code.skills.load.list_skills", return_value=[]),
             patch(
                 "deepagents_code.skills.trust.load_trusted_skill_dirs",

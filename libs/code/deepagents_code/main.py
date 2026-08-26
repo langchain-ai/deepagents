@@ -858,9 +858,10 @@ def _reject_reserved_agent_arg(name: str) -> None:
     """Exit with a CLI-level message when `-a` names an app-owned directory.
 
     Agent profiles are siblings of directories the app owns under the profile
-    root, so `get_agent_dir` rejects those names. It is called from several
-    places downstream of launch, so the failure is not attributable to the flag
-    that caused it. Reject the name here, at the point of entry, instead.
+    root, so `_paths.get_agent_dir` rejects those names. It is called from
+    several places downstream of launch, so the failure is not attributable to
+    the flag that caused it. Reject the name here, at the point of entry,
+    instead.
 
     Note:
         Exits the process with status 2 (argparse's usage-error status) when

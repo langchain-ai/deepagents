@@ -114,14 +114,13 @@ class TestResetDryRun:
         buf = io.StringIO()
         test_console = Console(file=buf, highlight=False, width=200)
         with (
-            patch("deepagents_code.agent.settings") as mock_settings,
+            patch("deepagents_code.agent.user_deepagents_dir", return_value=tmp_path),
             patch("deepagents_code.agent.console", test_console),
             patch(
                 "deepagents_code.agent.get_default_coding_instructions",
                 return_value="default",
             ),
         ):
-            mock_settings.user_deepagents_dir = tmp_path
             reset_agent("coder", dry_run=True)
 
         assert agent_dir.exists()
@@ -140,7 +139,7 @@ class TestResetDryRun:
 
         stdout_buf = io.StringIO()
         with (
-            patch("deepagents_code.agent.settings") as mock_settings,
+            patch("deepagents_code.agent.user_deepagents_dir", return_value=tmp_path),
             patch("deepagents_code.agent.console"),
             patch(
                 "deepagents_code.agent.get_default_coding_instructions",
@@ -148,7 +147,6 @@ class TestResetDryRun:
             ),
             patch("sys.stdout", stdout_buf),
         ):
-            mock_settings.user_deepagents_dir = tmp_path
             reset_agent("coder", dry_run=True, output_format="json")
 
         result = json.loads(stdout_buf.getvalue())
@@ -361,10 +359,13 @@ class TestSkillsCreateIdempotency:
         test_console = Console(file=buf, highlight=False, width=200)
         mock_settings = MagicMock()
         mock_settings.project_root = None
-        mock_settings.ensure_user_skills_dir.return_value = tmp_path
         with (
             patch("deepagents_code.config.Settings") as settings_cls,
             patch("deepagents_code.config.console", test_console),
+            patch(
+                "deepagents_code.skills.commands.ensure_user_skills_dir",
+                return_value=tmp_path,
+            ),
         ):
             settings_cls.from_environment.return_value = mock_settings
             _create("my-skill", "agent")
@@ -384,10 +385,13 @@ class TestSkillsCreateIdempotency:
         stdout_buf = io.StringIO()
         mock_settings = MagicMock()
         mock_settings.project_root = None
-        mock_settings.ensure_user_skills_dir.return_value = tmp_path
         with (
             patch("deepagents_code.config.Settings") as settings_cls,
             patch("deepagents_code.config.console"),
+            patch(
+                "deepagents_code.skills.commands.ensure_user_skills_dir",
+                return_value=tmp_path,
+            ),
             patch("sys.stdout", stdout_buf),
         ):
             settings_cls.from_environment.return_value = mock_settings
@@ -534,12 +538,11 @@ class TestErrorMessageHints:
         buf = io.StringIO()
         test_console = Console(file=buf, highlight=False, width=200)
         with (  # separate to satisfy PT012
-            patch("deepagents_code.agent.settings") as mock_settings,
+            patch("deepagents_code.agent.user_deepagents_dir", return_value=tmp_path),
             patch("deepagents_code.agent.console", test_console),
+            pytest.raises(SystemExit),
         ):
-            mock_settings.user_deepagents_dir = tmp_path
-            with pytest.raises(SystemExit):
-                reset_agent("coder", "nonexistent")
+            reset_agent("coder", "nonexistent")
 
         output = buf.getvalue()
         assert "dcode agents list" in output

@@ -941,7 +941,7 @@ class TestJsonArg:
 class TestReservedAgentArg:
     """`-a plugins` must fail at the CLI, not inside agent construction.
 
-    `agent.create_cli_agent` calls `settings.ensure_agent_dir(assistant_id)`
+    `agent.create_cli_agent` calls `ensure_agent_dir(assistant_id)`
     with no handler, so a reserved name surfaced to the user as an unhandled
     `ValueError` from server startup.
     """

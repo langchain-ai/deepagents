@@ -26533,10 +26533,9 @@ class TestSwitchAgentGuards:
         (tmp_path / "coder").mkdir()
         async with app.run_test():
             with (
-                patch("deepagents_code.config.settings") as mock_settings,
+                patch("deepagents_code.app.user_deepagents_dir", return_value=tmp_path),
                 patch.object(app, "run_worker") as worker,
             ):
-                mock_settings.user_deepagents_dir = tmp_path
                 app._switch_agent("ghost")
             worker.assert_not_called()
             assert app._assistant_id == "coder"
@@ -26552,10 +26551,9 @@ class TestSwitchAgentGuards:
         (tmp_path / "researcher").mkdir()
         async with app.run_test():
             with (
-                patch("deepagents_code.config.settings") as mock_settings,
+                patch("deepagents_code.app.user_deepagents_dir", return_value=tmp_path),
                 patch.object(app, "run_worker") as worker,
             ):
-                mock_settings.user_deepagents_dir = tmp_path
                 app._switch_agent("researcher")
             worker.assert_called_once()
             assert app._agent_switching is True

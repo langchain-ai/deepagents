@@ -125,7 +125,7 @@ def _default_db_path() -> Path:
         if not configured:
             home = Path.home() / ".deepagents"
         elif configured.startswith("~/"):
-            home = Path.home() / configured[2:]
+            home = Path.home() / configured[2:].lstrip("/")
         elif configured.startswith("~") or not Path(configured).is_absolute():
             msg = (
                 f"Invalid DEEPAGENTS_HOME {configured!r}: use an absolute path "

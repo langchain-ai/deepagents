@@ -488,8 +488,11 @@ def test_default_db_path_prefers_env_override(
     assert inspector._default_db_path() == PATHS.profile.sessions_file
 
 
+@pytest.mark.parametrize("configured", ["~/custom-dcode", "~//custom-dcode"])
 def test_default_db_path_without_package(
-    inspector: ModuleType, monkeypatch: pytest.MonkeyPatch
+    inspector: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: str,
 ) -> None:
     """The standalone script resolves the root before re-execing into dcode."""
     real_import = __import__
@@ -507,7 +510,7 @@ def test_default_db_path_without_package(
         return real_import(name, globals_, locals_, fromlist, level)
 
     monkeypatch.setattr("builtins.__import__", import_module)
-    monkeypatch.setenv("DEEPAGENTS_HOME", "~/custom-dcode")
+    monkeypatch.setenv("DEEPAGENTS_HOME", configured)
 
     assert inspector._default_db_path() == Path.home() / "custom-dcode" / ".state" / (
         "sessions.db"

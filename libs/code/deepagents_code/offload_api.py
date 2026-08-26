@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -34,6 +35,8 @@ from deepagents_code.offload_middleware import (
 from deepagents_code.server_graph import get_server_runtime
 
 if TYPE_CHECKING:
+    from collections.abc import Sized
+
     from langchain_core.runnables import RunnableConfig
     from langsmith import Client
     from starlette.requests import Request
@@ -75,23 +78,38 @@ _MAX_OPERATION_OUTCOMES = 1024
 _TRACE_FLUSH_TIMEOUT = 2.0
 """Seconds allowed for the shutdown trace flush.
 
-Held below `client.launch.server._SHUTDOWN_TIMEOUT` (3s), the SIGTERM grace
-period before dcode escalates to SIGKILL, so the flush completes inside the
-window instead of being killed mid-send. Raising this past that budget makes
-shutdown strictly worse: the process is killed with the traces still queued.
+Worst case the flush holds `_TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE` of
+`client.launch.server._SHUTDOWN_TIMEOUT`, the SIGTERM grace period before dcode
+escalates to SIGKILL. It also runs before LangGraph's own teardown, so the
+budget left for the rest of shutdown is thin by design. Raising either constant
+makes shutdown strictly worse: the process is killed with the traces still
+queued. `TestFlushBudget` enforces the inequality, which no import can.
 """
 _TRACE_FLUSH_GRACE = 0.5
 """Extra seconds before the flush thread is abandoned.
 
-`Client.flush` bounds only the wait on already-submitted sends; its
-synchronous drain and submit steps -- including a retrying inline send when
-the client thread pool is already shut down -- ignore the timeout. The outer
-deadline supplies the hard ceiling that `flush` itself does not.
+`Client.flush` honors its timeout for the tracing-queue drain and for the
+compressed-send wait. It does not honor it for `_flush_run_ops_buffer`, nor for
+the drain-and-submit prologue of `flush_compressed_traces` -- including a
+retrying inline send when the client thread pool is already shut down. The
+outer deadline is the hard ceiling for those unbounded segments.
 """
 
+_MISSING = object()
+"""Sentinel separating "attribute absent" from a legitimate `None` value."""
 
-def _pending_trace_batches(client: Client) -> int:
-    """Count trace batches still unsent after a flush.
+
+class _FlushDeadlineError(Exception):
+    """The shutdown flush thread outlived its hard deadline.
+
+    A private type rather than `TimeoutError`, which is an `OSError` subclass
+    that langsmith's inline retry raises on a socket timeout. Borrowing the
+    builtin would report a fast network failure as a slow deadline overrun.
+    """
+
+
+def _pending_trace_work(client: Client) -> int | None:
+    """Count trace work still unsent after a flush.
 
     `Client.flush` returns silently when its deadline expires, so a truncated
     flush is indistinguishable from a complete one unless the leftovers are
@@ -101,24 +119,58 @@ def _pending_trace_batches(client: Client) -> int:
         client: The LangSmith client that was just flushed.
 
     Returns:
-        Number of queued or in-flight batches, or 0 if the client does not
-        expose the internals this reads.
+        The sum of queued run operations (`tracing_queue.unfinished_tasks`) and
+        in-flight send batches (`_futures`), or `None` when the client exposes
+        neither -- "cannot tell" rather than "nothing pending". Those are two
+        different units, so read the number as a signal that work was dropped
+        rather than as an exact batch count.
     """
-    queue = getattr(client, "tracing_queue", None)
-    pending = getattr(queue, "unfinished_tasks", 0) if queue is not None else 0
-    return pending + len(getattr(client, "_futures", None) or ())
+    queue = getattr(client, "tracing_queue", _MISSING)
+    futures = getattr(client, "_futures", _MISSING)
+    if queue is _MISSING and futures is _MISSING:
+        # Returning 0 here would make the truncation warning a permanently
+        # silent no-op after a langsmith rename, which is the exact failure
+        # this function exists to report.
+        logger.warning(
+            "Cannot verify the LangSmith trace flush: the client exposes "
+            "neither `tracing_queue` nor `_futures`; a truncated flush will go "
+            "unreported until this is updated"
+        )
+        return None
+
+    pending = 0
+    if queue is not _MISSING and queue is not None:
+        pending += getattr(queue, "unfinished_tasks", 0)
+    if futures is not _MISSING and futures:
+        pending += len(cast("Sized", futures))
+    return pending
 
 
-async def _await_flush_thread(client: Client) -> None:
+def _describe_pending(client: Client) -> str:
+    """Render the unsent trace count for an operator-facing log line.
+
+    Args:
+        client: The LangSmith client that was just flushed.
+
+    Returns:
+        A noun phrase naming how much trace work is being dropped.
+    """
+    pending = _pending_trace_work(client)
+    if pending is None:
+        return "an unknown number of queued trace items"
+    return f"{pending} queued trace item(s)"
+
+
+async def _await_flush_thread(client: Client) -> float:
     """Run `client.flush` on a daemon thread and wait, with a hard deadline.
 
-    `asyncio.to_thread` is unusable here: a timeout cancels only the
-    awaitable, not the default-executor thread running `flush`, and the
-    `asyncio.run` runner joins default-executor threads during loop shutdown
-    (up to five minutes). A hung flush would therefore still delay process
-    exit past the SIGKILL escalation, which is the exact case the deadline
-    exists for. The daemon thread is never joined, so a wedged flush is
-    simply left behind and dies with the process.
+    `asyncio.to_thread` is unusable here. A timeout cancels only the awaitable,
+    not the default-executor thread running `flush`. And the `asyncio.run`
+    runner joins default-executor threads during loop shutdown, for up to five
+    minutes. A hung flush would therefore still delay process exit past the
+    SIGKILL escalation, which is the exact case the deadline exists for. The
+    daemon thread is never joined, so a wedged flush is simply left behind and
+    dies with the process.
 
     The deadline is a plain `call_later` handle instead of `asyncio.wait_for`
     for the same reason: cancellation does not stop the thread, so the future
@@ -127,56 +179,94 @@ async def _await_flush_thread(client: Client) -> None:
     Args:
         client: The LangSmith client to flush.
 
+    Returns:
+        Seconds spent waiting on the flush.
+
     Raises:
-        TimeoutError: The flush did not finish within
+        _FlushDeadlineError: The flush did not finish within
             `_TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE`.
     """
     loop = asyncio.get_running_loop()
     done = loop.create_future()
-    event = threading.Event()
+    dispatched = threading.Event()
 
-    def complete(error: Exception | None = None) -> None:
+    def complete(error: Exception | None) -> None:
         if done.done():
+            if error is not None:
+                # Log rather than drop. "The flush ran out of time" and "the
+                # flush failed on a rotated API key" call for opposite
+                # responses, and only one of them is already reported.
+                logger.warning(
+                    "LangSmith flush failed after the shutdown deadline: %r", error
+                )
             return
         if error is None:
             done.set_result(False)
         else:
             done.set_exception(error)
 
-    def dispatch_completion(error: Exception | None = None) -> None:
+    def dispatch_completion(error: Exception | None) -> None:
         try:
             loop.call_soon_threadsafe(complete, error)
         except RuntimeError:
             if not loop.is_closed():
                 raise
+            # The deadline fired, the loop is gone, and the traces are already
+            # reported as dropped. This must never escape: an unhandled error
+            # in an unjoined thread prints a bare traceback into the server log
+            # that dcode tails on failure, which reads as a crash.
+            logger.debug("LangSmith flush finished after the shutdown deadline")
 
     def flush() -> None:
+        outcome: Exception | None = None
         try:
             client.flush(timeout=_TRACE_FLUSH_TIMEOUT)
         except Exception as exc:  # noqa: BLE001  # relayed to the waiter below
-            dispatch_completion(exc)
-        else:
-            dispatch_completion()
+            outcome = exc
+        except BaseException as exc:  # noqa: BLE001  # see comment below
+            # A `SystemExit`, or a `KeyboardInterrupt` delivered to this
+            # thread, would otherwise leave the waiter with no outcome at all.
+            # Re-raising it past the lifespan would replace whatever error was
+            # already propagating, so relay it as a plain `Exception`.
+            outcome = RuntimeError(f"LangSmith flush raised {exc!r}")
         finally:
-            event.set()
+            dispatch_completion(outcome)
+            # Announce only after the completion is queued, so the `call_soon`
+            # in `give_up` lands behind it. A result already in flight is then
+            # never misreported as a deadline overrun.
+            dispatched.set()
+
+    def resolve_deadline() -> None:
+        if not done.done():
+            done.set_result(True)
 
     def give_up() -> None:
-        # Resolve rather than raise so the `TimeoutError` surfaces at the
-        # `await` in the coroutine body; cancellation alone could not stop
-        # the thread anyway.
-        if not event.is_set() and not done.done():
-            done.set_result(True)
+        # Resolve rather than raise so the deadline surfaces at the `await` in
+        # the coroutine body; cancellation alone could not stop the thread
+        # anyway. The deadline is unconditional -- an unreachable deadline is
+        # the one failure this whole design exists to prevent -- so the retry
+        # below happens at most once.
+        if done.done():
+            return
+        if dispatched.is_set():
+            # The thread's completion is already queued ahead of this
+            # callback. Give it one loop turn to land.
+            loop.call_soon(resolve_deadline)
+            return
+        done.set_result(True)
 
     thread = threading.Thread(
         target=flush, daemon=True, name="langsmith-shutdown-flush"
     )
     timer = loop.call_later(_TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE, give_up)
+    started = time.monotonic()
     try:
         thread.start()
         if await done:
-            raise TimeoutError
+            raise _FlushDeadlineError
     finally:
         timer.cancel()
+    return time.monotonic() - started
 
 
 async def _flush_traces() -> None:
@@ -189,13 +279,13 @@ async def _flush_traces() -> None:
     it accepts no timeout, and an unbounded flush would outlive the SIGTERM
     grace period.
 
-    Best effort by contract: every failure is logged and swallowed so a
-    telemetry problem can never turn into a failed shutdown.
+    This is best effort: every failure is logged and swallowed so a telemetry
+    problem can never turn into a failed shutdown.
 
-    Note that this runs before LangGraph's own lifespan teardown (an
-    `AsyncExitStack` unwinds last-entered first), so traces emitted while the
-    runtime cancels in-flight runs are still lost. Covering those would need a
-    second flush after the runtime is down.
+    This runs before LangGraph's own lifespan teardown, because an
+    `AsyncExitStack` unwinds last-entered first. Traces emitted while the
+    runtime cancels in-flight runs are therefore still lost. Covering those
+    would need a second flush after the runtime is down.
     """
     try:
         from langsmith import run_trees
@@ -205,19 +295,23 @@ async def _flush_traces() -> None:
             logger.debug("No LangSmith client to flush during shutdown")
             return
 
-        await _await_flush_thread(client)
-
-        if pending := _pending_trace_batches(client):
+        try:
+            elapsed = await _await_flush_thread(client)
+        except _FlushDeadlineError:
             logger.warning(
-                "LangSmith trace flush incomplete after %.1fs; dropping %d batch(es)",
-                _TRACE_FLUSH_TIMEOUT,
+                "LangSmith trace flush exceeded %.1fs; dropping %s",
+                _TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE,
+                _describe_pending(client),
+            )
+            return
+
+        if pending := _pending_trace_work(client):
+            logger.warning(
+                "LangSmith trace flush incomplete after %.1fs; "
+                "dropping %d queued trace item(s)",
+                elapsed,
                 pending,
             )
-    except TimeoutError:
-        logger.warning(
-            "LangSmith trace flush exceeded %.1fs; dropping queued traces",
-            _TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE,
-        )
     except Exception:
         # Broad by design: this runs in a `finally` during shutdown, so an
         # escaping error would replace whatever was already propagating.

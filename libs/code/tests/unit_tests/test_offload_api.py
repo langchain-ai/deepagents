@@ -9,7 +9,7 @@ import threading
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -1349,6 +1349,50 @@ def test_validated_context_fields_exist_on_the_schema() -> None:
     assert validated <= declared, validated - declared
 
 
+_ORPHAN_JOIN_TIMEOUT = 5.0
+"""Seconds a test waits on an abandoned flush thread before giving up.
+
+Generous on purpose: it only bounds a hang, so a slow CI machine must never
+trip it.
+"""
+
+
+def _new_flush_thread(existing: set[threading.Thread]) -> threading.Thread:
+    """Return the flush thread this test started.
+
+    Matched against a pre-test snapshot rather than by name alone, so a
+    leftover thread from another test cannot be mistaken for this one.
+
+    Args:
+        existing: Threads alive before the code under test ran.
+
+    Returns:
+        The single new `langsmith-shutdown-flush` thread.
+    """
+    started = [
+        thread
+        for thread in threading.enumerate()
+        if thread not in existing and thread.name == "langsmith-shutdown-flush"
+    ]
+    assert len(started) == 1, started
+    return started[0]
+
+
+def _join_flush_threads(existing: set[threading.Thread]) -> None:
+    """Wait for flush threads this test started, so none outlive it.
+
+    A thread that outlives its test surfaces as a
+    `PytestUnhandledThreadExceptionWarning` attributed to whichever test is
+    running when it wakes.
+
+    Args:
+        existing: Threads alive before the code under test ran.
+    """
+    for thread in threading.enumerate():
+        if thread not in existing and thread.name == "langsmith-shutdown-flush":
+            thread.join(_ORPHAN_JOIN_TIMEOUT)
+
+
 class TestLifespan:
     """Shutdown flushes buffered LangSmith traces.
 
@@ -1361,13 +1405,15 @@ class TestLifespan:
     def _client() -> MagicMock:
         """Build a flushed-clean client that rejects calls the real one rejects.
 
-        `spec` matters: a bare `MagicMock` accepts any keyword, so the suite
-        would keep passing after langsmith drops the `timeout` parameter --
-        the exact break that would silently disable this flush.
+        `create_autospec` rather than `MagicMock(spec=Client)`: `spec` checks
+        attribute *names* only and does not signature-check calls on child
+        mocks, so the suite would keep passing after langsmith drops the
+        `timeout` parameter -- the exact break that silently disables this
+        flush. `create_autospec` validates the call itself.
         """
         from langsmith import Client
 
-        client = MagicMock(spec=Client)
+        client = create_autospec(Client, instance=True)
         client.tracing_queue = None
         client._futures = None
         return client
@@ -1421,23 +1467,32 @@ class TestLifespan:
             async with offload_api.app.router.lifespan_context(offload_api.app):
                 pass
 
-        assert flush_thread == [flush_thread[0]]
+        assert len(flush_thread) == 1
         assert flush_thread[0] != threading.get_ident()
 
     async def test_does_not_create_tracing_client(self) -> None:
-        """Tracing stays off: shutdown never constructs a client to flush."""
+        """Tracing stays off: shutdown never constructs a client to flush.
+
+        Asserted against `Client.__init__` rather than `get_cached_client`,
+        which the shutdown path does not reference at all -- so an assertion
+        on that name could never fail. Any route to a new client, including a
+        bare `Client()`, trips this.
+        """
+        import langsmith
         from langsmith import run_trees
 
         from deepagents_code import offload_api
 
+        def forbidden(*_args: object, **_kwargs: object) -> None:
+            msg = "shutdown must not construct a LangSmith client"
+            raise AssertionError(msg)
+
         with (
             patch.object(run_trees, "_CLIENT", None),
-            patch.object(run_trees, "get_cached_client") as get_cached_client,
+            patch.object(langsmith.Client, "__init__", forbidden),
         ):
             async with offload_api.app.router.lifespan_context(offload_api.app):
                 pass
-
-        get_cached_client.assert_not_called()
 
     async def test_warns_when_the_flush_leaves_traces_behind(
         self, caplog: pytest.LogCaptureFixture
@@ -1456,7 +1511,7 @@ class TestLifespan:
             async with offload_api.app.router.lifespan_context(offload_api.app):
                 pass
 
-        assert "dropping 3 batch(es)" in caplog.text
+        assert "dropping 3 queued trace item(s)" in caplog.text
 
     async def test_hung_flush_does_not_block_shutdown(
         self, caplog: pytest.LogCaptureFixture
@@ -1472,29 +1527,36 @@ class TestLifespan:
 
         from deepagents_code import offload_api
 
+        release = threading.Event()
         client = self._client()
-        client.flush.side_effect = lambda **_: time.sleep(1.0)
-        with (
-            patch.object(run_trees, "_CLIENT", client),
-            patch.object(offload_api, "_TRACE_FLUSH_TIMEOUT", 0.0),
-            patch.object(offload_api, "_TRACE_FLUSH_GRACE", 0.01),
-            caplog.at_level(logging.WARNING, logger=offload_api.__name__),
-        ):
-            started = time.monotonic()
-            async with offload_api.app.router.lifespan_context(offload_api.app):
-                pass
-            elapsed = time.monotonic() - started
+        client.flush.side_effect = lambda **_: release.wait(_ORPHAN_JOIN_TIMEOUT)
+        existing = set(threading.enumerate())
+        try:
+            with (
+                patch.object(run_trees, "_CLIENT", client),
+                patch.object(offload_api, "_TRACE_FLUSH_TIMEOUT", 0.0),
+                patch.object(offload_api, "_TRACE_FLUSH_GRACE", 0.01),
+                caplog.at_level(logging.WARNING, logger=offload_api.__name__),
+            ):
+                started = time.monotonic()
+                async with offload_api.app.router.lifespan_context(offload_api.app):
+                    pass
+                elapsed = time.monotonic() - started
 
-        assert "exceeded" in caplog.text
-        assert elapsed < 0.5
+            assert "exceeded" in caplog.text
+            assert elapsed < 0.5
 
-        # The abandoned thread is a daemon, so nothing -- not even the
-        # `asyncio.run` runner's executor join -- waits on it at teardown.
-        orphan = next(
-            t for t in threading.enumerate() if t.name == "langsmith-shutdown-flush"
-        )
-        assert orphan.daemon
-        assert orphan.is_alive()
+            # The abandoned thread is a daemon, so nothing -- not even the
+            # `asyncio.run` runner's executor join -- waits on it at teardown.
+            orphan = _new_flush_thread(existing)
+            assert orphan.daemon
+            assert orphan.is_alive()
+        finally:
+            # Released rather than left sleeping: a thread that outlives its
+            # test surfaces as a `PytestUnhandledThreadExceptionWarning`
+            # against whichever test happens to be running when it wakes.
+            release.set()
+            _join_flush_threads(existing)
 
     @pytest.mark.parametrize("cancel_waiter", [False, True])
     async def test_late_flush_completion_is_ignored(self, cancel_waiter: bool) -> None:
@@ -1539,7 +1601,7 @@ class TestLifespan:
                     with pytest.raises(asyncio.CancelledError):
                         await waiter
                 else:
-                    with pytest.raises(TimeoutError):
+                    with pytest.raises(offload_api._FlushDeadlineError):
                         await waiter
 
                 release.set()
@@ -1596,6 +1658,299 @@ class TestLifespan:
                 pass
 
         assert "No LangSmith client to flush" in caplog.text
+
+    async def test_base_exception_in_the_flush_still_releases_the_waiter(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-`Exception` failure must not strand the waiter forever.
+
+        The worker records its outcome in a `finally`, so the deadline stays
+        reachable. Were the outcome recorded only on the `Exception` path, a
+        `SystemExit` from `flush` would leave `await done` unresolved and hang
+        shutdown until dcode escalated to SIGKILL, with nothing logged.
+        """
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        client = self._client()
+        client.flush.side_effect = SystemExit(1)
+        with (
+            patch.object(run_trees, "_CLIENT", client),
+            caplog.at_level(logging.ERROR, logger=offload_api.__name__),
+        ):
+            started = time.monotonic()
+            async with offload_api.app.router.lifespan_context(offload_api.app):
+                pass
+            elapsed = time.monotonic() - started
+
+        # Relayed as a plain `Exception`: re-raising `SystemExit` past the
+        # lifespan would replace whatever error was already propagating.
+        assert elapsed < offload_api._TRACE_FLUSH_TIMEOUT
+        assert "Failed to flush LangSmith traces" in caplog.text
+        assert "SystemExit" in caplog.text
+
+    async def test_flush_failure_after_the_deadline_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A cause that arrives late is reported, not discarded.
+
+        "The flush ran out of time" and "the flush failed on a rotated API
+        key" call for opposite responses, and only the first is already in the
+        log by the time the late result lands.
+        """
+        from deepagents_code import offload_api
+
+        release = threading.Event()
+        client = self._client()
+
+        def flush(**_kwargs: object) -> None:
+            release.wait(_ORPHAN_JOIN_TIMEOUT)
+            msg = "credentials rejected"
+            raise RuntimeError(msg)
+
+        client.flush.side_effect = flush
+        existing = set(threading.enumerate())
+        try:
+            with (
+                patch.object(offload_api, "_TRACE_FLUSH_TIMEOUT", 0.0),
+                patch.object(offload_api, "_TRACE_FLUSH_GRACE", 0.0),
+                caplog.at_level(logging.WARNING, logger=offload_api.__name__),
+                pytest.raises(offload_api._FlushDeadlineError),
+            ):
+                await offload_api._await_flush_thread(client)
+
+            with caplog.at_level(logging.WARNING, logger=offload_api.__name__):
+                release.set()
+                _join_flush_threads(existing)
+                # One turn for the thread's queued completion to run.
+                await asyncio.sleep(0)
+        finally:
+            release.set()
+            _join_flush_threads(existing)
+
+        assert "failed after the shutdown deadline" in caplog.text
+        assert "credentials rejected" in caplog.text
+
+    async def test_completion_racing_the_deadline_is_not_misreported(self) -> None:
+        """A flush that finishes as the timer fires is not called an overrun.
+
+        The worker announces itself only *after* queueing its completion, so a
+        `give_up` that observes the announcement knows the result is already
+        ahead of it in the ready queue and can yield one loop turn. Drop that
+        check and a successful flush is reported as "exceeded ...; dropping
+        queued traces" whenever the timer wins the race.
+
+        Driven by hand rather than by real timing: the window is microseconds
+        wide, so a wall-clock test would assert nothing most of the time.
+        """
+        from deepagents_code import offload_api
+
+        loop = asyncio.get_running_loop()
+        real_call_soon_threadsafe = loop.call_soon_threadsafe
+        client = self._client()
+        deferred: list[tuple[Callable[..., object], tuple[object, ...]]] = []
+        give_ups: list[Callable[[], object]] = []
+
+        def defer_completion(
+            callback: Callable[..., object], *args: object
+        ) -> MagicMock:
+            deferred.append((callback, args))
+            return MagicMock()
+
+        def capture_timer(
+            _delay: float, callback: Callable[[], object], *_args: object
+        ) -> MagicMock:
+            give_ups.append(callback)
+            return MagicMock()
+
+        with patch.object(loop, "call_soon_threadsafe", defer_completion):
+            # `call_later` is unpatched again as soon as the deadline handle is
+            # captured, because `asyncio.sleep` needs it too.
+            with patch.object(loop, "call_later", capture_timer):
+                waiter = asyncio.create_task(offload_api._await_flush_thread(client))
+                # A bare yield: enough for the coroutine to start the worker
+                # and reach its `await`, and it needs no timer of its own.
+                await asyncio.sleep(0)
+            assert len(give_ups) == 1
+
+            # The stub flush returns at once; this waits for the worker to
+            # dispatch its completion and then announce itself.
+            await asyncio.sleep(0.05)
+            assert len(deferred) == 1
+
+        # Queue the completion first, exactly as the worker's ordering
+        # guarantees, then fire the deadline in the same loop turn.
+        callback, args = deferred.pop()
+        real_call_soon_threadsafe(callback, *args)
+        give_ups.pop()()
+
+        assert await waiter >= 0
+
+    def test_abandoned_flush_thread_raises_no_unhandled_exception(self) -> None:
+        """The orphan wakes into a closed loop without printing a traceback.
+
+        `call_soon_threadsafe` raises `RuntimeError` once the loop is gone. An
+        unhandled error there prints a bare traceback from an unjoined thread
+        into the server log dcode tails on failure, which reads as a crash on
+        the deliberately-degraded path.
+
+        Driven through `asyncio.run` rather than the ambient test loop because
+        the loop has to actually close for the race to exist.
+        """
+        from deepagents_code import offload_api
+
+        release = threading.Event()
+        client = self._client()
+        client.flush.side_effect = lambda **_: release.wait(_ORPHAN_JOIN_TIMEOUT)
+        unhandled: list[object] = []
+
+        async def main() -> None:
+            with (
+                patch.object(offload_api, "_TRACE_FLUSH_TIMEOUT", 0.0),
+                patch.object(offload_api, "_TRACE_FLUSH_GRACE", 0.0),
+                pytest.raises(offload_api._FlushDeadlineError),
+            ):
+                await offload_api._await_flush_thread(client)
+
+        existing = set(threading.enumerate())
+        original_hook = threading.excepthook
+        threading.excepthook = unhandled.append
+        try:
+            asyncio.run(main())
+            orphan = _new_flush_thread(existing)
+            release.set()
+            orphan.join(_ORPHAN_JOIN_TIMEOUT)
+            assert not orphan.is_alive()
+        finally:
+            threading.excepthook = original_hook
+            release.set()
+            _join_flush_threads(existing)
+
+        assert unhandled == []
+
+
+class TestPendingTraceWork:
+    """Leftover counting after a flush that returned early.
+
+    `Client.flush` truncates silently, so this is the only signal that traces
+    were dropped -- and the only place a langsmith rename can turn the warning
+    into a permanent no-op.
+    """
+
+    @staticmethod
+    def _client(**attributes: object) -> MagicMock:
+        """Build a client exposing only the named attributes.
+
+        The unnamed ones are `del`d rather than left at their autospec
+        defaults, so `getattr` raises `AttributeError` the way it would after
+        langsmith renamed them.
+
+        Args:
+            **attributes: Attributes to expose, and their values.
+
+        Returns:
+            A `Client` autospec narrowed to `attributes`.
+        """
+        from langsmith import Client
+
+        client = create_autospec(Client, instance=True)
+        for name in ("tracing_queue", "_futures"):
+            if name in attributes:
+                setattr(client, name, attributes[name])
+            else:
+                delattr(client, name)
+        return client
+
+    def test_counts_in_flight_send_batches(self) -> None:
+        """Batches already handed to the client's pool live in `_futures`.
+
+        This is the limb that matters after a truncated flush: the queue is
+        drained but the sends are not yet acknowledged.
+        """
+        from deepagents_code import offload_api
+
+        client = self._client(tracing_queue=None, _futures=[object(), object()])
+        assert offload_api._pending_trace_work(client) == 2
+
+    def test_sums_both_sources(self) -> None:
+        """Queued operations and in-flight batches add rather than shadow."""
+        from deepagents_code import offload_api
+
+        client = self._client(
+            tracing_queue=SimpleNamespace(unfinished_tasks=3),
+            _futures=[object()],
+        )
+        assert offload_api._pending_trace_work(client) == 4
+
+    def test_queue_without_a_task_counter_is_survivable(self) -> None:
+        """A renamed `unfinished_tasks` degrades to "nothing queued"."""
+        from deepagents_code import offload_api
+
+        client = self._client(tracing_queue=SimpleNamespace(), _futures=None)
+        assert offload_api._pending_trace_work(client) == 0
+
+    def test_reports_that_it_cannot_tell(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Neither attribute present is "unknown", not "nothing pending".
+
+        Returning 0 here is what would make the truncation warning a silently
+        permanent no-op after langsmith renames its internals -- the exact
+        failure the warning exists to report.
+        """
+        from deepagents_code import offload_api
+
+        client = self._client()
+        with caplog.at_level(logging.WARNING, logger=offload_api.__name__):
+            assert offload_api._pending_trace_work(client) is None
+
+        assert "Cannot verify the LangSmith trace flush" in caplog.text
+
+    async def test_unverifiable_deadline_says_so(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The deadline warning names the count, or admits it has none."""
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        release = threading.Event()
+        client = self._client()
+        client.flush.side_effect = lambda **_: release.wait(_ORPHAN_JOIN_TIMEOUT)
+        existing = set(threading.enumerate())
+        try:
+            with (
+                patch.object(run_trees, "_CLIENT", client),
+                patch.object(offload_api, "_TRACE_FLUSH_TIMEOUT", 0.0),
+                patch.object(offload_api, "_TRACE_FLUSH_GRACE", 0.0),
+                caplog.at_level(logging.WARNING, logger=offload_api.__name__),
+            ):
+                async with offload_api.app.router.lifespan_context(offload_api.app):
+                    pass
+        finally:
+            release.set()
+            _join_flush_threads(existing)
+
+        assert "an unknown number of queued trace items" in caplog.text
+
+
+class TestFlushBudget:
+    """The trace flush has to fit inside dcode's shutdown grace period.
+
+    `offload_api` runs in the server child process and `client.launch.server`
+    in the dcode TUI, so no import couples the two constants. Without this
+    assertion, raising the flush budget past the SIGTERM grace period leaves
+    the suite green while guaranteeing the process is SIGKILLed with the
+    traces still queued -- the precise harm the docstrings warn about.
+    """
+
+    def test_flush_budget_fits_the_shutdown_grace_period(self) -> None:
+        from deepagents_code import offload_api
+        from deepagents_code.client.launch import server
+
+        budget = offload_api._TRACE_FLUSH_TIMEOUT + offload_api._TRACE_FLUSH_GRACE
+        assert budget < server._SHUTDOWN_TIMEOUT
 
 
 class TestRouteRegistration:

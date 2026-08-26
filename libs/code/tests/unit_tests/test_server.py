@@ -9,6 +9,7 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import threading
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Self
@@ -1514,6 +1515,37 @@ class TestServerSessionIsolation:
         assert popen.call_args.kwargs["start_new_session"] is True
         assert popen.call_args.kwargs["creationflags"] == 0
 
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="the stdlib names exist only on Windows"
+    )
+    def test_windows_constants_match_the_stdlib(self) -> None:
+        """The literals are the real ABI values, not just self-consistent.
+
+        Every other Windows assertion in this file runs on Linux behind a
+        patched `sys.platform`, comparing the constants to themselves. A wrong
+        value would pass all of them: `_WINDOWS_CTRL_BREAK_EVENT = 0` is
+        `CTRL_C_EVENT`, which `Popen.send_signal` dispatches differently, so
+        Windows shutdown would break silently.
+        """
+        # Both stdlib names are Windows-only, so they do not resolve for the
+        # type checker on the platform this file is checked on.
+        assert (
+            server_module._WINDOWS_CREATE_NEW_PROCESS_GROUP
+            == subprocess.CREATE_NEW_PROCESS_GROUP  # ty: ignore[unresolved-attribute]
+        )
+        assert (
+            server_module._WINDOWS_CTRL_BREAK_EVENT == signal.CTRL_BREAK_EVENT  # ty: ignore[unresolved-attribute]
+        )
+
+    def test_windows_constants_match_the_documented_literals(self) -> None:
+        """Guards the values on the platforms CI actually runs.
+
+        `libs/code` has no Windows CI leg, so without this the constants are
+        unverified everywhere.
+        """
+        assert server_module._WINDOWS_CREATE_NEW_PROCESS_GROUP == 0x00000200
+        assert server_module._WINDOWS_CTRL_BREAK_EVENT == 1
+
     async def test_windows_spawn_starts_new_process_group(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1795,6 +1827,50 @@ class TestTerminateServerProcess:
         )
         process.kill.assert_called_once_with()
 
+    def test_windows_logs_the_group_scope_for_the_graceful_signal(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ctrl+Break reaches the console group even with no POSIX pgid.
+
+        The word in the log line is the only observable effect of the win32
+        clause in `signal_scope`, so nothing else can catch its removal.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.send_signal.side_effect = ProcessLookupError
+
+        with caplog.at_level(logging.DEBUG, logger=server_module.__name__):
+            _terminate_server_process(process)
+
+        assert "process group" in caplog.text
+
+    def test_windows_escalation_reports_root_only_kill(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The hard kill reaches the root handle, and says so.
+
+        Ctrl+Break is group-wide but `TerminateProcess` is not, so reusing the
+        graceful signal's scope here would claim a group kill that never
+        happened and hide the orphaned descendants.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="langgraph", timeout=3),
+            0,
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            _terminate_server_process(process)
+
+        assert "killing process" in caplog.text
+        assert "killing process group" not in caplog.text
+        assert "left orphaned" in caplog.text
+
     def test_windows_ctrl_break_shutdown_is_graceful(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1914,7 +1990,7 @@ class TestTerminateServerProcess:
             ((4321, signal.SIGKILL),),
             ((4321, 0),),
         ]
-        assert "did not exit after SIGKILL" in caplog.text
+        assert "did not exit after the hard kill" in caplog.text
 
     def test_windows_sigkill_timeout_warns(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -1933,7 +2009,7 @@ class TestTerminateServerProcess:
             _terminate_server_process(process)
 
         process.kill.assert_called_once_with()
-        assert "did not exit after SIGKILL" in caplog.text
+        assert "did not exit after the hard kill" in caplog.text
 
     async def test_startup_failure_terminates_group(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -56,16 +56,33 @@ _HEALTH_POLL_INTERVAL_REMOTE = 0.3
 _HEALTH_TIMEOUT = 60
 
 _SHUTDOWN_TIMEOUT = 3
-"""Seconds to wait for a graceful SIGTERM exit before escalating to SIGKILL."""
+"""Seconds to wait for a graceful exit before escalating to a hard kill.
+
+The server flushes buffered LangSmith traces inside this window, so
+`offload_api._TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE` must stay under it.
+Nothing imports across the two processes, so lowering this value would
+silently truncate that flush; `TestFlushBudget` asserts the inequality.
+"""
 
 _SIGKILL_TIMEOUT = 2
 """Seconds to wait for the group/process to exit after SIGKILL."""
 
 _WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
-"""Windows creation flag required for targeted console control signals."""
+"""Windows creation flag required for targeted console control signals.
+
+A literal because `subprocess.CREATE_NEW_PROCESS_GROUP` exists only on
+Windows. The flag also disables Ctrl+C handling for the new group, so
+`CTRL_C_EVENT` is inert against it and Ctrl+Break is the only graceful
+signal available.
+"""
 
 _WINDOWS_CTRL_BREAK_EVENT = 1
-"""Windows Ctrl+Break event handled as a graceful SIGBREAK by Uvicorn."""
+"""Windows Ctrl+Break event handled as a graceful SIGBREAK by Uvicorn.
+
+A literal because `signal.CTRL_BREAK_EVENT` exists only on Windows. The
+value is load-bearing: `subprocess.Popen.send_signal` dispatches on it
+exactly, and 0 would mean `CTRL_C_EVENT` instead.
+"""
 
 _PROCESS_GROUP_POLL_INTERVAL = 0.05
 
@@ -554,26 +571,38 @@ def _signal_windows_server(process: subprocess.Popen[Any]) -> None:
 def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
     """Terminate the `langgraph dev` server and its descendants.
 
-    Sends SIGTERM, waits `_SHUTDOWN_TIMEOUT` for a graceful exit, then escalates
-    to SIGKILL. On POSIX the whole detached process group is signaled via
+    Signals the server for a graceful exit, waits `_SHUTDOWN_TIMEOUT`, then
+    escalates to a hard kill: SIGTERM then SIGKILL on POSIX, Ctrl+Break then
+    `TerminateProcess` on Windows.
+
+    On POSIX the whole detached process group is signaled via
     `os.killpg`, and teardown waits for the entire group to exit — not just the
     root — so a child that outlives the `langgraph dev` root is still escalated
     to SIGKILL rather than orphaned. On Windows, the server's console process
     group receives Ctrl+Break, which Uvicorn handles as a graceful SIGBREAK and
     runs the Starlette lifespan shutdown. If Ctrl+Break cannot be delivered,
     such as in a headless session without an attached console, the owned child
-    is terminated instead. If no dedicated group is available on POSIX, only
-    the root process is signaled. `_server_process_group` guarantees dcode's own
-    POSIX process group is never targeted.
+    is terminated instead. Note that the Windows escalation reaches only the
+    root handle, so a descendant that outlives it is orphaned; the POSIX group
+    path is the only one that escalates group-wide.
+
+    If no dedicated group is available on POSIX, only the root process is
+    signaled. `_server_process_group` guarantees dcode's own POSIX process
+    group is never targeted.
 
     Args:
         process: The running server subprocess to terminate.
     """
     pid = process.pid
     pgid = _server_process_group(pid)
-    scope = (
+    # Windows resolves no pgid, but Ctrl+Break still reaches the whole console
+    # group — while the escalation below only ever kills the root handle. The
+    # two scopes are tracked separately so neither log line overstates what
+    # actually happened.
+    signal_scope = (
         "process group" if pgid is not None or sys.platform == "win32" else "process"
     )
+    kill_scope = "process group" if pgid is not None else "process"
 
     logger.info("Stopping langgraph dev server (pid=%d)", pid)
     try:
@@ -592,30 +621,43 @@ def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
             else:
                 stopped = True
     except ProcessLookupError:
-        # The server exited before the SIGTERM landed; nothing left to reap.
-        logger.debug("Server %s pid=%d already exited before SIGTERM", scope, pid)
+        # The server exited before the graceful signal landed; nothing to reap.
+        logger.debug(
+            "Server %s pid=%d already exited before the graceful signal",
+            signal_scope,
+            pid,
+        )
         return
     except OSError:
-        # SIGTERM could not be delivered (e.g. EPERM). We never reach the SIGKILL
-        # escalation, so the server is left running — report it with the same
-        # fidelity as a failed SIGKILL rather than a bare "error stopping".
+        # The graceful signal could not be delivered (e.g. EPERM). We never
+        # reach the hard-kill escalation, so the server is left running —
+        # report it with the same fidelity as a failed SIGKILL rather than a
+        # bare "error stopping".
         logger.exception(
-            "Failed to signal server %s pid=%d; it may be orphaned", scope, pid
+            "Failed to signal server %s pid=%d; it may be orphaned",
+            signal_scope,
+            pid,
         )
         return
 
     if stopped:
         return
 
-    logger.warning("Server did not stop gracefully, killing %s", scope)
+    logger.warning("Server did not stop gracefully, killing %s", kill_scope)
+    if sys.platform == "win32":
+        logger.warning(
+            "Windows escalation reaches only the server root; any surviving "
+            "`langgraph dev` descendant is left orphaned"
+        )
     # Guard escalation explicitly: `ProcessLookupError` means the group exited
-    # just before SIGKILL, while any other `OSError` means it may be orphaned.
+    # just before the hard kill, while any other `OSError` means it may be
+    # orphaned.
     try:
         if pgid is not None:
             os.killpg(pgid, signal.SIGKILL)
             if not _wait_for_process_group_exit(process, pgid, _SIGKILL_TIMEOUT):
                 logger.warning(
-                    "Server %s pid=%d did not exit after SIGKILL", scope, pid
+                    "Server %s pid=%d did not exit after the hard kill", kill_scope, pid
                 )
         else:
             process.kill()
@@ -623,14 +665,18 @@ def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
                 process.wait(timeout=_SIGKILL_TIMEOUT)
             except subprocess.TimeoutExpired:
                 logger.warning(
-                    "Server %s pid=%d did not exit after SIGKILL", scope, pid
+                    "Server %s pid=%d did not exit after the hard kill", kill_scope, pid
                 )
     except ProcessLookupError:
-        logger.debug("Server %s pid=%d already exited before SIGKILL", scope, pid)
+        logger.debug(
+            "Server %s pid=%d already exited before the hard kill",
+            kill_scope,
+            pid,
+        )
     except OSError:
         logger.exception(
-            "Failed to SIGKILL server %s pid=%d; it may be orphaned",
-            scope,
+            "Hard kill failed for server %s pid=%d; it may be orphaned",
+            kill_scope,
             pid,
         )
 

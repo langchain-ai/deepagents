@@ -451,6 +451,26 @@ paths_are_same_file() {
   [ "$1" = "$2" ] || [ "$1" -ef "$2" ]
 }
 
+path_has_unsearchable_ancestor() {
+  local current="$1"
+  while [ "$current" != "/" ] && [ "$current" != "//" ]; do
+    case "$current" in
+      //*)
+        current="${current%/*}"
+        [ "$current" != "/" ] || current="//"
+        ;;
+      *)
+        current="${current%/*}"
+        [ -n "$current" ] || current="/"
+        ;;
+    esac
+    if [ -d "$current" ] && [ ! -x "$current" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Normalize a POSIX absolute path lexically without requiring it to exist.
 # This mirrors `_paths._normalize_absolute` (i.e. `os.path.normpath`): repeated
 # separators and `.` / `..` components are collapsed, but no symlink or
@@ -549,6 +569,10 @@ normalize_deepagents_home() {
   fi
   if [ -d "$DEEPAGENTS_HOME" ] && { [ ! -r "$DEEPAGENTS_HOME" ] || [ ! -x "$DEEPAGENTS_HOME" ]; }; then
     log_error "Invalid DEEPAGENTS_HOME '${raw}': exists but cannot be read or searched. Check the permissions on it and on its parent directories."
+    exit 1
+  fi
+  if [ ! -e "$DEEPAGENTS_HOME" ] && path_has_unsearchable_ancestor "$DEEPAGENTS_HOME"; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': cannot be inspected because a parent directory cannot be searched. Check the permissions on its parent directories."
     exit 1
   fi
   export DEEPAGENTS_HOME

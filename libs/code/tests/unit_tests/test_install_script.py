@@ -7313,6 +7313,24 @@ def test_install_script_rejects_unusable_deepagents_home(
     assert not uv_args.exists()
 
 
+@pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root bypasses permission bits")
+def test_install_script_rejects_profile_behind_unsearchable_ancestor(
+    tmp_path: Path,
+) -> None:
+    """An inaccessible parent must not make the profile look merely absent."""
+    blocked = tmp_path / "blocked"
+    blocked.mkdir(mode=0o600)
+    profile = blocked / "profile"
+    try:
+        proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(profile)})
+    finally:
+        blocked.chmod(0o700)
+
+    assert proc.returncode == 1
+    assert "parent directory cannot be searched" in proc.stderr
+    assert not uv_args.exists()
+
+
 def test_uv_cache_locations_have_one_source() -> None:
     """Both snapshot sites read `uv_cache_candidates`, not their own list.
 

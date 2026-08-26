@@ -5271,6 +5271,29 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
 
         user_visible_output_started.assert_not_called()
 
+    async def test_nested_grader_output_is_not_mounted(self) -> None:
+        """Rubric-grader tokens stay hidden with other nested message streams."""
+        mount_message = AsyncMock(return_value=True)
+        grader_namespace = ("ReliableRubricMiddleware.after_agent:grader",)
+        chunks = [
+            (grader_namespace, "messages", (_text_message("partial verdict"), {}))
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+        )
+
+        mount_message.assert_not_awaited()
+
     async def test_not_fired_for_hidden_summarization_output(self) -> None:
         """Hidden main-namespace summarization text does not count."""
         user_visible_output_started = MagicMock()

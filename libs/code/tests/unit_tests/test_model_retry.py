@@ -359,6 +359,7 @@ def test_permanent_transport_errors_are_not_retried(exc: Exception) -> None:
 def test_middleware_defaults() -> None:
     mw = CodeModelRetryMiddleware()
     assert mw.max_retries == DEFAULT_MODEL_RETRIES
+    assert mw.stream_output_is_visible is True
 
 
 def test_middleware_rejects_negative_budget() -> None:
@@ -1292,6 +1293,43 @@ def test_sync_model_call_is_not_retried_after_streaming() -> None:
     assert calls == 1, "a retryable error after visible output must not replay"
 
 
+async def test_hidden_model_call_is_retried_after_streaming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A nested stream filtered by the clients may retry its failed model node."""
+    monkeypatch.setattr(
+        "deepagents_code.model_retry._retry_delay_seconds", lambda *_: 0
+    )
+    calls = 0
+
+    @contextmanager
+    def _already_streamed(
+        tracker: model_retry._MessageStreamTracker,
+    ) -> Iterator[None]:
+        tracker.has_streamed = True
+        yield
+
+    async def _handler(_request: ModelRequest) -> ModelResponse:
+        nonlocal calls
+        await asyncio.sleep(0)
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadError(_DROPPED)
+        return cast("ModelResponse", "verdict")
+
+    middleware = CodeModelRetryMiddleware(
+        max_retries=1,
+        stream_output_is_visible=False,
+    )
+    with patch.object(model_retry, "_track_message_streams", _already_streamed):
+        result = await middleware.awrap_model_call(
+            cast("ModelRequest", SimpleNamespace(model=None)), _handler
+        )
+
+    assert result == "verdict"
+    assert calls == 2
+
+
 def test_sync_model_call_still_retries_before_streaming() -> None:
     """The guard must not disable retries on an attempt that emitted nothing."""
     calls = 0
@@ -1437,3 +1475,8 @@ def test_middleware_rejects_a_bool_budget() -> None:
     """
     with pytest.raises(TypeError, match="max_retries"):
         CodeModelRetryMiddleware(max_retries=cast("int", True))
+
+
+def test_middleware_rejects_non_bool_stream_visibility() -> None:
+    with pytest.raises(TypeError, match="stream_output_is_visible"):
+        CodeModelRetryMiddleware(stream_output_is_visible=cast("bool", 1))

@@ -3195,7 +3195,12 @@ def create_cli_agent(
     )
 
     grader_middleware: list[AgentMiddleware[Any, Any]] = [
-        CodeModelRetryMiddleware(max_retries=model_retries),
+        # Both clients filter this nested message stream. A transient fault can
+        # safely retry the failed model node without replaying grader tools.
+        CodeModelRetryMiddleware(
+            max_retries=model_retries,
+            stream_output_is_visible=False,
+        ),
         _ContextToolCallBudgetMiddleware(
             # `read_file` is bounded separately by the grader's in-tool
             # working-directory counter, which excludes offloaded-result reads.

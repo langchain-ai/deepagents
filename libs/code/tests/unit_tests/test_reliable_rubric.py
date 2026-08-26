@@ -1,19 +1,23 @@
 """Tests for CLI-specific rubric grader behavior."""
 
+import json
 from collections.abc import Callable, Iterator, Sequence
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.rubric import GraderResponse, RubricState
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.agents.middleware.human_in_the_loop import ApproveDecision
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.language_models import LanguageModelInput
+from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -46,6 +50,80 @@ class _FixedGenericFakeChatModel(GenericFakeChatModel):
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Return this deterministic model after tool binding."""
         return self
+
+
+class _RetryingGraderModel(BaseChatModel):
+    """Stream a partial verdict, fail once, then return structured output."""
+
+    attempts: ClassVar[int] = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "retrying-grader"
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
+        *,
+        tool_choice: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        """Return this deterministic model after structured-output binding."""
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ChatResult:
+        return ChatResult(
+            generations=[
+                ChatGeneration(
+                    message=_grader_call(
+                        result="satisfied",
+                        explanation="verified after retry",
+                        criteria=[{"name": "tests pass", "passed": True}],
+                    )
+                )
+            ]
+        )
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Iterator[ChatGenerationChunk]:
+        type(self).attempts += 1
+        if type(self).attempts == 1:
+            yield ChatGenerationChunk(message=AIMessageChunk(content="partial"))
+            msg = "grader connection dropped"
+            raise httpx.ReadError(msg)
+        args = json.dumps(
+            {
+                "result": "satisfied",
+                "explanation": "verified after retry",
+                "criteria": [{"name": "tests pass", "passed": True}],
+            }
+        )
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(
+                content="",
+                tool_call_chunks=[
+                    {
+                        "name": "GraderResponse",
+                        "args": args,
+                        "id": "grader-call",
+                        "index": 0,
+                        "type": "tool_call_chunk",
+                    }
+                ],
+                chunk_position="last",
+            )
+        )
 
 
 def _grader_call(
@@ -204,6 +282,52 @@ class TestReliableRubricMiddleware:
         }
         assert operation_ids == {"run-123:2"}
         assert state["messages"] == messages_before
+
+    @pytest.mark.filterwarnings(
+        r"ignore:The middleware `RubricMiddleware` is in beta\..*"
+    )
+    async def test_midstream_failure_retries_and_parses_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hidden partial grader response retries only its failed model node."""
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        monkeypatch.setattr(
+            "deepagents_code.model_retry._retry_delay_seconds", lambda *_: 0
+        )
+        main_model = _FixedGenericFakeChatModel(
+            messages=iter([AIMessage(content="implementation complete")])
+        )
+        _RetryingGraderModel.attempts = 0
+        grader_model = _RetryingGraderModel()
+        rubric = ReliableRubricMiddleware(
+            model=grader_model,
+            grader_middleware=[
+                CodeModelRetryMiddleware(
+                    max_retries=1,
+                    stream_output_is_visible=False,
+                )
+            ],
+        )
+        agent = create_deep_agent(model=main_model, middleware=[rubric])
+
+        result: dict[str, Any] = {}
+        async for namespace, mode, data in agent.astream(
+            {
+                "messages": [HumanMessage(content="implement it")],
+                "rubric": "- tests pass",
+            },
+            stream_mode=["messages", "values"],
+            subgraphs=True,
+        ):
+            if not namespace and mode == "values" and isinstance(data, dict):
+                result = data
+
+        assert _RetryingGraderModel.attempts == 2
+        assert result["_rubric_status"] == "satisfied"
+        assert result["_rubric_evaluations"][-1]["criteria"] == [
+            {"name": "tests pass", "passed": True}
+        ]
 
     async def test_does_not_apply_legacy_retry_async(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")

@@ -103,7 +103,7 @@ def _google_api_core_status_code(exc: Exception) -> int | None:
 
 
 class _MessageStreamTracker:
-    """Track whether a model attempt emitted visible output."""
+    """Track whether a model attempt emitted output to the message stream."""
 
     def __init__(self) -> None:
         self.has_streamed = False
@@ -565,9 +565,13 @@ def _log_auxiliary_retry(attempt: int, max_retries: int, exc: Exception) -> None
 
 
 def _allow_retry_after_stream(
-    tracker: _MessageStreamTracker, exc: Exception, attempt: int
+    tracker: _MessageStreamTracker,
+    exc: Exception,
+    attempt: int,
+    *,
+    stream_output_is_visible: bool,
 ) -> bool:
-    if not tracker.has_streamed:
+    if not tracker.has_streamed or not stream_output_is_visible:
         return True
     logger.warning(
         "Model stream failed after output began; not retrying attempt %d",
@@ -743,16 +747,25 @@ def build_retry_event(attempt: int, max_retries: int) -> dict[str, object]:
 class CodeModelRetryMiddleware(AgentMiddleware):
     """Retry transient model-node failures without replaying completed tools."""
 
-    def __init__(self, *, max_retries: int = DEFAULT_MODEL_RETRIES) -> None:
+    def __init__(
+        self,
+        *,
+        max_retries: int = DEFAULT_MODEL_RETRIES,
+        stream_output_is_visible: bool = True,
+    ) -> None:
         """Initialize the middleware with the resolved retry count.
 
         Args:
             max_retries: Startup fallback for retry attempts after the initial
                 call. `0` disables retries unless the request's runtime-selected
                 model carries a different provider-specific budget.
+            stream_output_is_visible: Whether message-stream chunks emitted by
+                this model reach a user-visible consumer. Keep `True` unless the
+                entire nested stream is filtered before rendering.
 
         Raises:
-            TypeError: If `max_retries` is a bool.
+            TypeError: If `max_retries` or `stream_output_is_visible` has the
+                wrong type.
             ValueError: If `max_retries` is negative.
         """
         # `True >= 0` passes and `range(True + 1)` runs two attempts, so an
@@ -763,7 +776,14 @@ class CodeModelRetryMiddleware(AgentMiddleware):
         if max_retries < 0:
             msg = "max_retries must be >= 0"
             raise ValueError(msg)
+        if not isinstance(stream_output_is_visible, bool):
+            msg = (
+                "stream_output_is_visible must be a bool, got "
+                f"{type(stream_output_is_visible).__name__}"
+            )
+            raise TypeError(msg)
         self.max_retries = max_retries
+        self.stream_output_is_visible = stream_output_is_visible
 
     @staticmethod
     def _emit_retry_status(
@@ -825,7 +845,10 @@ class CodeModelRetryMiddleware(AgentMiddleware):
                 request, attempt, budget, exc
             ),
             retry_guard=lambda exc, attempt, _delay: _allow_retry_after_stream(
-                stream_tracker, exc, attempt
+                stream_tracker,
+                exc,
+                attempt,
+                stream_output_is_visible=self.stream_output_is_visible,
             ),
         )
 
@@ -855,6 +878,9 @@ class CodeModelRetryMiddleware(AgentMiddleware):
                 request, attempt, budget, exc
             ),
             retry_guard=lambda exc, attempt, _delay: _allow_retry_after_stream(
-                stream_tracker, exc, attempt
+                stream_tracker,
+                exc,
+                attempt,
+                stream_output_is_visible=self.stream_output_is_visible,
             ),
         )

@@ -5763,6 +5763,7 @@ class TestCreateCliAgentInterpreterWiring:
             if isinstance(middleware, CodeModelRetryMiddleware)
         )
         assert retry_middleware.max_retries == 0
+        assert retry_middleware.stream_output_is_visible is False
         assert any(
             isinstance(middleware, AsyncApprovalHITLMiddleware)
             for middleware in rubrics[0]._grader_middleware

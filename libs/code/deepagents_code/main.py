@@ -3138,7 +3138,7 @@ async def run_textual_cli_async(
         _get_default_model_spec,
         detect_provider,
         resolve_auto_classifier_model_with_problem,
-        settings,
+        runtime_state,
     )
     from deepagents_code.model_config import (
         ModelConfigError,
@@ -3174,14 +3174,14 @@ async def run_textual_cli_async(
     if resolved_spec:
         parsed = ModelSpec.try_parse(resolved_spec)
         if parsed:
-            settings.model_provider = parsed.provider
-            settings.model_name = parsed.model
+            runtime_state.model_provider = parsed.provider
+            runtime_state.model_name = parsed.model
         else:
-            settings.model_name = resolved_spec
-            settings.model_provider = detect_provider(resolved_spec) or ""
+            runtime_state.model_name = resolved_spec
+            runtime_state.model_provider = detect_provider(resolved_spec) or ""
     else:
-        settings.model_provider = ""
-        settings.model_name = ""
+        runtime_state.model_provider = ""
+        runtime_state.model_name = ""
 
     # Distinguish "flag absent" from "flag explicitly blank": `--auto-classifier-
     # model ""` is the "inherit the main agent model" instruction and overrides
@@ -3381,7 +3381,7 @@ async def _run_acp_cli_async(
         sys.stderr.write(f"Error: {exc}\n")
         sys.stderr.flush()
         return 1
-    model_result.apply_to_settings()
+    model_result.apply_to_runtime_state()
 
     try:
         project_context = ProjectContext.from_user_cwd(Path.cwd())
@@ -3477,7 +3477,7 @@ async def _run_acp_cli_async(
                         cli_max_retries=cli_max_retries,
                     )
                 )
-                session_model.apply_to_settings()
+                session_model.apply_to_runtime_state()
                 agent_graph, _backend = create_cli_agent(
                     model=session_model.model,
                     assistant_id=assistant_id,

@@ -163,7 +163,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server(
         model=model_obj,
         provider="anthropic",
         model_name="claude-sonnet-4-6",
-        apply_to_settings=MagicMock(),
+        apply_to_runtime_state=MagicMock(),
         model_retries=5,
         cli_max_retries=None,
     )
@@ -266,7 +266,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server(
         additional_configs=plugin_configs,
     )
     discover_plugin_mcp.assert_called_once_with(project_dir=acp_project_root)
-    assert model_result.apply_to_settings.call_count == 2
+    assert model_result.apply_to_runtime_state.call_count == 2
     mock_create_agent.assert_called_once()
     call_kwargs = mock_create_agent.call_args.kwargs
     assert call_kwargs["model"] is model_obj
@@ -299,7 +299,7 @@ def test_acp_mode_auto_forwards_classifier_and_store() -> None:
         model=object(),
         provider="openai",
         model_name="gpt-5.5",
-        apply_to_settings=MagicMock(),
+        apply_to_runtime_state=MagicMock(),
         model_retries=5,
         cli_max_retries=None,
     )
@@ -355,7 +355,7 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
         model=model_obj,
         provider="anthropic",
         model_name="claude-sonnet-4-6",
-        apply_to_settings=MagicMock(),
+        apply_to_runtime_state=MagicMock(),
         model_retries=5,
         cli_max_retries=None,
     )
@@ -412,7 +412,7 @@ def test_acp_mode_forwards_allow_fs_tools() -> None:
         model=model_obj,
         provider="anthropic",
         model_name="claude-sonnet-4-6",
-        apply_to_settings=MagicMock(),
+        apply_to_runtime_state=MagicMock(),
         model_retries=5,
         cli_max_retries=None,
     )
@@ -460,7 +460,7 @@ def test_acp_mode_forwards_none_allow_fs_tools_by_default() -> None:
         model=object(),
         provider="anthropic",
         model_name="claude-sonnet-4-6",
-        apply_to_settings=MagicMock(),
+        apply_to_runtime_state=MagicMock(),
         model_retries=5,
         cli_max_retries=None,
     )
@@ -512,7 +512,7 @@ def test_acp_mode_forwards_recursion_limit() -> None:
         model=object(),
         provider="anthropic",
         model_name="claude-sonnet-4-6",
-        apply_to_settings=MagicMock(),
+        apply_to_runtime_state=MagicMock(),
         model_retries=5,
         cli_max_retries=None,
     )

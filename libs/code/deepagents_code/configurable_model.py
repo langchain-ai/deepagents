@@ -369,10 +369,10 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
 def _model_spec_from_model(model: BaseChatModel) -> str | None:
     """Return a resumable `provider:model` spec for a model object."""
     model_name = get_model_identifier(model)
-    from deepagents_code.config import settings
+    from deepagents_code.config import runtime_state
 
-    settings_provider = settings.model_provider or ""
-    settings_model = settings.model_name or ""
+    settings_provider = runtime_state.model_provider or ""
+    settings_model = runtime_state.model_name or ""
     if settings_provider and settings_model and model_name == settings_model:
         return f"{settings_provider}:{settings_model}"
     provider = _get_ls_provider(model)

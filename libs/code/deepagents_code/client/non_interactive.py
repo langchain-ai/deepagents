@@ -71,6 +71,7 @@ from deepagents_code.config import (
     build_langsmith_thread_url,
     create_model,
     is_shell_command_allowed,
+    runtime_state,
     settings,
 )
 from deepagents_code.file_ops import FileOpTracker, record_display_caveat
@@ -597,8 +598,8 @@ def _record_usage_from_message(
     record_message_usage(
         state.stats,
         message_obj,
-        fallback_model=settings.model_name or "",
-        fallback_provider=settings.model_provider or "",
+        fallback_model=runtime_state.model_name or "",
+        fallback_provider=runtime_state.model_provider or "",
         request_metadata=metadata,
         kind=usage_kind,
         recorded_requests=state.recorded_usage_requests,
@@ -1011,8 +1012,8 @@ def _process_stream_chunk(
                 state.stats,
                 data,
                 active_thread_id=state.thread_id,
-                fallback_model=settings.model_name or "",
-                fallback_provider=settings.model_provider or "",
+                fallback_model=runtime_state.model_name or "",
+                fallback_provider=runtime_state.model_provider or "",
                 recorded_requests=state.recorded_usage_requests,
             )
         elif (
@@ -1575,12 +1576,12 @@ async def _run_agent_loop(
     state.hooks.apply_graph_context(context)
     context["approval_mode"] = resolved_approval_mode.value
     context["auto_approve"] = resolved_approval_mode is ApprovalMode.YOLO
-    state.active_model = settings.model_name or None
+    state.active_model = runtime_state.model_name or None
     state.transcript = state.hooks.recorder(thread_id)
 
     start_outcome = await state.hooks.on_session_start(
         SessionStartCause.STARTUP,
-        model=settings.model_name or None,
+        model=runtime_state.model_name or None,
     )
     if not start_outcome.ok:
         await _end_headless_session(state, SessionEndCause.OTHER)
@@ -1787,8 +1788,8 @@ def _build_non_interactive_header(
         (f"Agent: {assistant_id}{default_label}", "dim"),
     ]
 
-    if settings.model_name:
-        parts.extend([(" | ", "dim"), (f"Model: {settings.model_name}", "dim")])
+    if runtime_state.model_name:
+        parts.extend([(" | ", "dim"), (f"Model: {runtime_state.model_name}", "dim")])
 
     parts.append((" | ", "dim"))
 
@@ -2115,7 +2116,7 @@ async def run_non_interactive(
         console.print(f"[bold red]Error:[/bold red] {e}")
         return 1
 
-    result.apply_to_settings()
+    result.apply_to_runtime_state()
 
     thread_id = generate_thread_id()
 

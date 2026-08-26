@@ -14,7 +14,7 @@ import pytest
 
 from deepagents_code import _env_vars
 from deepagents_code.command_registry import get_slash_commands
-from deepagents_code.config import Settings
+from deepagents_code.config import Settings, runtime_state
 from deepagents_code.skills.load import ExtendedSkillMetadata
 
 if TYPE_CHECKING:
@@ -309,22 +309,22 @@ class TestReloadFromEnvironment:
 
         assert loads == 1
 
-    def test_preserves_model_state(
+    def test_does_not_touch_runtime_model_state(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Reload should preserve runtime model fields and user project."""
+        """Reload should not touch separate runtime model state or user project."""
         settings = Settings.from_environment(start_path=tmp_path)
-        settings.model_name = "gpt-5"
-        settings.model_provider = "openai"
-        settings.model_context_limit = 200_000
+        runtime_state.model_name = "gpt-5"
+        runtime_state.model_provider = "openai"
+        runtime_state.model_context_limit = 200_000
         settings.user_langchain_project = "my-project"
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-reloaded")
         settings.reload_from_environment(start_path=tmp_path)
 
-        assert settings.model_name == "gpt-5"
-        assert settings.model_provider == "openai"
-        assert settings.model_context_limit == 200_000
+        assert runtime_state.model_name == "gpt-5"
+        assert runtime_state.model_provider == "openai"
+        assert runtime_state.model_context_limit == 200_000
         assert settings.user_langchain_project == "my-project"
 
     def test_no_changes_returns_empty(self, tmp_path: Path) -> None:
@@ -1706,7 +1706,6 @@ class TestReloadModelProfileHints:
         """Client-only sessions should resync after profile caches are cleared."""
         from deepagents_code import model_config
         from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.config import settings
         from deepagents_code.plugins.models import PluginDiscoveryResult
 
         config_path = tmp_path / "config.toml"
@@ -1723,8 +1722,8 @@ reasoning_effort_levels = ["{level}"]
         write_config("old")
         monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
         monkeypatch.setattr(model_config, "_get_provider_profile_modules", list)
-        monkeypatch.setattr(settings, "model_provider", "acme")
-        monkeypatch.setattr(settings, "model_name", "foo")
+        monkeypatch.setattr(runtime_state, "model_provider", "acme")
+        monkeypatch.setattr(runtime_state, "model_name", "foo")
         model_config.clear_caches()
 
         app = DeepAgentsApp()

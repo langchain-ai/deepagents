@@ -62,6 +62,7 @@ from deepagents_code.config import (
     normalize_langsmith_endpoint,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
+    runtime_state,
     settings,
     validate_model_capabilities,
 )
@@ -1633,11 +1634,11 @@ class TestCreateModelSplitCredentialWiring:
         assert ordered == ["warn", "apply"]
 
 
-class TestModelResultApplyToSettings:
-    """Tests for ModelResult.apply_to_settings propagation."""
+class TestModelResultApplyToRuntimeState:
+    """Tests for `ModelResult.apply_to_runtime_state` propagation."""
 
     def test_propagates_unsupported_modalities(self) -> None:
-        """Test that apply_to_settings writes unsupported_modalities to settings."""
+        """Test model results update all process-wide runtime metadata."""
         model_result = ModelResult(
             model=Mock(),
             model_name="deepseek-r1",
@@ -1645,21 +1646,24 @@ class TestModelResultApplyToSettings:
             context_limit=64000,
             unsupported_modalities=frozenset({"image", "audio"}),
         )
-        # `apply_to_settings` writes four fields to the process-global settings;
+        # The method writes four fields to process-global runtime state;
         # restore all of them or the values leak into every later test.
-        original_name = settings.model_name
-        original_provider = settings.model_provider
-        original_limit = settings.model_context_limit
-        original_modalities = settings.model_unsupported_modalities
+        original_name = runtime_state.model_name
+        original_provider = runtime_state.model_provider
+        original_limit = runtime_state.model_context_limit
+        original_modalities = runtime_state.model_unsupported_modalities
         try:
-            model_result.apply_to_settings()
+            model_result.apply_to_runtime_state()
             expected = frozenset({"image", "audio"})
-            assert settings.model_unsupported_modalities == expected
+            assert runtime_state.model_name == "deepseek-r1"
+            assert runtime_state.model_provider == "deepseek"
+            assert runtime_state.model_context_limit == 64000
+            assert runtime_state.model_unsupported_modalities == expected
         finally:
-            settings.model_name = original_name
-            settings.model_provider = original_provider
-            settings.model_context_limit = original_limit
-            settings.model_unsupported_modalities = original_modalities
+            runtime_state.model_name = original_name
+            runtime_state.model_provider = original_provider
+            runtime_state.model_context_limit = original_limit
+            runtime_state.model_unsupported_modalities = original_modalities
 
 
 class TestRetriesConfig:

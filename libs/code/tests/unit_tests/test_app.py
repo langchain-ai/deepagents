@@ -36235,6 +36235,37 @@ class TestRespawnServer:
 
         assert reload_started.is_set()
 
+    @pytest.mark.timeout(15)
+    async def test_cancelled_settings_reload_keeps_cancellation_if_worker_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A late worker error cannot replace the caller's cancellation."""
+        from deepagents_code.config import settings
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def failing_reload() -> list[str]:
+            started.set()
+            assert release.wait(timeout=5)
+            msg = "unreadable environment file"
+            raise OSError(msg)
+
+        monkeypatch.setattr(settings, "reload_from_environment", failing_reload)
+        reload_task = asyncio.create_task(
+            DeepAgentsApp._reload_settings_from_environment()
+        )
+        assert await asyncio.to_thread(started.wait, 5)
+        try:
+            reload_task.cancel()
+            await asyncio.sleep(0)
+            assert not reload_task.done()
+        finally:
+            release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await reload_task
+
     async def test_reload_preserves_queue_across_idle_server_restart(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

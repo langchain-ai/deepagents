@@ -16288,8 +16288,21 @@ class DeepAgentsApp(App):
         try:
             return await asyncio.shield(reload_task)
         except asyncio.CancelledError:
-            await reload_task
+            await DeepAgentsApp._settle_cancelled_settings_reload(reload_task)
             raise
+
+    @staticmethod
+    async def _settle_cancelled_settings_reload(
+        reload_task: asyncio.Task[list[str]],
+    ) -> None:
+        """Wait for a shielded reload without replacing caller cancellation."""
+        try:
+            await reload_task
+        except Exception:
+            logger.warning(
+                "Settings reload failed while settling caller cancellation",
+                exc_info=True,
+            )
 
     async def _reload_settings_from_environment_serialized(self) -> list[str]:
         """Reload settings while excluding every other environment mutation.

@@ -450,7 +450,7 @@ def _retry_call[ResultT](
     *,
     max_retries: int,
     on_retry: Callable[[int, int, Exception], None],
-    retry_guard: Callable[[Exception, int], bool] | None = None,
+    retry_guard: Callable[[Exception, int, float], bool] | None = None,
     delay_for: Callable[[int, Exception], float] | None = None,
 ) -> ResultT:
     """Run one synchronous call under the shared retry policy.
@@ -468,13 +468,15 @@ def _retry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
-            if retry_guard is not None and not retry_guard(exc, attempt + 1):
+            # Drawn once: the backoff carries jitter, so re-deriving it for the
+            # guard would authorise one delay and then sleep a different one.
+            delay = (delay_for or _retry_delay_seconds)(attempt, exc)
+            if retry_guard is not None and not retry_guard(exc, attempt + 1, delay):
                 raise
             if not _is_retryable_model_error(exc) or attempt >= max_retries:
                 _log_give_up(exc, attempt + 1, max_retries)
                 raise
             on_retry(attempt + 1, max_retries, exc)
-            delay = (delay_for or _retry_delay_seconds)(attempt, exc)
             if delay:
                 time.sleep(delay)
     msg = "Unexpected: retry loop completed without returning"
@@ -486,7 +488,7 @@ async def _aretry_call[ResultT](
     *,
     max_retries: int,
     on_retry: Callable[[int, int, Exception], None],
-    retry_guard: Callable[[Exception, int], bool] | None = None,
+    retry_guard: Callable[[Exception, int, float], bool] | None = None,
     delay_for: Callable[[int, Exception], float] | None = None,
 ) -> ResultT:
     """Run one asynchronous call under the shared retry policy.
@@ -506,13 +508,15 @@ async def _aretry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
-            if retry_guard is not None and not retry_guard(exc, attempt + 1):
+            # Drawn once: the backoff carries jitter, so re-deriving it for the
+            # guard would authorise one delay and then sleep a different one.
+            delay = (delay_for or _retry_delay_seconds)(attempt, exc)
+            if retry_guard is not None and not retry_guard(exc, attempt + 1, delay):
                 raise
             if not _is_retryable_model_error(exc) or attempt >= max_retries:
                 _log_give_up(exc, attempt + 1, max_retries)
                 raise
             on_retry(attempt + 1, max_retries, exc)
-            delay = (delay_for or _retry_delay_seconds)(attempt, exc)
             if delay:
                 await asyncio.sleep(delay)
     msg = "Unexpected: retry loop completed without returning"
@@ -575,7 +579,9 @@ def _auxiliary_max_retries(model: object) -> int:
     return DEFAULT_MODEL_RETRIES
 
 
-def _delay_ceiling_guard(max_delay: float | None) -> Callable[[Exception, int], bool]:
+def _delay_ceiling_guard(
+    max_delay: float | None,
+) -> Callable[[Exception, int, float], bool]:
     """Build a guard that gives up rather than sleeping past `max_delay`.
 
     Callers that run under an enclosing deadline cannot afford an honoured
@@ -588,10 +594,8 @@ def _delay_ceiling_guard(max_delay: float | None) -> Callable[[Exception, int], 
         A `retry_guard` callable for the shared retry loops.
     """
 
-    def guard(exc: Exception, attempt: int) -> bool:
-        if max_delay is None:
-            return True
-        if _retry_delay_seconds(attempt - 1, exc) <= max_delay:
+    def guard(exc: Exception, attempt: int, delay: float) -> bool:  # noqa: ARG001
+        if max_delay is None or delay <= max_delay:
             return True
         logger.warning(
             "Auxiliary model retry would wait past the caller deadline; "
@@ -783,7 +787,7 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             on_retry=lambda attempt, budget, exc: self._emit_retry_status(
                 request, attempt, budget, exc
             ),
-            retry_guard=lambda exc, attempt: _allow_retry_after_stream(
+            retry_guard=lambda exc, attempt, _delay: _allow_retry_after_stream(
                 stream_tracker, exc, attempt
             ),
             delay_for=self._retry_delay,
@@ -814,7 +818,7 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             on_retry=lambda attempt, budget, exc: self._emit_retry_status(
                 request, attempt, budget, exc
             ),
-            retry_guard=lambda exc, attempt: _allow_retry_after_stream(
+            retry_guard=lambda exc, attempt, _delay: _allow_retry_after_stream(
                 stream_tracker, exc, attempt
             ),
             delay_for=self._retry_delay,

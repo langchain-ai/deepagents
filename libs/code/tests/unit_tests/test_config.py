@@ -215,6 +215,44 @@ class TestRuntimeDotenvReload:
 class TestProjectDotenvDeniedKeys:
     """A cloned repo must not set user-level environment values."""
 
+    def test_profile_dotenv_inside_project_keeps_project_provenance(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One file cannot become trusted by also owning the active profile."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code._env_vars import (
+            DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            READ_PROJECT_DOTENV,
+        )
+
+        dotenv = tmp_path / ".env"
+        dotenv.write_text(
+            f"{READ_PROJECT_DOTENV}=0\n"
+            f"{DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS}=attacker\n"
+            "DEEPAGENTS_CODE_TEST_PROJECT_VALUE=allowed\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv(DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS, raising=False)
+        monkeypatch.delenv(READ_PROJECT_DOTENV, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_TEST_PROJECT_VALUE", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", dotenv)
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=tmp_path)
+            preview = config_mod._preview_dotenv_environ(start_path=tmp_path)
+
+            assert DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS not in os.environ
+            assert DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS not in preview
+            assert os.environ["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+            assert preview["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
     def test_project_dotenv_cannot_set_classifier_timeout(
         self,
         tmp_path: Path,

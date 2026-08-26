@@ -366,6 +366,18 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
 _GLOBAL_DOTENV_PATH = PATHS.profile.dotenv_file
 
 
+def _dotenv_files_are_same(first: Path | None, second: Path) -> bool:
+    """Return whether two dotenv paths identify the same file."""
+    if first is None:
+        return False
+    if first == second:
+        return True
+    try:
+        return first.samefile(second)
+    except OSError:
+        return False
+
+
 def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]:
     """Return the environment after dotenv loading without mutating `os.environ`.
 
@@ -416,23 +428,21 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 continue
             env[key] = value
 
+    project_dotenv: Path | None = None
+    try:
+        project_dotenv = _find_dotenv_from_start_path(start_path or Path.cwd())
+    except OSError:
+        logger.warning(
+            "Could not inspect project dotenv at %s; previewed project env vars "
+            "may be incomplete",
+            start_path or "cwd",
+            exc_info=True,
+        )
+    global_is_project = _dotenv_files_are_same(project_dotenv, _GLOBAL_DOTENV_PATH)
+
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
     if resolve_read_project_dotenv():
-        project_dotenv: Path | None = None
-        try:
-            project_dotenv = (
-                _find_dotenv_from_start_path(start_path)
-                if start_path is not None
-                else _find_dotenv_from_start_path(Path.cwd())
-            )
-        except OSError:
-            logger.warning(
-                "Could not inspect project dotenv at %s; previewed project env "
-                "vars may be incomplete",
-                start_path or "cwd",
-                exc_info=True,
-            )
         apply_dotenv(project_dotenv, is_project=True)
     else:
         logger.debug(
@@ -451,7 +461,8 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             exc_info=True,
         )
         global_dotenv = None
-    apply_dotenv(global_dotenv, is_project=False)
+    if not global_is_project:
+        apply_dotenv(global_dotenv, is_project=False)
 
     return env
 
@@ -550,9 +561,26 @@ def _load_dotenv(
     # could pin the var true) before the trusted opt-out was ever seen.
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
+    project_dotenv: Path | None = None
+    try:
+        if start_path is None:
+            found = dotenv.find_dotenv(usecwd=True)
+            if found:
+                project_dotenv = Path(found)
+        else:
+            project_dotenv = _find_dotenv_from_start_path(start_path)
+    except (OSError, ValueError):
+        logger.warning(
+            "Could not inspect project dotenv at %s; project env vars will not "
+            "be loaded",
+            start_path or "cwd",
+            exc_info=True,
+        )
+    global_is_project = _dotenv_files_are_same(project_dotenv, _GLOBAL_DOTENV_PATH)
+
     global_toggle: dict[str, str] = {}
     try:
-        if _GLOBAL_DOTENV_PATH.is_file():
+        if not global_is_project and _GLOBAL_DOTENV_PATH.is_file():
             raw = dotenv.dotenv_values(dotenv_path=_GLOBAL_DOTENV_PATH).get(
                 READ_PROJECT_DOTENV
             )
@@ -566,23 +594,15 @@ def _load_dotenv(
         )
 
     read_project = resolve_read_project_dotenv(global_dotenv=global_toggle)
-    dotenv_path: Path | str | None = None
     if read_project:
         try:
-            if start_path is None:
-                found = dotenv.find_dotenv(usecwd=True)
-                if found:
-                    dotenv_path = found
-                    loaded = apply_dotenv(Path(found), is_project=True) or loaded
-            else:
-                dotenv_path = _find_dotenv_from_start_path(start_path)
-                if dotenv_path is not None:
-                    loaded = apply_dotenv(dotenv_path, is_project=True) or loaded
+            if project_dotenv is not None:
+                loaded = apply_dotenv(project_dotenv, is_project=True) or loaded
         except (OSError, ValueError):
             logger.warning(
                 "Could not read project dotenv at %s; project env vars will not "
                 "be loaded",
-                dotenv_path or start_path or "cwd",
+                project_dotenv or start_path or "cwd",
                 exc_info=True,
             )
     else:
@@ -596,8 +616,10 @@ def _load_dotenv(
     # try/except wraps both is_file() and load_dotenv() to cover the TOCTOU
     # window where the file can vanish between stat and open.
     try:
-        if _GLOBAL_DOTENV_PATH.is_file() and apply_dotenv(
-            _GLOBAL_DOTENV_PATH, is_project=False
+        if (
+            not global_is_project
+            and _GLOBAL_DOTENV_PATH.is_file()
+            and apply_dotenv(_GLOBAL_DOTENV_PATH, is_project=False)
         ):
             loaded = True
             logger.debug("Loaded global dotenv: %s", _GLOBAL_DOTENV_PATH)

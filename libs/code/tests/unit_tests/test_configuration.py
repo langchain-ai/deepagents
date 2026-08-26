@@ -5845,6 +5845,80 @@ def test_newer_refresh_publishes_after_older_refresh_finishes_first(
     assert service.get_managed_snapshot().data == {"startup": {"mode": "new"}}
 
 
+def test_stale_refresh_failure_cannot_overwrite_newer_health(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure from an older load must not mark a healthy generation failed.
+
+    Refresh A starts, refresh B publishes a healthy generation, then A
+    finishes failing. Recording A's failure anyway would leave
+    `managed_refresh_failure` and `doctor` reporting the current, enforceable
+    policy as a stale refresh. Failure publication follows the same ticket
+    ordering as snapshot publication.
+    """
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.types import ProviderStatus, TomlSnapshot
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+
+    old_started = Event()
+    finish_old = Event()
+
+    def old_load(_path: Path | None = None) -> TomlSnapshot:
+        old_started.set()
+        assert finish_old.wait(timeout=5)
+        return TomlSnapshot(
+            {},
+            ProviderStatus(
+                "managed config",
+                managed,
+                ProviderHealth.UNREADABLE,
+                "remote source timed out",
+            ),
+        )
+
+    monkeypatch.setattr(service, "_load_managed", old_load)
+    old_result: list[TomlSnapshot] = []
+    worker = Thread(
+        target=lambda: old_result.append(service.get_managed_snapshot(refresh=True)),
+        name="stale-failing-refresh",
+        daemon=True,
+    )
+    worker.start()
+    assert old_started.wait(timeout=5)
+
+    # A newer refresh publishes healthy policy while the older load is in
+    # flight. Advance the file so the read below does not take the cache
+    # fast-path (`cached is not None`) and actually loads -- a refresh that
+    # hits the cache never publishes, so it cannot participate in the race.
+    # The published value must be enforceable: an unenforceable candidate is
+    # never cached, so it would not advance the publication ticket either.
+    managed.write_text('[startup]\nmode = "auto"\n', encoding="utf-8")
+    monkeypatch.setattr(
+        service,
+        "_load_managed",
+        lambda _path=None: TomlSnapshot(
+            {"startup": {"mode": "auto"}},
+            ProviderStatus("managed config", managed, ProviderHealth.OK, None),
+        ),
+    )
+    assert service.get_managed_snapshot(refresh=True).data == {
+        "startup": {"mode": "auto"}
+    }
+
+    finish_old.set()
+    worker.join(timeout=5)
+
+    # The refresh caller still receives its own failed generation, but the
+    # recorded health stays with the published snapshot.
+    assert old_result[0].status.health is ProviderHealth.UNREADABLE
+    assert service.managed_refresh_failure() is None
+
+
 @pytest.mark.parametrize(
     ("failure", "expected"),
     [

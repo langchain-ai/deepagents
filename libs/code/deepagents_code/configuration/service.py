@@ -642,14 +642,22 @@ class _SnapshotState:
                 return candidate
             return self.managed if self.managed is not None else candidate
 
-    def record_refresh_failure(self, status: ProviderStatus) -> None:
+    def record_refresh_failure(self, ticket: int, status: ProviderStatus) -> None:
         """Remember a load that produced no enforceable generation.
 
         Args:
+            ticket: The value `begin_load` returned for this load.
             status: Failed candidate's status, kept for the next health read.
+
+        The same ordering rule as `publish` applies: when a newer generation
+        has already been published, a failure from an older load is stale and
+        must not overwrite the health that publication just established --
+        `doctor` would otherwise report the current, healthy policy as a
+        failed refresh.
         """
         with _snapshot_lock:
-            self.refresh_failure = status
+            if ticket > self.published_ticket:
+                self.refresh_failure = status
 
     def reset(self) -> None:
         """Drop the cached snapshot and bar every in-flight load from it."""
@@ -789,7 +797,7 @@ def get_managed_snapshot(
     # key, through `managed_health().violations`; recording it here too would
     # print the same problem twice under two different names.
     if not candidate.status.usable:
-        _snapshot_state.record_refresh_failure(candidate.status)
+        _snapshot_state.record_refresh_failure(load_ticket, candidate.status)
     with _snapshot_lock:
         published = _snapshot_state.managed
         if not refresh and published is not None:

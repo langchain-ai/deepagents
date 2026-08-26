@@ -2,6 +2,25 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.63](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.62...deepagents-code==0.1.63) (2026-08-26)
+
+
+### Features
+
+* **code:** add Baseten `zai-org/GLM-5.3-Flash` to model switcher ([#5844](https://github.com/langchain-ai/deepagents/issues/5844)) ([731d2d5](https://github.com/langchain-ai/deepagents/commit/731d2d5a56dc0f9e78cec77722af592ad939edd3))
+* **code:** define and discover Python extensions ([#5631](https://github.com/langchain-ai/deepagents/issues/5631)) ([738bf07](https://github.com/langchain-ai/deepagents/commit/738bf077f8b079164f11742bfcaa2fa93df138d7))
+* **code:** load managed config from a remote source ([#5776](https://github.com/langchain-ai/deepagents/issues/5776)) ([9f3a1dd](https://github.com/langchain-ai/deepagents/commit/9f3a1dd38f8b5dbd828d2f366e9b03dad359fadf))
+* **code:** model-node retry middleware for transient model errors ([#4569](https://github.com/langchain-ai/deepagents/issues/4569)) ([948fea8](https://github.com/langchain-ai/deepagents/commit/948fea88e2c1e0660a3c1c7a077121c573f11675))
+
+
+### Bug Fixes
+
+* **code,evals:** allow instrumental Auto actions ([#5832](https://github.com/langchain-ai/deepagents/issues/5832)) ([56f51d8](https://github.com/langchain-ai/deepagents/commit/56f51d83a7d6621f2c3954ce69740c46e3cc1426))
+* **code:** clarify clear command descriptions ([#5841](https://github.com/langchain-ai/deepagents/issues/5841)) ([a6b069d](https://github.com/langchain-ai/deepagents/commit/a6b069db380c5483c414f48d9b57899c749c8528))
+* **code:** flush traces before server shutdown ([#5837](https://github.com/langchain-ai/deepagents/issues/5837)) ([804fdcc](https://github.com/langchain-ai/deepagents/commit/804fdcc436538686ca345965c0511e0664eb7c34))
+* **code:** make debug log path click-to-copy ([#5845](https://github.com/langchain-ai/deepagents/issues/5845)) ([1fc7d1e](https://github.com/langchain-ai/deepagents/commit/1fc7d1e26d21ff27327b1b0c0a926673c4663001))
+* **code:** track live dynamic subagent cost ([#5833](https://github.com/langchain-ai/deepagents/issues/5833)) ([37d7777](https://github.com/langchain-ai/deepagents/commit/37d7777195ff5c30ef789052d02d4387725182b8))
+
 ## [0.1.62](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.61...deepagents-code==0.1.62) (2026-08-26)
 
 ### Features

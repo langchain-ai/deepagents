@@ -451,7 +451,6 @@ def _retry_call[ResultT](
     max_retries: int,
     on_retry: Callable[[int, int, Exception], None],
     retry_guard: Callable[[Exception, int, float], bool] | None = None,
-    delay_for: Callable[[int, Exception], float] | None = None,
 ) -> ResultT:
     """Run one synchronous call under the shared retry policy.
 
@@ -477,7 +476,7 @@ def _retry_call[ResultT](
                 raise
             # Drawn once: the backoff carries jitter, so re-deriving it for the
             # guard would authorise one delay and then sleep a different one.
-            delay = (delay_for or _retry_delay_seconds)(attempt, exc)
+            delay = _retry_delay_seconds(attempt, exc)
             if retry_guard is not None and not retry_guard(exc, attempt + 1, delay):
                 raise
             on_retry(attempt + 1, max_retries, exc)
@@ -493,7 +492,6 @@ async def _aretry_call[ResultT](
     max_retries: int,
     on_retry: Callable[[int, int, Exception], None],
     retry_guard: Callable[[Exception, int, float], bool] | None = None,
-    delay_for: Callable[[int, Exception], float] | None = None,
 ) -> ResultT:
     """Run one asynchronous call under the shared retry policy.
 
@@ -521,7 +519,7 @@ async def _aretry_call[ResultT](
                 raise
             # Drawn once: the backoff carries jitter, so re-deriving it for the
             # guard would authorise one delay and then sleep a different one.
-            delay = (delay_for or _retry_delay_seconds)(attempt, exc)
+            delay = _retry_delay_seconds(attempt, exc)
             if retry_guard is not None and not retry_guard(exc, attempt + 1, delay):
                 raise
             on_retry(attempt + 1, max_retries, exc)
@@ -739,9 +737,8 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             TypeError: If `max_retries` is a bool.
             ValueError: If `max_retries` is negative.
         """
-        # `True >= 0` passes and `range(True + 1)` yields one attempt, so an
-        # unchecked bool reads as a budget of one. Every other budget check in
-        # dcode rejects it; this one is the outlier if it does not.
+        # `True >= 0` passes and `range(True + 1)` runs two attempts, so an
+        # unchecked bool reads as a budget of one retry.
         if isinstance(max_retries, bool):
             msg = f"max_retries must be an int, got {type(max_retries).__name__}"
             raise TypeError(msg)
@@ -749,15 +746,6 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             msg = "max_retries must be >= 0"
             raise ValueError(msg)
         self.max_retries = max_retries
-
-    def _retry_delay(self, attempt: int, exc: Exception) -> float:
-        retry_after = _retry_after_seconds(exc)
-        return retry_after if retry_after is not None else self._compute_delay(attempt)
-
-    @staticmethod
-    def _compute_delay(attempt: int) -> float:
-        """Return the local backoff after a zero-indexed attempt."""
-        return _compute_backoff_delay(attempt)
 
     @staticmethod
     def _emit_retry_status(
@@ -819,7 +807,6 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             retry_guard=lambda exc, attempt, _delay: _allow_retry_after_stream(
                 stream_tracker, exc, attempt
             ),
-            delay_for=self._retry_delay,
         )
 
     async def awrap_model_call(
@@ -850,5 +837,4 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             retry_guard=lambda exc, attempt, _delay: _allow_retry_after_stream(
                 stream_tracker, exc, attempt
             ),
-            delay_for=self._retry_delay,
         )

@@ -1047,6 +1047,11 @@ def _process_stream_chunk(
                 state.spinner.stop()
             status = retry_status_from_event(data)
             console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
+            # Restart it: the backoff is the longest stall of the turn, and
+            # leaving the spinner stopped reads as a hang until some unrelated
+            # later event happens to restart it.
+            if state.spinner:
+                state.spinner.start()
         else:
             _process_rubric_event(cast("dict[str, Any]", data), state, console)
     elif stream_mode == "messages":

@@ -3711,6 +3711,84 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Unexpected shell middleware on subagent {name!r}"
 
+    def test_retry_budget_reaches_every_installed_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        """`model_retries` must arrive at the middleware, not just its type.
+
+        The surrounding tests assert the middleware's presence and position but
+        never read its budget, so wiring `max_retries=0` into every install
+        site leaves the suite green while shipping retries that never fire.
+        """
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[
+                    {
+                        "name": "researcher",
+                        "description": "Researches things",
+                        "system_prompt": "Investigate the task thoroughly.",
+                        "model": None,
+                    }
+                ],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+                model_retries=7,
+            )
+
+        _, kwargs = mock_create.call_args
+
+        main_retries = [
+            mw
+            for mw in kwargs["middleware"]
+            if isinstance(mw, CodeModelRetryMiddleware)
+        ]
+        assert main_retries, "the main agent must install retry middleware"
+        assert all(mw.max_retries == 7 for mw in main_retries), (
+            "main-agent retry middleware carried the wrong budget: "
+            f"{[mw.max_retries for mw in main_retries]}"
+        )
+
+        subagent_retries = [
+            mw
+            for subagent in kwargs["subagents"]
+            for mw in subagent["middleware"]
+            if isinstance(mw, CodeModelRetryMiddleware)
+        ]
+        assert subagent_retries, "subagents must install retry middleware"
+        assert all(mw.max_retries == 7 for mw in subagent_retries), (
+            "subagent retry middleware carried the wrong budget: "
+            f"{[mw.max_retries for mw in subagent_retries]}"
+        )
+
     def test_subagent_middleware_combines_shell_configurable_model_and_cost(
         self, tmp_path: Path
     ) -> None:

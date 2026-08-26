@@ -95,6 +95,9 @@ _CLASSIFIER_TIMEOUT_SECONDS = AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 # batch the likeliest to be denied, and reported it as "the classifier did not
 # respond" for a model that was never built.
 _CLASSIFIER_CONSTRUCTION_TIMEOUT_SECONDS = 30.0
+# Share of the classifier budget one retry backoff may consume. A retry that
+# cannot fit gives up so the provider error, not a timeout, reaches the caller.
+_CLASSIFIER_RETRY_DELAY_FRACTION = 0.25
 _REASON_LIMIT = 512
 _TOTAL_DENIAL_FALLBACK = 20
 _CONSECUTIVE_DENIAL_FALLBACK = 3
@@ -2525,9 +2528,18 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 settings = request.model_settings if spec is None else {}
                 from deepagents_code.model_retry import aretry_model_call
 
+                # The retry backoff sleeps inside this deadline, so an
+                # honoured `Retry-After` would be cancelled mid-wait and
+                # resurface as a classifier timeout -- a diagnosis pointing at
+                # the wrong subsystem. Cap the wait at a fraction of the budget
+                # so a rate limit surfaces as itself.
                 result = await aretry_model_call(
                     model,
-                    lambda: structured.ainvoke(
+                    max_delay=(
+                        self._classifier_timeout_seconds
+                        * _CLASSIFIER_RETRY_DELAY_FRACTION
+                    ),
+                    call=lambda: structured.ainvoke(
                         messages,
                         config={
                             "run_name": "dcode_auto_classifier",

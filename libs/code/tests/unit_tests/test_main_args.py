@@ -4145,6 +4145,9 @@ class TestModelParamsRetryOverrideWarning:
         stderr = capsys.readouterr().err
         assert "--model-params max_retries is ignored" in stderr
         assert "--max-retries" in stderr
+        # Rich parses `[retries]` as a style tag and drops it, which would
+        # delete the remediation this warning exists to deliver.
+        assert "[retries].max_retries in config.toml" in stderr
 
     def test_unrelated_params_stay_quiet(
         self, capsys: pytest.CaptureFixture[str]

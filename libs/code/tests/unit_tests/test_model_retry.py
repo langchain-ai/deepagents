@@ -61,6 +61,9 @@ _UNSET = object()
 _READ_ERROR = httpx.ReadError("connection dropped")
 _CONNECT_ERROR = httpx.ConnectError("connection refused")
 _VALUE_ERROR = ValueError("bad request")
+_DROPPED = "connection dropped"
+_RETRY_AFTER_30 = "30"
+_RETRY_AFTER_1 = "1"
 
 
 class _StatusError(Exception):
@@ -466,8 +469,6 @@ class _RateLimitError(Exception):
     [
         pytest.param("30", 30.0, id="delta-seconds"),
         pytest.param("  45  ", 45.0, id="padded"),
-        pytest.param("0", 0.0, id="zero"),
-        pytest.param("-5", 0.0, id="negative-clamped"),
         pytest.param("600", 60.0, id="capped"),
     ],
 )
@@ -483,10 +484,16 @@ def test_retry_after_seconds_parses_http_date() -> None:
     assert result == pytest.approx(20.0, abs=2.0)
 
 
-def test_retry_after_seconds_past_date_clamps_to_zero() -> None:
+def test_retry_after_seconds_past_date_is_unusable() -> None:
+    """An elapsed hint must not cancel the backoff.
+
+    Returning 0.0 here is not the same as returning `None`: 0.0 is a real
+    delay, so both loops skip the sleep and burn the whole budget in a tight
+    loop against a server that just asked us to wait.
+    """
     when = datetime.now(UTC) - timedelta(seconds=30)
     header = format_datetime(when, usegmt=True)
-    assert _retry_after_seconds(_RateLimitError(header)) == pytest.approx(0.0)
+    assert _retry_after_seconds(_RateLimitError(header)) is None
 
 
 @pytest.mark.parametrize(
@@ -497,6 +504,8 @@ def test_retry_after_seconds_past_date_clamps_to_zero() -> None:
         pytest.param("   ", id="whitespace"),
         pytest.param("nan", id="nan"),
         pytest.param("inf", id="infinity"),
+        pytest.param("0", id="zero-carries-no-wait"),
+        pytest.param("-5", id="negative-carries-no-wait"),
     ],
 )
 def test_retry_after_seconds_ignores_unusable_headers(header: str) -> None:
@@ -801,7 +810,15 @@ def test_status_helpers() -> None:
     assert event["message"] == "Retrying model request 2/5"
 
 
-def test_stream_tracker_setup_failure_preserves_the_model_error() -> None:
+def test_stream_tracker_setup_failure_propagates() -> None:
+    """A tracker that cannot be set up must fail loudly, not be swallowed.
+
+    The handler never runs here, so there is no model error to preserve --
+    the earlier name claimed otherwise. What matters is that a broken tracker
+    surfaces instead of leaving the loop retrying against half-initialised
+    streaming state.
+    """
+
     class _TrackerSetupError(Exception):
         pass
 
@@ -890,3 +907,262 @@ def test_tracked_dedup_ids_reach_the_original_handler(handler_name: str) -> None
 
     tracker.merge_seen()
     assert "msg-1" in source.seen
+
+
+class APIConnectionError(Exception):
+    """Name-matched transient SDK error that also carries a status code.
+
+    Named to collide with `_TRANSIENT_SDK_EXC_NAMES` on purpose: the status
+    check must win over the name heuristic.
+    """
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"status {status_code}")
+        self.status_code = status_code
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable"),
+    [
+        pytest.param(400, False, id="bad-request-beats-name-match"),
+        pytest.param(401, False, id="auth-beats-name-match"),
+        pytest.param(403, False, id="permission-beats-name-match"),
+        pytest.param(503, True, id="server-error-agrees-with-name-match"),
+        pytest.param(429, True, id="rate-limit-agrees-with-name-match"),
+    ],
+)
+def test_status_code_outranks_the_sdk_name_heuristic(
+    status: int, retryable: bool
+) -> None:
+    """A status code must decide before the class-name fallback runs.
+
+    Without the ordering, a provider error class named `APIConnectionError`
+    that carries a 401 is retried the full budget, burning the wait and
+    delaying the auth failure the user has to act on. The existing fixtures
+    never combine the two signals, so reordering the block passes the suite.
+    """
+    assert _is_retryable_model_error(APIConnectionError(status)) is retryable
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable"),
+    [
+        pytest.param(499, False, id="below-server-range"),
+        pytest.param(500, True, id="server-range-floor"),
+        pytest.param(599, True, id="server-range-ceiling"),
+        pytest.param(600, False, id="above-server-range"),
+    ],
+)
+def test_server_error_range_boundaries(status: int, retryable: bool) -> None:
+    """Pin both ends of the 5xx window so the ceiling cannot drift."""
+    assert _is_retryable_model_error(_StatusError(status)) is retryable
+
+
+def test_bool_status_code_is_not_read_as_http_one() -> None:
+    """`status_code = True` must not classify as HTTP status 1."""
+    exc = _StatusError(True)  # type: ignore[arg-type]
+    assert model_retry._extract_status_code(exc) is None
+
+
+class _AttributeShapedError(Exception):
+    """Carry provider-specific status shapes on a real exception."""
+
+    def __init__(self, **shape: object) -> None:
+        super().__init__("provider error")
+        for name, value in shape.items():
+            setattr(self, name, value)
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        pytest.param(
+            _AttributeShapedError(http_status=503), 503, id="http-status-attribute"
+        ),
+        pytest.param(
+            _AttributeShapedError(
+                response={"ResponseMetadata": {"HTTPStatusCode": 500}}
+            ),
+            500,
+            id="botocore-response-mapping",
+        ),
+    ],
+)
+def test_status_code_fallback_attributes(exc: Exception, expected: int) -> None:
+    """The documented fallbacks are load-bearing for Bedrock-shaped errors."""
+    assert model_retry._extract_status_code(exc) == expected
+
+
+def test_unstamped_model_falls_back_to_the_default_budget(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unstamped model must not silently disable auxiliary retries.
+
+    `_install_summary_model_retries` replaces LangChain's unconditional
+    three-attempt `with_retry`, so a zero fallback would drop compaction
+    summarization to a single attempt -- a regression disguised as a feature.
+    """
+    attempts = 0
+
+    def call() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            raise httpx.ReadError(_DROPPED)
+        return "ok"
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.model_retry"):
+        assert retry_model_call(SimpleNamespace(), call) == "ok"
+
+    assert attempts == 3
+    assert "carries no dcode retry metadata" in caplog.text
+
+
+def test_stamped_model_budget_still_wins_over_the_fallback() -> None:
+    """Explicit metadata of zero still means zero."""
+    model = SimpleNamespace()
+    setattr(model, MODEL_RETRIES_ATTR, 0)
+    attempts = 0
+
+    def call() -> str:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ReadError(_DROPPED)
+
+    with pytest.raises(httpx.ReadError):
+        retry_model_call(model, call)
+    assert attempts == 1
+
+
+def test_max_delay_gives_up_rather_than_sleeping_past_a_deadline() -> None:
+    """A retry that cannot fit the caller's budget must surface the real error.
+
+    The auto-mode classifier runs its retries inside a hard `asyncio.timeout`.
+    Honouring a 30s `Retry-After` there gets cancelled mid-sleep and resurfaces
+    as a classifier timeout, blaming the wrong subsystem for a rate limit.
+    """
+    model = SimpleNamespace()
+    setattr(model, MODEL_RETRIES_ATTR, 5)
+    attempts = 0
+
+    def call() -> str:
+        nonlocal attempts
+        attempts += 1
+        raise _RateLimitError(_RETRY_AFTER_30)
+
+    with pytest.raises(_RateLimitError):
+        retry_model_call(model, call, max_delay=5.0)
+    assert attempts == 1, "a 30s Retry-After must not be waited out under a 5s cap"
+
+
+def test_max_delay_still_allows_a_retry_that_fits() -> None:
+    """The cap must not disable retries that comfortably fit the budget."""
+    model = SimpleNamespace()
+    setattr(model, MODEL_RETRIES_ATTR, 5)
+    attempts = 0
+
+    def call() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise _RateLimitError(_RETRY_AFTER_1)
+        return "ok"
+
+    assert retry_model_call(model, call, max_delay=5.0) == "ok"
+    assert attempts == 2
+
+
+def test_streaming_flag_is_set_before_the_chunk_is_forwarded() -> None:
+    """A writer that raises mid-chunk has still shown output to the user.
+
+    Setting the flag afterwards leaves it `False` on a broken pipe, and since
+    `ConnectionError` classifies retryable the loop would replay a response
+    whose first chunk already rendered -- the exact duplicate this guard
+    exists to prevent.
+    """
+    from langchain_core.callbacks import BaseCallbackManager as _Manager
+    from langgraph.pregel import _messages as _lg_messages
+
+    observed: list[bool] = []
+    tracker = model_retry._MessageStreamTracker()
+
+    def explode(_chunk: object) -> None:
+        # The tracker's view of itself at the moment the writer runs is the
+        # whole contract: it must already believe output has escaped.
+        observed.append(tracker.has_streamed)
+        msg = "broken pipe"
+        raise ConnectionError(msg)
+
+    source = _lg_messages.StreamMessagesHandler(explode, subgraphs=False)
+    manager = _Manager(handlers=[source], inheritable_handlers=[source])
+
+    tracked_callbacks = tracker.callbacks_with_tracked_messages(manager)
+    assert tracked_callbacks is not None
+    tracked = tracked_callbacks.handlers[0]
+
+    with pytest.raises(ConnectionError):
+        cast("Any", tracked).stream(("chunk", {}))
+
+    assert observed == [True], "flag must already be set when the writer runs"
+    assert tracker.has_streamed is True
+
+
+def test_sync_model_call_is_not_retried_after_streaming() -> None:
+    """The sync loop must honour the streamed-output guard too.
+
+    `test_failed_attempt_is_not_retried_after_streaming` drives `astream`, so
+    it only covers `awrap_model_call`. The sync path is a verbatim duplicate
+    and deleting its guard leaves the suite green -- while replaying a
+    response whose first chunk already reached the user.
+    """
+    calls = 0
+
+    @contextmanager
+    def _already_streamed(
+        tracker: model_retry._MessageStreamTracker,
+    ) -> Iterator[None]:
+        tracker.has_streamed = True
+        yield
+
+    def _handler(_request: ModelRequest) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadError(_DROPPED)
+
+    middleware = CodeModelRetryMiddleware(max_retries=3)
+    with (
+        patch.object(model_retry, "_track_message_streams", _already_streamed),
+        pytest.raises(httpx.ReadError),
+    ):
+        middleware.wrap_model_call(
+            cast("ModelRequest", SimpleNamespace(model=None)), _handler
+        )
+
+    assert calls == 1, "a retryable error after visible output must not replay"
+
+
+def test_sync_model_call_still_retries_before_streaming() -> None:
+    """The guard must not disable retries on an attempt that emitted nothing."""
+    calls = 0
+
+    @contextmanager
+    def _nothing_streamed(
+        _tracker: model_retry._MessageStreamTracker,
+    ) -> Iterator[None]:
+        yield
+
+    def _handler(_request: ModelRequest) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadError(_DROPPED)
+        return cast("ModelResponse", "ok")
+
+    middleware = CodeModelRetryMiddleware(max_retries=3)
+    with patch.object(model_retry, "_track_message_streams", _nothing_streamed):
+        result = middleware.wrap_model_call(
+            cast("ModelRequest", SimpleNamespace(model=None)), _handler
+        )
+
+    assert result == "ok"
+    assert calls == 2

@@ -5081,12 +5081,18 @@ def cli_main() -> None:
             supplied = sorted(retry_param_names & set(model_params))
             if supplied:
                 from rich.console import Console as _Console
+                from rich.text import Text as _Text
 
+                # Assembled rather than markup: the remediation names the
+                # `[retries]` table, which Rich would parse as a style tag and
+                # drop -- deleting the fix the warning exists to deliver.
                 _Console(stderr=True).print(
-                    "[bold yellow]Warning:[/bold yellow] --model-params "
-                    f"{', '.join(supplied)} is ignored; dcode owns the retry "
-                    "budget. Use --max-retries or [retries].max_retries in "
-                    "config.toml instead.",
+                    _Text.assemble(
+                        ("Warning:", "bold yellow"),
+                        f" --model-params {', '.join(supplied)} is ignored; "
+                        "dcode owns the retry budget. Use --max-retries or "
+                        "[retries].max_retries in config.toml instead.",
+                    ),
                     soft_wrap=True,
                     highlight=False,
                 )

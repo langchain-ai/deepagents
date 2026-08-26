@@ -104,8 +104,10 @@ class _MessageStreamTracker:
         replacements: dict[int, StreamMessagesHandler] = {}
 
         def forward(source: StreamMessagesHandler, chunk: StreamChunk) -> None:
-            source.stream(chunk)
+            # Flag first: a writer that raises part-way through has still put
+            # the chunk beyond our control, so a replay would double-render it.
             self.has_streamed = True
+            source.stream(chunk)
 
         def replace(handler: BaseCallbackHandler) -> BaseCallbackHandler:
             if not isinstance(handler, StreamMessagesHandler):
@@ -225,7 +227,12 @@ def _retry_after_seconds(exc: Exception) -> float | None:
 
     if not math.isfinite(seconds):
         return None
-    return min(max(seconds, 0.0), _MAX_RETRY_AFTER_SECONDS)
+    if seconds <= 0:
+        # A zero or already-elapsed hint carries no wait information. Returning
+        # it verbatim would skip the sleep entirely and let the whole budget
+        # burn in a tight loop, so fall back to the exponential curve.
+        return None
+    return min(seconds, _MAX_RETRY_AFTER_SECONDS)
 
 
 def _backoff_delay(
@@ -373,7 +380,7 @@ def _retry_call[ResultT](
     call: Callable[[], ResultT],
     *,
     max_retries: int,
-    on_retry: Callable[[int, int], None],
+    on_retry: Callable[[int, int, Exception], None],
     retry_guard: Callable[[Exception, int], bool] | None = None,
     delay_for: Callable[[int, Exception], float] | None = None,
 ) -> ResultT:
@@ -397,7 +404,7 @@ def _retry_call[ResultT](
             if not _is_retryable_model_error(exc) or attempt >= max_retries:
                 _log_give_up(exc, attempt + 1, max_retries)
                 raise
-            on_retry(attempt + 1, max_retries)
+            on_retry(attempt + 1, max_retries, exc)
             delay = (delay_for or _retry_delay_seconds)(attempt, exc)
             if delay:
                 time.sleep(delay)
@@ -409,7 +416,7 @@ async def _aretry_call[ResultT](
     call: Callable[[], Awaitable[ResultT]],
     *,
     max_retries: int,
-    on_retry: Callable[[int, int], None],
+    on_retry: Callable[[int, int, Exception], None],
     retry_guard: Callable[[Exception, int], bool] | None = None,
     delay_for: Callable[[int, Exception], float] | None = None,
 ) -> ResultT:
@@ -435,7 +442,7 @@ async def _aretry_call[ResultT](
             if not _is_retryable_model_error(exc) or attempt >= max_retries:
                 _log_give_up(exc, attempt + 1, max_retries)
                 raise
-            on_retry(attempt + 1, max_retries)
+            on_retry(attempt + 1, max_retries, exc)
             delay = (delay_for or _retry_delay_seconds)(attempt, exc)
             if delay:
                 await asyncio.sleep(delay)
@@ -443,9 +450,21 @@ async def _aretry_call[ResultT](
     raise RuntimeError(msg)
 
 
-def _log_auxiliary_retry(_attempt: int, _max_retries: int) -> None:
-    """Log one auxiliary-model retry."""
-    logger.warning("Auxiliary model call failed; retrying")
+def _log_auxiliary_retry(attempt: int, max_retries: int, exc: Exception) -> None:
+    """Log one auxiliary-model retry.
+
+    Only the final exception survives to be re-raised, so an attempt logged
+    without its cause is unrecoverable: five 429s and a 429 followed by four
+    connection resets are indistinguishable after the fact.
+    """
+    logger.warning(
+        "Auxiliary model call failed with %s (status %s); retrying %d/%d",
+        type(exc).__name__,
+        _extract_status_code(exc),
+        attempt,
+        max_retries,
+        exc_info=exc,
+    )
 
 
 def _allow_retry_after_stream(
@@ -461,39 +480,107 @@ def _allow_retry_after_stream(
     return False
 
 
-def retry_model_call[ResultT](model: object, call: Callable[[], ResultT]) -> ResultT:
+def _auxiliary_max_retries(model: object) -> int:
+    """Return the auxiliary retry budget for `model`, defaulting when unstamped.
+
+    A model that never passed through `create_model` carries no
+    `MODEL_RETRIES_ATTR`. Defaulting that case to zero would make every
+    auxiliary wrapper a silent passthrough -- and because
+    `_install_summary_model_retries` replaces LangChain's unconditional
+    three-attempt `with_retry`, compaction summarization would quietly drop to
+    a single attempt. Fall back to the normal budget and say so, since a
+    retry-less summarizer is invisible at runtime.
+
+    Returns:
+        The attached budget, or `DEFAULT_MODEL_RETRIES` when there is none.
+    """
+    resolved = _model_max_retries(model, -1)
+    if resolved >= 0:
+        return resolved
+    logger.warning(
+        "Model %s carries no dcode retry metadata; auxiliary calls fall back "
+        "to %d retries and its own SDK retry loop may still be active",
+        type(model).__name__,
+        DEFAULT_MODEL_RETRIES,
+    )
+    return DEFAULT_MODEL_RETRIES
+
+
+def _delay_ceiling_guard(max_delay: float | None) -> Callable[[Exception, int], bool]:
+    """Build a guard that gives up rather than sleeping past `max_delay`.
+
+    Callers that run under an enclosing deadline cannot afford an honoured
+    `Retry-After` of up to `_MAX_RETRY_AFTER_SECONDS`: the sleep outlives the
+    deadline, the task is cancelled mid-wait, and the real provider error is
+    replaced by an unrelated `TimeoutError`. Refusing the retry surfaces the
+    genuine cause instead, and avoids retrying a rate limit early.
+
+    Returns:
+        A `retry_guard` callable for the shared retry loops.
+    """
+
+    def guard(exc: Exception, attempt: int) -> bool:
+        if max_delay is None:
+            return True
+        if _retry_delay_seconds(attempt - 1, exc) <= max_delay:
+            return True
+        logger.warning(
+            "Auxiliary model retry would wait past the caller deadline; "
+            "surfacing %s instead",
+            type(exc).__name__,
+        )
+        return False
+
+    return guard
+
+
+def retry_model_call[ResultT](
+    model: object,
+    call: Callable[[], ResultT],
+    *,
+    max_delay: float | None = None,
+) -> ResultT:
     """Run a non-streaming auxiliary model call with its configured retry budget.
 
     Args:
         model: Model carrying dcode retry metadata when dcode owns its SDK retries.
         call: Fresh invocation callable to run for each attempt.
+        max_delay: Longest backoff this caller can absorb, for callers running
+            under an enclosing deadline. `None` honours the full policy.
 
     Returns:
         The successful call result.
     """
     return _retry_call(
         call,
-        max_retries=_model_max_retries(model, 0),
+        max_retries=_auxiliary_max_retries(model),
         on_retry=_log_auxiliary_retry,
+        retry_guard=_delay_ceiling_guard(max_delay),
     )
 
 
 async def aretry_model_call[ResultT](
-    model: object, call: Callable[[], Awaitable[ResultT]]
+    model: object,
+    call: Callable[[], Awaitable[ResultT]],
+    *,
+    max_delay: float | None = None,
 ) -> ResultT:
     """Run an asynchronous auxiliary model call with its configured retry budget.
 
     Args:
         model: Model carrying dcode retry metadata when dcode owns its SDK retries.
         call: Fresh async invocation callable to run for each attempt.
+        max_delay: Longest backoff this caller can absorb, for callers running
+            under an enclosing deadline. `None` honours the full policy.
 
     Returns:
         The successful call result.
     """
     return await _aretry_call(
         call,
-        max_retries=_model_max_retries(model, 0),
+        max_retries=_auxiliary_max_retries(model),
         on_retry=_log_auxiliary_retry,
+        retry_guard=_delay_ceiling_guard(max_delay),
     )
 
 
@@ -572,10 +659,20 @@ class CodeModelRetryMiddleware(AgentMiddleware):
 
     @staticmethod
     def _emit_retry_status(
-        request: ModelRequest, attempt: int, max_retries: int
+        request: ModelRequest, attempt: int, max_retries: int, exc: Exception
     ) -> None:
         event = build_retry_event(attempt, max_retries)
-        logger.warning("Model call failed; %s", event["message"])
+        # The user-facing event stays deliberately vague, but the log must name
+        # the cause: only the last exception is re-raised, so an attempt logged
+        # without its type and status leaves no way to tell a run of rate
+        # limits from a run of connection resets.
+        logger.warning(
+            "Model call failed with %s (status %s); %s",
+            type(exc).__name__,
+            _extract_status_code(exc),
+            event["message"],
+            exc_info=exc,
+        )
         writer = getattr(getattr(request, "runtime", None), "stream_writer", None)
         if writer is None:
             return
@@ -614,8 +711,8 @@ class CodeModelRetryMiddleware(AgentMiddleware):
         return _retry_call(
             call,
             max_retries=max_retries,
-            on_retry=lambda attempt, budget: self._emit_retry_status(
-                request, attempt, budget
+            on_retry=lambda attempt, budget, exc: self._emit_retry_status(
+                request, attempt, budget, exc
             ),
             retry_guard=lambda exc, attempt: _allow_retry_after_stream(
                 stream_tracker, exc, attempt
@@ -645,8 +742,8 @@ class CodeModelRetryMiddleware(AgentMiddleware):
         return await _aretry_call(
             call,
             max_retries=max_retries,
-            on_retry=lambda attempt, budget: self._emit_retry_status(
-                request, attempt, budget
+            on_retry=lambda attempt, budget, exc: self._emit_retry_status(
+                request, attempt, budget, exc
             ),
             retry_guard=lambda exc, attempt: _allow_retry_after_stream(
                 stream_tracker, exc, attempt

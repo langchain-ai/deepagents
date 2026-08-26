@@ -48,7 +48,7 @@ from deepagents_code import _env_vars
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
-    from deepagents_code.configuration.resolver import ResolvedValue
+    from deepagents_code.configuration.resolver import ConfigResolver, ResolvedValue
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,9 @@ COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
 
 Zero or negative disables the suggestion.
 """
+
+MODEL_SWITCH_WARNING_THRESHOLD_DEFAULT = 100_000
+"""Context size above which a user-initiated model switch requires confirmation."""
 
 HISTORY_RETENTION_DAYS_DEFAULT = 30
 """Default number of days an offloaded conversation-history archive is retained.
@@ -271,6 +274,55 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class CliSpec:
+    """Binding from one session-scoped CLI flag to a manifest option."""
+
+    flag: str
+    """Long CLI flag spelling, such as `--auto-approve`."""
+
+    dest: str | None = None
+    """Argparse destination, derived mechanically from `flag` when omitted."""
+
+    companion_flags: tuple[str, ...] = ()
+    """Other flags that set this option, for options driven by more than one.
+
+    `startup.mode` is set by both `--auto-approve` and `--yolo`, which argparse
+    keeps mutually exclusive. Every companion's argparse destination is derived
+    from its own spelling and is read by the provider, in listed order, before
+    `flag` -- so a companion is a real binding, not display text.
+
+    Each companion must be spelled exactly like the config value it selects
+    (`--yolo` -> `"yolo"`): the provider derives the value from the flag, and
+    `test_companion_flags_spell_their_startup_mode` pins it.
+    """
+
+    def __post_init__(self) -> None:
+        """Reject malformed flags and destinations at manifest construction.
+
+        Raises:
+            ValueError: If `flag` or any companion is not a non-empty long
+                option, or `dest` is supplied but blank.
+        """
+        for flag in (self.flag, *self.companion_flags):
+            if not flag.startswith("--") or not flag.removeprefix("--"):
+                msg = f"CLI flag must be a long option starting with '--': {flag!r}"
+                raise ValueError(msg)
+        if self.dest is not None and not self.dest:
+            msg = f"CLI destination for {self.flag} must not be empty"
+            raise ValueError(msg)
+
+    @property
+    def display_flags(self) -> str:
+        """Every spelling that sets this option, joined for user-facing text."""
+        return "/".join((self.flag, *self.companion_flags))
+
+    @property
+    def dest_name(self) -> str:
+        """Explicit or mechanically derived argparse destination."""
+        return self.dest or self.flag.removeprefix("--").replace("-", "_")
+
+
 @dataclass(frozen=True)
 class ConfigOption:
     """One user-tunable configuration option and where it can be set."""
@@ -315,7 +367,10 @@ class ConfigOption:
     """Whether a TOML bool should be negated after validation."""
 
     cli_flag: str | None = None
-    """Representative CLI flag that sets the option, or `None`."""
+    """Informational CLI flag for changing the value, or `None`."""
+
+    cli: CliSpec | None = None
+    """Session-scoped CLI binding that participates in ranked resolution."""
 
     redacted: bool = False
     """Whether `config` reports only set/not-set, never the raw value.
@@ -606,47 +661,19 @@ def _resolve_theme(toml_data: dict[str, Any], *, source: str) -> tuple[str, str]
     return None
 
 
-def _resolve_option(
-    option: ConfigOption,
+def _resolver_for_option_sources(
     *,
     toml_data: dict[str, Any] | None = None,
     managed_toml_data: dict[str, Any] | None = None,
-) -> ResolvedValue[object]:
-    """Resolve one option through the ranked durable-mask engine.
-
-    Shared by the manifest's bespoke readers: the bounded resolvers and the
-    display-preference loader.
-
-    With no caller-supplied tables this resolves through the shared process
-    resolver, so every reader that reaches it observes one generation of the
-    config files. See `ARCHITECTURE.md` for when that generation advances.
-    Pass explicit tables only to inspect a specific generation -- a candidate
-    being validated, or the one snapshot a CLI invocation reads.
-
-    A supplied table pairs with a default `OK` status, matching the health
-    these readers historically reported. `TomlSnapshot` rejects a non-`OK`
-    status carrying a non-empty table, because an unhealthy source is one every
-    reader must treat as declaring nothing; callers with real health metadata
-    pass both halves to `resolver_from_snapshots` directly.
-
-    Emits no diagnostics. Pair the result with `_emit_ranked_diagnostics` so a
-    provider rejection before the effective value is still reported.
-
-    Omitting *both* tables reads the shared process generation. Supplying
-    either one puts this on the ad-hoc path, where the other half is read to
-    complete the pair -- so a partial call is a deliberate request for a
-    specific generation, not a cheaper way to reach the shared one.
-
-    Args:
-        option: Manifest option to resolve.
-        toml_data: Parsed user `config.toml` table.
-        managed_toml_data: Parsed managed table.
+) -> ConfigResolver:
+    """Return the shared resolver or one bound to caller-supplied tables.
 
     Returns:
-        A rank-keyed `ResolvedValue`.
+        Resolver for one consistent source generation.
     """
     from deepagents_code.configuration.resolver import (
         get_config_resolver,
+        installed_cli_provider,
         resolver_from_snapshots,
     )
     from deepagents_code.configuration.types import (
@@ -654,7 +681,7 @@ def _resolve_option(
     )
 
     if toml_data is None and managed_toml_data is None:
-        return get_config_resolver().get(option)
+        return get_config_resolver()
 
     # Reached only when a caller supplied at least one table. The other half is
     # filled in here: the managed snapshot from the process cache, the user
@@ -665,9 +692,35 @@ def _resolve_option(
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
     user_data = load_config_toml() if toml_data is None else toml_data
-    resolver = resolver_from_snapshots(
+    # The CLI tier is process-wide and is not part of the caller's generation,
+    # so it carries over unchanged. Omitting it made every bounded reader on
+    # this path -- and `dcode config` -- report `default` for options a flag in
+    # the current argv was setting.
+    return resolver_from_snapshots(
         managed=TomlSnapshot.from_table("managed config", managed_data),
         user=TomlSnapshot.from_table("config.toml", user_data),
+        cli_provider=installed_cli_provider(),
+    )
+
+
+def _resolve_option(
+    option: ConfigOption,
+    *,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
+) -> ResolvedValue[object]:
+    """Resolve one option through the ranked durable-mask engine.
+
+    Omitting both tables uses the shared process generation. Supplying either
+    builds an ad-hoc resolver for the explicitly requested generation. Emits no
+    diagnostics; callers pair the result with `_emit_ranked_diagnostics`.
+
+    Returns:
+        A rank-keyed resolved value.
+    """
+    resolver = _resolver_for_option_sources(
+        toml_data=toml_data,
+        managed_toml_data=managed_toml_data,
     )
     return resolver.get(option)
 
@@ -681,50 +734,36 @@ def _resolve_option_without_managed(
 
     Companion to `_resolve_option` for the bounded readers' managed
     fall-through: an out-of-range managed value is rejected, and the option
-    must be re-read from env, `config.toml`, and the typed default only.
+    must be re-read from the remaining tiers.
 
-    With `toml_data=None` the user half comes out of the shared process
-    resolver's snapshot rather than a fresh parse. `_resolve_option` fills a
-    missing half from disk, which is what let a hand edit made after startup
-    change a later-built agent's value without `/reload`; the shared
-    ad-hoc resolver built here has a fresh `EnvProvider`, which reads
-    `os.environ` live, and takes only the user *snapshot* from the shared
-    resolver -- so that half stays pinned to the generation every other reader
-    observes.
+    With `toml_data=None`, rank exclusion runs directly against the shared
+    resolver. That preserves both its process-local CLI provider and its pinned
+    user snapshot, so a hand edit cannot change a later-built agent without
+    `/reload`. With a caller-supplied table the tiers are CLI, env, that table,
+    and the typed default; the CLI provider carries over because it is
+    process-wide rather than part of the caller's generation.
 
     Returns:
         A rank-keyed `ResolvedValue` with the managed tier masked out.
     """
     from deepagents_code.configuration.resolver import (
-        USER_RANK,
+        MANAGED_RANK,
         get_config_resolver,
+        installed_cli_provider,
         resolver_from_snapshots,
     )
     from deepagents_code.configuration.types import (
         TomlSnapshot,
     )
 
-    if toml_data is not None:
-        user = TomlSnapshot.from_table("config.toml", toml_data)
-    else:
-        shared = get_config_resolver().toml_snapshot(USER_RANK)
-        if shared is None:
-            # The shared resolver always has a user provider, so this is a
-            # programming error rather than a config problem. Substituting an
-            # empty tier keeps the read working; saying so keeps it from
-            # looking like the user simply declared nothing.
-            logger.error(
-                "Shared resolver has no user provider at rank %d; resolving "
-                "%s against an empty user tier",
-                USER_RANK,
-                option.key,
-            )
-        user = (
-            shared if shared is not None else TomlSnapshot.unknown_origin("config.toml")
-        )
+    if toml_data is None:
+        return get_config_resolver().get_without_ranks(option, {MANAGED_RANK})
+
+    user = TomlSnapshot.from_table("config.toml", toml_data)
     resolver = resolver_from_snapshots(
         managed=TomlSnapshot.declaring_nothing("managed config"),
         user=user,
+        cli_provider=installed_cli_provider(),
     )
     return resolver.get(option)
 
@@ -738,8 +777,131 @@ def _ranked_source(resolved: ResolvedValue[object]) -> str:
     return " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
 
 
+def _warn_cli_flag_masked(
+    option: ConfigOption, resolved: ResolvedValue[object], cli_value: object
+) -> None:
+    """Tell the user a flag they passed lost to a stronger config tier.
+
+    Written to stderr rather than logged. `deepagents_code/__init__.py`
+    installs an always-on buffer handler on the package logger, so
+    `logging.lastResort` never fires and a `logger.warning` reaches nothing but
+    that buffer. Deduped per config generation because `dcode config` resolves
+    the whole manifest in one pass.
+
+    Args:
+        option: Manifest option whose CLI tier was masked.
+        resolved: Rank-keyed resolution carrying the masked and winning tiers.
+        cli_value: Value the masked CLI tier produced, used to name the flag.
+    """
+    flag = _cli_supplied_flag(option, cli_value)
+    winner = resolved.provider_status[min(resolved.ranks)].name
+    _print_cli_warning(
+        ("masked cli flag", f"{flag}|{winner}"),
+        f"{flag} was ignored: {winner} takes precedence. "
+        "Ask your administrator if this is unexpected.",
+    )
+
+
+def _cli_supplied_flag(option: ConfigOption, cli_value: object) -> str:
+    """Return the single flag that produced `cli_value`.
+
+    An option bound to several flags derives its value from the flag spelling
+    (`--yolo` -> `"yolo"`), so the value identifies the flag. Naming every
+    spelling would warn about a flag the user never typed.
+
+    Args:
+        option: Manifest option whose CLI tier was read.
+        cli_value: Value the CLI tier produced.
+
+    Returns:
+        The matching companion spelling, otherwise the primary flag.
+    """
+    spec = option.cli
+    if spec is None:
+        return option.cli_flag or option.key
+    for flag in spec.companion_flags:
+        if flag.removeprefix("--") == cli_value:
+            return flag
+    if cli_value is False:
+        return f"--no-{spec.flag.removeprefix('--')}"
+    return spec.flag
+
+
+def _cli_display_flags(option: ConfigOption) -> str:
+    """Return the flag spelling to show the user for this option.
+
+    Returns:
+        Every flag that sets the option, or the key when none is bound.
+    """
+    return option.cli.display_flags if option.cli else option.cli_flag or option.key
+
+
+def _warn_cli_value_rejected(option: ConfigOption, reason: str) -> None:
+    """Tell the user the value they passed on a flag was rejected.
+
+    A rejected CLI value falls through to the next tier, so without this the
+    flag silently does nothing: `dcode --interpreter-tools 'x,all' config`
+    exits 0 and reports the option as coming from `default`, which actively
+    confirms the wrong hypothesis for anyone debugging the flag.
+
+    Args:
+        option: Manifest option whose CLI tier was rejected.
+        reason: The provider's rejection text.
+    """
+    flag = _cli_display_flags(option)
+    _print_cli_warning(("rejected cli value", f"{flag}|{reason}"), reason)
+
+
+def _notify_cli_warning(message: str) -> bool:
+    """Show a CLI-tier warning in the active Textual app when one is running.
+
+    Returns:
+        Whether the warning was delivered through Textual.
+    """
+    try:
+        from textual._context import active_app  # noqa: PLC2701
+
+        app = active_app.get()
+    except (ImportError, LookupError):
+        return False
+    if not app.is_running:
+        return False
+    app.notify(message, severity="warning", markup=False)
+    return True
+
+
+def _print_cli_warning(warning_key: tuple[str, str], message: str) -> None:
+    """Surface one CLI-tier warning, at most once per generation.
+
+    Args:
+        warning_key: Dedup key stored in `_warned_non_table_paths`.
+        message: Warning body, rendered in Textual or after a `Warning:` prefix.
+    """
+    if warning_key in _warned_non_table_paths:
+        return
+    _warned_non_table_paths.add(warning_key)
+    if _notify_cli_warning(message):
+        return
+
+    from rich.console import Console
+    from rich.text import Text
+
+    # `soft_wrap` keeps the message greppable on one line off a TTY, matching
+    # the headless approval-flag warning in `main`.
+    warning = Text("Warning:", style="bold yellow")
+    warning.append(" ")
+    warning.append(message)
+    Console(stderr=True).print(
+        warning,
+        soft_wrap=True,
+    )
+
+
 def _emit_ranked_diagnostics(
-    option: ConfigOption, resolved: ResolvedValue[object]
+    option: ConfigOption,
+    resolved: ResolvedValue[object],
+    *,
+    warn_masked_cli: bool = True,
 ) -> None:
     """Emit provider rejections encountered before the effective value.
 
@@ -760,13 +922,18 @@ def _emit_ranked_diagnostics(
     Args:
         option: Manifest option being resolved.
         resolved: Rank-keyed provider results and selected value.
+        warn_masked_cli: Whether a masked CLI tier may warn. Callers that
+            resolve the same option repeatedly -- the bounded readers, which
+            re-resolve with rejected ranks excluded -- pass `False`, because an
+            intermediate resolution can show the CLI tier masked by a value the
+            loop is about to reject and honour the flag moments later.
     """
     from deepagents_code.configuration.providers import (
         RETAINED_SOURCE_SUFFIX,
         SHADOWED_TABLE_SUFFIX,
         UNUSABLE_SOURCE_SUFFIX,
     )
-    from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
+    from deepagents_code.configuration.resolver import CLI_RANK, ENVIRONMENT_RANK
     from deepagents_code.configuration.types import Found, Invalid
 
     once_per_generation = (
@@ -783,6 +950,29 @@ def _emit_ranked_diagnostics(
                 return
             _warned_non_table_paths.add(warning_key)
         logger.warning("%s", reason)
+
+    # A flag the user actually typed, outranked by a stronger tier. The loop
+    # below cannot report this: for a REPLACE option it breaks at the first
+    # `Found`, which is the winning tier, so it never reaches the masked CLI
+    # entry. Without this the whole event is silent -- `--yolo` under a
+    # managed `manual` starts in Manual, prints nothing and exits 0, and the
+    # user blames the flag rather than their administrator's policy.
+    cli_result = resolved.tier_health.get(CLI_RANK)
+    if (
+        warn_masked_cli
+        and CLI_RANK in resolved.masked_ranks
+        and isinstance(cli_result, Found)
+        # Masking is structural: every non-durable tier below a durable one is
+        # masked, so this fires even when policy and the flag agree. Warning
+        # then tells the user to question a policy that did what they asked.
+        and cli_result.value != resolved.value
+    ):
+        _warn_cli_flag_masked(option, resolved, cli_result.value)
+    # A value the user typed that the provider refused. `emit` below logs the
+    # same reason, but only into the buffer handler, so the flag would
+    # otherwise fall through to the next tier in silence.
+    elif isinstance(cli_result, Invalid):
+        _warn_cli_value_rejected(option, cli_result.reason)
 
     accumulating = option.merge_strategy is not MergeStrategy.REPLACE
     for rank in sorted(resolved.tier_health):
@@ -1181,9 +1371,10 @@ def resolve_auto_classifier_model_with_source(
 
     Shares the blank-env veto with
     `config.resolve_auto_classifier_model_with_problem` so `dcode config` cannot
-    report a classifier the runtime does not use. A managed value outranks that
-    veto. `None` means the classifier inherits the main agent model; a blank
-    managed value means inherit, credited to `managed config`.
+    report a classifier the runtime does not use. Managed values and explicit
+    CLI arguments outrank that veto. `None` means the classifier inherits the
+    main agent model; a blank managed value means inherit, credited to
+    `managed config`.
 
     Args:
         toml_data: Parsed `config.toml`.
@@ -1211,6 +1402,17 @@ def resolve_auto_classifier_model_with_source(
     from deepagents_code.configuration.service import managed_decided
 
     if managed_decided(source):
+        return (
+            value.strip() if isinstance(value, str) and value.strip() else None
+        ), source
+
+    from deepagents_code.configuration.resolver import CLI_RANK
+
+    if CLI_RANK in resolved.ranks:
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+        if value == INHERIT_CLASSIFIER_MODEL:
+            return None, source
         return (
             value.strip() if isinstance(value, str) and value.strip() else None
         ), source
@@ -1353,6 +1555,11 @@ def is_valid_recursion_limit(value: object) -> TypeIs[int]:
     )
 
 
+def _is_valid_cli_recursion_limit(value: object) -> TypeIs[int]:
+    """Return whether `value` satisfies the public CLI contract."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
 def resolve_recursion_limit(
     *,
     toml_data: dict[str, Any] | None = None,
@@ -1360,17 +1567,13 @@ def resolve_recursion_limit(
 ) -> int:
     """Resolve the effective main-agent `recursion_limit`.
 
-    Resolves `runtime.recursion_limit` through the standard managed → env →
-    `config.toml` → default precedence. An out-of-range value (below
-    `RECURSION_LIMIT_FLOOR` or above `RECURSION_LIMIT_CEILING`) is discarded
-    with a logged warning and the next lower-precedence layer is tried, so a bad
-    higher-precedence override cannot mask a valid TOML setting (or the
-    default).
+    Resolves `runtime.recursion_limit` through the standard managed → CLI → env →
+    `config.toml` → default precedence. Explicit CLI values retain the
+    documented `>= 1` contract. Other out-of-range values (below
+    `RECURSION_LIMIT_FLOOR` or above `RECURSION_LIMIT_CEILING`) are discarded
+    with a logged warning and the next lower-precedence layer is tried.
 
-    An out-of-range *managed* value falls through here, but stops an agent
-    launch: `main._apply_managed_runtime_policy` treats it as unenforceable
-    policy and exits 78, because the CLI flag it would otherwise leave in force
-    outranks this bounded resolver.
+    Managed values remain subject to the launch-time managed-health gate.
 
     Args:
         toml_data: Parsed `config.toml`.
@@ -1379,7 +1582,8 @@ def resolve_recursion_limit(
             described in `_resolve_option`.
 
     Returns:
-        The resolved recursion limit, guaranteed within
+        The resolved recursion limit. CLI values are positive; values from all
+            other tiers are within
             `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
     """
     data = toml_data
@@ -1387,41 +1591,34 @@ def resolve_recursion_limit(
     if option is None:
         return RECURSION_LIMIT_DEFAULT
 
-    resolved = _resolve_option(
-        option,
+    resolver = _resolver_for_option_sources(
         toml_data=data,
         managed_toml_data=managed_toml_data,
     )
-    _emit_ranked_diagnostics(option, resolved)
-    value, source = resolved.value, _ranked_source(resolved)
-    if is_valid_recursion_limit(value):
-        return value
+    from deepagents_code.configuration.resolver import CLI_RANK
 
-    from deepagents_code.configuration.service import managed_decided
-
-    managed_rejected = managed_decided(source)
-    if managed_rejected:
-        logger.warning(
-            "Ignoring managed recursion_limit %r (expected int in [%d, %d]); "
-            "falling through to the next config source",
-            value,
-            RECURSION_LIMIT_FLOOR,
-            RECURSION_LIMIT_CEILING,
-        )
-        resolved = _resolve_option_without_managed(option, toml_data=data)
-        _emit_ranked_diagnostics(option, resolved)
+    excluded: set[int] = set()
+    first_resolved: ResolvedValue[object] | None = None
+    settled: int | None = None
+    while True:
+        resolved = resolver.get_without_ranks(option, excluded)
+        # `warn_masked_cli=False`: this loop re-resolves the option, and an
+        # intermediate iteration can show the CLI tier masked by a managed
+        # value the very next iteration rejects. Warning here told the user
+        # `--recursion-limit was ignored` and then returned their value.
+        _emit_ranked_diagnostics(option, resolved, warn_masked_cli=False)
+        if first_resolved is None:
+            first_resolved = resolved
         value, source = resolved.value, _ranked_source(resolved)
+        if CLI_RANK in resolved.ranks and _is_valid_cli_recursion_limit(value):
+            settled = value
+            break
         if is_valid_recursion_limit(value):
-            return value
-
-    # Invalid higher-precedence values must fall through instead of jumping
-    # straight to the default. Hide the rejected env var (if any) and
-    # re-resolve so the remaining sources still apply. Both bounded options
-    # declare no `fallback_env_vars`, so "remaining env fallbacks" is empty
-    # today and the next source is TOML, then the typed default; a bounded
-    # option that grew aliases would need this to loop over them.
-    if source.startswith("env (") and source.endswith(")"):
-        env_name = source[len("env (") : -1]
+            settled = value
+            break
+        rejected_ranks = set(resolved.ranks)
+        if source == "default" or not rejected_ranks:
+            break
         logger.warning(
             "Ignoring %s recursion_limit %r (expected int in [%d, %d]); "
             "falling through to the next config source",
@@ -1430,24 +1627,9 @@ def resolve_recursion_limit(
             RECURSION_LIMIT_FLOOR,
             RECURSION_LIMIT_CEILING,
         )
-        previous = os.environ.pop(env_name, None)
-        try:
-            if managed_rejected:
-                resolved = _resolve_option_without_managed(option, toml_data=data)
-                _emit_ranked_diagnostics(option, resolved)
-                value, source = resolved.value, _ranked_source(resolved)
-                if is_valid_recursion_limit(value):
-                    return value
-            else:
-                return resolve_recursion_limit(
-                    toml_data=data,
-                    managed_toml_data=managed_toml_data,
-                )
-        finally:
-            if previous is not None:
-                os.environ[env_name] = previous
+        excluded.update(rejected_ranks)
 
-    if source != "default":
+    if settled is None and source != "default":
         logger.warning(
             "Ignoring %s recursion_limit %r (expected int in [%d, %d]); using %d",
             source,
@@ -1456,7 +1638,17 @@ def resolve_recursion_limit(
             RECURSION_LIMIT_CEILING,
             RECURSION_LIMIT_DEFAULT,
         )
-    return RECURSION_LIMIT_DEFAULT
+    # Emitted once the loop settles, against the first resolution: only now is
+    # it known whether the flag actually lost. `resolved` here is the winning
+    # tier, so the masked CLI entry is not on it -- the first resolution is the
+    # one that still carries the mask.
+    if (
+        first_resolved is not None
+        and CLI_RANK not in resolved.ranks
+        and CLI_RANK in first_resolved.masked_ranks
+    ):
+        _emit_ranked_diagnostics(option, first_resolved)
+    return RECURSION_LIMIT_DEFAULT if settled is None else settled
 
 
 # --- Option definitions -----------------------------------------------------
@@ -1906,6 +2098,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.AUTO_CLASSIFIER_MODEL,
         toml_keys=("models", "auto_classifier"),
         cli_flag="--auto-classifier-model",
+        cli=CliSpec("--auto-classifier-model"),
     ),
     ConfigOption(
         key="models.auto_classifier_timeout",
@@ -2018,7 +2211,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Tracing",
         summary="Redact detected secrets from LangSmith agent traces before upload.",
         kind=OptionKind.BOOL,
-        default=False,
+        default=True,
         env_var=_env_vars.LANGSMITH_REDACT,
         toml_keys=("tracing", "langsmith_redact"),
     ),
@@ -2052,6 +2245,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.SHELL_ALLOW_LIST,
         toml_keys=("shell", "allow_list"),
         cli_flag="--shell-allow-list",
+        cli=CliSpec("--shell-allow-list"),
         settings_field="shell_allow_list",
     ),
     ConfigOption(
@@ -2155,6 +2349,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=INTERPRETER_ENABLE_DEFAULT,
         toml_keys=("interpreter", "enable_interpreter"),
         cli_flag="--interpreter",
+        cli=CliSpec("--interpreter"),
         settings_field="enable_interpreter",
     ),
     ConfigOption(
@@ -2201,6 +2396,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=INTERPRETER_PTC_DEFAULT,
         toml_keys=("interpreter", "ptc"),
         cli_flag="--interpreter-tools",
+        cli=CliSpec("--interpreter-tools"),
         settings_field="interpreter_ptc",
     ),
     ConfigOption(
@@ -2231,6 +2427,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=True,
         toml_keys=("threads", "relative_time"),
         cli_flag="--relative",
+        cli=CliSpec("--relative"),
     ),
     ConfigOption(
         key="threads.sort_order",
@@ -2240,6 +2437,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="updated_at",
         toml_keys=("threads", "sort_order"),
         cli_flag="--sort",
+        cli=CliSpec("--sort"),
     ),
     ConfigOption(
         key="threads.columns",
@@ -2287,6 +2485,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("warnings", "trusted_cache_endpoints"),
+    ),
+    ConfigOption(
+        key="warnings.model_switch_token_threshold",
+        group="Warnings",
+        summary=("Confirm model switches above this context size (0 disables)."),
+        kind=OptionKind.NON_NEGATIVE_INT,
+        default=MODEL_SWITCH_WARNING_THRESHOLD_DEFAULT,
+        toml_keys=("warnings", "model_switch_token_threshold"),
     ),
     ConfigOption(
         key="warnings.session_cost_threshold_usd",
@@ -2433,6 +2639,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.RECURSION_LIMIT,
         toml_keys=("runtime", "recursion_limit"),
         cli_flag="--recursion-limit",
+        cli=CliSpec("--recursion-limit"),
     ),
     ConfigOption(
         key="runtime.offline",
@@ -2470,6 +2677,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="manual",
         toml_keys=("startup", "mode"),
         cli_flag="--auto-approve",
+        cli=CliSpec("--auto-approve", companion_flags=("--yolo",)),
     ),
     ConfigOption(
         key="startup.read_project_dotenv",
@@ -2581,6 +2789,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.DEBUG_MCP_PROJECT_TRUST,
+    ),
+    ConfigOption(
+        key="debug.model_switch",
+        group="Debug",
+        summary=("Force the model-switch confirmation modal on every model change."),
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_MODEL_SWITCH,
     ),
 )
 

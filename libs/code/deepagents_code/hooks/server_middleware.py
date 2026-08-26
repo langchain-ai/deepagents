@@ -30,7 +30,9 @@ from langchain.agents.middleware.types import (
     ContextT,
     PrivateStateAttr,
     ResponseT,
+    TracePolicy,
     hook_config,
+    omit_payload,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, interrupt
@@ -290,6 +292,9 @@ def _subagent_transcript_config(
 
 class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, ResponseT]):
     """Emit server-owned lifecycle events over the hook interrupt transport."""
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     state_schema = ServerHooksState
 

@@ -42,6 +42,7 @@ from langchain_core.messages import (
 )
 from pydantic import BaseModel, ConfigDict
 
+from deepagents_code._constants import LOCAL_CONTEXT_MESSAGE_SOURCE
 from deepagents_code.config_manifest import _is_secret_env
 from deepagents_code.json_types import JSON_VALUE_ADAPTER, JsonValue
 
@@ -62,7 +63,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SUBAGENT_TRANSCRIPT_ID_METADATA_KEY = "dcode_subagent_id"
-_INTERNAL_STREAM_SOURCES = frozenset({"summarization", "auto_mode_classifier"})
+_INTERNAL_STREAM_SOURCES = frozenset(
+    {LOCAL_CONTEXT_MESSAGE_SOURCE, "summarization", "auto_mode_classifier"}
+)
 
 TRANSCRIPT_SCHEMA_VERSION = 1
 DEFAULT_RETENTION_REVISIONS = 20
@@ -219,6 +222,8 @@ class TranscriptStore:
         with self._lock:
             buffer = self._buffer(thread_id, agent_id)
             for message in messages:
+                if _is_local_context_message(message):
+                    continue
                 record = _record_from_message(
                     message,
                     thread_id=thread_id,
@@ -346,7 +351,7 @@ class TranscriptRecorder:
         if (
             metadata is not None
             and metadata.get("lc_source") in _INTERNAL_STREAM_SOURCES
-        ):
+        ) or _is_local_context_message(message):
             return
         agent_id = None if main_agent else _stream_agent_id(metadata)
         if not main_agent and agent_id is None:
@@ -388,6 +393,20 @@ def _stream_agent_id(metadata: Mapping[str, object] | None) -> str | None:
         return None
     value = metadata.get(SUBAGENT_TRANSCRIPT_ID_METADATA_KEY)
     return value if isinstance(value, str) and value else None
+
+
+def _is_local_context_message(message: object) -> bool:
+    """Return whether a local or serialized message is internal context."""
+    if isinstance(message, BaseMessage):
+        metadata = getattr(message, "additional_kwargs", None)
+    elif isinstance(message, dict):
+        metadata = message.get("additional_kwargs")
+    else:
+        return False
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("lc_source") == LOCAL_CONTEXT_MESSAGE_SOURCE
+    )
 
 
 def _record_from_message(

@@ -508,6 +508,77 @@ def _path_status(label: str, path: object) -> DiagnosticItem:
     )
 
 
+def _writable_path_status(label: str, path: object) -> DiagnosticItem:
+    """Build a path item that also reports whether the directory is writable.
+
+    `classify_path` answers "is it there", which reports a present but
+    root-owned directory as healthy. That is the single condition the profile
+    fallbacks exist for, so the row that would send a user looking must not be
+    the one that says `exists`.
+
+    Uses `os.access` rather than `probe_writable`: a diagnostic must not create
+    directories as a side effect of reporting on them.
+
+    Args:
+        label: Human-readable name for the path.
+        path: Filesystem directory to probe.
+
+    Returns:
+        A diagnostic item describing the directory and its usability.
+    """
+    import os
+    from pathlib import Path
+
+    from deepagents_code._paths import PathState, classify_path
+
+    resolved = Path(str(path))
+    state = classify_path(resolved)
+    if state is not PathState.EXISTS:
+        return _path_status(label, path)
+    if os.access(resolved, os.W_OK | os.X_OK):
+        return DiagnosticItem(label, f"{resolved} (exists)", ok=True)
+    return DiagnosticItem(
+        label,
+        f"{resolved} (exists but is not writable - the profile fallback is used)",
+        ok=False,
+    )
+
+
+def _fallback_location_items() -> list[DiagnosticItem]:
+    """Build the managed-bin and update-lock rows, naming the location in use.
+
+    Returns:
+        Rows for both preferred locations, each profile fallback that exists,
+        and the managed binary actually on `PATH`.
+    """
+    from deepagents_code._paths import PathState, classify_path
+    from deepagents_code.managed_tools import (
+        BIN_DIR,
+        FALLBACK_BIN_DIR,
+        managed_rg_path,
+    )
+    from deepagents_code.update_check import FALLBACK_UPDATE_LOCK_FILE, UPDATE_LOCK_FILE
+
+    items = [
+        _writable_path_status("Managed binaries", BIN_DIR),
+        _writable_path_status("Update locks", UPDATE_LOCK_FILE.parent),
+    ]
+    # Surface a profile-scoped fallback only once it exists, i.e. once it is
+    # actually the location in use. The installation-scoped directories are
+    # created lazily, so their absence is not evidence of a permission problem.
+    for label, fallback in (
+        ("Managed binaries (profile)", FALLBACK_BIN_DIR),
+        ("Update locks (profile)", FALLBACK_UPDATE_LOCK_FILE.parent),
+    ):
+        if classify_path(fallback) is PathState.EXISTS:
+            items.append(_path_status(label, fallback))
+    # Two rows and no statement of which one wins is the gap this closes.
+    rg_path = managed_rg_path()
+    if classify_path(rg_path) is PathState.EXISTS:
+        items.append(DiagnosticItem(label="Managed ripgrep", value=str(rg_path)))
+    return items
+
+
 def _managed_config_diagnostic() -> DiagnosticItem:
     """Report managed TOML location, parse health, and policy enforceability.
 
@@ -600,16 +671,31 @@ def _collect_configuration() -> DiagnosticSection:
     Returns:
         The `Configuration` section.
     """
+    from deepagents_code._paths import PATHS
     from deepagents_code.model_config import DEFAULT_CONFIG_DIR
 
-    return DiagnosticSection(
-        title="Configuration",
-        items=[
-            _path_status("Data directory", DEFAULT_CONFIG_DIR),
-            _managed_config_diagnostic(),
-            _user_config_diagnostic(),
-        ],
-    )
+    items = [
+        _path_status("Data directory", DEFAULT_CONFIG_DIR),
+        _managed_config_diagnostic(),
+        _user_config_diagnostic(),
+        *_fallback_location_items(),
+    ]
+    if PATHS.home_check_skipped:
+        items.append(
+            DiagnosticItem(
+                label="Profile safety check",
+                value=(
+                    "skipped - the home directory could not be resolved, so "
+                    "DEEPAGENTS_HOME was not checked against it. Set $HOME."
+                ),
+                ok=False,
+            )
+        )
+    if not PATHS.uses_default_profile:
+        items.append(
+            DiagnosticItem(label="Profile", value=f"{PATHS.profile.root} (configured)")
+        )
+    return DiagnosticSection(title="Configuration", items=items)
 
 
 def collect_sections() -> list[DiagnosticSection]:

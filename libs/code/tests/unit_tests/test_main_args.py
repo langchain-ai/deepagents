@@ -58,6 +58,36 @@ def test_shell_allow_list_not_specified(mock_argv: MockArgvType) -> None:
         assert parsed_args.shell_allow_list is None
 
 
+def test_malformed_shell_allow_list_is_a_visible_cli_error(
+    mock_argv: MockArgvType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An invalid explicit policy must abort instead of falling through."""
+    with mock_argv("--shell-allow-list", "all,ls"), pytest.raises(SystemExit) as exc:
+        parse_args()
+
+    assert exc.value.code == 2
+    error = capsys.readouterr().err
+    assert "--shell-allow-list" in error
+    assert "Cannot combine 'all' with other commands" in error
+
+
+@pytest.mark.parametrize("value", ["", "   ", ",", " , , "])
+def test_empty_shell_allow_list_is_a_visible_cli_error(
+    value: str,
+    mock_argv: MockArgvType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An explicit allow-list must contain at least one command."""
+    with mock_argv("--shell-allow-list", value), pytest.raises(SystemExit) as exc:
+        parse_args()
+
+    assert exc.value.code == 2
+    error = capsys.readouterr().err
+    assert "--shell-allow-list" in error
+    assert "must contain at least one non-empty command" in error
+
+
 def test_parse_args_does_not_prepend_managed_bin(
     monkeypatch: pytest.MonkeyPatch, mock_argv: MockArgvType
 ) -> None:
@@ -145,39 +175,115 @@ class TestAutoApproveArgument:
             parse_args()
 
 
-class TestResolveAutoApprove:
-    """Tests for `_resolve_auto_approve` (flag vs. `[startup].mode` precedence)."""
+class TestResolveApprovalMode:
+    """Tests for `_resolve_approval_mode` (flag vs. `[startup].mode`)."""
 
-    def test_explicit_flag_wins_without_consulting_config(self) -> None:
-        """An explicit -y (True) resolves True and never reads config."""
-        from deepagents_code.main import _resolve_auto_approve
+    def test_explicit_flag_wins_over_config(self, tmp_path: Path) -> None:
+        """An explicit `--auto-approve` outranks a `manual` config."""
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
 
-        args = argparse.Namespace(auto_approve=True)
-        with patch("deepagents_code.model_config.load_startup_mode") as mock_load:
-            assert _resolve_auto_approve(args) is True
-        mock_load.assert_not_called()
+        # `_isolate_state_dir` already points `DEFAULT_CONFIG_PATH` here.
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nmode = "manual"\n', encoding="utf-8"
+        )
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=True, yolo=False)
+            assert _resolve_approval_mode(args).value == "auto"
+        finally:
+            service.invalidate_config_sources()
 
-    def test_omitted_flag_manual_config_resolves_false(self) -> None:
-        """No flag + `[startup].mode = manual` keeps approvals on (False)."""
-        from deepagents_code.main import _resolve_auto_approve
+    def test_omitted_flag_reads_manual_from_config(self, tmp_path: Path) -> None:
+        """No flag + `[startup].mode = manual` keeps approvals on."""
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
 
-        args = argparse.Namespace(auto_approve=None)
-        with patch(
-            "deepagents_code.model_config.load_startup_mode",
-            return_value="manual",
-        ):
-            assert _resolve_auto_approve(args) is False
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nmode = "manual"\n', encoding="utf-8"
+        )
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=None, yolo=False)
+            assert _resolve_approval_mode(args).value == "manual"
+        finally:
+            service.invalidate_config_sources()
 
-    def test_omitted_flag_dangerously_auto_config_resolves_false(self) -> None:
-        """The removed `dangerously-auto` spelling fails closed."""
-        from deepagents_code.main import _resolve_auto_approve
+    def test_omitted_flag_restores_recent_auto(self, tmp_path: Path) -> None:
+        """A bare launch restores the Auto mode last selected in the TUI."""
+        from deepagents_code.approval_mode import save_auto_mode_notice
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
 
-        args = argparse.Namespace(auto_approve=None)
-        with patch(
-            "deepagents_code.model_config.load_startup_mode",
-            return_value="dangerously-auto",
-        ):
-            assert _resolve_auto_approve(args) is False
+        assert save_auto_mode_notice()
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nrecent = "auto"\n', encoding="utf-8"
+        )
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=None, yolo=False)
+            assert _resolve_approval_mode(args).value == "auto"
+        finally:
+            service.invalidate_config_sources()
+
+    def test_blocked_recent_auto_queues_an_explanation(self, tmp_path: Path) -> None:
+        """A stale Auto notice fails closed and explains the Manual fallback."""
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
+        from deepagents_code.model_config import (
+            consume_recent_auto_not_restored_notice,
+        )
+
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nrecent = "auto"\n', encoding="utf-8"
+        )
+        consume_recent_auto_not_restored_notice()
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=None, yolo=False)
+            assert _resolve_approval_mode(args).value == "manual"
+            assert consume_recent_auto_not_restored_notice() is not None
+        finally:
+            service.invalidate_config_sources()
+
+    def test_removed_dangerously_auto_spelling_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """The retired `dangerously-auto` spelling must not grant autonomy.
+
+        Previously asserted by patching `model_config.load_startup_mode`, which
+        `_resolve_approval_mode` stopped calling when it moved to the resolver.
+        The patch became a no-op and the assertion passed on the empty-config
+        default instead -- green whether or not the value fell back safely.
+        Write the real spelling into `config.toml` so the coercion runs.
+        """
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
+
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nmode = "dangerously-auto"\n', encoding="utf-8"
+        )
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=None, yolo=False)
+            assert _resolve_approval_mode(args).value == "manual"
+        finally:
+            service.invalidate_config_sources()
+
+    def test_config_can_select_an_autonomous_mode(self, tmp_path: Path) -> None:
+        """A valid config mode must still be honoured, or the test above is vacuous."""
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_approval_mode
+
+        (tmp_path / "config.toml").write_text(
+            '[startup]\nmode = "auto"\n', encoding="utf-8"
+        )
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(auto_approve=None, yolo=False)
+            assert _resolve_approval_mode(args).value == "auto"
+        finally:
+            service.invalidate_config_sources()
 
     @pytest.mark.parametrize(
         ("args", "expected"),
@@ -318,7 +424,7 @@ class TestHeadlessApprovalFlagHandling:
         post-dispatch clear would still look green).
 
         The managed-policy cases cover the flag the user typed surviving
-        `_apply_managed_runtime_policy` revoking it: the warning keys off a
+        `_apply_managed_runtime_exceptions` revoking it: the warning keys off a
         parse-time capture, so it must still fire.
         """
         from deepagents_code.main import cli_main
@@ -1179,6 +1285,105 @@ def _wait_for_timeout(mock_wait_for: MagicMock) -> object:
     return bound.arguments["timeout"]
 
 
+def test_cli_main_forwards_recursion_limit_to_headless_server() -> None:
+    """A headless launch serializes the CLI limit to its server process."""
+    from deepagents_code.main import cli_main
+
+    run_mock = AsyncMock(return_value=0)
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["deepagents", "-n", "task", "--recursion-limit", "3000"],
+        ),
+        patch.object(sys, "stdin", mock_stdin),
+        patch("deepagents_code.main.check_optional_tools", return_value=[]),
+        patch(
+            "deepagents_code.main._should_ensure_managed_ripgrep",
+            return_value=False,
+        ),
+        patch("deepagents_code.client.non_interactive.run_non_interactive", run_mock),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    assert run_mock.await_args.kwargs["recursion_limit"] == 3000  # ty: ignore
+
+
+def test_cli_main_installs_the_shell_allow_list_before_dispatch() -> None:
+    """`--shell-allow-list` must be resolvable by the time the agent is built.
+
+    This branch deleted the explicit application in `cli_main`
+    (`settings.shell_allow_list = parse_shell_allow_list(...)`). The flag's
+    whole effect now rests on an unwritten ordering invariant:
+    `_install_cli_provider` must run before the work that reads the value.
+    Nothing else fails if that ordering breaks -- the flag still parses, no
+    warning fires, and shell auto-approval simply stops applying.
+
+    Asserted against the resolver and a freshly built `Settings`, not the
+    `deepagents_code.config.settings` singleton. `_get_settings` caches
+    permanently on first access, and under pytest `agent.py` is already
+    imported (it binds `settings` at module scope), so the singleton in this
+    process was built long before this test ran. Reading it here would assert
+    the import order of the test session rather than the order in `cli_main`.
+
+    Scope, verified by mutation: this fails if the manifest binding names the
+    wrong argparse destination, and it does *not* fail if the explicit
+    `_install_cli_provider` call is deleted -- `_resolver_for_args` installs a
+    provider on demand, so the two paths are redundant. That redundancy is why
+    the flag survives; do not read a pass here as proof the explicit call is
+    still in place.
+    """
+    from deepagents_code.config import Settings
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import (
+        CLI_RANK,
+        get_config_resolver,
+    )
+    from deepagents_code.main import cli_main
+
+    seen: dict[str, object] = {}
+
+    async def _capture(**_kwargs: object) -> int:  # noqa: RUF029  # awaited by cli_main
+        option = get_option("shell.allow_list")
+        assert option is not None
+        resolved = get_config_resolver().get(option)
+        seen["value"] = resolved.value
+        seen["ranks"] = resolved.ranks
+        seen["settings"] = Settings.from_environment().shell_allow_list
+        return 0
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["deepagents", "-n", "task", "--shell-allow-list", "git status,ls"],
+        ),
+        patch.object(sys, "stdin", mock_stdin),
+        patch("deepagents_code.main.check_optional_tools", return_value=[]),
+        patch(
+            "deepagents_code.main._should_ensure_managed_ripgrep",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.client.non_interactive.run_non_interactive",
+            _capture,
+        ),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    assert seen["value"] == ["git status", "ls"]
+    assert seen["ranks"] == (CLI_RANK,)
+    assert seen["settings"] == ["git status", "ls"]
+
+
 class TestTimeoutArgument:
     """Tests for --timeout argument parsing, validation, and runtime behavior."""
 
@@ -1789,6 +1994,101 @@ class TestAgentResolutionScope:
         valid_recent.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("managed_setting", "cli_args", "kwarg", "expected"),
+    [
+        (
+            "relative_time = true",
+            ("--no-relative",),
+            "relative",
+            True,
+        ),
+        (
+            'sort_order = "created_at"',
+            ("--sort", "updated"),
+            "sort_by",
+            "created",
+        ),
+    ],
+)
+def test_managed_thread_display_options_override_cli_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    managed_setting: str,
+    cli_args: tuple[str, ...],
+    kwarg: str,
+    expected: object,
+) -> None:
+    """Managed thread display policy must win at command dispatch."""
+    from deepagents_code.configuration import service
+    from deepagents_code.main import cli_main
+    from unit_tests.conftest import redirect_managed_config
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(f"[threads]\n{managed_setting}\n", encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+
+    try:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "threads", "list", *cli_args],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch(
+                "deepagents_code.sessions.list_threads_command",
+                new_callable=AsyncMock,
+            ) as mock_list,
+        ):
+            cli_main()
+    finally:
+        service.invalidate_config_sources()
+
+    assert mock_list.await_args.kwargs[kwarg] == expected  # ty: ignore[unresolved-attribute]
+
+
+def test_invalid_managed_thread_sort_falls_through_to_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown managed sort value must not mask a valid CLI choice."""
+    from deepagents_code.configuration import service
+    from deepagents_code.main import cli_main
+    from unit_tests.conftest import redirect_managed_config
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[threads]\nsort_order = "created"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+
+    try:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "threads", "list", "--sort", "created"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch(
+                "deepagents_code.sessions.list_threads_command",
+                new_callable=AsyncMock,
+            ) as mock_list,
+        ):
+            cli_main()
+    finally:
+        service.invalidate_config_sources()
+
+    assert mock_list.await_args.kwargs["sort_by"] == "created"  # ty: ignore[unresolved-attribute]
+
+
 class TestThreadsListCwdFilter:
     """Tests for `deepagents threads list --cwd` path normalization."""
 
@@ -1970,6 +2270,44 @@ class TestResolveAgentArg:
         ):
             assert _resolve_agent_arg(self._args()) == DEFAULT_AGENT_NAME
 
+    @pytest.mark.parametrize("name", ["plugins", "bin", "conversation_history"])
+    def test_rejects_reserved_agent_arg(self, name: str) -> None:
+        """`-a` naming app state exits 2 on every platform."""
+        from deepagents_code.main import _resolve_agent_arg
+
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_agent_arg(self._args(agent=name))
+
+        assert exc_info.value.code == 2
+
+    @pytest.mark.parametrize("name", ["Plugins", "BIN"])
+    def test_rejects_reserved_agent_arg_case_alias(self, name: str) -> None:
+        """Case-aliased spellings exit 2 where the filesystem folds case.
+
+        `Plugins` resolves onto the reserved `plugins/` directory on the
+        case-insensitive default macOS/Windows filesystems, so the guard must
+        reject it there. On Linux it names a genuinely different directory
+        and stays a valid agent name. Mock `sys.platform` so both branches
+        are covered regardless of the host running the suite; the reserved
+        names are cached per process, so the caches must be cleared for the
+        mocked platform to take effect.
+        """
+        from deepagents_code import _reserved_names
+        from deepagents_code.main import _resolve_agent_arg
+
+        for platform, rejects in (("darwin", True), ("linux", False)):
+            with patch.object(sys, "platform", platform):
+                _reserved_names._reserved_names_folded.cache_clear()
+                try:
+                    if rejects:
+                        with pytest.raises(SystemExit) as exc_info:
+                            _resolve_agent_arg(self._args(agent=name))
+                        assert exc_info.value.code == 2
+                    else:
+                        assert _resolve_agent_arg(self._args(agent=name)) == name
+                finally:
+                    _reserved_names._reserved_names_folded.cache_clear()
+
     def test_falls_back_when_both_default_and_recent_stale(self) -> None:
         """Both keys point at deleted dirs → final fallback to DEFAULT_AGENT_NAME.
 
@@ -2000,18 +2338,40 @@ class TestRecentAgentIsValid:
 
     def test_returns_true_for_existing_dir(self, tmp_path, monkeypatch) -> None:
         """Existing `~/.deepagents/<name>/` resolves to True."""
+        from deepagents_code._paths import _capture_paths
         from deepagents_code.main import _recent_agent_is_valid
 
-        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "deepagents_code._paths.PATHS",
+            _capture_paths(None, launch_home=tmp_path),
+        )
         (tmp_path / ".deepagents" / "coder").mkdir(parents=True)
+
+        assert _recent_agent_is_valid("coder") is True
+
+    def test_uses_deepagents_home_override(self, tmp_path, monkeypatch) -> None:
+        """Agent validation follows `DEEPAGENTS_HOME`."""
+        from deepagents_code._paths import _capture_paths
+        from deepagents_code.main import _recent_agent_is_valid
+
+        configured = tmp_path / "custom-home"
+        (configured / "coder").mkdir(parents=True)
+        monkeypatch.setattr(
+            "deepagents_code._paths.PATHS",
+            _capture_paths(str(configured), launch_home=tmp_path),
+        )
 
         assert _recent_agent_is_valid("coder") is True
 
     def test_returns_false_for_missing_dir(self, tmp_path, monkeypatch) -> None:
         """Missing dir → False, no exception."""
+        from deepagents_code._paths import _capture_paths
         from deepagents_code.main import _recent_agent_is_valid
 
-        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "deepagents_code._paths.PATHS",
+            _capture_paths(None, launch_home=tmp_path),
+        )
 
         assert _recent_agent_is_valid("ghost") is False
 
@@ -2021,6 +2381,18 @@ class TestRecentAgentIsValid:
 
         with patch("pathlib.Path.is_dir", side_effect=PermissionError("denied")):
             assert _recent_agent_is_valid("coder") is False
+
+    @pytest.mark.parametrize("name", ["plugins", "Plugins", "PLUGINS"])
+    def test_reserved_names_fall_back(self, name: str) -> None:
+        """A stored reserved name is invalid even in a case-aliased spelling.
+
+        `plugins/` exists under the profile root, so `is_dir()` would accept
+        `Plugins` on a case-insensitive filesystem and the launch would then
+        fail in `get_agent_dir`; the stale entry must fall back instead.
+        """
+        from deepagents_code.main import _recent_agent_is_valid
+
+        assert _recent_agent_is_valid(name) is False
 
 
 class TestUpdateSubcommand:
@@ -3199,14 +3571,27 @@ class TestResolveInterpreterEnabled:
         with patch.object(settings, "enable_interpreter", True):
             assert _resolve_interpreter_enabled(args) is False
 
-    def test_explicit_flag_overrides_sandbox_default(
-        self, mock_argv: MockArgvType
+    def test_explicit_flag_with_remote_sandbox_is_a_visible_error(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        """`--interpreter --sandbox <remote>` must abort with a real message.
+
+        The combination is unsatisfiable: `agent.py` refuses to build a remote
+        sandbox with the interpreter enabled. Returning `True` here surfaced
+        that as a bare `ValueError` traceback from deep inside agent
+        construction, which tells the user nothing about which two flags
+        conflict.
+        """
         from deepagents_code.main import _resolve_interpreter_enabled
 
         with mock_argv("-n", "task", "--sandbox", "daytona", "--interpreter"):
             args = parse_args()
-        assert _resolve_interpreter_enabled(args) is True
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_interpreter_enabled(args)
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "daytona" in out
+        assert "--interpreter" in out
 
     def test_explicit_no_flag_overrides_local_default(
         self, mock_argv: MockArgvType
@@ -3222,9 +3607,10 @@ class TestResolveInterpreterEnabled:
     def test_empty_sandbox_treated_as_local(self) -> None:
         """An empty-string sandbox is falsy and must resolve as local mode.
 
-        Parity with the `_resolve_enable_interpreter` edge case (the CLI resolver
-        delegates to it); a regression in the falsy-sandbox guard must fail here
-        too, not only at the server-config layer.
+        `_server_config._resolve_enable_interpreter` applies the same rule
+        independently -- this branch removed the delegation that used to keep
+        them in lockstep -- so both need their own coverage or the two can
+        drift apart unnoticed.
         """
         import argparse
 
@@ -3234,6 +3620,174 @@ class TestResolveInterpreterEnabled:
         args = argparse.Namespace(interpreter=None, sandbox="")
         with patch.object(settings, "enable_interpreter", True):
             assert _resolve_interpreter_enabled(args) is True
+
+    def test_managed_false_revokes_an_explicit_interpreter_flag(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Managed `false` must beat `--interpreter`, an enforced key.
+
+        This branch removed the assignment that used to enforce
+        `interpreter.enable_interpreter` in `_apply_managed_runtime_policy`;
+        only `models.default` kept its copy. Enforcement now rests entirely on
+        `deciding_rank` preferring `MANAGED_RANK`, and nothing covered the
+        revocation direction -- a CLI-wins short-circuit inserted before
+        `deciding_rank` left the whole suite green while a user's flag turned
+        on JS execution against policy.
+        """
+        import argparse
+
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_interpreter_enabled
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            "[interpreter]\nenable_interpreter = false\n", encoding="utf-8"
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(interpreter=True, sandbox=None)
+            assert _resolve_interpreter_enabled(args) is False
+        finally:
+            service.invalidate_config_sources()
+
+    def test_managed_true_survives_an_explicit_opt_out(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`--no-interpreter` must not revoke a managed `true` either.
+
+        The mirror of the revocation case: an enforced key is enforced in both
+        directions, so neither spelling of the flag may override policy.
+        """
+        import argparse
+
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_interpreter_enabled
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            "[interpreter]\nenable_interpreter = true\n", encoding="utf-8"
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(interpreter=False, sandbox=None)
+            assert _resolve_interpreter_enabled(args) is True
+        finally:
+            service.invalidate_config_sources()
+
+    def test_managed_policy_outranks_the_sandbox_default(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Managed `enable_interpreter` must not be silently dropped.
+
+        Regression: only the CLI tier was consulted, so a managed `true` --
+        an `ENFORCED_MANAGED_KEYS` member -- silently became `false` whenever
+        `--sandbox` named a remote backend. Policy may not be revoked by a
+        user's flag, and the combination cannot be honoured either, so the
+        launch stops and names the administrator as the way out.
+        """
+        import argparse
+
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_interpreter_enabled
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            "[interpreter]\nenable_interpreter = true\n", encoding="utf-8"
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(interpreter=None, sandbox="daytona")
+            with pytest.raises(SystemExit) as exc_info:
+                _resolve_interpreter_enabled(args)
+            assert exc_info.value.code == 1
+            out = capsys.readouterr().out
+            assert "administrator" in out
+        finally:
+            service.invalidate_config_sources()
+
+    def test_non_strict_reports_absent_instead_of_exiting(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        """`dcode tools` must report, not abort, on an unsatisfiable pair.
+
+        A read-only listing has nothing to abort, and the interpreter would in
+        fact be absent, so `strict=False` reports `False`.
+        """
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task", "--sandbox", "daytona", "--interpreter"):
+            args = parse_args()
+        assert _resolve_interpreter_enabled(args, strict=False) is False
+
+    @pytest.mark.parametrize(
+        "toml_text",
+        [
+            "[interpreter]\nenable_interpreter = true\n",
+            "[interpreter]\nenable_interpreter = false\n",
+        ],
+        ids=["true", "false"],
+    )
+    def test_user_config_does_not_override_the_sandbox_rule(
+        self,
+        tmp_path: Path,
+        toml_text: str,
+    ) -> None:
+        """`config.toml` is an ambient preference; `--sandbox` is about this run.
+
+        Regression: treating *any* declaring tier as decisive meant the
+        redundant-but-harmless `enable_interpreter = true` in a user's
+        `config.toml` resolved `True` under a remote sandbox, which
+        `agent.py` then rejected with a `ValueError`. Selecting a remote
+        sandbox used to just work for these users and must keep working.
+        """
+        import argparse
+
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        # `_isolate_state_dir` already points `DEFAULT_CONFIG_PATH` here.
+        (tmp_path / "config.toml").write_text(toml_text, encoding="utf-8")
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(interpreter=None, sandbox="daytona")
+            assert _resolve_interpreter_enabled(args) is False
+        finally:
+            service.invalidate_config_sources()
+
+    def test_sandbox_default_still_applies_when_undeclared(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With policy silent on the key, the sandbox default stands."""
+        import argparse
+
+        from deepagents_code.config import settings
+        from deepagents_code.configuration import service
+        from deepagents_code.main import _resolve_interpreter_enabled
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed.toml"
+        managed.write_text("[runtime]\nrecursion_limit = 100\n", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        try:
+            args = argparse.Namespace(interpreter=None, sandbox="daytona")
+            with patch.object(settings, "enable_interpreter", True):
+                assert _resolve_interpreter_enabled(args) is False
+        finally:
+            service.invalidate_config_sources()
 
 
 class TestRunTextualCliAsyncInterpreterDefault:

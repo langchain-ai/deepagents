@@ -39,6 +39,11 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
+from deepagents_code._paths import (
+    PATHS,
+    first_writable,
+    harden_state_dir,
+)
 from deepagents_code._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __version__
 from deepagents_code.model_config import (
     DEFAULT_CONFIG_PATH,
@@ -61,13 +66,25 @@ when it is younger than `CACHE_TTL`. SDK upload timestamps are stored under
 `_SDK_RELEASE_TIMES_KEY`.
 """
 
-UPDATE_LOCK_FILE: Path = DEFAULT_STATE_DIR / "update.lock"
+UPDATE_LOCK_FILE: Path = PATHS.installation.locks_dir / "update.lock"
 """Advisory lock file serializing dcode self-upgrades across processes.
 
 Held for the duration of an install by whichever process is upgrading, so
 several concurrently launched terminals do not each run their own
 `uv tool install -U` against the same tool environment. Carries no data — only
-the lock matters. See `update_install_lock`.
+the lock matters. Its installation-derived location is shared by every profile
+that launches this tool environment. See `update_install_lock`.
+"""
+
+FALLBACK_UPDATE_LOCK_FILE: Path = PATHS.profile.locks_dir / "update.lock"
+"""Profile-scoped lock used when the installation locks directory is unwritable.
+
+A system or root-owned `sys.prefix` makes `UPDATE_LOCK_FILE`'s parent
+uncreatable for a normal user. Without this fallback the lock would fail open
+on *every* launch, which is the concurrent-install race it exists to prevent.
+Profile-scoped serialization is weaker than installation-scoped — two profiles
+sharing one unwritable installation would not serialize against each other —
+but it is strictly better than no lock at all.
 """
 
 UPDATE_STATE_FILE: Path = DEFAULT_STATE_DIR / "update_state.json"
@@ -346,6 +363,28 @@ def read_installed_distribution_version() -> str | None:
         # A newer packaging could accept a version this process's copy rejects;
         # reporting nothing beats reporting an unparseable string.
         logger.debug("Unparseable installed dist-info version: %s", raw)
+        return None
+
+
+def cached_release_requires_prereleases(version: str | None) -> bool | None:
+    """Return cached pre-release-pin status, or `None` without a fresh answer."""
+    if not version:
+        return None
+    try:
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        checked_at = _coerce_checked_at(data.get("checked_at"))
+        if not is_update_cache_fresh(checked_at):
+            return None
+        values = data.get(_RELEASE_PRERELEASE_PINS_KEY)
+        cached = values.get(version) if isinstance(values, dict) else None
+        if not isinstance(cached, list):
+            return None
+        pins = [_canonical_prerelease_pin(pin) for pin in cached]
+        return bool(pins) if all(pin is not None for pin in pins) else None
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug("Failed to read cached release pre-release pins", exc_info=True)
         return None
 
 
@@ -2238,6 +2277,37 @@ release on a different one.
 """
 
 
+def _resolve_update_lock_file() -> Path | None:
+    """Return the first usable lock path, preferring installation scope.
+
+    Returns:
+        The lock file whose parent directory is writable, or `None` when
+        neither is. The caller then proceeds without a lock.
+    """
+    candidates = (UPDATE_LOCK_FILE, FALLBACK_UPDATE_LOCK_FILE)
+    chosen_dir = first_writable(
+        [candidate.parent for candidate in candidates],
+        mode=0o700,
+        what="Update lock",
+    )
+    if chosen_dir is None:
+        return None
+    chosen = next(c for c in candidates if c.parent == chosen_dir)
+    if chosen != UPDATE_LOCK_FILE:
+        logger.warning(
+            "Using the profile update lock %s because the shared "
+            "installation lock directory %s is not writable; upgrades are "
+            "serialized per profile only",
+            chosen,
+            UPDATE_LOCK_FILE.parent,
+        )
+    return chosen
+
+
+_WARNED_LOCK_UNAVAILABLE = False
+"""Whether the "no update lock" warning already reached stderr this process."""
+
+
 @contextmanager
 def update_install_lock() -> Iterator[bool]:
     """Try to claim the exclusive right to self-upgrade dcode.
@@ -2290,30 +2360,30 @@ def update_install_lock() -> Iterator[bool]:
         yield False
         return
     try:
-        try:
-            UPDATE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        except OSError:
-            logger.warning(
-                "Proceeding without the update lock; could not create %s",
-                UPDATE_LOCK_FILE.parent,
-                exc_info=True,
+        lock_file = _resolve_update_lock_file()
+        if lock_file is None:
+            # Both locations failed, so the lock is fail-open on every launch
+            # from now on — the permanent state `FALLBACK_UPDATE_LOCK_FILE`
+            # exists to prevent. A warning alone is invisible, so say it on
+            # stderr once per process.
+            message = (
+                "Proceeding without the update lock; could not create "
+                f"{UPDATE_LOCK_FILE.parent} or "
+                f"{FALLBACK_UPDATE_LOCK_FILE.parent}. Concurrent dcode "
+                "upgrades will not be serialized."
             )
+            global _WARNED_LOCK_UNAVAILABLE  # noqa: PLW0603  # once per process
+            if not _WARNED_LOCK_UNAVAILABLE:
+                _WARNED_LOCK_UNAVAILABLE = True
+                print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+            logger.warning("%s", message)
             yield True
             return
-        if os.name != "nt":
-            try:
-                UPDATE_LOCK_FILE.parent.chmod(0o700)
-            except OSError:
-                # Only the permission hardening failed. The directory is still
-                # perfectly usable for locking (CIFS/exFAT mounts routinely
-                # refuse `chmod`), so abandoning the lock here would disable
-                # this protection on every launch for no reason.
-                logger.warning(
-                    "Could not restrict permissions on %s",
-                    UPDATE_LOCK_FILE.parent,
-                    exc_info=True,
-                )
-        file_lock = FileLock(str(UPDATE_LOCK_FILE), timeout=0, thread_local=False)
+        # Only the permission hardening can fail here. The directory is still
+        # usable for locking (CIFS/exFAT mounts routinely refuse `chmod`), so
+        # abandoning the lock would disable this protection for no reason.
+        harden_state_dir(lock_file.parent)
+        file_lock = FileLock(str(lock_file), timeout=0, thread_local=False)
         try:
             file_lock.acquire()
         # `filelock.Timeout` subclasses `TimeoutError`, hence `OSError`, so this
@@ -2323,7 +2393,7 @@ def update_install_lock() -> Iterator[bool]:
         except Timeout:
             logger.info(
                 "Skipping update install; %s is held by another dcode process",
-                UPDATE_LOCK_FILE,
+                lock_file,
             )
             yield False
             return
@@ -2331,7 +2401,7 @@ def update_install_lock() -> Iterator[bool]:
             logger.warning(
                 "Proceeding without the update lock; could not acquire %s. "
                 "If this persists, removing that file may clear it.",
-                UPDATE_LOCK_FILE,
+                lock_file,
                 exc_info=True,
             )
             yield True
@@ -2352,7 +2422,7 @@ def update_install_lock() -> Iterator[bool]:
                     "Failed to release the update lock at %s; further update "
                     "attempts in this session may report a concurrent install "
                     "until dcode is restarted",
-                    UPDATE_LOCK_FILE,
+                    lock_file,
                     exc_info=True,
                 )
     finally:

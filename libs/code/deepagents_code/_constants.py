@@ -77,3 +77,18 @@ resume but are not user-authored, so they are filtered out of both the rendered
 transcript and a thread's initial prompt. Shared here so the single producer
 (`textual_adapter`) and its consumers (`app`, `sessions`) agree on one literal.
 """
+
+LOCAL_CONTEXT_MESSAGE_SOURCE: Final[str] = "local_context"
+"""Source for model-only local-context refresh messages."""
+
+DEFAULT_PLUGIN_DIRNAME: Final[str] = "plugins"
+"""Directory name for plugin storage under the profile root.
+
+Not an agent profile. The `/agent` picker reserves this name in addition to
+requiring an `AGENTS.md` marker, so it is never listed as a selectable agent.
+
+Defined here rather than in `plugins.store` because `_reserved_names` reads it
+on the CLI startup path, and importing `plugins.store` pulls in the `plugins`
+package `__init__`, which loads pydantic through `plugins.models` (see AGENTS.md
+"Startup performance"). `plugins.store` re-exports it for its own callers.
+"""

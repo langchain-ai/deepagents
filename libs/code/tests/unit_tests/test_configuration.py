@@ -1672,10 +1672,10 @@ def test_rejected_managed_privilege_value_stops_the_launch(
     try:
         if expected_exit:
             with pytest.raises(SystemExit) as excinfo:
-                main._apply_managed_runtime_policy(args)
+                main._apply_managed_runtime_exceptions(args)
             assert excinfo.value.code == 78
         else:
-            main._apply_managed_runtime_policy(args)
+            main._apply_managed_runtime_exceptions(args)
     finally:
         service.invalidate_config_sources()
 
@@ -1708,11 +1708,72 @@ def test_managed_auto_mode_does_not_set_the_interactive_only_flag(
     model_config.clear_caches()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        assert main._resolve_approval_mode(args).value == "auto"
         assert args.auto_approve is False
-        assert args.yolo is False
-        # The mode still reaches the runtime through the merged config.
-        assert model_config.load_startup_mode() == "auto"
+        assert args.yolo is True
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
+def test_managed_startup_mode_masks_a_cli_approval_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed mode revokes `--yolo`, which the ACP launch once kept.
+
+    Regression: `_apply_managed_runtime_policy` revoked the raw approval flags
+    managed `startup.mode` masked, but `_apply_managed_runtime_exceptions` does
+    not, and the ACP branch read the raw flags — `dcode --acp --yolo` launched
+    with approvals disabled despite managed `startup.mode = "manual"`. The
+    branch now resolves the mode instead, so the managed tier masks the
+    non-durable CLI value.
+    """
+    from deepagents_code import main, model_config
+    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    args = _managed_policy_args()
+    try:
+        assert main._resolve_approval_mode(args) is ApprovalMode.MANUAL
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
+def test_cli_approval_flag_outranks_user_startup_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unmanaged `--yolo` still masks a user-configured mode.
+
+    The CLI tier is the non-durable one: it masks the durable user tier, and
+    only a managed tier masks it. An administrator's empty `managed.toml`
+    installs the tier but declares no mode, so it changes nothing.
+    """
+    from deepagents_code import main, model_config
+    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    args = _managed_policy_args()
+    try:
+        assert main._resolve_approval_mode(args) is ApprovalMode.YOLO
     finally:
         service.invalidate_config_sources()
         model_config.clear_caches()
@@ -1740,7 +1801,7 @@ def test_managed_sandbox_default_does_not_force_a_sandbox(
         for unsandboxed in ("none", None):
             args = _managed_policy_args()
             args.sandbox = unsandboxed
-            main._apply_managed_runtime_policy(args)
+            main._apply_managed_runtime_exceptions(args)
             assert args.sandbox == unsandboxed
     finally:
         service.invalidate_config_sources()
@@ -1767,7 +1828,7 @@ def test_unavailable_managed_sandbox_leaves_an_unsandboxed_launch_alone(
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        main._apply_managed_runtime_exceptions(args)
         assert args.sandbox == "none"
     finally:
         service.invalidate_config_sources()
@@ -1796,7 +1857,7 @@ def test_unavailable_managed_sandbox_stops_a_sandboxed_launch(
     args.sandbox = "not-a-real-provider"
     try:
         with pytest.raises(SystemExit) as excinfo:
-            main._apply_managed_runtime_policy(args)
+            main._apply_managed_runtime_exceptions(args)
         assert excinfo.value.code == 78
     finally:
         service.invalidate_config_sources()
@@ -2202,9 +2263,9 @@ def test_managed_auto_classifier_does_not_set_the_acp_incompatible_flag(
 ) -> None:
     """Managed policy must not set `--auto-classifier-model`.
 
-    Regression: assigning the flag made every ACP launch exit 2 with
-    "--auto-classifier-model requires --auto-approve in ACP mode", naming a flag
-    the user never passed. `build_server_config` falls through to
+    Regression: assigning the flag made every ACP launch exit 2 on the
+    `--auto-classifier-model` approval gate, naming a flag the user never
+    passed. `build_server_config` falls through to
     `resolve_auto_classifier_model_with_source` when the flag is unset, and that
     already reads managed policy at top precedence, so the positive value needs
     no flag — the same reasoning the `startup.mode` block uses.
@@ -2228,7 +2289,7 @@ def test_managed_auto_classifier_does_not_set_the_acp_incompatible_flag(
     model_config.clear_caches()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        main._apply_managed_runtime_exceptions(args)
         assert args.auto_classifier_model is None
         # The value still reaches the runtime through the manifest resolver.
         sources = service.get_config_sources()
@@ -2238,6 +2299,48 @@ def test_managed_auto_classifier_does_not_set_the_acp_incompatible_flag(
         )
         assert resolved == "openai:gpt-4o-mini"
         assert source == "managed config"
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_default_model_replaces_the_cli_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed launch model must displace an explicit `--model`."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[models]\ndefault = "managed:model"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    args.model = "user:model"
+    try:
+        main._apply_managed_runtime_exceptions(args)
+        assert args.model == "managed:model"
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_interpreter_ptc_clears_the_cli_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed PTC policy must prevent raw CLI forwarding to the server."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[interpreter]\nptc = ["read_file"]\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    assert args.interpreter_tools == "all"
+    try:
+        main._apply_managed_runtime_exceptions(args)
+        assert args.interpreter_tools is None
     finally:
         service.invalidate_config_sources()
 
@@ -2487,7 +2590,11 @@ async def test_unreadable_managed_policy_disables_every_mcp_server(
     )
     load = AsyncMock(return_value=([], None, []))
     monkeypatch.setattr(mcp_tools, "_load_tools_from_config", load)
-    monkeypatch.setattr(mcp_tools, "discover_mcp_configs", MagicMock(return_value=[]))
+    monkeypatch.setattr(
+        mcp_tools,
+        "discover_mcp_config_sources",
+        MagicMock(return_value=[]),
+    )
     try:
         tools, manager, infos = await mcp_tools.resolve_and_load_mcp_tools(
             explicit_config_path=str(explicit),
@@ -2651,7 +2758,7 @@ def test_managed_yolo_switcher_removes_yolo_from_the_approval_cycle(
 
     The rejection half of this key was covered; the applied half was not. It
     reaches the runtime through the resolver's implicit managed tier rather
-    than through `_apply_managed_runtime_policy`, so a reader switched to
+    than through `_apply_managed_runtime_exceptions`, so a reader switched to
     `managed_toml_data={}` — as two auto-classifier readers deliberately are —
     would make enforcement a silent no-op with the fail-closed test still green.
     """
@@ -3279,11 +3386,11 @@ def test_managed_startup_mode_revokes_a_user_yolo_flag(
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        assert main._resolve_approval_mode(args).value == "manual"
     finally:
         service.invalidate_config_sources()
 
-    assert args.yolo is False
+    assert args.yolo is True
     assert args.auto_approve is False
 
 
@@ -3319,7 +3426,7 @@ def test_managed_auto_classifier_clears_the_cli_flag(
     args = _managed_policy_args()
     args.auto_classifier_model = "openai:user-weaker-model"
     try:
-        main._apply_managed_runtime_policy(args)
+        main._apply_managed_runtime_exceptions(args)
         assert args.auto_classifier_model is None
         # The managed value still reaches the runtime through the resolver the
         # flag normally defers to.
@@ -3332,12 +3439,13 @@ def test_managed_auto_classifier_clears_the_cli_flag(
         model_config.clear_caches()
 
 
-def test_managed_shell_allow_list_clears_the_cli_grant(
+def test_managed_shell_allow_list_masks_the_cli_grant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A managed allow list must displace `--shell-allow-list all`."""
     from deepagents_code import main
+    from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration import service
 
     managed = tmp_path / "managed.toml"
@@ -3346,19 +3454,189 @@ def test_managed_shell_allow_list_clears_the_cli_grant(
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        option = get_option("shell.allow_list")
+        assert option is not None
+        assert main._resolver_for_args(args).get(option).value == ["ls"]
     finally:
         service.invalidate_config_sources()
 
-    assert args.shell_allow_list is None
+    assert args.shell_allow_list == "all"
 
 
-def test_managed_recursion_limit_is_range_checked_before_it_wins(
+def test_masked_cli_flag_warns_the_user(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A flag beaten by managed policy must say so on stderr.
+
+    Regression: `masked_ranks` was computed and never read, so `--yolo` under
+    a managed `manual` started in Manual, printed nothing and exited 0. The
+    resolution loop cannot report it -- for a REPLACE option it breaks at the
+    winning tier and never reaches the masked CLI entry.
+    """
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    try:
+        assert main._resolve_approval_mode(args).value == "manual"
+    finally:
+        service.invalidate_config_sources()
+
+    err = capsys.readouterr().err
+    # Names the flag the user actually typed. `_managed_policy_args` sets
+    # `--yolo`, so naming `--auto-approve` too would warn about a flag that
+    # was never passed.
+    assert "--yolo was ignored" in err
+    assert "--auto-approve" not in err
+    assert "managed config takes precedence" in err
+
+
+@pytest.mark.parametrize(
+    ("key", "managed_toml", "cli_args", "negative_flag", "positive_flag"),
+    [
+        (
+            "interpreter.enable_interpreter",
+            {"interpreter": {"enable_interpreter": True}},
+            {"interpreter": False},
+            "--no-interpreter",
+            "--interpreter",
+        ),
+        (
+            "threads.relative_time",
+            {"threads": {"relative_time": True}},
+            {"relative": False},
+            "--no-relative",
+            "--relative",
+        ),
+    ],
+)
+def test_masked_negative_boolean_flag_warns_with_the_negative_spelling(
+    key: str,
+    managed_toml: dict[str, Any],
+    cli_args: dict[str, object],
+    negative_flag: str,
+    positive_flag: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Managed-policy warnings must name the Boolean flag the user supplied."""
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.types import TomlSnapshot
+
+    option = get_option(key)
+    assert option is not None
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot.from_table("managed config", managed_toml),
+        user=TomlSnapshot.from_table("config.toml", {}),
+        cli_provider=CliProvider(cli_args),
+    )
+
+    _emit_ranked_diagnostics(option, resolver.get(option))
+
+    err = capsys.readouterr().err
+    assert f"{negative_flag} was ignored" in err
+    assert f"{positive_flag} was ignored" not in err
+
+
+def test_config_command_reports_the_cli_tier() -> None:
+    """`dcode config` must credit a flag the user passed in this argv.
+
+    Regression: `resolver_from_snapshots` gained an optional `cli_provider`
+    and every pre-existing call site kept the default, so the command that
+    users open *because* a flag is not taking was the one reader that could
+    not see the CLI tier. It reported `default` for an option the current
+    argv was setting.
+    """
+    from deepagents_code.client.commands.config import _resolve
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import (
+        install_cli_provider,
+        reset_config_resolver,
+    )
+
+    option = get_option("interpreter.ptc")
+    assert option is not None
+    install_cli_provider(CliProvider({"interpreter_tools": "task"}))
+    try:
+        overridden, source, value = _resolve(option, toml_data={}, managed_toml_data={})
+    finally:
+        reset_config_resolver()
+
+    assert overridden is True
+    assert source == "CLI argument"
+    assert value == ["task"]
+
+
+def test_rejected_cli_value_warns_the_user(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A flag value the provider refused must say so on stderr.
+
+    Regression: the rejection reason went only to `logger.warning`, and the
+    always-on buffer handler on the package logger means that reaches no
+    stream at all. `dcode --interpreter-tools '[/tmp],all' config` therefore
+    exited 0 and reported the option as `default` -- actively confirming the
+    wrong hypothesis for a user debugging why their flag did nothing. The
+    bracket-shaped input must also stay literal instead of being parsed as
+    Rich markup.
+    """
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.providers import TomlSnapshot
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+
+    option = get_option("interpreter.ptc")
+    assert option is not None
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot.from_table("managed config", {}),
+        user=TomlSnapshot.from_table("config.toml", {}),
+        cli_provider=CliProvider({"interpreter_tools": "[/tmp],all"}),
+    )
+    resolved = resolver.get(option)
+    _emit_ranked_diagnostics(option, resolved)
+
+    err = capsys.readouterr().err
+    assert "Warning:" in err
+    assert "--interpreter-tools" in err
+    assert "[/tmp],all" in err
+
+
+def test_unmasked_cli_flag_is_silent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A flag that wins must not warn."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    try:
+        assert main._resolve_approval_mode(args).value == "yolo"
+    finally:
+        service.invalidate_config_sources()
+
+    assert "was ignored" not in capsys.readouterr().err
+
+
+def test_managed_recursion_limit_masks_the_cli_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A valid managed limit is applied; the resolver alone never bounds it."""
+    """A managed limit wins even when `--recursion-limit` is explicit.
+
+    The parent resolves the full managed → CLI → env → TOML → default chain
+    before serializing an explicit flag to the child server process.
+    """
     from deepagents_code import main
+    from deepagents_code.config_manifest import resolve_recursion_limit
     from deepagents_code.configuration import service
 
     managed = tmp_path / "managed.toml"
@@ -3367,11 +3645,139 @@ def test_managed_recursion_limit_is_range_checked_before_it_wins(
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
-        main._apply_managed_runtime_policy(args)
+        main._resolver_for_args(args)
+        # No CLI flag: the managed value wins at build time.
+        assert main._resolved_recursion_limit(args) is None
+        assert resolve_recursion_limit() == 500
+        # An explicit flag is serialized as the effective managed value.
+        args.recursion_limit = 75
+        assert main._resolved_recursion_limit(args) == 500
+        assert resolve_recursion_limit() == 500
     finally:
         service.invalidate_config_sources()
 
-    assert args.recursion_limit == 500
+
+def test_rejected_managed_limit_does_not_warn_about_the_honoured_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A flag the fall-through ends up honouring must not be called ignored.
+
+    Regression: `_emit_ranked_diagnostics` fired on every iteration of the
+    fall-through loop. With an out-of-range managed limit masking an explicit
+    `--recursion-limit`, iteration 1 warned "was ignored: managed config takes
+    precedence. Ask your administrator" and iteration 2 then returned the CLI
+    value. A false warning is worse than silence: it sends the user to their
+    administrator about a non-problem.
+    """
+    from deepagents_code import main
+    from deepagents_code.config_manifest import resolve_recursion_limit
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    # Below `RECURSION_LIMIT_FLOOR`, so the managed tier is rejected and the
+    # loop falls through to the CLI value.
+    managed.write_text("[runtime]\nrecursion_limit = 5\n", encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    args.recursion_limit = 7
+    try:
+        main._resolver_for_args(args)
+        assert resolve_recursion_limit() == 7
+    finally:
+        service.invalidate_config_sources()
+
+    assert "was ignored" not in capsys.readouterr().err
+
+
+def test_masked_recursion_limit_still_warns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Deferring the warning must not silence a flag that genuinely lost."""
+    from deepagents_code import main
+    from deepagents_code.config_manifest import resolve_recursion_limit
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text("[runtime]\nrecursion_limit = 500\n", encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    args.recursion_limit = 7
+    try:
+        main._resolver_for_args(args)
+        assert resolve_recursion_limit() == 500
+    finally:
+        service.invalidate_config_sources()
+
+    err = capsys.readouterr().err
+    assert "--recursion-limit was ignored" in err
+    assert "managed config takes precedence" in err
+
+
+def test_cli_recursion_limit_outranks_user_toml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unmanaged `--recursion-limit` still masks the user config.
+
+    The launcher resolves and forwards an explicit flag so it survives the
+    server subprocess boundary; only the managed tier masks it.
+    """
+    from deepagents_code import main, model_config
+    from deepagents_code.config_manifest import resolve_recursion_limit
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("[runtime]\nrecursion_limit = 42\n", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    args = _managed_policy_args()
+    args.recursion_limit = 75
+    try:
+        main._resolver_for_args(args)
+        assert main._resolved_recursion_limit(args) == 75
+        assert resolve_recursion_limit() == 75
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
+@pytest.mark.parametrize("limit", [1, 24, 100_001])
+def test_positive_cli_recursion_limit_preserves_the_documented_range(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit: int,
+) -> None:
+    """Every positive CLI limit wins over lower-ranked configuration."""
+    from deepagents_code import _env_vars, main, model_config
+    from deepagents_code.config_manifest import resolve_recursion_limit
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("[runtime]\nrecursion_limit = 400\n", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "500")
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    args.recursion_limit = limit
+    try:
+        main._resolver_for_args(args)
+        assert resolve_recursion_limit() == limit
+        assert main._resolved_recursion_limit(args) == limit
+    finally:
+        service.invalidate_config_sources()
 
 
 @pytest.mark.parametrize(
@@ -3492,3 +3898,70 @@ def test_startup_gate_accepts_a_missing_managed_file(
         main._require_managed_config_or_exit()
     finally:
         service.invalidate_config_sources()
+
+
+def test_agreeing_cli_flag_is_not_reported_as_ignored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A flag that agrees with managed policy must not be called ignored.
+
+    Masking is structural: every non-durable tier below a durable one lands in
+    `masked_ranks`, so a managed `[startup] mode` masks `--yolo` even when both
+    select YOLO. Warning there told the user their flag was dropped and sent
+    them to their administrator about a policy that did exactly what they
+    asked -- and the run started in YOLO regardless, so the message was simply
+    false.
+    """
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "yolo"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    try:
+        assert main._resolve_approval_mode(args).value == "yolo"
+    finally:
+        service.invalidate_config_sources()
+
+    assert "was ignored" not in capsys.readouterr().err
+
+
+def test_blank_auto_classifier_flag_overrides_as_explicit_inherit() -> None:
+    """`--flag ""` must not win its rank as a plain empty string.
+
+    A CLI value is a shell string, not a TOML literal. `coerce_toml_value`
+    accepts `""` as a legitimate value, so a blank flag resolved as `Found('')`
+    at the CLI rank and suppressed every real value below it -- reporting an
+    empty classifier sourced from `CLI argument` on the `dcode config` surface.
+
+    For `models.auto_classifier` the blank flag is not absent either: it is the
+    explicit "inherit the main agent model" instruction, which the launch path
+    maps to `INHERIT_CLASSIFIER_MODEL` ahead of env and `config.toml`. The CLI
+    tier resolves the same sentinel so introspection agrees with the launch.
+    """
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import (
+        CLI_RANK,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.types import TomlSnapshot
+
+    option = get_option("models.auto_classifier")
+    assert option is not None
+    resolver = resolver_from_snapshots(
+        managed=TomlSnapshot.from_table("managed config", {}),
+        user=TomlSnapshot.from_table(
+            "config.toml", {"models": {"auto_classifier": "openai:gpt-5"}}
+        ),
+        cli_provider=CliProvider({"auto_classifier_model": ""}),
+    )
+    resolved = resolver.get(option)
+
+    assert resolved.value == INHERIT_CLASSIFIER_MODEL
+    assert CLI_RANK in resolved.ranks

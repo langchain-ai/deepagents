@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
 
+from deepagents_code._paths import harden_state_dir
 from deepagents_code.goal_state_notice import is_internal_message
 
 if TYPE_CHECKING:
@@ -354,7 +355,10 @@ def get_db_path() -> Path:
         return _db_path
     from deepagents_code.model_config import DEFAULT_STATE_DIR
 
-    DEFAULT_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # Pass the directory rather than letting it default to
+    # `PATHS.profile.state_dir`: the database has always been located from
+    # `DEFAULT_STATE_DIR`, and tests patch that name on its own.
+    harden_state_dir(DEFAULT_STATE_DIR)
     _db_path = DEFAULT_STATE_DIR / "sessions.db"
     return _db_path
 

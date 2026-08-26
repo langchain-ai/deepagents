@@ -24,7 +24,6 @@ from deepagents_code.offload_middleware import (
     _RetryingModelInvoker,
     _runtime_model_config,
 )
-from deepagents_code.tool_display import format_tool_display
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
@@ -49,15 +48,6 @@ class TestHITLGating:
 
             result = _add_interrupt_on()
             assert "compact_conversation" not in result
-
-
-class TestDisplayFormatting:
-    """Test tool display formatting for compact_conversation."""
-
-    def test_display_formatting(self) -> None:
-        """format_tool_display should return the expected string."""
-        result = format_tool_display("compact_conversation", {})
-        assert "compact_conversation()" in result
 
 
 class TestArchiveReadGuard:

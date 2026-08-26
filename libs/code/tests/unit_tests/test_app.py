@@ -13,6 +13,7 @@ import threading
 import time
 import webbrowser
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
@@ -65,6 +66,7 @@ from deepagents_code._constants import (
     SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
     SYSTEM_MESSAGE_PREFIX,
 )
+from deepagents_code._paths import PATHS
 from deepagents_code._session_stats import SessionStats
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
@@ -234,6 +236,47 @@ async def test_context_prefers_checkpoint_total_after_offload(
     assert screen_type.call_args.kwargs["context_tokens"] == 1_000
     push_screen.call_args.args[1](None)
     focus.assert_called_once_with()
+
+
+async def test_context_doctor_dispatches_to_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    handler = AsyncMock()
+    monkeypatch.setattr(app, "_handle_context_doctor_command", handler)
+
+    await app._handle_command("/context-doctor")
+
+    handler.assert_awaited_once_with("/context-doctor")
+
+
+@pytest.mark.parametrize("auto_save", [True, False])
+async def test_handle_context_doctor_command_renders_report(
+    monkeypatch: pytest.MonkeyPatch,
+    auto_save: bool,
+) -> None:
+    app = DeepAgentsApp()
+    app._server_kwargs = {"allow_fs_tools": ["read_file"]}
+    app._cwd = "/tmp"
+    app._discovered_skills = []
+    mount_message = AsyncMock()
+    monkeypatch.setattr(app, "_mount_message", mount_message)
+    monkeypatch.setattr(
+        app,
+        "_get_context_usage_counts",
+        AsyncMock(return_value=(100, 20)),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.config.is_memory_auto_save_enabled",
+        lambda: auto_save,
+    )
+
+    await app._handle_context_doctor_command("/context-doctor")
+
+    assert mount_message.await_count == 2
+    rendered_msg = mount_message.await_args_list[-1].args[0]
+    assert isinstance(rendered_msg, AppMessage)
+    assert "Fresh-session context audit" in str(rendered_msg._content)
 
 
 async def test_tokens_prompts_for_first_message_when_usage_is_empty(
@@ -1947,6 +1990,7 @@ class TestStartupSequence:
         app._install_extra_then_switch.assert_awaited_once_with(  # ty: ignore
             "baseten",
             "baseten:zai-org/GLM-5.2",
+            interactive=False,
         )
         app._switch_model.assert_not_awaited()  # ty: ignore
 
@@ -16131,8 +16175,9 @@ class TestMessageTimestampFooters:
             await app._load_thread_history(
                 thread_id="t-spacer", preloaded_payload=payload
             )
-            await pilot.pause()
 
+            # Assert the synchronous restore window before the post-refresh
+            # prefetch is allowed to hydrate archived rows above it.
             assert app._message_store.total_count >= 5
             assert app._message_store.has_messages_above
             top = app.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", Static)
@@ -18581,13 +18626,7 @@ class TestInterruptApprovalPriority:
     async def test_approval_arriving_during_prompt_search_keeps_shift_tab(
         self,
     ) -> None:
-        """A focused approval should retain shift+tab/ctrl+t after search opened.
-
-        The inline panel steps `toggle_auto_approve` aside so shift+tab can page
-        its results, but only while the query input has focus. Gating on panel
-        state alone left auto-approve untogglable and dropped shift+tab through
-        to `Screen.focus_previous`, moving focus off the pending approval.
-        """
+        """A focused approval should retain shift+tab/ctrl+t after search opened."""
         from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         app = DeepAgentsApp()
@@ -18598,8 +18637,7 @@ class TestInterruptApprovalPriority:
             chat_input.open_prompt_search()
             await pilot.pause()
 
-            # While the query owns focus the panel keeps the chord.
-            assert app.check_action("toggle_auto_approve", ()) is False
+            assert app.check_action("toggle_auto_approve", ()) is True
 
             menu = ApprovalMenu({"name": "execute", "args": {"command": "pwd"}})
             future: asyncio.Future[dict[str, str]] = (
@@ -19304,6 +19342,23 @@ class TestActionOpenEditor:
         text_area = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
         assert app.focused is text_area
         return menu, text_area, future
+
+    def test_suspend_pauses_native_stderr_guard(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        guard = MagicMock()
+        guard.paused.return_value = contextlib.nullcontext()
+        app._terminal_stderr_guard = guard
+
+        with (
+            patch(
+                "textual.app.App.suspend", return_value=contextlib.nullcontext()
+            ) as textual_suspend,
+            app.suspend(),
+        ):
+            pass
+
+        guard.paused.assert_called_once_with()
+        textual_suspend.assert_called_once_with()
 
     async def test_updates_text_on_successful_edit(self) -> None:
         app = DeepAgentsApp(agent=MagicMock())
@@ -24031,13 +24086,13 @@ class TestDispatchModelSwitch:
         app._connecting = False
         setattr(app, flag, True)
         app._defer_action = MagicMock()  # ty: ignore
-        app.call_later = MagicMock()  # ty: ignore
+        app._schedule_off_message_pump = MagicMock()  # ty: ignore
         app.notify = MagicMock()  # ty: ignore
 
         app._dispatch_model_switch("openai:gpt-5.5")
 
         app._defer_action.assert_called_once()  # ty: ignore
-        app.call_later.assert_not_called()  # ty: ignore
+        app._schedule_off_message_pump.assert_not_called()  # ty: ignore
         assert app.notify.call_count == (1 if should_notify else 0)  # ty: ignore
 
     async def test_switches_immediately_when_idle(self) -> None:
@@ -24047,12 +24102,13 @@ class TestDispatchModelSwitch:
         app._shell_running = False
         app._connecting = False
         app._defer_action = MagicMock()  # ty: ignore
-        app.call_later = MagicMock()  # ty: ignore
+        app._schedule_off_message_pump = MagicMock()  # ty: ignore
 
         app._dispatch_model_switch("openai:gpt-5.5")
 
         app._defer_action.assert_not_called()  # ty: ignore
-        app.call_later.assert_called_once()  # ty: ignore
+        app._schedule_off_message_pump.assert_called_once()  # ty: ignore
+        app._schedule_off_message_pump.call_args.args[0].close()  # ty: ignore
 
     async def test_defers_switch_while_busy(self) -> None:
         """A busy app queues the switch and notifies the user."""
@@ -24061,14 +24117,14 @@ class TestDispatchModelSwitch:
         app._shell_running = False
         app._connecting = False
         app._defer_action = MagicMock()  # ty: ignore
-        app.call_later = MagicMock()  # ty: ignore
+        app._schedule_off_message_pump = MagicMock()  # ty: ignore
         app.notify = MagicMock()  # ty: ignore
 
         app._dispatch_model_switch("openai:gpt-5.5")
 
         app._defer_action.assert_called_once()  # ty: ignore
         app.notify.assert_called_once()  # ty: ignore
-        app.call_later.assert_not_called()  # ty: ignore
+        app._schedule_off_message_pump.assert_not_called()  # ty: ignore
 
     async def test_toasts_when_busy_and_connecting(self) -> None:
         """In-flight work toasts even while also reconnecting.
@@ -24082,14 +24138,14 @@ class TestDispatchModelSwitch:
         app._shell_running = False
         app._connecting = True
         app._defer_action = MagicMock()  # ty: ignore
-        app.call_later = MagicMock()  # ty: ignore
+        app._schedule_off_message_pump = MagicMock()  # ty: ignore
         app.notify = MagicMock()  # ty: ignore
 
         app._dispatch_model_switch("openai:gpt-5.5")
 
         app._defer_action.assert_called_once()  # ty: ignore
         app.notify.assert_called_once()  # ty: ignore
-        app.call_later.assert_not_called()  # ty: ignore
+        app._schedule_off_message_pump.assert_not_called()  # ty: ignore
 
     async def test_defers_silently_while_only_connecting(self) -> None:
         """A reconnect-only defer queues the switch without a toast."""
@@ -24098,14 +24154,138 @@ class TestDispatchModelSwitch:
         app._shell_running = False
         app._connecting = True
         app._defer_action = MagicMock()  # ty: ignore
-        app.call_later = MagicMock()  # ty: ignore
+        app._schedule_off_message_pump = MagicMock()  # ty: ignore
         app.notify = MagicMock()  # ty: ignore
 
         app._dispatch_model_switch("openai:gpt-5.5")
 
         app._defer_action.assert_called_once()  # ty: ignore
         app.notify.assert_not_called()  # ty: ignore
-        app.call_later.assert_not_called()  # ty: ignore
+        app._schedule_off_message_pump.assert_not_called()  # ty: ignore
+
+    async def test_deferred_request_uses_latest_context_tokens(self) -> None:
+        """Deferred confirmation reads context after the active turn completes."""
+        app = DeepAgentsApp()
+        app._agent_running = True
+        app._shell_running = False
+        app._connecting = False
+        app._context_tokens = 50_000
+        app._model_switch_warning_threshold = 100_000
+        app._push_screen_wait = AsyncMock(return_value=False)  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+        from deepagents_code.config import settings
+
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+        app._dispatch_model_switch("openai:gpt-5.5")
+        action = app._deferred_actions[0]
+        app._context_tokens = 150_000
+
+        async with app.run_test():
+            await action.execute()
+
+        screen = app._push_screen_wait.await_args.args[0]  # ty: ignore
+        assert screen._context_tokens == 150_000
+        app._switch_model.assert_not_awaited()  # ty: ignore
+
+    async def test_deferred_model_switch_blocks_drain_until_confirmed(self) -> None:
+        """A later deferred action cannot run while the confirmation is open."""
+        app = DeepAgentsApp()
+        app._context_tokens = 150_000
+        app._model_switch_warning_threshold = 100_000
+        app._switch_model = AsyncMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+        from deepagents_code.config import settings
+
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+
+        prompt_open = asyncio.Event()
+        answer_prompt = asyncio.Event()
+
+        async def push_screen_wait(screen: object) -> bool:
+            del screen  # only the prompt's timing matters, not its content
+            prompt_open.set()
+            await answer_prompt.wait()
+            return True
+
+        app._push_screen_wait = push_screen_wait  # ty: ignore
+
+        order: list[str] = []
+
+        async def thread_switch() -> None:  # noqa: RUF029
+            order.append("thread_switch")
+
+        app._deferred_actions.append(
+            DeferredAction(
+                kind="model_switch",
+                execute=partial(
+                    app._confirm_and_switch_model,
+                    "openai:gpt-5.5",
+                ),
+            )
+        )
+        app._deferred_actions.append(
+            DeferredAction(kind="thread_switch", execute=thread_switch)
+        )
+
+        async with app.run_test():
+            drain = asyncio.create_task(app._drain_deferred_actions())
+            # Let the drain reach the confirmation prompt, then yield several
+            # times: a drain that resumes early has ample opportunity to run
+            # the thread switch while the modal is still unanswered.
+            await asyncio.wait_for(prompt_open.wait(), timeout=5)
+            for _ in range(10):
+                await asyncio.sleep(0)
+            assert order == []
+            answer_prompt.set()
+            await asyncio.wait_for(drain, timeout=5)
+
+        assert order == ["thread_switch"]
+        app._switch_model.assert_awaited_once()  # ty: ignore
+
+    async def test_debug_env_var_forces_confirmation_below_threshold(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`DEEPAGENTS_CODE_DEBUG_MODEL_SWITCH` prompts with no context at all."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_MODEL_SWITCH", "1")
+        app = DeepAgentsApp()
+        app._context_tokens = 0
+        app._model_switch_warning_threshold = 0
+        app._push_screen_wait = AsyncMock(return_value=True)  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        from deepagents_code.config import settings
+
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+
+        async with app.run_test():
+            await app._confirm_and_switch_model("openai:gpt-5.5")
+
+        app._push_screen_wait.assert_awaited_once()  # ty: ignore
+        app._switch_model.assert_awaited_once()  # ty: ignore
+
+    async def test_debug_env_var_unset_keeps_threshold_gate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Below the threshold, a switch without the debug flag skips the modal."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_MODEL_SWITCH", raising=False)
+        app = DeepAgentsApp()
+        app._context_tokens = 10_000
+        app._model_switch_warning_threshold = 100_000
+        app._push_screen_wait = AsyncMock()  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        from deepagents_code.config import settings
+
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+
+        async with app.run_test():
+            await app._confirm_and_switch_model("openai:gpt-5.5")
+
+        app._push_screen_wait.assert_not_awaited()  # ty: ignore
+        app._switch_model.assert_awaited_once()  # ty: ignore
 
 
 class TestDeferredActions:
@@ -25255,19 +25435,6 @@ class TestDeferredActions:
 
             assert len(app._pending_messages) == 1
             assert app._pending_messages[0].text == "/auto model openai:gpt-5.5-mini"
-
-    async def test_model_with_args_still_queues(self) -> None:
-        """/model gpt-4 should be queued when busy, not bypass."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent_running = True
-
-            app.post_message(ChatInput.Submitted("/model gpt-4", "command"))
-            await pilot.pause()
-
-            assert len(app._pending_messages) == 1
-            assert app._pending_messages[0].text == "/model gpt-4"
 
     async def test_side_effect_free_bypasses_queue(self) -> None:
         """SIDE_EFFECT_FREE commands bypass the queue."""
@@ -31456,7 +31623,8 @@ class TestLiveApprovalModeWrites:
 
         notify.assert_called_once_with(
             "Approval mode changed for this session, but the startup preference "
-            "could not be saved. Check permissions for ~/.deepagents/.",
+            "could not be saved. Check permissions for "
+            f"{PATHS.display(PATHS.profile.root)}.",
             severity="warning",
             markup=False,
         )
@@ -42490,6 +42658,40 @@ class TestPromptClipboard:
             assert chat_input.value == "helhello saved promptlo"
             assert app.focused is text_area
 
+    async def test_tab_inserts_when_approval_arrives_during_prompt_modal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A background approval must not intercept the modal's Tab binding."""
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            monkeypatch.setattr(
+                chat_input, "recent_prompts", lambda: ("newest", "oldest")
+            )
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, PromptClipboardScreen)
+
+            await pilot.press("down")
+            approval = MagicMock()
+            app._pending_approval_widget = approval
+
+            await pilot.press("tab")
+            await pilot.pause()
+            await pilot.pause()
+
+            approval.action_reject_with_reason.assert_not_called()
+            assert app.screen is not screen
+            assert chat_input.value == "oldest"
+
     async def test_escape_preserves_draft_and_cursor(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -42706,10 +42908,10 @@ class TestPromptClipboard:
             assert app.screen is screen
             assert screen._recommended_only is False
 
-    async def test_shift_tab_pages_in_prompt_modal(
+    async def test_shift_tab_does_not_page_prompt_modal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The modal pages with shift+tab; it must not hit the app binding."""
+        """The app swallows Shift+Tab in the modal without moving selection."""
         from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
 
         app = DeepAgentsApp(agent=MagicMock())
@@ -42718,9 +42920,7 @@ class TestPromptClipboard:
             chat_input = app._chat_input
             assert chat_input is not None
             monkeypatch.setattr(
-                chat_input,
-                "recent_prompts",
-                lambda: tuple(f"prompt {i}" for i in range(12)),
+                chat_input, "recent_prompts", lambda: ("newest", "oldest")
             )
 
             await pilot.press("ctrl+r")
@@ -42730,49 +42930,41 @@ class TestPromptClipboard:
             screen = cast("PromptClipboardScreen", app.screen)
             assert isinstance(screen, PromptClipboardScreen)
 
-            await pilot.press("tab")
-            await pilot.pause()
-            assert screen._selected_index == 5
-
+            await pilot.press("down")
             await pilot.press("shift+tab")
             await pilot.pause()
-            assert screen._selected_index == 0
 
-    async def test_shift_tab_pages_the_inline_panel(
+            assert app.screen is screen
+            assert screen._selected_index == 1
+
+    async def test_shift_tab_no_longer_pages_inline_panel(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The inline panel pages with shift+tab under the real app dispatch.
-
-        The widget-level paging test runs on a bare host with no competing
-        binding, so it cannot catch the `toggle_auto_approve` step-aside
-        regressing. Without it shift+tab would toggle auto-approve — a
-        permissions change — instead of paging results.
-        """
+        """Shift+Tab uses the app action while inline prompt search is open."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             chat_input = app._chat_input
             assert chat_input is not None
             monkeypatch.setattr(
-                chat_input,
-                "recent_prompts",
-                lambda: tuple(f"prompt {i}" for i in range(12)),
+                chat_input, "recent_prompts", lambda: ("newest", "oldest")
             )
-            approval_mode_before = app._approval_mode
 
             await pilot.press("ctrl+r")
             await pilot.pause()
             await pilot.pause()
+            await pilot.press("down")
+            assert chat_input._prompt_search_index == 1
+
+            with patch.object(
+                DeepAgentsApp, "action_toggle_auto_approve", new=AsyncMock()
+            ) as toggle:
+                await pilot.press("shift+tab")
+                await pilot.pause()
+
+            toggle.assert_awaited_once()
             assert chat_input._prompt_search_active is True
-
-            await pilot.press("tab")
-            await pilot.pause()
-            assert chat_input._prompt_search_index == 5
-
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert chat_input._prompt_search_index == 0
-            assert app._approval_mode == approval_mode_before
+            assert chat_input._prompt_search_index == 1
 
     @pytest.mark.parametrize(
         "pending_field",

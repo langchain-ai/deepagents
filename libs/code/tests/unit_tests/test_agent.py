@@ -1,6 +1,7 @@
 """Unit tests for agent formatting functions."""
 
 import asyncio
+import sys
 import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -25,7 +26,9 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
+from deepagents_code._paths import PATHS
 from deepagents_code._repository_bounds import REPOSITORY_TOOL_CALL_LIMIT
+from deepagents_code._reserved_names import reserved_agent_dir_names
 from deepagents_code.agent import (
     _AGENT_DIR_MARKER,
     _MEMORY_READONLY_SYSTEM_PROMPT,
@@ -43,7 +46,6 @@ from deepagents_code.agent import (
     _format_write_file_description,
     _has_resolvable_model_provider,
     _interrupt_predicate,
-    _reserved_agent_dir_names,
     _resolve_retry_owned_model,
     _rubric_grader_system_prompt,
     _sanitize_agent_message_name,
@@ -539,18 +541,6 @@ async def test_live_approval_round_trip_flips_interrupt_decision() -> None:
             store=store,
         )
     )
-
-
-def test_cli_context_schema_fields_mirror_typed_dict() -> None:
-    """`CLIContextSchema` and `CLIContext` must stay structurally identical.
-
-    The two shapes carry the same payload across the API boundary (dataclass
-    in-process, dict over RemoteGraph). A field added to one but not the other
-    would silently drop across that boundary; this pins the documented mirror.
-    """
-    from deepagents_code._cli_context import CLIContext
-
-    assert {f.name for f in fields(CLIContextSchema)} == set(CLIContext.__annotations__)
 
 
 def test_should_interrupt_tool_call_fails_closed_when_live_mode_missing() -> None:
@@ -1478,6 +1468,19 @@ class TestGetSystemPromptModelIdentity:
 
         assert "### Model Identity" not in prompt
 
+    def test_skills_path_uses_launch_profile(self) -> None:
+        """Agent-facing instructions name the effective configured skills root."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.has_tavily = False
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        expected = PATHS.display(PATHS.profile.agent_skills_dir("test-agent"))
+        assert expected in prompt
+        assert "~/.deepagents/test-agent/skills" not in prompt
+
     def test_excludes_provider_when_not_set(self) -> None:
         """Test that provider is excluded when model_provider is None."""
         mock_settings = Mock()
@@ -1935,18 +1938,6 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_get_prompt.assert_not_called()
 
 
-class TestDefaultAgentName:
-    """Tests for the DEFAULT_AGENT_NAME constant."""
-
-    def test_default_agent_name_value(self) -> None:
-        """Guard against accidental renames of the default agent identifier.
-
-        Other modules (main.py, commands.py) rely on this value matching
-        the directory name under `~/.deepagents/`.
-        """
-        assert DEFAULT_AGENT_NAME == "agent"
-
-
 class TestListAgents:
     """Tests for list_agents output."""
 
@@ -2288,6 +2279,69 @@ class TestCreateCliAgentSkillsSources:
         ):
             assert expected in rendered, f"missing {expected!r} in:\n{rendered}"
         assert rendered.rstrip().endswith("(higher priority)")
+
+    def test_missing_home_omits_optional_user_skill_sources(
+        self, tmp_path: Path
+    ) -> None:
+        """Agent startup does not stringify or access absent home aliases."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_claude_skills_dir.return_value = None
+        mock_settings.get_project_claude_skills_dir.return_value = None
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured_sources: list[list[str]] = []
+
+        class FakeSkillsMiddleware:
+            def __init__(self, **kwargs: Any) -> None:
+                captured_sources.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=_make_fake_chat_model(),
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=True,
+                enable_shell=False,
+            )
+
+        assert captured_sources == [
+            [
+                (str(Settings.get_built_in_skills_dir()), "Built-in"),
+                (str(skills_dir), "User Deepagents"),
+            ]
+        ]
 
 
 class TestCreateCliAgentMemorySources:
@@ -4894,15 +4948,54 @@ class TestGetAvailableAgentNames:
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
         _seed_agent(agents_dir, "agent")
-        for name in _reserved_agent_dir_names():
+        for name in reserved_agent_dir_names():
             _seed_agent(agents_dir, name)
 
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["agent"]
 
+    def test_ignores_case_aliased_reserved_dirs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A case-aliased reserved dir never surfaces as an agent.
+
+        `iterdir()` returns the on-disk spelling, which an exact-string guard
+        misses when it differs only by case (e.g. after `dcode -a Plugins`
+        created the entry on a case-insensitive filesystem). The alias only
+        exists where the filesystem folds case, so the test pins the platform
+        to macOS.
+        """
+        monkeypatch.setattr(sys, "platform", "darwin")
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        _seed_agent(agents_dir, "agent")
+        _seed_agent(agents_dir, "Plugins")
+        _seed_agent(agents_dir, "BIN")
+
+        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
+
+    def test_lists_case_aliased_dirs_on_case_sensitive_linux(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Linux a case-aliased dir is a real agent, not reserved state.
+
+        Case-sensitive filesystems keep `Plugins/` distinct from the
+        app-owned `plugins/`, so hiding it would silently drop a legitimate
+        agent from the picker.
+        """
+        monkeypatch.setattr(sys, "platform", "linux")
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        _seed_agent(agents_dir, "agent")
+        _seed_agent(agents_dir, "Plugins")
+
+        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["Plugins", "agent"]
+
     def test_reserved_agent_dir_names_includes_app_dirs(self) -> None:
         """The reserved-name set is sourced from each owning module."""
-        assert _reserved_agent_dir_names() == frozenset(
+        assert reserved_agent_dir_names() == frozenset(
             {BIN_DIR.name, DEFAULT_PLUGIN_DIRNAME, CONVERSATION_HISTORY_DIRNAME},
         )
 

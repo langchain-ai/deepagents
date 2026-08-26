@@ -27,6 +27,7 @@ import tomli_w
 
 from deepagents_code import _env_vars, auth_store
 from deepagents_code._git import find_git_common_dir
+from deepagents_code._paths import PATHS
 from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
 
 if TYPE_CHECKING:
@@ -413,7 +414,8 @@ class ProviderAuthStatus:
             return self.detail
         return (
             f"provider '{self.provider}' is not recognized. "
-            "Add it to ~/.deepagents/config.toml with an api_key_env field"
+            f"Add it to {PATHS.display(PATHS.profile.config_file)} with an "
+            "api_key_env field"
         )
 
 
@@ -726,19 +728,19 @@ class ProviderConfig(TypedDict, total=False):
     """
 
 
-DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
-"""Directory for user-level Deep Agents configuration (`~/.deepagents`)."""
+DEFAULT_CONFIG_DIR = PATHS.profile.root
+"""User-level Deep Agents directory, optionally set by `DEEPAGENTS_HOME`."""
 
-DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
-"""Path to the user's model configuration file (`~/.deepagents/config.toml`)."""
+DEFAULT_CONFIG_PATH = PATHS.profile.config_file
+"""Path to the selected profile's model configuration file."""
 
-DEFAULT_STATE_DIR = DEFAULT_CONFIG_DIR / ".state"
-"""Directory for app-managed internal state (`~/.deepagents/.state`).
+DEFAULT_STATE_DIR = PATHS.profile.state_dir
+"""Directory for app-managed internal state in the selected profile.
 
 Holds files the app writes for its own bookkeeping — OAuth tokens, the
 sessions database, version-check caches, input history. Kept separate from
-top-level user-facing config and agent directories so listing/iterating
-`~/.deepagents` doesn't conflate state with agents.
+top-level user-facing config and agent directories so listing the profile root
+doesn't conflate state with agents.
 """
 
 
@@ -749,7 +751,9 @@ def default_cache_dir() -> Path:
     to `~/AppData/Local`), and `XDG_CACHE_HOME` elsewhere when it is an
     absolute path (falling back to `~/.cache`). The XDG spec treats relative
     `XDG_CACHE_HOME` values as invalid, so they are ignored rather than
-    resolved against the launch directory.
+    resolved against the launch directory. If the OS home directory cannot be
+    resolved to an absolute path, caches fall back to the selected profile's
+    `.state/cache` directory so an absolute `DEEPAGENTS_HOME` remains usable.
 
     Platform-native locations are the convention for a long-lived app (this is
     what `platformdirs` codifies and what `uv` itself does — its own cache is
@@ -768,13 +772,21 @@ def default_cache_dir() -> Path:
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
             return Path(local_app_data)
-        return Path.home() / "AppData" / "Local"
+    elif sys.platform != "darwin":
+        xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+        if xdg_cache_home and Path(xdg_cache_home).is_absolute():
+            return Path(xdg_cache_home)
+    try:
+        home = Path.home()
+    except RuntimeError:
+        return DEFAULT_STATE_DIR / "cache"
+    if not home.is_absolute():
+        return DEFAULT_STATE_DIR / "cache"
+    if sys.platform == "win32":
+        return home / "AppData" / "Local"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Caches"
-    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
-    if xdg_cache_home and Path(xdg_cache_home).is_absolute():
-        return Path(xdg_cache_home)
-    return Path.home() / ".cache"
+        return home / "Library" / "Caches"
+    return home / ".cache"
 
 
 RECENT_MODELS_FILENAME = "recent_models.json"

@@ -65,6 +65,8 @@ class TestCollectBuiltInTools:
         for tool in tools:
             assert tool.description
             assert "\n" not in tool.description
+            assert tool.schema is not None
+            assert tool.schema["type"] == "function"
 
     def test_enumeration_survives_a_policy_blocked_subagent_model(
         self, monkeypatch: pytest.MonkeyPatch

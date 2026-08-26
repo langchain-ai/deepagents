@@ -12,11 +12,15 @@ import hashlib
 import html
 import json
 import logging
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final, Literal, NamedTuple, TypedDict, cast
 
-from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._constants import (
+    LOCAL_CONTEXT_MESSAGE_SOURCE,
+    SYSTEM_MESSAGE_PREFIX,
+)
 from deepagents_code.goal_state_limits import (
     GOAL_STATUS_VALUES,
     GoalStateSizeError,
@@ -38,7 +42,7 @@ user transcript content. Keep this source in the internal-message filters when
 adding a new transcript or history projection.
 """
 SUPERSEDED_GOAL_STATE_SOURCE: Final = "goal_state_superseded"
-"""Source for the stand-in that replaces a superseded notice in a request.
+"""Source for the stand-in that replaces an oversized notice in a request.
 
 Deliberately not `GOAL_STATE_MESSAGE_SOURCE`: `is_goal_state_message` matches on
 that source, so reusing it would let a stand-in win
@@ -53,7 +57,7 @@ rejects any other version, so a resumed thread's outdated notice stops counting
 as authoritative and the next model boundary appends a current one. Version 2
 dropped the `get_goal`/`get_rubric` references version 1 notices carried, and
 version 3 stopped truncating the only model-visible objective and rubric text.
-Version 4 rejects oversized new state and replaces any legacy oversized notice
+Version 4 rejects oversized new state and supersedes any legacy oversized notice
 with bounded recovery guidance. Version 5 counts HTML-escaped embedded text in
 that budget, so version 4 notices with escape-heavy text are superseded.
 """
@@ -66,13 +70,20 @@ _GOAL_INTERNAL_SOURCES = frozenset(
 _CONVERSATION_CONTROL_SOURCES = frozenset(
     {*_GOAL_INTERNAL_SOURCES, SUPERSEDED_GOAL_STATE_SOURCE, "rubric_grader"}
 )
-_USER_HIDDEN_SOURCES = frozenset({*_CONVERSATION_CONTROL_SOURCES, "summarization"})
+_USER_HIDDEN_SOURCES = frozenset(
+    {*_CONVERSATION_CONTROL_SOURCES, LOCAL_CONTEXT_MESSAGE_SOURCE, "summarization"}
+)
 _LEGACY_CONVERSATION_CONTROL_PREFIXES = (
     f"{SYSTEM_MESSAGE_PREFIX} Goal set by the user",
     f"{SYSTEM_MESSAGE_PREFIX} Goal amended by the user.",
     f"{SYSTEM_MESSAGE_PREFIX} Goal resumed by the user.",
     f"{SYSTEM_MESSAGE_PREFIX} Goal/rubric state changed.",
     f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user.",
+)
+_GOAL_STATE_EMBEDDED_SECTION_PATTERN = re.compile(
+    r"<(goal_objective|acceptance_criteria|goal_status_note|prior_blocker)>(.*?)"
+    r"</\1>",
+    re.DOTALL,
 )
 
 GoalTransition = Literal["created", "amended", "resumed"]
@@ -814,10 +825,27 @@ def latest_goal_state_message_index(messages: Sequence[object]) -> int | None:
     return None
 
 
-def superseded_goal_state_placeholder(message: object) -> HumanMessage:
-    """Build the stand-in that hides a superseded notice without moving indices.
+def is_oversized_goal_state_message(message: object) -> bool:
+    """Return whether embedded goal-state text violates current size limits."""
+    if not is_goal_state_message(message):
+        return False
+    sections = dict(_GOAL_STATE_EMBEDDED_SECTION_PATTERN.findall(message_text(message)))
+    try:
+        validate_goal_notice_text(
+            objective=html.unescape(sections.get("goal_objective", "")) or None,
+            criteria=html.unescape(sections.get("acceptance_criteria", "")) or None,
+            status_note=html.unescape(sections.get("goal_status_note", "")) or None,
+            prior_blocker=html.unescape(sections.get("prior_blocker", "")) or None,
+        )
+    except GoalStateSizeError:
+        return True
+    return False
 
-    A superseded notice must stop being model-visible, but it cannot be removed
+
+def superseded_goal_state_placeholder(message: object) -> HumanMessage:
+    """Build a bounded same-index stand-in for an oversized prior notice.
+
+    An oversized notice must stop being model-visible, but it cannot be removed
     from a model request. The summarizer picks its cutoff from `request.messages`
     and persists that cutoff as an absolute index into `state["messages"]`, which
     this middleware never filters. Any removal makes the two lists disagree by the
@@ -831,15 +859,15 @@ def superseded_goal_state_placeholder(message: object) -> HumanMessage:
     reducer would overwrite rather than append if one ever saw it.
 
     Returns:
-        A `HumanMessage` carrying only the fact that a superseded notice was
-        omitted.
+        Internal message that preserves the replaced notice's identifier.
     """
     from langchain_core.messages import HumanMessage
 
     return HumanMessage(
         content=(
-            f"{SYSTEM_MESSAGE_PREFIX} A superseded goal/rubric state notice was "
-            "omitted here. The current notice appears later in this conversation."
+            f"{SYSTEM_MESSAGE_PREFIX} An oversized superseded goal/rubric state "
+            "notice was omitted here. The current notice appears later in this "
+            "conversation."
         ),
         additional_kwargs={"lc_source": SUPERSEDED_GOAL_STATE_SOURCE},
         id=getattr(message, "id", None),

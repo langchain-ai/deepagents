@@ -365,6 +365,25 @@ class TestReloadFromEnvironment:
         assert settings.shell_allow_list == ["ls", "grep"]
         assert any(change.startswith("shell_allow_list:") for change in changes)
 
+    def test_reload_preserves_cli_shell_allow_list(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Reloads retain the session-scoped CLI allow-list winner."""
+        from deepagents_code.configuration.provider import CliProvider
+        from deepagents_code.configuration.resolver import install_cli_provider
+
+        install_cli_provider(CliProvider({"shell_allow_list": "ls,cat"}))
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.shell_allow_list == ["ls", "cat"]
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "grep")
+        preview = settings.preview_reload_from_environment(start_path=tmp_path)
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert settings.shell_allow_list == ["ls", "cat"]
+        assert not any(change.startswith("shell_allow_list:") for change in preview)
+        assert not any(change.startswith("shell_allow_list:") for change in changes)
+
     def test_loads_project_dotenv_from_explicit_start_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -612,6 +631,7 @@ class TestReloadFromEnvironment:
             "SYSTEMROOT=C:\\repo\\windows\n"
             "WINDIR=C:\\repo\\windows\n"
             "DEEPAGENTS_INHERITED_PYTHONPATH=/tmp/evil\n"
+            "DEEPAGENTS_HOME=/tmp/attacker-profile\n"
             "OPENAI_API_KEY=sk-ok\n"
         )
         for key in (
@@ -638,6 +658,7 @@ class TestReloadFromEnvironment:
             "SYSTEMROOT",
             "WINDIR",
             "DEEPAGENTS_INHERITED_PYTHONPATH",
+            "DEEPAGENTS_HOME",
             "OPENAI_API_KEY",
         ):
             monkeypatch.delenv(key, raising=False)
@@ -669,7 +690,30 @@ class TestReloadFromEnvironment:
         # The carrier var must not be injectable from `.env`, or a project could
         # smuggle a PYTHONPATH into agent `execute` commands through it.
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
+        assert "DEEPAGENTS_HOME" not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_global_dotenv_cannot_set_deepagents_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The global dotenv cannot replace the launch-selected trust root."""
+        from deepagents_code._paths import get_deepagents_home
+        from deepagents_code.config import _load_dotenv
+
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text("DEEPAGENTS_HOME=/tmp/attacker-profile\n")
+        isolated = tmp_path / "isolated"
+        isolated.mkdir()
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        monkeypatch.delenv("DEEPAGENTS_HOME", raising=False)
+        captured = get_deepagents_home()
+
+        _load_dotenv(start_path=isolated)
+
+        assert "DEEPAGENTS_HOME" not in os.environ
+        assert get_deepagents_home() == captured
 
     def test_project_dotenv_denies_lowercase_git_config_keys(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1764,6 +1808,50 @@ class TestReloadSkillReport:
         # Critical: must not claim every prior skill was removed.
         assert "Removed:" not in text
         assert "Skills updated" not in text
+
+
+async def test_reload_notifies_when_managed_policy_newly_masks_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reload-time CLI masking warning must reach the active Textual app."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.config import settings
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import install_cli_provider
+    from unit_tests.conftest import redirect_managed_config
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text("", encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    install_cli_provider(CliProvider({"shell_allow_list": "ls"}))
+    original_allow_list = settings.shell_allow_list
+    settings.reload_from_environment(start_path=tmp_path)
+    notices: list[tuple[str, str | None]] = []
+
+    def capture_notify(
+        message: str, *_args: object, severity: str | None = None, **_kwargs: object
+    ) -> None:
+        notices.append((str(message), severity))
+
+    app = DeepAgentsApp()
+    try:
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", capture_notify)
+            managed.write_text('[shell]\nallow_list = ["cat"]\n', encoding="utf-8")
+            reload_task = app._schedule_reload()
+            await reload_task
+            await pilot.pause()
+    finally:
+        settings.shell_allow_list = original_allow_list
+        service.invalidate_config_sources()
+
+    assert any(
+        "--shell-allow-list was ignored" in message and severity == "warning"
+        for message, severity in notices
+    )
 
 
 class TestReloadThemeReapply:

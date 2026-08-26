@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 import pytest
 from packaging.version import InvalidVersion, Version
 
+from deepagents_code import _paths, update_check
 from deepagents_code._version import __version__
 from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
@@ -46,6 +47,7 @@ from deepagents_code.update_check import (
     _terminate_install_process,
     _uv_tool_bin_dir,
     _write_release_prerelease_pins,
+    cached_release_requires_prereleases,
     cleanup_update_logs,
     clear_resume_auto_update_deferral,
     clear_startup_auto_update_failure,
@@ -339,6 +341,67 @@ class TestLatestFromReleases:
         }
         assert _latest_from_releases(releases, include_prereleases=False) is None
         assert _latest_from_releases(releases, include_prereleases=True) == "1.0.0b1"
+
+
+class TestCachedReleaseRequiresPrereleases:
+    def test_fresh_cache_reports_prerelease_pin_without_http(self, cache_file) -> None:
+        """Fresh validated pin metadata is sufficient for the version hint."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time(),
+                    "release_prerelease_pins": {"99.0.0": ["deepagents==0.7.0a7"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("requests.get") as mock_get:
+            assert cached_release_requires_prereleases("99.0.0") is True
+
+        mock_get.assert_not_called()
+
+    def test_stale_cache_does_not_report_prerelease_pin(self, cache_file) -> None:
+        """Stale prerequisite metadata is not treated as authoritative."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time() - CACHE_TTL - 1,
+                    "release_prerelease_pins": {"99.0.0": ["deepagents==0.7.0a7"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert cached_release_requires_prereleases("99.0.0") is None
+
+    def test_empty_cached_pins_report_stable_only(self, cache_file) -> None:
+        """An explicit empty pin list authorizes the normal stable command."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time(),
+                    "release_prerelease_pins": {"99.0.0": []},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert cached_release_requires_prereleases("99.0.0") is False
+
+    def test_invalid_cached_pin_is_rejected(self, cache_file) -> None:
+        """Untrusted cache directives never influence the upgrade command."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time(),
+                    "release_prerelease_pins": {"99.0.0": ["-r /tmp/evil"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert cached_release_requires_prereleases("99.0.0") is None
 
 
 class TestCachedUpdateAvailable:
@@ -3714,8 +3777,8 @@ class TestUpdateInstallLock:
         with update_install_lock() as holding:
             assert holding is True
 
-    def test_lock_file_lands_in_the_state_directory(self) -> None:
-        """The production path is a state-dir sibling, not a temp file.
+    def test_lock_file_lands_in_the_installation_lock_directory(self) -> None:
+        """The production path is installation-scoped, not profile-scoped.
 
         Checked in a subprocess because the autouse state-dir fixture patches
         `UPDATE_LOCK_FILE` for every test in this suite, so the real value is
@@ -3723,9 +3786,9 @@ class TestUpdateInstallLock:
         somewhere per-process would exclude nothing.
         """
         probe = (
-            "from deepagents_code.update_check import "
-            "DEFAULT_STATE_DIR, UPDATE_LOCK_FILE\n"
-            "print(UPDATE_LOCK_FILE == DEFAULT_STATE_DIR / 'update.lock')\n"
+            "from deepagents_code._paths import PATHS\n"
+            "from deepagents_code.update_check import UPDATE_LOCK_FILE\n"
+            "print(UPDATE_LOCK_FILE == PATHS.installation.locks_dir / 'update.lock')\n"
         )
         result = subprocess.run(
             [sys.executable, "-c", probe],
@@ -3736,6 +3799,29 @@ class TestUpdateInstallLock:
         )
 
         assert result.stdout.strip() == "True"
+
+    def test_profiles_share_the_same_update_lock(self, tmp_path: Path) -> None:
+        """Two profile homes using this tool environment contend on one lock."""
+        probe = (
+            "from deepagents_code.update_check import UPDATE_LOCK_FILE\n"
+            "print(UPDATE_LOCK_FILE)\n"
+        )
+        paths = []
+        for profile in (tmp_path / "first", tmp_path / "second"):
+            env = os.environ.copy()
+            env["DEEPAGENTS_HOME"] = str(profile)
+            result = subprocess.run(
+                [sys.executable, "-c", probe],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
+            )
+            paths.append(result.stdout.strip())
+
+        assert paths[0] == paths[1]
+        assert str(tmp_path) not in paths[0]
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_lock_directory_is_owner_only(self, tmp_path) -> None:
@@ -3750,13 +3836,24 @@ class TestUpdateInstallLock:
         assert stat.S_IMODE(lock_path.parent.stat().st_mode) == 0o700
 
     def test_unusable_lock_directory_fails_open(self, tmp_path, caplog) -> None:
-        """An unwritable state dir must not disable updates permanently."""
+        """Only an unusable *pair* of lock locations may disable the lock.
+
+        An unwritable installation directory alone now falls back to the
+        profile (see `TestUpdateLockLocationFallback`), so both must be
+        unusable before updates proceed unserialized.
+        """
         blocker = tmp_path / "blocker"
         blocker.write_text("not a directory", encoding="utf-8")
+        fallback_blocker = tmp_path / "fallback-blocker"
+        fallback_blocker.write_text("not a directory", encoding="utf-8")
         with (
             patch(
                 "deepagents_code.update_check.UPDATE_LOCK_FILE",
                 blocker / "update.lock",
+            ),
+            patch(
+                "deepagents_code.update_check.FALLBACK_UPDATE_LOCK_FILE",
+                fallback_blocker / "update.lock",
             ),
             caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
             update_install_lock() as holding,
@@ -6488,3 +6585,110 @@ class TestTargetedPrereleaseResolution:
         assert "core==1.0a1" in targeted_output
         assert "provider==1.0" in targeted_output
         assert "provider==1.1rc1" not in targeted_output
+
+
+class TestUpdateLockLocationFallback:
+    """The update lock must not fail open on every launch.
+
+    `UPDATE_LOCK_FILE` is derived from `sys.prefix`, which is unwritable for a
+    normal user on a system or root-owned install. Without a fallback the lock
+    would be skipped on every single launch, reinstating the concurrent
+    double-upgrade race it exists to prevent.
+    """
+
+    def test_prefers_the_installation_lock(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared" / "update.lock"
+        profile = tmp_path / "profile" / "update.lock"
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", shared),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+        ):
+            assert update_check._resolve_update_lock_file() == shared
+        assert shared.parent.is_dir()
+        assert not profile.parent.exists()
+
+    def test_falls_back_to_the_profile_lock(self, tmp_path: Path) -> None:
+        # An existing file where the lock directory should go reproduces the
+        # `mkdir` failure an unwritable prefix produces.
+        blocker = tmp_path / "shared"
+        blocker.write_text("")
+        shared = blocker / "update.lock"
+        profile = tmp_path / "profile" / "update.lock"
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", shared),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+        ):
+            assert update_check._resolve_update_lock_file() == profile
+        assert profile.parent.is_dir()
+
+    def test_falls_back_when_existing_lock_dir_is_unwritable(
+        self, tmp_path: Path
+    ) -> None:
+        """A pre-existing unwritable lock dir passes `mkdir(exist_ok=True)` but
+        must not be selected — the fallback must be tried instead.
+        """  # noqa: D205
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        profile = tmp_path / "profile" / "update.lock"
+        original_probe = _paths.probe_writable
+
+        def fake_probe(directory: Path, *, mode: int = 0o777) -> None:
+            if directory == shared:
+                msg = "Permission denied"
+                raise OSError(msg)
+            original_probe(directory, mode=mode)
+
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", shared / "update.lock"),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+            # `first_writable` lives in `_paths`, so that is the seam.
+            patch.object(_paths, "probe_writable", side_effect=fake_probe),
+        ):
+            assert update_check._resolve_update_lock_file() == profile
+        assert profile.parent.is_dir()
+
+    def test_returns_none_only_when_neither_is_usable(self, tmp_path: Path) -> None:
+        first = tmp_path / "a"
+        second = tmp_path / "b"
+        first.write_text("")
+        second.write_text("")
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", first / "update.lock"),
+            patch.object(
+                update_check, "FALLBACK_UPDATE_LOCK_FILE", second / "update.lock"
+            ),
+        ):
+            assert update_check._resolve_update_lock_file() is None
+
+    def test_lock_is_acquired_from_the_fallback_location(self, tmp_path: Path) -> None:
+        """A usable fallback yields a real lock, not a fail-open `True`."""
+        blocker = tmp_path / "shared"
+        blocker.write_text("")
+        profile = tmp_path / "profile" / "update.lock"
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", blocker / "update.lock"),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+            update_check.update_install_lock() as acquired,
+        ):
+            assert acquired is True
+            assert profile.exists()
+
+    def test_the_fallback_lock_actually_excludes(self, tmp_path: Path) -> None:
+        """A fallback lock must serialize, not merely exist.
+
+        Asserting `acquired is True` and that the file appeared says nothing
+        about exclusion, which is the entire reason the fallback is preferred
+        over failing open.
+        """
+        blocker = tmp_path / "shared"
+        blocker.write_text("")
+        profile = tmp_path / "profile" / "update.lock"
+        profile.parent.mkdir(parents=True)
+
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", blocker / "update.lock"),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+            TestUpdateInstallLock._lock_held_by_subprocess(profile),
+            update_check.update_install_lock() as acquired,
+        ):
+            assert acquired is False

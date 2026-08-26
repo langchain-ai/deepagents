@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from deepagents_code.output import OutputFormat
 
 from deepagents_code import theme
+from deepagents_code._paths import PATHS
 
 MAX_SKILL_NAME_LENGTH = 64
 
@@ -187,9 +188,10 @@ def _list(
 
                 write_json("skills list", [])
                 return
+            project_skills_display = escape_markup(str(project_skills_dir))
             console.print("[yellow]No project skills found.[/yellow]")
             console.print(
-                f"[dim]Project skills will be created in {project_skills_dir}/ "
+                f"[dim]Project skills will be created in {project_skills_display} "
                 "when you add them.[/dim]",
                 style=theme.MUTED,
             )
@@ -231,6 +233,7 @@ def _list(
             return
 
         if not skills:
+            user_skills_display = escape_markup(PATHS.display(user_skills_dir))
             console.print()
             console.print("[yellow]No skills found.[/yellow]")
             console.print()
@@ -240,7 +243,7 @@ def _list(
                 "  1. .agents/skills/                 project skills\n"
                 "  2. .deepagents/skills/             project skills (alias)\n"
                 "  3. ~/.agents/skills/               user skills\n"
-                "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
+                f"  4. {user_skills_display}   user skills (alias)\n"
                 "  5. <package>/built_in_skills/      built-in skills[/dim]",
                 style=theme.MUTED,
             )
@@ -407,6 +410,8 @@ def _create(
     Raises:
         SystemExit: If the skill name is invalid or the directory cannot be created.
     """
+    from rich.markup import escape as escape_markup
+
     from deepagents_code.config import Settings, console, get_glyphs
 
     # Validate skill name first (per Agent Skills spec)
@@ -490,25 +495,28 @@ def _create(
         return
 
     checkmark = get_glyphs().checkmark
+    skill_dir_display = escape_markup(PATHS.display(skill_dir))
+    skill_md_display = escape_markup(PATHS.display(skill_md))
+    skills_dir_display = escape_markup(PATHS.display(skills_dir))
     console.print(
         f"\n[bold]{checkmark} Skill '{skill_name}' created successfully![/bold]",
         style=theme.PRIMARY,
     )
-    console.print(f"Location: {skill_dir}\n", style=theme.MUTED)
+    console.print(f"Location: {skill_dir_display}\n", style=theme.MUTED)
     console.print(
         "[dim]Edit the SKILL.md file to customize:\n"
         "  1. Update the description in YAML frontmatter\n"
         "  2. Fill in the instructions and examples\n"
         "  3. Add any supporting files (scripts, configs, etc.)\n"
         "\n"
-        f"  nano {skill_md}\n"
+        f"  nano {skill_md_display}\n"
         "\n"
         "  See examples/skills/ in the deepagents-code repo for example skills:\n"
         "   - web-research: Structured research workflow\n"
         "   - langgraph-docs: LangGraph documentation lookup\n"
         "\n"
         "   Copy an example:\n"
-        "   cp -r examples/skills/web-research ~/.deepagents/agent/skills/\n",
+        f"   cp -r examples/skills/web-research {skills_dir_display}\n",
         style=theme.MUTED,
     )
 
@@ -1059,7 +1067,7 @@ def setup_skills_parser(
         description=(
             "Create a new skill with a template SKILL.md file. "
             "By default, skills are created in "
-            "~/.deepagents/<agent>/skills/. "
+            f"{PATHS.display(PATHS.profile.agent_skills_dir('<agent>'))}. "
             "Use --project to create in the project's "
             ".deepagents/skills/ directory."
         ),

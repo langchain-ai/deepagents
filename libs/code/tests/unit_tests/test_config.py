@@ -1,6 +1,9 @@
 """Tests for config module including project discovery utilities."""
 
 import logging
+import subprocess
+import sys
+import textwrap
 import time
 import warnings
 from collections.abc import Iterator
@@ -214,6 +217,88 @@ class TestRuntimeDotenvReload:
 class TestProjectDotenvDeniedKeys:
     """A cloned repo must not set user-level environment values."""
 
+    def test_profile_dotenv_inside_project_keeps_project_provenance(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One file cannot become trusted by also owning the active profile."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code._env_vars import (
+            DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            READ_PROJECT_DOTENV,
+        )
+
+        dotenv = tmp_path / ".env"
+        dotenv.write_text(
+            f"{READ_PROJECT_DOTENV}=0\n"
+            f"{DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS}=attacker\n"
+            "DEEPAGENTS_CODE_TEST_PROJECT_VALUE=allowed\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv(DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS, raising=False)
+        monkeypatch.delenv(READ_PROJECT_DOTENV, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_TEST_PROJECT_VALUE", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", dotenv)
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=tmp_path)
+            preview = config_mod._preview_dotenv_environ(start_path=tmp_path)
+
+            assert DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS not in os.environ
+            assert DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS not in preview
+            assert os.environ["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+            assert preview["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_profile_dotenv_identity_error_keeps_project_provenance(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An identity error cannot promote a project file to trusted input."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code._env_vars import (
+            DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+        )
+
+        project = tmp_path / "cloned-repo"
+        alias_parent = project / "alias"
+        alias_parent.mkdir(parents=True)
+        dotenv = project / ".env"
+        dotenv.write_text(
+            f"{DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS}=attacker\n"
+            "DEEPAGENTS_CODE_TEST_PROJECT_VALUE=allowed\n",
+            encoding="utf-8",
+        )
+        profile_alias = alias_parent / ".." / ".env"
+        monkeypatch.delenv(DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_TEST_PROJECT_VALUE", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", profile_alias)
+        monkeypatch.setattr(
+            Path,
+            "samefile",
+            Mock(side_effect=PermissionError("identity unavailable")),
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+            preview = config_mod._preview_dotenv_environ(start_path=project)
+
+            assert DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS not in os.environ
+            assert DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS not in preview
+            assert os.environ["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+            assert preview["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
     def test_project_dotenv_cannot_set_classifier_timeout(
         self,
         tmp_path: Path,
@@ -327,6 +412,29 @@ class TestProjectDotenvDeniedKeys:
         # above cannot pass just because the `.env` was never read — and it
         # proves the file was classified as a *project* `.env`.
         assert env["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-from-project"
+
+
+class TestEditableInstallInfo:
+    """Editable-install detection degrades safely without a usable home."""
+
+    def test_missing_home_preserves_editable_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed home lookup leaves the absolute source path uncontracted."""
+        import deepagents_code.config as config_mod
+
+        checkout = tmp_path / "checkout"
+        dist = Mock()
+        dist.read_text.return_value = (
+            f'{{"dir_info": {{"editable": true}}, "url": "{checkout.as_uri()}"}}'
+        )
+        monkeypatch.setattr(config_mod, "distribution", lambda _name: dist)
+        monkeypatch.setattr(config_mod, "_editable_cache", None)
+        monkeypatch.setattr(
+            Path, "home", Mock(side_effect=RuntimeError("home unavailable"))
+        )
+
+        assert config_mod._resolve_editable_info() == (True, str(checkout))
 
 
 class TestResolveReadProjectDotenv:
@@ -725,6 +833,28 @@ class TestProjectAgentMdFinding:
         assert result[0].is_relative_to(link_root.resolve())
 
 
+class TestSettingsUserDeepagentsDir:
+    """Test user-level paths derived from `DEEPAGENTS_HOME`."""
+
+    def test_uses_deepagents_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Agent profiles and instructions use the configured root."""
+        import deepagents_code.config as config_module
+        from deepagents_code._paths import _capture_paths
+
+        configured = tmp_path / "custom-home"
+        snapshot = _capture_paths(str(configured), launch_home=tmp_path)
+        monkeypatch.setattr(config_module, "PATHS", snapshot)
+        settings = Settings.__new__(Settings)
+
+        assert settings.user_deepagents_dir == configured
+        assert settings.get_agent_dir("coder") == configured / "coder"
+        assert settings.get_user_agent_md_path("coder") == (
+            configured / "coder" / "AGENTS.md"
+        )
+
+
 class TestSettingsGetProjectAgentMdPath:
     """Test Settings.get_project_agent_md_path() integration."""
 
@@ -940,6 +1070,22 @@ class TestAgentsAliasDirectories:
         settings = Settings.from_environment()
         expected = Path.home() / ".agents" / "skills"
         assert settings.get_user_agent_skills_dir() == expected
+
+    def test_home_aliases_are_skipped_when_home_is_unresolvable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An absolute profile stays usable without optional home aliases."""
+        import deepagents_code.config as config_module
+        from deepagents_code._paths import _capture_paths
+
+        with patch.object(Path, "home", side_effect=RuntimeError("no home")):
+            snapshot = _capture_paths(str(tmp_path / "profile"))
+        monkeypatch.setattr(config_module, "PATHS", snapshot)
+        settings = Settings.__new__(Settings)
+
+        assert settings.user_agents_dir is None
+        assert settings.get_user_agent_skills_dir() is None
+        assert settings.get_user_claude_skills_dir() is None
 
     def test_get_project_agent_skills_dir_with_project(self, tmp_path: Path) -> None:
         """Test get_project_agent_skills_dir returns .agents/skills in project."""
@@ -2680,23 +2826,19 @@ class TestLangsmithKeyShadowedByEmptyOverride:
 class TestLangsmithSecretRedaction:
     """Tests for LangSmith trace secret redaction configuration."""
 
-    @pytest.fixture(autouse=True)
-    def _enable_redaction(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
+    def test_redaction_enabled_by_default(self) -> None:
+        """LangSmith trace redaction defaults to enabled."""
+        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
+            assert is_langsmith_redaction_enabled() is True
 
-    def test_redaction_disabled_by_default(
+    def test_redaction_can_be_disabled_by_env(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """LangSmith trace redaction defaults to disabled."""
-        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
+        """The redaction env var can opt out for local debugging."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
         with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
             assert is_langsmith_redaction_enabled() is False
-
-    def test_redaction_can_be_enabled_by_env(self) -> None:
-        """The redaction env var can opt in to secret redaction."""
-        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
-            assert is_langsmith_redaction_enabled() is True
 
     def test_configures_langsmith_client_with_secret_anonymizer(
         self,
@@ -2725,14 +2867,14 @@ class TestLangsmithSecretRedaction:
         assert secret not in redacted
         assert "[SECRET_DETECTED]" in redacted
 
-    def test_skips_client_configuration_by_default(
+    def test_skips_client_configuration_when_redaction_disabled(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Tracing leaves the LangSmith client untouched until redaction is enabled."""
+        """Opting out leaves the LangSmith client untouched."""
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
-        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
 
         with (
             patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
@@ -3024,17 +3166,17 @@ class TestLangsmithSecretRedaction:
         assert "api_key" not in kwargs
         assert "anonymizer" in kwargs
 
-    def test_redaction_can_be_enabled_by_toml(
+    def test_redaction_can_be_disabled_by_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """A `[tracing] langsmith_redact = true` in config.toml opts in."""
-        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
+        """A `[tracing] langsmith_redact = false` in config.toml opts out."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", raising=False)
         (tmp_path / "config.toml").write_text(
-            "[tracing]\nlangsmith_redact = true\n", encoding="utf-8"
+            "[tracing]\nlangsmith_redact = false\n", encoding="utf-8"
         )
-        assert is_langsmith_redaction_enabled() is True
+        assert is_langsmith_redaction_enabled() is False
 
     def test_env_redaction_toggle_overrides_toml(
         self,
@@ -3042,11 +3184,11 @@ class TestLangsmithSecretRedaction:
         tmp_path: Path,
     ) -> None:
         """The redaction env var takes precedence over a conflicting config.toml."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
         (tmp_path / "config.toml").write_text(
-            "[tracing]\nlangsmith_redact = true\n", encoding="utf-8"
+            "[tracing]\nlangsmith_redact = false\n", encoding="utf-8"
         )
-        assert is_langsmith_redaction_enabled() is False
+        assert is_langsmith_redaction_enabled() is True
 
     def test_fail_closed_clears_env_when_sdk_disable_also_fails(
         self,
@@ -7736,3 +7878,286 @@ class TestCollectRetryConfigWarnings:
             tmp_path, '[retries.openai]\nparam = "not an identifier"\n'
         )
         assert any("[retries.openai].param" in text for text in warnings)
+
+
+class TestDeniedHomeKeyReporting:
+    """A denied `DEEPAGENTS_HOME` must be loud in the user's own dotenv.
+
+    Denying it from a project `.env` is expected and stays at debug level. The
+    global `.env` is the user's own trusted file, so silently dropping a key
+    they deliberately wrote leaves a setting that never takes effect and no way
+    to discover why — the constraint (it selects the profile owning that very
+    file) is not guessable.
+    """
+
+    def test_global_dotenv_warns_with_actionable_text(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from deepagents_code.config import _report_denied_env_key
+
+        dotenv = tmp_path / ".env"
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            _report_denied_env_key("DEEPAGENTS_HOME", dotenv, is_project=False)
+
+        assert "DEEPAGENTS_HOME" in caplog.text
+        assert "launching shell" in caplog.text
+        assert str(dotenv) in caplog.text
+
+    def test_global_loader_warns_when_home_is_already_inherited(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Pinned launch state must not suppress the denied-key diagnostic."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        profile = tmp_path / "profile"
+        project.mkdir()
+        profile.mkdir()
+        dotenv = profile / ".env"
+        dotenv.write_text("DEEPAGENTS_HOME=/ignored\n", encoding="utf-8")
+        inherited = str(tmp_path / "active-profile")
+        monkeypatch.setenv("DEEPAGENTS_HOME", inherited)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", dotenv)
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+                config_mod._load_dotenv(start_path=project)
+
+            assert "DEEPAGENTS_HOME" in caplog.text
+            assert "launching shell" in caplog.text
+            assert os.environ["DEEPAGENTS_HOME"] == inherited
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_project_dotenv_stays_at_debug(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from deepagents_code.config import _report_denied_env_key
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            _report_denied_env_key(
+                "DEEPAGENTS_HOME", tmp_path / ".env", is_project=True
+            )
+
+        assert caplog.text == ""
+
+    def test_other_denied_keys_never_log_their_value(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An attacker-controlled value must not reach the log."""
+        from deepagents_code.config import _report_denied_env_key
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.config"):
+            _report_denied_env_key("BASH_ENV", tmp_path / ".env", is_project=False)
+
+        assert "BASH_ENV" in caplog.text
+
+    @pytest.mark.parametrize(
+        "key", ["BASH_ENV", "GIT_SSH_COMMAND", "PYTHONPATH", "NODE_OPTIONS"]
+    )
+    def test_every_denied_key_in_the_users_own_dotenv_is_reported(
+        self, key: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The trusted-file rule applies to all denied keys, not just one.
+
+        A user who writes `PYTHONPATH` into their own `~/.deepagents/.env`
+        otherwise gets a setting that never takes effect, with the drop
+        recorded only at debug level.
+        """
+        from deepagents_code.config import _report_denied_env_key
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            _report_denied_env_key(key, tmp_path / ".env", is_project=False)
+
+        assert key in caplog.text
+        assert "shell environment" in caplog.text
+
+    def test_the_report_reaches_stderr_not_only_the_log(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The package's buffering handler defeats `logging.lastResort`.
+
+        With a handler on the `deepagents_code` logger, a bare
+        `logger.warning` never reaches the terminal, so the user still has no
+        way to find out why their key was dropped.
+        """
+        from deepagents_code.config import _report_denied_env_key
+
+        _report_denied_env_key("BASH_ENV", tmp_path / ".env", is_project=False)
+
+        assert "BASH_ENV" in capsys.readouterr().err
+
+    def test_the_default_profile_marker_is_denied_from_a_dotenv(self) -> None:
+        """The marker key must stay on the denylist.
+
+        `_honors_default_marker` re-derives the default location, so a forged
+        marker can only change display. `PATHS` is frozen before any dotenv
+        loads, which makes this defense-in-depth for a layer that could be
+        reordered later — so it needs its own guard.
+        """
+        from deepagents_code.config import _is_dotenv_denied_env_key
+
+        assert _is_dotenv_denied_env_key("DEEPAGENTS_HOME_IS_DEFAULT")
+
+    def test_case_insensitive_match(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Windows-style lowercase spelling is still warned about."""
+        from deepagents_code.config import _report_denied_env_key
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            _report_denied_env_key(
+                "deepagents_home", tmp_path / ".env", is_project=False
+            )
+
+        assert "launching shell" in caplog.text
+
+
+class TestReservedAgentNames:
+    """An agent must not be able to resolve onto app-owned profile state.
+
+    Agent profiles live directly under the profile root, so `dcode -a plugins`
+    would otherwise stamp an `AGENTS.md` marker into the plugin store.
+    """
+
+    @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
+    def test_reserved_names_are_rejected(self, name: str) -> None:
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="reserved"):
+            settings.get_agent_dir(name)
+
+    def test_ordinary_names_still_resolve(self) -> None:
+        settings = Settings.__new__(Settings)
+
+        assert settings.get_agent_dir("coder").name == "coder"
+
+    @pytest.mark.parametrize(
+        "name", ["BIN", "Plugins", "CONVERSATION_HISTORY", "pLuGiNs"]
+    )
+    def test_case_aliases_are_rejected(
+        self, name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Case-insensitive filesystems resolve these onto the reserved dir.
+
+        On the default macOS/Windows filesystems `Plugins` is the same
+        directory as `plugins/`, so an exact-string guard would let the name
+        through and stamp agent state into app-owned directories.
+        """
+        monkeypatch.setattr(sys, "platform", "darwin")
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="reserved"):
+            settings.get_agent_dir(name)
+
+    def test_case_alias_is_allowed_on_case_sensitive_linux(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Linux `Plugins/` is a different directory from `plugins/`.
+
+        The default Linux filesystems are case-sensitive, so an agent named
+        `Plugins` cannot collide with the app-owned `plugins/` directory and
+        must not be rejected.
+        """
+        monkeypatch.setattr(sys, "platform", "linux")
+        settings = Settings.__new__(Settings)
+
+        assert settings.get_agent_dir("Plugins").name == "Plugins"
+
+    def test_windows_trailing_space_alias_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reject a Windows trailing-space alias of a reserved name.
+
+        `"plugins "` passes the character allowlist (whitespace is allowed)
+        but Windows strips the trailing space and resolves it onto `plugins/`.
+        The strip is Windows filesystem semantics, so the guard only applies
+        it there; on POSIX `plugins ` is a genuinely different directory.
+        """
+        monkeypatch.setattr(sys, "platform", "win32")
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="reserved"):
+            settings.get_agent_dir("plugins ")
+
+    def test_trailing_dot_never_reaches_the_reserved_check(self) -> None:
+        """The character allowlist already rejects `.` on every platform.
+
+        A trailing-dot alias such as `plugins.` is refused as an invalid name
+        before the reserved-name comparison runs.
+        """
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="Invalid agent name"):
+            settings.get_agent_dir("plugins.")
+
+    def test_trailing_space_is_allowed_off_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On POSIX a trailing space names a different, non-reserved directory."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        settings = Settings.__new__(Settings)
+
+        assert settings.get_agent_dir("plugins ").name == "plugins "
+
+    @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
+    def test_the_agents_md_accessor_rejects_them_too(self, name: str) -> None:
+        """The marker write goes through this accessor, not `get_agent_dir`.
+
+        `onboarding.write_onboarding_name_memory` calls it and then creates the
+        parent directory, so leaving it unchecked is what would stamp
+        `AGENTS.md` into app-owned state.
+        """
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="reserved"):
+            settings.get_user_agent_md_path(name)
+
+    def test_the_agents_md_accessor_rejects_invalid_characters(self) -> None:
+        """It skipped the character check as well, not only reserved names."""
+        settings = Settings.__new__(Settings)
+
+        with pytest.raises(ValueError, match="Invalid agent name"):
+            settings.get_user_agent_md_path("../escape")
+
+
+class TestAgentDirStaysOffTheHeavyImportPath:
+    """`get_agent_dir` is a path join reached by client-side CLI commands.
+
+    `AGENTS.md` § Startup performance forbids importing `deepagents` or
+    LangChain on that path. The reserved-name check briefly imported
+    `deepagents_code.agent`, which pulls in both at module level and cost
+    roughly 0.8s on commands that touch no model code.
+    """
+
+    def test_reserved_name_check_does_not_import_the_agent_module(self) -> None:
+        """Run in a subprocess: the parent test session already imports agent."""
+        source = textwrap.dedent(
+            """
+            import sys
+            from deepagents_code.config import Settings
+
+            Settings.get_agent_dir(object.__new__(Settings), "demo")
+            heavy = sorted(
+                name
+                for name in sys.modules
+                if name == "deepagents_code.agent"
+                or name.split(".")[0] in {"langchain", "langgraph", "deepagents"}
+            )
+            print(",".join(heavy))
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", source],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        assert result.stdout.strip() == ""

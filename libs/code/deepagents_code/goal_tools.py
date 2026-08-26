@@ -19,6 +19,8 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    TracePolicy,
+    omit_payload,
 )
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
@@ -36,7 +38,7 @@ from deepagents_code.goal_state_notice import (
     goal_notice_size_error,
     goal_state_fingerprint,
     has_goal_or_rubric_state,
-    is_goal_state_message,
+    is_oversized_goal_state_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
     latest_human_is_unsaved_goal_continuation,
@@ -286,6 +288,9 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     registered.
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = GoalToolState
 
     def __init__(self) -> None:
@@ -437,12 +442,14 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
         When checkpointed history no longer surfaces a current notice, a
         transient goal-state notice is appended to the request messages only
-        (not persisted; `before_model` owns the durable write). Every superseded
-        notice is replaced in place by a fixed-size stand-in, so a legacy
-        oversized value cannot remain model-visible beside its bounded
-        replacement. Replacement keeps the list length and every index stable,
-        which the inner summarizer's persisted absolute cutoff depends on — see
-        `superseded_goal_state_placeholder`. The system prompt is left unchanged.
+        (not persisted; `before_model` owns the durable write). Earlier bounded
+        notices remain byte-stable so changing goal state does not invalidate the
+        cacheable conversation prefix. Oversized legacy notices are replaced by
+        bounded same-index stand-ins so they cannot exhaust the model context.
+        Replacement keeps the list length and every index stable, which the inner
+        summarizer's persisted absolute cutoff depends on — see
+        `superseded_goal_state_placeholder`. The current notice explicitly
+        supersedes them, and the system prompt is left unchanged.
 
         This middleware wraps the summarizer, so `request.messages` is the full
         persisted list rather than a trimmed window. The summarization cutoff is
@@ -452,12 +459,11 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         the only copy the model had.
 
         Returns:
-            The request unchanged apart from any malformed-event state override,
-            when no notice is needed and no superseded notice was replaced.
-            Otherwise a request carrying any of: a current goal-state notice
-            appended to its messages, superseded notices replaced in place within
-            them, and — for a malformed `_summarization_event` — a state override
-            nulling that event.
+            The request unchanged apart from any malformed-event state override
+            when no notice or oversized-message replacement is needed. Otherwise,
+            a request with oversized legacy notices replaced in place, any current
+            goal-state notice appended, and — for a malformed
+            `_summarization_event` — a state override nulling that event.
         """
         values = cast("dict[str, Any]", request.state)
         event = values.get("_summarization_event")
@@ -481,43 +487,24 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             # retains the canonical goal state.
             cutoff=len(request.messages) if malformed_event else (cutoff or 0),
         )
-        messages = list(request.messages)
+        latest = latest_goal_state_notice(request.messages)
+        preserved_index = latest[0] if notice is None and latest is not None else None
+        messages = [
+            (
+                superseded_goal_state_placeholder(message)
+                if index != preserved_index and is_oversized_goal_state_message(message)
+                else message
+            )
+            for index, message in enumerate(request.messages)
+        ]
         if notice is not None:
             messages.append(notice)
-        latest_index = latest_goal_state_message_index(messages)
-        # Replace superseded notices in place rather than removing them, so a
-        # legacy oversized value stops being model-visible beside its bounded
-        # replacement without moving any index. The inner summarizer picks its
-        # cutoff from this list and persists it as an *absolute* index into
-        # `state["messages"]`, which is never filtered, so a removal would make
-        # the persisted cutoff slice the checkpointed list too early — silently
-        # dropping live turns, and orphaning a `ToolMessage` whose `AIMessage`
-        # was summarized away (which the provider rejects). See
-        # `superseded_goal_state_placeholder`.
-        #
-        # Every superseded notice is replaced, including ones below the cutoff:
-        # the stand-in is the same length-preserving shape either way, so there is
-        # no alignment reason to treat them differently, and doing so keeps the
-        # request free of stale goal text no matter where the cutoff lands.
-        #
-        # `is_goal_state_message` also matches on the `SYSTEM_MESSAGE_PREFIX`
-        # text, not just the metadata source, so this can in principle replace a
-        # human turn that opens with that exact sentence. The prefix arm is kept
-        # because legacy notices predate the metadata and are the reason the
-        # filter exists; the residual risk is a user pasting that sentence
-        # verbatim as the start of a message, which only affects the transient
-        # request window and never the checkpoint.
-        replaced = False
-        projected: list[Any] = []
-        for index, message in enumerate(messages):
-            if index != latest_index and is_goal_state_message(message):
-                projected.append(superseded_goal_state_placeholder(message))
-                replaced = True
-            else:
-                projected.append(message)
-        if notice is None and not replaced:
+        if notice is None and all(
+            projected is original
+            for projected, original in zip(messages, request.messages, strict=True)
+        ):
             return request
-        return request.override(messages=projected)
+        return request.override(messages=messages)
 
     @override
     def wrap_model_call[ResponseT](

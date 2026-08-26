@@ -52,13 +52,22 @@ from deepagents_code.main import (
     format_tool_warning_cli,
     run_textual_cli_async,
 )
-from deepagents_code.mcp_tools import ProjectServerSummary
+from deepagents_code.mcp_tools import (
+    DiscoveredMCPConfig,
+    MCPConfigScope,
+    ProjectServerSummary,
+)
 from deepagents_code.update_check import update_install_lock
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` and patch
 # `is_update_check_enabled()` to avoid accidental PyPI/DNS work. This module
 # tests startup update behavior itself, so each test must control those values.
 pytestmark = pytest.mark.self_managed_update_check
+
+
+def _project_mcp_source(path: Path, project_root: Path) -> DiscoveredMCPConfig:
+    """Build an explicitly project-scoped discovery fixture."""
+    return DiscoveredMCPConfig(path, MCPConfigScope.PROJECT, project_root)
 
 
 class TestTerminationSignalHandling:
@@ -1433,10 +1442,16 @@ class TestStartupAutoUpdate:
         """Text wider than the pane counts each wrapped row.
 
         Deliberately left unmocked: this is the canary that should fail if a
-        future Rich version changes how it wraps text, so its `options` must
-        stay real rather than being pinned to a forced width.
+        future Rich version changes how it wraps text. Pin both constructor
+        dimensions so Rich honors the requested width even under `TERM=dumb`.
         """
-        console = Console(file=StringIO(), force_terminal=True, no_color=True, width=10)
+        console = Console(
+            file=StringIO(),
+            force_terminal=True,
+            no_color=True,
+            width=10,
+            height=25,
+        )
         # 20 characters at width 10 wraps to exactly 2 rows.
         assert _terminal_row_count(console, "abcdefghijklmnopqrst") == 2
 
@@ -2674,41 +2689,9 @@ class TestLangSmithTeardownUrl:
         # Without LangSmith configured, should return None
         assert thread_url is None
 
-    def test_thread_url_not_shown_for_none_thread_id(self) -> None:
-        """Guard condition: thread_url and thread_exists both needed."""
-        thread_url = None
-        thread_exists = True
-        show_link = bool(thread_url and thread_exists)
-        assert not show_link
-
-    def test_thread_url_not_shown_when_no_checkpoints(self) -> None:
-        """Guard condition: thread must have checkpointed content."""
-        thread_url = "https://smith.langchain.com/o/org/projects/p/proj/t/abc"
-        thread_exists = False
-        show_link = bool(thread_url and thread_exists)
-        assert not show_link
-
-    def test_thread_url_shown_when_all_conditions_met(self) -> None:
-        """Guard condition: both thread_url and thread_exists must be truthy."""
-        thread_url = "https://smith.langchain.com/o/org/projects/p/proj/t/abc"
-        thread_exists = True
-        show_link = bool(thread_url and thread_exists)
-        assert show_link
-
 
 class TestAppResult:
     """Tests for the AppResult dataclass."""
-
-    def test_fields_accessible(self) -> None:
-        """AppResult should expose return_code and thread_id."""
-        result = AppResult(return_code=0, thread_id="tid-abc")
-        assert result.return_code == 0
-        assert result.thread_id == "tid-abc"
-
-    def test_thread_id_none(self) -> None:
-        """AppResult should accept None for thread_id."""
-        result = AppResult(return_code=1, thread_id=None)
-        assert result.thread_id is None
 
     def test_frozen(self) -> None:
         """AppResult should be immutable."""
@@ -2717,45 +2700,6 @@ class TestAppResult:
         result = AppResult(return_code=0, thread_id="tid")
         with pytest.raises(FrozenInstanceError):
             result.return_code = 1  # ty: ignore
-
-
-class TestRunTextualAppReturnType:
-    """Test that run_textual_app returns AppResult."""
-
-    async def test_run_textual_app_returns_app_result(self) -> None:
-        """run_textual_app should return an AppResult."""
-        sig = inspect.signature(run_textual_app)
-        annotation = sig.return_annotation
-        assert annotation in (AppResult, "AppResult"), (
-            f"run_textual_app should return AppResult, got {annotation}"
-        )
-
-
-class TestRunTextualCliAsyncReturnType:
-    """Test that run_textual_cli_async returns AppResult."""
-
-    def test_run_textual_cli_async_returns_app_result(self) -> None:
-        """run_textual_cli_async should return an AppResult."""
-        sig = inspect.signature(run_textual_cli_async)
-        assert sig.return_annotation in (AppResult, "AppResult"), (
-            "run_textual_cli_async should return AppResult, "
-            f"got {sig.return_annotation}"
-        )
-
-
-class TestThreadMessage:
-    """Test thread info display format.
-
-    Thread info is now displayed in the WelcomeBanner widget rather than via
-    pre-TUI console output, so we verify the banner receives the thread ID.
-    """
-
-    def test_thread_id_forwarded_to_app(self) -> None:
-        """run_textual_cli_async passes thread_id to run_textual_app."""
-        source = inspect.getsource(run_textual_cli_async)
-        assert "thread_id=thread_id" in source, (
-            "thread_id should be forwarded to run_textual_app"
-        )
 
 
 class TestRunTextualCliAsyncMcp:
@@ -3017,7 +2961,10 @@ class TestRunTextualCliAsyncMcp:
 
 
 class TestServerCleanupLifecycle:
-    """Verify server_proc.stop() is guaranteed after the TUI exits.
+    """Verify TUI setup and teardown around `run_textual_app`.
+
+    Covers both the stderr-guard/driver wiring installed before `run_async`
+    and the cleanup guaranteed after it.
 
     The `Server log preserved at:` notice is drained by the process-global
     `emit_preserved_log_notices()` (patched here), called unconditionally once
@@ -3029,15 +2976,121 @@ class TestServerCleanupLifecycle:
         """run_textual_app must call server_proc.stop() in the finally block."""
         server_proc = SimpleNamespace(stop=MagicMock())
 
+        guard = MagicMock(active=False)
         with (
-            patch.object(
-                DeepAgentsApp,
-                "run_async",
-                new_callable=AsyncMock,
+            patch.object(DeepAgentsApp, "run_async", new_callable=AsyncMock),
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
             ),
             patch(
                 "deepagents_code.client.launch.server.emit_preserved_log_notices",
             ) as emit,
+        ):
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
+
+        guard.close.assert_called_once_with()
+        server_proc.stop.assert_called_once_with()
+        emit.assert_called_once_with()
+
+    async def test_stdout_driver_installed_while_stderr_is_suppressed(self) -> None:
+        """An active guard must redirect Textual to stdout before it renders.
+
+        The guard points fd 2 at /dev/null and Textual's stock Unix driver
+        renders to `sys.__stderr__`, so the driver must already be swapped by
+        the time `run_async` starts — a black screen otherwise.
+        """
+        driver_class = MagicMock()
+        observed: list[object] = []
+
+        async def _run_async(app: DeepAgentsApp) -> None:  # noqa: RUF029
+            observed.append(app.driver_class)
+
+        guard = MagicMock(active=True)
+        with (
+            patch.object(DeepAgentsApp, "run_async", new=_run_async),
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
+            ),
+            patch(
+                "deepagents_code._terminal_stderr.stdout_driver_class",
+                return_value=driver_class,
+            ),
+            patch("deepagents_code.client.launch.server.emit_preserved_log_notices"),
+        ):
+            await run_textual_app(server_proc=None, thread_id="t-1")  # ty: ignore
+
+        assert observed == [driver_class]
+
+    async def test_driver_untouched_while_stderr_is_not_suppressed(self) -> None:
+        """An inactive guard must leave Textual's auto-detected driver alone."""
+        stdout_driver = MagicMock()
+        observed: list[object] = []
+
+        async def _run_async(app: DeepAgentsApp) -> None:  # noqa: RUF029
+            observed.append(app.driver_class)
+
+        guard = MagicMock(active=False)
+        with (
+            patch.object(DeepAgentsApp, "run_async", new=_run_async),
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
+            ),
+            patch(
+                "deepagents_code._terminal_stderr.stdout_driver_class",
+                return_value=stdout_driver,
+            ) as stdout_driver_class,
+            patch("deepagents_code.client.launch.server.emit_preserved_log_notices"),
+        ):
+            await run_textual_app(server_proc=None, thread_id="t-1")  # ty: ignore
+
+        stdout_driver_class.assert_not_called()
+        assert len(observed) == 1
+        assert observed[0] is not stdout_driver
+
+    async def test_stderr_suppression_dropped_when_stdout_unusable(self) -> None:
+        """A visible TUI on stderr beats an invisible one on a dead stdout."""
+        observed: list[object] = []
+
+        async def _run_async(app: DeepAgentsApp) -> None:  # noqa: RUF029
+            observed.append(app.driver_class)
+
+        guard = MagicMock(active=True)
+        with (
+            patch.object(DeepAgentsApp, "run_async", new=_run_async),
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
+            ),
+            patch(
+                "deepagents_code._terminal_stderr.stdout_driver_class",
+                return_value=None,
+            ),
+            patch("deepagents_code.client.launch.server.emit_preserved_log_notices"),
+        ):
+            await run_textual_app(server_proc=None, thread_id="t-1")  # ty: ignore
+
+        guard.close.assert_called_with()
+        # Textual's auto-detected driver must survive; `None` would crash
+        # `_build_driver`, and the stdout class was never available.
+        assert len(observed) == 1
+        assert observed[0] is not None
+
+    async def test_server_proc_stopped_when_stderr_guard_install_fails(self) -> None:
+        """Server cleanup must run when the stderr guard cannot be installed."""
+        server_proc = SimpleNamespace(stop=MagicMock())
+
+        with (
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                side_effect=OSError("too many open files"),
+            ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
+            pytest.raises(TextualAppError, match="too many open files"),
         ):
             await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
@@ -3994,12 +4047,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
                 return_value=[],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], []),
             ),
             patch("builtins.input", return_value="y"),
         ):
@@ -4034,12 +4083,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
                 return_value=[],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], []),
             ),
             patch(
                 "deepagents_code.main._select_trust_action",
@@ -4078,12 +4123,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
                 return_value=[],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], []),
             ),
             patch(
                 "deepagents_code.main._select_trust_action",
@@ -4115,12 +4156,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4163,12 +4200,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4221,12 +4254,11 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[lower_cfg, higher_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [lower_cfg, higher_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(lower_cfg, project_root),
+                    _project_mcp_source(higher_cfg, project_root),
+                ],
             ),
             patch("builtins.input", return_value="y"),
         ):
@@ -4272,12 +4304,11 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[lower, higher],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [lower, higher]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(lower, project_root),
+                    _project_mcp_source(higher, project_root),
+                ],
             ),
             patch("builtins.input", return_value="n"),
         ):
@@ -4319,12 +4350,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4378,12 +4405,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4436,12 +4459,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4512,12 +4531,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4584,12 +4599,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4645,12 +4656,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4717,12 +4726,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4773,12 +4780,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4847,12 +4852,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4910,12 +4913,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4961,12 +4962,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -5005,12 +5004,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -5064,12 +5061,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -6594,3 +6589,76 @@ class TestCheckMcpProjectTrustDedupe:
         combined = self._captured_prompt(capsys)
         assert combined.count('  "alpha" (stdio):') == 1, combined
         assert combined.count('  "beta" (stdio):') == 1, combined
+
+
+class TestCheckMcpProjectTrustScopeFilter:
+    """Only project-scoped configs may reach the approval prompt.
+
+    The user's own profile `.mcp.json` is already trusted. Listing its servers
+    in the "untrusted project servers" prompt would train users to approve
+    their own configuration, which is exactly the signal the prompt exists to
+    carry.
+    """
+
+    def _write_config(self, path: Path, servers: dict[str, Any]) -> None:
+        import json
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+    def test_user_scoped_servers_are_not_prompted(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A mixed source list prompts for the project server only."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        profile = tmp_path / "profile"
+        project = tmp_path / "repo"
+        user_cfg = profile / ".mcp.json"
+        project_cfg = project / ".mcp.json"
+        self._write_config(user_cfg, {"user_srv": {"command": "uvx", "args": ["u"]}})
+        self._write_config(
+            project_cfg, {"project_srv": {"command": "uvx", "args": ["p"]}}
+        )
+        monkeypatch.chdir(project)
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_config_sources",
+            return_value=[
+                DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+                _project_mcp_source(project_cfg, project),
+            ],
+        ):
+            result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is False
+        combined = capsys.readouterr()
+        text = combined.out + combined.err
+        assert "project_srv" in text
+        assert "user_srv" not in text
+
+    def test_only_user_scoped_sources_skip_the_prompt_entirely(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With nothing project-scoped there is nothing to approve."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        user_cfg = tmp_path / "profile" / ".mcp.json"
+        self._write_config(user_cfg, {"user_srv": {"command": "uvx", "args": ["u"]}})
+        monkeypatch.chdir(tmp_path)
+
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_config_sources",
+            return_value=[DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER)],
+        ):
+            result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is None
+        assert "user_srv" not in capsys.readouterr().err

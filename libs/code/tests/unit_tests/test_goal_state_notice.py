@@ -1,11 +1,17 @@
 """Unit tests for goal-state notices and continuation messages."""
 
+import html
 import logging
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from deepagents_code._constants import (
+    LOCAL_CONTEXT_MESSAGE_SOURCE,
+    SYSTEM_MESSAGE_PREFIX,
+)
 from deepagents_code.goal_state_limits import (
+    GOAL_NOTICE_TEXT_CHAR_LIMIT,
     GOAL_OBJECTIVE_CHAR_LIMIT,
     GOAL_STATUS_NOTE_CHAR_LIMIT,
     RUBRIC_CHAR_LIMIT,
@@ -21,6 +27,7 @@ from deepagents_code.goal_state_notice import (
     is_conversation_control_message,
     is_goal_internal_message,
     is_internal_message,
+    is_oversized_goal_state_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
     latest_human_is_unsaved_goal_continuation,
@@ -28,6 +35,7 @@ from deepagents_code.goal_state_notice import (
     project_goal_state,
     serialize_goal_state,
     summarization_cutoff,
+    superseded_goal_state_placeholder,
 )
 
 
@@ -277,6 +285,111 @@ def test_prior_schema_notice_is_not_authoritative() -> None:
     assert latest_goal_state_message_index([stale]) == 0
 
 
+def _legacy_notice(content: str, *, event_id: str) -> HumanMessage:
+    """Build a prior-schema notice carrying hand-written content.
+
+    Returns:
+        A goal-state notice whose schema version is one behind the current one.
+    """
+    notice = build_goal_state_notice({"rubric": "old"}, event_id=event_id)
+    notice.content = content
+    notice.additional_kwargs = {
+        **notice.additional_kwargs,
+        "goal_message_schema_version": GOAL_MESSAGE_SCHEMA_VERSION - 1,
+    }
+    return notice
+
+
+def test_placeholder_does_not_impersonate_a_goal_state_notice() -> None:
+    """A stand-in must never win `latest_goal_state_message_index`.
+
+    The stand-in sits at the index of the notice it replaced, which is *before*
+    the current one. `is_goal_state_message` matches on `lc_source`, so giving the
+    stand-in `GOAL_STATE_MESSAGE_SOURCE` would make it a candidate for "latest
+    notice" and hand the middleware "a notice was omitted here" as the live goal
+    state. It keeps the replaced notice's `id` so an `add_messages` reducer would
+    overwrite rather than append if one ever saw it.
+    """
+    oversized = build_goal_state_notice({"rubric": "old"}, event_id="oversized")
+    stand_in = superseded_goal_state_placeholder(oversized)
+
+    assert stand_in.additional_kwargs["lc_source"] != GOAL_STATE_MESSAGE_SOURCE
+    assert stand_in.id == oversized.id
+    assert goal_state_notice_info(stand_in) is None
+    assert latest_goal_state_message_index([stand_in]) is None
+    # The stand-in stays hidden from the user like the notice it replaces.
+    assert is_internal_message(stand_in)
+
+
+def test_oversized_detection_ignores_non_notices() -> None:
+    """Only goal-state notices are candidates for bounded replacement."""
+    huge = "x" * (RUBRIC_CHAR_LIMIT + 1)
+    assert not is_oversized_goal_state_message(HumanMessage(content=huge))
+    assert not is_oversized_goal_state_message(AIMessage(content=huge))
+    assert not is_oversized_goal_state_message(
+        build_goal_state_notice({"rubric": "small"}, event_id="current")
+    )
+
+
+def test_oversized_detection_reads_each_embedded_section() -> None:
+    """Every boundary-tagged section counts toward its own field budget."""
+    for tag, limit in (
+        ("goal_objective", GOAL_OBJECTIVE_CHAR_LIMIT),
+        ("acceptance_criteria", RUBRIC_CHAR_LIMIT),
+        ("goal_status_note", GOAL_STATUS_NOTE_CHAR_LIMIT),
+        ("prior_blocker", GOAL_STATUS_NOTE_CHAR_LIMIT),
+    ):
+        over = _legacy_notice(
+            f"notice\n<{tag}>{'x' * (limit + 1)}</{tag}>", event_id=f"over-{tag}"
+        )
+        under = _legacy_notice(
+            f"notice\n<{tag}>{'x' * (limit - 1)}</{tag}>", event_id=f"under-{tag}"
+        )
+        assert is_oversized_goal_state_message(over), tag
+        assert not is_oversized_goal_state_message(under), tag
+
+
+def test_oversized_detection_counts_escaped_text() -> None:
+    """Escape-heavy version 4 notices are the reason schema version 5 exists.
+
+    Version 4 validated raw text, so criteria made entirely of `&` passed its
+    per-field check while expanding fivefold into the rendered notice. Detection
+    must therefore re-escape what it unescapes out of the boundary tags, or the
+    notice this bump was made for stays model-visible at five times its budget.
+    """
+    raw = "&" * (RUBRIC_CHAR_LIMIT - 1)
+    escaped = html.escape(raw, quote=False)
+    assert len(raw) < RUBRIC_CHAR_LIMIT
+    assert len(escaped) > GOAL_NOTICE_TEXT_CHAR_LIMIT
+
+    notice = _legacy_notice(
+        f"{SYSTEM_MESSAGE_PREFIX} Goal/rubric state changed.\n\n"
+        f"<acceptance_criteria>{escaped}</acceptance_criteria>",
+        event_id="escape-heavy",
+    )
+
+    assert is_oversized_goal_state_message(notice)
+
+
+def test_oversized_detection_is_scoped_to_the_current_tag_vocabulary() -> None:
+    """Untagged notices read as bounded, which is safe only by history.
+
+    Detection sees text inside `<goal_objective>`, `<acceptance_criteria>`,
+    `<goal_status_note>`, and `<prior_blocker>` and nothing else. Notices predating
+    those tags embedded no goal text at all — they pointed at `get_goal`/`get_rubric`
+    read tools — so there is no untagged notice that can be oversized. Renaming a tag
+    without a schema bump would silently reopen that path, so pin the assumption
+    here rather than leaving it implicit in the pattern.
+    """
+    untagged = _legacy_notice(
+        f"{SYSTEM_MESSAGE_PREFIX} Goal/rubric state changed.\n\n"
+        f"Acceptance criteria:\n{'x' * (RUBRIC_CHAR_LIMIT + 1)}",
+        event_id="untagged",
+    )
+
+    assert not is_oversized_goal_state_message(untagged)
+
+
 def test_summarization_cutoff_degrades_to_zero_on_malformed_events() -> None:
     """A malformed event must read as "nothing trimmed", never raise."""
     assert summarization_cutoff({"cutoff_index": 7}) == 7
@@ -519,6 +632,10 @@ def test_internal_message_predicates_are_scope_specific() -> None:
         content="conversation summary",
         additional_kwargs={"lc_source": "summarization"},
     )
+    local_context = HumanMessage(
+        content="local context changed",
+        additional_kwargs={"lc_source": LOCAL_CONTEXT_MESSAGE_SOURCE},
+    )
     unknown = HumanMessage(
         content="connector message",
         additional_kwargs={"lc_source": "slack"},
@@ -529,6 +646,8 @@ def test_internal_message_predicates_are_scope_specific() -> None:
         assert is_conversation_control_message(message)
     assert is_internal_message(summary)
     assert not is_conversation_control_message(summary)
+    assert is_internal_message(local_context)
+    assert not is_conversation_control_message(local_context)
     assert not is_internal_message(unknown)
     assert not is_conversation_control_message(unknown)
     assert is_internal_message(HumanMessage(content="[SYSTEM] legacy marker"))

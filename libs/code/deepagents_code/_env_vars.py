@@ -199,6 +199,21 @@ persist trust decisions.
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
+DEBUG_MODEL_SWITCH = "DEEPAGENTS_CODE_DEBUG_MODEL_SWITCH"
+"""Force the model-switch confirmation modal on every model change.
+
+Set to a truthy value when launching the interactive TUI to make
+`_confirm_and_switch_model` show `ModelSwitchWarningScreen` for every switch
+to a different model, bypassing the `warnings.model_switch_token_threshold`
+gate. Lets the modal — including the deferred path that queues behind an
+active turn — be exercised without growing a thread past the token threshold.
+The modal shows the real current/target models and the live context-token
+count, which may be 0.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
+as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
+"""
+
 DEBUG_NOTIFICATIONS = "DEEPAGENTS_CODE_DEBUG_NOTIFICATIONS"
 """Inject sample missing-dependency notifications at launch so the notification
 center UI can be exercised without waiting for real conditions.
@@ -314,7 +329,7 @@ LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 
 LANGSMITH_REDACT = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
-"""Toggle LangSmith secret redaction for agent traces (defaults to off)."""
+"""Toggle LangSmith secret redaction for agent traces (defaults to on)."""
 
 LANGSMITH_REPLICA_PROJECTS = "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"
 """Comma-separated LangSmith project names to *also* write agent traces to.
@@ -500,9 +515,9 @@ settable as `[features].resume_term_program` in config.toml.
 RIPGREP_INSTALLER = "DEEPAGENTS_CODE_RIPGREP_INSTALLER"
 """Select how ripgrep is provisioned: `managed` (default) or `system`.
 
-`managed` downloads the pinned, SHA-256-verified upstream binary into
-`~/.deepagents/bin` (no sudo). `system` skips that download so power users can
-rely on their distro package / existing toolchain instead; the install script's
+`managed` downloads the pinned, SHA-256-verified upstream binary into the dcode
+installation (no sudo). `system` skips that download so power users can rely on
+their distro package / existing toolchain instead; the install script's
 `system` mode keeps the brew/apt/cargo path. A system `rg` already on `PATH` is
 reused under either setting. Unrecognized values fall back to `managed`. See
 `managed_tools.ripgrep_installer`."""

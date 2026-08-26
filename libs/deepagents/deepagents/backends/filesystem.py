@@ -614,7 +614,7 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
 
-    def grep(
+    def grep(  # noqa: C901 -- path resolution, glob validation, engine selection, and context attach are each guarded early-exits; splitting them would scatter the partial-error bookkeeping
         self,
         pattern: str,
         path: str | None = None,
@@ -651,6 +651,16 @@ class FilesystemBackend(BackendProtocol):
         if context_lines < 0:
             msg = "context_lines must be non-negative"
             raise ValueError(msg)
+
+        # Validate the include glob before choosing a search path: the shared
+        # matcher refuses some patterns (e.g. any `..` segment) by raising, and
+        # the Python fallback compiles it outside any error handling. Reporting
+        # a refusal here keeps `grep` non-throwing on both paths -- and
+        # consistent, since ripgrep would otherwise treat it as a silent
+        # no-match.
+        glob_refusal = self._refused_grep_glob_error(glob)
+        if glob_refusal is not None:
+            return GrepResult(error=glob_refusal, matches=[])
 
         # Resolve base path
         try:
@@ -690,6 +700,25 @@ class FilesystemBackend(BackendProtocol):
                 newline=context_newline,
             )
         return GrepResult(error=partial_error, matches=matches, truncated=truncated)
+
+    @staticmethod
+    def _refused_grep_glob_error(glob: str | None) -> str | None:
+        """Return the refusal message for an include glob the shared matcher rejects.
+
+        `grep` validates the glob before choosing a search path: the shared
+        matcher refuses some patterns (e.g. any `..` segment) by raising
+        `InvalidGlobPatternError`, and the Python fallback compiles it outside
+        any error handling. Reporting a refusal up front keeps `grep`
+        non-throwing on both paths -- and consistent, since ripgrep would
+        otherwise treat the same glob as a silent no-match.
+        """
+        if glob is None:
+            return None
+        try:
+            compile_grep_include_glob(glob)
+        except InvalidGlobPatternError as e:
+            return str(e)
+        return None
 
     def _apply_grep_context(
         self,

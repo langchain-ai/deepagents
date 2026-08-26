@@ -8,6 +8,7 @@ import stat
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
@@ -266,6 +267,10 @@ def test_stream_recorder_collects_completed_main_and_identified_subagent(
         {},
         main_agent=True,
     )
+    chunk_without_metadata = Mock(spec=AIMessageChunk)
+    chunk_without_metadata.id = "mock-chunk"
+    chunk_without_metadata.content = "ignored"
+    recorder.record(chunk_without_metadata, {}, main_agent=True)  # ty: ignore[invalid-argument-type]
 
     main = runtime.transcripts.materialize("thread").path.read_text()
     agent = runtime.transcripts.materialize(

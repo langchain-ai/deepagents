@@ -398,7 +398,7 @@ def _stream_agent_id(metadata: Mapping[str, object] | None) -> str | None:
 def _is_local_context_message(message: object) -> bool:
     """Return whether a local or serialized message is internal context."""
     if isinstance(message, BaseMessage):
-        metadata = message.additional_kwargs
+        metadata = getattr(message, "additional_kwargs", None)
     elif isinstance(message, dict):
         metadata = message.get("additional_kwargs")
     else:

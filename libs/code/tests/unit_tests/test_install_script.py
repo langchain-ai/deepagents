@@ -7284,6 +7284,24 @@ def test_install_script_rejects_non_directory_deepagents_home(tmp_path: Path) ->
     assert not uv_args.exists()
 
 
+@pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root bypasses permission bits")
+@pytest.mark.parametrize("mode", [0o300, 0o400], ids=["unreadable", "unsearchable"])
+def test_install_script_rejects_unusable_deepagents_home(
+    tmp_path: Path, mode: int
+) -> None:
+    """The installer rejects a profile that app startup cannot traverse."""
+    profile = tmp_path / "profile"
+    profile.mkdir(mode=mode)
+    try:
+        proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(profile)})
+    finally:
+        profile.chmod(0o700)
+
+    assert proc.returncode == 1
+    assert "cannot be read or searched" in proc.stderr
+    assert not uv_args.exists()
+
+
 def test_uv_cache_locations_have_one_source() -> None:
     """Both snapshot sites read `uv_cache_candidates`, not their own list.
 

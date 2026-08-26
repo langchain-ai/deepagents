@@ -547,6 +547,10 @@ normalize_deepagents_home() {
     log_error "Invalid DEEPAGENTS_HOME '${raw}': exists but is not a directory."
     exit 1
   fi
+  if [ -d "$DEEPAGENTS_HOME" ] && { [ ! -r "$DEEPAGENTS_HOME" ] || [ ! -x "$DEEPAGENTS_HOME" ]; }; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': exists but cannot be read or searched. Check the permissions on it and on its parent directories."
+    exit 1
+  fi
   export DEEPAGENTS_HOME
   if [ -n "$raw" ]; then
     log_info "Using DEEPAGENTS_HOME: ${DEEPAGENTS_HOME}"

@@ -2036,6 +2036,41 @@ class TestDebugConsoleToggle:
             assert fields["CWD"].copyable is True
             assert fields["CWD"].value
 
+    async def test_build_snapshot_debug_log_path_is_copyable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code._debug as debug_mod
+
+        monkeypatch.setattr(
+            debug_mod, "installed_debug_log_path", lambda: "/tmp/custom-debug.log"
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            field = next(
+                field
+                for field in app._build_debug_snapshot()
+                if field.label == "Debug log"
+            )
+            assert field.value == "/tmp/custom-debug.log"
+            assert field.copyable is True
+
+    async def test_build_snapshot_in_memory_log_is_not_copyable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code._debug as debug_mod
+
+        monkeypatch.setattr(debug_mod, "installed_debug_log_path", lambda: None)
+        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            field = next(
+                field
+                for field in app._build_debug_snapshot()
+                if field.label == "Debug log"
+            )
+            assert field.value == "in-memory only"
+            assert field.copyable is False
+
     async def test_build_snapshot_model_field_is_copyable_when_configured(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

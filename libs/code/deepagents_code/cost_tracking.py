@@ -127,35 +127,46 @@ _UNPRICEABLE_PROVIDERS: frozenset[str] = frozenset({"openai_codex"})
 _CONFIGURED_PROVIDER_METADATA_KEY = "deepagents_code_configured_provider"
 """Model metadata key preserving the provider selected by `create_model`."""
 
+_CONFIGURED_MODEL_METADATA_KEY = "deepagents_code_configured_model"
+"""Model metadata key preserving the model selected by `create_model`."""
+
 _CHECKPOINT_NAMESPACE_METADATA_KEY = "langgraph_checkpoint_ns"
 """Callback metadata key identifying the graph node that made a request."""
 
 
-def _set_configured_provider_metadata(model: object, provider: str) -> None:
-    """Attach the configured provider to every request made by a model.
+def _set_configured_model_metadata(
+    model: object,
+    model_name: str,
+    provider: str,
+) -> None:
+    """Attach the configured model identity to every request made by a model.
 
     LangChain provider integrations can report a generic backend in response
-    metadata: Azure and the Codex subscription model both report `openai`.
-    Model metadata reaches `on_chat_model_start`, so recording the configured
-    provider there preserves the distinction for main, side, and nested calls.
+    metadata, and some omit the model name. Model metadata reaches
+    `on_chat_model_start`, so recording the configured identity there preserves
+    the model and provider for main, side, and nested calls.
 
     Args:
-        model: Chat model whose callback metadata should carry the provider.
+        model: Chat model whose callback metadata should carry the identity.
+        model_name: Model selected while constructing the model.
         provider: Provider selected while constructing the model.
     """
-    if not provider:
+    if not model_name and not provider:
         return
     try:
         current = getattr(model, "metadata", None)
         metadata = dict(current) if isinstance(current, Mapping) else {}
-        metadata[_CONFIGURED_PROVIDER_METADATA_KEY] = provider
+        if model_name:
+            metadata[_CONFIGURED_MODEL_METADATA_KEY] = model_name
+        if provider:
+            metadata[_CONFIGURED_PROVIDER_METADATA_KEY] = provider
         model.metadata = metadata  # ty: ignore[unresolved-attribute]
     except Exception:
         # Cost estimation is best-effort and must never make a usable model fail
         # construction. The response metadata and main-message fallback still
         # cover providers whose model object rejects metadata assignment.
         logger.debug(
-            "Could not attach configured provider metadata to %s",
+            "Could not attach configured model metadata to %s",
             type(model).__name__,
             exc_info=True,
         )
@@ -1592,6 +1603,9 @@ class _ModelCallContext:
     thread_id: str
     """Thread that owns the request's eventual cost."""
 
+    configured_model: str
+    """Model selected for this request, or `""` when unavailable."""
+
     configured_provider: str
     """Provider selected for this request, or `""` when unavailable."""
 
@@ -1615,7 +1629,7 @@ def _emit_model_usage(
                 "version": MODEL_USAGE_EVENT_VERSION,
                 "request_id": record.message_id,
                 "usage_metadata": dict(record.usage_metadata),
-                "model_name": record.model_name,
+                "model_name": record.model_name or context.configured_model,
                 "provider": record.provider,
                 "thread_id": context.thread_id,
                 "scope": context.scope,
@@ -1691,12 +1705,21 @@ class _SessionCostRecorder(BaseCallbackHandler):
             with self._lock:
                 self._run_contexts[run_id] = _ModelCallContext(
                     thread_id="",
+                    configured_model="",
                     configured_provider="",
                     scope="",
                 )
                 while len(self._run_contexts) > _MAX_INFLIGHT_REQUESTS:
                     self._run_contexts.popitem(last=False)
             return
+        model_name = (
+            metadata.get(_CONFIGURED_MODEL_METADATA_KEY)
+            if metadata is not None
+            else None
+        )
+        configured_model = (
+            model_name if isinstance(model_name, str) and model_name else ""
+        )
         provider = (
             metadata.get(_CONFIGURED_PROVIDER_METADATA_KEY)
             if metadata is not None
@@ -1713,6 +1736,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
         with self._lock:
             self._run_contexts[run_id] = _ModelCallContext(
                 thread_id=thread_id,
+                configured_model=configured_model,
                 configured_provider=configured_provider,
                 scope=_parent_checkpoint_scope(namespace),
             )

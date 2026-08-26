@@ -2698,7 +2698,23 @@ def _resolve_model_retries_from_section(
 
 def collect_retry_config_warnings() -> list[str]:
     """Return user-facing diagnostics from one pure retry-config parse."""
-    return list(_read_retry_config().warnings)
+    warnings, _ = collect_retry_config_startup()
+    return warnings
+
+
+def collect_retry_config_startup() -> tuple[list[str], set[str]]:
+    """Return retry diagnostics and configured provider parameter names.
+
+    Returns:
+        User-facing diagnostics and valid `[retries.<provider>].param` names.
+    """
+    retry_config = _read_retry_config()
+    param_names = {
+        provider.param
+        for provider in retry_config.providers.values()
+        if provider.param is not None
+    }
+    return list(retry_config.warnings), param_names
 
 
 _extra_skills_path_base: ContextVar[Path | None] = ContextVar(

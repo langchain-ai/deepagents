@@ -4155,14 +4155,34 @@ class TestModelParamsRetryOverrideWarning:
         )
         assert "is ignored; dcode owns the retry budget" not in capsys.readouterr().err
 
+    def test_custom_retry_param_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A configured custom-provider retry kwarg is visibly overridden."""
+        with patch(
+            "deepagents_code.config.collect_retry_config_startup",
+            return_value=([], {"retry_attempts"}),
+        ):
+            self._run_headless(
+                [
+                    "dcode",
+                    "--model-params",
+                    '{"retry_attempts": 3}',
+                    "-n",
+                    "hi",
+                ]
+            )
+
+        stderr = capsys.readouterr().err
+        assert "--model-params retry_attempts is ignored" in stderr
+        assert "--max-retries" in stderr
+
     def test_retry_config_warning_renders_markup_as_text(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """Malformed config values cannot inject Rich markup or crash startup."""
         warning = "Ignoring [retries].max_retries='[/bold]'; expected an integer."
         with patch(
-            "deepagents_code.config.collect_retry_config_warnings",
-            return_value=[warning],
+            "deepagents_code.config.collect_retry_config_startup",
+            return_value=([warning], set()),
         ):
             self._run_headless(["dcode", "-n", "hi"])
 

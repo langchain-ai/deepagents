@@ -7874,6 +7874,20 @@ class TestCollectRetryConfigWarnings:
         warnings = self._warnings(tmp_path, "[retries.openai]\nmax_retry = 3\n")
         assert any("[retries.openai].max_retry=3" in text for text in warnings)
 
+    def test_custom_provider_param_is_returned_for_startup(
+        self, tmp_path: Path
+    ) -> None:
+        """Startup can identify custom retry kwargs that model params override."""
+        from deepagents_code.config import collect_retry_config_startup
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.foo]\nparam = "retry_attempts"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            warnings, param_names = collect_retry_config_startup()
+
+        assert warnings == []
+        assert param_names == {"retry_attempts"}
+
 
 class TestDeniedHomeKeyReporting:
     """A denied `DEEPAGENTS_HOME` must be loud in the user's own dotenv.

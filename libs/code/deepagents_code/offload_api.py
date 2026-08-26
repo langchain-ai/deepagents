@@ -34,6 +34,7 @@ from deepagents_code.server_graph import get_server_runtime
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
+    from langsmith import Client
     from starlette.requests import Request
 
     from deepagents_code.cost_tracking import PreparedOperationCost
@@ -71,25 +72,108 @@ _operation_outcomes: OrderedDict[_OperationKey, _OperationOutcome] = OrderedDict
 _MAX_OPERATION_OUTCOMES = 1024
 """Bound completed/cancelled ids retained to close request/cancel races."""
 _TRACE_FLUSH_TIMEOUT = 2.0
+"""Seconds allowed for the shutdown trace flush.
+
+Held below `client.launch.server._SHUTDOWN_TIMEOUT` (3s), the SIGTERM grace
+period before dcode escalates to SIGKILL, so the flush completes inside the
+window instead of being killed mid-send. Raising this past that budget makes
+shutdown strictly worse: the process is killed with the traces still queued.
+"""
+_TRACE_FLUSH_GRACE = 0.5
+"""Extra seconds before the flush thread is abandoned.
+
+`Client.flush` bounds only the wait on already-submitted sends; its
+synchronous drain and submit steps -- including a retrying inline send when
+the client thread pool is already shut down -- ignore the timeout. The outer
+`asyncio.wait_for` supplies the hard ceiling that `flush` itself does not.
+"""
+
+
+def _pending_trace_batches(client: Client) -> int:
+    """Count trace batches still unsent after a flush.
+
+    `Client.flush` returns silently when its deadline expires, so a truncated
+    flush is indistinguishable from a complete one unless the leftovers are
+    inspected directly.
+
+    Args:
+        client: The LangSmith client that was just flushed.
+
+    Returns:
+        Number of queued or in-flight batches, or 0 if the client does not
+        expose the internals this reads.
+    """
+    queue = getattr(client, "tracing_queue", None)
+    pending = getattr(queue, "unfinished_tasks", 0) if queue is not None else 0
+    return pending + len(getattr(client, "_futures", None) or ())
 
 
 async def _flush_traces() -> None:
-    """Flush the child process's existing LangSmith tracing client."""
-    from langsmith import run_trees
+    """Flush the child process's existing LangSmith tracing client.
 
-    client = run_trees._CLIENT
-    if client is None:
-        return
+    Reads `run_trees._CLIENT` directly rather than calling the public
+    `get_cached_client()`, which would *construct* a client when tracing is
+    off. `langchain_core.tracers.langchain.wait_for_all_tracers` reads the
+    same private global for the same reason; it is unusable here only because
+    it accepts no timeout, and an unbounded flush would outlive the SIGTERM
+    grace period.
+
+    Best effort by contract: every failure is logged and swallowed so a
+    telemetry problem can never turn into a failed shutdown.
+
+    Note that this runs before LangGraph's own lifespan teardown (an
+    `AsyncExitStack` unwinds last-entered first), so traces emitted while the
+    runtime cancels in-flight runs are still lost. Covering those would need a
+    second flush after the runtime is down.
+    """
     try:
-        await asyncio.to_thread(client.flush, timeout=_TRACE_FLUSH_TIMEOUT)
-    except Exception:
-        logger.warning(
-            "Failed to flush LangSmith traces during shutdown", exc_info=True
+        from langsmith import run_trees
+
+        client = getattr(run_trees, "_CLIENT", None)
+        if client is None:
+            logger.debug("No LangSmith client to flush during shutdown")
+            return
+
+        await asyncio.wait_for(
+            asyncio.to_thread(client.flush, timeout=_TRACE_FLUSH_TIMEOUT),
+            timeout=_TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE,
         )
+
+        if pending := _pending_trace_batches(client):
+            logger.warning(
+                "LangSmith trace flush incomplete after %.1fs; dropping %d batch(es)",
+                _TRACE_FLUSH_TIMEOUT,
+                pending,
+            )
+    except TimeoutError:
+        logger.warning(
+            "LangSmith trace flush exceeded %.1fs; dropping queued traces",
+            _TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE,
+        )
+    except Exception:
+        # Broad by design: this runs in a `finally` during shutdown, so an
+        # escaping error would replace whatever was already propagating.
+        # `exception` (not `warning`) so a broken langsmith integration --
+        # a renamed `_CLIENT`, a dropped `timeout` kwarg -- is loud rather
+        # than a silently permanent no-op.
+        logger.exception("Failed to flush LangSmith traces during shutdown")
 
 
 @asynccontextmanager
 async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
+    """Flush buffered traces once the server stops serving.
+
+    `Client` registers an `atexit` handler that only closes its session, never
+    flushes, so without this hook anything still queued when dcode signals the
+    server is lost. The flush is in a `finally` so it also runs when the app
+    body raises -- the crash case where the buffered traces matter most.
+
+    Args:
+        _app: The Starlette app, required by the lifespan protocol.
+
+    Yields:
+        Control for the lifetime of the application.
+    """
     try:
         yield
     finally:

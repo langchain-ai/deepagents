@@ -62,49 +62,6 @@ Administrators can enforce any supported `config.toml` setting with a read-only
 Managed values override two lower layers: the `DEEPAGENTS_CODE_` and
 compatibility environment variables, and `~/.deepagents/config.toml`.
 
-The fixed file may instead point to one centrally hosted policy:
-
-```toml
-[managed_config]
-source = "https://config.example.com/dcode/managed_config.toml"
-```
-
-In remote mode, the fixed file is only a trust anchor. It must contain only the
-`[managed_config]` table and its `source` key. The downloaded document is then
-the complete managed policy. Remote policy cannot declare `[managed_config]` at
-all. The URL must use HTTPS. It cannot contain credentials, a query string, or a
-fragment. It cannot contain whitespace or control characters. It must be
-printable ASCII.
-
-`dcode` ignores environment proxy settings and refuses redirects. It validates
-the certificate against Python's default TLS trust store. One five-second budget
-covers the whole fetch: the connection, the TLS handshake, the headers, and the
-body. `dcode` abandons the fetch when that budget is spent. It rejects a
-response larger than 1 MiB. Only one fetch of a given URL runs at a time; a
-second one is refused while the first has not returned.
-
-`dcode` accepts only a complete policy document. The response must have status
-200. The media type must be `application/toml`, `text/plain`, or
-`application/octet-stream`, and the body must not be compressed. A response
-that declares no media type is also read. A document served with any other
-media type is rejected before it is parsed. Framing must show that the body
-arrived whole: one `Content-Length` that matches the bytes read, or chunked
-encoding. A response that sends both, or that repeats `Content-Length` with
-different values, is rejected. A document with no keys is a failed publish.
-`dcode` does not read it as a policy that enforces nothing. Truncated TOML
-often still parses, so a partial document would otherwise enforce a policy with
-entries silently missing.
-
-`SSL_CERT_FILE` and `SSL_CERT_DIR` still select the trust store. A local user
-who controls the environment of the `dcode` process can therefore substitute
-the certificate authorities this fetch accepts.
-
-`dcode` can reach a private enterprise host. The administrator's URL is the only
-permitted destination. There is no persistent cache or remote authentication. A
-fetch failure blocks startup just like an unreadable local policy. A failed
-`/reload` keeps the last policy that was enforceable in the running process, and
-`dcode doctor` reports the failed refresh.
-
 For an agent launch, managed values also override these CLI flags: the model,
 the auto-classifier model, the interpreter toggle, the programmatic tool-calling
 list, the recursion limit, the shell allow list, and the startup mode. A managed

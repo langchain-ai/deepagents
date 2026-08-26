@@ -196,13 +196,14 @@ async def test_factory_errors_are_isolated(
 
 
 async def test_shutdown_runs_in_reverse_registration_order(tmp_path: Path) -> None:
-    """Teardown unwinds resources in reverse registration order."""
+    """Teardown unwinds resources and isolates extension exit attempts."""
     from deepagents_code.extensions.registry import ExtensionRegistry, SourceInfo
 
     order: list[str] = []
     registry = ExtensionRegistry()
     source = SourceInfo(tmp_path / "extension.py")
     registry.add_shutdown_hook(lambda: order.append("first"), source)
+    registry.add_shutdown_hook(lambda: (_ for _ in ()).throw(SystemExit(7)), source)
     registry.add_shutdown_hook(lambda: order.append("second"), source)
 
     await shutdown_extensions(ExtensionLoadResult(registry=registry, active=True))

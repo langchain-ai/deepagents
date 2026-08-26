@@ -166,7 +166,7 @@ async def shutdown_extensions(extensions: ExtensionLoadResult) -> None:
                 result = hook.unit()
                 if inspect.isawaitable(result):
                     await result
-            except Exception:
+            except (Exception, SystemExit):
                 logger.warning(
                     "Shutdown hook from %s failed", hook.source.label, exc_info=True
                 )

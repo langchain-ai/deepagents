@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-from deepagents_code._env_vars import (
-    EXTENSIONS,
-    EXTENSIONS_TRUST,
-    classify_env_bool,
-)
+from deepagents_code.configuration.resolver import USER_RANK, get_config_resolver
+
+if TYPE_CHECKING:
+    from deepagents_code.configuration.resolver import ConfigResolver
 
 logger = logging.getLogger(__name__)
 
@@ -43,24 +41,12 @@ class ExtensionSettings:
     """Explicit directories from trusted user configuration."""
 
 
-def _read_config_section() -> dict[str, object]:
-    import tomllib
-
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as handle:
-            data = tomllib.load(handle)
-    except FileNotFoundError:
+def _read_config_section(resolver: ConfigResolver) -> dict[str, object]:
+    snapshot = resolver.toml_snapshot(USER_RANK)
+    if snapshot is None:
+        logger.error("Shared resolver has no user config provider")
         return {}
-    except (OSError, tomllib.TOMLDecodeError):
-        logger.warning(
-            "Could not read extensions config from %s",
-            DEFAULT_CONFIG_PATH,
-            exc_info=True,
-        )
-        return {}
-    section = data.get("extensions")
+    section = snapshot.data.get("extensions")
     return section if isinstance(section, dict) else {}
 
 
@@ -101,38 +87,25 @@ def _parse_paths(raw: object, *, name: str) -> tuple[Path, ...]:
 
 
 def load_extension_settings() -> ExtensionSettings:
-    """Resolve extension settings with environment overrides.
-
-    Invalid environment values fall through to user configuration rather than
-    silently changing the runtime behavior reported by `dcode config`.
+    """Resolve extension settings through the shared config generation.
 
     Returns:
         Effective settings with safe defaults for malformed values.
+
+    Raises:
+        RuntimeError: If the extension manifest options are unavailable.
     """
-    section = _read_config_section()
+    from deepagents_code.config_manifest import get_option
 
-    configured_enabled = section.get("enabled")
-    enabled = configured_enabled if isinstance(configured_enabled, bool) else True
-    env_enabled = os.environ.get(EXTENSIONS)
-    if env_enabled is not None and env_enabled.strip():
-        parsed_enabled = classify_env_bool(env_enabled)
-        if parsed_enabled is None:
-            logger.warning("Ignoring %s=%r (expected bool)", EXTENSIONS, env_enabled)
-        else:
-            enabled = parsed_enabled
-
-    trust = parse_trust_policy(section.get("trust")) or TrustPolicy.ASK
-    env_trust = os.environ.get(EXTENSIONS_TRUST)
-    if env_trust is not None and env_trust.strip():
-        parsed_trust = parse_trust_policy(env_trust)
-        if parsed_trust is None:
-            logger.warning(
-                "Ignoring %s=%r (expected ask, always, or never)",
-                EXTENSIONS_TRUST,
-                env_trust,
-            )
-        else:
-            trust = parsed_trust
+    resolver = get_config_resolver()
+    enabled_option = get_option("extensions.enabled")
+    trust_option = get_option("extensions.trust")
+    if enabled_option is None or trust_option is None:
+        msg = "Extension options are missing from the config manifest"
+        raise RuntimeError(msg)
+    enabled = cast("bool", resolver.get(enabled_option).value)
+    trust = TrustPolicy(cast("str", resolver.get(trust_option).value))
+    section = _read_config_section(resolver)
 
     return ExtensionSettings(
         enabled=enabled,

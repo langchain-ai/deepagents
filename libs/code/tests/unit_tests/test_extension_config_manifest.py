@@ -2,7 +2,9 @@
 
 from unittest.mock import patch
 
-from deepagents_code._env_vars import EXTENSIONS_TRUST
+import pytest
+
+from deepagents_code._env_vars import EXTENSIONS, EXTENSIONS_TRUST
 from deepagents_code.config_manifest import (
     OptionKind,
     get_option,
@@ -34,3 +36,30 @@ def test_invalid_trust_env_matches_runtime_fallback() -> None:
             "never",
             "config.toml",
         )
+
+
+def test_runtime_settings_honor_managed_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed extension policy must override user and environment values."""
+    from deepagents_code.configuration import resolver as resolver_module
+    from deepagents_code.configuration.types import TomlSnapshot
+    from deepagents_code.extensions import settings as settings_module
+    from deepagents_code.extensions.settings import TrustPolicy, load_extension_settings
+
+    resolver = resolver_module.resolver_from_snapshots(
+        managed=TomlSnapshot.from_table(
+            "managed config", {"extensions": {"enabled": False, "trust": "never"}}
+        ),
+        user=TomlSnapshot.from_table(
+            "config.toml", {"extensions": {"enabled": True, "trust": "always"}}
+        ),
+    )
+    monkeypatch.setattr(settings_module, "get_config_resolver", lambda: resolver)
+    monkeypatch.setenv(EXTENSIONS, "true")
+    monkeypatch.setenv(EXTENSIONS_TRUST, "always")
+
+    settings = load_extension_settings()
+
+    assert not settings.enabled
+    assert settings.trust is TrustPolicy.NEVER

@@ -7864,6 +7864,16 @@ class TestCollectRetryConfigWarnings:
         )
         assert any("[retries.openai].param" in text for text in warnings)
 
+    def test_unknown_global_key_is_reported(self, tmp_path: Path) -> None:
+        """A misspelled global retry key reaches startup diagnostics."""
+        warnings = self._warnings(tmp_path, "[retries]\nmax_retry = 3\n")
+        assert any("[retries].max_retry=3" in text for text in warnings)
+
+    def test_unknown_provider_key_is_reported(self, tmp_path: Path) -> None:
+        """A misspelled provider retry key reaches startup diagnostics."""
+        warnings = self._warnings(tmp_path, "[retries.openai]\nmax_retry = 3\n")
+        assert any("[retries.openai].max_retry=3" in text for text in warnings)
+
 
 class TestDeniedHomeKeyReporting:
     """A denied `DEEPAGENTS_HOME` must be loud in the user's own dotenv.

@@ -270,12 +270,14 @@ class TestGlyphUsability:
         assert UNICODE_GLYPHS.box_horizontal == "─"
         assert UNICODE_GLYPHS.box_horizontal_heavy == "━"
         assert UNICODE_GLYPHS.hunk_break == "⋮"
+        assert UNICODE_GLYPHS.line_continuation == "…"
 
     def test_ascii_box_drawing_characters(self) -> None:
         """Test ASCII box-drawing alternatives are simple ASCII."""
         assert ASCII_GLYPHS.box_horizontal == "-"
         assert ASCII_GLYPHS.box_horizontal_heavy == "="
         assert ASCII_GLYPHS.hunk_break == ":"
+        assert ASCII_GLYPHS.line_continuation == "."
 
 
 class TestGetBanner:

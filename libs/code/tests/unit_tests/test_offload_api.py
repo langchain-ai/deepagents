@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+import threading
+import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -1344,6 +1347,192 @@ def test_validated_context_fields_exist_on_the_schema() -> None:
     }
 
     assert validated <= declared, validated - declared
+
+
+_ORPHAN_JOIN_TIMEOUT = 5.0
+"""Seconds a test waits for a released flush thread before giving up."""
+
+
+def _flush_client() -> MagicMock:
+    """Build an autospecced LangSmith client for shutdown tests."""
+    from langsmith import Client
+
+    return create_autospec(Client, instance=True)
+
+
+def _new_flush_thread(existing: set[threading.Thread]) -> threading.Thread:
+    """Return the flush thread started after the supplied snapshot."""
+    started = [
+        thread
+        for thread in threading.enumerate()
+        if thread not in existing and thread.name == "langsmith-shutdown-flush"
+    ]
+    assert len(started) == 1, started
+    return started[0]
+
+
+def _join_flush_threads(existing: set[threading.Thread]) -> None:
+    """Wait for flush threads started after the supplied snapshot."""
+    for thread in threading.enumerate():
+        if thread not in existing and thread.name == "langsmith-shutdown-flush":
+            thread.join(_ORPHAN_JOIN_TIMEOUT)
+
+
+class TestLifespan:
+    """Shutdown flushes buffered LangSmith traces."""
+
+    async def test_flushes_existing_tracing_client(self) -> None:
+        """The flush happens on shutdown, not on startup."""
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        client = _flush_client()
+        with patch.object(run_trees, "_CLIENT", client):
+            async with offload_api.app.router.lifespan_context(offload_api.app):
+                client.flush.assert_not_called()
+
+        client.flush.assert_called_once_with()
+
+    async def test_flushes_when_the_app_body_raises(self) -> None:
+        """A crashing app still flushes without replacing its exception."""
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        client = _flush_client()
+
+        async def run_and_raise() -> None:
+            async with offload_api.app.router.lifespan_context(offload_api.app):
+                msg = "app exploded"
+                raise RuntimeError(msg)
+
+        with (
+            patch.object(run_trees, "_CLIENT", client),
+            pytest.raises(RuntimeError, match="app exploded"),
+        ):
+            await run_and_raise()
+
+        client.flush.assert_called_once_with()
+
+    async def test_flushes_off_the_event_loop(self) -> None:
+        """The blocking flush runs on a daemon worker, not the event loop."""
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        flush_threads: list[int] = []
+        client = _flush_client()
+        client.flush.side_effect = lambda: flush_threads.append(threading.get_ident())
+
+        with patch.object(run_trees, "_CLIENT", client):
+            async with offload_api.app.router.lifespan_context(offload_api.app):
+                pass
+
+        assert len(flush_threads) == 1
+        assert flush_threads[0] != threading.get_ident()
+
+    async def test_does_not_create_tracing_client(self) -> None:
+        """Tracing disabled remains a no-op rather than constructing a client."""
+        import langsmith
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        def forbidden(*_args: object, **_kwargs: object) -> None:
+            msg = "shutdown must not construct a LangSmith client"
+            raise AssertionError(msg)
+
+        with (
+            patch.object(run_trees, "_CLIENT", None),
+            patch.object(langsmith.Client, "__init__", forbidden),
+        ):
+            async with offload_api.app.router.lifespan_context(offload_api.app):
+                pass
+
+    async def test_hung_flush_does_not_block_shutdown(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hung flush is abandoned after the external deadline."""
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        release = threading.Event()
+        client = _flush_client()
+        client.flush.side_effect = release.wait
+        existing = set(threading.enumerate())
+        try:
+            with (
+                patch.object(run_trees, "_CLIENT", client),
+                patch.object(offload_api, "_TRACE_FLUSH_TIMEOUT", 0.01),
+                patch.object(offload_api, "_TRACE_FLUSH_POLL_INTERVAL", 0.001),
+                caplog.at_level(logging.WARNING, logger=offload_api.__name__),
+            ):
+                started = time.monotonic()
+                async with offload_api.app.router.lifespan_context(offload_api.app):
+                    pass
+                elapsed = time.monotonic() - started
+
+            assert "some traces may be lost" in caplog.text
+            assert elapsed < 0.5
+            orphan = _new_flush_thread(existing)
+            assert orphan.daemon
+            assert orphan.is_alive()
+        finally:
+            release.set()
+            _join_flush_threads(existing)
+
+    async def test_flush_failure_is_logged_and_swallowed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A telemetry failure cannot turn into a failed shutdown."""
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        client = _flush_client()
+        client.flush.side_effect = RuntimeError("flush failed")
+        with (
+            patch.object(run_trees, "_CLIENT", client),
+            caplog.at_level(logging.ERROR, logger=offload_api.__name__),
+        ):
+            async with offload_api.app.router.lifespan_context(offload_api.app):
+                pass
+
+        assert "Failed to flush LangSmith traces" in caplog.text
+        assert "flush failed" in caplog.text
+
+    async def test_base_exception_is_logged_and_swallowed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-Exception failure still releases the shutdown waiter."""
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        client = _flush_client()
+        client.flush.side_effect = SystemExit(1)
+        with (
+            patch.object(run_trees, "_CLIENT", client),
+            caplog.at_level(logging.ERROR, logger=offload_api.__name__),
+        ):
+            async with offload_api.app.router.lifespan_context(offload_api.app):
+                pass
+
+        assert "Failed to flush LangSmith traces" in caplog.text
+        assert "SystemExit" in caplog.text
+
+
+class TestFlushBudget:
+    """The flush leaves time for LangGraph's own lifespan teardown."""
+
+    def test_flush_budget_leaves_teardown_margin(self) -> None:
+        from deepagents_code import offload_api
+        from deepagents_code.client.launch import server
+
+        remaining = server._SHUTDOWN_TIMEOUT - offload_api._TRACE_FLUSH_TIMEOUT
+        assert remaining >= 2.0
 
 
 class TestRouteRegistration:

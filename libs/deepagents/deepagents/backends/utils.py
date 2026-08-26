@@ -21,6 +21,19 @@ from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMa
 logger = logging.getLogger(__name__)
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+
+
+class InvalidGlobPatternError(ValueError):
+    """A glob pattern the shared matcher refuses to compile.
+
+    Subclasses `ValueError` so existing `except ValueError` handlers keep
+    working. Callers that catch this specific type can label the failure a
+    *pattern* problem truthfully -- a bare `ValueError` from the same call also
+    covers path normalization, and mislabeling one as the other sends the model
+    off rewriting a glob that was fine.
+    """
+
+
 MAX_VIDEO_INPUT_BYTES: Final = 1024 * 1024 * 1024
 """Maximum raw video payload size accepted by `read_file` frame extraction."""
 
@@ -100,9 +113,17 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
 
         Example: `/*.py` matches `top.py` but not `src/app/main.py`.
 
+    Leading-dot names match only when the pattern segment itself starts with
+    `.` (no `DOTMATCH`), and `**` will not descend into dot-directories. A bare
+    pattern is therefore *broader* than its `**/` form: `*.yml` matches
+    `.github/workflows/ci.yml`, while `**/*.yml` does not.
+
     Exclusion/negation patterns (a leading `!`) are not supported: the `!` is
     treated literally rather than inverting the match, so results for such
     patterns can diverge from `rg --glob '!...'`.
+
+    This is the single source of truth for both `grep(..., glob=...)` and
+    backend `glob()`.
 
     Args:
         pattern: Glob include pattern.
@@ -112,10 +133,18 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
         the path is included by `pattern`.
 
     Raises:
-        ValueError: If `wcmatch` refuses the pattern (e.g. brace expansion past
-            its limit). Note most malformed patterns (`*.{py`, `[a-`) do not
-            raise -- they compile and simply match nothing.
+        InvalidGlobPatternError: If the pattern contains a `..` segment, or if
+            `wcmatch` refuses it (e.g. brace expansion past its limit). Note
+            most malformed patterns (`*.{py`, `[a-`) do not raise -- they
+            compile and simply match nothing.
     """
+    # Reject traversal here rather than per-backend: every backend routes
+    # through this function, so a single check keeps `../*.py` from being an
+    # exception in one backend and a silent empty result in another.
+    if ".." in pattern.replace("\\", "/").split("/"):
+        msg = f"Path traversal not allowed in glob pattern {pattern!r}"
+        raise InvalidGlobPatternError(msg)
+
     flags = wcglob.BRACE | wcglob.GLOBSTAR
     # A leading `/` anchors to the search root: strip it so it matches against
     # the (slash-less) relative path, but decide anchoring from the original
@@ -126,10 +155,14 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
         compiled = wcglob.compile(pattern.lstrip("/"), flags=flags)
     except Exception as exc:
         # `wcmatch` only raises private types (`wcmatch._wcparse.PatternLimitException`),
-        # so catch broadly and re-raise as ValueError: every backend can then catch
-        # one public type instead of importing from a private module.
+        # so catch broadly and re-raise a public type: every backend can then catch
+        # one public type instead of importing from a private module. Log first --
+        # the breadth also swallows genuine bugs (a non-`str` pattern, a wcmatch
+        # version bump), which would otherwise reach the user as "invalid pattern"
+        # for a pattern that is perfectly valid.
+        logger.warning("wcmatch refused glob pattern %r (%s): %s", pattern, type(exc).__name__, exc)
         msg = f"Invalid glob pattern {pattern!r}: {exc}"
-        raise ValueError(msg) from exc
+        raise InvalidGlobPatternError(msg) from exc
 
     if anchored:
 
@@ -141,21 +174,6 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
             return bool(compiled.match(PurePosixPath(rel_path).name))
 
     return matcher
-
-
-def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
-    """Alias for `compile_grep_include_glob`, named for the `glob()` call site.
-
-    Backend `glob()` and grep include-filters share one contract; see
-    `compile_grep_include_glob` for the rules and the `Raises` behavior.
-
-    Args:
-        pattern: Glob pattern.
-
-    Returns:
-        Predicate accepting a search-root-relative POSIX path.
-    """
-    return compile_grep_include_glob(pattern)
 
 
 def _normalize_content(file_data: FileData) -> str:
@@ -814,6 +832,11 @@ def _glob_search_files(
 
             `"No files found"` if no matches.
 
+    Raises:
+        InvalidGlobPatternError: If the matcher refuses `pattern` (see
+            `compile_grep_include_glob`). Note an unparseable `path` is *not*
+            raised -- it returns `"No files found"`.
+
     Example:
         ```python
         files = {"/src/main.py": FileData(...), "/test.py": FileData(...)}
@@ -897,7 +920,8 @@ def grep_matches_from_files(
     dropped is reported complete (`truncated=False`).
 
     We deliberately do not raise here to keep backends non-throwing in tool
-    contexts and preserve user-facing error messages.
+    contexts and preserve user-facing error messages: a refused `glob` filter
+    is returned as `GrepResult(error=...)`, not raised.
     """
     try:
         normalized_path = _normalize_path(path)
@@ -907,7 +931,10 @@ def grep_matches_from_files(
     filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
-        matcher = compile_grep_include_glob(glob)
+        try:
+            matcher = compile_grep_include_glob(glob)
+        except InvalidGlobPatternError as exc:
+            return GrepResult(error=str(exc))
         filtered = {fp: fd for fp, fd in filtered.items() if matcher(_relative_to_root(fp, normalized_path))}
 
     matches: list[GrepMatch] = []

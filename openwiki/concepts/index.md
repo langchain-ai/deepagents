@@ -1,0 +1,11 @@
+# Files
+
+- [Backends (Filesystem, State, Store, Sandbox)](backends.md) - How deepagents' pluggable BackendProtocol decides where agent files, memory, and shell execution live — covering the state, store, filesystem, sandbox, composite, langsmith, local_shell, and context_hub implementations and how the resolved backend fixes durability and shell availability.
+- [dcode Configuration Model](config-layering.md) - How Deep Agents Code layers user, project, session, and runtime configuration into one process-wide resolution generation, when that generation advances, and which readers deliberately snapshot files on their own.
+- [Context Management (Summarization, Eviction, Offload)](context-management.md) - How deepagents keeps model context bounded by summarizing long message histories, evicting or clipping large tool outputs to disk, and offloading full conversation history to per-session archives.
+- [Middleware Catalog](middleware-catalog.md) - Index of the built-in deepagents SDK middleware modules — what each contributes, its responsibility, and where the deeper concept page lives.
+- [Permissions & Human-in-the-Loop](permissions-hitl.md) - How deepagents enforces filesystem permissions at the tool level and how the SDK and dcode pause tool calls for human approval, including path-scoped interrupt rules, dcode approval modes, and the ask_user flow.
+- [Profiles & Model Resolution](profiles-models.md) - How Deep Agents turns a model string into a configured chat model and tunes runtime behavior via two orthogonal profile systems — provider profiles (model construction) and harness profiles (prompt, tools, middleware).
+- [State & Persistence](state-persistence.md) - How Deep Agents models run state with DeepAgentState and the DeltaChannel messages reducer, and how the two persistence axes — LangGraph checkpoints versus backend filesystem/memory — differ and interact.
+- [Subagents & Skills](subagents-skills.md) - How the deepagents SDK delegates work to isolated subagents via a task tool and loads reusable, on-demand skills into the system prompt through progressive disclosure.
+- [Tool Surface & Filesystem Tools](tools-filesystem.md) - How the model's visible tool set is assembled from middleware, caller tools, backend capability, and profile exclusions, and how the built-in filesystem tools and their permission checks behave.

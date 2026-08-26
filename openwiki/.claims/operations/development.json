@@ -1,0 +1,266 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:66eef5306a82732b89ec7aeb2de4ddcd92a27f18231ee66ca30a705c0e1ed363",
+  "claims": [
+    {
+      "id": "claim_a64f733f2f92431a84333168dbfe4826",
+      "statement": "The repository is a monorepo of independently versioned Python packages under libs/ with no root pyproject.toml; each package owns its own pyproject.toml, Makefile, and README.md, and contributors work inside the single package they are changing.",
+      "evidence": [
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L30-L49",
+          "version": "repo-lines-v1:sha256:7fadcab0884d15474b9ffc94632e833e341967e49cdc798b113d09d8d854a6f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1YTU3M2ViOTJkN2U2ZDc2NmIwOGNmNTU4ZjUzZjhjM2M5MDNiMTdhMzM0ZmRiMDBhNThjYjVlNmEzY2NhYWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTU5OTNiM2Q5NDNkMDZiMmRlN2I4OTViMDE1MmY3YzNmZmQ2YmI2YjcxZGI4ZDgyNGI0NjNmZjA4OTA1ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZiNzM1YTE1OWU0MTI5M2Q4NWMwMWQ0MWE3NzAzOTk3ZGI0YjE3MGM0MTM3YzU2NGQzNDBmMGFlNWEzYzY0OTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODE3MzI2NGExYjg2YzJlMWVmY2ZiMTZhNTk2OTRiNGI4OWUxNWJhOGJkODhmOTI0NmMzZTU1ZTdmNTM5ZGYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_95c92ea73e8e4bfe8801ed3e4a080237",
+      "statement": "Local package dependencies are wired as editable uv sources, so changes in a dependency package are immediately visible to sibling packages during development (e.g. libs/code declares deepagents, deepagents-acp, and every partner package with editable = true).",
+      "evidence": [
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L49-L49",
+          "version": "repo-lines-v1:sha256:7695993b3d943d06b2de7b895b0152f7c3ffd6bb6b71db8d824b463ff08905d2:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzY5NTk5M2IzZDk0M2QwNmIyZGU3Yjg5NWIwMTUyZjdjM2ZmZDZiYjZiNzFkYjhkODI0YjQ2M2ZmMDg5MDVkMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNzY5NTk5M2IzZDk0M2QwNmIyZGU3Yjg5NWIwMTUyZjdjM2ZmZDZiYjZiNzFkYjhkODI0YjQ2M2ZmMDg5MDVkMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNWU3NDM2MTA0YWRkOGVlNzA0OWIwZmIwNDI5MmJjNTI3MTUwYzRlOGY1OTdjZGM3MWEwMmU2Y2NlMjkzZWNhMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTY4MTczMjY0YTFiODZjMmUxZWZjZmIxNmE1OTY5NGI0Yjg5ZTE1YmE4YmQ4OGY5MjQ2YzNlNTVlN2Y1MzlkZiJ9"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L213-L220",
+          "version": "repo-lines-v1:sha256:d17072bf7263abf884a8260ad4ae1059ed3b0302391e9a981c6677cba58f44ca:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjUyZmM1OGIzZjRiOTczNzM2YjNhZDc5ZDFkNzQ5NTEwNTIzMGY2NWUzZDk4NjM3YTQ2YWU4ZTJmZWEyOTUyZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmZlYjcxZTU4NGZjZjYxMzlmMTU4ODY4OGM2NDE3Nzc0Y2ZjOTFjZjNhZGNlYmRhMzYzMjY2NWIyNGI4NzJlMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2UxMTZhYjgzZDA2YzE2MDkwYTgwMzc2OTc3ZDZmNzFkNjY1NmY5N2U5MmJmNjM4OWRkMTBiOTc3NTEyZWE2OCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_087b527158824dd9944ec31c2730a8a1",
+      "statement": "The development toolchain is uv-only (interpreters, virtual environments, and dependencies) plus make as the task runner; pip, poetry, and conda are disallowed, and uv provisions the correct interpreter automatically so there is no global Python version to pin.",
+      "evidence": [
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L8-L13",
+          "version": "repo-lines-v1:sha256:dcf3a99df90126eda41a8723677b225acb5d1dbfdd14d43496665efc205b1829:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOWQ4ZmVmZGY0MjlkMDg5NzkzNGYzMDZlMmJhYjM5ZDFiNmJlMjdjYWEzNmY4MzRhYjNhYWQ2YzNlY2U5OTc2MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWRjMTY2NzEwMzZkZDNmYzM3MWZlMmIxYzA1NWQxZjU3ZDViOTQ3ZjE2OGFjMWMwM2FkYWIxNTQxMWMzNDMzMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2MyNTUwNmQzOTdjMDUzMTNiMTVkNDIyY2NjMzc3MWVhNjBmODk2YTVjYzZmNGNlY2U1MDZkMGNlY2ZlODk0MSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzIxMDZkYThkNTg1YmJjNjcxNmViMWUzMTU3NWRjZjcwMmMxZDYyZGNhMjRlNWQzYmU2ZGJhOTdmZTk3ZDc5NiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_014666f13f9d4f89a2913acc7ab92dbe",
+      "statement": "libs/DEVELOPMENT.md defines four monorepo rules: install dependencies explicitly with uv sync, never create a virtual environment outside the package directory, never mix environments within one session, and never pin a global Python version but defer to each package's requires-python.",
+      "evidence": [
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L62-L67",
+          "version": "repo-lines-v1:sha256:538da00d0532b02a2be6d0cdee2b191ae4a687b6b2626d88425e2306badec22a:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDEwNThjNTI3Y2YzOWIxNzg1ZTdhYmYzZTk1MGEzNjljZGE2ZTdkNzUyM2M4YjVkN2ViZWUwM2FkYmZkYjJhNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzVhOTQyMjY4NDBkM2I1NDczOGVjMmI2MDQzNGJhOGU2NjRiZTc3MzgyZjNiMjQzMzliMTA0MGM0MTk5MjA1YSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDkxMzBjMDEyYTQ1NTFiMDA3ZWQ1MmUyZDI3MTczYzIwYTkwNzFjMzEyMDFkZWI5OGQ1MmM5MDRiZGZlYWQ1MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjQ4NDY1NTBmM2Y5YzAxMmVhZjE1OGI4NjgyN2IxNzgwNjZmNDcxZDBmOGM5MTViZWViNjZlNTNmOTJiYzgzOSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_b9fc61ea48094c739f4574840b1cff90",
+      "statement": "The standard per-package workflow is to cd into a package, run uv sync --all-groups to install the package plus all dependency groups, then use the package's make targets (test, lint, format) with make help listing available targets.",
+      "evidence": [
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L51-L88",
+          "version": "repo-lines-v1:sha256:ed5df95b7ae563146f8ecd596460a9439c2a294b5fbebd29346f0f3bf2f49174:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxN2ZkZDFhYTMwY2M0ZGFjNDk2MzcwZmQ1NmViZWIyMTI5MWE2Zjk4MGZjMDU3MzFiYTg2MTM3MWIyNWM2NDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YzA2YzU2MWQ1YzMyNzM0MzY4NTI2OGE0NmIzMzkxZjM5OThlZWU4OTBkMmJlNTFmMGQyMWNjNGE1M2FlNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU5ODMyMGYzMDZlMjdiNmZiOWJhYmUyMjg0YTkwZWVhYjUyMDVhYWFlNWMyYzZkYTIzNGVmMWU2YzlkYTAzNDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM3NzY1M2E4ODRiMjliOTVhMjQyOTkzZTJkYmE0NzgzNDMxNmFhZGQxZDY5MDYyZGMzNzdhYTNhMWFmNjE4ZWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3d6ad2f492d94c51b3a6f13cfaa8e273",
+      "statement": "Package make targets invoke tooling through uv run and export UV_FROZEN = true so a stale lockfile fails the run instead of being silently updated; make test runs unit tests offline (--disable-socket) and in parallel (-n auto) with coverage.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/Makefile#L5-L23",
+          "version": "repo-lines-v1:sha256:a5a4e865b261974bdb79ba95e5264944113a1a611346f9ee044491c9ed36bc9a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViYzhmMjk2MzFkY2JjNjhhZTY3MGE3NjFjZTZkMzMzNjI0OTcxY2M0MDI2Zjk2NDg5YmQ1YjFjMjE0NzY4YmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyOGU3YzAyNGQ4MTg2NDQxN2NjY2I0NjU4MmVkOWJhNzM5YWM2OWZkZjA2YTgwMDE1NWNjM2ZlZjkzNDQyNjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwNjM0NjAyNzhhZGRmMjI3MTMyZmNjNWE4YjZkOWI2ZWJmMjAwZjFiNWEwOGQwNzQwNWY1Y2IwY2E0N2I5YWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0M2E3OGIwMjQyZGQ5Njk2ODg1NmNlODU5ZjM0MTcwYWZkYTI3MjVlNWYyYjllYWJkNGE0MzE3ODI1YjEyYTAifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/Makefile#L70-L83",
+          "version": "repo-lines-v1:sha256:341bc5598a2613089ae7aa4962e152e26e44d0d8d517e725651b0124745a61e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3ZWM2OTdiMDg2YTJiZGE3ZDlhZmRkYmQ1NTJhZmY3YTMxYTlkNDg0MDAwYmJmODFmNjM1N2ZlOTkwOTdiOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiNjc4YWE4MDJkM2YyMGIzNDlmMzFkYmU5OWU0Zjk2NDI0NDc5ZDIxN2EyMTU0NmUyN2Q4NzhkYzc2Njk5ZDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2NGUwZDE5YjI0MzM3MzI4MGM0ZmQ3NjJiZjAxZmZlOWQ0NDgzYTM5ZmYxYWVlMjIxOTcwMGY2MjBkYzExNTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYxZGI1MWJkMTFhODUwZjAzZWVjNzc0Njc4NzEzMmYyZjEzZDI2ZmI2OTgwZTU4OGZiMWEwMjA4NzAxMGY0MWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f5ef849c66e94ef2b912d53067661cf9",
+      "statement": "make lint runs ruff check plus ruff format --diff and then the ty type checker, while make format applies ruff format and safe ruff check --fix fixes.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/Makefile#L70-L83",
+          "version": "repo-lines-v1:sha256:341bc5598a2613089ae7aa4962e152e26e44d0d8d517e725651b0124745a61e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3ZWM2OTdiMDg2YTJiZGE3ZDlhZmRkYmQ1NTJhZmY3YTMxYTlkNDg0MDAwYmJmODFmNjM1N2ZlOTkwOTdiOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiNjc4YWE4MDJkM2YyMGIzNDlmMzFkYmU5OWU0Zjk2NDI0NDc5ZDIxN2EyMTU0NmUyN2Q4NzhkYzc2Njk5ZDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2NGUwZDE5YjI0MzM3MzI4MGM0ZmQ3NjJiZjAxZmZlOWQ0NDgzYTM5ZmYxYWVlMjIxOTcwMGY2MjBkYzExNTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYxZGI1MWJkMTFhODUwZjAzZWVjNzc0Njc4NzEzMmYyZjEzZDI2ZmI2OTgwZTU4OGZiMWEwMjA4NzAxMGY0MWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_98a95b267eba47aba14097c7d0d4b589",
+      "statement": "The per-package Makefile help target auto-generates its target listing by scanning ## comments in the Makefile.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/Makefile#L93-L97",
+          "version": "repo-lines-v1:sha256:57ea32a5be57816b80f562a43fd1604e00050acd09cfa1b11793090d82e3d252:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWNjOTJiNWU2YjQ0MzAyMzJiODAxZmNjMTJmYjcxOGM5MzBmMmQ3YjA3MmIyYjFlODhhNDc3NDc0ZDE5MWJhYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzI3YTBjNzFkYzc0MmJiMDliZTcxMDIyNTU0ZTZlZTQ2MjE5NmU3MWY3NTE2NmI4YjMyNTc3ZGY0ODUyMWQ4ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGQ3ZDQ5OGY5MDlmMzgzYzIyZTE2MWU3YjU2Y2M1MzIyNjAyYzVjMTUwNmU3YTFjMDU3NDg0ZjA4MWFlMmI0MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_8b1fec4be0fe480e81d10cc0cd5c51e0",
+      "statement": "libs/Makefile provides repo-wide fan-out targets (lint, format, lock, lock-check, lock-bump, bench-all) that iterate over discovered packages and run each package's corresponding target, stopping on the first failure via set -e.",
+      "evidence": [
+        {
+          "resource": "repo://libs/Makefile#L55-L76",
+          "version": "repo-lines-v1:sha256:aa1d811d3e9756bcd12ea264b8a9dc477001d9ad1825635da8d2128ce15ec607:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyMjE1MTI1YmFhODE4ZDA2ZDg3MjMxZWYzYjMyY2FhYjVlODg4ZTA4ODY4NzJhZmJhYjVmOWQxOTg3OGM3OWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OWEwZmIyMTcxZjliNTk0YmQyZjA5YzQwMmEwYjU1MmRiNjNiNTBlZDBhNzE1OGEzMWQzMGFlYWRhYjVjMzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ1ZmM1YTY1NDg4YjI1OGUzZTBkMWFlYzBjZTllNzAxZGJiY2M3ZmUwZmE1M2Q3OTFiZDA5NWE5OTY5OTdhMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_78d1b2fff5cf4cab96b40ddc4af09b22",
+      "statement": "The libs/Makefile lock targets invoke uv lock with a per-package --directory and --python version, mapping acp to Python 3.14 and every other package to 3.12, and discover packages by globbing */Makefile and partners/*/Makefile.",
+      "evidence": [
+        {
+          "resource": "repo://libs/Makefile#L1-L8",
+          "version": "repo-lines-v1:sha256:899de37497a56baf11bb9d9ef66c60060772114beb1c47790a6cd58e6dbce3e8:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzQyNjkxZTcxZTdmYzhhNTQyMmZiY2ViNWFhNTU5ODdiOWQxYzk1YWVmYjI4MGNmMTA3NTZkMTg1ODNlM2Y1OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGZjZTY4OWYzMzFhNzMzOWI5NTkyODJlZDI0MmNmODc4NDUwNDAxMDc3NmJhZDA3ZmZmNjVkNmFiZjQyODRmZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTk1OWFmZTBmZDZmZmYyOWY4OTU1NDIyM2Y1ODlhMzhkNmJlN2YzOGQ5MGY3Yzc3OTg4YzFkM2NjN2U1ODg1ZiJ9"
+        },
+        {
+          "resource": "repo://libs/Makefile#L24-L53",
+          "version": "repo-lines-v1:sha256:38b8a7b309684d706ee21b486afead2084f2488fd1dcf93b9a2fdc35e46410bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5NTlmMzA3NTM0YzBhN2ZkODlhNTAwODljN2NmZmEyZTQxMmI3YTg3ZGYxNWM4ZGM3NjcyNGY0MDUyOWY1ODUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmZTA0MzNkNzgwYjgwNzY4OThiYjNkNjk1N2NlODA4ZDY1ODA2YmEzNmNkNzIzYTk4ZTgwY2YwMGNhMmQ3ZjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZiMTI0YTkxZThhYzUxMWIwMGNlZmNkYzhlOTcxZWNmNWIzZGVkNDNmYjA4NWYxNWE1YmY1ZjExMDg4MmJmZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5YmY4MjgwMGMxOTVhZTEwZGM5ZDBlYmQ3OGRhOTM0ZDMyOGFmZWZkY2M4Mzg2ZWRhY2IxMDk2NTJhNjlkMGYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7da608ed8e6240359e834a59045c35d6",
+      "statement": "bench-all runs the bench target only for the packages listed in BENCH_PACKAGES (deepagents and code).",
+      "evidence": [
+        {
+          "resource": "repo://libs/Makefile#L14-L14",
+          "version": "repo-lines-v1:sha256:fffa9e0612361e191cf0482a8614fa04e41c4dd74e3839c3240ba0ccb1688274:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmZmYTllMDYxMjM2MWUxOTFjZjA0ODJhODYxNGZhMDRlNDFjNGRkNzRlMzgzOWMzMjQwYmEwY2NiMTY4ODI3NCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmZmYTllMDYxMjM2MWUxOTFjZjA0ODJhODYxNGZhMDRlNDFjNGRkNzRlMzgzOWMzMjQwYmEwY2NiMTY4ODI3NCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMWI1NjAwOGZlZmNjZDA4N2VkNmM3ZmM3NGY2NzUzMjY2MjFlZDI2OTA1YjFkNGRkMzg3ZWVmMzZkNzVjYTliNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTA2MzQ2MDI3OGFkZGYyMjcxMzJmY2M1YThiNmQ5YjZlYmYyMDBmMWI1YTA4ZDA3NDA1ZjVjYjBjYTQ3YjlhYSJ9"
+        },
+        {
+          "resource": "repo://libs/Makefile#L71-L76",
+          "version": "repo-lines-v1:sha256:b5deef82bc8bcda069523b60c4bc46ca0b820c21a0811cc4426f391bd16e2ea7:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjAwMmQ0YjI0NTU0OWUyZjg4ZjZlMjM2ZDk0N2VmYWVkMGY3MjQ2MmZmNTc4MWE0NmU2Y2U1ZTY1YjE0NTJlNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDg5YTBmYjIxNzFmOWI1OTRiZDJmMDljNDAyYTBiNTUyZGI2M2I1MGVkMGE3MTU4YTMxZDMwYWVhZGFiNWMzOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDM0MjJiYTgzNzU1ZmRmYTBlNjQ5NWVjMjM2NTE0YzE4ZjYxZjc0ZGU4MTFmNzM2MmZlNGFhMmQ0ODUyNmJmMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_5c41a08551cf444096588a51c816d6e9",
+      "statement": "pre-commit is installed with default_install_hook_types [pre-commit, commit-msg, pre-push] and requires minimum_pre_commit_version 3.2.0 because older versions reject the git-hook-named stages and would invalidate the whole config file.",
+      "evidence": [
+        {
+          "resource": "repo://.pre-commit-config.yaml#L1-L10",
+          "version": "repo-lines-v1:sha256:b898f922a59c8bbfce5c8c2e4a639bcc60cd224f8efd796178c4ecd58ab58ca2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzMmM5ZGFhZmNlYjRhZWFmMDI3YjRkYmQzNTU0NjAxZDZhZjA4ZmMzMTg4NjExZDY2ODIzOTNmZDE4NWZjMTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5NGRhMDU1MzA0ZGI1MjYyNmRhOWQ3MTZlYWI4MzM3ZWY5OTQ5NGE4Y2M0OGE2ZTg0YjViNmVhYTc0N2VjNTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3NTEwYWRhN2JjODNjNGFhMTMyNGFiZTM1NjllZGI3MTUyNjczMGFjN2E2YzQ5Y2UyYWJlMzdlNjMxNTBlOWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_61b8b586ae074da782a58fdda9c93da6",
+      "statement": "The pre-commit config validates commit messages against an allowed Conventional Commit type list (via conventional-pre-commit on the commit-msg stage) that mirrors .github/workflows/pr_lint.yml.",
+      "evidence": [
+        {
+          "resource": "repo://.pre-commit-config.yaml#L13-L34",
+          "version": "repo-lines-v1:sha256:422cbe52a84741c970eba91a3b3ff5d79b1a3bc62bf518b09087725aa9a182e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYxZTI5OWE4YzZlY2Y0OTQ3MTZhMzIxZTdmM2EwNzZhMzVkMjViYTNmNTdiZjU5MTVkZmY5MTFiOTdmYjkzYzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0YzMzNGExNzMzY2U1Y2NmZjA1NWZjYzUzODNkMjA0Yjk2NjkzMDA1NmQ5MjIwMTY0ZDlhMmUxNDVkNmQ3ZDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5M2FjNTE2NmJhNjk2ZWM3YzhkNTc2NDI4YzI0ODM2Y2ZhZjliOTZkMzI1MjEwNTk2MzBhMGNkZWUwZmM3MmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNjMDAxMWU2NGM1ZGE1Yzg2YzQwOTRiYWM4OGFlZDZhMzc4MDc3NjI1MTUyN2UxODQ1M2MwYTY1NGU3ZjFmYmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_463b1f61c7b54749a65df70bbdc8b6b1",
+      "statement": "Local pre-commit hooks run each changed package's make format lint (and regenerate generated artifacts such as the code package COMMANDS.md and the evals catalog), scoped by file path so a hook only fires when its package changes.",
+      "evidence": [
+        {
+          "resource": "repo://.pre-commit-config.yaml#L57-L88",
+          "version": "repo-lines-v1:sha256:e2f4e4fb830f385d1ec9e43809a35e0c25eb1f12000a796b9dc28dd47ce30189:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwNWFjN2E3OGNlODgzZmExOGI3MDdlODJmMzU1ZjRkZDQ0OWNmZWNjNzkyZmVkMWYwZGQyOGFlM2Y2MDk4NTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxNzg2YmQzZDQ5YmE5M2IyNmM0NDY4MzUyZDVlYjA3OWI1ZmNlNGZkZmQ2MzY4Mzg2NDIxZGVmYzI2NzA0ZTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhOTJiN2YyMDUzNTE5NjZjNmJmM2ZjNWYyZGM5NTZlNWYzYTk1OTk4MzEwMjMwM2YwZWQyY2JlNDgwMWM4NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5ZTgzNDU4Yzk4MjJlYWY1NmIzMTI0NzE0OWExNDY5MmQzYmVhY2I4Yzg1ZDkzNWJkNWRhMTA3ZmIyMmVjMTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_99d0975c71df45188e48ba787f8501e3",
+      "statement": "pre-commit runs consistency-check scripts: lock-check (lockfiles current), extras-sync (extras match required deps), version-equality (pyproject.toml version matches _version.py for deepagents and code), and branch-scopes-sync (branch-name rules match across hook, CI, and pr_lint).",
+      "evidence": [
+        {
+          "resource": "repo://.pre-commit-config.yaml#L89-L110",
+          "version": "repo-lines-v1:sha256:34c450fc7a6513bb2ad1de6bd63baec1ce906090502b223cb3f5aa04120cfc76:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4NzM5Zjg5ZTUwMmUwYWQ1NDAxZTAwMWNhMWVhZDdhY2Q2YjE3ZDJiMzI3ZDgwZTJiYjI0OTlmNmQ4NWZkZTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxNzg2YmQzZDQ5YmE5M2IyNmM0NDY4MzUyZDVlYjA3OWI1ZmNlNGZkZmQ2MzY4Mzg2NDIxZGVmYzI2NzA0ZTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxOTYzOTc1Mjc1NWZmYWViMzhlMTI5OWMwYTdiMzU1MGY4MTE2NzIwYWY1YzBlOTJlNjk3MzgyOGFhMmViODAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmNjFkYjhmMjJlOTEwNmFiMDExN2QyZTUzNjIzZjk3NGM5ODRlN2IwZDM2N2Y1YzYyYTc2MmE3Y2JmNDlmMDYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_22cc3f3cf015487887916397a9e31eea",
+      "statement": "A pre-push hook (bash .githooks/pre-push, always_run) rejects pushing branches that do not follow the <github-username>/<scope>/<short-description> convention; it is enabled by pre-commit install --install-hooks, allows protected and automation/release branches, and can be skipped with git push --no-verify or SKIP=branch-name.",
+      "evidence": [
+        {
+          "resource": "repo://.pre-commit-config.yaml#L111-L117",
+          "version": "repo-lines-v1:sha256:91ba2a7072245f720f4ac57a06e5121dc884572b20c8f99783a950828ea18638:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjVhMGVmYTA1Y2E5YTQ0MzI1N2Q0NmNlNTQyYzg3Y2NjODVjYjU4OTQyZWNkYzE5Mzc4NjM4ZDU2NGJiYjIyOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGQ4ZjgwYjVhNzNlODRiMjY2ZDQ5ZDc3ZGI1NDg1NzQzNjJlNzkxNjBjMDliZjQ2MDExMTJmM2JhZjNlY2RhMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODA3NGFjMzI0N2U2NjVlNmMxZTJhNGQ0ZjAzNDEzODM1NDdmZGUxMTM2ZTI1MGYxMDVlZmVkY2JhYWNhNmJkZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        },
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L157-L175",
+          "version": "repo-lines-v1:sha256:839b7eec6870e376f355d15ace693b3dd2cb9239445b12f12cb5acebe0849026:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzNDZmYmViN2ExNjY5M2MzYzIzNzQwODc4OWM0MTRkNTcyNGQ3ZGJjMzI0ZjdlNmFhYjNjZDU3ZDVmZjc2NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkYzRlOGRmZDk3MWFlOTExOWQzZGM5MWUzOWEwN2M2ZWZjOTUxMDQ1NDA0MmMwMzA4MjFmMjIyYWY2OGRlM2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJhYjZiZjdmODNjN2JiOWFmZTUyY2Y4NzUzZDY2ZjE1MDYyZWU0NDU2YTllMzJjYWEzODM3ZjM0ZjliY2MzOTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVlZGFiN2Y5MzY4MjE4NTJkMjIwNjYzZjE1NzAxMjJjYjhiNDQ3MTI4OTM2OWY2OWI3MDYyNDViMTQ4OTMyMzEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_42d929a8800741ddae7e9b3aff779915",
+      "statement": "AGENTS.md at the repo root is the authoritative coding-agent and contributor guide (PR conventions, branch naming, code/documentation principles, testing requirements), and CLAUDE.md merely redirects to it.",
+      "evidence": [
+        {
+          "resource": "repo://AGENTS.md#L1-L9",
+          "version": "repo-lines-v1:sha256:cb8bc9e08749022e56af502659da1a9e16bb6c7248ac7de1829bd0859f84b1a9:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWVmM2IzNWQyMjMxYTAwOWM5YWU0Mjg1MjNlZjRhNTEyMTdjMzE2NzZmZWEzNmIxNmM5ZDMwMmFmNjQ1MjI1NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNThjYzliZmQyN2YzNmE5MzJlNDQxNzMwYTU4M2Y3NjczMzc4ZDgyMDQxNjhmYjU0NTg1ODE3NTc4YzUxOWVmMCJ9"
+        },
+        {
+          "resource": "repo://CLAUDE.md#L1-L7",
+          "version": "repo-lines-v1:sha256:31060379798cd019458c941e0c10846d7b7ad856616f025414ea67f326bfe1d6:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWYxODBmOWMxMjY5MDNiY2MzMzFhYTk1NDU2ZTQ5NDQ0YTdkNGQwMTFlOGEyYTgzZjVkYzg3MDIzOTE4MTJkMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDlmNzg3MTQ4OTNhYTc3OTQyY2VhMWM0YTJlMDIzMWRiYjdmYTJhNDFhNzBjODE0NjBhM2M2NzU2MmRhM2FhYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_d1da897a7a854cdb9a67803ddddaed9c",
+      "statement": "Opening a pull request is gated on reading the LangChain contributing guide, and external PRs must link a maintainer-approved issue or discussion with the contributor assigned before the PR is opened.",
+      "evidence": [
+        {
+          "resource": "repo://AGENTS.md#L8-L8",
+          "version": "repo-lines-v1:sha256:6c18821b9aa01414a6618108f3907a836280c05851eb018a130211c2f733a699:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmMxODgyMWI5YWEwMTQxNGE2NjE4MTA4ZjM5MDdhODM2MjgwYzA1ODUxZWIwMThhMTMwMjExYzJmNzMzYTY5OSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmMxODgyMWI5YWEwMTQxNGE2NjE4MTA4ZjM5MDdhODM2MjgwYzA1ODUxZWIwMThhMTMwMjExYzJmNzMzYTY5OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmM2ZWY3YTA3ZjIzMzE3OTQyNmU4YzJlMzNjNjk5NWRkZWZmMDcwODM0NGRkNWNjZWVlNjhiYjg4M2YwYWMwZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZmNmM2UxNDIyNzE5ZjI1M2M3ZjBkNWFlNTYxOTE3MTFjNDExMjYyYjA2ZWRiMDczOTRmZWYxNWU0NjBjYWFhYyJ9"
+        },
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L5-L6",
+          "version": "repo-lines-v1:sha256:0310f427424a07b18dc9573af9f8d875b7b7dccbef46d5d56c0987796a920b8b:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmJiMWE3MjM3ODZiNTRjYjkxNDU4Mjc3NDg5NWQzODcxNWJkODU4NDM5NjE4M2JjOTBhNzZlN2M2NWVlNjY1MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODI3YjdlZDA5OWJjNWI2MTRjOTYwYjc2MDQ2MmQxMmU1YjZiZDA4MzI1NTQyZDJmMDQzNzJhMTZiNTk1ZTk2OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTg2YTQ4NmRiMDQyNzQyMGM1MGJkNjc1Y2U1YzVjZGI4MTVhZWRjZjM0MmI2Yjk1YzE2ZTNiZDczZjA0ZDE3OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODY4OTRhZWI2MmRmZTdiZDJkMGJlYzJmZGQzNzJmZGQ4ZTM1ZDM0NjdkYTBmNmZhMjFjZTA1YzFiZTE5Y2E4NiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_2e16c3c8e6f54b8495937d304f6ef18d",
+      "statement": "Releases use release-please with independent per-package versioning: separate-pull-requests is enabled and each libs/ package is configured with its own release-type python, package-name, component, changelog-path, extra-files, and exclude-paths.",
+      "evidence": [
+        {
+          "resource": "repo://release-please-config.json#L1-L5",
+          "version": "repo-lines-v1:sha256:48cace74b7ba54c2fb2dac7f9a9fe3f821928c4112169bb7f3cb361d850d5430:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTZmYjA4ZmRhMWFjYjk1N2I2MTE2YmQzNzgxMWExZmU0MWEwMTYxMWMwNjMxZWRiZjc4NmQ2ODg5YTI3YTU1YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODA3ZmIzYTI4MGUyM2M3NjAxMzMyNDA4NjE3YjJlNjNlYWRkMzY2ODRiNWQxZGI4YzYwYmRmM2RlYzVjOGE3NCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzc1MjgwNDhkZTMxMjJkYmJmN2RkYzlhM2RjYzA5MmNjYTE4ZWUxMmNlOTYyZTlkNTU3NzQ2YTEwMGVjODNiMCJ9"
+        },
+        {
+          "resource": "repo://release-please-config.json#L57-L102",
+          "version": "repo-lines-v1:sha256:e4de5d065f1ad1a8e8a779145919ed59bc34bc60ab4abebf2b8cfaf4d7d92f77:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyYzAwNDdmN2NjNGM5NzFjYWRhYjRjMjk1NzUyNzZkY2JiMTJkZmMyM2E3ZDkwZWFlNTQyZTU3NWZlMjBjOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmMGNkYjk3MmE3YmZiN2VkMjQ2ZjlmZjY3MjM4NWU1NWY0OTY4ZmMxMTA0M2RjNWI2ODRkNTFkZmEzMWRiY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0NGJhNWRlZjg2ZTVmYjYxYjc4MmJlMGFkMmM1YzMwOGVkNWI4YTFlMGRlMTFjMDM3MDJjZmVlY2Y0YzczMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4MjE4Mzc5YzE5NDdlNmNiNDY4N2ZkYzU5NTIzMjFmYzlmMzkxNDk0NThkOGVhZDIwMTIwNDQ3N2Y4NjcwY2MifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f092e4ff19eb42868be9ac1850a6529c",
+      "statement": "Each release-please package rewrites its own pyproject.toml and _version.py on a bump and excludes its tests directory from triggering a release, keeping test-only changes non-releasing.",
+      "evidence": [
+        {
+          "resource": "repo://release-please-config.json#L57-L72",
+          "version": "repo-lines-v1:sha256:b9ab580f8af3a14af3b61d87c811ff23dfbc60c8e99b6895c66f46a1948bf4e8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyYzAwNDdmN2NjNGM5NzFjYWRhYjRjMjk1NzUyNzZkY2JiMTJkZmMyM2E3ZDkwZWFlNTQyZTU3NWZlMjBjOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmMGNkYjk3MmE3YmZiN2VkMjQ2ZjlmZjY3MjM4NWU1NWY0OTY4ZmMxMTA0M2RjNWI2ODRkNTFkZmEzMWRiY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0NGJhNWRlZjg2ZTVmYjYxYjc4MmJlMGFkMmM1YzMwOGVkNWI4YTFlMGRlMTFjMDM3MDJjZmVlY2Y0YzczMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNmNGYzY2QxY2QzODlmMmZjNDNlZjc4OThmZGU4ZWFiMGJjMGFjZmYzY2YwNDJiNWFiYTFhZGM4MmJiODZiZTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4a0fef756f594209901908160d4144b9",
+      "statement": "The .release-please-manifest.json records each package's current version independently, so packages sit at unrelated version numbers (e.g. libs/deepagents at 0.7.9 and libs/code at 0.1.62).",
+      "evidence": [
+        {
+          "resource": "repo://.release-please-manifest.json#L1-L11",
+          "version": "repo-lines-v1:sha256:28862261986a6826ca56e32df8216ed00d23ac61fb4582850e03f256efe2771f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_db598d7328bb45549395f4544671d4e4",
+      "statement": "release-please forms per-component tags using include-component-in-tag true with tag-separator == and include-v-in-tag false (e.g. deepagents==0.7.9), and skips the automatic GitHub release while drafting the release PR.",
+      "evidence": [
+        {
+          "resource": "repo://release-please-config.json#L194-L196",
+          "version": "repo-lines-v1:sha256:3ba339e8b3d0b4c53af69116b02754dd0d5f2138b8406f3052131d870f30d4be:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTRhN2NkZTliMTI1MzBjMjc0MjQxMTdmZmJkNTFhM2NjMGU5M2IxZjcxNWI5ZTM4ZmI3ZTQxMTY5ZjQzMmY4ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjYxMGM4ZDEzOGE1ZjJlNzA4OWUzOTU4MmRkNTI1Yjg4MjY2YTgyM2NlOTRhNGNhNjU0MDgxMTgwOWQyODY3NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2EyZWJmY2QzMTA2ZDU1ZDlmNWVmODY3MGVmOTkxZjk5YTJhOTBhMTJmODdmMTZhOTQwNjFkYjUwNGMzYWY5NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjEsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSJ9"
+        },
+        {
+          "resource": "repo://release-please-config.json#L3-L4",
+          "version": "repo-lines-v1:sha256:90a651830170878b306840cfea223c2be31a93d868b261631b52ca3fe3a92b57:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzQ4Y2QxODgwZGI0YWIzZmMyZjhmMjM4ZDAzNjllNDFkODlhMzMwMmEzNzMyYmQ4ZmRiOTUzNWE5YmI0ZWRkOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjJmYjM0ZWZlMzhmNjg2MWVhNjA0MzQ4MzNkZjc3NDhlODQxMzIyMDQwZjdmYzJiNzkwZjA2NDVkZDA0MzExNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2I2MzJhMTFlOWE0ZTEyYmVlYzVjOTlmNmYxMTY5OTg1Y2NiNjcyODAyNDlhZjQxMjhmOTA1Nzc2NmMyYjRjOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjIyYzFmYmI2M2M4YWJjODZmOGRjMmE5NDkxZDgyZDE0YjEzZTc2N2I5ZTBjYThmZDQ3YzUwODBkZmExNGE5NiJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.0",
+    "at": "2026-08-26T21:35:57.774Z"
+  }
+}

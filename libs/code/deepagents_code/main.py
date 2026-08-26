@@ -4715,6 +4715,22 @@ def _config_provider_statuses() -> Mapping[int, "ProviderStatus"]:
     return get_config_resolver().provider_statuses()
 
 
+def _print_retry_config_warnings(warnings: list[str]) -> None:
+    """Print `[retries]` diagnostics to stderr, before any branch can exit."""
+    if not warnings:
+        return
+    from rich.console import Console as _Console
+    from rich.text import Text as _Text
+
+    stderr_console = _Console(stderr=True)
+    for warning in warnings:
+        stderr_console.print(
+            _Text.assemble(("Warning:", "bold yellow"), " ", warning),
+            soft_wrap=True,
+            highlight=False,
+        )
+
+
 def _startup_model_provider(args: argparse.Namespace) -> str | None:
     """Return the provider this run will build, without importing langchain.
 
@@ -5096,6 +5112,10 @@ def cli_main() -> None:
             _startup_model_provider(args),
             model_params if isinstance(model_params, dict) else None,
         )
+        # Reported here rather than beside the TUI launch: every later branch
+        # can exit first -- ACP does -- and `_read_retry_config` only logs into
+        # the debug buffer, which the user never sees.
+        _print_retry_config_warnings(retry_config_warnings)
 
         # dcode's model-node middleware owns the retry budget, so `create_model`
         # forces the provider's own retry kwarg to its disable value. A
@@ -5350,19 +5370,6 @@ def cli_main() -> None:
                 "  dcode --skill code-review -n 'review this patch'"
             )
             sys.exit(2)
-
-        # Print retry-config diagnostics before the TUI takes over the screen.
-        if retry_config_warnings:
-            from rich.console import Console as _Console
-            from rich.text import Text as _Text
-
-            stderr_console = _Console(stderr=True)
-            for warning in retry_config_warnings:
-                stderr_console.print(
-                    _Text.assemble(("Warning:", "bold yellow"), " ", warning),
-                    soft_wrap=True,
-                    highlight=False,
-                )
 
         max_turns_set = getattr(args, "max_turns", None) is not None
         if max_turns_set and not args.non_interactive_message:

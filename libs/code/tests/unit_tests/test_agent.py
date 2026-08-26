@@ -3805,7 +3805,6 @@ class TestCreateCliAgentShellMiddlewareWiring:
         from deepagents_code.cost_tracking import CostTrackingMiddleware
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
         from deepagents_code.model_retry import CodeModelRetryMiddleware
-        from deepagents_code.offload_middleware import _RetryingModelInvoker
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -3866,18 +3865,20 @@ class TestCreateCliAgentShellMiddlewareWiring:
             middleware_types = [
                 type(mw) for mw in subagents_by_name[name]["middleware"]
             ]
-            assert middleware_types[:-1] == [
+            assert middleware_types == [
                 ConfigurableModelMiddleware,
                 CostTrackingMiddleware,
                 CodeModelRetryMiddleware,
                 ShellAllowListMiddleware,
                 ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
-            summarization = subagents_by_name[name]["middleware"][-1]
-            assert isinstance(summarization, SummarizationMiddleware)
-            assert isinstance(
-                summarization._lc_helper._summary_model, _RetryingModelInvoker
-            )
+            # Subagents get no automatic summarizer. Deep Agents installs none
+            # of its own, so adding one here would switch on compaction and its
+            # archive writes rather than adjust an existing policy.
+            assert not any(
+                isinstance(mw, SummarizationMiddleware)
+                for mw in subagents_by_name[name]["middleware"]
+            ), f"Subagent {name!r} must not gain automatic summarization"
             hooks = next(
                 mw
                 for mw in subagents_by_name[name]["middleware"]
@@ -3906,11 +3907,9 @@ class TestCreateCliAgentShellMiddlewareWiring:
         assert any(
             isinstance(mw, CodeModelRetryMiddleware) for mw in pinned_middleware
         ), "Pinned subagent should retain model retries"
-        pinned_summarization = pinned_middleware[-1]
-        assert isinstance(pinned_summarization, SummarizationMiddleware)
-        assert isinstance(
-            pinned_summarization._lc_helper._summary_model, _RetryingModelInvoker
-        )
+        assert not any(
+            isinstance(mw, SummarizationMiddleware) for mw in pinned_middleware
+        ), "Pinned subagent must not gain automatic summarization"
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
         ), "Pinned subagent must not gain configurable model middleware"

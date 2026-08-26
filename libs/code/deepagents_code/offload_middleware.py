@@ -136,20 +136,6 @@ def _install_summary_model_retries(summarization: SummarizationMiddleware) -> No
     helper._summary_model = _RetryingModelInvoker(summarization.model)
 
 
-def _create_retrying_summarization_middleware(
-    model: str | BaseChatModel,
-    backend: BackendProtocol,
-) -> SummarizationMiddleware:
-    """Create an automatic summarizer governed by dcode's retry policy.
-
-    Returns:
-        A summarizer whose private model invocation uses the shared retry budget.
-    """
-    sdk_middleware = create_summarization_tool_middleware(model, backend)
-    _install_summary_model_retries(sdk_middleware._summarization)
-    return sdk_middleware._summarization
-
-
 class _OffloadState(CostState, SummarizationState, total=False):
     """Checkpoint channels server-owned forced compaction reads and writes.
 

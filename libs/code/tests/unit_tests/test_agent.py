@@ -5247,12 +5247,14 @@ class TestCreateCliAgentInterpreterWiring:
             tmp_path,
             auto_mode_enabled=True,
             auto_classifier_model="openai:gpt-5.5-mini",
+            cli_max_retries=0,
         )
 
         auto_middleware = next(
             item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
         )
         assert auto_middleware._configured_classifier_model == "openai:gpt-5.5-mini"
+        assert auto_middleware._cli_max_retries == 0
 
     def test_auto_classifier_model_falls_back_to_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

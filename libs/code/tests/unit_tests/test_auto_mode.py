@@ -300,6 +300,7 @@ def _middleware(
     classifier_model: str | BaseChatModel | None = None,
     classifier_timeout_seconds: float = 1,
     classifier_construction_timeout_seconds: float = 1,
+    cli_max_retries: int | None = None,
     trusted_ask_user_tool: BaseTool | None = None,
     trusted_compaction_tool: BaseTool | None = None,
 ) -> AutoModeHITLMiddleware:
@@ -321,6 +322,7 @@ def _middleware(
             classifier_construction_timeout_seconds
         ),
         classifier_model=classifier_model,
+        cli_max_retries=cli_max_retries,
         trusted_ask_user_tool=trusted_ask_user_tool,
         trusted_compaction_tool=trusted_compaction_tool,
     )
@@ -4580,9 +4582,13 @@ class _RecordingModelFactory:
         self.models = list(models)
         self.error = error
         self.specs: list[str] = []
+        self.retry_overrides: list[int | None] = []
 
-    def __call__(self, spec: str) -> SimpleNamespace:
+    def __call__(
+        self, spec: str, *, cli_max_retries: int | None = None
+    ) -> SimpleNamespace:
         self.specs.append(spec)
+        self.retry_overrides.append(cli_max_retries)
         if self.error is not None:
             raise self.error
         if len(self.models) == 1:
@@ -4659,6 +4665,29 @@ async def test_classifier_model_spec_is_resolved_once_and_cached(
 
     assert factory.specs == ["openai:gpt-5.5-mini"]
     assert len(classifier.calls) == 2
+
+
+async def test_classifier_model_spec_receives_cli_retry_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    classifier = _StructuredModel(_allow_result())
+    factory = _RecordingModelFactory(classifier)
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(
+        tmp_path,
+        classifier_model="openai:gpt-5.5-mini",
+        cli_max_retries=0,
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    await middleware._classifier_model(request)
+
+    assert factory.retry_overrides == [0]
 
 
 async def test_classifier_model_construction_respects_deadline(

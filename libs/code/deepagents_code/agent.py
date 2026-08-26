@@ -2501,8 +2501,9 @@ def create_cli_agent(
         model_retries: Model-node retry attempts after the first call. `0`
             disables retries. Resolved upstream from config/CLI.
         cli_max_retries: The `--max-retries` flag value, or `None` when unset.
-            Forwarded to subagent models so each one resolves its own provider's
-            configured budget unless the user overrode it globally.
+            Forwarded to subagent and Auto classifier models so each one resolves
+            its own provider's configured budget unless the user overrode it
+            globally.
         enforce_model_policy: Check every model string against `models.allowed`.
             Pass `False` **only** from callers that compile a graph they never
             invoke (tool enumeration), so a blocked subagent model degrades the
@@ -3046,6 +3047,7 @@ def create_cli_agent(
                 worktree_root=trusted_root,
                 shell_allow_list=narrow_allow_list,
                 classifier_model=classifier_model,
+                cli_max_retries=cli_max_retries,
                 classifier_timeout_seconds=resolve_auto_classifier_timeout(),
                 trusted_ask_user_tool=trusted_ask_user_tool,
                 trusted_compaction_tool=compaction_middleware.tools[0],

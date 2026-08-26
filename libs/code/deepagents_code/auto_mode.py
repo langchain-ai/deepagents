@@ -1971,6 +1971,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             _CLASSIFIER_CONSTRUCTION_TIMEOUT_SECONDS
         ),
         classifier_model: str | BaseChatModel | None = None,
+        cli_max_retries: int | None = None,
         trusted_ask_user_tool: BaseTool | None = None,
         trusted_compaction_tool: BaseTool | None = None,
     ) -> None:
@@ -1990,6 +1991,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 first review; a chat model instance is used as-is. `None`
                 inherits the main agent model, which is the default. A per-run
                 `classifier_model` on the runtime context wins over this value.
+            cli_max_retries: Explicit `--max-retries` value to retain when a
+                distinct classifier model is constructed.
             trusted_ask_user_tool: Built-in tool allowed to create consent receipts.
             trusted_compaction_tool: Built-in tool that performs conversation
                 compaction.
@@ -2049,6 +2052,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             classifier_construction_timeout_seconds
         )
         self._configured_classifier_model = classifier_model
+        self._cli_max_retries = cli_max_retries
         self._classifier_model_cache: OrderedDict[str, BaseChatModel] = OrderedDict()
         self._classifier_model_lock = asyncio.Lock()
         self._classifier_model_constructions: dict[
@@ -2406,7 +2410,16 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         try:
             try:
-                result = await asyncio.to_thread(create_model, selected)
+                retry_kwargs = (
+                    {"cli_max_retries": self._cli_max_retries}
+                    if self._cli_max_retries is not None
+                    else {}
+                )
+                result = await asyncio.to_thread(
+                    create_model,
+                    selected,
+                    **retry_kwargs,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

@@ -57,6 +57,13 @@ class ReliableRubricMiddleware(RubricMiddleware):
     the SDK's `RubricMiddleware`. The grader middleware stack owns model retries,
     so transient failures follow the same budget and taxonomy as every other
     dcode model call without replaying completed grader tools.
+
+    That taxonomy is narrower than the transport retry this class carried
+    before. `CodeModelRetryMiddleware` refuses a retry once a call has streamed
+    (see `_allow_retry_after_stream`), so a fault that arrives mid-response --
+    a dropped read or a truncated body -- now propagates instead of being
+    retried. Widening it back needs proof that grader tokens never reach the
+    renderer, since a replay would otherwise duplicate visible output.
     """
 
     def __init__(  # noqa: D107

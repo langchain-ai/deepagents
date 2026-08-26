@@ -3780,7 +3780,7 @@ def is_langsmith_redaction_enabled() -> bool:
 
     option = get_option("tracing.langsmith_redact")
     if option is None:
-        return False
+        return True
     resolved = get_config_resolver().get(option)
     _emit_ranked_diagnostics(option, resolved)
     return bool(resolved.value)

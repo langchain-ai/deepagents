@@ -22316,11 +22316,22 @@ class DeepAgentsApp(App):
         from functools import partial
 
         request = partial(
-            self._schedule_model_switch_confirmation,
+            self._confirm_and_switch_model,
             model_spec,
             extra_kwargs=extra_kwargs,
         )
         if self._agent_running or self._shell_running or self._connecting:
+            # The deferred action awaits the confirmation and the switch itself
+            # rather than detaching them. `_drain_deferred_actions` awaits each
+            # action to keep the queue serialized, so returning after only
+            # scheduling the prompt would let a queued thread switch (or any
+            # later deferred mutation) resume while `ModelSwitchWarningScreen`
+            # is still open: the prompt's token count would describe a thread
+            # the user has already left, and accepting it would mutate model
+            # state concurrently with that switch. The drain runs from worker
+            # or cleanup tasks, never the App message pump, so awaiting the
+            # modal here cannot starve it of key events — the pump stays free
+            # to route input to the screen.
             self._defer_action(
                 DeferredAction(kind="model_switch", execute=request),
             )
@@ -22335,32 +22346,18 @@ class DeepAgentsApp(App):
             context="model-switch",
         )
 
-    async def _schedule_model_switch_confirmation(
-        self,
-        model_spec: str,
-        *,
-        extra_kwargs: dict[str, Any] | None = None,
-    ) -> None:
-        """Detach a deferred model-switch confirmation from its caller."""
-        coroutine = self._confirm_and_switch_model(
-            model_spec, extra_kwargs=extra_kwargs
-        )
-        task = self._schedule_off_message_pump(coroutine, context="model-switch")
-        if task is None:
-            await self._mount_message(
-                ErrorMessage(
-                    "Model switch did not occur because another confirmation is "
-                    "active. Try again after answering it."
-                )
-            )
-
     async def _confirm_and_switch_model(
         self,
         model_spec: str,
         *,
         extra_kwargs: dict[str, Any] | None = None,
     ) -> None:
-        """Confirm a large-context switch before mutating model state."""
+        """Confirm a large-context switch before mutating model state.
+
+        Deferred callers await this inline (see `_dispatch_model_switch`); idle
+        callers reach it through `_schedule_off_message_pump` because their
+        continuation starts on the App message pump.
+        """
         from deepagents_code.config import detect_provider, settings
         from deepagents_code.model_config import ModelSpec
 
@@ -22382,16 +22379,38 @@ class DeepAgentsApp(App):
 
             current = f"{settings.model_provider}:{settings.model_name}"
             display = f"{provider}:{model_name}" if provider and not parsed else target
+            screen = ModelSwitchWarningScreen(
+                current_model=current,
+                target_model=display,
+                context_tokens=self._context_tokens,
+                threshold=threshold,
+                approximate=self._tokens_approximate,
+            )
             try:
-                confirmed = await self._push_screen_wait(
-                    ModelSwitchWarningScreen(
-                        current_model=current,
-                        target_model=display,
-                        context_tokens=self._context_tokens,
-                        threshold=threshold,
-                        approximate=self._tokens_approximate,
-                    )
+                # Watchdog-bounded like every other confirmation modal: the
+                # deferred drain awaits this confirmation inline (see
+                # `_dispatch_model_switch`), so an await that never resolves
+                # (compose crash, programmatic teardown that skips the dismiss
+                # callback) would block every later deferred action for the
+                # rest of the session. A timeout fails closed — the switch is
+                # abandoned, never applied.
+                confirmed = await asyncio.wait_for(
+                    self._push_screen_wait(screen),
+                    timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
                 )
+            except TimeoutError:
+                logger.warning(
+                    "Model-switch confirmation timed out; treating as cancel",
+                )
+                self._dismiss_orphaned_screen(screen)
+                self.notify(
+                    "The model-switch confirmation timed out, so the model was "
+                    "not switched. Run /model to try again.",
+                    severity="warning",
+                    timeout=8,
+                    markup=False,
+                )
+                return
             except Exception:
                 logger.exception("Failed to show model-switch confirmation")
                 await self._mount_message(

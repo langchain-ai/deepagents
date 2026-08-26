@@ -746,6 +746,31 @@ def test_remote_toml_provider_bounds_a_stalled_chunked_read(
     assert "timed out" in (snapshot.status.detail or "")
 
 
+def test_remote_toml_provider_handles_read_worker_start_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Thread exhaustion must produce managed-config health, not a traceback."""
+    import threading
+
+    class SelectiveThread(threading.Thread):
+        def start(self) -> None:
+            if self.name == "managed-config-read":
+                msg = "can't start new thread"
+                raise RuntimeError(msg)
+            super().start()
+
+    monkeypatch.setattr(threading, "Thread", SelectiveThread)
+    snapshot = _remote_snapshot(
+        _RemoteResponse(b'[startup]\nmode = "manual"\n'),
+        tmp_path,
+        monkeypatch,
+    )
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert "could not be read (OSError)" in (snapshot.status.detail or "")
+
+
 @pytest.mark.parametrize(
     "response",
     [

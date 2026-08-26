@@ -892,6 +892,7 @@ def _read_response_chunk(
         The next available body chunk.
 
     Raises:
+        OSError: If the daemon read worker cannot be started.
         TimeoutError: If the absolute fetch deadline expires during the read.
     """
     from concurrent.futures import Future
@@ -908,7 +909,12 @@ def _read_response_chunk(
         except (HTTPException, OSError, ValueError) as exc:
             future.set_exception(exc)
 
-    Thread(target=read_chunk, name="managed-config-read", daemon=True).start()
+    worker = Thread(target=read_chunk, name="managed-config-read", daemon=True)
+    try:
+        worker.start()
+    except RuntimeError as exc:
+        msg = "remote source read worker could not start"
+        raise OSError(msg) from exc
     try:
         return future.result(timeout=timeout)
     except TimeoutError:

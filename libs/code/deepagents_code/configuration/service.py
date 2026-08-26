@@ -591,11 +591,16 @@ class _SnapshotState:
     started earlier still fill an empty cache when a later load failed.
     """
 
-    __slots__ = ("latest_ticket", "managed", "published_ticket")
+    __slots__ = ("latest_ticket", "managed", "published_ticket", "refresh_failure")
 
     def __init__(self) -> None:
         """Start with no cached snapshot."""
         self.managed: TomlSnapshot | None = None
+        # Status of the most recent load that could not be enforced, cleared
+        # by the next one that can. `doctor` reads it so a host that stopped
+        # answering is reported by something other than an unreachable log
+        # record.
+        self.refresh_failure: ProviderStatus | None = None
         # Monotonic ticket issued when each load starts.
         self.latest_ticket = 0
         # Ticket of the load whose snapshot is currently cached. `reset` raises
@@ -633,13 +638,24 @@ class _SnapshotState:
                 # ticket and not against `latest_ticket`.
                 self.published_ticket = ticket
                 self.managed = candidate
+                self.refresh_failure = None
                 return candidate
             return self.managed if self.managed is not None else candidate
+
+    def record_refresh_failure(self, status: ProviderStatus) -> None:
+        """Remember a load that produced no enforceable generation.
+
+        Args:
+            status: Failed candidate's status, kept for the next health read.
+        """
+        with _snapshot_lock:
+            self.refresh_failure = status
 
     def reset(self) -> None:
         """Drop the cached snapshot and bar every in-flight load from it."""
         with _snapshot_lock:
             self.managed = None
+            self.refresh_failure = None
             # Advance both tickets so a load started before the reset cannot
             # republish the snapshot being cleared. Keeping these two writes
             # together is what makes the invalidation atomic.
@@ -661,37 +677,27 @@ def _remote_managed_snapshot(snapshot: TomlSnapshot) -> TomlSnapshot:
         return snapshot
     descriptor = snapshot.data["managed_config"]
     path = snapshot.status.path
+
+    def corrupt(detail: str) -> TomlSnapshot:
+        """Reject the descriptor without reaching the network.
+
+        Args:
+            detail: Which descriptor rule the local file broke.
+
+        Returns:
+            An empty `CORRUPT` snapshot naming the descriptor file.
+        """
+        return TomlSnapshot(
+            {}, ProviderStatus(MANAGED_SOURCE, path, ProviderHealth.CORRUPT, detail)
+        )
+
     if not isinstance(descriptor, dict) or set(descriptor) != {"source"}:
-        return TomlSnapshot(
-            {},
-            ProviderStatus(
-                MANAGED_SOURCE,
-                path,
-                ProviderHealth.CORRUPT,
-                "[managed_config] must contain only a string source",
-            ),
-        )
+        return corrupt("[managed_config] must contain only a string source")
     if set(snapshot.data) != {"managed_config"}:
-        return TomlSnapshot(
-            {},
-            ProviderStatus(
-                MANAGED_SOURCE,
-                path,
-                ProviderHealth.CORRUPT,
-                "remote descriptor cannot contain local policy keys",
-            ),
-        )
+        return corrupt("remote descriptor cannot contain local policy keys")
     source = descriptor["source"]
     if not isinstance(source, str) or not source.strip():
-        return TomlSnapshot(
-            {},
-            ProviderStatus(
-                MANAGED_SOURCE,
-                path,
-                ProviderHealth.CORRUPT,
-                "[managed_config].source must be a non-empty string",
-            ),
-        )
+        return corrupt("[managed_config].source must be a non-empty string")
     return RemoteTomlProvider(MANAGED_SOURCE, source.strip(), path).load()
 
 
@@ -778,6 +784,12 @@ def get_managed_snapshot(
     )
     if enforceable:
         return _snapshot_state.publish(load_ticket, candidate)
+    # Only an unreadable candidate is recorded as a refresh failure. A
+    # parseable document whose values policy rejects is already reported, by
+    # key, through `managed_health().violations`; recording it here too would
+    # print the same problem twice under two different names.
+    if not candidate.status.usable:
+        _snapshot_state.record_refresh_failure(candidate.status)
     with _snapshot_lock:
         published = _snapshot_state.managed
         if not refresh and published is not None:
@@ -788,8 +800,11 @@ def get_managed_snapshot(
             # caller asked for this generation and must receive it.
             #
             # The failure itself must not vanish: it is the only signal that
-            # the policy host stopped answering, and a non-refresh reader has
-            # no other channel for it.
+            # the policy host stopped answering. `logger.warning` alone cannot
+            # carry it -- the package installs its own handler at import time,
+            # so `logging.lastResort` never fires and the record reaches no
+            # terminal -- so record it where `managed_health` and `doctor` can
+            # report it.
             logger.warning(
                 "Managed policy refresh failed (%s); serving the last "
                 "enforceable generation",
@@ -797,6 +812,21 @@ def get_managed_snapshot(
             )
             return published
     return candidate
+
+
+def managed_refresh_failure() -> ProviderStatus | None:
+    """Return the status of the last refresh that produced no policy.
+
+    A failed refresh does not change what the process enforces: the last
+    enforceable generation keeps resolving, which is what fail-closed requires.
+    That makes the failure invisible to every surface that reads the served
+    snapshot, so it is reported from here instead.
+
+    Returns:
+        The failed status, or `None` when the current generation is fresh.
+    """
+    with _snapshot_lock:
+        return _snapshot_state.refresh_failure
 
 
 def get_config_sources(

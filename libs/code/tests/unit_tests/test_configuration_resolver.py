@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -1405,3 +1405,168 @@ def test_selected_rank_without_provider_status_is_still_rejected() -> None:
             provider_status={},
             selected_ranks=(USER_RANK,),
         )
+
+
+class _StubRemoteResponse:
+    """Minimal complete HTTPS response for remote managed-policy tests."""
+
+    def __init__(self, payload: bytes) -> None:
+        """Model a well-framed 200 carrying `payload`."""
+        from email.message import Message
+        from io import BytesIO
+        from types import SimpleNamespace
+
+        self._stream = BytesIO(payload)
+        self.status = 200
+        self.chunked = False
+        self.fp = SimpleNamespace(raw=SimpleNamespace(_sock=self))
+        self.headers = Message()
+        self.headers["Content-Length"] = str(len(payload))
+
+    def __enter__(self) -> Self:
+        """Return self so production's `with` block works.
+
+        Returns:
+            This response.
+        """
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        """Release the response."""
+        self.close()
+
+    def close(self) -> None:
+        """Model response cleanup."""
+
+    def read1(self, size: int = -1) -> bytes:
+        """Return the next chunk.
+
+        Args:
+            size: Most bytes to return.
+
+        Returns:
+            The next body chunk.
+        """
+        return self._stream.read(size)
+
+    def settimeout(self, value: float | None) -> None:
+        """Accept the deadline production applies to the socket."""
+
+    def shutdown(self, how: int) -> None:
+        """Accept the shutdown production issues on an aborted read."""
+
+
+def test_failed_remote_refresh_keeps_policy_resolving_in_the_resolver(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A dead policy host does not drop the tier that is already in force.
+
+    Asserting the service cache is not enough: the resolver is what every
+    option read goes through, and it takes its managed tier from a *replacement*
+    provider on this path rather than from a `reload`. A replacement that
+    installed the failed generation would resolve as "this source declares
+    nothing" and let the user tier win.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import (
+        providers as providers_module,
+        resolver as resolver_module,
+        service,
+        writer,
+    )
+    from unit_tests.conftest import redirect_managed_config
+
+    managed_path = tmp_path / "managed.toml"
+    managed_path.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed_path)
+    user_path = tmp_path / "config.toml"
+    user_path.write_text('[shell]\nallow_list = ["user-only"]\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_path)
+    healthy = True
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> object:
+            assert timeout > 0
+            if not healthy:
+                msg = "policy host is down"
+                raise OSError(msg)
+            return _StubRemoteResponse(b'[shell]\nallow_list = ["managed-only"]\n')
+
+    monkeypatch.setattr(providers_module, "_build_remote_opener", lambda: Opener())
+    service.invalidate_config_sources()
+    try:
+        option = get_option("shell.allow_list")
+        assert option is not None
+        resolver = resolver_module.get_config_resolver()
+        assert resolver.get(option).value == ["managed-only"]
+
+        healthy = False
+        writer.refresh_shared_resolver(user_path)
+
+        resolved = resolver_module.get_config_resolver().get(option)
+        # Still the managed value, still attributed to the managed tier.
+        assert resolved.value == ["managed-only"]
+        assert MANAGED_RANK in resolved.selected_ranks
+        assert isinstance(resolved.tier_health[MANAGED_RANK], Found)
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_unenforceable_remote_policy_cannot_escalate_through_a_refresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A published policy that policy itself rejects must not unmanage a session.
+
+    A document that parses is `usable`, so nothing about provider health stops
+    it from being installed -- but an enforced key whose value cannot be applied
+    resolves as `Invalid` at the managed rank and falls through to the user's
+    own value. `startup.mode` is exactly the privilege that must never do that,
+    so an in-app preference toggle cannot be a way to reach it.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import (
+        providers as providers_module,
+        resolver as resolver_module,
+        service,
+        writer,
+    )
+    from unit_tests.conftest import redirect_managed_config
+
+    managed_path = tmp_path / "managed.toml"
+    managed_path.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed_path)
+    user_path = tmp_path / "config.toml"
+    user_path.write_text('[startup]\nmode = "yolo"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_path)
+    body = b'[startup]\nmode = "manual"\n'
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> object:
+            assert timeout > 0
+            return _StubRemoteResponse(body)
+
+    monkeypatch.setattr(providers_module, "_build_remote_opener", lambda: Opener())
+    service.invalidate_config_sources()
+    try:
+        option = get_option("startup.mode")
+        assert option is not None
+        resolver = resolver_module.get_config_resolver()
+        assert resolver.get(option).value == "manual"
+
+        # The administrator publishes an edit policy cannot apply.
+        body = b"[startup]\nmode = 42\n"
+        writer.refresh_shared_resolver(user_path)
+
+        resolved = resolver_module.get_config_resolver().get(option)
+        assert resolved.value == "manual"
+        assert MANAGED_RANK in resolved.selected_ranks
+        # And specifically not the user's own escalation.
+        assert resolved.value != "yolo"
+    finally:
+        service.invalidate_config_sources()

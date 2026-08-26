@@ -569,9 +569,17 @@ def test_remote_toml_provider_does_not_accumulate_stalled_open_threads(
     assert all(
         snapshot.status.health is ProviderHealth.UNREADABLE for snapshot in snapshots
     )
+    # The refusal names this process's stuck fetch, not the administrator's
+    # server: the source may be answering perfectly well, and a private class
+    # name is not an operator-facing cause.
     assert any(
-        "_RemoteOpenInProgressError" in (snapshot.status.detail or "")
+        snapshot.status.detail
+        == "an earlier fetch of the remote source has not returned yet"
         for snapshot in snapshots[1:]
+    )
+    assert not any(
+        "_RemoteOpenInProgressError" in (snapshot.status.detail or "")
+        for snapshot in snapshots
     )
     assert response.closed.wait(timeout=1)
 
@@ -1016,7 +1024,9 @@ def test_remote_managed_policy_outranks_lower_sources(
     ) == ("manual", "managed config")
 
 
-def test_remote_opener_installs_both_destination_guards() -> None:
+def test_remote_opener_installs_both_destination_guards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The real opener rejects redirects, not just environment proxies.
 
     The safe-failure parametrization above stubs an `HTTPError(302)`, so it
@@ -1025,12 +1035,24 @@ def test_remote_opener_installs_both_destination_guards() -> None:
     turns an administrator-pinned host into attacker-chosen egress with the
     whole suite still green.
     """
-    from urllib.request import HTTPRedirectHandler, ProxyHandler
+    from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
     from deepagents_code.configuration.providers import _build_remote_opener
 
+    # With no proxy in the environment `build_opener` installs no `ProxyHandler`
+    # either way, so asserting its absence would pass whether or not production
+    # passes `ProxyHandler({})`. Configuring one is what gives the assertion
+    # teeth -- and the control below proves this environment would otherwise
+    # route through it.
+    monkeypatch.setenv("HTTPS_PROXY", "https://proxy.invalid:3128")
+    monkeypatch.setenv("https_proxy", "https://proxy.invalid:3128")
     # `handlers` is set in `OpenerDirector.__init__` but absent from typeshed,
     # so read it the way the proxy assertion above reads `proxies`.
+    control: list[Any] = vars(build_opener())["handlers"]
+    proxied = [h for h in control if isinstance(h, ProxyHandler)]
+    assert proxied, "expected a default opener to install an env ProxyHandler"
+    assert hasattr(proxied[0], "https_open")
+
     handlers: list[Any] = vars(_build_remote_opener())["handlers"]
     # `ProxyHandler({})` registers no `*_open` method, so `build_opener` never
     # adds it to the chain. Passing it still does the work: it displaces the
@@ -5955,3 +5977,355 @@ def test_blank_auto_classifier_flag_overrides_as_explicit_inherit() -> None:
 
     assert resolved.value == INHERIT_CLASSIFIER_MODEL
     assert CLI_RANK in resolved.ranks
+
+
+_NO_THREAD = "can't start new thread"
+
+
+class _FakeClock:
+    """Monotonic clock a test advances explicitly.
+
+    Stateful rather than an `iter([...])` of readings: a scripted iterator
+    fails with `StopIteration` the moment production reads the clock one extra
+    time, which reports a refactor as an unrelated crash instead of an
+    assertion. Every reading here is still ordered and reproducible.
+    """
+
+    def __init__(self) -> None:
+        """Start at zero."""
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        """Return the current reading.
+
+        Returns:
+            Seconds since this clock started.
+        """
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        """Move the clock forward.
+
+        Args:
+            seconds: How far to advance.
+        """
+        self.now += seconds
+
+
+def test_remote_toml_provider_stops_a_body_dripped_past_the_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A body fed a chunk at a time cannot outlive the end-to-end budget.
+
+    Every per-read timeout is recomputed from what is left of the deadline, so
+    a server that answers just inside each shrinking window is bounded only by
+    the cumulative check after each chunk. Without that check this response
+    reads to completion well past five seconds, and the partial policy it
+    delivers parses.
+    """
+    from deepagents_code.configuration import providers
+
+    clock = _FakeClock()
+
+    class DrippingResponse(_RemoteResponse):
+        """Answers a little at a time, spending real budget on each chunk."""
+
+        def read1(self, size: int = -1) -> bytes:
+            del size
+            clock.advance(2.0)
+            return b'mode = "manual"\n'
+
+    response = DrippingResponse(b"", content_length="64")
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            return response
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    monkeypatch.setattr(providers.time, "monotonic", clock)
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert snapshot.status.detail == "remote source timed out"
+    # No partial body may reach `tomllib`: a prefix of a policy parses.
+    assert snapshot.data == {}
+    assert clock.now >= providers.REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS
+    assert response.closed.is_set()
+
+
+def test_remote_toml_provider_closes_a_response_that_lands_at_the_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connect that returns exactly as the budget runs out reads no body.
+
+    Distinct from the deadline expiring *before* the open is attempted, which
+    fails earlier while computing the connect timeout. Here the response
+    exists, so it must also be released rather than leaked.
+    """
+    from deepagents_code.configuration import providers
+
+    clock = _FakeClock()
+    response = _RemoteResponse(b'[startup]\nmode = "manual"\n')
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            # A connect that consumes the entire budget and then succeeds.
+            assert timeout > 0
+            clock.advance(providers.REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS + 1.0)
+            return response
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    monkeypatch.setattr(providers.time, "monotonic", clock)
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    assert snapshot.status.detail == "remote source timed out"
+    assert snapshot.data == {}
+    assert response.closed.is_set()
+    assert response.read_timeouts == []
+
+
+@pytest.mark.parametrize(
+    "media_type",
+    [
+        "text/html\x1b[2J\x1b[H",
+        "text/html\r\nX-Injected: 1",
+        "text/" + "h" * 4096,
+        "text/html \u200b",
+    ],
+    ids=["ansi-escape", "header-injection", "overlong", "unicode-separator"],
+)
+def test_remote_toml_provider_sanitizes_a_hostile_media_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    media_type: str,
+) -> None:
+    """A server-chosen media type is bounded before it reaches an operator.
+
+    This detail lands in exit-78 stderr and the `doctor` row, and it is the one
+    piece of server-controlled text reproduced on this boundary. An escape
+    sequence could rewrite the surrounding report and an unbounded value could
+    bury it.
+    """
+    from deepagents_code.configuration import providers
+
+    response = _RemoteResponse(b'[startup]\nmode = "manual"\n')
+    response.headers["Content-Type"] = media_type
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            return response
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.UNREADABLE
+    detail = snapshot.status.detail or ""
+    assert "not TOML" in detail
+    assert all(char.isascii() and char.isprintable() for char in detail)
+    assert len(detail) < 128
+
+
+def test_remote_toml_provider_releases_its_slot_when_no_worker_can_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Thread exhaustion fails closed and leaves the destination reusable.
+
+    The open slot is released by a done callback on the future, so a start
+    failure that left the future pending would occupy that URL for the rest of
+    the process: every later fetch would be refused even after threads freed
+    up.
+    """
+    from deepagents_code.configuration import providers
+
+    real_start = Thread.start
+    fail_start = True
+
+    def start(self: Thread) -> None:
+        if fail_start and self.name == "managed-config-open":
+            raise RuntimeError(_NO_THREAD)
+        real_start(self)
+
+    monkeypatch.setattr(Thread, "start", start)
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            return _RemoteResponse(b'[startup]\nmode = "manual"\n')
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    provider = RemoteTomlProvider(
+        "managed config",
+        "https://config.example.com/policy.toml",
+        tmp_path / "managed.toml",
+    )
+    failed = provider.load()
+
+    assert failed.status.health is ProviderHealth.UNREADABLE
+    assert "could not be read" in (failed.status.detail or "")
+
+    fail_start = False
+    recovered = provider.load()
+
+    # The slot was released, so the same URL is fetchable again rather than
+    # permanently refused as still in progress.
+    assert recovered.status.health is ProviderHealth.OK
+    assert recovered.data == {"startup": {"mode": "manual"}}
+
+
+def test_doctor_keeps_a_rejected_remote_url_out_of_its_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source that fails validation is never echoed, token and all.
+
+    The descriptor is administrator-authored, but a mistyped source can still
+    carry a secret in its query string, and `doctor` output is pasted into
+    tickets. `remote_source` stays unset for a rejected URL, so the row falls
+    back to naming the descriptor file.
+    """
+    from deepagents_code.configuration import service
+    from deepagents_code.doctor import _managed_config_diagnostic
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/p?token=s3cret"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    try:
+        item = _managed_config_diagnostic()
+    finally:
+        service.invalidate_config_sources()
+
+    assert item.ok is False
+    assert "s3cret" not in item.value
+    assert "config.example.com" not in item.value
+    assert str(managed) in item.value
+    assert "query string" in item.value
+
+
+def test_doctor_reports_a_failed_refresh_behind_a_served_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A policy host that stopped answering cannot be silent.
+
+    Fail-closed means the last enforceable generation keeps resolving, so every
+    other field on this row stays green and correct. That is exactly why the
+    failed refresh needs its own clause: `logger.warning` cannot reach a
+    terminal here, because the package installs its own handler at import time.
+    """
+    from deepagents_code.configuration import providers, service
+    from deepagents_code.doctor import _managed_config_diagnostic
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[managed_config]\nsource = "https://config.example.com/policy.toml"\n',
+        encoding="utf-8",
+    )
+    redirect_managed_config(monkeypatch, managed)
+    healthy = True
+    failure = URLError("dns failed")
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            if not healthy:
+                raise failure
+            return _RemoteResponse(b'[startup]\nmode = "manual"\n')
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    service.invalidate_config_sources()
+    try:
+        assert service.get_managed_snapshot().data == {"startup": {"mode": "manual"}}
+        healthy = False
+
+        item = _managed_config_diagnostic()
+
+        # Still enforcing the generation it could read. A non-refresh read is
+        # what the process resolves from; a `refresh=True` caller deliberately
+        # receives the failure it asked to see.
+        assert service.get_managed_snapshot().data == {"startup": {"mode": "manual"}}
+        # ...and the row says both halves. Reporting only the read failure
+        # reads as "no policy is in force", which is the opposite of what
+        # fail-closed retention just did.
+        assert item.ok is False
+        assert "could not be read" in item.value
+        assert "still enforcing the last generation" in item.value
+        assert "not unmanaged" in item.value
+        assert "dns failed" not in item.value
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_provider_status_rejects_an_unvalidated_remote_source() -> None:
+    """The "only a validated URL is retained" rule is enforced, not documented.
+
+    Every surface interpolates this field straight into operator text, so a
+    construction site that skipped `_validate_remote_url` would put a rejected
+    source -- credentials and all -- into a `doctor` row.
+    """
+    from deepagents_code.configuration.types import ProviderStatus
+
+    for source in (
+        "http://config.example.com/policy.toml",
+        "https://user:pw@config.example.com/policy.toml",
+        "https://config.example.com/policy.toml?token=s3cret",
+        "https://config.example.com/policy.toml#frag",
+        "https://config.example.com/pol\u200bicy.toml",
+        "https://config.example.com/policy.toml\x1b[2J",
+    ):
+        with pytest.raises(ValueError, match="validated absolute HTTPS URL"):
+            ProviderStatus(
+                "managed config",
+                None,
+                ProviderHealth.UNREADABLE,
+                "boom",
+                remote_source=source,
+            )
+
+    # The shape production actually produces still constructs.
+    ProviderStatus(
+        "managed config",
+        None,
+        ProviderHealth.UNREADABLE,
+        "boom",
+        remote_source="https://config.example.com/policy.toml",
+    )
+
+
+def test_remote_source_longer_than_the_bound_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """An unbounded source would be the one unbounded string on this path."""
+    from deepagents_code.configuration.providers import REMOTE_SOURCE_MAX_CHARS
+
+    source = "https://config.example.com/" + "a" * REMOTE_SOURCE_MAX_CHARS
+    snapshot = RemoteTomlProvider(
+        "managed config",
+        source,
+        tmp_path / "managed.toml",
+    ).load()
+
+    assert snapshot.status.health is ProviderHealth.CORRUPT
+    assert snapshot.status.detail == "remote source is too long"
+    assert snapshot.status.remote_source is None

@@ -260,6 +260,14 @@ class ConfigResolver:
 
         Advances the generation, so this also re-arms the source-level
         diagnostics -- see `reload_with_replacements`, which does the work.
+
+        Reloads every provider *under this resolver's lock*, and a managed
+        provider's loader can fetch over the network for the whole remote
+        timeout. Every concurrent `get` and `resolve_options` blocks for that
+        duration, which on the Textual event loop stalls the UI. Callers that
+        may run against a remote descriptor should fetch first and hand the
+        snapshot over -- `get_config_resolver(refresh_managed=True)` does
+        exactly that -- rather than calling this.
         """
         self.reload_with_replacements({})
 
@@ -268,6 +276,10 @@ class ConfigResolver:
         replacements: Mapping[int, ConfigProvider],
     ) -> None:
         """Refresh providers after installing already-refreshed replacements.
+
+        Non-replaced providers are reloaded under this resolver's lock, so the
+        caveat on `reload` about a managed loader's network I/O applies to any
+        call that leaves the managed rank unreplaced.
 
         Args:
             replacements: Providers already bound to the desired generation,
@@ -278,28 +290,16 @@ class ConfigResolver:
             ValueError: If a replacement rank is not in this resolver, or a
                 replacement is not serving a usable snapshot.
         """
-        from deepagents_code.configuration.providers import TomlFileProvider
-
         with self._lock:
             ranks = {provider.rank for provider in self._providers}
             unknown = replacements.keys() - ranks
             if unknown:
                 msg = f"cannot replace unknown provider ranks: {sorted(unknown)}"
                 raise ValueError(msg)
-            # A replacement bypasses `reload`, so require a usable generation
-            # behind it. Its latest status may still be unusable when it safely
-            # retains the previous snapshot; rejecting that state would erase
-            # the failed-refresh diagnostic. A provider whose served snapshot
-            # is itself unusable would resolve as "this source declares
-            # nothing" and silently let lower ranks win.
             unusable = sorted(
                 rank
                 for rank, provider in replacements.items()
-                if not provider.status().usable
-                and (
-                    not isinstance(provider, TomlFileProvider)
-                    or not provider.current_snapshot().status.usable
-                )
+                if not _serves_usable_policy(provider)
             )
             if unusable:
                 msg = (
@@ -616,6 +616,31 @@ def get_config_resolver(
             }
         )
         return resolver
+
+
+def _serves_usable_policy(provider: ConfigProvider) -> bool:
+    """Whether a replacement is serving a snapshot resolution can trust.
+
+    A replacement bypasses `reload`, so it needs a usable generation behind it.
+    Its latest status may still be unusable while it safely retains the
+    previous snapshot; rejecting that state would erase the failed-refresh
+    diagnostic. A provider whose *served* snapshot is unusable would resolve as
+    "this source declares nothing" and silently let lower ranks win.
+
+    Args:
+        provider: Replacement about to be installed.
+
+    Returns:
+        Whether the generation this provider resolves from is usable.
+    """
+    from deepagents_code.configuration.providers import TomlFileProvider
+
+    if provider.status().usable:
+        return True
+    return (
+        isinstance(provider, TomlFileProvider)
+        and provider.current_snapshot().status.usable
+    )
 
 
 def _managed_replacement_provider(

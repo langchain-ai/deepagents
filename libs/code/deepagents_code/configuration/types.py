@@ -58,8 +58,37 @@ class ProviderStatus:
     because that is the file an operator can edit. Without this field an error
     renders as "repair or remove" that file, which is not broken -- and
     removing it drops all policy. Set only after `_validate_remote_url`
-    accepts the URL, so a rejected source is never echoed back.
+    accepts the URL, so a rejected source is never echoed back --
+    `__post_init__` enforces that rather than trusting every construction site.
     """
+
+    def __post_init__(self) -> None:
+        """Reject a remote source that never passed URL validation.
+
+        Every surface interpolates this field straight into operator-facing
+        text, so "only a validated URL reaches here" is a security invariant.
+        It held by convention -- one construction site in each of two modules
+        -- and `ProviderStatus` is public, so a third site is a rejected
+        source, credentials and all, in a `doctor` row. This restates the
+        cheap, load-bearing half of `_validate_remote_url` rather than the
+        whole of it: the point is that an unvalidated string cannot get in.
+
+        Raises:
+            ValueError: If `remote_source` is not an absolute HTTPS URL, is not
+                printable ASCII, or carries credentials, a query, or a
+                fragment.
+        """
+        source = self.remote_source
+        if source is None:
+            return
+        if (
+            not source.startswith("https://")
+            or not source.isascii()
+            or not source.isprintable()
+            or any(char in source for char in "@?# ")
+        ):
+            msg = "remote_source must be a validated absolute HTTPS URL"
+            raise ValueError(msg)
 
     @property
     def usable(self) -> bool:

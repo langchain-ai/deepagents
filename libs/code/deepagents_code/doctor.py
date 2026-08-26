@@ -514,17 +514,52 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     Returns:
         Managed config diagnostic row.
     """
+    try:
+        return _managed_config_row()
+    except Exception as exc:  # See below.
+        # A remote descriptor turns this row into a network fetch, so it has
+        # more ways to fail than any other row here -- and it is the row a
+        # user reaches for after exit 78 told them to investigate. An escape
+        # would take down every unrelated section with it. `doctor` already
+        # guards a corrupt update stamp the same way.
+        logger.debug("Managed config diagnostic failed", exc_info=True)
+        return DiagnosticItem(
+            "Managed config",
+            f"could not be checked ({type(exc).__name__})",
+            ok=False,
+        )
+
+
+def _managed_config_row() -> DiagnosticItem:
+    """Build the managed config row from one refreshed snapshot.
+
+    Any failure reading or resolving managed policy propagates to
+    `_managed_config_diagnostic`, which reports it as an unchecked row.
+
+    Returns:
+        Managed config diagnostic row.
+    """
     from deepagents_code.configuration.resolver import (
         MANAGED_RANK,
         resolver_from_snapshots,
     )
     from deepagents_code.configuration.service import (
         get_managed_snapshot,
+        managed_refresh_failure,
         managed_snapshot_health,
     )
     from deepagents_code.configuration.types import ProviderHealth, TomlSnapshot
 
     snapshot = get_managed_snapshot(refresh=True)
+    # A refresh caller receives the failure it asked to see, while the process
+    # keeps resolving from the last generation it could read. Both halves have
+    # to appear: the failure alone reads as "no policy is in force", which is
+    # the opposite of what fail-closed retention does.
+    retained = (
+        get_managed_snapshot().data
+        if not snapshot.status.usable and managed_refresh_failure() is not None
+        else None
+    )
     user = TomlSnapshot.absent("config.toml")
     status = resolver_from_snapshots(managed=snapshot, user=user).provider_statuses()[
         MANAGED_RANK
@@ -574,9 +609,18 @@ def _managed_config_diagnostic() -> DiagnosticItem:
         # `ok`. It still has to appear somewhere: the only other announcement is
         # a `logger.warning` that cannot reach stderr.
         detail += f" - ignores {', '.join(health.rejections)}"
+    stale = ""
+    if retained:
+        # Naming the keys would duplicate `dcode config`; what an administrator
+        # needs here is that the session is not unprotected while the source is
+        # down.
+        stale = (
+            " - still enforcing the last generation that could be read, so this "
+            "session is not unmanaged"
+        )
     return DiagnosticItem(
         "Managed config",
-        f"{location} ({suffix}){detail}{hint}",
+        f"{location} ({suffix}){detail}{stale}{hint}",
         ok=health.ok,
     )
 

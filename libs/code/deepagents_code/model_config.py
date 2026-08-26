@@ -879,7 +879,7 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
-RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
+RETRY_PARAM_BY_PROVIDER: dict[str, str | None] = {
     "anthropic": "max_retries",
     "azure_openai": "max_retries",
     "baseten": "max_retries",
@@ -899,19 +899,36 @@ RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "perplexity": "max_retries",
     "together": "max_retries",
     "xai": "max_retries",
+    # `None` means "checked, and this integration has no retry-count kwarg" --
+    # distinct from a provider absent from the table, which means dcode does
+    # not know. Only the absent case warrants the "SDK retries stay active"
+    # warning: a `None` provider has no SDK retry loop to multiply, so warning
+    # about it told the user to set `[retries.<provider>].param` to a kwarg
+    # their integration would drop.
+    #
+    # `cohere` is deliberately NOT listed here: `langchain_cohere`'s `BaseCohere`
+    # appears to expose `max_retries`, so it likely belongs above with a kwarg
+    # name rather than here. Left absent until someone can check it against an
+    # installed `langchain_cohere` -- absent warns, which is noisy but honest,
+    # whereas a wrong `None` would silently leave its SDK retries running.
+    "huggingface": None,
+    "ibm": None,
+    "nvidia": None,
+    "ollama": None,
 }
 """Constructor kwargs used to disable provider-owned retry loops.
 
 dcode's model-node middleware owns the retry budget, so integrations with a
 known retry-count parameter receive their provider-specific disable value at
-construction time. Providers absent from this mapping either do not expose an
-integer retry-count parameter or must declare one with
-`[retries.<provider>].param` in `config.toml`.
+construction time. A `None` value records an integration reported to
+have no retry-count parameter. Providers absent from this mapping are unknown
+to dcode and must declare one with `[retries.<provider>].param` in
+`config.toml`.
 
-Membership is verified against each integration's chat model constructor, never
-inferred from the provider name. `cohere`, `huggingface`, `ibm`, `nvidia`, and
-`ollama` are absent because their chat models declare no retry-count field and
-ignore extra kwargs, so naming one here would be dropped rather than honored.
+A kwarg name is verified against that integration's chat model constructor,
+never inferred from the provider name. The `None` entries are the weaker claim:
+none of those packages is installed in this repo, so they rest on the
+integrations' own documentation. Re-check one before relying on it.
 """
 
 RETRY_DISABLE_VALUE_BY_PROVIDER: dict[str, int] = {"google_genai": 1}

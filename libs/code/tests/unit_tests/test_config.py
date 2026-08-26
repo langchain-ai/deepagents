@@ -1782,7 +1782,11 @@ class TestRetriesConfig:
 
     @pytest.mark.parametrize(
         "provider",
-        sorted(model_config.RETRY_PARAM_BY_PROVIDER),
+        sorted(
+            name
+            for name, param in model_config.RETRY_PARAM_BY_PROVIDER.items()
+            if param is not None
+        ),
     )
     def test_every_registered_provider_is_disabled(self, provider: str) -> None:
         """Dropping a registry entry silently reactivates that provider's retries."""
@@ -1790,6 +1794,29 @@ class TestRetriesConfig:
         expected = model_config.RETRY_DISABLE_VALUE_BY_PROVIDER.get(provider, 0)
         config = _parse_retry_config(None)
         assert _provider_retry_disable_kwargs(config, provider, {}) == {param: expected}
+
+    @pytest.mark.parametrize(
+        "provider",
+        sorted(
+            name
+            for name, param in model_config.RETRY_PARAM_BY_PROVIDER.items()
+            if param is None
+        ),
+    )
+    def test_provider_without_a_retry_kwarg_is_quiet(
+        self, provider: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `None` entry has no SDK retry loop, so there is nothing to warn about.
+
+        These providers used to hit the unidentifiable-provider warning, which
+        told the user to set `[retries.<provider>].param` -- a kwarg their
+        integration drops. The advice inverted the remediation it offered.
+        """
+        config_module._warned_unknown_retry_providers.discard(provider)
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            config = _parse_retry_config(None)
+            assert _provider_retry_disable_kwargs(config, provider, {}) == {}
+        assert caplog.text == ""
 
     def test_unidentifiable_provider_warns(
         self, caplog: pytest.LogCaptureFixture
@@ -7864,12 +7891,13 @@ class TestCollectRetryConfigWarnings:
 
     @staticmethod
     def _warnings(tmp_path: Path, toml: str) -> list[str]:
-        from deepagents_code.config import collect_retry_config_warnings
+        from deepagents_code.config import collect_retry_config_startup
 
         config_path = tmp_path / "config.toml"
         config_path.write_text(toml)
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            return collect_retry_config_warnings()
+            warnings, _ = collect_retry_config_startup()
+        return warnings
 
     def test_clean_config_reports_nothing(self, tmp_path: Path) -> None:
         """A valid budget must not produce noise on every launch."""

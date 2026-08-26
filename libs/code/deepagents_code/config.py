@@ -2647,6 +2647,14 @@ def _provider_retry_disable_kwargs(
 
     retry_param = _resolve_retry_param(config, provider, model_kwargs)
     if retry_param is None:
+        # A `None` entry records an integration checked and found to have no
+        # retry-count kwarg, so there is no SDK loop to multiply and nothing to
+        # warn about. Warning anyway pointed the user at
+        # `[retries.<provider>].param`, which their integration would drop.
+        from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
+
+        if provider in RETRY_PARAM_BY_PROVIDER:
+            return {}
         # The provider's own SDK retry loop can't be identified, so it stays
         # active and may multiply the middleware's attempts. Register the
         # provider in `RETRY_PARAM_BY_PROVIDER` or set `[retries.<provider>].param`.
@@ -2726,12 +2734,6 @@ def _resolve_model_retries_from_section(
         return cli_max_retries
     configured = _resolve_config_retry_count(config, provider)
     return configured if configured is not None else DEFAULT_MODEL_RETRIES
-
-
-def collect_retry_config_warnings() -> list[str]:
-    """Return user-facing diagnostics from one pure retry-config parse."""
-    warnings, _ = collect_retry_config_startup()
-    return warnings
 
 
 def collect_retry_config_startup(
@@ -5692,18 +5694,32 @@ class ModelResult:
         the retry resolver itself, so a bad value here signals a caller
         constructing `ModelResult` by hand with a budget the retry middleware
         could not honor. `bool` is rejected for the same reason
-        `_request_max_retries` rejects it: `True` would silently read as a
-        budget of one.
+        `_model_max_retries` and `CodeModelRetryMiddleware.__init__` reject it:
+        `True` would silently read as a budget of one.
+
+        `cli_max_retries` gets the same gate. It is the field that carries the
+        explicit flag onward to a re-resolution for a different provider, and
+        it was the one budget field in dcode without the check -- which is the
+        argument for a single validated budget type rather than a ninth copy of
+        this predicate.
 
         Raises:
-            TypeError: If `model_retries` is a `bool`.
-            ValueError: If `model_retries` is negative.
+            TypeError: If `model_retries` or `cli_max_retries` is a `bool`.
+            ValueError: If `model_retries` or `cli_max_retries` is negative.
         """
         if isinstance(self.model_retries, bool):
             msg = f"model_retries must be an int, got {self.model_retries!r}"
             raise TypeError(msg)
         if self.model_retries < 0:
             msg = f"model_retries must be >= 0, got {self.model_retries}"
+            raise ValueError(msg)
+        if isinstance(self.cli_max_retries, bool):
+            msg = (
+                f"cli_max_retries must be None or an int, got {self.cli_max_retries!r}"
+            )
+            raise TypeError(msg)
+        if self.cli_max_retries is not None and self.cli_max_retries < 0:
+            msg = f"cli_max_retries must be >= 0, got {self.cli_max_retries}"
             raise ValueError(msg)
 
     def apply_to_settings(self) -> None:

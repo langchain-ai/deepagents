@@ -24098,17 +24098,26 @@ class DeepAgentsApp(App):
                 f"({store.visible_count} rendered), {turns} {turn_label}"
             )
 
-        def _log_path() -> str:
-            path = installed_debug_log_path()
+        def _log_field() -> SnapshotField:
+            try:
+                path = installed_debug_log_path()
+            except Exception as exc:
+                logger.warning("Debug snapshot field 'Debug log' failed", exc_info=True)
+                return SnapshotField(
+                    label="Debug log", value=f"(unavailable: {type(exc).__name__})"
+                )
             if path:
-                return str(path)
+                return SnapshotField(label="Debug log", value=str(path), copyable=True)
             # DEEPAGENTS_CODE_DEBUG can read truthy with no handler installed —
             # e.g. a bad path, or the var set after import via .env. Distinguish
             # that from the plain no-file-logging case so the console does not
             # imply a file exists (and hint that a request went unfulfilled).
-            if is_env_truthy(DEBUG):
-                return "in-memory only (file logging requested but unavailable)"
-            return "in-memory only"
+            value = (
+                "in-memory only (file logging requested but unavailable)"
+                if is_env_truthy(DEBUG)
+                else "in-memory only"
+            )
+            return SnapshotField(label="Debug log", value=value)
 
         return [
             _safe("Version", lambda: __version__, copyable=True),
@@ -24124,7 +24133,7 @@ class DeepAgentsApp(App):
             _safe("Sandbox", lambda: self._sandbox_type or "local"),
             _safe("MCP servers", _mcp),
             _safe("Tokens", _tokens),
-            _safe("Debug log", _log_path),
+            _log_field(),
         ]
 
     def _open_notification_center(self) -> None:

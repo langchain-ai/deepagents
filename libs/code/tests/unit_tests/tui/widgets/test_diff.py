@@ -13,7 +13,7 @@ from textual.style import Color, Style
 from textual.visual import RenderOptions
 from textual.widgets import Static
 
-from deepagents_code.config import ASCII_GLYPHS, get_glyphs
+from deepagents_code.config import ASCII_GLYPHS, get_glyphs, reset_glyphs_cache
 from deepagents_code.diff_utils import (
     DiffStats,
     count_diff_change_lines,
@@ -48,6 +48,22 @@ def _clear_highlight_cache() -> Iterator[None]:
     diff_module._highlight_lines_cached.cache_clear()
     yield
     diff_module._highlight_lines_cached.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _unicode_glyphs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Render every diff row with the Unicode glyph set, regardless of ambient state.
+
+    The diff renderer reads `get_glyphs()`, which is cached process-wide from the
+    terminal charset detection. An unrelated test that forces ASCII mode (e.g. in
+    `test_charset.py`) would otherwise leave `.` as the continuation glyph and
+    break the `…` expectations below, with xdist scheduling deciding which run
+    order exposes the leak.
+    """
+    monkeypatch.setenv("UI_CHARSET_MODE", "unicode")
+    reset_glyphs_cache()
+    yield
+    reset_glyphs_cache()
 
 
 def _rendered(diff: str, max_lines: int | None = 100) -> list[Static]:

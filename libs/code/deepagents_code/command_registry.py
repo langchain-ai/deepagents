@@ -131,6 +131,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="tokens window usage remaining offload compact",
     ),
     SlashCommand(
+        name="/context-doctor",
+        description="Audit what a session injects and its estimated token cost",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="tokens prompt skills memory mcp schemas bloat",
+    ),
+    SlashCommand(
         name="/cost",
         description="Show estimated thread cost",
         bypass_tier=BypassTier.QUEUED,

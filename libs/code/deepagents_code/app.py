@@ -12648,6 +12648,130 @@ class DeepAgentsApp(App):
             AppMessage(self._render_tool_catalog(catalog), markdown=True)
         )
 
+    async def _handle_context_doctor_command(self, command: str) -> None:
+        """Audit the estimated token cost of context injected into a session."""
+        from pathlib import Path
+
+        from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT
+
+        from deepagents_code._constants import DEFAULT_AGENT_NAME
+        from deepagents_code.agent import (
+            _MEMORY_READONLY_SYSTEM_PROMPT,
+            get_skill_sources,
+            get_system_prompt,
+        )
+        from deepagents_code.config import is_memory_auto_save_enabled, settings
+        from deepagents_code.context_doctor import (
+            build_context_doctor_report,
+            format_memory_prompt,
+            format_skills_prompt,
+            render_context_doctor_report,
+        )
+        from deepagents_code.tool_catalog import (
+            collect_built_in_tools,
+            collect_tools_from_agent,
+        )
+
+        await self._mount_message(UserMessage(command))
+        managed = self._server_kwargs is not None
+        system_prompt: str | None = None
+        memory_prompt: str | None = None
+        memory_contents: list[tuple[str, str]] = []
+        skill_sources = []
+        built_in = None
+
+        if managed:
+            try:
+                system_prompt = get_system_prompt(
+                    assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
+                    sandbox_type=self._sandbox_type,
+                    interactive=True,
+                    cwd=Path(self._cwd),
+                    fs_tools=self._server_kwargs.get("allow_fs_tools"),
+                )
+            except Exception:
+                logger.exception("Failed to build base prompt for /context-doctor")
+            memory_paths = [
+                settings.get_user_agent_md_path(
+                    self._assistant_id or DEFAULT_AGENT_NAME
+                ),
+                *settings.get_project_agent_md_path(),
+            ]
+            for path in memory_paths:
+                try:
+                    if path.is_file():
+                        memory_contents.append(
+                            (str(path), path.read_text(encoding="utf-8"))
+                        )
+                except OSError:
+                    logger.warning("Could not read memory metadata for %s", path)
+            template = (
+                MEMORY_SYSTEM_PROMPT
+                if is_memory_auto_save_enabled()
+                else _MEMORY_READONLY_SYSTEM_PROMPT
+            )
+            try:
+                memory_prompt = format_memory_prompt(memory_contents, template)
+            except Exception:
+                logger.exception("Failed to format memory for /context-doctor")
+            try:
+                skill_sources = get_skill_sources(
+                    assistant_id=self._assistant_id or DEFAULT_AGENT_NAME
+                )
+            except Exception:
+                logger.exception("Failed to resolve skill sources for /context-doctor")
+            try:
+                built_in = await asyncio.to_thread(
+                    collect_built_in_tools,
+                    assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
+                    enable_interpreter=bool(
+                        self._server_kwargs.get("enable_interpreter")
+                    ),
+                    fs_tools=self._server_kwargs.get("allow_fs_tools"),
+                )
+            except Exception:
+                logger.exception("Failed to enumerate tools for /context-doctor")
+        else:
+            try:
+                active_tools = (
+                    collect_tools_from_agent(self._agent)
+                    if self._agent is not None
+                    else None
+                )
+                if active_tools is not None:
+                    mcp_names = {
+                        tool.name
+                        for server in self._mcp_server_info_for_tools()
+                        for tool in server.tools
+                    }
+                    built_in = [
+                        tool for tool in active_tools if tool.name not in mcp_names
+                    ]
+            except Exception:
+                logger.exception("Failed to inspect custom agent for /context-doctor")
+
+        skills = list(self._discovered_skills)
+        skills_prompt = None
+        try:
+            skills_prompt = format_skills_prompt(skills, sources=skill_sources)
+        except Exception:
+            logger.exception("Failed to format skills for /context-doctor")
+        provider_tokens, conversation_tokens = await self._get_context_usage_counts()
+        report = build_context_doctor_report(
+            system_prompt=system_prompt,
+            memory_prompt=memory_prompt,
+            memory_files=len(memory_contents),
+            skills_prompt=skills_prompt,
+            skills=skills,
+            built_in_tools=built_in,
+            mcp_servers=self._mcp_server_info_for_tools(),
+            conversation_tokens=conversation_tokens,
+            provider_tokens=provider_tokens,
+        )
+        await self._mount_message(
+            AppMessage(render_context_doctor_report(report), markdown=False)
+        )
+
     def _mcp_server_info_for_tools(self) -> list[MCPServerInfo]:
         """Return MCP metadata matching the tools bound to the running agent.
 
@@ -15730,6 +15854,8 @@ class DeepAgentsApp(App):
                 ),
                 lambda _result: self._focus_chat_input_after_refresh(),
             )
+        elif cmd == "/context-doctor":
+            await self._handle_context_doctor_command(command)
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:

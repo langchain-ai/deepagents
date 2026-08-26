@@ -21,7 +21,10 @@ from deepagents_code._constants import FIREWORKS_MODEL_ID_PREFIXES
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH, is_env_truthy
 from deepagents_code._session_stats import format_cost, format_token_count
 from deepagents_code.config import get_glyphs
+from deepagents_code.runtime_state import get_runtime_state
 from deepagents_code.tui.widgets.loading import Spinner
+
+runtime_state = get_runtime_state()
 
 logger = logging.getLogger(__name__)
 
@@ -658,8 +661,6 @@ class StatusBar(Vertical):
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
-        from deepagents_code.config import settings
-
         self.cwd = self._initial_cwd
         if self._hide_cwd:
             self._set_cwd_visible(False)
@@ -668,9 +669,9 @@ class StatusBar(Vertical):
                 self.query_one("#branch-display", BranchLabel).display = False
         # Set initial model display
         label = self.query_one("#model-display", ModelLabel)
-        label.provider = settings.model_provider or ""
-        label.model = settings.model_name or ""
-        self.set_context_limit(settings.model_context_limit)
+        label.provider = runtime_state.model_provider or ""
+        label.model = runtime_state.model_name or ""
+        self.set_context_limit(runtime_state.model_context_limit)
         with suppress(NoMatches):
             self.query_one("#rubric-display", Static).display = False
         # Reactives are `init=False`, so the connection watcher never fires on

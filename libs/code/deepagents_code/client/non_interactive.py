@@ -80,6 +80,7 @@ from deepagents_code.hooks import (
     drain_pending_hooks,
 )
 from deepagents_code.model_config import ModelConfigError
+from deepagents_code.runtime_state import get_runtime_state
 from deepagents_code.sessions import generate_thread_id
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.unicode_security import (
@@ -108,6 +109,8 @@ if TYPE_CHECKING:
         HookNoticeSeverity,
     )
     from deepagents_code.hooks.transcript import TranscriptRecorder
+
+runtime_state = get_runtime_state()
 
 logger = logging.getLogger(__name__)
 
@@ -597,8 +600,8 @@ def _record_usage_from_message(
     record_message_usage(
         state.stats,
         message_obj,
-        fallback_model=settings.model_name or "",
-        fallback_provider=settings.model_provider or "",
+        fallback_model=runtime_state.model_name or "",
+        fallback_provider=runtime_state.model_provider or "",
         request_metadata=metadata,
         kind=usage_kind,
         recorded_requests=state.recorded_usage_requests,
@@ -1011,8 +1014,8 @@ def _process_stream_chunk(
                 state.stats,
                 data,
                 active_thread_id=state.thread_id,
-                fallback_model=settings.model_name or "",
-                fallback_provider=settings.model_provider or "",
+                fallback_model=runtime_state.model_name or "",
+                fallback_provider=runtime_state.model_provider or "",
                 recorded_requests=state.recorded_usage_requests,
             )
         elif (
@@ -1575,12 +1578,12 @@ async def _run_agent_loop(
     state.hooks.apply_graph_context(context)
     context["approval_mode"] = resolved_approval_mode.value
     context["auto_approve"] = resolved_approval_mode is ApprovalMode.YOLO
-    state.active_model = settings.model_name or None
+    state.active_model = runtime_state.model_name or None
     state.transcript = state.hooks.recorder(thread_id)
 
     start_outcome = await state.hooks.on_session_start(
         SessionStartCause.STARTUP,
-        model=settings.model_name or None,
+        model=runtime_state.model_name or None,
     )
     if not start_outcome.ok:
         await _end_headless_session(state, SessionEndCause.OTHER)
@@ -1787,8 +1790,8 @@ def _build_non_interactive_header(
         (f"Agent: {assistant_id}{default_label}", "dim"),
     ]
 
-    if settings.model_name:
-        parts.extend([(" | ", "dim"), (f"Model: {settings.model_name}", "dim")])
+    if runtime_state.model_name:
+        parts.extend([(" | ", "dim"), (f"Model: {runtime_state.model_name}", "dim")])
 
     parts.append((" | ", "dim"))
 

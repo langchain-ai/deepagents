@@ -22,6 +22,8 @@ from deepagents.middleware import (
     SkillsMiddleware,  # noqa: F401
 )
 
+from deepagents_code.runtime_state import get_runtime_state
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
@@ -124,6 +126,8 @@ from deepagents_code.unicode_security import (
     strip_dangerous_unicode,
     summarize_issues,
 )
+
+runtime_state = get_runtime_state()
 
 logger = logging.getLogger(__name__)
 
@@ -1546,10 +1550,10 @@ def get_system_prompt(
         )
 
     model_identity_section = build_model_identity_section(
-        settings.model_name,
-        provider=settings.model_provider,
-        context_limit=settings.model_context_limit,
-        unsupported_modalities=settings.model_unsupported_modalities,
+        runtime_state.model_name,
+        provider=runtime_state.model_provider,
+        context_limit=runtime_state.model_context_limit,
+        unsupported_modalities=runtime_state.model_unsupported_modalities,
     )
     filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
     web_search_tool_guidance = _WEB_SEARCH_TOOL_GUIDANCE if settings.has_tavily else ""

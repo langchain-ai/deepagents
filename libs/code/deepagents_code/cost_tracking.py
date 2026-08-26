@@ -77,6 +77,7 @@ from langgraph.types import Overwrite
 
 from deepagents_code._env_vars import OFFLINE, is_env_truthy
 from deepagents_code.resume_state import ResumeState
+from deepagents_code.runtime_state import get_runtime_state
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -88,6 +89,8 @@ if TYPE_CHECKING:
     from genai_prices.types import AbstractUsage, ModelInfo, Provider
     from langchain_core.outputs import LLMResult
     from langgraph.runtime import Runtime
+
+runtime_state = get_runtime_state()
 
 logger = logging.getLogger(__name__)
 
@@ -2254,10 +2257,8 @@ def _pricing_target(
     resolved_model = model_name or fallback[0]
     resolved_provider = provider or fallback[1]
     if not resolved_model:
-        from deepagents_code.config import settings
-
-        resolved_model = settings.model_name or ""
-        resolved_provider = resolved_provider or settings.model_provider or ""
+        resolved_model = runtime_state.model_name or ""
+        resolved_provider = resolved_provider or runtime_state.model_provider or ""
     return resolved_model, resolved_provider
 
 

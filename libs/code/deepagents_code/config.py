@@ -50,6 +50,7 @@ from deepagents_code.config_manifest import (
     INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
     RECURSION_LIMIT_DEFAULT,
 )
+from deepagents_code.runtime_state import get_runtime_state
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -2942,18 +2943,6 @@ class Settings:
     user_langchain_project: str | None
     """Original `LANGSMITH_PROJECT` from environment (for user code)."""
 
-    model_name: str | None = None
-    """Currently active model name, set after model creation."""
-
-    model_provider: str | None = None
-    """Provider identifier (e.g., `openai`, `anthropic`, `google_genai`)."""
-
-    model_context_limit: int | None = None
-    """Maximum input token count from the model profile."""
-
-    model_unsupported_modalities: frozenset[str] = frozenset()
-    """Input modalities not indicated as supported by the model profile."""
-
     project_root: Path | None = None
     """Current project root directory, or `None` if not in a git project."""
 
@@ -3026,6 +3015,44 @@ class Settings:
     bypassing HITL approval — this flag is a deliberate sanity gate, not a
     feature toggle.
     """
+
+    @property
+    def model_name(self) -> str | None:
+        """The active model name."""
+        return get_runtime_state().model_name
+
+    @model_name.setter
+    def model_name(self, value: str | None) -> None:  # noqa: PLR6301
+        get_runtime_state().model_name = value
+
+    @property
+    def model_provider(self) -> str | None:
+        """The active model provider."""
+        return get_runtime_state().model_provider
+
+    @model_provider.setter
+    def model_provider(self, value: str | None) -> None:  # noqa: PLR6301
+        get_runtime_state().model_provider = value
+
+    @property
+    def model_context_limit(self) -> int | None:
+        """The active model context limit."""
+        return get_runtime_state().model_context_limit
+
+    @model_context_limit.setter
+    def model_context_limit(self, value: int | None) -> None:  # noqa: PLR6301
+        get_runtime_state().model_context_limit = value
+
+    @property
+    def model_unsupported_modalities(self) -> frozenset[str]:
+        """Modalities unsupported by the active model."""
+        return get_runtime_state().model_unsupported_modalities
+
+    @model_unsupported_modalities.setter
+    def model_unsupported_modalities(  # noqa: PLR6301
+        self, value: frozenset[str]
+    ) -> None:
+        get_runtime_state().model_unsupported_modalities = value
 
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> Settings:
@@ -5731,11 +5758,11 @@ class ModelResult:
 
     def apply_to_settings(self) -> None:
         """Commit this result's metadata to global `settings`."""
-        s = _get_settings()
-        s.model_name = self.model_name
-        s.model_provider = self.provider
-        s.model_context_limit = self.context_limit
-        s.model_unsupported_modalities = self.unsupported_modalities
+        runtime_state = get_runtime_state()
+        runtime_state.model_name = self.model_name
+        runtime_state.model_provider = self.provider
+        runtime_state.model_context_limit = self.context_limit
+        runtime_state.model_unsupported_modalities = self.unsupported_modalities
 
 
 def _apply_profile_overrides(

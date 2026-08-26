@@ -30,6 +30,7 @@ from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.cold_cache import cache_identity_params
+from deepagents_code.runtime_state import get_runtime_state
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -38,6 +39,8 @@ if TYPE_CHECKING:
 
     from deepagents_code.config import ModelResult
 
+
+runtime_state = get_runtime_state()
 
 logger = logging.getLogger(__name__)
 
@@ -369,10 +372,9 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
 def _model_spec_from_model(model: BaseChatModel) -> str | None:
     """Return a resumable `provider:model` spec for a model object."""
     model_name = get_model_identifier(model)
-    from deepagents_code.config import settings
 
-    settings_provider = settings.model_provider or ""
-    settings_model = settings.model_name or ""
+    settings_provider = runtime_state.model_provider or ""
+    settings_model = runtime_state.model_name or ""
     if settings_provider and settings_model and model_name == settings_model:
         return f"{settings_provider}:{settings_model}"
     provider = _get_ls_provider(model)

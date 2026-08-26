@@ -6,6 +6,7 @@ Core compact tool logic tests live in the SDK at
 
 from __future__ import annotations
 
+import asyncio
 from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,16 +15,19 @@ import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.config import MODEL_RETRIES_ATTR
 from deepagents_code.offload_middleware import (
     CLICompactionMiddleware,
     _ArchiveReadGuard,
     _RetryingModelInvoker,
     _runtime_model_config,
 )
+
+_NO_BACKOFF = "deepagents_code.model_retry._retry_delay_seconds"
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
@@ -675,3 +679,70 @@ class TestSdkContractGuards:
         )
 
         assert applied == ["S", "m2", "m3"]
+
+
+class TestRetryingModelInvoker:
+    """The wrapper that replaces LangChain's summary-model retries.
+
+    It stands in for `with_retry()`, so a wrapper that does not actually retry
+    silently drops compaction summarization to a single attempt.
+    """
+
+    @staticmethod
+    def _model(calls: list[str]) -> SimpleNamespace:
+        """Build a model that fails once, then succeeds.
+
+        Returns:
+            A stub chat model carrying the default dcode retry budget.
+        """
+        transient = TimeoutError("provider unavailable")
+
+        def invoke(_input: object, **_kwargs: object) -> AIMessage:
+            calls.append("sync")
+            if len(calls) == 1:
+                raise transient
+            return AIMessage(content="summary")
+
+        async def ainvoke(_input: object, **_kwargs: object) -> AIMessage:
+            await asyncio.sleep(0)
+            calls.append("async")
+            if len(calls) == 1:
+                raise transient
+            return AIMessage(content="summary")
+
+        model = SimpleNamespace(invoke=invoke, ainvoke=ainvoke)
+        setattr(model, MODEL_RETRIES_ATTR, 2)
+        return model
+
+    def test_invoke_retries_a_transient_failure(self) -> None:
+        calls: list[str] = []
+        invoker = _RetryingModelInvoker(cast("Any", self._model(calls)))
+
+        with patch(_NO_BACKOFF, lambda *_args: 0):
+            result = invoker.invoke("summarize this")
+
+        assert calls == ["sync", "sync"]
+        assert result.content == "summary"
+
+    async def test_ainvoke_retries_a_transient_failure(self) -> None:
+        """A hoisted coroutine would raise "cannot reuse already awaited"."""
+        calls: list[str] = []
+        invoker = _RetryingModelInvoker(cast("Any", self._model(calls)))
+
+        with patch(_NO_BACKOFF, lambda *_args: 0):
+            result = await invoker.ainvoke("summarize this")
+
+        assert calls == ["async", "async"]
+        assert result.content == "summary"
+
+    def test_unstamped_model_keeps_a_usable_budget(self) -> None:
+        """Falling back to zero would make the wrapper a silent passthrough."""
+        calls: list[str] = []
+        model = self._model(calls)
+        delattr(model, MODEL_RETRIES_ATTR)
+        invoker = _RetryingModelInvoker(cast("Any", model))
+
+        with patch(_NO_BACKOFF, lambda *_args: 0):
+            assert invoker.invoke("summarize this").content == "summary"
+
+        assert calls == ["sync", "sync"]

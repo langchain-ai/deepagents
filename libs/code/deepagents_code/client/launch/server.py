@@ -529,6 +529,28 @@ def _wait_for_process_group_exit(
         time.sleep(min(_PROCESS_GROUP_POLL_INTERVAL, remaining))
 
 
+def _signal_windows_server(process: subprocess.Popen[Any]) -> None:
+    """Request graceful Windows shutdown, terminating when no console exists.
+
+    Args:
+        process: The owned server process to signal.
+
+    Raises:
+        ProcessLookupError: The server exited before the signal landed.
+    """
+    try:
+        process.send_signal(_WINDOWS_CTRL_BREAK_EVENT)
+    except ProcessLookupError:
+        raise
+    except OSError:
+        logger.warning(
+            "Failed to send Ctrl+Break to server process pid=%d; "
+            "falling back to terminate",
+            process.pid,
+        )
+        process.terminate()
+
+
 def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
     """Terminate the `langgraph dev` server and its descendants.
 
@@ -538,9 +560,11 @@ def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
     root — so a child that outlives the `langgraph dev` root is still escalated
     to SIGKILL rather than orphaned. On Windows, the server's console process
     group receives Ctrl+Break, which Uvicorn handles as a graceful SIGBREAK and
-    runs the Starlette lifespan shutdown. If no dedicated group is available on
-    POSIX, only the root process is signaled. `_server_process_group` guarantees
-    dcode's own POSIX process group is never targeted.
+    runs the Starlette lifespan shutdown. If Ctrl+Break cannot be delivered,
+    such as in a headless session without an attached console, the owned child
+    is terminated instead. If no dedicated group is available on POSIX, only
+    the root process is signaled. `_server_process_group` guarantees dcode's own
+    POSIX process group is never targeted.
 
     Args:
         process: The running server subprocess to terminate.
@@ -557,10 +581,10 @@ def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
             os.killpg(pgid, signal.SIGTERM)
             stopped = _wait_for_process_group_exit(process, pgid, _SHUTDOWN_TIMEOUT)
         else:
-            graceful_signal = (
-                _WINDOWS_CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM
-            )
-            process.send_signal(graceful_signal)
+            if sys.platform == "win32":
+                _signal_windows_server(process)
+            else:
+                process.send_signal(signal.SIGTERM)
             try:
                 process.wait(timeout=_SHUTDOWN_TIMEOUT)
             except subprocess.TimeoutExpired:

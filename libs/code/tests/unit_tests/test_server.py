@@ -2023,24 +2023,26 @@ class TestTerminateServerProcess:
         )
         process.kill.assert_not_called()
 
-    def test_windows_ctrl_break_oserror_reports_orphan(
+    def test_windows_ctrl_break_oserror_falls_back_to_terminate(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """An undeliverable Windows Ctrl+Break reports the orphan risk."""
+        """A headless Windows child is terminated when Ctrl+Break is unavailable."""
         monkeypatch.setattr(
             "deepagents_code.client.launch.server.sys.platform", "win32"
         )
         process = self._own_group_process()
-        process.send_signal.side_effect = PermissionError
+        process.send_signal.side_effect = OSError("no console")
 
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.WARNING):
             _terminate_server_process(process)
 
         process.send_signal.assert_called_once_with(
             server_module._WINDOWS_CTRL_BREAK_EVENT
         )
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=server_module._SHUTDOWN_TIMEOUT)
         process.kill.assert_not_called()
-        assert "may be orphaned" in caplog.text
+        assert "falling back to terminate" in caplog.text
 
     def test_windows_sigkill_oserror_reports_orphan(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

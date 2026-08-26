@@ -22,7 +22,9 @@ from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # inspected for runtime injection
 )
 from langchain_core.exceptions import ContextOverflowError
+from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
 from langgraph.types import Command  # noqa: TC002  # inspected for tool schema
@@ -63,13 +65,75 @@ if TYPE_CHECKING:
         ModelRequest,
         ModelResponse,
     )
-    from langchain.chat_models import BaseChatModel
     from langchain_core.messages import AnyMessage
     from langgraph.runtime import Runtime
 
     from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
 logger = logging.getLogger(__name__)
+
+
+class _RetryingModelInvoker(Runnable[LanguageModelInput, AIMessage]):
+    """Apply dcode's retry budget to one auxiliary model runnable."""
+
+    def __init__(self, model: BaseChatModel) -> None:
+        self._model = model
+
+    def invoke(
+        self,
+        input: LanguageModelInput,  # noqa: A002  # `Runnable` keyword contract
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> AIMessage:
+        """Invoke the model with dcode-owned retries.
+
+        Returns:
+            The model response.
+        """
+        from deepagents_code.model_retry import retry_model_call
+
+        return retry_model_call(
+            self._model,
+            lambda: self._model.invoke(input, config=config, **kwargs),
+        )
+
+    async def ainvoke(
+        self,
+        input: LanguageModelInput,  # noqa: A002  # `Runnable` keyword contract
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> AIMessage:
+        """Asynchronously invoke the model with dcode-owned retries.
+
+        Returns:
+            The model response.
+        """
+        from deepagents_code.model_retry import aretry_model_call
+
+        return await aretry_model_call(
+            self._model,
+            lambda: self._model.ainvoke(input, config=config, **kwargs),
+        )
+
+
+def _install_summary_model_retries(summarization: SummarizationMiddleware) -> None:
+    """Replace LangChain's generic summary retries with dcode's exact policy.
+
+    Raises:
+        AttributeError: If the SDK no longer exposes the summary-model slot.
+    """
+    helper = summarization._lc_helper
+    # Assigning to a renamed slot would create a new attribute nothing reads,
+    # leaving LangChain's unconditional three-attempt `with_retry` in place --
+    # a silent no-op that defeats `--max-retries 0` and reports nothing.
+    if not hasattr(helper, "_summary_model"):
+        msg = (
+            f"{type(helper).__name__} exposes no '_summary_model' slot, so dcode "
+            "cannot own compaction summarization retries. The SDK's "
+            "summarization internals have changed."
+        )
+        raise AttributeError(msg)
+    helper._summary_model = _RetryingModelInvoker(summarization.model)
 
 
 class _OffloadState(CostState, SummarizationState, total=False):
@@ -611,6 +675,24 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     used by the server-owned `/offload` operation.
     """
 
+    def __init__(
+        self,
+        summarization: SummarizationMiddleware,
+        *,
+        system_prompt: str | None = None,
+        cli_max_retries: int | None = None,
+    ) -> None:
+        """Initialize the CLI compaction middleware.
+
+        Args:
+            summarization: Summarization engine used by every compaction path.
+            system_prompt: Optional prompt fragment advertising the compact tool.
+            cli_max_retries: Explicit `--max-retries` value to retain when
+                rebuilding a runtime-selected model for `/offload`.
+        """
+        super().__init__(summarization, system_prompt=system_prompt)
+        self._cli_max_retries = cli_max_retries
+
     @property
     def name(self) -> str:
         """Replace the SDK auto-summarizer while retaining the compact tool."""
@@ -825,6 +907,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             config.model_spec,
             extra_kwargs=config.model_params or None,
             profile_overrides=config.profile_overrides or None,
+            cli_max_retries=self._cli_max_retries,
         ).model
         context_limit = config.context_limit
         if context_limit is not None:
@@ -862,7 +945,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         # composite backend here and only swapped `_backend` for the guard
         # afterwards, so the prefix was correct then too. `_PendingArchive`
         # applies the guard separately when writing.
-        return create_summarization_middleware(model, self._summarization._backend)
+        summarization = create_summarization_middleware(
+            model, self._summarization._backend
+        )
+        _install_summary_model_retries(summarization)
+        return summarization
 
     async def _aplan_forced_compaction_update(
         self, state: _OffloadState, runtime: _HasRunContext
@@ -1032,20 +1119,25 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 def _create_cli_compaction_middleware(
     model: str | BaseChatModel,
     backend: BackendProtocol,
+    *,
+    cli_max_retries: int | None = None,
 ) -> CLICompactionMiddleware:
     """Create the dcode compaction middleware from the SDK configuration.
 
     Args:
         model: Startup model or model specification.
         backend: Agent backend used for archive persistence.
+        cli_max_retries: Explicit `--max-retries` value for runtime rebuilds.
 
     Returns:
         CLI compaction middleware with the SDK's model-aware defaults.
     """
     sdk_middleware = create_summarization_tool_middleware(model, backend)
+    _install_summary_model_retries(sdk_middleware._summarization)
     return CLICompactionMiddleware(
         sdk_middleware._summarization,
         system_prompt=sdk_middleware.system_prompt,
+        cli_max_retries=cli_max_retries,
     )
 
 

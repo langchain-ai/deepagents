@@ -1853,3 +1853,68 @@ class TestModelIdentityPatch:
         assert "may not be available" not in patched
         assert "`deepseek-r1`" not in patched
         assert "### Skills Directory" in patched
+
+
+class TestRuntimeModelRetryBudget:
+    """A `/model` switch must carry the explicit CLI retry budget."""
+
+    @staticmethod
+    def _switch(
+        model_params: dict[str, Any], *, cli_max_retries: int | None = None
+    ) -> tuple[MagicMock, ModelRequest]:
+        """Drive a runtime model switch and return the `create_model` mock.
+
+        Returns:
+            The patched `create_model` mock and the request the handler saw.
+        """
+        request = _make_request(
+            _make_model("gpt-5.5"),
+            context=CLIContextSchema(
+                model="anthropic:claude-sonnet-4-6", model_params=model_params
+            ),
+        )
+        replacement = _make_model("claude-sonnet-4-6")
+        replacement._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        captured: list[ModelRequest] = []
+        middleware = ConfigurableModelMiddleware(
+            openai_prompt_cache_key=True,
+            cli_max_retries=cli_max_retries,
+        )
+        with patch(
+            _PATCH_CREATE, return_value=_make_model_result(replacement)
+        ) as create:
+            middleware.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+        return create, captured[0]
+
+    def test_budget_survives_the_switch(self) -> None:
+        """Without this the switched-to model reverts to the default budget.
+
+        `--max-retries 0` or a raised budget would silently stop applying the
+        moment the user ran `/model`.
+        """
+        create, _request = self._switch({}, cli_max_retries=2)
+        _args, kwargs = create.call_args
+        assert kwargs["cli_max_retries"] == 2
+
+    def test_cli_budget_stays_separate_from_model_settings(self) -> None:
+        """The explicit retry field is never a provider request parameter."""
+        _create, request = self._switch({"top_p": 1}, cli_max_retries=2)
+        assert request.model_settings == {"top_p": 1}
+
+    def test_cli_budget_alone_leaves_settings_untouched(self) -> None:
+        """A retry override alone must not create model settings."""
+        _create, request = self._switch({}, cli_max_retries=2)
+        assert not request.model_settings
+
+    def test_real_params_still_merge(self) -> None:
+        """The explicit retry field must not drop actual model overrides."""
+        _create, request = self._switch({"top_p": 1}, cli_max_retries=2)
+        assert (request.model_settings or {})["top_p"] == 1
+
+    def test_absent_sentinel_sends_no_extra_kwargs(self) -> None:
+        """A model with no flag set must resolve its own configured budget."""
+        create, _request = self._switch({"top_p": 1})
+        _args, kwargs = create.call_args
+        assert "cli_max_retries" not in kwargs

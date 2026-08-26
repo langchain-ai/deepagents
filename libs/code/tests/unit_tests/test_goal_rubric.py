@@ -2489,6 +2489,35 @@ class TestGoalCriteriaFallback:
         assert response_format.schema is GoalProposal
         assert response_format.handle_errors is _raise_terminal_goal_state_size_error
 
+    @pytest.mark.parametrize(
+        "factory_kwargs",
+        [{}, {"repository_backend": None, "context_tools": []}],
+        ids=["fallback_agent", "context_agent"],
+    )
+    def test_both_criteria_agents_install_model_retries(
+        self, factory_kwargs: dict[str, Any]
+    ) -> None:
+        """Goal child graphs honor the configured model retry budget."""
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        factory = (
+            create_goal_criteria_agent
+            if factory_kwargs
+            else create_goal_criteria_fallback_agent
+        )
+        graph = MagicMock()
+        graph.with_config.return_value = "configured-graph"
+
+        with patch("langchain.agents.create_agent", return_value=graph) as create:
+            factory(model=MagicMock(), model_retries=3, **factory_kwargs)
+
+        retry = next(
+            item
+            for item in create.call_args.kwargs["middleware"]
+            if isinstance(item, CodeModelRetryMiddleware)
+        )
+        assert retry.max_retries == 3
+
     @pytest.mark.parametrize("field", ["objective", "criteria"])
     def test_goal_proposal_schema_rejects_whitespace_only_field(
         self, field: str

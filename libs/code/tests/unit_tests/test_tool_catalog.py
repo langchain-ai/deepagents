@@ -81,7 +81,8 @@ class TestCollectBuiltInTools:
         The subagent's own model is still resolved by the SDK during assembly,
         which is pre-existing behavior and needs a credential for the provider
         it names. A placeholder key isolates this test to the policy question
-        rather than the environment's credentials.
+        rather than the environment's credentials. Dcode's runtime model factory
+        must not eagerly reconstruct it because that factory enforces policy.
         """
         from deepagents_code.model_config import ModelConfig
 
@@ -109,9 +110,11 @@ class TestCollectBuiltInTools:
             ],
         )
 
-        names = {tool.name for tool in collect_built_in_tools()}
+        with patch("deepagents_code.agent._resolve_retry_owned_model") as resolve:
+            names = {tool.name for tool in collect_built_in_tools()}
 
         assert names >= _CORE_BUILT_IN
+        resolve.assert_not_called()
 
     def test_respects_filesystem_allowlist(self) -> None:
         """The catalog listing is narrowed to an explicit allowlist.

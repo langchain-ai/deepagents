@@ -44,7 +44,9 @@ from deepagents_code.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    _has_resolvable_model_provider,
     _interrupt_predicate,
+    _resolve_retry_owned_model,
     _rubric_grader_system_prompt,
     _sanitize_agent_message_name,
     _should_interrupt_tool_call,
@@ -124,6 +126,54 @@ def _make_fake_chat_model() -> GenericFakeChatModel:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
     model.profile = {"max_input_tokens": 200000}
     return model
+
+
+def _keep_model_spec(model_spec: str, _model_retries: int) -> BaseChatModel:
+    """Keep a model string unresolved in tests unrelated to retry ownership."""
+    return cast("BaseChatModel", model_spec)
+
+
+def test_resolve_retry_owned_model_uses_dcode_factory() -> None:
+    """String models receive the middleware budget through `create_model`."""
+    fake_model = _make_fake_chat_model()
+    with patch(
+        "deepagents_code.config.create_model",
+        return_value=SimpleNamespace(model=fake_model),
+    ) as mock_create:
+        resolved = _resolve_retry_owned_model("anthropic:claude-test", 3)
+
+    assert resolved is fake_model
+    mock_create.assert_called_once_with(
+        "anthropic:claude-test",
+        cli_max_retries=3,
+    )
+
+
+def test_resolve_retry_owned_model_defers_without_credentials() -> None:
+    """An unauthenticated provider yields `None`, not a launch-aborting raise.
+
+    Owning the retry budget is an optimization. A subagent declaring a provider
+    the user has not authenticated must still let the CLI start, with the
+    credential error surfacing if and when that subagent runs.
+    """
+    from deepagents_code.model_config import MissingCredentialsError
+
+    with patch(
+        "deepagents_code.config.create_model",
+        side_effect=MissingCredentialsError(
+            "no creds", provider="anthropic", env_var="ANTHROPIC_API_KEY"
+        ),
+    ):
+        assert _resolve_retry_owned_model("anthropic:claude-test", 3) is None
+
+
+@pytest.mark.parametrize(
+    ("model_spec", "expected"),
+    [("anthropic:claude-test", True), ("claude-test", True), ("fake-model", False)],
+)
+def test_has_resolvable_model_provider(model_spec: str, expected: bool) -> None:
+    """Only strings with an identifiable provider are eagerly resolved."""
+    assert _has_resolvable_model_provider(model_spec) is expected
 
 
 @contextmanager
@@ -326,12 +376,15 @@ def test_goal_criteria_tools_wire_fallback_and_none_backend(tmp_path: Path) -> N
             system_prompt="test prompt",
             cwd=tmp_path,
             goal_criteria_tools=[],
+            model_retries=3,
         )
 
     make_criteria.assert_called_once()
     assert make_criteria.call_args.kwargs["repository_backend"] is None
     assert make_criteria.call_args.kwargs["fs_tools"] == ["read_file"]
+    assert make_criteria.call_args.kwargs["model_retries"] == 3
     make_fallback.assert_called_once()
+    assert make_fallback.call_args.kwargs["model_retries"] == 3
     # Primary and fallback agents share one model, and the middleware receives
     # both so graph-level failures can degrade to goal-only generation.
     assert (
@@ -3658,6 +3711,84 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Unexpected shell middleware on subagent {name!r}"
 
+    def test_retry_budget_reaches_every_installed_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        """`model_retries` must arrive at the middleware, not just its type.
+
+        The surrounding tests assert the middleware's presence and position but
+        never read its budget, so wiring `max_retries=0` into every install
+        site leaves the suite green while shipping retries that never fire.
+        """
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[
+                    {
+                        "name": "researcher",
+                        "description": "Researches things",
+                        "system_prompt": "Investigate the task thoroughly.",
+                        "model": None,
+                    }
+                ],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+                model_retries=7,
+            )
+
+        _, kwargs = mock_create.call_args
+
+        main_retries = [
+            mw
+            for mw in kwargs["middleware"]
+            if isinstance(mw, CodeModelRetryMiddleware)
+        ]
+        assert main_retries, "the main agent must install retry middleware"
+        assert all(mw.max_retries == 7 for mw in main_retries), (
+            "main-agent retry middleware carried the wrong budget: "
+            f"{[mw.max_retries for mw in main_retries]}"
+        )
+
+        subagent_retries = [
+            mw
+            for subagent in kwargs["subagents"]
+            for mw in subagent["middleware"]
+            if isinstance(mw, CodeModelRetryMiddleware)
+        ]
+        assert subagent_retries, "subagents must install retry middleware"
+        assert all(mw.max_retries == 7 for mw in subagent_retries), (
+            "subagent retry middleware carried the wrong budget: "
+            f"{[mw.max_retries for mw in subagent_retries]}"
+        )
+
     def test_subagent_middleware_combines_shell_configurable_model_and_cost(
         self, tmp_path: Path
     ) -> None:
@@ -3667,10 +3798,13 @@ class TestCreateCliAgentShellMiddlewareWiring:
         must not gain `ConfigurableModelMiddleware`, which would let a runtime
         `/model` switch clobber the pinned model.
         """
+        from deepagents.middleware.summarization import SummarizationMiddleware
+
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.cost_tracking import CostTrackingMiddleware
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -3708,6 +3842,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
+            ) as mock_resolve,
         ):
             create_cli_agent(
                 model="fake-model",
@@ -3730,9 +3868,17 @@ class TestCreateCliAgentShellMiddlewareWiring:
             assert middleware_types == [
                 ConfigurableModelMiddleware,
                 CostTrackingMiddleware,
+                CodeModelRetryMiddleware,
                 ShellAllowListMiddleware,
                 ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
+            # Subagents get no automatic summarizer. Deep Agents installs none
+            # of its own, so adding one here would switch on compaction and its
+            # archive writes rather than adjust an existing policy.
+            assert not any(
+                isinstance(mw, SummarizationMiddleware)
+                for mw in subagents_by_name[name]["middleware"]
+            ), f"Subagent {name!r} must not gain automatic summarization"
             hooks = next(
                 mw
                 for mw in subagents_by_name[name]["middleware"]
@@ -3749,6 +3895,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] == "anthropic:claude-haiku-4-5"
+        mock_resolve.assert_called_once_with("anthropic:claude-haiku-4-5", None)
         pinned_middleware = pinned["middleware"]
         assert any(
             isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
@@ -3757,6 +3904,12 @@ class TestCreateCliAgentShellMiddlewareWiring:
             isinstance(mw, CostTrackingMiddleware) and mw._nested
             for mw in pinned_middleware
         ), "Pinned subagent should retain nested cost tracking"
+        assert any(
+            isinstance(mw, CodeModelRetryMiddleware) for mw in pinned_middleware
+        ), "Pinned subagent should retain model retries"
+        assert not any(
+            isinstance(mw, SummarizationMiddleware) for mw in pinned_middleware
+        ), "Pinned subagent must not gain automatic summarization"
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
         ), "Pinned subagent must not gain configurable model middleware"
@@ -3958,6 +4111,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
             patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
+            ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
             ),
         ):
             create_cli_agent(
@@ -4191,6 +4348,10 @@ class TestCreateCliAgentFsToolsWiring:
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
+            ) as mock_resolve,
         ):
             create_cli_agent(
                 model="nvidia:nvidia/nemotron-3-ultra-550b-a55b",
@@ -4202,6 +4363,9 @@ class TestCreateCliAgentFsToolsWiring:
             )
 
         _, kwargs = mock_create.call_args
+        mock_resolve.assert_called_once_with(
+            "nvidia:nvidia/nemotron-3-ultra-550b-a55b", None
+        )
         main_filesystem = next(
             middleware
             for middleware in kwargs["middleware"]
@@ -4485,6 +4649,10 @@ class TestCreateCliAgentFsToolsWiring:
             patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
+            ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
             ),
         ):
             create_cli_agent(
@@ -5052,6 +5220,23 @@ class TestCreateCliAgentInterpreterWiring:
             compaction_middleware
         )
 
+    def test_model_retry_wraps_only_inside_compaction(self, tmp_path: Path) -> None:
+        """Automatic compaction must not be replayed by a model retry."""
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+        from deepagents_code.offload_middleware import CLICompactionMiddleware
+
+        middleware = self._capture_middleware(tmp_path, cli_max_retries=0)
+        compaction = next(
+            item for item in middleware if isinstance(item, CLICompactionMiddleware)
+        )
+        retry = next(
+            item for item in middleware if isinstance(item, CodeModelRetryMiddleware)
+        )
+
+        assert compaction._cli_max_retries == 0
+        # LangChain composes the first middleware as the outermost wrapper.
+        assert middleware.index(compaction) < middleware.index(retry)
+
     def test_auto_classifier_model_argument_reaches_middleware(
         self, tmp_path: Path
     ) -> None:
@@ -5062,12 +5247,14 @@ class TestCreateCliAgentInterpreterWiring:
             tmp_path,
             auto_mode_enabled=True,
             auto_classifier_model="openai:gpt-5.5-mini",
+            cli_max_retries=0,
         )
 
         auto_middleware = next(
             item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
         )
         assert auto_middleware._configured_classifier_model == "openai:gpt-5.5-mini"
+        assert auto_middleware._cli_max_retries == 0
 
     def test_auto_classifier_model_falls_back_to_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5372,6 +5559,26 @@ class TestCreateCliAgentInterpreterWiring:
                 rubric_model="openai:blocked",
             )
 
+    def test_resolves_rubric_model_with_retry_ownership(self, tmp_path: Path) -> None:
+        """A dedicated grader model disables provider retries before nesting."""
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        resolved_model = _make_fake_chat_model()
+        with patch(
+            "deepagents_code.agent._resolve_retry_owned_model",
+            return_value=resolved_model,
+        ) as resolve:
+            middleware = self._capture_middleware(
+                tmp_path,
+                model=_make_fake_chat_model(),
+                rubric_model="anthropic:grader-model",
+                cli_max_retries=0,
+            )
+
+        rubric = next(item for item in middleware if isinstance(item, RubricMiddleware))
+        assert rubric._model is resolved_model
+        resolve.assert_called_once_with("anthropic:grader-model", 0)
+
     def test_rejects_disallowed_primary_model_string(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -5395,6 +5602,19 @@ class TestCreateCliAgentInterpreterWiring:
 
         with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
             self._capture_middleware(tmp_path, model="openai:blocked")
+
+    def test_graph_only_primary_model_skips_eager_retry_resolution(
+        self, tmp_path: Path
+    ) -> None:
+        """Tool enumeration leaves its never-invoked model string unresolved."""
+        with patch("deepagents_code.agent._resolve_retry_owned_model") as resolve:
+            self._capture_middleware(
+                tmp_path,
+                model="openai:catalog-placeholder",
+                enforce_model_policy=False,
+            )
+
+        resolve.assert_not_called()
 
     def test_prebuilt_model_object_is_exempt_from_policy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5478,6 +5698,8 @@ class TestCreateCliAgentInterpreterWiring:
         from deepagents.middleware.rubric import RubricMiddleware
         from langchain_core.tools import StructuredTool
 
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
         def inspect_resource(resource_id: str) -> str:
             return resource_id
 
@@ -5512,6 +5734,7 @@ class TestCreateCliAgentInterpreterWiring:
                 rubric_model="custom-grader-model",
                 rubric_max_iterations=5,
                 rubric_grader_tools=[mcp_read],
+                model_retries=0,
             )
 
         _, kwargs = mock_create.call_args
@@ -5534,6 +5757,13 @@ class TestCreateCliAgentInterpreterWiring:
         ]
         assert "`notion_fetch`" in rubrics[0]._system_prompt
         assert rubrics[0]._grader_context_schema is CLIContextSchema
+        retry_middleware = next(
+            middleware
+            for middleware in rubrics[0]._grader_middleware
+            if isinstance(middleware, CodeModelRetryMiddleware)
+        )
+        assert retry_middleware.max_retries == 0
+        assert retry_middleware.stream_output_is_visible is False
         assert any(
             isinstance(middleware, AsyncApprovalHITLMiddleware)
             for middleware in rubrics[0]._grader_middleware
@@ -5716,6 +5946,10 @@ class TestCreateCliAgentInterpreterWiring:
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
+            ),
         ):
             create_cli_agent(
                 model="fireworks:accounts/fireworks/models/glm-5p2",
@@ -5770,6 +6004,10 @@ class TestCreateCliAgentInterpreterWiring:
             patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
+            ),
+            patch(
+                "deepagents_code.agent._resolve_retry_owned_model",
+                side_effect=_keep_model_spec,
             ),
         ):
             create_cli_agent(
@@ -6735,3 +6973,41 @@ class TestApplyInheritedPythonpath:
         env = {"PATH": "/usr/bin"}
         _apply_inherited_pythonpath(env)
         assert "PYTHONPATH" not in env
+
+
+class TestSubagentRetryBudgetResolution:
+    """`_resolve_retry_owned_model` must not forge the `--max-retries` flag."""
+
+    @staticmethod
+    def _captured_kwargs(cli_max_retries: int | None) -> dict[str, object]:
+        from deepagents_code.agent import _resolve_retry_owned_model
+
+        captured: dict[str, object] = {}
+
+        def _fake_create_model(
+            spec: str,  # noqa: ARG001  # positional spec is not under test here
+            **kwargs: object,
+        ) -> SimpleNamespace:
+            captured.update(kwargs)
+            return SimpleNamespace(model=SimpleNamespace())
+
+        with patch("deepagents_code.config.create_model", _fake_create_model):
+            _resolve_retry_owned_model("anthropic:claude-haiku-4-5", cli_max_retries)
+        return captured
+
+    def test_unset_flag_lets_the_model_resolve_its_own_budget(self) -> None:
+        """Without `--max-retries`, nothing may pre-empt the provider section.
+
+        Forwarding the caller's resolved budget here would outrank
+        `[retries.<provider>].max_retries`, so a subagent on another provider
+        could never use its own configured value.
+        """
+        assert self._captured_kwargs(None) == {"cli_max_retries": None}
+
+    def test_explicit_flag_still_reaches_the_subagent(self) -> None:
+        """An explicit `--max-retries` remains a global override."""
+        assert self._captured_kwargs(2) == {"cli_max_retries": 2}
+
+    def test_zero_flag_is_forwarded_not_treated_as_unset(self) -> None:
+        """`--max-retries 0` disables retries; it is not an absent flag."""
+        assert self._captured_kwargs(0) == {"cli_max_retries": 0}

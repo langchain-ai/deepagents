@@ -56,6 +56,7 @@ from deepagents_code.approval_mode import (
 )
 from deepagents_code.auto_mode import (
     _CLASSIFIER_POLICY,
+    _CLASSIFIER_RETRY_DELAY_FRACTION,
     _MAX_CLASSIFIER_MODEL_CACHE,
     _MAX_EMITTED_EVENT_SCOPES,
     _MAX_PENDING_EVENT_SCOPES,
@@ -82,6 +83,7 @@ from deepagents_code.auto_mode import (
     sanitize_auto_reason,
     user_prompt_metadata,
 )
+from deepagents_code.config import MODEL_RETRIES_ATTR
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
@@ -300,6 +302,7 @@ def _middleware(
     classifier_model: str | BaseChatModel | None = None,
     classifier_timeout_seconds: float = 1,
     classifier_construction_timeout_seconds: float = 1,
+    cli_max_retries: int | None = None,
     trusted_ask_user_tool: BaseTool | None = None,
     trusted_compaction_tool: BaseTool | None = None,
 ) -> AutoModeHITLMiddleware:
@@ -321,6 +324,7 @@ def _middleware(
             classifier_construction_timeout_seconds
         ),
         classifier_model=classifier_model,
+        cli_max_retries=cli_max_retries,
         trusted_ask_user_tool=trusted_ask_user_tool,
         trusted_compaction_tool=trusted_compaction_tool,
     )
@@ -4369,6 +4373,88 @@ async def test_invoke_failure_names_distinct_classifier_spec(
     assert counters["classifier_config_failed_spec"] is None
 
 
+async def test_classifier_retries_a_transient_invoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An inherited classifier gets dcode retries outside the model middleware."""
+
+    class _TransientModel(_StructuredModel):
+        attempts = 0
+
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            self.attempts += 1
+            if self.attempts == 1:
+                msg = "provider unavailable"
+                raise TimeoutError(msg)
+            return await super().ainvoke(messages, **kwargs)
+
+    monkeypatch.setattr(
+        "deepagents_code.model_retry._retry_delay_seconds", lambda *_: 0
+    )
+    model = _TransientModel(_allow_result())
+    setattr(model, MODEL_RETRIES_ATTR, 1)
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert model.attempts == 2
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_classifier_caps_total_retry_sleep_at_a_share_of_its_deadline(
+    tmp_path: Path,
+) -> None:
+    """A rate limit must surface as itself, not as a classifier timeout.
+
+    Without a cumulative cap the retries sleep out the whole `asyncio.timeout`
+    and the failure is reported as "the classifier did not respond", blaming
+    the wrong subsystem for a provider rate limit. Pins both that a cap is
+    passed and that it is a share of the configured deadline.
+    """
+    captured: list[float | None] = []
+
+    async def _record(
+        _model: object,
+        call: object,  # noqa: ARG001
+        *,
+        max_total_delay: float | None = None,
+    ) -> object:
+        captured.append(max_total_delay)
+        await asyncio.sleep(0)
+        msg = "rate limited"
+        raise TimeoutError(msg)
+
+    budget = 8.0
+    middleware = _middleware(tmp_path, classifier_timeout_seconds=budget)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    with patch("deepagents_code.model_retry.aretry_model_call", _record):
+        await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert captured == [budget * _CLASSIFIER_RETRY_DELAY_FRACTION]
+
+
 async def test_invoke_failure_evicts_cached_classifier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4541,9 +4627,13 @@ class _RecordingModelFactory:
         self.models = list(models)
         self.error = error
         self.specs: list[str] = []
+        self.retry_overrides: list[int | None] = []
 
-    def __call__(self, spec: str) -> SimpleNamespace:
+    def __call__(
+        self, spec: str, *, cli_max_retries: int | None = None
+    ) -> SimpleNamespace:
         self.specs.append(spec)
+        self.retry_overrides.append(cli_max_retries)
         if self.error is not None:
             raise self.error
         if len(self.models) == 1:
@@ -4620,6 +4710,29 @@ async def test_classifier_model_spec_is_resolved_once_and_cached(
 
     assert factory.specs == ["openai:gpt-5.5-mini"]
     assert len(classifier.calls) == 2
+
+
+async def test_classifier_model_spec_receives_cli_retry_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    classifier = _StructuredModel(_allow_result())
+    factory = _RecordingModelFactory(classifier)
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(
+        tmp_path,
+        classifier_model="openai:gpt-5.5-mini",
+        cli_max_retries=0,
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    await middleware._classifier_model(request)
+
+    assert factory.retry_overrides == [0]
 
 
 async def test_classifier_model_construction_respects_deadline(

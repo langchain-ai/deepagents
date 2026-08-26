@@ -2131,8 +2131,8 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         key="retries.max_retries",
         group="Models",
         summary=(
-            "Default provider retry count; override per provider with "
-            "`[retries.<provider>]`."
+            "Retries after a failed model request; `0` disables them. Override "
+            "per provider with `[retries.<provider>]`."
         ),
         kind=OptionKind.NON_NEGATIVE_INT,
         toml_keys=("retries", "max_retries"),

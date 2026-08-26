@@ -6,6 +6,7 @@ Core compact tool logic tests live in the SDK at
 
 from __future__ import annotations
 
+import asyncio
 from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,15 +15,20 @@ import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.config import MODEL_RETRIES_ATTR
 from deepagents_code.offload_middleware import (
     CLICompactionMiddleware,
     _ArchiveReadGuard,
+    _install_summary_model_retries,
+    _RetryingModelInvoker,
     _runtime_model_config,
 )
+
+_NO_BACKOFF = "deepagents_code.model_retry._retry_delay_seconds"
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
@@ -433,7 +439,7 @@ class TestCLICompactionMiddleware:
     def test_runtime_model_builds_matching_summarizer(self) -> None:
         """A `/model` override selects the summarizer used by `/offload`."""
         startup = self._summarization()
-        middleware = CLICompactionMiddleware(startup)
+        middleware = CLICompactionMiddleware(startup, cli_max_retries=0)
         runtime = MagicMock()
         runtime.context = {
             "model": "provider:active-model",
@@ -459,6 +465,7 @@ class TestCLICompactionMiddleware:
             "provider:active-model",
             extra_kwargs={"temperature": 0},
             profile_overrides=None,
+            cli_max_retries=0,
         )
         create_summarization.assert_called_once()
         assert create_summarization.call_args.args[0] is active_model
@@ -467,6 +474,7 @@ class TestCLICompactionMiddleware:
         # archive path, and the guard exposes no such attribute. The server
         # operation applies the guard separately at the write site.
         assert create_summarization.call_args.args[1] is startup._backend
+        assert isinstance(selected._lc_helper._summary_model, _RetryingModelInvoker)
 
     def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:
         """Server-side offload uses the CLI's effective model profile."""
@@ -499,6 +507,7 @@ class TestCLICompactionMiddleware:
             "provider:active-model",
             extra_kwargs=None,
             profile_overrides={"max_input_tokens": 32_000},
+            cli_max_retries=None,
         )
         assert active_model.profile["max_input_tokens"] == 24_000
         create_summarization.assert_called_once()
@@ -577,13 +586,20 @@ class TestCLICompactionMiddleware:
         with patch.object(
             om, "create_summarization_tool_middleware", return_value=sdk
         ) as factory:
-            result = om._create_cli_compaction_middleware("provider:model", backend)
+            result = om._create_cli_compaction_middleware(
+                "provider:model", backend, cli_max_retries=0
+            )
 
         factory.assert_called_once()
         assert isinstance(result, om.CLICompactionMiddleware)
         assert result.name == "SummarizationMiddleware"
         assert result.system_prompt == "SYSTEM PROMPT"
         assert result._summarization is sdk._summarization
+        assert result._cli_max_retries == 0
+        assert isinstance(
+            result._summarization._lc_helper._summary_model,
+            _RetryingModelInvoker,
+        )
 
 
 class TestRuntimeModelConfig:
@@ -664,3 +680,85 @@ class TestSdkContractGuards:
         )
 
         assert applied == ["S", "m2", "m3"]
+
+
+class TestRetryingModelInvoker:
+    """The wrapper that replaces LangChain's summary-model retries.
+
+    It stands in for `with_retry()`, so a wrapper that does not actually retry
+    silently drops compaction summarization to a single attempt.
+    """
+
+    @staticmethod
+    def _model(calls: list[str]) -> SimpleNamespace:
+        """Build a model that fails once, then succeeds.
+
+        Returns:
+            A stub chat model carrying the default dcode retry budget.
+        """
+        transient = TimeoutError("provider unavailable")
+
+        def invoke(_input: object, **_kwargs: object) -> AIMessage:
+            calls.append("sync")
+            if len(calls) == 1:
+                raise transient
+            return AIMessage(content="summary")
+
+        async def ainvoke(_input: object, **_kwargs: object) -> AIMessage:
+            await asyncio.sleep(0)
+            calls.append("async")
+            if len(calls) == 1:
+                raise transient
+            return AIMessage(content="summary")
+
+        model = SimpleNamespace(invoke=invoke, ainvoke=ainvoke)
+        setattr(model, MODEL_RETRIES_ATTR, 2)
+        return model
+
+    def test_invoke_retries_a_transient_failure(self) -> None:
+        calls: list[str] = []
+        invoker = _RetryingModelInvoker(cast("Any", self._model(calls)))
+
+        with patch(_NO_BACKOFF, lambda *_args: 0):
+            result = invoker.invoke("summarize this")
+
+        assert calls == ["sync", "sync"]
+        assert result.content == "summary"
+
+    async def test_ainvoke_retries_a_transient_failure(self) -> None:
+        """A hoisted coroutine would raise "cannot reuse already awaited"."""
+        calls: list[str] = []
+        invoker = _RetryingModelInvoker(cast("Any", self._model(calls)))
+
+        with patch(_NO_BACKOFF, lambda *_args: 0):
+            result = await invoker.ainvoke("summarize this")
+
+        assert calls == ["async", "async"]
+        assert result.content == "summary"
+
+    def test_unstamped_model_keeps_a_usable_budget(self) -> None:
+        """Falling back to zero would make the wrapper a silent passthrough."""
+        calls: list[str] = []
+        model = self._model(calls)
+        delattr(model, MODEL_RETRIES_ATTR)
+        invoker = _RetryingModelInvoker(cast("Any", model))
+
+        with patch(_NO_BACKOFF, lambda *_args: 0):
+            assert invoker.invoke("summarize this").content == "summary"
+
+        assert calls == ["sync", "sync"]
+
+
+def test_summary_model_slot_rename_is_loud() -> None:
+    """A renamed SDK slot must fail, not silently keep LangChain's retries.
+
+    Plain assignment would create an unused attribute and leave the stock
+    three-attempt `with_retry` installed, so `--max-retries 0` would keep
+    retrying and nothing would say why.
+    """
+    summarization = cast(
+        "Any", SimpleNamespace(_lc_helper=SimpleNamespace(), model=SimpleNamespace())
+    )
+
+    with pytest.raises(AttributeError, match="_summary_model"):
+        _install_summary_model_retries(summarization)

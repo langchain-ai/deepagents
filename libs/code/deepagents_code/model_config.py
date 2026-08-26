@@ -879,6 +879,70 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+RETRY_PARAM_BY_PROVIDER: dict[str, str | None] = {
+    "anthropic": "max_retries",
+    "azure_openai": "max_retries",
+    "baseten": "max_retries",
+    "bedrock": "max_retries",
+    "deepseek": "max_retries",
+    "fireworks": "max_retries",
+    "google_anthropic_vertex": "max_retries",
+    "google_genai": "max_retries",
+    "google_vertexai": "max_retries",
+    "groq": "max_retries",
+    "litellm": "max_retries",
+    "meta": "max_retries",
+    "mistralai": "max_retries",
+    "openai": "max_retries",
+    "openai_codex": "max_retries",
+    "openrouter": "max_retries",
+    "perplexity": "max_retries",
+    "together": "max_retries",
+    "xai": "max_retries",
+    # `None` means "checked, and this integration has no retry-count kwarg" --
+    # distinct from a provider absent from the table, which means dcode does
+    # not know. Only the absent case warrants the "SDK retries stay active"
+    # warning: a `None` provider has no SDK retry loop to multiply, so warning
+    # about it told the user to set `[retries.<provider>].param` to a kwarg
+    # their integration would drop.
+    #
+    # `cohere` is deliberately NOT listed here: `langchain_cohere`'s `BaseCohere`
+    # appears to expose `max_retries`, so it likely belongs above with a kwarg
+    # name rather than here. Left absent until someone can check it against an
+    # installed `langchain_cohere` -- absent warns, which is noisy but honest,
+    # whereas a wrong `None` would silently leave its SDK retries running.
+    "huggingface": None,
+    "ibm": None,
+    "nvidia": None,
+    "ollama": None,
+}
+"""Constructor kwargs used to disable provider-owned retry loops.
+
+dcode's model-node middleware owns the retry budget, so integrations with a
+known retry-count parameter receive their provider-specific disable value at
+construction time. A `None` value records an integration reported to
+have no retry-count parameter. Providers absent from this mapping are unknown
+to dcode and must declare one with `[retries.<provider>].param` in
+`config.toml`.
+
+A kwarg name is verified against that integration's chat model constructor,
+never inferred from the provider name. The `None` entries are the weaker claim:
+none of those packages is installed in this repo, so they rest on the
+integrations' own documentation. Re-check one before relying on it.
+"""
+
+RETRY_DISABLE_VALUE_BY_PROVIDER: dict[str, int] = {"google_genai": 1}
+"""Non-zero provider-specific values that disable SDK retries.
+
+`google-genai` counts *total attempts*, not retries. Before 1.68.0 it read zero
+as unset and restored its own five-attempt default; from 1.68.0 on it coerces
+zero to one (`_api_client._retry_args`), so zero and one now behave alike. One is
+sent because it disables retries on both, and it is the only value that means
+"the initial request only" on every version.
+
+Other registered providers count retries, so zero disables them.
+"""
+
 LANGSMITH_SERVICE = "langsmith"
 """Service name for LangSmith tracing in `SERVICE_API_KEY_ENV`.
 
@@ -937,42 +1001,6 @@ the full `openai` API, so mirroring every openai model would surface specs the
 backend rejects at call time.
 """
 
-
-RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
-    "anthropic": "max_retries",
-    "azure_openai": "max_retries",
-    "baseten": "max_retries",
-    "bedrock": "max_retries",
-    "deepseek": "max_retries",
-    "fireworks": "max_retries",
-    "google_anthropic_vertex": "max_retries",
-    "google_genai": "max_retries",
-    "google_vertexai": "max_retries",
-    "groq": "max_retries",
-    "litellm": "max_retries",
-    "meta": "max_retries",
-    "mistralai": "max_retries",
-    "openai": "max_retries",
-    "openrouter": "max_retries",
-    "perplexity": "max_retries",
-    "together": "max_retries",
-    "xai": "max_retries",
-}
-"""Maps a provider to the constructor kwarg that sets its retry count.
-
-The value is the kwarg name to pass to the provider's chat model constructor.
-It is uniformly `max_retries` for every provider listed today, but this is a
-`dict` rather than a `set` of providers because retry-kwarg names diverge across
-the ecosystem -- some integrations expose a differently named kwarg -- and the
-value column lets a future provider register its own name without restructuring
-callers.
-
-Membership is verified against each provider's chat model constructor (e.g.
-`ChatGoogleGenerativeAI` exposes `max_retries`, not `retries`), not inferred
-from naming. Providers absent from this map either lack an integer retry-count
-kwarg or are not yet wired as a credential-resolvable provider in this module;
-a `[retries]` config for them is ignored with a warning by `_resolve_retry_kwargs`.
-"""
 
 PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     # Each tuple lists every base-URL env var the provider's LangChain

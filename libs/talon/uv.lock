@@ -741,7 +741,7 @@ test = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.62"
+version = "0.1.63"
 source = { editable = "../code" }
 dependencies = [
     { name = "aiosqlite" },
@@ -882,7 +882,7 @@ test = [
 
 [[package]]
 name = "deepagents-talon"
-version = "0.0.4"
+version = "0.0.5"
 source = { editable = "." }
 dependencies = [
     { name = "deepagents" },

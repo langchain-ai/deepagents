@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Literal, cast
 from weakref import WeakValueDictionary
 
@@ -69,6 +71,91 @@ _active_operations: dict[_OperationKey, asyncio.Task[object]] = {}
 _operation_outcomes: OrderedDict[_OperationKey, _OperationOutcome] = OrderedDict()
 _MAX_OPERATION_OUTCOMES = 1024
 """Bound completed/cancelled ids retained to close request/cancel races."""
+_TRACE_FLUSH_TIMEOUT = 2.0
+"""Seconds allowed for the shutdown trace flush."""
+_TRACE_FLUSH_POLL_INTERVAL = 0.05
+"""Seconds between completion checks while the daemon flush thread runs."""
+
+
+def _run_trace_flush(done: threading.Event, failures: list[BaseException]) -> None:
+    """Flush existing LangSmith tracers and record completion for the event loop."""
+    try:
+        from langchain_core.tracers.langchain import wait_for_all_tracers
+
+        wait_for_all_tracers()
+    except BaseException as exc:  # noqa: BLE001  # telemetry cannot break shutdown
+        failures.append(exc)
+    finally:
+        done.set()
+
+
+async def _flush_traces() -> None:
+    """Flush the child process's existing LangSmith tracing client.
+
+    `wait_for_all_tracers` does not construct a client when tracing is off. It
+    has no timeout, so it runs on an unjoined daemon thread and this coroutine
+    abandons the wait at `_TRACE_FLUSH_TIMEOUT`. Polling a `threading.Event`
+    avoids scheduling a late completion onto an event loop that may be closed.
+
+    This runs before LangGraph's own lifespan teardown, because an
+    `AsyncExitStack` unwinds last-entered first. Traces emitted while the
+    runtime cancels in-flight runs are therefore still lost. Covering those
+    would need a second flush after the runtime is down.
+    """
+    done = threading.Event()
+    failures: list[BaseException] = []
+    thread = threading.Thread(
+        target=_run_trace_flush,
+        args=(done, failures),
+        daemon=True,
+        name="langsmith-shutdown-flush",
+    )
+    try:
+        thread.start()
+    except Exception:
+        logger.exception("Failed to start the LangSmith shutdown flush")
+        return
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _TRACE_FLUSH_TIMEOUT
+    while not done.is_set():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            logger.warning(
+                "LangSmith trace flush exceeded %.1fs; some traces may be lost",
+                _TRACE_FLUSH_TIMEOUT,
+            )
+            return
+        await asyncio.sleep(min(_TRACE_FLUSH_POLL_INTERVAL, remaining))
+
+    if failures:
+        failure = failures[0]
+        logger.error(
+            "Failed to flush LangSmith traces during shutdown",
+            exc_info=(type(failure), failure, failure.__traceback__),
+        )
+
+
+@asynccontextmanager
+async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
+    """Flush buffered traces once the server stops serving.
+
+    `Client` registers an `atexit` handler that only closes its session, never
+    flushes, so without this hook anything still queued when dcode signals the
+    server is lost. The flush is in a `finally` so it also runs when the app
+    body raises -- the crash case where the buffered traces matter most.
+
+    Args:
+        _app: The Starlette app, required by the lifespan protocol.
+
+    Yields:
+        Control for the lifetime of the application.
+    """
+    try:
+        yield
+    finally:
+        await _flush_traces()
+
 
 # One client for the process. `get_client` builds a fresh `httpx.AsyncClient`
 # (with its own connection pool) per call and exposes no close hook we own, so
@@ -917,6 +1004,7 @@ async def cancel_offload(request: Request) -> JSONResponse:
 
 
 app = Starlette(
+    lifespan=_lifespan,
     routes=[
         Route(
             "/dcode/threads/{thread_id:str}/offload",
@@ -928,5 +1016,5 @@ app = Starlette(
             cancel_offload,
             methods=["POST"],
         ),
-    ]
+    ],
 )

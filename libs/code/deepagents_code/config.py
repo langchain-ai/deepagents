@@ -1536,6 +1536,11 @@ class Glyphs:
 
     # Diff-specific
     hunk_break: str  # ⋮ vs :
+    # Distinct from `ellipsis`, which is identical in Unicode mode but
+    # ASCII-expands to "..." — three cells would overflow the diff's
+    # line-number column, which is only `max(2, len(str(max_line)))` wide,
+    # and break the vertical alignment every row shares.
+    line_continuation: str  # … vs .
 
     # Status bar
     git_branch: str  # "↗" vs "git:"
@@ -1570,6 +1575,7 @@ UNICODE_GLYPHS = Glyphs(
     box_horizontal_heavy="━",
     # Diff-specific
     hunk_break="⋮",
+    line_continuation="…",
     # Status bar
     git_branch="↗",
 )
@@ -1604,6 +1610,7 @@ ASCII_GLYPHS = Glyphs(
     box_horizontal_heavy="=",
     # Diff-specific
     hunk_break=":",
+    line_continuation=".",
     # Status bar
     git_branch="git:",
 )

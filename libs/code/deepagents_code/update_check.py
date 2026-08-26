@@ -2456,10 +2456,11 @@ async def perform_upgrade(
         stdout/stderr. *installed_version* is the version the successful
         install actually resolved to, read back from the tool environment on
         disk, or `None` when the upgrade failed or the installed version
-        could not be determined. Callers should report *installed_version*
-        rather than the version their update check observed: the install
-        command is unpinned, so a release published between check and install
-        is what lands on disk.
+        could not be determined. A successful installer exit is reported as a
+        failure when the installed version remains below `target_version`.
+        Callers should report *installed_version* rather than the version their
+        update check observed: the install command is unpinned, so a release
+        published between check and install is what lands on disk.
 
     Raises:
         OSError: Propagated from building the upgrade command or running the
@@ -2621,9 +2622,21 @@ async def perform_upgrade(
             # distribution back rather than reporting the earlier check's
             # version; when the readback is indeterminate, the caller's
             # checked version is still the best available answer.
-            installed_version = (
-                await asyncio.to_thread(read_installed_distribution_version)
-            ) or target_version
+            installed_version = await asyncio.to_thread(
+                read_installed_distribution_version
+            )
+            if (
+                installed_version is not None
+                and target_version is not None
+                and _parse_version(installed_version) < _parse_version(target_version)
+            ):
+                detail = (
+                    "Installer completed, but deepagents-code remains at "
+                    f"v{installed_version}; v{target_version} may not have reached "
+                    "the package index yet. Try again shortly."
+                )
+                return False, f"{detail}\n{output}".rstrip(), None
+            installed_version = installed_version or target_version
     return success, output, installed_version
 
 

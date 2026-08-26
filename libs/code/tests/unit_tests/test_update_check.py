@@ -3120,6 +3120,50 @@ class TestUpdateLogs:
         assert success is True
         assert installed == "1.2.0"
 
+    async def test_perform_upgrade_rejects_stale_successful_install(
+        self, cache_file
+    ) -> None:
+        """A successful installer exit is not success when the app stays stale."""
+        cache_file.write_text(
+            json.dumps({"release_prerelease_pins": {"1.1.0": []}}),
+            encoding="utf-8",
+        )
+        with (
+            patch("deepagents_code.update_check.__version__", "1.0.0"),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_python",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_with_packages",
+                return_value=(),
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, "Updated dependencies only"),
+            ),
+            patch(
+                "deepagents_code.update_check.read_installed_distribution_version",
+                return_value="1.0.0",
+            ),
+        ):
+            success, output, installed = await perform_upgrade(target_version="1.1.0")
+
+        assert success is False
+        assert installed is None
+        assert "remains at v1.0.0" in output
+        assert "v1.1.0 may not have reached the package index yet" in output
+        assert "Updated dependencies only" in output
+
     async def test_perform_upgrade_falls_back_to_target_when_readback_fails(
         self, cache_file
     ) -> None:

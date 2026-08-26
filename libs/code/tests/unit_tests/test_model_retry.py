@@ -1218,3 +1218,21 @@ def test_sync_model_call_still_retries_before_streaming() -> None:
 
     assert result == "ok"
     assert calls == 2
+
+
+def test_predicate_ignores_stdlib_timeout_reached_only_through_context() -> None:
+    """A permanent error is not retryable because a timeout preceded it.
+
+    Python sets `__context__` on anything raised inside an `except` block, so
+    treating the bare stdlib fallback as a chain signal would retry a genuine
+    configuration fault five times whenever a timeout happened to precede it.
+    """
+    exc = ValueError("permanent")
+    exc.__context__ = TimeoutError("transient")
+
+    assert _is_retryable_model_error(exc) is False
+
+
+def test_predicate_still_retries_a_stdlib_timeout_raised_directly() -> None:
+    """The narrowing must not stop the raised exception from classifying."""
+    assert _is_retryable_model_error(TimeoutError("transient")) is True

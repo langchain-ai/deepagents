@@ -328,8 +328,15 @@ def _is_http_transport_error(exc: BaseException) -> bool:
     )
 
 
-def _direct_model_error_retryability(exc: BaseException) -> bool | None:
+def _direct_model_error_retryability(
+    exc: BaseException, *, raised: bool
+) -> bool | None:
     """Classify one exception before inspecting any wrapped failures.
+
+    Args:
+        exc: The exception to classify.
+        raised: Whether `exc` is the exception the model call actually raised,
+            rather than one reached through a group member or a cause chain.
 
     Returns:
         Whether the exception is retryable, or `None` when it has no direct
@@ -356,31 +363,43 @@ def _direct_model_error_retryability(exc: BaseException) -> bool | None:
     if _is_transient_sdk_error(exc):
         return True
 
-    # Stdlib transport faults raised directly (rare, but cheap to cover).
-    if isinstance(exc, (TimeoutError, ConnectionError)):
+    # Stdlib transport faults raised directly (rare, but cheap to cover). This
+    # heuristic is deliberately confined to the raised exception: Python sets
+    # `__context__` on anything raised inside an `except` block, so honouring it
+    # here would make a permanent failure that merely surfaced while handling a
+    # timeout look transient and burn the whole budget on it.
+    if raised and isinstance(exc, (TimeoutError, ConnectionError)):
         return True
     return None
 
 
 def _is_retryable_model_error(exc: Exception) -> bool:
-    """Return whether a model error tree contains a transient failure."""
-    pending: list[BaseException] = [exc]
+    """Return whether a model error tree contains a transient failure.
+
+    Descends into `BaseExceptionGroup` members and the cause chain, so a
+    transport fault wrapped by an async task group is still found. An exception
+    that classifies either way decides for its own branch and is not descended
+    through, which keeps a definite `ModelError.is_retryable` verdict (an
+    authentication failure, say) authoritative over whatever it happens to
+    wrap.
+    """
+    pending: list[tuple[BaseException, bool]] = [(exc, True)]
     seen: set[int] = set()
     while pending:
-        current = pending.pop()
+        current, raised = pending.pop()
         if id(current) in seen:
             continue
         seen.add(id(current))
-        retryable = _direct_model_error_retryability(current)
+        retryable = _direct_model_error_retryability(current, raised=raised)
         if retryable is not None:
             if retryable:
                 return True
             continue
         if isinstance(current, BaseExceptionGroup):
-            pending.extend(current.exceptions)
+            pending.extend((member, False) for member in current.exceptions)
         cause = current.__cause__ or current.__context__
         if cause is not None:
-            pending.append(cause)
+            pending.append((cause, False))
     return False
 
 

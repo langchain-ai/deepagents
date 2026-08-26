@@ -12,13 +12,13 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
-    from deepagents_code.configuration.resolver import ConfigResolver, ResolvedValue
+    from deepagents_code.configuration.resolver import ResolvedValue
 
 from deepagents_code.configuration.paths import (
     managed_config_path,
     resolve_managed_path,
 )
-from deepagents_code.configuration.providers import TomlFileProvider
+from deepagents_code.configuration.providers import RemoteTomlProvider, TomlFileProvider
 from deepagents_code.configuration.resolver import merge_toml_tables
 from deepagents_code.configuration.types import (
     ProviderHealth,
@@ -528,6 +528,23 @@ class ManagedConfigError(RuntimeError):
                     f"Managed config location could not be determined{detail}. "
                     "Ask your administrator to verify the managed-config path."
                 )
+            elif status.remote_source is not None:
+                # Same reasoning one step out: the local file is a trust anchor
+                # holding a URL, so it is not what needs repairing, and
+                # removing it would drop policy entirely. Naming the URL is safe
+                # because `remote_source` is set only from
+                # `_validate_remote_url`'s output, which rejects credentials,
+                # query strings, and fragments.
+                if status.health is ProviderHealth.CORRUPT:
+                    action = "repair the managed-config document published there"
+                else:
+                    action = "verify that the managed-config source is reachable"
+                message = (
+                    f"Managed config at {path} points to "
+                    f"{status.remote_source}, which is "
+                    f"{status.health.value}{detail}. Ask your administrator to "
+                    f"{action}."
+                )
             else:
                 message = (
                     f"Managed config at {path} is {status.health.value}{detail}. "
@@ -548,26 +565,158 @@ class ManagedPolicyError(ManagedConfigError):
     def __init__(self, status: ProviderStatus, keys: tuple[str, ...]) -> None:
         """Build a startup error naming the keys that stop the launch."""
         path = status.path or managed_config_path()
+        rejected = ", ".join(keys)
+        if status.remote_source is not None:
+            # The rejected value is in the remote document, not in the local
+            # trust anchor, which holds only a URL. Pointing the administrator
+            # at the anchor sends them to a file with no such key in it.
+            location = f"{path} points to {status.remote_source}, which"
+        else:
+            location = str(path)
         super().__init__(
             status,
-            f"Managed config at {path} rejects {', '.join(keys)}. "
+            f"Managed config at {location} rejects {rejected}. "
             "Ask your administrator to correct the value.",
         )
         self.keys = keys
 
 
 class _SnapshotState:
-    """Mutable process snapshot guarded by `_snapshot_lock`."""
+    """Mutable process snapshot guarded by `_snapshot_lock`.
 
-    __slots__ = ("managed",)
+    Loads run outside the lock, so several can overlap. `published_ticket`
+    orders enforceable generations while `outcome_ticket` independently orders
+    health outcomes. Keeping them separate lets an older successful load fill
+    an empty cache after a newer load fails without erasing that newer failure.
+    """
+
+    __slots__ = (
+        "latest_ticket",
+        "managed",
+        "outcome_ticket",
+        "published_ticket",
+        "refresh_failure",
+    )
 
     def __init__(self) -> None:
         """Start with no cached snapshot."""
         self.managed: TomlSnapshot | None = None
+        # Status of the most recent load that could not be enforced, cleared
+        # by the next one that can. `doctor` reads it so a host that stopped
+        # answering is reported by something other than an unreachable log
+        # record.
+        self.refresh_failure: ProviderStatus | None = None
+        # Monotonic ticket issued when each load starts.
+        self.latest_ticket = 0
+        # Ticket of the latest success or recorded refresh failure. Snapshot
+        # publication and health move independently when an older success
+        # finishes after a newer failure.
+        self.outcome_ticket = 0
+        # Ticket of the load whose snapshot is currently cached. `reset` raises
+        # it to `latest_ticket` so no load already in flight can republish the
+        # generation being cleared.
+        self.published_ticket = 0
+
+    def begin_load(self) -> int:
+        """Issue the ticket for one load attempt.
+
+        Returns:
+            The new ticket, to be passed back to `publish`.
+        """
+        with _snapshot_lock:
+            self.latest_ticket += 1
+            return self.latest_ticket
+
+    def publish(self, ticket: int, candidate: TomlSnapshot) -> TomlSnapshot:
+        """Cache an enforceable candidate unless a newer one already won.
+
+        Args:
+            ticket: The value `begin_load` returned for this load.
+            candidate: The enforceable snapshot this load produced.
+
+        Returns:
+            The candidate, or the newer generation that superseded it.
+        """
+        with _snapshot_lock:
+            if ticket > self.published_ticket:
+                # Nothing newer has published, so this generation is current
+                # even if a later load is still in flight. Publishing an older
+                # one would roll the process back to a policy the
+                # administrator has already replaced -- that is what the
+                # comparison prevents, and why it is against the *published*
+                # ticket and not against `latest_ticket`.
+                self.published_ticket = ticket
+                self.managed = candidate
+                if ticket > self.outcome_ticket:
+                    self.outcome_ticket = ticket
+                    self.refresh_failure = None
+                return candidate
+            return self.managed if self.managed is not None else candidate
+
+    def record_refresh_failure(self, ticket: int, status: ProviderStatus) -> None:
+        """Remember a load that produced no enforceable generation.
+
+        Args:
+            ticket: The value `begin_load` returned for this load.
+            status: Failed candidate's status, kept for the next health read.
+
+        Health has its own ordering ticket. A failure from an older load must
+        not overwrite a newer success, and an older success that is still
+        eligible to fill the cache must not erase a newer failure.
+        """
+        with _snapshot_lock:
+            if ticket > self.outcome_ticket:
+                self.outcome_ticket = ticket
+                self.refresh_failure = status
+
+    def reset(self) -> None:
+        """Drop the cached snapshot and bar every in-flight load from it."""
+        with _snapshot_lock:
+            self.managed = None
+            self.refresh_failure = None
+            # Advance every ordering ticket so a load started before the reset
+            # cannot republish the snapshot or health being cleared.
+            self.latest_ticket += 1
+            self.published_ticket = self.latest_ticket
+            self.outcome_ticket = self.latest_ticket
 
 
 _snapshot_lock = threading.RLock()
 _snapshot_state = _SnapshotState()
+
+
+def _remote_managed_snapshot(snapshot: TomlSnapshot) -> TomlSnapshot:
+    """Resolve a local managed descriptor to its remote policy snapshot.
+
+    Returns:
+        The original local policy or its downloaded remote policy generation.
+    """
+    if not snapshot.status.usable or "managed_config" not in snapshot.data:
+        return snapshot
+    descriptor = snapshot.data["managed_config"]
+    path = snapshot.status.path
+
+    def corrupt(detail: str) -> TomlSnapshot:
+        """Reject the descriptor without reaching the network.
+
+        Args:
+            detail: Which descriptor rule the local file broke.
+
+        Returns:
+            An empty `CORRUPT` snapshot naming the descriptor file.
+        """
+        return TomlSnapshot(
+            {}, ProviderStatus(MANAGED_SOURCE, path, ProviderHealth.CORRUPT, detail)
+        )
+
+    if not isinstance(descriptor, dict) or set(descriptor) != {"source"}:
+        return corrupt("[managed_config] must contain only a string source")
+    if set(snapshot.data) != {"managed_config"}:
+        return corrupt("remote descriptor cannot contain local policy keys")
+    source = descriptor["source"]
+    if not isinstance(source, str) or not source.strip():
+        return corrupt("[managed_config].source must be a non-empty string")
+    return RemoteTomlProvider(MANAGED_SOURCE, source.strip(), path).load()
 
 
 def _load_managed(path: Path | None = None) -> TomlSnapshot:
@@ -581,12 +730,13 @@ def _load_managed(path: Path | None = None) -> TomlSnapshot:
         Parsed managed snapshot and health.
     """
     if path is not None:
-        return TomlFileProvider("managed config", path).load()
+        snapshot = TomlFileProvider(MANAGED_SOURCE, path).load()
+        return _remote_managed_snapshot(snapshot)
     resolved = resolve_managed_path()
-    snapshot = TomlFileProvider("managed config", resolved.path).load()
+    snapshot = TomlFileProvider(MANAGED_SOURCE, resolved.path).load()
     is_guess = resolved.fallback is not None
     if not is_guess or snapshot.status.health is not ProviderHealth.MISSING:
-        return snapshot
+        return _remote_managed_snapshot(snapshot)
     # "No file at a guessed path" is not "no policy deployed", so this is not a
     # clean `MISSING`. `INDETERMINATE` is not usable, which stops the launch
     # instead of letting every reader see an empty managed table and treat
@@ -610,7 +760,10 @@ def get_managed_snapshot(
     cleanly earlier. An unusable snapshot carries `data == {}`, which every
     reader would otherwise treat as "nothing is enforced", so caching it would
     turn one broken write by an administrator into a process-wide fail-open.
-    The caller still receives the failed load, so health checks see the error.
+    A `refresh` caller still receives the failed load, so health checks see the
+    error. A non-refresh caller may instead receive a generation another caller
+    published while this load was failing, because the serialized path it
+    replaces would have read that from the cache and never loaded at all.
 
     The same holds for a file that parses but cannot be enforced. Its health
     is `OK`, so a usability check alone would cache it. When the refresh
@@ -622,7 +775,8 @@ def get_managed_snapshot(
     only the last enforceable snapshot.
 
     Returns:
-        The cached snapshot, or the freshly loaded one when refreshing.
+        The cached snapshot, the freshly loaded one when refreshing, or a
+        newer generation that a concurrent load published first.
     """
     if path is not None:
         return _load_managed(path)
@@ -630,15 +784,67 @@ def get_managed_snapshot(
         cached = _snapshot_state.managed
         if not refresh and cached is not None:
             return cached
-        candidate = _load_managed()
-        # Cache only a snapshot whose declared policy can actually be enforced.
-        # `usable` admits a parseable-but-unenforceable file, so gate on the
-        # policy check too, not just provider health.
-        if candidate.status.usable and not managed_policy_violations(
-            candidate.data, status=candidate.status
-        ):
-            _snapshot_state.managed = candidate
-        return candidate
+        load_ticket = _snapshot_state.begin_load()
+    # Load outside the lock. A remote descriptor turns this into an HTTPS
+    # fetch, and every ordinary config read reaches `get_managed_snapshot`
+    # through `get_config_resolver`, much of it from the Textual event loop.
+    # Holding the lock across the fetch would leave the loop blocked in
+    # `RLock.acquire` for its whole duration, which is exactly what moving the
+    # fetch onto a worker thread was meant to prevent. Two cold callers can now
+    # both load where one would have waited for the other; one bounded extra
+    # fetch is cheaper than a stalled UI.
+    candidate = _load_managed()
+    # Cache only a snapshot whose declared policy can actually be enforced.
+    # `usable` admits a parseable-but-unenforceable file, so gate on the
+    # policy check too, not just provider health.
+    enforceable = candidate.status.usable and not managed_policy_violations(
+        candidate.data, status=candidate.status
+    )
+    if enforceable:
+        return _snapshot_state.publish(load_ticket, candidate)
+    # Only an unreadable candidate is recorded as a refresh failure. A
+    # parseable document whose values policy rejects is already reported, by
+    # key, through `managed_health().violations`; recording it here too would
+    # print the same problem twice under two different names.
+    if not candidate.status.usable:
+        _snapshot_state.record_refresh_failure(load_ticket, candidate.status)
+    with _snapshot_lock:
+        published = _snapshot_state.managed
+        if not refresh and published is not None:
+            # A concurrent caller published policy while this load was
+            # failing. Under the old serialized path this caller would have
+            # read that snapshot from the cache and never loaded at all, so
+            # prefer it over a failure it would not have seen. A `refresh`
+            # caller asked for this generation and must receive it.
+            #
+            # The failure itself must not vanish: it is the only signal that
+            # the policy host stopped answering. `logger.warning` alone cannot
+            # carry it -- the package installs its own handler at import time,
+            # so `logging.lastResort` never fires and the record reaches no
+            # terminal -- so record it where `managed_health` and `doctor` can
+            # report it.
+            logger.warning(
+                "Managed policy refresh failed (%s); serving the last "
+                "enforceable generation",
+                candidate.status.detail or candidate.status.health.value,
+            )
+            return published
+    return candidate
+
+
+def managed_refresh_failure() -> ProviderStatus | None:
+    """Return the status of the last refresh that produced no policy.
+
+    A failed refresh does not change what the process enforces: the last
+    enforceable generation keeps resolving, which is what fail-closed requires.
+    That makes the failure invisible to every surface that reads the served
+    snapshot, so it is reported from here instead.
+
+    Returns:
+        The failed status, or `None` when the current generation is fresh.
+    """
+    with _snapshot_lock:
+        return _snapshot_state.refresh_failure
 
 
 def get_config_sources(
@@ -701,8 +907,7 @@ def invalidate_config_sources() -> None:
     """
     from deepagents_code.configuration.resolver import reset_config_resolver
 
-    with _snapshot_lock:
-        _snapshot_state.managed = None
+    _snapshot_state.reset()
     reset_config_resolver()
 
 
@@ -747,26 +952,9 @@ def require_healthy_managed_config(*, refresh: bool = False) -> None:
     get_healthy_managed_snapshot(refresh=refresh)
 
 
-def _managed_resolver(snapshot: TomlSnapshot) -> ConfigResolver:
-    """Build a resolver whose managed provider owns `snapshot`.
-
-    Returns:
-        Resolver bound to the supplied managed generation.
-    """
-    from deepagents_code.configuration.resolver import resolver_from_snapshots
-
-    return resolver_from_snapshots(
-        managed=snapshot,
-        user=TomlSnapshot.absent("config.toml"),
-    )
-
-
 def managed_config_status(*, refresh: bool = False) -> ProviderStatus:
     """Return managed provider health for diagnostics and config inspection."""
-    from deepagents_code.configuration.resolver import MANAGED_RANK
-
-    snapshot = get_managed_snapshot(refresh=refresh)
-    return _managed_resolver(snapshot).provider_statuses()[MANAGED_RANK]
+    return get_managed_snapshot(refresh=refresh).status
 
 
 @dataclass(frozen=True, slots=True)
@@ -802,11 +990,8 @@ def managed_health(*, refresh: bool = False) -> ManagedHealth:
     Returns:
         Health, violations, and ignored rejections that cannot disagree.
     """
-    from deepagents_code.configuration.resolver import MANAGED_RANK
-
     snapshot = get_managed_snapshot(refresh=refresh)
-    status = _managed_resolver(snapshot).provider_statuses()[MANAGED_RANK]
-    return managed_snapshot_health(replace(snapshot, status=status))
+    return managed_snapshot_health(snapshot)
 
 
 def managed_snapshot_health(snapshot: TomlSnapshot) -> ManagedHealth:

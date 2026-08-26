@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +43,56 @@ class ProviderHealth(StrEnum):
     CORRUPT = "CORRUPT"
 
 
+REMOTE_SOURCE_MAX_CHARS = 2048
+"""Longest remote source URL retained in operator-facing diagnostics."""
+
+
+def _validate_remote_source_url(source: str) -> str:
+    """Validate and normalize one configured remote source URL.
+
+    Returns:
+        The normalized absolute HTTPS URL.
+
+    Raises:
+        ValueError: If the source is unsafe or is not an absolute HTTPS URL.
+    """
+    from urllib.parse import urlsplit
+
+    if len(source) > REMOTE_SOURCE_MAX_CHARS:
+        msg = "remote source is too long"
+        raise ValueError(msg)
+    if any(char.isspace() or not char.isprintable() for char in source):
+        msg = "remote source must not contain whitespace or control characters"
+        raise ValueError(msg)
+    try:
+        parsed = urlsplit(source)
+    except ValueError as exc:
+        msg = "remote source is not a valid URL"
+        raise ValueError(msg) from exc
+    if not source.isascii():
+        msg = "remote source must contain only ASCII URI characters"
+        raise ValueError(msg)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        msg = "remote source must be an absolute HTTPS URL"
+        raise ValueError(msg)
+    if parsed.username is not None or parsed.password is not None:
+        msg = "remote source must not contain credentials"
+        raise ValueError(msg)
+    if parsed.query or parsed.fragment:
+        msg = "remote source must not contain a query string or fragment"
+        raise ValueError(msg)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        msg = "remote source has an invalid port"
+        raise ValueError(msg) from exc
+    host = parsed.hostname.rstrip(".")
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return parsed._replace(scheme="https", netloc=netloc).geturl()
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderStatus:
     """Health and safe diagnostic detail for one provider."""
@@ -51,6 +101,42 @@ class ProviderStatus:
     path: Path | None
     health: ProviderHealth
     detail: str | None = None
+    remote_source: str | None = field(default=None, kw_only=True)
+    """Validated URL this status came from, when `path` is only a trust anchor.
+
+    A remote managed policy reports the *local* descriptor file as its `path`,
+    because that is the file an operator can edit. Without this field an error
+    renders as "repair or remove" that file, which is not broken -- and
+    removing it drops all policy. Set only after `_validate_remote_url`
+    accepts the URL, so a rejected source is never echoed back --
+    `__post_init__` enforces that rather than trusting every construction site.
+    """
+
+    def __post_init__(self) -> None:
+        """Reject a remote source that never passed URL validation.
+
+        Every surface interpolates this field straight into operator-facing
+        text, so "only a validated URL reaches here" is a security invariant.
+        It held by convention -- one construction site in each of two modules
+        -- and `ProviderStatus` is public, so a third site is a rejected
+        source, credentials and all, in a `doctor` row. This restates the
+        canonical remote-source validator and also requires its normalized
+        output: the point is that an unvalidated string cannot get in.
+
+        Raises:
+            ValueError: If `remote_source` is not the normalized output of the
+                remote-source validator.
+        """
+        source = self.remote_source
+        if source is None:
+            return
+        msg = "remote_source must be a validated absolute HTTPS URL"
+        try:
+            normalized = _validate_remote_source_url(source)
+        except ValueError as exc:
+            raise ValueError(msg) from exc
+        if normalized != source:
+            raise ValueError(msg)
 
     @property
     def usable(self) -> bool:

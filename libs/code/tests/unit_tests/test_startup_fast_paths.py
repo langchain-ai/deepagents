@@ -112,6 +112,29 @@ def _read_marker(stderr: str, prefix: str) -> object:
     raise AssertionError(msg)
 
 
+def test_managed_health_import_defers_remote_http_stack() -> None:
+    """Ordinary managed-config checks do not import remote networking code."""
+    code = """
+        import json
+        import sys
+
+        import deepagents_code.configuration.service
+
+        remote_modules = ("http.client", "urllib.error", "urllib.request")
+        print(json.dumps([name for name in remote_modules if name in sys.modules]))
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
+
+
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [

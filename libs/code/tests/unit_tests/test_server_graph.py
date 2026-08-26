@@ -79,6 +79,31 @@ class TestServerGraph:
         assert calls == 1
         assert results == [graph_obj, graph_obj, graph_obj]
 
+    async def test_managed_health_gate_runs_off_event_loop(self) -> None:
+        """A remote managed policy cannot stall server scheduling."""
+        from deepagents_code.configuration import service
+
+        module = _import_fresh_server_graph()
+        loop_thread_id = threading.get_ident()
+        health_thread_ids: list[int] = []
+
+        def require_healthy_managed_config(*, refresh: bool = False) -> None:
+            assert refresh is True
+            health_thread_ids.append(threading.get_ident())
+
+        async def build() -> object:  # noqa: RUF029  # async factory contract
+            return module.ServerRuntime(object(), object(), object())
+
+        with patch.object(
+            service,
+            "require_healthy_managed_config",
+            require_healthy_managed_config,
+        ):
+            await module._build_runtime_factory(build)()
+
+        assert health_thread_ids
+        assert all(thread_id != loop_thread_id for thread_id in health_thread_ids)
+
     def test_server_runtime_slots_are_named(self) -> None:
         """Both opaque runtime slots are named to prevent transposition."""
         module = _import_fresh_server_graph()

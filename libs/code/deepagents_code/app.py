@@ -20997,6 +20997,7 @@ class DeepAgentsApp(App):
         acknowledgement used by `--yolo` before unrestricted mode becomes active.
         """
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
         from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
         from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
@@ -21048,6 +21049,8 @@ class DeepAgentsApp(App):
             # move the row cursor via `_SupportsReverseNav` below (which
             # would leave focus stranded on the first checkbox).
             self.screen.action_focus_previous()
+            return
+        if isinstance(self.screen, PromptClipboardScreen):
             return
         if isinstance(self.screen, _SupportsReverseNav):
             # Membership is by `action_move_up` presence, not an enumerated
@@ -23551,14 +23554,9 @@ class DeepAgentsApp(App):
             cursor-style modals via `_SupportsReverseNav` and otherwise no-ops
             under a `ModalScreen` that lacks dedicated `shift+tab` handling
             (as `DebugConsoleScreen` does), so the key would be silently
-            swallowed. `PromptClipboardScreen` also steps aside so its own
-            priority `shift+tab -> page_newer` binding wins and the key does not
-            fall through to `Screen.focus_previous`. Note this keys on the
-            action, and `toggle_auto_approve` is also bound to `ctrl+t`, so
-            that binding is stepped aside under either screen. The composer's
-            inline prompt search gets the same step-aside so shift+tab pages
-            its results, but only while the query input holds focus: an
-            approval that arrives mid-search must keep the chord.
+            swallowed. Note this keys on the action, and `toggle_auto_approve`
+            is also bound to `ctrl+t`, so that binding is stepped aside under
+            the console for either chord.
         - `quit_or_interrupt` (`ctrl+c`): the prompt clipboard owns this chord for
             copying the selected prompt rather than the focused search text.
         - `interrupt` (`escape`): while the prompt-search query has focus,
@@ -23569,7 +23567,9 @@ class DeepAgentsApp(App):
             `tab -> app.focus_next`, which means it would otherwise swallow
             `tab` app-wide. Stepping aside unless an approval menu is pending
             and the chat input is unfocused keeps focus traversal and
-            chat-input completion working everywhere else.
+            chat-input completion working everywhere else. The prompt clipboard
+            also keeps ownership when a background approval arrives after the
+            modal opens.
 
         Branches on action names, not keys, so this stays correct if a binding is
         ever rebound.
@@ -23587,23 +23587,9 @@ class DeepAgentsApp(App):
             if isinstance(self.screen, ModelSelectorScreen):
                 return False
         if action == "toggle_auto_approve":
-            from deepagents_code.tui.modals.prompt_clipboard import (
-                PromptClipboardScreen,
-            )
             from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
-            from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
 
-            if isinstance(self.screen, (DebugConsoleScreen, PromptClipboardScreen)):
-                return False
-            # The inline prompt search pages its results with shift+tab.
-            # Gate on focus, not just on the panel being open. An inline
-            # approval that arrives mid-search takes focus, and its menu needs
-            # shift+tab/ctrl+t to keep toggling auto-approve; stepping aside on
-            # panel state alone also drops shift+tab through to
-            # `Screen.focus_previous`, moving focus off the pending approval.
-            if self._inline_prompt_search_active() and isinstance(
-                self.focused, PromptSearchInput
-            ):
+            if isinstance(self.screen, DebugConsoleScreen):
                 return False
         # The prompt-search query owns escape only while it has focus. An inline
         # approval that arrived after search opened must keep the global binding
@@ -23621,6 +23607,13 @@ class DeepAgentsApp(App):
             if isinstance(self.screen, PromptClipboardScreen):
                 return False
         if action == "approval_reject_with_reason":
+            from deepagents_code.tui.modals.prompt_clipboard import (
+                PromptClipboardScreen,
+            )
+
+            screen_stack = self.screen_stack
+            if screen_stack and isinstance(screen_stack[-1], PromptClipboardScreen):
+                return False
             return self._pending_approval_widget is not None and (
                 not self._is_input_focused()
             )

@@ -14,6 +14,7 @@ from deepagents_code.config import (
     _get_editable_install_path,
     _is_editable_install,
     console,
+    parse_shell_allow_list,
 )
 
 _JSON_OPTION_LINE = "  --json                  Emit machine-readable JSON"
@@ -64,6 +65,28 @@ def non_negative_int(value: str) -> int:
         msg = f"must be a non-negative integer (>= 0), got {parsed}"
         raise argparse.ArgumentTypeError(msg)
     return parsed
+
+
+def shell_allow_list_arg(value: str) -> str:
+    """Argparse type that validates a shell allow-list without normalizing it.
+
+    Args:
+        value: Raw comma-separated CLI value.
+
+    Returns:
+        The original value for the CLI configuration provider.
+
+    Raises:
+        argparse.ArgumentTypeError: If the allow-list is malformed.
+    """
+    try:
+        parsed = parse_shell_allow_list(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if parsed is None:
+        msg = "must contain at least one non-empty command"
+        raise argparse.ArgumentTypeError(msg)
+    return value
 
 
 def _print_option_section(*lines: str, title: str = "Options") -> None:

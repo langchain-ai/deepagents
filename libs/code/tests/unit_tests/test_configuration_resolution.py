@@ -145,7 +145,7 @@ def test_every_enforced_key_exits_78_and_a_rejected_benign_key_falls_through(
             lambda data=data, **_kwargs: _snapshot(data, status),
         )
         with pytest.raises(SystemExit) as excinfo:
-            main._apply_managed_runtime_policy(_managed_args())
+            main._apply_managed_runtime_exceptions(_managed_args())
         assert excinfo.value.code == 78
 
     benign = get_option("display.cursor_style")

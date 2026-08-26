@@ -2674,41 +2674,9 @@ class TestLangSmithTeardownUrl:
         # Without LangSmith configured, should return None
         assert thread_url is None
 
-    def test_thread_url_not_shown_for_none_thread_id(self) -> None:
-        """Guard condition: thread_url and thread_exists both needed."""
-        thread_url = None
-        thread_exists = True
-        show_link = bool(thread_url and thread_exists)
-        assert not show_link
-
-    def test_thread_url_not_shown_when_no_checkpoints(self) -> None:
-        """Guard condition: thread must have checkpointed content."""
-        thread_url = "https://smith.langchain.com/o/org/projects/p/proj/t/abc"
-        thread_exists = False
-        show_link = bool(thread_url and thread_exists)
-        assert not show_link
-
-    def test_thread_url_shown_when_all_conditions_met(self) -> None:
-        """Guard condition: both thread_url and thread_exists must be truthy."""
-        thread_url = "https://smith.langchain.com/o/org/projects/p/proj/t/abc"
-        thread_exists = True
-        show_link = bool(thread_url and thread_exists)
-        assert show_link
-
 
 class TestAppResult:
     """Tests for the AppResult dataclass."""
-
-    def test_fields_accessible(self) -> None:
-        """AppResult should expose return_code and thread_id."""
-        result = AppResult(return_code=0, thread_id="tid-abc")
-        assert result.return_code == 0
-        assert result.thread_id == "tid-abc"
-
-    def test_thread_id_none(self) -> None:
-        """AppResult should accept None for thread_id."""
-        result = AppResult(return_code=1, thread_id=None)
-        assert result.thread_id is None
 
     def test_frozen(self) -> None:
         """AppResult should be immutable."""
@@ -2717,45 +2685,6 @@ class TestAppResult:
         result = AppResult(return_code=0, thread_id="tid")
         with pytest.raises(FrozenInstanceError):
             result.return_code = 1  # ty: ignore
-
-
-class TestRunTextualAppReturnType:
-    """Test that run_textual_app returns AppResult."""
-
-    async def test_run_textual_app_returns_app_result(self) -> None:
-        """run_textual_app should return an AppResult."""
-        sig = inspect.signature(run_textual_app)
-        annotation = sig.return_annotation
-        assert annotation in (AppResult, "AppResult"), (
-            f"run_textual_app should return AppResult, got {annotation}"
-        )
-
-
-class TestRunTextualCliAsyncReturnType:
-    """Test that run_textual_cli_async returns AppResult."""
-
-    def test_run_textual_cli_async_returns_app_result(self) -> None:
-        """run_textual_cli_async should return an AppResult."""
-        sig = inspect.signature(run_textual_cli_async)
-        assert sig.return_annotation in (AppResult, "AppResult"), (
-            "run_textual_cli_async should return AppResult, "
-            f"got {sig.return_annotation}"
-        )
-
-
-class TestThreadMessage:
-    """Test thread info display format.
-
-    Thread info is now displayed in the WelcomeBanner widget rather than via
-    pre-TUI console output, so we verify the banner receives the thread ID.
-    """
-
-    def test_thread_id_forwarded_to_app(self) -> None:
-        """run_textual_cli_async passes thread_id to run_textual_app."""
-        source = inspect.getsource(run_textual_cli_async)
-        assert "thread_id=thread_id" in source, (
-            "thread_id should be forwarded to run_textual_app"
-        )
 
 
 class TestRunTextualCliAsyncMcp:

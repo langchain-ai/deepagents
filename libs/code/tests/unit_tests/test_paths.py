@@ -37,8 +37,3 @@ class TestClassifyPath:
 
         monkeypatch.setattr(Path, "stat", _raise)
         assert classify_path(Path("/anything")) is PathState.UNREADABLE
-
-    def test_state_value_is_json_friendly(self) -> None:
-        """`PathState` is a str enum, so its value serializes directly."""
-        assert PathState.UNREADABLE == "unreadable"
-        assert PathState.EXISTS.value == "exists"

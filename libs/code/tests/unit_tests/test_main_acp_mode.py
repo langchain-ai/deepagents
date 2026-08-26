@@ -15,9 +15,11 @@ import pytest
 from deepagents_acp.server import AgentServerACP
 
 from deepagents_code.main import _preload_session_mcp_server_info, cli_main
+from unit_tests.conftest import redirect_managed_config
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
@@ -79,7 +81,47 @@ def test_acp_mode_rejects_auto_classifier_model(
         cli_main()
 
     assert exc_info.value.code == 2
-    assert "--auto-classifier-model requires --auto-approve" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "--auto-classifier-model requires Auto mode in ACP mode" in err
+    resolve_agent.assert_not_called()
+
+
+def test_acp_mode_rejects_auto_classifier_model_in_yolo(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """YOLO must not silently drop the classifier model.
+
+    `create_cli_agent` only installs `AutoModeHITLMiddleware` when
+    `auto_mode_enabled` is true; in ACP that flag follows `auto`, not `yolo`,
+    so a classifier supplied alongside `--yolo` would never be consulted.
+    """
+    args = _make_acp_args(yolo=True, auto_classifier_model="openai:gpt-5.5-mini")
+
+    with (
+        patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "--acp",
+                "--yolo",
+                "--auto-classifier-model",
+                "openai:gpt-5.5-mini",
+            ],
+        ),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch(
+            "deepagents_code.approval_mode.has_yolo_acknowledgement",
+            return_value=True,
+        ),
+        patch("deepagents_code.main._resolve_agent_arg") as resolve_agent,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "--auto-classifier-model requires Auto mode in ACP mode" in err
     resolve_agent.assert_not_called()
 
 
@@ -449,7 +491,11 @@ def test_acp_mode_forwards_none_allow_fs_tools_by_default() -> None:
 
 
 def test_acp_mode_forwards_recursion_limit() -> None:
-    """`--acp --recursion-limit` forwards the explicit limit to `create_cli_agent`."""
+    """`--acp --recursion-limit` forwards the effective CLI value.
+
+    ACP builds in the parent, but uses the same boundary helper as TUI and
+    headless launches, so this pins the serialized value too.
+    """
     args = _make_acp_args(recursion_limit=3000)
     model_result = SimpleNamespace(
         model=object(),
@@ -548,3 +594,49 @@ def test_non_acp_mode_checks_dependencies_before_parsing() -> None:
     assert exc_info.value.code == 7
     mock_check.assert_called_once_with()
     mock_parse.assert_not_called()
+
+
+def test_acp_managed_manual_revokes_the_yolo_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed `manual` revokes `--yolo` in the ACP launch, not just the resolver.
+
+    The ACP branch derives every approval decision from `_resolve_approval_mode`
+    rather than raw flags. Nothing pinned the wiring: reverting the forwarding
+    to `getattr(args, "yolo", False)` left the whole suite green while
+    `dcode --acp --yolo` under a managed `manual` launched with approvals
+    disabled and no acknowledgement gate -- an administrator-policy bypass on a
+    privilege-granting key.
+    """
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+
+    args = _make_acp_args(yolo=True, auto_approve=False)
+    run_acp = AsyncMock(return_value=0)
+
+    try:
+        with (
+            patch.object(sys, "argv", ["deepagents", "--acp", "--yolo"]),
+            patch("deepagents_code.main.parse_args", return_value=args),
+            # Would abort with exit 2 if the gate still read `args.yolo`.
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=False,
+            ),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch("deepagents_code.main._run_acp_cli_async", run_acp),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+    finally:
+        service.invalidate_config_sources()
+
+    assert exc_info.value.code == 0
+    kwargs = run_acp.call_args.kwargs
+    assert kwargs["yolo"] is False
+    assert kwargs["auto"] is False

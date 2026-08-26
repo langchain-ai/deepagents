@@ -232,28 +232,18 @@ class TestPromptClipboardScreen:
             assert preview.region.bottom <= screen.size.height
             assert help_.region.bottom <= outer.region.bottom
 
-    async def test_tab_and_shift_tab_page_selection(self) -> None:
-        """Tab/Shift+Tab page through results; the filter input keeps focus."""
+    async def test_tab_inserts_selected_prompt(self) -> None:
+        """Tab behaves like Enter instead of paging through results."""
         app = _PromptClipboardApp()
         async with app.run_test() as pilot:
-            screen = app.open(tuple(f"prompt {i}" for i in range(12)))
+            app.open(("newest", "oldest"))
             await pilot.pause()
-            search = screen.query_one("#prompt-filter", Input)
 
+            await pilot.press("down")
             await pilot.press("tab")
             await pilot.pause()
-            assert screen.focused is search
-            assert screen._selected_index == 5
 
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert screen.focused is search
-            assert screen._selected_index == 0
-
-            # Page up at the top stays put rather than wrapping or erroring.
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert screen._selected_index == 0
+            assert app.results == ["oldest"]
 
     async def test_ctrl_c_copies_selected_prompt_without_dismissing(self) -> None:
         app = _PromptClipboardApp()
@@ -472,38 +462,6 @@ class TestPromptClipboardScreen:
             await pilot.pause()
             preview = screen.query_one("#prompt-preview", Static)
             assert str(preview.content) == "beta"
-
-    async def test_moving_after_a_queued_filter_edit_does_not_raise(self) -> None:
-        """Ctrl+C leaves the modal open, so its re-filter must not desync rows.
-
-        `action_copy` consumes a filter edit whose `Changed` message is still
-        queued, which widens `_filtered` without re-rendering `_rows`. Paging
-        then indexed the stale row list and raised `IndexError`.
-        """
-        app = _PromptClipboardApp()
-        async with app.run_test() as pilot:
-            screen = app.open(tuple(f"prompt {index}" for index in range(12)))
-            await pilot.pause()
-
-            search = screen.query_one("#prompt-filter", Input)
-            search.value = "prompt 1"
-            screen._apply_filter("prompt 1")
-            await pilot.pause()
-            assert len(screen._rows) == len(screen._filtered)
-
-            # Widen the filter behind the modal's back, exactly as a queued
-            # `Input.Changed` does, then act on it without letting the render
-            # land first.
-            search.value = "prompt"
-            with patch("deepagents_code.clipboard.copy_text_with_feedback"):
-                screen.action_copy()
-            assert len(screen._rows) != len(screen._filtered)
-
-            await screen.action_page_older()
-            await pilot.pause()
-
-            assert len(screen._rows) == len(screen._filtered)
-            assert 0 <= screen._selected_index < len(screen._rows)
 
     async def test_queued_filter_edit_keeps_the_highlighted_prompt(self) -> None:
         """A consumed filter edit must not silently re-point the selection.

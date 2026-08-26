@@ -12,11 +12,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 from deepagents_code.config import get_glyphs
-from deepagents_code.tui.widgets.prompt_search import (
-    PROMPT_SEARCH_PAGE_SIZE,
-    filter_prompts,
-    prompt_title,
-)
+from deepagents_code.tui.widgets.prompt_search import filter_prompts, prompt_title
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -76,8 +72,7 @@ class PromptClipboardScreen(ModalScreen[str | None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
-        Binding("tab", "page_older", "Page Down", show=False, priority=True),
-        Binding("shift+tab", "page_newer", "Page Up", show=False, priority=True),
+        Binding("tab", "select", "Insert", show=False, priority=True),
         Binding("enter", "select", "Insert", show=False, priority=True),
         Binding("ctrl+c", "copy", "Copy", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
@@ -134,8 +129,7 @@ class PromptClipboardScreen(ModalScreen[str | None]):
                 sep.join(
                     (
                         f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
-                        "Tab/Shift+Tab page",
-                        "Enter insert",
+                        "Tab/Enter insert",
                         "Ctrl+C copy",
                         "Esc cancel",
                     )
@@ -295,18 +289,6 @@ class PromptClipboardScreen(ModalScreen[str | None]):
     async def action_move_down(self) -> None:
         """Move selection toward older prompts."""
         await self._move(1)
-
-    async def action_page_newer(self) -> None:
-        """Jump selection one page toward newer prompts.
-
-        Named for direction rather than `page_up`/`page_down`, which are
-        sync `Widget` methods this would otherwise override incompatibly.
-        """
-        await self._move(-PROMPT_SEARCH_PAGE_SIZE)
-
-    async def action_page_older(self) -> None:
-        """Jump selection one page toward older prompts."""
-        await self._move(PROMPT_SEARCH_PAGE_SIZE)
 
     def action_select(self) -> None:
         """Dismiss with the selected prompt."""

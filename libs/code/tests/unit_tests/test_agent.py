@@ -378,12 +378,15 @@ def test_goal_criteria_tools_wire_fallback_and_none_backend(tmp_path: Path) -> N
             system_prompt="test prompt",
             cwd=tmp_path,
             goal_criteria_tools=[],
+            model_retries=3,
         )
 
     make_criteria.assert_called_once()
     assert make_criteria.call_args.kwargs["repository_backend"] is None
     assert make_criteria.call_args.kwargs["fs_tools"] == ["read_file"]
+    assert make_criteria.call_args.kwargs["model_retries"] == 3
     make_fallback.assert_called_once()
+    assert make_fallback.call_args.kwargs["model_retries"] == 3
     # Primary and fallback agents share one model, and the middleware receives
     # both so graph-level failures can degrade to goal-only generation.
     assert (

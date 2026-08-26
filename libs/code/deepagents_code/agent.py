@@ -3124,8 +3124,12 @@ def create_cli_agent(
             context_tools=goal_criteria_tools,
             auto_mode_enabled=auto_mode_enabled,
             fs_tools=fs_tools,
+            model_retries=model_retries,
         )
-        criteria_fallback_agent = create_goal_criteria_fallback_agent(model=model)
+        criteria_fallback_agent = create_goal_criteria_fallback_agent(
+            model=model,
+            model_retries=model_retries,
+        )
         agent_middleware.append(
             GoalCriteriaMiddleware(criteria_agent, criteria_fallback_agent)
         )

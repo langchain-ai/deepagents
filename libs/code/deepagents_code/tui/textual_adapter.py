@@ -1893,6 +1893,15 @@ async def execute_task_textual(
                                 )
                         continue
 
+                    if isinstance(data, dict) and data.get("type") == "model_retry":
+                        if is_main_agent and adapter._set_spinner is not None:
+                            from deepagents_code.model_retry import (
+                                retry_status_from_event,
+                            )
+
+                            await adapter._set_spinner(retry_status_from_event(data))
+                        continue
+
                     auto_review_event = _parse_auto_mode_review_event(
                         data, is_main_agent=is_main_agent
                     )

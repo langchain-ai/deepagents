@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from deepagents_code import _git as git_module, model_config
+from deepagents_code import _git as git_module, config as config_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._version import __version__
 from deepagents_code.config import (
@@ -21,9 +21,9 @@ from deepagents_code.config import (
     _MCP_SSE_LOGGER_NAME,
     _MCP_STREAMABLE_HTTP_LOGGER_NAME,
     _QUIET_SDK_LOGGER_NAMES,
-    CLI_MAX_RETRIES_KEY,
     LANGSMITH_EU_ENDPOINT,
     LANGSMITH_US_ENDPOINT,
+    MODEL_RETRIES_ATTR,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
     LangSmithApiError,
@@ -38,10 +38,12 @@ from deepagents_code.config import (
     _disable_orphaned_tracing,
     _get_provider_kwargs,
     _McpShutdownRaceFilter,
+    _parse_retry_config,
+    _provider_retry_disable_kwargs,
     _quiet_sdk_logging,
-    _read_config_toml_retries,
-    _resolve_retry_kwargs,
-    _resolve_retry_param_name,
+    _read_retry_config,
+    _resolve_config_retry_count,
+    _resolve_model_retries_from_section,
     apply_stored_langsmith_auth,
     build_langsmith_thread_url,
     configure_langsmith_secret_redaction,
@@ -1671,223 +1673,253 @@ class TestRetriesConfig:
         config_path.write_text("[models]\ndefault = 'openai:gpt-5.5'\n")
 
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert _read_config_toml_retries() is None
+            config = _read_retry_config()
+        assert config.max_retries is None
+        assert not config.providers
 
     def test_read_retries_returns_none_when_file_missing(self, tmp_path: Path) -> None:
         """Missing config file returns `None`."""
         config_path = tmp_path / "config.toml"
 
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert _read_config_toml_retries() is None
+            config = _read_retry_config()
+        assert config.max_retries is None
+        assert not config.providers
 
-    def test_read_retries_returns_none_when_unreadable(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_read_retries_returns_none_when_unreadable(self, tmp_path: Path) -> None:
         """Unreadable config returns `None` with a warning."""
         config_path = tmp_path / "config.toml"
 
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             patch.object(Path, "open", side_effect=PermissionError("denied")),
-            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
         ):
-            assert _read_config_toml_retries() is None
+            config = _read_retry_config()
 
-        assert "Could not read retries config" in caplog.text
+        assert any("Could not read retries config" in text for text in config.warnings)
 
     def test_read_retries_allows_unknown_provider_with_param(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path
     ) -> None:
         """Unknown providers can opt into retries with an explicit param."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("[retries.custom_provider]\nparam = 'max_retries'\n")
 
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
-        ):
-            assert _read_config_toml_retries() == {
-                "custom_provider": {"param": "max_retries"}
-            }
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            config = _read_retry_config()
 
-        assert "is not a known provider" not in caplog.text
+        assert config.providers["custom_provider"].param == "max_retries"
+        assert not any("unrecognized provider" in text for text in config.warnings)
 
     def test_read_retries_warns_unknown_provider_without_param(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path
     ) -> None:
         """Unknown retry tables still warn when they cannot provide a kwarg."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("[retries.custom_provider]\nmax_retries = 2\n")
 
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
-        ):
-            assert _read_config_toml_retries() == {
-                "custom_provider": {"max_retries": 2}
-            }
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            config = _read_retry_config()
 
-        assert "is not a known provider" in caplog.text
+        assert config.providers["custom_provider"].max_retries == 2
+        # Kept, not dropped: the diagnostic must not claim an override that
+        # never happens, since the table still applies if that provider is the
+        # one the langchain registry builds.
+        assert any("unrecognized provider" in text for text in config.warnings)
+        assert not any("Ignoring [retries." in text for text in config.warnings)
 
-    def test_resolve_retry_kwargs_global(self) -> None:
-        """Global retry config applies to supported providers."""
-        assert _resolve_retry_kwargs({"max_retries": 2}, "fireworks") == {
-            "max_retries": 2
+    def test_resolve_config_retry_count_provider_override_wins(self) -> None:
+        """Provider retry config beats the global model-node retry count."""
+        config = _parse_retry_config(
+            {"max_retries": 2, "fireworks": {"max_retries": 3}}
+        )
+        assert _resolve_config_retry_count(config, "fireworks") == 3
+
+    def test_resolve_config_retry_count_provider_only(self) -> None:
+        """Provider retry config works without a global count."""
+        assert (
+            _resolve_config_retry_count(
+                _parse_retry_config({"fireworks": {"max_retries": 3}}), "fireworks"
+            )
+            == 3
+        )
+
+    def test_provider_retry_disable_kwargs_uses_registered_param(self) -> None:
+        """Known providers have their SDK retry loop disabled."""
+        assert _provider_retry_disable_kwargs(
+            _parse_retry_config(None), "fireworks", {}
+        ) == {"max_retries": 0}
+
+    def test_provider_retry_disable_kwargs_uses_google_attempt_semantics(self) -> None:
+        """Google needs one total attempt because zero restores its default."""
+        assert _provider_retry_disable_kwargs(
+            _parse_retry_config(None), "google_genai", {}
+        ) == {"max_retries": 1}
+
+    def test_provider_retry_disable_kwargs_uses_configured_param(self) -> None:
+        """Custom providers can name the SDK retry constructor kwarg."""
+        config = _parse_retry_config({"custom_provider": {"param": "retries"}})
+        assert _provider_retry_disable_kwargs(config, "custom_provider", {}) == {
+            "retries": 0
+        }
+
+    def test_provider_retry_disable_kwargs_detects_model_param(self) -> None:
+        """An explicit conventional model param identifies custom SDK retries."""
+        assert _provider_retry_disable_kwargs(
+            _parse_retry_config(None), "custom_provider", {"max_retries": 9}
+        ) == {"max_retries": 0}
+
+    def test_configured_param_outranks_the_registry(self) -> None:
+        """An explicit `param` corrects the built-in registry, not the reverse.
+
+        Honoring the registry first would silently discard a directive the
+        config schema accepts and validates.
+        """
+        config = _parse_retry_config({"openai": {"param": "num_retries"}})
+        assert _provider_retry_disable_kwargs(config, "openai", {}) == {
+            "num_retries": 0
         }
 
     @pytest.mark.parametrize(
-        ("provider", "retry_param"),
-        [
-            ("anthropic", "max_retries"),
-            ("azure_openai", "max_retries"),
-            ("baseten", "max_retries"),
-            ("bedrock", "max_retries"),
-            ("deepseek", "max_retries"),
-            ("fireworks", "max_retries"),
-            ("google_anthropic_vertex", "max_retries"),
-            ("google_genai", "max_retries"),
-            ("google_vertexai", "max_retries"),
-            ("groq", "max_retries"),
-            ("litellm", "max_retries"),
-            ("mistralai", "max_retries"),
-            ("openai", "max_retries"),
-            ("openrouter", "max_retries"),
-            ("perplexity", "max_retries"),
-            ("together", "max_retries"),
-            ("xai", "max_retries"),
-        ],
+        "provider",
+        sorted(
+            name
+            for name, param in model_config.RETRY_PARAM_BY_PROVIDER.items()
+            if param is not None
+        ),
     )
-    def test_resolve_retry_kwargs_registered_providers(
-        self, provider: str, retry_param: str
+    def test_every_registered_provider_is_disabled(self, provider: str) -> None:
+        """Dropping a registry entry silently reactivates that provider's retries."""
+        param = model_config.RETRY_PARAM_BY_PROVIDER[provider]
+        expected = model_config.RETRY_DISABLE_VALUE_BY_PROVIDER.get(provider, 0)
+        config = _parse_retry_config(None)
+        assert _provider_retry_disable_kwargs(config, provider, {}) == {param: expected}
+
+    @pytest.mark.parametrize(
+        "provider",
+        sorted(
+            name
+            for name, param in model_config.RETRY_PARAM_BY_PROVIDER.items()
+            if param is None
+        ),
+    )
+    def test_provider_without_a_retry_kwarg_is_quiet(
+        self, provider: str, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Registered providers receive the retry kwarg their constructor expects."""
-        assert _resolve_retry_kwargs({"max_retries": 2}, provider) == {retry_param: 2}
+        """A `None` entry has no SDK retry loop, so there is nothing to warn about.
 
-    def test_resolve_retry_kwargs_provider_override_wins(self) -> None:
-        """Provider retry config beats the global value."""
-        section = {"max_retries": 2, "fireworks": {"max_retries": 3}}
-        assert _resolve_retry_kwargs(section, "fireworks") == {"max_retries": 3}
+        These providers used to hit the unidentifiable-provider warning, which
+        told the user to set `[retries.<provider>].param` -- a kwarg their
+        integration drops. The advice inverted the remediation it offered.
+        """
+        config_module._warned_unknown_retry_providers.discard(provider)
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            config = _parse_retry_config(None)
+            assert _provider_retry_disable_kwargs(config, provider, {}) == {}
+        assert caplog.text == ""
 
-    def test_resolve_retry_kwargs_provider_only(self) -> None:
-        """Provider retry config works without a global value."""
-        assert _resolve_retry_kwargs(
-            {"fireworks": {"max_retries": 3}}, "fireworks"
-        ) == {"max_retries": 3}
+    def test_unidentifiable_provider_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unknown provider's SDK retries multiply ours, so say so loudly."""
+        config_module._warned_unknown_retry_providers.discard("mystery")
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            config = _parse_retry_config(None)
+            assert _provider_retry_disable_kwargs(config, "mystery", {}) == {}
 
-    def test_resolve_retry_kwargs_custom_provider_param(self) -> None:
-        """Custom providers can name the retry constructor kwarg."""
-        section = {
-            "max_retries": 2,
-            "custom_provider": {"param": "retries", "max_retries": 4},
-        }
-        assert _resolve_retry_kwargs(section, "custom_provider") == {"retries": 4}
+        assert "may multiply" in caplog.text
+        assert "[retries.mystery].param" in caplog.text
 
-    def test_resolve_retry_kwargs_custom_provider_param_uses_global(self) -> None:
-        """Custom provider param can use the global retry count."""
-        section = {"max_retries": 2, "custom_provider": {"param": "retries"}}
-        assert _resolve_retry_kwargs(section, "custom_provider") == {"retries": 2}
+    def test_unidentifiable_provider_warns_once_per_provider(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The warning is advice, not an event, so it must not repeat.
 
-    def test_resolve_retry_kwargs_param_overrides_registry(self) -> None:
-        """Known providers can override the registered retry kwarg name."""
-        section = {"max_retries": 2, "fireworks": {"param": "retries"}}
-        assert _resolve_retry_kwargs(section, "fireworks") == {"retries": 2}
+        `create_model` runs again for every subagent, rubric model, and runtime
+        `/model` switch. Repeating an unactionable warning on each one buries
+        the debug buffer that the same run relies on for real diagnostics.
+        """
+        config_module._warned_unknown_retry_providers.discard("enigma")
+        config = _parse_retry_config(None)
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            for _ in range(3):
+                assert _provider_retry_disable_kwargs(config, "enigma", {}) == {}
+
+        assert len([r for r in caplog.records if "may multiply" in r.message]) == 1
+
+    def test_clobbering_an_explicit_value_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A user-supplied retry count is overridden, but never silently."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _provider_retry_disable_kwargs(
+                _parse_retry_config(None), "fireworks", {"max_retries": 3}
+            ) == {"max_retries": 0}
+
+        assert "Ignoring max_retries=3" in caplog.text
+        assert "--max-retries" in caplog.text
+
+    def test_no_warning_when_the_value_already_matches(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Nothing is being taken away, so stay quiet."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _provider_retry_disable_kwargs(
+                _parse_retry_config(None), "fireworks", {"max_retries": 0}
+            ) == {"max_retries": 0}
+
+        assert "Ignoring max_retries" not in caplog.text
 
     @pytest.mark.parametrize("value", [-1, 1.5, True, False, "3"])
-    def test_resolve_retry_kwargs_invalid_values_warn(
-        self, value: object, caplog: pytest.LogCaptureFixture
+    def test_resolve_config_retry_count_invalid_values_warn(
+        self, value: object
     ) -> None:
         """Invalid retry values are ignored with a warning."""
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
-            assert _resolve_retry_kwargs({"max_retries": value}, "fireworks") == {}
+        config = _parse_retry_config({"max_retries": value})
+        assert _resolve_config_retry_count(config, "fireworks") is None
 
-        assert "Ignoring [retries].max_retries" in caplog.text
-
-    def test_resolve_retry_kwargs_unknown_provider_warns(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Unsupported providers do not receive retry kwargs."""
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
-            assert _resolve_retry_kwargs({"max_retries": 2}, "custom_provider") == {}
-
-        assert (
-            "does not support a registered or configured retry parameter" in caplog.text
-        )
+        assert any("Ignoring [retries].max_retries" in text for text in config.warnings)
 
     @pytest.mark.parametrize("value", ["max-retries", "class", "", 2, True])
-    def test_resolve_retry_kwargs_invalid_param_warns(
-        self, value: object, caplog: pytest.LogCaptureFixture
+    def test_provider_retry_disable_kwargs_invalid_param_warns(
+        self, value: object
     ) -> None:
         """Invalid retry kwarg names are ignored with a warning."""
-        section = {"max_retries": 2, "custom_provider": {"param": value}}
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
-            assert _resolve_retry_kwargs(section, "custom_provider") == {}
+        config = _parse_retry_config({"custom_provider": {"param": value}})
+        assert _provider_retry_disable_kwargs(config, "custom_provider", {}) == {}
 
-        assert "Ignoring [retries.custom_provider].param" in caplog.text
-        assert (
-            "does not support a registered or configured retry parameter" in caplog.text
+        assert any(
+            "Ignoring [retries.custom_provider].param" in text
+            for text in config.warnings
         )
 
-    def test_resolve_retry_kwargs_unknown_keys_warn(
-        self, caplog: pytest.LogCaptureFixture
+    def test_resolve_config_retry_count_unknown_keys_warn(
+        self,
     ) -> None:
         """Unknown retry keys are ignored with warnings."""
-        section = {"max_retries": 2, "fireworks": {"other": 4}, "other": 5}
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
-            assert _resolve_retry_kwargs(section, "fireworks") == {"max_retries": 2}
+        config = _parse_retry_config(
+            {"max_retries": 2, "fireworks": {"other": 4}, "other": 5}
+        )
+        assert _resolve_config_retry_count(config, "fireworks") == 2
 
-        assert "Ignoring [retries].other" in caplog.text
-        assert "Ignoring [retries.fireworks].other" in caplog.text
-
-    def test_get_provider_kwargs_includes_retries(self, tmp_path: Path) -> None:
-        """Provider kwargs include retries from `[retries]`."""
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("[retries.fireworks]\nmax_retries = 3\n")
-
-        clear_caches()
-        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert _get_provider_kwargs("fireworks")["max_retries"] == 3
-
-    def test_get_provider_kwargs_params_beat_retries(self, tmp_path: Path) -> None:
-        """Provider params keep precedence over `[retries]`."""
-        config_path = tmp_path / "config.toml"
-        config_path.write_text(
-            """
-[models.providers.fireworks.params]
-max_retries = 5
-
-[retries.fireworks]
-max_retries = 3
-"""
+        assert any("Ignoring [retries].other" in text for text in config.warnings)
+        assert any(
+            "Ignoring [retries.fireworks].other" in text for text in config.warnings
         )
 
-        clear_caches()
-        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert _get_provider_kwargs("fireworks")["max_retries"] == 5
-
-    def test_get_provider_kwargs_includes_global_retries(self, tmp_path: Path) -> None:
-        """A global `[retries]` default reaches provider kwargs via setdefault."""
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("[retries]\nmax_retries = 2\n")
-
-        clear_caches()
-        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert _get_provider_kwargs("fireworks")["max_retries"] == 2
-
-    def test_resolve_retry_kwargs_zero_is_valid(self) -> None:
+    def test_resolve_config_retry_count_zero_is_valid(self) -> None:
         """`max_retries = 0` is a valid count (disables retries)."""
-        assert _resolve_retry_kwargs({"max_retries": 0}, "fireworks") == {
-            "max_retries": 0
-        }
+        config = _parse_retry_config({"max_retries": 0})
+        assert _resolve_config_retry_count(config, "fireworks") == 0
 
-    def test_resolve_retry_kwargs_provider_scalar_falls_back_to_global(
-        self, caplog: pytest.LogCaptureFixture
+    def test_resolve_config_retry_count_provider_scalar_falls_back_to_global(
+        self,
     ) -> None:
         """A non-table provider value warns and falls back to the global count."""
-        section = {"max_retries": 2, "fireworks": 5}
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
-            assert _resolve_retry_kwargs(section, "fireworks") == {"max_retries": 2}
+        config = _parse_retry_config({"max_retries": 2, "fireworks": 5})
+        assert _resolve_config_retry_count(config, "fireworks") == 2
 
-        assert "expected table" in caplog.text
+        assert any("[retries].fireworks=5" in text for text in config.warnings)
 
     def test_read_retries_returns_none_when_not_table(self, tmp_path: Path) -> None:
         """A scalar `retries` value (not a table) yields `None`."""
@@ -1895,26 +1927,21 @@ max_retries = 3
         config_path.write_text("retries = 5\n")
 
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert _read_config_toml_retries() is None
+            config = _read_retry_config()
+        assert config.max_retries is None
+        assert not config.providers
 
-    def test_read_retries_returns_none_on_malformed_toml(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_read_retries_returns_none_on_malformed_toml(self, tmp_path: Path) -> None:
         """Malformed TOML returns `None` with a warning."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("[retries\nmax_retries = 1\n")
 
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
-        ):
-            assert _read_config_toml_retries() is None
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            config = _read_retry_config()
 
-        assert "Could not read retries config" in caplog.text
+        assert any("Could not read retries config" in text for text in config.warnings)
 
-    def test_read_retries_warns_unknown_provider_table(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_read_retries_warns_unknown_provider_table(self, tmp_path: Path) -> None:
         """A mistyped provider sub-table warns; a valid one does not."""
         config_path = tmp_path / "config.toml"
         config_path.write_text(
@@ -1922,77 +1949,61 @@ max_retries = 3
             "[retries.fireorks]\nmax_retries = 2\n"
         )
 
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
-        ):
-            section = _read_config_toml_retries()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            config = _read_retry_config()
 
-        assert section is not None
-        assert "'fireorks' is not a known provider" in caplog.text
+        assert "fireworks" in config.providers
+        assert any(
+            "[retries.fireorks]" in text and "unrecognized provider" in text
+            for text in config.warnings
+        )
         # The correctly spelled provider table must not be flagged.
-        assert "[retries.fireworks]" not in caplog.text
+        assert not any("[retries.fireworks]" in text for text in config.warnings)
 
-    def test_read_retries_allows_bedrock_table(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_read_retries_allows_bedrock_table(self, tmp_path: Path) -> None:
         """Retry-capable providers without API-key env entries are still known."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("[retries.bedrock]\nmax_retries = 3\n")
 
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
-        ):
-            section = _read_config_toml_retries()
-
-        assert section == {"bedrock": {"max_retries": 3}}
-        assert "is not a known provider" not in caplog.text
-
-
-class TestResolveRetryParamName:
-    """`_resolve_retry_param_name` picks the constructor kwarg for a provider."""
-
-    def test_registered_provider_returns_mapped_name(self) -> None:
-        """A registered provider resolves to its mapped kwarg."""
-        assert _resolve_retry_param_name("openai") == "max_retries"
-
-    def test_unknown_provider_defaults_to_max_retries(self) -> None:
-        """An unregistered provider falls back to the universal `max_retries`."""
-        assert _resolve_retry_param_name("some_unregistered_provider") == "max_retries"
-
-    def test_config_param_override_wins_for_custom_provider(
-        self, tmp_path: Path
-    ) -> None:
-        """`[retries.<provider>].param` names the kwarg for a custom provider."""
-        config_path = tmp_path / "config.toml"
-        config_path.write_text('[retries.custom]\nparam = "num_retries"\n')
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert _resolve_retry_param_name("custom") == "num_retries"
+            config = _read_retry_config()
 
-    def test_config_param_override_wins_for_registered_provider(
-        self, tmp_path: Path
-    ) -> None:
-        """A configured `param` overrides even a registered provider's mapping."""
-        config_path = tmp_path / "config.toml"
-        config_path.write_text('[retries.openai]\nparam = "request_retries"\n')
-        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert _resolve_retry_param_name("openai") == "request_retries"
+        assert config.providers["bedrock"].max_retries == 3
+        assert not any("unrecognized provider" in text for text in config.warnings)
 
-    def test_invalid_config_param_falls_back_to_registry(self, tmp_path: Path) -> None:
-        """An invalid `param` value is ignored, falling back to the registry."""
+
+class TestResolveModelRetries:
+    """The retry resolver resolves the model-node retry budget."""
+
+    @staticmethod
+    def _resolve_retries(provider: str, *, cli_max_retries: int | None = None) -> int:
+        """Resolve a budget the way `create_model` does.
+
+        Returns:
+            The effective retry count.
+        """
+        return _resolve_model_retries_from_section(
+            _read_retry_config(), provider, cli_max_retries
+        )
+
+    def test_uses_default_when_config_is_absent(self, tmp_path: Path) -> None:
+        """The default retry budget applies without config or a CLI flag."""
         config_path = tmp_path / "config.toml"
-        config_path.write_text('[retries.openai]\nparam = "not an identifier"\n')
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert _resolve_retry_param_name("openai") == "max_retries"
+            assert self._resolve_retries("openai") == 5
+
+    def test_cli_value_beats_provider_and_global_config(self, tmp_path: Path) -> None:
+        """The CLI retry count has highest precedence."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[retries]\nmax_retries = 2\n[retries.openai]\nmax_retries = 3\n"
+        )
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert self._resolve_retries("openai", cli_max_retries=4) == 4
 
 
 class TestCreateModelMaxRetries:
-    """`create_model` folds the `--max-retries` sentinel into the constructor.
-
-    The flag value rides `extra_kwargs` under `CLI_MAX_RETRIES_KEY`; these tests
-    mock `init_chat_model` and assert on the kwargs forwarded to it.
-    """
+    """`create_model` keeps CLI retries separate from provider kwargs."""
 
     @pytest.fixture(autouse=True)
     def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2001,60 +2012,91 @@ class TestCreateModelMaxRetries:
         )
 
     @patch("langchain.chat_models.init_chat_model")
-    def test_sentinel_folds_to_resolved_param(self, mock_init: Mock) -> None:
-        """A registered provider receives the value under `max_retries`."""
+    def test_cli_value_sets_model_retry_budget(self, mock_init: Mock) -> None:
+        """The CLI value becomes the model-node budget, not an SDK kwarg."""
         mock_init.return_value = Mock()
-        create_model(
-            "anthropic:claude-sonnet-4-5", extra_kwargs={CLI_MAX_RETRIES_KEY: 4}
-        )
+        result = create_model("anthropic:claude-sonnet-4-5", cli_max_retries=4)
         kwargs = mock_init.call_args.kwargs
-        assert kwargs["max_retries"] == 4
-        # The internal carrier must never reach the constructor.
-        assert CLI_MAX_RETRIES_KEY not in kwargs
+        assert result.model_retries == 4
+        assert kwargs["max_retries"] == 0
 
     @patch("langchain.chat_models.init_chat_model")
-    def test_sentinel_beats_model_params_max_retries(self, mock_init: Mock) -> None:
-        """The CLI flag outranks a `max_retries` supplied via `--model-params`."""
+    def test_budget_is_stamped_on_the_model_for_the_middleware(
+        self, mock_init: Mock
+    ) -> None:
+        """The middleware reads the model attribute, not the `ModelResult` field.
+
+        `CodeModelRetryMiddleware._request_max_retries` looks up
+        `MODEL_RETRIES_ATTR` on `request.model`, so asserting only on
+        `result.model_retries` would leave the real handoff unverified.
+        """
         mock_init.return_value = Mock()
-        create_model(
-            "anthropic:claude-sonnet-4-5",
-            extra_kwargs={CLI_MAX_RETRIES_KEY: 4, "max_retries": 1},
-        )
-        assert mock_init.call_args.kwargs["max_retries"] == 4
+        result = create_model("anthropic:claude-sonnet-4-5", cli_max_retries=4)
+        assert getattr(result.model, MODEL_RETRIES_ATTR) == 4
 
     @patch("langchain.chat_models.init_chat_model")
-    def test_sentinel_folds_to_configured_param(
+    def test_slotted_model_does_not_break_construction(self, mock_init: Mock) -> None:
+        """A model rejecting attribute writes still yields a usable result.
+
+        Retry metadata is advisory; the middleware falls back to its startup
+        budget. A custom provider class using `__slots__` must not turn that
+        into a failed model construction.
+        """
+
+        class _Slotted:
+            __slots__ = ()
+
+        mock_init.return_value = _Slotted()
+        result = create_model("anthropic:claude-sonnet-4-5", cli_max_retries=4)
+        assert result.model_retries == 4
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_sdk_retries_are_disabled_despite_model_params(
+        self, mock_init: Mock
+    ) -> None:
+        """Provider retries stay disabled even when model params set a count."""
+        mock_init.return_value = Mock()
+        result = create_model(
+            "anthropic:claude-sonnet-4-5",
+            extra_kwargs={"max_retries": 1},
+            cli_max_retries=4,
+        )
+        assert result.model_retries == 4
+        assert mock_init.call_args.kwargs["max_retries"] == 0
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_configured_param_disables_custom_provider_sdk_retries(
         self, mock_init: Mock, tmp_path: Path
     ) -> None:
-        """A `[retries.<provider>].param` override redirects the folded kwarg."""
+        """A `[retries.<provider>].param` targets a custom provider SDK kwarg."""
         config_path = tmp_path / "config.toml"
-        config_path.write_text('[retries.anthropic]\nparam = "request_retries"\n')
+        config_path.write_text('[retries.custom]\nparam = "request_retries"\n')
         mock_init.return_value = Mock()
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            create_model(
-                "anthropic:claude-sonnet-4-5",
-                extra_kwargs={CLI_MAX_RETRIES_KEY: 4},
-            )
+            result = create_model("custom:model", cli_max_retries=4)
         kwargs = mock_init.call_args.kwargs
-        assert kwargs["request_retries"] == 4
-        assert CLI_MAX_RETRIES_KEY not in kwargs
+        assert result.model_retries == 4
+        assert kwargs["request_retries"] == 0
 
     @patch("langchain.chat_models.init_chat_model")
-    def test_zero_is_forwarded(self, mock_init: Mock) -> None:
-        """`--max-retries 0` (disable retries) folds through, not dropped."""
+    def test_zero_disables_model_node_retries(self, mock_init: Mock) -> None:
+        """`--max-retries 0` disables model-node retries while SDK retries stay off."""
         mock_init.return_value = Mock()
-        create_model(
-            "anthropic:claude-sonnet-4-5", extra_kwargs={CLI_MAX_RETRIES_KEY: 0}
-        )
+        result = create_model("anthropic:claude-sonnet-4-5", cli_max_retries=0)
+        assert result.model_retries == 0
         assert mock_init.call_args.kwargs["max_retries"] == 0
 
     @patch("langchain.chat_models.init_chat_model")
     def test_caller_extra_kwargs_not_mutated(self, mock_init: Mock) -> None:
-        """The caller's dict keeps the sentinel for reuse (runtime model switch)."""
+        """Separating CLI retries leaves caller model kwargs untouched."""
         mock_init.return_value = Mock()
-        extra = {CLI_MAX_RETRIES_KEY: 4}
-        create_model("anthropic:claude-sonnet-4-5", extra_kwargs=extra)
-        assert extra == {CLI_MAX_RETRIES_KEY: 4}
+        extra = {"temperature": 0.2}
+        create_model(
+            "anthropic:claude-sonnet-4-5",
+            extra_kwargs=extra,
+            cli_max_retries=4,
+        )
+        assert extra == {"temperature": 0.2}
 
 
 class TestCreateModelProfileOverrides:
@@ -7842,6 +7884,90 @@ class TestResolveGoalAutoAcceptCriteria:
             True,
             f"env ({GOAL_AUTO_ACCEPT_CRITERIA})",
         )
+
+
+class TestCollectRetryConfigWarnings:
+    """Retry config problems must reach the user, not just the debug buffer."""
+
+    @staticmethod
+    def _warnings(tmp_path: Path, toml: str) -> list[str]:
+        from deepagents_code.config import collect_retry_config_startup
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(toml)
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            warnings, _ = collect_retry_config_startup()
+        return warnings
+
+    def test_clean_config_reports_nothing(self, tmp_path: Path) -> None:
+        """A valid budget must not produce noise on every launch."""
+        assert self._warnings(tmp_path, "[retries]\nmax_retries = 3\n") == []
+
+    def test_non_integer_budget_is_reported(self, tmp_path: Path) -> None:
+        """`max_retries = "five"` silently ran with the default before."""
+        warnings = self._warnings(tmp_path, '[retries]\nmax_retries = "five"\n')
+        assert any("[retries].max_retries" in text for text in warnings)
+
+    def test_bad_provider_param_is_reported(self, tmp_path: Path) -> None:
+        """A `param` that is not an identifier cannot disable SDK retries."""
+        warnings = self._warnings(
+            tmp_path, '[retries.openai]\nparam = "not an identifier"\n'
+        )
+        assert any("[retries.openai].param" in text for text in warnings)
+
+    def test_unknown_global_key_is_reported(self, tmp_path: Path) -> None:
+        """A misspelled global retry key reaches startup diagnostics."""
+        warnings = self._warnings(tmp_path, "[retries]\nmax_retry = 3\n")
+        assert any("[retries].max_retry=3" in text for text in warnings)
+
+    def test_unknown_provider_key_is_reported(self, tmp_path: Path) -> None:
+        """A misspelled provider retry key reaches startup diagnostics."""
+        warnings = self._warnings(tmp_path, "[retries.openai]\nmax_retry = 3\n")
+        assert any("[retries.openai].max_retry=3" in text for text in warnings)
+
+    def test_custom_provider_param_is_returned_for_startup(
+        self, tmp_path: Path
+    ) -> None:
+        """Startup can identify custom retry kwargs that model params override."""
+        from deepagents_code.config import collect_retry_config_startup
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.foo]\nparam = "retry_attempts"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            warnings, param_names = collect_retry_config_startup("foo")
+
+        assert warnings == []
+        assert param_names == {"retry_attempts"}
+
+    def test_another_providers_param_is_not_reported_as_forced(
+        self, tmp_path: Path
+    ) -> None:
+        """A kwarg configured for a different provider is passed through.
+
+        `create_model` forces the retry kwarg of the provider it actually
+        builds. Reporting every configured name would tell the user their
+        `--model-params` value was ignored when it reaches the constructor
+        untouched -- the opposite of what happens.
+        """
+        from deepagents_code.config import collect_retry_config_startup
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.foo]\nparam = "retry_attempts"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            _warnings, param_names = collect_retry_config_startup("openai")
+
+        assert param_names == {"max_retries"}
+
+    def test_unresolved_provider_reports_no_forced_param(self, tmp_path: Path) -> None:
+        """Nothing can be claimed as overridden before the provider is known."""
+        from deepagents_code.config import collect_retry_config_startup
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.foo]\nparam = "retry_attempts"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            _warnings, param_names = collect_retry_config_startup(None)
+
+        assert param_names == set()
 
 
 class TestDeniedHomeKeyReporting:

@@ -254,6 +254,9 @@ class ServerConfig:
     """Extra kwargs forwarded to the chat model constructor (temperature,
     max_tokens, etc.)."""
 
+    cli_max_retries: int | None = None
+    """Explicit `--max-retries` value, separate from provider model kwargs."""
+
     profile_overrides: dict[str, Any] | None = None
     """Model profile metadata overrides resolved by the client."""
 
@@ -424,6 +427,12 @@ class ServerConfig:
         if self.rubric_max_iterations is not None and self.rubric_max_iterations <= 0:
             msg = "rubric_max_iterations must be None or a positive integer"
             raise ValueError(msg)
+        if isinstance(self.cli_max_retries, bool):
+            msg = "cli_max_retries must be None or a non-negative integer"
+            raise TypeError(msg)
+        if self.cli_max_retries is not None and self.cli_max_retries < 0:
+            msg = "cli_max_retries must be None or a non-negative integer"
+            raise ValueError(msg)
         if isinstance(self.recursion_limit, bool):
             msg = "recursion_limit must be None or a positive integer"
             raise TypeError(msg)
@@ -450,6 +459,9 @@ class ServerConfig:
             "MODEL": self.model,
             "MODEL_PARAMS": (
                 json.dumps(self.model_params) if self.model_params is not None else None
+            ),
+            "MAX_RETRIES": (
+                str(self.cli_max_retries) if self.cli_max_retries is not None else None
             ),
             "PROFILE_OVERRIDES": (
                 json.dumps(self.profile_overrides)
@@ -522,6 +534,7 @@ class ServerConfig:
         return cls(
             model=_read_env_str("MODEL"),
             model_params=_read_env_json("MODEL_PARAMS"),
+            cli_max_retries=_read_env_int("MAX_RETRIES", default=None),
             profile_overrides=_read_env_json("PROFILE_OVERRIDES"),
             assistant_id=_read_env_str("ASSISTANT_ID") or DEFAULT_ASSISTANT_ID,
             system_prompt=_read_env_str("SYSTEM_PROMPT"),
@@ -570,6 +583,7 @@ class ServerConfig:
         project_context: ProjectContext | None,
         model_name: str | None,
         model_params: dict[str, Any] | None,
+        cli_max_retries: int | None = None,
         profile_overrides: dict[str, Any] | None = None,
         assistant_id: str,
         auto_approve: bool,
@@ -604,6 +618,7 @@ class ServerConfig:
             project_context: Explicit user/project path context.
             model_name: Model spec string.
             model_params: Extra model kwargs.
+            cli_max_retries: Explicit `--max-retries` value.
             profile_overrides: Model profile metadata overrides.
             assistant_id: Agent identifier.
             auto_approve: Auto-approve all tools.
@@ -650,6 +665,7 @@ class ServerConfig:
         return cls(
             model=model_name,
             model_params=model_params,
+            cli_max_retries=cli_max_retries,
             profile_overrides=profile_overrides,
             assistant_id=assistant_id,
             auto_approve=auto_approve,

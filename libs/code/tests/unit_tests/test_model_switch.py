@@ -99,8 +99,9 @@ def mock_create_model() -> Iterator[Mock]:
         *,
         extra_kwargs: dict[str, object] | None = None,
         profile_overrides: dict[str, object] | None = None,
+        cli_max_retries: int | None = None,
     ) -> _FakeModelResult:
-        del extra_kwargs, profile_overrides
+        del extra_kwargs, profile_overrides, cli_max_retries
         parsed = ModelSpec.try_parse(model_spec)
         if parsed is None:
             provider = "openai"
@@ -797,6 +798,7 @@ class TestModelSwitchErrorHandling:
             "anthropic:claude-sonnet-4-5",
             extra_kwargs={"temperature": 0.7},
             profile_overrides={"max_input_tokens": 180_000},
+            cli_max_retries=None,
         )
 
     async def test_remote_agent_sets_model_params_override(self) -> None:
@@ -1570,10 +1572,11 @@ class TestModelSwitchBusyIndicator:
                 *,
                 extra_kwargs: dict[str, object] | None = None,
                 profile_overrides: dict[str, object] | None = None,
+                cli_max_retries: int | None = None,
             ) -> _FakeModelResult:
                 # Runs in the worker thread: record what the bar shows while the
                 # (normally slow) provider import is notionally in progress.
-                del model_spec, extra_kwargs, profile_overrides
+                del model_spec, extra_kwargs, profile_overrides, cli_max_retries
                 busy_mid_flight.append(bar._busy_message)
                 return _FakeModelResult(
                     model_name="claude-sonnet-4-5",
@@ -1625,8 +1628,9 @@ class TestModelSwitchBusyIndicator:
                 *,
                 extra_kwargs: dict[str, object] | None = None,
                 profile_overrides: dict[str, object] | None = None,
+                cli_max_retries: int | None = None,
             ) -> _FakeModelResult:
-                del model_spec, extra_kwargs, profile_overrides
+                del model_spec, extra_kwargs, profile_overrides, cli_max_retries
                 busy_mid_flight.append(bar._busy_message)
                 msg = "provider import blew up"
                 raise RuntimeError(msg)

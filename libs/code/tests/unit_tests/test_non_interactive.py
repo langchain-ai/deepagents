@@ -71,6 +71,7 @@ from deepagents_code.hooks.models.domain import (
     SessionStartDecision,
     UserPromptSubmitDecision,
 )
+from deepagents_code.hooks.transcript import TranscriptRecorder, TranscriptStore
 from deepagents_code.tool_display import format_tool_message_content
 
 
@@ -106,6 +107,34 @@ def test_nested_usage_event_updates_headless_stats(console: Console) -> None:
 
     assert state.stats.request_count == 1
     assert state.stats.per_kind["subagent"].request_count == 1
+
+
+def test_nested_grader_output_is_not_rendered_or_transcribed(tmp_path: Path) -> None:
+    """Headless grading hides partial tokens from output and hook transcripts."""
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    state = StreamState(
+        thread_id="thread-1",
+        transcript=TranscriptRecorder(transcripts, "thread-1"),
+    )
+    chunk = (
+        ("ReliableRubricMiddleware.after_agent:grader",),
+        "messages",
+        (AIMessage(id="grader-partial", content="partial verdict"), {}),
+    )
+
+    _process_stream_chunk(
+        chunk,
+        state,
+        console,
+        FileOpTracker(assistant_id="assistant"),
+    )
+
+    assert output.getvalue() == ""
+    assert state.full_response == []
+    transcript = transcripts.materialize("thread-1")
+    assert transcript.path.read_text(encoding="utf-8") == ""
 
 
 def test_subagent_summarization_does_not_signal_compaction() -> None:

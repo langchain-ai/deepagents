@@ -252,6 +252,8 @@ class TestServerGraph:
         model_result = SimpleNamespace(
             model=model_obj,
             apply_to_settings=MagicMock(),
+            model_retries=5,
+            cli_max_retries=3,
         )
         configure_redaction = MagicMock(side_effect=configure_redaction_side_effect)
         create_model = MagicMock(side_effect=create_model_side_effect)
@@ -293,6 +295,12 @@ class TestServerGraph:
             # assertion passed whether or not `_make_graphs` read
             # `config.allow_fs_tools`, so a dropped read would go unnoticed.
             allow_fs_tools=["ls", "read_file"],
+            # Non-default budget for the same reason: it must survive the
+            # `to_env()`/`from_env()` round trip and reach `create_model`.
+            # With the `None` default, dropping the `cli_max_retries=` argument
+            # in `_make_graphs` left every server-mode run on
+            # `DEFAULT_MODEL_RETRIES` with the whole suite still green.
+            cli_max_retries=3,
         )
         env_overrides = {}
         for suffix, value in config.to_env().items():
@@ -355,6 +363,7 @@ class TestServerGraph:
         assert create_model.call_args.kwargs["profile_overrides"] == {
             "max_input_tokens": 32000
         }
+        assert create_model.call_args.kwargs["cli_max_retries"] == 3
         kwargs = resolve_mcp_tools.await_args_list[0].kwargs
         assert kwargs["explicit_config_path"] is None
         assert kwargs["no_mcp"] is False
@@ -392,6 +401,8 @@ class TestServerGraph:
             async_subagents=None,
             goal_criteria_tools=[fetch_tool, web_tool, mcp_tool],
             rubric_grader_tools=[fetch_tool, web_tool, mcp_tool],
+            model_retries=5,
+            cli_max_retries=3,
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:
@@ -460,6 +471,8 @@ class TestServerGraph:
                 return_value=SimpleNamespace(
                     model=model_obj,
                     apply_to_settings=MagicMock(),
+                    model_retries=5,
+                    cli_max_retries=None,
                 ),
             ),
             is_memory_auto_save_enabled=MagicMock(return_value=True),

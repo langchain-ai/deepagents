@@ -83,6 +83,7 @@ from deepagents_code.approval_mode import (
 )
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
+    DEFAULT_MODEL_RETRIES,
     _ShellAllowAll,
     config,
     console,
@@ -2204,6 +2205,52 @@ def _apply_inherited_pythonpath(env: dict[str, str]) -> None:
         env["PYTHONPATH"] = inherited
 
 
+def _resolve_retry_owned_model(
+    model_spec: str, cli_max_retries: int | None
+) -> BaseChatModel | None:
+    """Resolve a string model with provider retries disabled and metadata tagged.
+
+    Only an explicit `--max-retries` is forwarded. Passing the caller's already
+    resolved budget instead would take precedence over
+    `[retries.<provider>].max_retries`, so a model on a different provider could
+    never use its own configured budget.
+
+    Args:
+        model_spec: The subagent's declared model string.
+        cli_max_retries: The `--max-retries` flag value, or `None` when unset.
+
+    Returns:
+        The concrete model prepared by dcode's model factory, or `None` when it
+        cannot be built here and the caller should pass the spec through.
+    """
+    from deepagents_code.config import create_model
+    from deepagents_code.model_config import MissingCredentialsError
+
+    try:
+        return create_model(model_spec, cli_max_retries=cli_max_retries).model
+    except MissingCredentialsError:
+        # Taking ownership of retries is an optimization, not a precondition for
+        # launching. A subagent declaring a provider the user has not
+        # authenticated must not abort the whole CLI: pass the spec through so
+        # the credential error surfaces if and when that subagent runs.
+        logger.debug(
+            "Deferring model resolution for %r: no provider credentials yet",
+            model_spec,
+        )
+        return None
+
+
+def _has_resolvable_model_provider(model_spec: str) -> bool:
+    """Return whether dcode can resolve the provider before graph construction."""
+    from deepagents_code.config import detect_provider
+    from deepagents_code.model_config import ModelSpec
+
+    return (
+        ModelSpec.try_parse(model_spec) is not None
+        or detect_provider(model_spec) is not None
+    )
+
+
 def get_skill_sources(
     assistant_id: str = DEFAULT_AGENT_NAME,
     project_context: ProjectContext | None = None,
@@ -2299,6 +2346,8 @@ def create_cli_agent(
     async_subagents: list[AsyncSubAgent] | None = None,
     goal_criteria_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
     rubric_grader_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
+    model_retries: int = DEFAULT_MODEL_RETRIES,
+    cli_max_retries: int | None = None,
     enforce_model_policy: bool = True,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
@@ -2448,6 +2497,12 @@ def create_cli_agent(
         rubric_grader_tools: External read-only context tools available to rubric
             grading for verifying work completed in MCP-backed or web-accessible
             systems.
+        model_retries: Model-node retry attempts after the first call. `0`
+            disables retries. Resolved upstream from config/CLI.
+        cli_max_retries: The `--max-retries` flag value, or `None` when unset.
+            Forwarded to subagent, Auto classifier, and runtime offload models
+            so each one resolves its own provider's configured budget unless the
+            user overrode it globally.
         enforce_model_policy: Check every model string against `models.allowed`.
             Pass `False` **only** from callers that compile a graph they never
             invoke (tool enumeration), so a blocked subagent model degrades the
@@ -2468,10 +2523,9 @@ def create_cli_agent(
             without `auto_approve` or `interpreter_ptc_acknowledge_unsafe`.
         ModelNotAllowedError: When `model`, `auto_classifier_model`,
             `rubric_model`, or a subagent's frontmatter `model` is a string
-            outside the effective `models.allowed` policy. Model *strings* are
-            checked here because the SDK resolves them through
-            `init_chat_model`, bypassing `config.create_model`; a prebuilt
-            `BaseChatModel` came from a path that already checked.
+            outside the effective `models.allowed` policy. Model strings are
+            checked before dcode resolves them with provider retries disabled;
+            a prebuilt `BaseChatModel` came from a path that already checked.
     """  # noqa: DOC502 - propagates from `ModelConfig.require_model_allowed`
     tools = tools or []
     mcp_tools = tuple(mcp_tools or ())
@@ -2542,7 +2596,12 @@ def create_cli_agent(
         if resolved_interrupt_on is not None:
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
-            middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
+            middleware.append(
+                ConfigurableModelMiddleware(
+                    persist_model_state=False,
+                    cli_max_retries=cli_max_retries,
+                )
+            )
         # Checkpoint nested spend before HITL can pause the subgraph, then hand
         # the completed delta back through owner-scoped state for the parent
         # graph to add to its durable total.
@@ -2552,6 +2611,9 @@ def create_cli_agent(
         # activates only for the measured Fireworks GLM-5.2 endpoint.
         if not interactive:
             middleware.append(_GlmTerminalStallRecovery())
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Server-owned hooks must wrap subagent tools too; otherwise Pre/Post
@@ -2585,9 +2647,12 @@ def create_cli_agent(
     from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
     from deepagents_code.model_config import ModelConfig
 
-    # Every model *string* this function forwards is checked here, because the
-    # SDK resolves strings through `init_chat_model` without passing through
-    # `create_model` -- the gate in `config.create_model` never sees them. A
+    # Every runtime model string is checked before it is resolved. Known providers
+    # go through `create_model` here so the SDK retry loop is disabled before Deep
+    # Agents builds the graph and every request carries dcode's retry metadata.
+    # Graph-only tool enumeration leaves all strings to SDK assembly because it
+    # never invokes them. Provider-less placeholders also remain strings because
+    # dcode cannot identify a retry constructor parameter for them. A
     # `BaseChatModel` was already built by a checked path, so it is exempt.
     model_policy = ModelConfig.load()
     if not enforce_model_policy:
@@ -2601,6 +2666,12 @@ def create_cli_agent(
         )
     if isinstance(model, str):
         model_policy.require_model_allowed(model)
+        if enforce_model_policy and _has_resolvable_model_provider(model):
+            # `None` means credentials are absent: keep the spec so graph
+            # construction resolves it later instead of failing the launch.
+            resolved = _resolve_retry_owned_model(model, cli_max_retries)
+            if resolved is not None:
+                model = resolved
     if (
         isinstance(auto_classifier_model, str)
         and auto_classifier_model.strip()
@@ -2637,7 +2708,14 @@ def create_cli_agent(
                     else f"subagent {name!r}"
                 ),
             )
-            subagent["model"] = model_spec
+            resolved_model = (
+                _resolve_retry_owned_model(model_spec, cli_max_retries)
+                if enforce_model_policy and _has_resolvable_model_provider(model_spec)
+                else None
+            )
+            subagent["model"] = (
+                resolved_model if resolved_model is not None else model_spec
+            )
         subagent_middleware = _subagent_cli_middleware(
             has_explicit_model=has_explicit_model,
         )
@@ -2673,7 +2751,7 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
-        ConfigurableModelMiddleware(),
+        ConfigurableModelMiddleware(cli_max_retries=cli_max_retries),
     ]
     if not interactive:
         agent_middleware.append(_GlmTerminalStallRecovery())
@@ -2935,7 +3013,11 @@ def create_cli_agent(
             routes={},
         )
 
-    compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
+    compaction_middleware = _create_cli_compaction_middleware(
+        model,
+        composite_backend,
+        cli_max_retries=cli_max_retries,
+    )
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
         from deepagents_code.config import resolve_auto_classifier_model
@@ -2956,6 +3038,7 @@ def create_cli_agent(
                 worktree_root=trusted_root,
                 shell_allow_list=narrow_allow_list,
                 classifier_model=classifier_model,
+                cli_max_retries=cli_max_retries,
                 classifier_timeout_seconds=resolve_auto_classifier_timeout(),
                 trusted_ask_user_tool=trusted_ask_user_tool,
                 trusted_compaction_tool=compaction_middleware.tools[0],
@@ -3049,13 +3132,28 @@ def create_cli_agent(
             context_tools=goal_criteria_tools,
             auto_mode_enabled=auto_mode_enabled,
             fs_tools=fs_tools,
+            model_retries=model_retries,
+            cli_max_retries=cli_max_retries,
         )
-        criteria_fallback_agent = create_goal_criteria_fallback_agent(model=model)
+        criteria_fallback_agent = create_goal_criteria_fallback_agent(
+            model=model,
+            model_retries=model_retries,
+            cli_max_retries=cli_max_retries,
+        )
         agent_middleware.append(
             GoalCriteriaMiddleware(criteria_agent, criteria_fallback_agent)
         )
 
     agent_middleware.append(compaction_middleware)
+
+    # Model-node retry sits inside side-effecting automatic compaction so a
+    # failed provider attempt repeats only the final model handler, not summary
+    # generation or the archive append. Keep it in the stack when the startup
+    # budget is zero because a runtime `/model` switch may select a provider
+    # with a non-zero request-time budget.
+    from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+    agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
 
     grader_context_tools = _normalize_rubric_grader_context_tools(
         rubric_grader_tools or ()
@@ -3097,6 +3195,12 @@ def create_cli_agent(
     )
 
     grader_middleware: list[AgentMiddleware[Any, Any]] = [
+        # Both clients filter this nested message stream. A transient fault can
+        # safely retry the failed model node without replaying grader tools.
+        CodeModelRetryMiddleware(
+            max_retries=model_retries,
+            stream_output_is_visible=False,
+        ),
         _ContextToolCallBudgetMiddleware(
             # `read_file` is bounded separately by the grader's in-tool
             # working-directory counter, which excludes offloaded-result reads.
@@ -3131,6 +3235,12 @@ def create_cli_agent(
     # a policy check here would instead advise a fully qualified spec.
     if isinstance(rubric_model, str) and rubric_model.strip():
         model_policy.require_model_allowed(rubric_model)
+        if enforce_model_policy and _has_resolvable_model_provider(rubric_model):
+            resolved_rubric_model = _resolve_retry_owned_model(
+                rubric_model, cli_max_retries
+            )
+            if resolved_rubric_model is not None:
+                rubric_model = resolved_rubric_model
 
     # Rubric-driven self-evaluation. The middleware is a no-op until a
     # `rubric` is supplied on invocation state, so installing it is safe.

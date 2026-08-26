@@ -225,7 +225,7 @@ class TestRetryParamByProvider:
             set(PROVIDER_API_KEY_ENV)
             | set(IMPLICIT_AUTH_PROVIDERS)
             | set(NO_AUTH_REQUIRED_PROVIDERS)
-            | {"bedrock"}
+            | {"bedrock", model_config.CODEX_PROVIDER}
         )
         assert set(RETRY_PARAM_BY_PROVIDER) <= known_providers
 

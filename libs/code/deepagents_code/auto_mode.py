@@ -95,6 +95,10 @@ _CLASSIFIER_TIMEOUT_SECONDS = AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 # batch the likeliest to be denied, and reported it as "the classifier did not
 # respond" for a model that was never built.
 _CLASSIFIER_CONSTRUCTION_TIMEOUT_SECONDS = 30.0
+# Share of the classifier budget one retry backoff may consume. A retry that
+# cannot fit gives up so the provider error, not a timeout, reaches the caller.
+_CLASSIFIER_RETRY_DELAY_FRACTION = 0.25
+"""Share of the classifier deadline that all retry backoff may consume."""
 _REASON_LIMIT = 512
 _TOTAL_DENIAL_FALLBACK = 20
 _CONSECUTIVE_DENIAL_FALLBACK = 3
@@ -1979,6 +1983,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             _CLASSIFIER_CONSTRUCTION_TIMEOUT_SECONDS
         ),
         classifier_model: str | BaseChatModel | None = None,
+        cli_max_retries: int | None = None,
         trusted_ask_user_tool: BaseTool | None = None,
         trusted_compaction_tool: BaseTool | None = None,
     ) -> None:
@@ -1998,6 +2003,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 first review; a chat model instance is used as-is. `None`
                 inherits the main agent model, which is the default. A per-run
                 `classifier_model` on the runtime context wins over this value.
+            cli_max_retries: Explicit `--max-retries` value to retain when a
+                distinct classifier model is constructed.
             trusted_ask_user_tool: Built-in tool allowed to create consent receipts.
             trusted_compaction_tool: Built-in tool that performs conversation
                 compaction.
@@ -2057,6 +2064,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             classifier_construction_timeout_seconds
         )
         self._configured_classifier_model = classifier_model
+        self._cli_max_retries = cli_max_retries
         self._classifier_model_cache: OrderedDict[str, BaseChatModel] = OrderedDict()
         self._classifier_model_lock = asyncio.Lock()
         self._classifier_model_constructions: dict[
@@ -2414,7 +2422,16 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         try:
             try:
-                result = await asyncio.to_thread(create_model, selected)
+                retry_kwargs = (
+                    {"cli_max_retries": self._cli_max_retries}
+                    if self._cli_max_retries is not None
+                    else {}
+                )
+                result = await asyncio.to_thread(
+                    create_model,
+                    selected,
+                    **retry_kwargs,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -2534,17 +2551,31 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 # with the primary model. A distinct classifier runs on its
                 # own defaults.
                 settings = request.model_settings if spec is None else {}
-                result = await structured.ainvoke(
-                    messages,
-                    config={
-                        "run_name": "dcode_auto_classifier",
-                        "tags": ["dcode:auto"],
-                        "metadata": {
-                            "lc_source": "auto_mode_classifier",
-                            "classifier_model": spec or "inherited",
+                from deepagents_code.model_retry import aretry_model_call
+
+                # The retry backoff sleeps inside this deadline, so an
+                # honoured `Retry-After` would be cancelled mid-wait and
+                # resurface as a classifier timeout -- a diagnosis pointing at
+                # the wrong subsystem. Cap the total retry sleep at a fraction
+                # of the budget so a rate limit surfaces as itself.
+                result = await aretry_model_call(
+                    model,
+                    max_total_delay=(
+                        self._classifier_timeout_seconds
+                        * _CLASSIFIER_RETRY_DELAY_FRACTION
+                    ),
+                    call=lambda: structured.ainvoke(
+                        messages,
+                        config={
+                            "run_name": "dcode_auto_classifier",
+                            "tags": ["dcode:auto"],
+                            "metadata": {
+                                "lc_source": "auto_mode_classifier",
+                                "classifier_model": spec or "inherited",
+                            },
                         },
-                    },
-                    **settings,
+                        **settings,
+                    ),
                 )
         except TimeoutError:
             # `asyncio.timeout(...).expired()` distinguishes our wait budget

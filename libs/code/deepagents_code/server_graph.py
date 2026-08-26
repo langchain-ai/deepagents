@@ -284,6 +284,7 @@ async def _make_graphs() -> ServerRuntime:
         config.model,
         extra_kwargs=config.model_params,
         profile_overrides=config.profile_overrides,
+        cli_max_retries=config.cli_max_retries,
     )
     result.apply_to_settings()
 
@@ -386,6 +387,8 @@ async def _make_graphs() -> ServerRuntime:
             async_subagents=async_subagents,
             goal_criteria_tools=read_only_context_tools,
             rubric_grader_tools=read_only_context_tools,
+            model_retries=result.model_retries,
+            cli_max_retries=result.cli_max_retries,
         )
         from deepagents_code.offload_middleware import offload_operation_from
 

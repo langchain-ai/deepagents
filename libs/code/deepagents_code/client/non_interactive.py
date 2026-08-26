@@ -1036,7 +1036,24 @@ def _process_stream_chunk(
     if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
         _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
     elif stream_mode == "custom" and isinstance(data, dict):
-        _process_rubric_event(cast("dict[str, Any]", data), state, console)
+        if data.get("type") == "model_retry":
+            from deepagents_code.model_retry import retry_status_from_event
+
+            # A `Retry-After` backoff can hold the turn for a minute, so this
+            # line is the only explanation for the stall; stop the spinner first
+            # so it cannot overwrite it. `highlight=False` keeps Rich from
+            # bolding the "1/5", which would cancel the `dim`.
+            if state.spinner:
+                state.spinner.stop()
+            status = retry_status_from_event(data)
+            console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
+            # Restart it: the backoff is the longest stall of the turn, and
+            # leaving the spinner stopped reads as a hang until some unrelated
+            # later event happens to restart it.
+            if state.spinner:
+                state.spinner.start()
+        else:
+            _process_rubric_event(cast("dict[str, Any]", data), state, console)
     elif stream_mode == "messages":
         _process_message_chunk(
             cast("tuple[AIMessage | ToolMessage, dict[str, str]]", data),
@@ -1875,6 +1892,7 @@ async def run_non_interactive(
     sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     *,
+    cli_max_retries: int | None = None,
     initial_skill: str | None = None,
     startup_cmd: str | None = None,
     profile_override: dict[str, Any] | None = None,
@@ -1918,6 +1936,7 @@ async def run_non_interactive(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
+        cli_max_retries: Explicit `--max-retries` value.
         sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
             `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
         sandbox_id: Optional existing sandbox ID to reuse.
@@ -2090,6 +2109,7 @@ async def run_non_interactive(
             model_name,
             extra_kwargs=model_params,
             profile_overrides=profile_override,
+            cli_max_retries=cli_max_retries,
         )
     except ModelConfigError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
@@ -2201,6 +2221,7 @@ async def run_non_interactive(
             assistant_id=assistant_id,
             model_name=model_name,
             model_params=model_params,
+            cli_max_retries=cli_max_retries,
             profile_overrides=profile_override,
             auto_approve=use_auto_approve,
             interrupt_shell_only=use_interrupt_shell_only,

@@ -110,6 +110,7 @@ from deepagents_code.offload import (
 from deepagents_code.offload_middleware import (
     OffloadOperation,
     _create_cli_compaction_middleware,
+    _create_retrying_summarization_middleware,
     attach_offload_operation,
 )
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
@@ -3013,6 +3014,18 @@ def create_cli_agent(
         )
 
     compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
+    # Deep Agents' stock subagent summarizer calls its private summary model
+    # before delegating to the remaining model-handler stack. Replace that core
+    # slot after the composite backend exists so its auxiliary call uses dcode's
+    # exact retry budget, including zero.
+    for subagent_spec in custom_subagents:
+        if "runnable" in subagent_spec:
+            continue
+        subagent_spec.setdefault("middleware", []).append(
+            _create_retrying_summarization_middleware(
+                subagent_spec.get("model", model), composite_backend
+            )
+        )
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
         from deepagents_code.config import resolve_auto_classifier_model

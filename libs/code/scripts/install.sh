@@ -34,14 +34,18 @@
 #   This script installs deepagents-code as a uv tool. To remove it:
 #     uv tool uninstall deepagents-code
 #   That removes the dcode/deepagents-code binary and its isolated venv.
-#   User config and data live separately in ~/.deepagents (config.toml,
-#   hooks.json, a global .env, and a .state/ dir holding sessions and saved
-#   credentials) and are NOT removed by the uninstall above. To also wipe them:
-#     rm -rf ~/.deepagents
+#   User config and data live in the effective DEEPAGENTS_HOME (default:
+#   ~/.deepagents) and are NOT removed by the uninstall above. Before
+#   uninstalling, run `dcode doctor` and record its exact "Data directory".
+#   To erase the profile too, remove only that confirmed dedicated directory;
+#   never recursively remove `/`, your home, a checkout, or an unresolved env
+#   expression. Managed support binaries live in the tool environment and are
+#   removed with it.
 #   Optionally clear uv's shared tool cache (~/.cache/uv on Linux,
 #   ~/Library/Caches/uv on macOS) — only if no other uv tools rely on it.
 #
 # Environment variables:
+#   DEEPAGENTS_HOME — user config and data directory (default: ~/.deepagents)
 #   DEEPAGENTS_CODE_EXTRAS — comma-separated pip extras, e.g. "ollama",
 #     "ollama,groq", or "daytona". Valid extras (see pyproject.toml for the
 #     authoritative list):
@@ -66,7 +70,7 @@
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   DEEPAGENTS_CODE_RIPGREP_INSTALLER — how to provision ripgrep:
 #     "managed" (default) eagerly installs the pinned, SHA-256-verified binary
-#     into ~/.deepagents/bin (no sudo) via `dcode tools install`; "system"
+#     inside the dcode tool environment via `dcode tools install`; "system"
 #     keeps the interactive package-manager install (brew/apt/cargo/...),
 #     which only counts as success when the resulting `rg` meets the minimum
 #     supported version. Set DEEPAGENTS_CODE_OFFLINE=1 to skip the managed
@@ -121,6 +125,7 @@ Target:
   VERSION           Install an exact version, e.g. 0.1.0rc1
 
 Environment variables:
+  DEEPAGENTS_HOME — user config and data directory (default: ~/.deepagents)
   DEEPAGENTS_CODE_EXTRAS — comma-separated pip extras, e.g. "ollama",
     "ollama,groq", or "daytona". Valid extras (see pyproject.toml for the
     authoritative list):
@@ -143,7 +148,7 @@ Environment variables:
   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
   DEEPAGENTS_CODE_RIPGREP_INSTALLER — how to provision ripgrep:
     "managed" (default) eagerly installs the pinned, SHA-256-verified binary
-    into ~/.deepagents/bin (no sudo) via `dcode tools install`; "system"
+    inside the dcode tool environment via `dcode tools install`; "system"
     keeps the interactive package-manager install (brew/apt/cargo/...). Set
     DEEPAGENTS_CODE_OFFLINE=1 to skip the managed download entirely.
   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
@@ -442,12 +447,149 @@ if [ "$OS" = "macos" ] && { [ -z "${HOME:-}" ] || [ "$(id -u)" -eq 0 ]; }; then
   export HOME
 fi
 
+paths_are_same_file() {
+  [ "$1" = "$2" ] || [ "$1" -ef "$2" ]
+}
+
+path_has_unsearchable_ancestor() {
+  local current="$1"
+  while [ "$current" != "/" ] && [ "$current" != "//" ]; do
+    case "$current" in
+      //*)
+        current="${current%/*}"
+        [ "$current" != "/" ] || current="//"
+        ;;
+      *)
+        current="${current%/*}"
+        [ -n "$current" ] || current="/"
+        ;;
+    esac
+    if [ -d "$current" ] && [ ! -x "$current" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Normalize a POSIX absolute path lexically without requiring it to exist.
+# This mirrors `_paths._normalize_absolute` (i.e. `os.path.normpath`): repeated
+# separators and `.` / `..` components are collapsed, but no symlink or
+# filesystem lookup is performed. A leading exactly-double slash is preserved,
+# because POSIX leaves `//` implementation-defined and `os.path.normpath` keeps
+# it — collapsing it here would make the installer and every later launch
+# disagree about which directory one DEEPAGENTS_HOME value names.
+# `tests/unit_tests/test_install_script.py` asserts parity against the Python
+# implementation directly, so both sides stay in step.
+normalize_absolute_path() {
+  local rest="$1"
+  local normalized="/"
+  local root="/"
+  local part
+  case "$rest" in
+    //[!/]*|//) normalized="//"; root="//"; rest="${rest#//}" ;;
+    /*) rest="${rest#/}" ;;
+    *) return 1 ;;
+  esac
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"
+    if [ "$rest" = "$part" ]; then
+      rest=""
+    else
+      rest="${rest#*/}"
+    fi
+    case "$part" in
+      ""|.) ;;
+      ..)
+        if [ "$normalized" != "$root" ]; then
+          normalized="${normalized%/*}"
+          # Stripping the last component of a one-deep path leaves "" (root
+          # "/") or "/" (root "//"); both mean "back at the root".
+          case "$normalized" in
+            ""|/) normalized="$root" ;;
+          esac
+        fi
+        ;;
+      *)
+        case "$normalized" in
+          /|//) normalized="${normalized}${part}" ;;
+          *) normalized="${normalized}/${part}" ;;
+        esac
+        ;;
+    esac
+  done
+  printf '%s' "$normalized"
+}
+
+normalize_deepagents_home() {
+  local raw="${DEEPAGENTS_HOME:-}"
+  local candidate normalized_home
+  case "$raw" in
+    "") candidate="${HOME}/.deepagents" ;;
+    \~/*) candidate="${HOME}/${raw#\~/}" ;;
+    \~*)
+      log_error "Invalid DEEPAGENTS_HOME: use an absolute path or a path beginning with '~/' ('~user' forms are not allowed)."
+      exit 1
+      ;;
+    /*) candidate="$raw" ;;
+    *)
+      log_error "Invalid DEEPAGENTS_HOME '${raw}': use an absolute path or a path beginning with '~/'."
+      exit 1
+      ;;
+  esac
+  if ! DEEPAGENTS_HOME="$(normalize_absolute_path "$candidate")"; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': the resolved path must be absolute."
+    exit 1
+  fi
+  # Same degenerate-root rejections as `_paths._reject_degenerate_root`, so the
+  # installer fails here rather than provisioning a profile the app refuses to
+  # launch from.
+  if paths_are_same_file "$DEEPAGENTS_HOME" "/"; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': the filesystem root cannot be a profile. Use a dedicated directory."
+    exit 1
+  fi
+  # Fail rather than compare against an unnormalized value. The app treats a
+  # non-absolute home as fatal (`_paths._resolve_launch_home`), so falling back
+  # to the raw string here would make this rejection unreliable in exactly the
+  # environment where the two layers must agree.
+  if ! normalized_home="$(normalize_absolute_path "$HOME")"; then
+    log_error "Cannot resolve the home directory '${HOME}': \$HOME must be an absolute path."
+    exit 1
+  fi
+  if paths_are_same_file "$DEEPAGENTS_HOME" "$normalized_home"; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': the home directory itself cannot be a profile, because its '.env' would be loaded as trusted configuration. Use a subdirectory such as '~/.deepagents'."
+    exit 1
+  fi
+  if [ -L "$DEEPAGENTS_HOME" ] && [ ! -e "$DEEPAGENTS_HOME" ]; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': is a symlink whose target is missing or cannot be resolved."
+    exit 1
+  fi
+  if [ -e "$DEEPAGENTS_HOME" ] && [ ! -d "$DEEPAGENTS_HOME" ]; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': exists but is not a directory."
+    exit 1
+  fi
+  if [ -d "$DEEPAGENTS_HOME" ] && { [ ! -r "$DEEPAGENTS_HOME" ] || [ ! -x "$DEEPAGENTS_HOME" ]; }; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': exists but cannot be read or searched. Check the permissions on it and on its parent directories."
+    exit 1
+  fi
+  if [ ! -e "$DEEPAGENTS_HOME" ] && path_has_unsearchable_ancestor "$DEEPAGENTS_HOME"; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': cannot be inspected because a parent directory cannot be searched. Check the permissions on its parent directories."
+    exit 1
+  fi
+  export DEEPAGENTS_HOME
+  if [ -n "$raw" ]; then
+    log_info "Using DEEPAGENTS_HOME: ${DEEPAGENTS_HOME}"
+  fi
+}
+
+normalize_deepagents_home
+UV_TOOL_DIR_ENV="${UV_TOOL_DIR:-}"
+
 # ---------------------------------------------------------------------------
 # Ownership fix for root installs
 # ---------------------------------------------------------------------------
 # When running as root, files created under $HOME will be owned by root.
 # Resolve the target user so we can fix ownership after install steps.
-# When not root, fix_owner is a no-op.
+# When not root, the exact-path ownership helper is a no-op.
 if [ "$(id -u)" -eq 0 ]; then
   if [ "$OS" = "macos" ]; then
     # Reuse CONSOLE_USER from above; fall back to basename of the
@@ -460,15 +602,10 @@ if [ "$(id -u)" -eq 0 ]; then
 
   if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
     log_warn "Could not determine non-root target user. Files under ${HOME} may remain owned by root."
-    log_warn "  After install, run: sudo chown -R YOUR_USERNAME ~/.local"
-    fix_owner() { :; }
+    log_warn "  Re-run as the target user, or repair only the exact installed paths reported above."
     fix_file_owner() { :; }
+    fix_tree_owner() { :; }
   else
-    fix_owner() {
-      if ! chown -R "$TARGET_USER" "$@" 2>&1; then
-        log_warn "Could not fix ownership of $* for user ${TARGET_USER}."
-      fi
-    }
     fix_file_owner() {
       local path
       for path in "$@"; do
@@ -477,10 +614,29 @@ if [ "$(id -u)" -eq 0 ]; then
         fi
       done
     }
+    # Repair a directory tree this installer created. Chowning only the
+    # directory inode leaves everything inside it root-owned, which succeeds
+    # silently and then breaks the target user's next `uv tool upgrade` from a
+    # completely unrelated code path. Callers must gate this on
+    # `path_is_under_home`, and on a `*_PREEXISTED` flag unless the tree is one
+    # the installer owns outright (its own uv tool environment), so it only
+    # ever walks a tree this installer is responsible for under the target
+    # user's home. `-xdev` keeps it off other filesystems, and `-h` never
+    # follows a symlink out of the tree.
+    fix_tree_owner() {
+      local path
+      for path in "$@"; do
+        [ -d "$path" ] || continue
+        if ! find "$path" -xdev -exec chown -h "$TARGET_USER" {} + 2>&1; then
+          log_warn "Could not fix ownership of the tree at $path for user ${TARGET_USER}."
+          log_warn "  Run: sudo chown -R ${TARGET_USER} $path"
+        fi
+      done
+    }
   fi
 else
-  fix_owner() { :; }
   fix_file_owner() { :; }
+  fix_tree_owner() { :; }
 fi
 
 # ---------------------------------------------------------------------------
@@ -958,16 +1114,82 @@ release_install_lock_reclaim_guard() {
   INSTALL_LOCK_RECLAIM_TOKEN=""
 }
 
+# Compute the same installation root Python derives from `sys.prefix` (see
+# `_paths._installation_paths`), which is where the install lock lives.
+#
+# `uv tool dir` is authoritative; the remaining branches are guesses. A guess
+# that misses — uv configured through `uv.toml`, a non-default `--tool-dir`, or
+# uv not yet on PATH at the first lock acquisition — yields a *different* lock
+# root, so concurrent `curl | bash` runs would not serialize.
+#
+# Prints "<root><TAB><guessed>". The flag is returned rather than assigned to a
+# global because the only caller substitutes this function, and a subshell
+# assignment would be discarded — leaving the warning permanently unreachable.
+resolve_installation_root() {
+  local tool_dir=""
+  local guessed=false
+  if [ -n "${UV_BIN:-}" ]; then
+    tool_dir="$("$UV_BIN" tool dir 2>/dev/null || true)"
+  fi
+  if [ -z "$tool_dir" ] && [ -n "${UV_TOOL_DIR_ENV:-}" ]; then
+    tool_dir="$UV_TOOL_DIR_ENV"
+    guessed=true
+  fi
+  if [ -z "$tool_dir" ]; then
+    tool_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/uv/tools"
+    guessed=true
+  fi
+  case "$tool_dir" in
+    /*) ;;
+    *) tool_dir="$(pwd -P)/${tool_dir}" ;;
+  esac
+  printf '%s\t%s' "$(normalize_absolute_path "${tool_dir}/deepagents-code")" "$guessed"
+}
+
 # Serialize concurrent installs (racing `curl | bash` runs corrupting a shared
 # uv tool dir). Use an atomic mkdir lock dir with a PID + timestamp so a crashed
 # holder's lock can be aged out (see install_lock_is_stale). Avoid shell
-# redirection to a lock file here: when the installer runs as root and HOME is
-# user-writable, opening ~/.deepagents/install.lock would follow a symlink before
-# any post-open validation can run.
+# redirection to a lock file here. The lock is derived from the uv tool
+# environment, not `DEEPAGENTS_HOME`, so profiles sharing an installation also
+# share serialization.
 acquire_install_lock() {
-  local lock_root="$HOME/.deepagents"
-  mkdir -p "$lock_root"
-  fix_owner "$lock_root"
+  local installation_root
+  local installation_parent
+  local installation_name
+  local lock_root
+  local resolution
+  local guessed
+  # Keep this a command substitution: `set -e` must still abort if resolution
+  # fails. A stub that prints only the root yields no tab, which reads as
+  # "not guessed" below.
+  resolution="$(resolve_installation_root)"
+  installation_root="${resolution%%$'\t'*}"
+  guessed="${resolution#*$'\t'}"
+  [ "$guessed" != "$resolution" ] || guessed=false
+  installation_parent="${installation_root%/*}"
+  installation_name="${installation_root##*/}"
+  lock_root="${installation_parent}/.${installation_name}.deepagents-code-locks"
+  if [ -L "$lock_root" ]; then
+    log_error "Installer lock root is a symlink: $lock_root"
+    log_error "Remove it or choose a different uv tool directory, then retry."
+    exit 1
+  fi
+  if [ "${guessed:-false}" = true ]; then
+    log_warn "Could not ask uv for its tool directory; guessing the installer lock root."
+    log_warn "  Concurrent installs may not serialize. Lock root: ${lock_root}"
+  fi
+  if [ ! -d "$lock_root" ]; then
+    if ! mkdir -p "$lock_root"; then
+      log_error "Could not create the installer lock directory: ${lock_root}"
+      log_error "  This serializes concurrent installs; it is not related to DEEPAGENTS_HOME."
+      exit 1
+    fi
+    # `uv tool dir` can point outside $HOME (a system-wide tool dir), and this
+    # hands the inode to a non-root user.
+    if path_is_under_home "$lock_root"; then
+      fix_file_owner "$lock_root"
+    fi
+  fi
 
   INSTALL_LOCK_DIR="$lock_root/install.lock.d"
   INSTALL_LOCK_RECLAIM_DIR="$lock_root/install.lock.reclaim.d"
@@ -977,6 +1199,15 @@ acquire_install_lock() {
 
     if mkdir "$INSTALL_LOCK_DIR" 2>/dev/null; then
       break
+    fi
+
+    # A failed mkdir only means "another installer owns the lock" when the
+    # lock directory actually exists. If the root is unwritable (common with a
+    # system-wide, root-owned uv tool directory), waiting cannot make progress.
+    if [ ! -d "$INSTALL_LOCK_DIR" ]; then
+      log_error "Cannot create installer lock at $INSTALL_LOCK_DIR."
+      log_error "Check that the uv tool directory is writable, then retry."
+      exit 1
     fi
 
     if install_lock_is_stale; then
@@ -1026,7 +1257,8 @@ acquire_install_lock() {
   fi
   printf '%s\n' "$$" >"$INSTALL_LOCK_DIR/pid"
   date +%s >"$INSTALL_LOCK_DIR/started_at" 2>/dev/null || true
-  fix_owner "$INSTALL_LOCK_DIR"
+  fix_file_owner "$INSTALL_LOCK_DIR" "$INSTALL_LOCK_DIR/token" \
+    "$INSTALL_LOCK_DIR/pid" "$INSTALL_LOCK_DIR/started_at"
   INSTALL_LOCK_KIND="mkdir"
 }
 
@@ -1078,8 +1310,8 @@ case "$ASSUME_YES" in
   *)          ASSUME_YES="0" ;;
 esac
 # How ripgrep gets provisioned: "managed" (default) eagerly fetches the
-# pinned, SHA-256-verified binary into ~/.deepagents/bin via `dcode tools
-# install`; "system" keeps the interactive package-manager path below. Any
+# pinned, SHA-256-verified binary inside the dcode tool environment via
+# `dcode tools install`; "system" keeps the interactive package-manager path below. Any
 # value other than "system" normalizes to "managed".
 #
 # Lowercase and strip whitespace first so this matches the `.strip().lower()`
@@ -1501,11 +1733,52 @@ resolve_uv_bin() {
   return 1
 }
 
+uv_cache_candidates() {
+  # Single source of truth for uv's cache locations. Both the snapshot helper
+  # and the inline snapshot below read this list. A location added to one but
+  # not the other would silently leave a root-owned cache behind.
+  printf '%s\n' \
+    "${XDG_CACHE_HOME:-${HOME}/.cache}/uv" \
+    "${HOME}/Library/Caches/uv" \
+    "${XDG_DATA_HOME:-${HOME}/.local/share}/uv"
+}
+
+snapshot_missing_uv_cache_paths() {
+  local uv_cache_dir
+  UV_CACHE_CANDIDATES=""
+  while IFS= read -r uv_cache_dir; do
+    [ -n "$uv_cache_dir" ] || continue
+    if [ ! -e "$uv_cache_dir" ]; then
+      UV_CACHE_CANDIDATES="${UV_CACHE_CANDIDATES}${uv_cache_dir}"$'\n'
+    fi
+  done < <(uv_cache_candidates)
+}
+
+repair_created_uv_cache_paths() {
+  local uv_cache_dir
+  while IFS= read -r uv_cache_dir; do
+    [ -n "$uv_cache_dir" ] || continue
+    # Validate after installation, when the formerly missing path can be
+    # resolved without weakening path_is_under_home's symlink-safe contract.
+    if path_is_under_home "$uv_cache_dir"; then
+      fix_tree_owner "$uv_cache_dir"
+    fi
+  done <<EOF
+${UV_CACHE_CANDIDATES}
+EOF
+}
+
 if ! resolve_uv_bin; then
   if [ -n "${UV_BIN:-}" ]; then
     log_error "UV_BIN is set but does not point to an executable uv: ${UV_BIN}"
     exit 1
   fi
+  # Note which uv-owned caches this run is about to create, so a root install
+  # can hand them back afterwards. Without this the target user's later
+  # non-root `uv` invocations fail on a root-owned cache, far from here. Take
+  # this snapshot before acquiring the install lock: its default path lives
+  # below uv's data directory and can create that tree itself.
+  snapshot_missing_uv_cache_paths
   acquire_install_lock
   UV_BIN_DIR_PREEXISTED=false
   if [ -d "${HOME}/.local/bin" ]; then
@@ -1517,6 +1790,7 @@ if ! resolve_uv_bin; then
     fix_file_owner "${HOME}/.local/bin"
   fi
   fix_file_owner "${HOME}/.local/bin/uv" "${HOME}/.local/bin/uvx" "${HOME}/.local/bin/env"
+  repair_created_uv_cache_paths
   if ! resolve_uv_bin; then
     log_error "uv not found after installation. Restart your shell or add ~/.local/bin to PATH."
     exit 1
@@ -1617,6 +1891,26 @@ UV_TOOL_DIR=""
 if UV_TOOL_DIR_RAW=$("$UV_BIN" tool dir 2>/dev/null); then
   UV_TOOL_DIR="$UV_TOOL_DIR_RAW"
 fi
+MANAGED_BIN_DIR="${UV_TOOL_DIR:+${UV_TOOL_DIR}/deepagents-code/share/deepagents-code/bin}"
+# `dcode tools install` falls back to "${DEEPAGENTS_HOME}/bin" when
+# MANAGED_BIN_DIR is unwritable. Neither is snapshotted: see
+# fix_managed_bin_owner for why the repair must not be gated on pre-existence.
+
+# `uv tool install` writes into uv's caches too, so a root run leaves them
+# root-owned and the target user's next non-root `uv` fails on a stale cache,
+# far from here. Snapshot which caches exist now: ones this run creates can be
+# handed back wholesale, while a pre-existing user cache is only reported —
+# walking a tree the installer did not create is what fix_tree_owner forbids.
+UV_TOOL_CACHE_NEW=""
+UV_TOOL_CACHE_PREEXISTING=""
+while IFS= read -r uv_cache_dir; do
+  [ -n "$uv_cache_dir" ] || continue
+  if [ -e "$uv_cache_dir" ]; then
+    UV_TOOL_CACHE_PREEXISTING="${UV_TOOL_CACHE_PREEXISTING}${uv_cache_dir}"$'\n'
+  else
+    UV_TOOL_CACHE_NEW="${UV_TOOL_CACHE_NEW}${uv_cache_dir}"$'\n'
+  fi
+done < <(uv_cache_candidates)
 if [ -n "$UV_TOOL_DIR" ] && [ -d "${UV_TOOL_DIR}/deepagents-code" ]; then
   shopt -s nullglob
   for du in "${UV_TOOL_DIR}"/deepagents-code/lib/python*/site-packages/deepagents_code-*.dist-info/direct_url.json; do
@@ -2235,15 +2529,31 @@ if path_is_under_home "$TOOL_BIN_DIR"; then
   fi
   fix_file_owner "${TOOL_BIN_DIR}/dcode" "${TOOL_BIN_DIR}/deepagents-code"
 fi
+# Repair on every root run, not only a first install. `uv tool install` has
+# just written into this tree as root, so gating on "did this run create
+# it?" would leave the common `sudo` upgrade path root-owned — exactly
+# the breakage fix_tree_owner exists to prevent. The tree is dcode's own tool
+# environment, so the installer owns it whether or not this run created it.
 if [ -n "$UV_TOOL_DIR" ] && path_is_under_home "${UV_TOOL_DIR}/deepagents-code"; then
-  fix_owner "${UV_TOOL_DIR}/deepagents-code"
-elif [ -d "${HOME}/.local/share/uv" ]; then
-  fix_owner "${HOME}/.local/share/uv"
+  fix_tree_owner "${UV_TOOL_DIR}/deepagents-code"
 fi
-if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
-  fix_owner "${HOME}/Library/Caches/uv"
-elif [ -d "${HOME}/.cache/uv" ]; then
-  fix_owner "${HOME}/.cache/uv"
+while IFS= read -r uv_cache_dir; do
+  [ -n "$uv_cache_dir" ] || continue
+  if path_is_under_home "$uv_cache_dir"; then
+    fix_tree_owner "$uv_cache_dir"
+  fi
+done <<EOF
+${UV_TOOL_CACHE_NEW}
+EOF
+if [ "$(id -u)" -eq 0 ]; then
+  while IFS= read -r uv_cache_dir; do
+    [ -n "$uv_cache_dir" ] || continue
+    [ -d "$uv_cache_dir" ] || continue
+    log_warn "Installed as root using the pre-existing uv cache at ${uv_cache_dir}."
+    log_warn "  Some entries are now root-owned. Run: sudo chown -R ${TARGET_USER} ${uv_cache_dir}"
+  done <<EOF
+${UV_TOOL_CACHE_PREEXISTING}
+EOF
 fi
 # Restore ownership for the log path without recursively chowning a cache path
 # that could have been swapped after creation.
@@ -2283,10 +2593,6 @@ dir_in_original_path() {
     *":$check_dir:"*) return 0 ;;
     *) return 1 ;;
   esac
-}
-
-paths_are_same_file() {
-  [ "$1" = "$2" ] || [ "$1" -ef "$2" ]
 }
 
 # Try to symlink the dcode binary into a directory already in PATH. Tries
@@ -3378,7 +3684,7 @@ install_ripgrep_via_cargo() {
   if command -v cargo >/dev/null 2>&1; then
     log_info "Installing ripgrep via cargo (no sudo needed)..."
     if cargo install ripgrep; then
-      fix_owner "${HOME}/.cargo"
+      fix_file_owner "${HOME}/.cargo/bin/rg"
       installed_rg_is_acceptable && return 0
       log_warn "cargo install succeeded but rg not found in PATH or too old."
     fi
@@ -3399,11 +3705,33 @@ ripgrep_managed_failed() {
   ripgrep_manual_hint
 }
 
+# Hand back whichever managed bin directory `dcode tools install` just wrote
+# to. It prefers the installation-scoped MANAGED_BIN_DIR and falls back to the
+# profile-scoped one when that is unwritable, so a root install must repair
+# both or the fallback stays root-owned inside the user's home. Each is gated
+# on `path_is_under_home` as fix_tree_owner requires: MANAGED_BIN_DIR derives
+# from `uv tool dir`, which the user can point outside $HOME.
+#
+# Repair on every root run, not only a first install — the same reason
+# `fix_tree_owner "${UV_TOOL_DIR}/deepagents-code"` is ungated. `dcode tools
+# install` has just written into these trees as root, and on an upgrade they
+# already exist, so a `*_PREEXISTED` gate would skip the common `sudo` path and
+# leave the freshly written `rg` root-owned. Both hold only the managed binary
+# the installer put there, so they are trees this installer owns outright.
+fix_managed_bin_owner() {
+  if [ -n "$MANAGED_BIN_DIR" ] && path_is_under_home "$MANAGED_BIN_DIR"; then
+    fix_tree_owner "$MANAGED_BIN_DIR"
+  fi
+  if [ -n "${DEEPAGENTS_HOME:-}" ] && path_is_under_home "${DEEPAGENTS_HOME}/bin"; then
+    fix_tree_owner "${DEEPAGENTS_HOME}/bin"
+  fi
+}
+
 if [ "$SKIP_OPTIONAL" != "1" ]; then
   if [ "$RIPGREP_INSTALLER" = "managed" ] && [ "$VERIFY_OK" = true ] && [ -n "$DCODE_BIN" ]; then
     # Eager, non-prompting managed install through the freshly installed binary
     # — the same pinned, SHA-256-verified path dcode uses on first run
-    # (downloads into ~/.deepagents/bin, no sudo). Doing it here removes the
+    # (downloads inside the dcode tool environment). Doing it here removes the
     # first-run download latency. The binary reuses a system `rg` already on
     # PATH and honors DEEPAGENTS_CODE_OFFLINE and
     # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system. Routine output stays behind
@@ -3412,7 +3740,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       echo ""
       log_info "Setting up ripgrep..."
       if "$DCODE_BIN" tools install; then
-        fix_owner "${HOME}/.deepagents/bin"
+        fix_managed_bin_owner
       else
         ripgrep_managed_failed
       fi
@@ -3422,7 +3750,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       if ripgrep_setup_out=$(mktemp 2>/dev/null); then
         register_temp "$ripgrep_setup_out"
         if "$DCODE_BIN" tools install >"$ripgrep_setup_out" 2>&1; then
-          fix_owner "${HOME}/.deepagents/bin"
+          fix_managed_bin_owner
         else
           echo ""
           cat "$ripgrep_setup_out" >&2 2>/dev/null || true

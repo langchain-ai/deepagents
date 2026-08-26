@@ -47,10 +47,11 @@ def _make_executable(path: Path) -> None:
 def _clean_environ() -> dict[str, str]:
     """Return `os.environ` without vars that redirect the installer's writes.
 
-    A developer with `ZDOTDIR` or `XDG_CONFIG_HOME` set in their own shell would
-    otherwise have the PATH entry written into their real dotfiles instead of
-    the fake HOME, so profile assertions fail locally but pass in CI. Tests that
-    exercise those variables set them explicitly.
+    A developer with `ZDOTDIR`, `XDG_CONFIG_HOME`, or `XDG_DATA_HOME` set in
+    their own shell would otherwise redirect writes away from the fake HOME.
+    The data directory also selects the fallback installer-lock root when
+    `uv tool dir` is unavailable. Tests that exercise those variables set them
+    explicitly.
 
     `SHELL` is dropped for the same reason: it selects the candidate profile
     set, so a contributor whose login shell is fish would otherwise exercise a
@@ -61,9 +62,26 @@ def _clean_environ() -> dict[str, str]:
     return {
         key: value
         for key, value in os.environ.items()
-        if key not in {"ZDOTDIR", "XDG_CONFIG_HOME", "SHELL"}
+        if key
+        not in {
+            "DEEPAGENTS_HOME",
+            "SHELL",
+            "UV_TOOL_DIR",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "ZDOTDIR",
+        }
         and not key.startswith("DEEPAGENTS_CODE_")
     }
+
+
+def test_clean_environ_drops_xdg_data_home(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host data-directory settings cannot redirect installer test locks."""
+    monkeypatch.setenv("XDG_DATA_HOME", "/host-specific/data")
+
+    assert "XDG_DATA_HOME" not in _clean_environ()
 
 
 def _host_path_without_dcode() -> str:
@@ -234,6 +252,10 @@ if [ "${{1:-}}" = "-v" ]; then
 fi
 if [ "${{1:-}}" = "tools" ]; then
   printf '%s\\n' "$*" >> {str(tools_log)!r}
+  if [ -n "${{FAKE_MANAGED_BIN_DIR:-}}" ]; then
+    mkdir -p "$FAKE_MANAGED_BIN_DIR"
+    : >"$FAKE_MANAGED_BIN_DIR/rg"
+  fi
   printf 'Using ripgrep already on PATH at /tmp/fake-rg\\n'
   exit "${{FAKE_DCODE_TOOLS_RC:-0}}"
 fi
@@ -3767,6 +3789,72 @@ def test_install_lock_missing_dir_is_not_stale(tmp_path: Path) -> None:
     )
 
 
+def test_install_script_lock_is_independent_of_deepagents_home(tmp_path: Path) -> None:
+    """Installer serialization follows the uv tool environment, not a profile."""
+    bin_dir, home, uv = _write_fake_tools(
+        tmp_path, installed_version="0.0.1", latest_version="0.1.0"
+    )
+    configured = tmp_path / "custom-home"
+    env = {
+        **_clean_environ(),
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_HOME": str(configured),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+    }
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not configured.exists()
+    assert not (home / ".deepagents").exists()
+    assert (tmp_path / "tools/.deepagents-code.deepagents-code-locks").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected_suffix"),
+    [
+        ("~/profiles/../custom", "home/custom"),
+        ("{tmp}/absolute/../custom", "custom"),
+    ],
+)
+def test_install_script_normalizes_deepagents_home(
+    tmp_path: Path, configured: str, expected_suffix: str
+) -> None:
+    """Installer normalization matches the Python launch contract."""
+    value = configured.format(tmp=tmp_path)
+
+    proc, _ = _invoke(tmp_path, {"DEEPAGENTS_HOME": value})
+
+    assert proc.returncode == 0, proc.stderr
+    expected = tmp_path / expected_suffix
+    assert f"Using DEEPAGENTS_HOME: {expected}" in proc.stdout + proc.stderr
+    assert not expected.exists()
+
+
+@pytest.mark.parametrize("configured", ["relative/profile", "~other/profile"])
+def test_install_script_rejects_invalid_deepagents_home(
+    tmp_path: Path, configured: str
+) -> None:
+    """Relative and `~user` profile roots fail before installation starts."""
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": configured})
+
+    assert proc.returncode == 1
+    assert "Invalid DEEPAGENTS_HOME" in proc.stderr
+    assert "absolute path" in proc.stderr
+    assert not uv_args.exists()
+
+
 def test_install_script_ignores_symlinked_legacy_lock_file(tmp_path: Path) -> None:
     """A symlinked legacy `install.lock` is not followed when flock is available.
 
@@ -3828,6 +3916,123 @@ def test_install_script_does_not_redirect_to_legacy_lock_file() -> None:
     assert '>"$HOME/.deepagents/install.lock"' not in script
 
 
+class TestInstallLockRootGuessWarning:
+    """The guess warning must be reachable.
+
+    `resolve_installation_root` is substituted by its caller, so a flag it
+    assigns to a global dies in the subshell and the warning can never print.
+    Concurrent installs then fail to serialize with no diagnostic at all.
+    """
+
+    def _run(self, tmp_path: Path, *, uv_bin: str) -> subprocess.CompletedProcess[str]:
+        script = tmp_path / "lock_guess_harness.sh"
+        script.write_text(
+            "set -euo pipefail\n"
+            f"HOME={str(tmp_path)!r}\n"
+            # `resolve_installation_root` falls back to XDG_DATA_HOME. Pin it
+            # inside tmp_path: inheriting the real one would create — and hold
+            # — a lock in the developer's actual uv tool directory, blocking
+            # every later test that acquires the install lock.
+            f"XDG_DATA_HOME={str(tmp_path / 'xdg')!r}\n"
+            f"UV_BIN={uv_bin!r}\n"
+            "UV_TOOL_DIR_ENV=''\n"
+            "INSTALL_LOCK_KIND=''\n"
+            "INSTALL_LOCK_DIR=''\n"
+            "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
+            "fix_file_owner() { return 0; }\n"
+            "wait_for_install_lock_reclaim_guard() { return 0; }\n"
+            "log_warn() { printf 'WARN %s\\n' \"$*\"; }\n"
+            "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
+            f"{_extract_shell_function('normalize_absolute_path')}\n"
+            f"{_extract_shell_function('resolve_installation_root')}\n"
+            f"{_extract_shell_function('install_lock_identity')}\n"
+            f"{_extract_shell_function('install_lock_is_stale')}\n"
+            f"{_extract_shell_function('acquire_install_lock')}\n"
+            "acquire_install_lock\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            ["bash", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_warns_when_the_lock_root_is_a_guess(self, tmp_path: Path) -> None:
+        """With uv unavailable the root is a guess and the user is told."""
+        result = self._run(tmp_path, uv_bin="")
+
+        assert result.returncode == 0, result.stderr
+        assert "guessing the installer lock root" in result.stdout
+        assert "may not serialize" in result.stdout
+
+    def test_stays_quiet_when_uv_answers(self, tmp_path: Path) -> None:
+        """An authoritative `uv tool dir` answer must not warn."""
+        uv_bin = tmp_path / "uv"
+        uv_bin.write_text(
+            f'#!/usr/bin/env bash\nprintf "%s" {str(tmp_path / "tools")!r}\n',
+            encoding="utf-8",
+        )
+        uv_bin.chmod(0o755)
+
+        result = self._run(tmp_path, uv_bin=str(uv_bin))
+
+        assert result.returncode == 0, result.stderr
+        assert "guessing the installer lock root" not in result.stdout
+
+
+def test_install_lock_fails_when_lock_root_cannot_create_child(
+    tmp_path: Path,
+) -> None:
+    """An unwritable existing lock root fails instead of waiting forever."""
+    installation_root = tmp_path / "tools" / "deepagents-code"
+    lock_root = tmp_path / "tools" / ".deepagents-code.deepagents-code-locks"
+    lock_root.mkdir(parents=True)
+    script = tmp_path / "unwritable_lock_harness.sh"
+    script.write_text(
+        f"HOME={str(tmp_path)!r}\n"
+        "INSTALL_LOCK_KIND=''\n"
+        "INSTALL_LOCK_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
+        "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
+        "fix_file_owner() { return 0; }\n"
+        f"resolve_installation_root() {{ printf '%s' {str(installation_root)!r}; }}\n"
+        "log_warn() { return 0; }\n"
+        "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
+        f"{_extract_shell_function('lock_dir_mtime')}\n"
+        f"{_extract_shell_function('install_lock_identity')}\n"
+        f"{_extract_shell_function('install_lock_is_stale')}\n"
+        f"{_extract_shell_function('install_lock_reclaim_guard_is_stale')}\n"
+        f"{_extract_shell_function('wait_for_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('release_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock')}\n"
+        "mkdir() {\n"
+        '  if [ "$1" = "$INSTALL_LOCK_DIR" ]; then\n'
+        "    return 1\n"
+        "  fi\n"
+        '  command mkdir "$@"\n'
+        "}\n"
+        "sleep() { return 97; }\n"
+        "acquire_install_lock\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        timeout=10,
+    )
+
+    assert proc.returncode == 1
+    assert "Cannot create installer lock" in proc.stderr
+    assert "writable" in proc.stderr
+
+
 def test_install_script_reclaim_skips_new_lock_after_stale_check(
     tmp_path: Path,
 ) -> None:
@@ -3843,7 +4048,8 @@ def test_install_script_reclaim_skips_new_lock_after_stale_check(
     called. A filesystem marker sequences the two calls: each runs in a `$(...)`
     subshell, so a shell-variable counter would not carry across them.
     """
-    lock_root = tmp_path / ".deepagents"
+    installation_root = tmp_path / "deepagents-code"
+    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
@@ -3858,7 +4064,8 @@ def test_install_script_reclaim_skips_new_lock_after_stale_check(
         "INSTALL_LOCK_RECLAIM_DIR=''\n"
         "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
         "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
-        "fix_owner() { return 0; }\n"
+        "fix_file_owner() { return 0; }\n"
+        f"resolve_installation_root() {{ printf '%s' {str(installation_root)!r}; }}\n"
         "log_warn() { return 0; }\n"
         "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
         f"{_extract_shell_function('lock_dir_mtime')}\n"
@@ -3908,7 +4115,8 @@ def test_install_script_reclaim_holds_guard_while_renaming_stale_lock(
     tmp_path: Path,
 ) -> None:
     """Stale reclaim renames the canonical lock only while peers are guarded."""
-    lock_root = tmp_path / ".deepagents"
+    installation_root = tmp_path / "deepagents-code"
+    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
@@ -3922,7 +4130,8 @@ def test_install_script_reclaim_holds_guard_while_renaming_stale_lock(
         "INSTALL_LOCK_RECLAIM_DIR=''\n"
         "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
         "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
-        "fix_owner() { return 0; }\n"
+        "fix_file_owner() { return 0; }\n"
+        f"resolve_installation_root() {{ printf '%s' {str(installation_root)!r}; }}\n"
         "log_warn() { return 0; }\n"
         "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
         f"{_extract_shell_function('lock_dir_mtime')}\n"
@@ -3982,7 +4191,7 @@ def test_install_script_release_removes_lock_only_when_token_matches(
     owner now holds. The reclaim guard is left untouched here
     (INSTALL_LOCK_RECLAIM_TOKEN empty), so only the canonical lock is exercised.
     """
-    lock_root = tmp_path / ".deepagents"
+    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "token").write_text(f"{on_disk_token}\n")
@@ -4023,7 +4232,8 @@ def test_install_script_aborts_when_lock_token_cannot_be_written(
     release) or the `exit` (install proceeds tokenless, so release never matches
     and the lock leaks permanently).
     """
-    lock_root = tmp_path / ".deepagents"
+    installation_root = tmp_path / "deepagents-code"
+    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
     lock_root.mkdir(parents=True)
     script = tmp_path / "token_write_harness.sh"
     script.write_text(
@@ -4033,7 +4243,8 @@ def test_install_script_aborts_when_lock_token_cannot_be_written(
         "INSTALL_LOCK_RECLAIM_DIR=''\n"
         "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
         "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
-        "fix_owner() { return 0; }\n"
+        "fix_file_owner() { return 0; }\n"
+        f"resolve_installation_root() {{ printf '%s' {str(installation_root)!r}; }}\n"
         "log_warn() { return 0; }\n"
         "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
         f"{_extract_shell_function('lock_dir_mtime')}\n"
@@ -4086,7 +4297,8 @@ def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path) -> None:
     bin_dir, home, uv = _write_fake_tools(
         tmp_path, installed_version="0.0.1", latest_version="0.1.0"
     )
-    lock_dir = home / ".deepagents" / "install.lock.d"
+    lock_root = tmp_path / "tools/.deepagents-code.deepagents-code-locks"
+    lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
     (lock_dir / "started_at").write_text("1\n")  # 1970 => well past the window
@@ -4114,10 +4326,9 @@ def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path) -> None:
     # The install ran (lock acquired) rather than aborting on the stale lock.
     assert (tmp_path / "uv-args.txt").is_file()
     # The lock is released on exit, leaving no lock dir and no reclaim leftovers.
-    deepagents = home / ".deepagents"
-    assert not (deepagents / "install.lock.d").exists()
-    assert not list(deepagents.glob("install.lock.d.reclaim.*"))
-    assert not (deepagents / "install.lock.reclaim.d").exists()
+    assert not (lock_root / "install.lock.d").exists()
+    assert not list(lock_root.glob("install.lock.d.reclaim.*"))
+    assert not (lock_root / "install.lock.reclaim.d").exists()
 
 
 @pytest.mark.skipif(
@@ -4136,14 +4347,14 @@ def test_install_script_aborts_on_unremovable_stale_lock(tmp_path: Path) -> None
     bin_dir, home, uv = _write_fake_tools(
         tmp_path, installed_version="0.0.1", latest_version="0.1.0"
     )
-    deepagents = home / ".deepagents"
-    lock_dir = deepagents / "install.lock.d"
+    lock_root = tmp_path / "tools/.deepagents-code.deepagents-code-locks"
+    lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
     (lock_dir / "started_at").write_text("1\n")
     # Read+execute only: entries inside cannot be renamed or unlinked, so both
     # the `mv` and the fallback `rm -rf` fail with EACCES.
-    deepagents.chmod(0o555)
+    lock_root.chmod(0o555)
     env = {
         **_clean_environ(),
         "HOME": str(home),
@@ -4165,7 +4376,7 @@ def test_install_script_aborts_on_unremovable_stale_lock(tmp_path: Path) -> None
         )
     finally:
         # Restore write access so tmp_path teardown can remove the tree.
-        deepagents.chmod(0o755)
+        lock_root.chmod(0o755)
 
     assert proc.returncode == 1, proc.stderr
     assert "Cannot reclaim stale installer lock" in proc.stderr
@@ -4453,6 +4664,54 @@ def test_install_uv_hides_installer_output_by_default(tmp_path: Path) -> None:
     assert proc.returncode == 0
     assert "UV_INSTALLER_NOISE" not in proc.stdout
     assert "UV_INSTALLER_NOISE" not in proc.stderr
+
+
+def test_uv_cache_snapshot_precedes_install_lock() -> None:
+    """Lock creation cannot hide a newly created uv data tree from ownership repair."""
+    source = SCRIPT.read_text(encoding="utf-8")
+    bootstrap = source.split("if ! resolve_uv_bin; then", maxsplit=1)[1].split(
+        "resolve_tool_bin_dir()", maxsplit=1
+    )[0]
+
+    assert bootstrap.index("snapshot_missing_uv_cache_paths") < bootstrap.index(
+        "acquire_install_lock"
+    )
+
+
+def test_uv_cache_snapshot_repairs_path_created_by_installer(tmp_path: Path) -> None:
+    """A missing cache is remembered before install and repaired after creation."""
+    home = tmp_path / "home"
+    cache = home / "cache" / "uv"
+    repaired = tmp_path / "repaired.txt"
+    home.mkdir()
+    script = tmp_path / "uv_cache_ownership_harness.sh"
+    script.write_text(
+        f"HOME={str(home)!r}\n"
+        f"XDG_CACHE_HOME={str(home / 'cache')!r}\n"
+        f"XDG_DATA_HOME={str(home / 'data')!r}\n"
+        f"{_extract_shell_function('path_is_under_home')}\n"
+        # `snapshot_missing_uv_cache_paths` reads the candidate list from this
+        # helper, so both layers cannot drift apart.
+        f"{_extract_shell_function('uv_cache_candidates')}\n"
+        f"{_extract_shell_function('snapshot_missing_uv_cache_paths')}\n"
+        f"{_extract_shell_function('repair_created_uv_cache_paths')}\n"
+        f"fix_tree_owner() {{ printf '%s\\n' \"$1\" >> {str(repaired)!r}; }}\n"
+        "snapshot_missing_uv_cache_paths\n"
+        f"mkdir -p {str(cache)!r}\n"
+        "repair_created_uv_cache_paths\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert repaired.read_text(encoding="utf-8").splitlines() == [str(cache)]
 
 
 def test_install_uv_verbose_shows_installer_output(tmp_path: Path) -> None:
@@ -5281,6 +5540,196 @@ def test_install_script_root_does_not_execute_existing_dcode_before_install(
     assert proc.returncode == 0, proc.stderr
     assert (tmp_path / "uv-args.txt").exists()
     assert not marker.exists()
+
+
+def test_root_install_chowns_only_exact_managed_leaves_with_optional_setup(
+    tmp_path: Path,
+) -> None:
+    """Root optional setup never recursively takes ownership of broad roots."""
+    env = _env(
+        tmp_path,
+        {"SUDO_USER": "target"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    # A profile cannot *be* the home directory, so point it at a subdirectory.
+    # `home` itself must still never be a chown target.
+    profile = home / ".deepagents"
+    # `dcode tools install` falls back to the profile bin dir when the shared
+    # installation one is unwritable. It sits inside the target user's home, so
+    # a root install must hand it back or the user's next non-root run fails on
+    # root-owned files.
+    fallback_bin = profile / "bin"
+    chown_log = tmp_path / "chown-invocations.txt"
+    for name, body in {
+        "id": "printf '0\\n'\n",
+        "uname": "printf 'Linux\\n'\n",
+        "chown": 'printf \'%s\\n\' "$*" >>"$CHOWN_LOG"\n',
+    }.items():
+        tool = bin_dir / name
+        tool.write_text(f"#!/usr/bin/env bash\n{body}")
+        _make_executable(tool)
+    env.update(
+        {
+            "CHOWN_LOG": str(chown_log),
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_HOME": str(profile),
+            "FAKE_MANAGED_BIN_DIR": str(fallback_bin),
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    invocations = chown_log.read_text().splitlines()
+    assert invocations
+    # `-R` stays banned: ownership repair walks only trees this run created,
+    # via `find -xdev -exec chown -h`, never a recursive chown of a broad root.
+    assert all("-R" not in invocation.split() for invocation in invocations)
+    # `find -exec ... +` batches several paths into one invocation, so collect
+    # every argument rather than just the last token.
+    targets = {
+        arg
+        for invocation in invocations
+        for arg in invocation.split()
+        if arg.startswith("/")
+    }
+    assert str(fallback_bin) in targets
+    assert str(home) not in targets
+    assert str(home / ".local") not in targets
+    assert "/" not in targets
+    assert (tmp_path / "dcode-tools.txt").exists()
+
+
+def test_root_upgrade_still_chowns_a_preexisting_managed_bin_dir(
+    tmp_path: Path,
+) -> None:
+    """The `sudo` upgrade path is the common one, and it must not be skipped.
+
+    `dcode tools install` writes into these trees as root on every run. Gating
+    the repair on "did this run create the directory?" skipped it whenever the
+    directory already existed — i.e. on every upgrade — leaving the freshly
+    written `rg` root-owned inside the target user's home.
+    """
+    env = _env(
+        tmp_path,
+        {"SUDO_USER": "target"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    profile = home / ".deepagents"
+    fallback_bin = profile / "bin"
+    # The upgrade case: both managed bin directories are already on disk with a
+    # binary in them before the installer runs.
+    fallback_bin.mkdir(parents=True)
+    (fallback_bin / "rg").write_text("stale binary\n")
+    chown_log = tmp_path / "chown-invocations.txt"
+    for name, body in {
+        "id": "printf '0\n'\n",
+        "uname": "printf 'Linux\n'\n",
+        "chown": 'printf \'%s\\n\' "$*" >>"$CHOWN_LOG"\n',
+    }.items():
+        tool = bin_dir / name
+        tool.write_text(f"#!/usr/bin/env bash\n{body}")
+        _make_executable(tool)
+    env.update(
+        {
+            "CHOWN_LOG": str(chown_log),
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_HOME": str(profile),
+            "FAKE_MANAGED_BIN_DIR": str(fallback_bin),
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    targets = {
+        arg
+        for invocation in chown_log.read_text().splitlines()
+        for arg in invocation.split()
+        if arg.startswith("/")
+    }
+    assert str(fallback_bin) in targets
+    # The repair still walks only the managed tree, never the home or profile.
+    assert str(home) not in targets
+    assert str(profile) not in targets
+
+
+def test_root_install_skips_a_managed_bin_dir_outside_home(tmp_path: Path) -> None:
+    """A tool dir outside $HOME is never handed to the target user.
+
+    `uv tool dir` is user-configurable (`UV_TOOL_DIR`, `uv.toml`, `--tool-dir`)
+    and can name a system path such as `/opt/uv-tools`. Chowning that to a
+    non-root user would be a privilege handover, so `fix_tree_owner`'s
+    `path_is_under_home` gate must apply here too.
+    """
+    env = _env(
+        tmp_path,
+        {"SUDO_USER": "target"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    profile = home / ".deepagents"
+    outside_bin = tmp_path / "opt/uv-tools/deepagents-code/share/deepagents-code/bin"
+    chown_log = tmp_path / "chown-invocations.txt"
+    for name, body in {
+        "id": "printf '0\\n'\n",
+        "uname": "printf 'Linux\\n'\n",
+        "chown": 'printf \'%s\\n\' "$*" >>"$CHOWN_LOG"\n',
+    }.items():
+        tool = bin_dir / name
+        tool.write_text(f"#!/usr/bin/env bash\n{body}")
+        _make_executable(tool)
+    env.update(
+        {
+            "CHOWN_LOG": str(chown_log),
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_HOME": str(profile),
+            "FAKE_MANAGED_BIN_DIR": str(outside_bin),
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    targets = {
+        arg
+        for invocation in chown_log.read_text().splitlines()
+        for arg in invocation.split()
+        if arg.startswith("/")
+    }
+    assert not any(target.startswith(str(tmp_path / "opt")) for target in targets)
 
 
 def _invoke_with_local_dcode_not_on_path(
@@ -6635,3 +7084,295 @@ def test_install_script_rejects_unknown_flag(tmp_path: Path) -> None:
     assert proc.returncode == 2
     assert "Unrecognized argument" in proc.stderr
     assert not (tmp_path / "uv-args.txt").exists()
+
+
+_NORMALIZE_PARITY_CASES = [
+    "/a//b/",
+    "/a/./b",
+    "/a/b/..",
+    "/a/b/../../..",
+    "/..",
+    "/",
+    "/tmp/../..",
+    "/x/./../y",
+    # POSIX leaves a leading exactly-double slash implementation-defined and
+    # `os.path.normpath` preserves it. The installer must agree, or it exports
+    # one directory while every later launch resolves another.
+    "//",
+    "//.",
+    "//..",
+    "///a",
+    "//srv/profile",
+    "//a/../b",
+    "//a/b/../..",
+    "//a/b/../c",
+]
+
+
+@pytest.mark.parametrize("candidate", _NORMALIZE_PARITY_CASES)
+def test_shell_normalizer_matches_python_normalizer(candidate: str) -> None:
+    """`normalize_absolute_path` agrees with `_paths._normalize_absolute`.
+
+    The shell helper's docstring claims it mirrors the Python implementation.
+    Asserting against hardcoded strings would let the two drift while the claim
+    still read as verified, so this runs the same inputs through both.
+    """
+    from deepagents_code._paths import _normalize_absolute
+
+    script = (
+        f"{_extract_shell_function('normalize_absolute_path')}\n"
+        'normalize_absolute_path "$1"\n'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", candidate],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == str(_normalize_absolute(Path(candidate)))
+
+
+@pytest.mark.parametrize(
+    "tool_dir",
+    [
+        "/opt/uv/tools",
+        "/Users/someone/.local/share/uv/tools",
+        "/tmp/a b/tools",
+        "/var//lib/uv/tools",
+    ],
+)
+def test_shell_lock_root_matches_python_installation_paths(tool_dir: str) -> None:
+    """The installer and dcode must derive the same install/update lock root.
+
+    `install.sh` says it mirrors `_paths._installation_paths`, but the existing
+    checks compare against hardcoded strings, so the two could drift while the
+    claim still read as verified. If they drift, a `curl | bash` install and a
+    dcode self-upgrade stop sharing a lock and nothing fails.
+    """
+    from deepagents_code._paths import _normalize_absolute
+
+    installation_root = _normalize_absolute(Path(tool_dir) / "deepagents-code")
+    expected = (
+        installation_root.parent / f".{installation_root.name}.deepagents-code-locks"
+    )
+
+    # The three lines `acquire_install_lock` uses to build `lock_root`.
+    script = (
+        'installation_root="$1"\n'
+        'installation_parent="${installation_root%/*}"\n'
+        'installation_name="${installation_root##*/}"\n'
+        "printf '%s' "
+        '"${installation_parent}/.${installation_name}.deepagents-code-locks"\n'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", str(installation_root)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == str(expected)
+
+
+def test_shell_lock_root_formula_is_the_one_the_installer_uses() -> None:
+    """Pin the formula above to the real `acquire_install_lock` source.
+
+    The test above reproduces three lines rather than running the function,
+    which needs uv. Fail if those lines change.
+    """
+    source = _extract_shell_function("acquire_install_lock")
+
+    assert 'installation_parent="${installation_root%/*}"' in source
+    assert 'installation_name="${installation_root##*/}"' in source
+    assert (
+        'lock_root="${installation_parent}/.${installation_name}'
+        '.deepagents-code-locks"' in source
+    )
+
+
+def test_shell_normalizer_rejects_relative_paths() -> None:
+    """A relative input is a non-zero exit, matching the Python `ValueError`."""
+    script = (
+        f"{_extract_shell_function('normalize_absolute_path')}\n"
+        'normalize_absolute_path "$1"\n'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", "relative/dir"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode != 0
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected_message"),
+    [
+        ("/", "filesystem root"),
+        ("~/", "home directory itself"),
+        ("{home}", "home directory itself"),
+    ],
+)
+def test_install_script_rejects_degenerate_deepagents_home(
+    tmp_path: Path, configured: str, expected_message: str
+) -> None:
+    """The installer rejects the same degenerate roots the app does.
+
+    Provisioning a profile the app then refuses to launch from would leave the
+    user with a "successful" install and an unusable CLI.
+    """
+    home = tmp_path / "home"
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": configured.format(home=home)})
+
+    assert proc.returncode == 1
+    assert expected_message in proc.stderr
+    assert not uv_args.exists()
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_message"),
+    [("home", "home directory itself"), ("root", "filesystem root")],
+)
+def test_install_script_rejects_symlinked_deepagents_home_alias(
+    tmp_path: Path, target: str, expected_message: str
+) -> None:
+    """Installer validation uses directory identity, matching app startup."""
+    home = tmp_path / "home"
+    link = tmp_path / "profile-link"
+    destination = home if target == "home" else Path("/")
+    link.symlink_to(destination, target_is_directory=True)
+
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(link)})
+
+    assert proc.returncode == 1
+    assert expected_message in proc.stderr
+    assert not uv_args.exists()
+
+
+@pytest.mark.parametrize("target", ["missing", "profile-link"])
+def test_install_script_rejects_unresolved_deepagents_home_symlink(
+    tmp_path: Path, target: str
+) -> None:
+    """Dangling links and symlink loops fail before installation starts."""
+    link = tmp_path / "profile-link"
+    link.symlink_to(target, target_is_directory=True)
+
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(link)})
+
+    assert proc.returncode == 1
+    assert "symlink whose target is missing or cannot be resolved" in proc.stderr
+    assert not uv_args.exists()
+
+
+def test_install_script_rejects_case_alias_of_home(tmp_path: Path) -> None:
+    """A differently cased home spelling is rejected where names ignore case."""
+    home = tmp_path / "home"
+    home.mkdir()
+    variant = tmp_path / "HOME"
+    if not variant.exists():
+        pytest.skip("case-sensitive filesystem")
+
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(variant)})
+
+    assert proc.returncode == 1
+    assert "home directory itself" in proc.stderr
+    assert not uv_args.exists()
+
+
+def test_install_script_rejects_non_directory_deepagents_home(tmp_path: Path) -> None:
+    """An existing regular file cannot hold a profile."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("")
+
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(blocker)})
+
+    assert proc.returncode == 1
+    assert "not a directory" in proc.stderr
+    assert not uv_args.exists()
+
+
+@pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root bypasses permission bits")
+@pytest.mark.parametrize("mode", [0o300, 0o400], ids=["unreadable", "unsearchable"])
+def test_install_script_rejects_unusable_deepagents_home(
+    tmp_path: Path, mode: int
+) -> None:
+    """The installer rejects a profile that app startup cannot traverse."""
+    profile = tmp_path / "profile"
+    profile.mkdir(mode=mode)
+    try:
+        proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(profile)})
+    finally:
+        profile.chmod(0o700)
+
+    assert proc.returncode == 1
+    assert "cannot be read or searched" in proc.stderr
+    assert not uv_args.exists()
+
+
+@pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root bypasses permission bits")
+def test_install_script_rejects_profile_behind_unsearchable_ancestor(
+    tmp_path: Path,
+) -> None:
+    """An inaccessible parent must not make the profile look merely absent."""
+    blocked = tmp_path / "blocked"
+    blocked.mkdir(mode=0o600)
+    profile = blocked / "profile"
+    try:
+        proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(profile)})
+    finally:
+        blocked.chmod(0o700)
+
+    assert proc.returncode == 1
+    assert "parent directory cannot be searched" in proc.stderr
+    assert not uv_args.exists()
+
+
+def test_uv_cache_locations_have_one_source() -> None:
+    """Both snapshot sites read `uv_cache_candidates`, not their own list.
+
+    The list appeared twice before. A cache location added to one copy and not
+    the other leaves a root-owned directory behind after a root install, which
+    surfaces later as a stale-cache failure far from the installer.
+    """
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert script.count('"${HOME}/Library/Caches/uv"') == 1
+    # Both consumers read the helper.
+    assert script.count("< <(uv_cache_candidates)") == 2
+
+
+def test_an_unnormalizable_home_stops_the_installer(tmp_path: Path) -> None:
+    """A relative `$HOME` must fail, not fall back to the raw string.
+
+    The app treats a non-absolute home as fatal, so silently comparing against
+    an unnormalized value would make the "profile is the home directory"
+    rejection unreliable in exactly the environment where the two layers must
+    agree.
+    """
+    script = tmp_path / "home_harness.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        'log_error() { printf "%s\\n" "$1" >&2; }\n'
+        f"{_extract_shell_function('normalize_absolute_path')}\n"
+        f"{_extract_shell_function('paths_are_same_file')}\n"
+        f"{_extract_shell_function('normalize_deepagents_home')}\n"
+        "HOME=relative/home\n"
+        f"DEEPAGENTS_HOME={str(tmp_path / 'profile')!r}\n"
+        "normalize_deepagents_home\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+
+    assert proc.returncode != 0
+    assert "home directory" in proc.stderr

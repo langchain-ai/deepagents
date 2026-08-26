@@ -73,6 +73,7 @@ from deepagents_code._git import (
 )
 from deepagents_code._invocation import invoked_name
 from deepagents_code._markdown import escape_markdown as _escape_markdown
+from deepagents_code._paths import PATHS
 from deepagents_code._session_stats import (
     USAGE_KIND_LABELS,
     USAGE_KIND_ORDER,
@@ -9562,7 +9563,7 @@ class DeepAgentsApp(App):
             self.notify(
                 "Approval mode changed for this session, but the startup "
                 "preference could not be saved. Check permissions for "
-                "~/.deepagents/.",
+                f"{PATHS.display(PATHS.profile.root)}.",
                 severity="warning",
                 markup=False,
             )
@@ -10533,7 +10534,8 @@ class DeepAgentsApp(App):
         if not saved:
             self.notify(
                 "Could not save the goal criteria preference. Auto will keep "
-                "asking for review; edit ~/.deepagents/config.toml to change it.",
+                "asking for review; edit "
+                f"{PATHS.display(PATHS.profile.config_file)} to change it.",
                 severity="warning",
                 markup=False,
             )
@@ -10974,7 +10976,8 @@ class DeepAgentsApp(App):
         if not ok:
             self.notify(
                 "Could not save onboarding state. Setup may run again next "
-                "launch — check permissions on ~/.deepagents/.state/.",
+                "launch — check permissions on "
+                f"{PATHS.display(PATHS.profile.state_dir)}.",
                 severity="warning",
                 markup=False,
             )
@@ -24113,7 +24116,8 @@ class DeepAgentsApp(App):
             else:
                 self.notify(
                     "Could not save notification preference. "
-                    "Check file permissions for ~/.deepagents/config.toml.",
+                    "Check file permissions for "
+                    f"{PATHS.display(PATHS.profile.config_file)}.",
                     severity="warning",
                     timeout=6,
                     markup=False,
@@ -28292,7 +28296,8 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(
                         "Model switched for this session, but could not save "
-                        "preference. Check permissions for ~/.deepagents/",
+                        "preference. Check permissions for "
+                        f"{PATHS.display(PATHS.profile.root)}",
                     ),
                 )
             else:
@@ -28477,7 +28482,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(
                     "Could not save default model. "
-                    "Check permissions for ~/.deepagents/",
+                    f"Check permissions for {PATHS.display(PATHS.profile.root)}",
                 ),
             )
 
@@ -28500,7 +28505,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(
                     "Could not clear default model. "
-                    "Check permissions for ~/.deepagents/",
+                    f"Check permissions for {PATHS.display(PATHS.profile.root)}",
                 ),
             )
 

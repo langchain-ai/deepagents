@@ -170,7 +170,7 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
     import httpx
     from pydantic import ValidationError
 
-    from deepagents_code.mcp_auth import format_login_failure
+    from deepagents_code.mcp_auth import format_login_failure, token_store_dir
 
     try:
         await login(
@@ -179,12 +179,13 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
             ui=CliOAuthInteraction(),
         )
     except PermissionError as exc:
-        # PermissionError typically means the user's home dir or the
-        # ~/.deepagents/.state/mcp-tokens/ tree isn't writable. Retrying
-        # without a hint sends users in circles.
+        from deepagents_code._paths import PATHS
+
+        token_store = token_store_dir()
+        token_store_display = PATHS.display(token_store)
         print(  # noqa: T201
             f"Login failed: cannot write to the MCP tokens store ({exc}). "
-            f"Check permissions on ~/.deepagents/.state/mcp-tokens/ and "
+            f"Check permissions on {token_store_display} and "
             f"retry `dcode mcp login {selection.server_name}`.",
             file=sys.stderr,
         )
@@ -215,30 +216,31 @@ def run_mcp_config() -> int:
     Returns:
         Process exit code: always 0.
     """
-    from pathlib import Path
-
+    from deepagents_code._paths import PATHS, project_paths
     from deepagents_code.mcp_tools import (
+        MCP_CONFIG_DISCOVERY_PATHS,
         _resolve_project_config_base,
-        discover_mcp_configs,
     )
     from deepagents_code.ui import console
 
-    found = {str(p.resolve()) for p in discover_mcp_configs()}
-    user_dir = Path.home() / ".deepagents"
-    project_root = _resolve_project_config_base(None)
+    project = project_paths(_resolve_project_config_base(None))
 
-    rows: list[tuple[str, str, bool]] = []
-    for display, label, resolved in (
-        ("~/.deepagents/.mcp.json", "user-level", user_dir / ".mcp.json"),
-        (
-            "<project-root>/.deepagents/.mcp.json",
-            "project subdir",
-            project_root / ".deepagents" / ".mcp.json",
-        ),
-        ("<project-root>/.mcp.json", "project root", project_root / ".mcp.json"),
-    ):
-        exists = str(resolved.resolve()) in found or resolved.is_file()
-        rows.append((display, label, exists))
+    # Same three locations, same order, as `discover_mcp_config_sources`. The
+    # user row is rendered from live `PATHS` so a test that patches the
+    # snapshot sees a row consistent with the rest of this output; the display
+    # constant is frozen at the same import and cannot follow a patch.
+    user_config = PATHS.profile.mcp_config_file
+    candidates = (
+        (PATHS.display(user_config), user_config),
+        (MCP_CONFIG_DISCOVERY_PATHS[1][0], project.config_mcp_config_file),
+        (MCP_CONFIG_DISCOVERY_PATHS[2][0], project.root_mcp_config_file),
+    )
+    rows = [
+        (display, label, path.is_file())
+        for (_, label), (display, path) in zip(
+            MCP_CONFIG_DISCOVERY_PATHS, candidates, strict=True
+        )
+    ]
 
     width = max(len(p) for p, _, _ in rows)
     console.print(

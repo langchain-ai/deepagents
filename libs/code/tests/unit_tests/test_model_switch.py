@@ -9,6 +9,7 @@ import pytest
 from textual.app import App, ComposeResult
 
 from deepagents_code import model_config
+from deepagents_code._paths import PATHS
 from deepagents_code.app import (
     DeepAgentsApp,
     _extract_model_params_flag,
@@ -624,7 +625,7 @@ class TestModelSwitchErrorHandling:
         # Should warn about save failure
         assert len(captured_errors) == 1
         assert "could not save" in captured_errors[0].lower()
-        assert "~/.deepagents/" in captured_errors[0]
+        assert PATHS.display(PATHS.profile.root) in captured_errors[0]
 
         # Should NOT show success message when save fails
         assert not any("Switched to" in m for m in captured_messages)

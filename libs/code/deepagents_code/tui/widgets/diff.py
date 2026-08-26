@@ -194,13 +194,24 @@ class _Row(NamedTuple):
 
 
 def _with_offset(strip: Strip, offset: int) -> Strip:
-    """Return a strip whose selection metadata starts at `offset`."""
+    """Return a strip whose selection metadata is rebased to `offset`."""
+    segments: list[Segment] = []
+    for segment in strip:
+        offset_style = RichStyle.from_meta({"offset": (offset, 0)})
+        style = segment.style + offset_style if segment.style else offset_style
+        segments.append(Segment(segment.text, style, segment.control))
+        offset += len(segment.text)
+    return Strip(segments, strip.cell_count)
+
+
+def _with_fixed_offset(strip: Strip, offset: int) -> Strip:
+    """Return a decorative strip mapped to one logical `offset`."""
     offset_style = RichStyle.from_meta({"offset": (offset, 0)})
     return Strip(
         [
             Segment(
                 segment.text,
-                segment.style + offset_style if segment.style is not None else None,
+                segment.style + offset_style if segment.style else offset_style,
                 segment.control,
             )
             for segment in strip
@@ -223,14 +234,12 @@ class _DiffRowContent(Content):
     def _wrapped(self, width: int) -> list[tuple[Content, int]]:
         """Return wrapped lines with their offsets in the logical content."""
         content = Content(self.plain, list(self.spans), self.cell_length)
-        if (
-            self.continuation is None
-            or self.cell_length <= width
-            or width <= self.prefix_len
-        ):
+        if width <= self.prefix_len:
             return [(content, 0)]
         prefix = self[: self.prefix_len]
         body = self[self.prefix_len :].expand_tabs()
+        if body.cell_length <= width - self.prefix_len:
+            return [(prefix + body, 0)]
         body_lines = body.divide(divide_line(body.plain, width - self.prefix_len))
         starts = accumulate(
             (len(line) for line in body_lines[:-1]), initial=self.prefix_len
@@ -270,7 +279,7 @@ class _DiffRowContent(Content):
         gutter_strip = continuation.render_strips(
             self.prefix_len, 1, style, source_options
         )[0]
-        gutter_strip = _with_offset(gutter_strip, logical_offset)
+        gutter_strip = _with_fixed_offset(gutter_strip, logical_offset)
         return Strip.join([gutter_strip, source_strip])
 
     def render_strips(
@@ -281,7 +290,7 @@ class _DiffRowContent(Content):
         Returns:
             One strip per visual line.
         """
-        if width <= self.prefix_len:
+        if self.continuation is None or width <= self.prefix_len:
             return super().render_strips(width, height, style, options)
         first, *continuations = self._wrapped(width)
         lines = [
@@ -295,7 +304,7 @@ class _DiffRowContent(Content):
 
     def get_height(self, rules: RulesMap, width: int) -> int:
         """Return the number of wrapped visual lines."""
-        if width <= self.prefix_len:
+        if self.continuation is None or width <= self.prefix_len:
             return super().get_height(rules, width)
         return len(self._wrapped(width))
 

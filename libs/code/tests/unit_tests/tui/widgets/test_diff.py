@@ -268,6 +268,22 @@ class TestComposeDiffLines:
             offsets.add(segment.style.meta["offset"])
         assert offsets == {(12, 0)}
 
+    def test_unnumbered_rows_keep_normal_wrapping(self) -> None:
+        """Hiding line numbers must not clip wrapped source text."""
+        widget = next(
+            w
+            for w in compose_diff_lines(
+                "@@ -1 +1 @@\n+abcdefghijkl", show_numbers=False
+            )
+            if isinstance(w, Static) and "abc" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+        lines = _visual_lines(widget, 6)
+
+        assert len(lines) > 1
+        assert "".join(lines).replace(" ", "") == "+abcdefghijkl"
+        assert content.get_height({}, 6) == len(lines)
+
     def test_narrow_width_uses_normal_wrapping_without_clipping(self) -> None:
         """Rows narrower than the gutter still render every source cell."""
         widget = next(
@@ -282,16 +298,43 @@ class TestComposeDiffLines:
     def test_wrapped_tabbed_lines_keep_all_source_text(self) -> None:
         """Tab expansion cannot make wrapping discard trailing source."""
         widget = next(
-            w
-            for w in _rendered("@@ -680 +680 @@\n+\tabcdefghijkl")
-            if "abc" in _plain(w)
+            w for w in _rendered("@@ -680 +680 @@\n+\tabcdef") if "abc" in _plain(w)
         )
 
         assert _visual_lines(widget, 12) == [
             "680 +       ",
             "  …     abcd",
-            "  …   efghij",
-            "  …   kl",
+            "  …   ef",
+        ]
+
+    def test_styled_continuations_keep_per_segment_offsets(self) -> None:
+        """Clicks on later styled segments map to their source characters."""
+        text = "value = alpha + beta + gamma"
+        widget = next(
+            w
+            for w in compose_diff_lines(
+                f"@@ -0,0 +1 @@\n+{text}", path="m.py", after=f"{text}\n"
+            )
+            if isinstance(w, Static) and "alpha" in _plain(w)
+        )
+
+        source = tuple(_visual_strips(widget, 18)[1])[2:]
+        assert [segment.text for segment in source] == [
+            "+",
+            " ",
+            "beta",
+            " ",
+            "+",
+            " ",
+        ]
+        offsets = [segment.style.meta["offset"] for segment in source if segment.style]
+        assert offsets == [
+            (19, 0),
+            (20, 0),
+            (21, 0),
+            (25, 0),
+            (26, 0),
+            (27, 0),
         ]
 
     def test_ascii_continuation_fits_the_line_number_column(

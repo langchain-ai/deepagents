@@ -3078,6 +3078,13 @@ class TestCountMessagesFromDeltas:
                     additional_kwargs={"lc_source": "summarization"},
                 )
             ],
+            [
+                HumanMessage(
+                    content="hidden local context",
+                    id="h6",
+                    additional_kwargs={"lc_source": "local_context"},
+                )
+            ],
         ]
 
         assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
@@ -3143,6 +3150,11 @@ def test_inlined_checkpoint_count_excludes_internal_messages() -> None:
                         content="hidden",
                         id="h2",
                         additional_kwargs={"lc_source": "goal_state"},
+                    ),
+                    HumanMessage(
+                        content="hidden context",
+                        id="h3",
+                        additional_kwargs={"lc_source": "local_context"},
                     ),
                 ]
             }

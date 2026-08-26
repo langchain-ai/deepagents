@@ -16,7 +16,10 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final, Literal, NamedTuple, TypedDict, cast
 
-from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._constants import (
+    LOCAL_CONTEXT_MESSAGE_SOURCE,
+    SYSTEM_MESSAGE_PREFIX,
+)
 from deepagents_code.goal_state_limits import (
     GOAL_STATUS_VALUES,
     GoalStateSizeError,
@@ -66,7 +69,9 @@ _GOAL_INTERNAL_SOURCES = frozenset(
 _CONVERSATION_CONTROL_SOURCES = frozenset(
     {*_GOAL_INTERNAL_SOURCES, SUPERSEDED_GOAL_STATE_SOURCE, "rubric_grader"}
 )
-_USER_HIDDEN_SOURCES = frozenset({*_CONVERSATION_CONTROL_SOURCES, "summarization"})
+_USER_HIDDEN_SOURCES = frozenset(
+    {*_CONVERSATION_CONTROL_SOURCES, LOCAL_CONTEXT_MESSAGE_SOURCE, "summarization"}
+)
 _LEGACY_CONVERSATION_CONTROL_PREFIXES = (
     f"{SYSTEM_MESSAGE_PREFIX} Goal set by the user",
     f"{SYSTEM_MESSAGE_PREFIX} Goal amended by the user.",

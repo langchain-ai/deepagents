@@ -20,6 +20,7 @@ from deepagents_code.goal_state_notice import (
     GOAL_MESSAGE_SCHEMA_VERSION,
     build_goal_continuation,
     build_goal_state_notice,
+    goal_state_fingerprint,
     goal_state_notice_info,
 )
 from deepagents_code.goal_tools import (
@@ -550,27 +551,28 @@ def test_wrap_model_call_disables_malformed_summarization_cutoff(
     )
 
     assert captured["request"].state["_summarization_event"] is None
-    # Discarding the event forces a fresh tail notice and drops the superseded
-    # one, so exactly one notice stays visible and it is the last message.
+    # Discarding the event forces a fresh tail notice without changing the
+    # cacheable request prefix.
     sent = captured["request"].messages
+    assert sent[:-1] == request.messages
     assert goal_state_notice_info(sent[-1]) is not None
-    assert sum(goal_state_notice_info(m) is not None for m in sent) == 1
+    assert sum(goal_state_notice_info(m) is not None for m in sent) == 2
     assert state["_summarization_event"] is not None
 
 
 def test_wrap_model_call_replaces_superseded_oversized_notice() -> None:
-    """A bounded replacement also evicts the legacy poison from the request.
-
-    Eviction is a same-index substitution, not a removal, so the oversized text
-    is gone while the list length and every later index are unchanged.
-    """
+    """A bounded same-index stand-in keeps legacy poison from the model."""
     rubric = "x" * (RUBRIC_CHAR_LIMIT + 1)
     state: dict[str, object] = {
         "rubric": rubric,
         "_sticky_rubric": rubric,
     }
     legacy = build_goal_state_notice({"rubric": "old"}, event_id="legacy-oversized")
-    legacy.content = f"legacy notice {rubric}"
+    legacy.content = (
+        "legacy notice\n<acceptance_criteria>"
+        f"{'x' * (RUBRIC_CHAR_LIMIT + 1)}"
+        "</acceptance_criteria>"
+    )
     legacy.additional_kwargs = {
         **legacy.additional_kwargs,
         "goal_message_schema_version": GOAL_MESSAGE_SCHEMA_VERSION - 1,
@@ -588,15 +590,67 @@ def test_wrap_model_call_replaces_superseded_oversized_notice() -> None:
     )
 
     messages = captured["request"].messages
-    assert legacy not in messages
-    # The legacy notice's slot survives as a bounded stand-in; the fresh notice
-    # is appended after it.
     assert len(messages) == 3
     assert messages[0] is request.messages[0]
-    assert "superseded goal/rubric state notice was omitted" in messages[1].content
+    assert messages[1].id == legacy.id
+    assert "oversized superseded goal/rubric state notice was omitted" in (
+        messages[1].content
+    )
     assert rubric not in messages[1].content
     assert "too large to include safely" in messages[-1].content
     assert len(messages[-1].content) < 2_000
+
+
+def test_wrap_model_call_preserves_latest_authoritative_oversized_notice() -> None:
+    """The only current notice remains visible until a successor is appended."""
+    state: dict[str, object] = {"rubric": "current"}
+    superseded = build_goal_state_notice(
+        {"rubric": "old"}, event_id="superseded-oversized"
+    )
+    authoritative = build_goal_state_notice(state, event_id="authoritative-oversized")
+    oversized_content = (
+        "notice\n<acceptance_criteria>"
+        f"{'x' * (RUBRIC_CHAR_LIMIT + 1)}"
+        "</acceptance_criteria>"
+    )
+    superseded.content = oversized_content
+    authoritative.content = oversized_content
+    request = _fake_request(None, state=state, messages=[superseded, authoritative])
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    messages = captured["request"].messages
+    assert "oversized superseded goal/rubric state notice was omitted" in (
+        messages[0].content
+    )
+    assert messages[1] is authoritative
+    assert messages[1].content == oversized_content
+
+
+def test_wrap_model_call_preserves_bounded_stale_notice() -> None:
+    """Schema-invalid history remains byte-stable while it fits the budget."""
+    state: dict[str, object] = {"rubric": "current"}
+    stale = build_goal_state_notice({"rubric": "old"}, event_id="bounded-stale")
+    stale.additional_kwargs = {
+        **stale.additional_kwargs,
+        "goal_message_schema_version": GOAL_MESSAGE_SCHEMA_VERSION - 1,
+    }
+    request = _fake_request(None, state=state, messages=[stale])
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    messages = captured["request"].messages
+    assert messages[0] is stale
+    assert messages[-1] is not stale
+    assert "Acceptance criteria" in messages[0].content
 
 
 def test_discarding_malformed_summarization_event_is_logged(
@@ -622,27 +676,14 @@ def test_discarding_malformed_summarization_event_is_logged(
     assert "re-sends the full history" in caplog.text
 
 
-def test_wrap_model_call_keeps_message_count_so_indices_stay_aligned() -> None:
-    """Filtering must not shift the absolute indices the summarizer slices by.
-
-    This middleware wraps the summarizer, so the inner `SummarizationMiddleware`
-    both applies the persisted absolute `cutoff_index` to the list handed inward
-    *and* derives the next `cutoff_index` from it — then persists that against
-    the unfiltered `state["messages"]`. Removing a superseded notice at any index
-    makes the two lists disagree by the number dropped: the read side starts too
-    late, and the write side records a cutoff that slices the checkpointed list
-    too early, silently losing live turns and orphaning a `ToolMessage` whose
-    `AIMessage` was summarized away (which the provider rejects). Replacing in
-    place keeps both coordinate systems identical. Every earlier cutoff test uses
-    a malformed cutoff, which takes the event-nulling branch and never reaches
-    this slice.
-    """
+def test_wrap_model_call_preserves_history_with_summarization_cutoff() -> None:
+    """Appending a current notice leaves the summarizer's history unchanged."""
     state: dict[str, object] = {
         "_goal_objective": "ship the fix",
         "_goal_status": "active",
     }
     superseded = build_goal_state_notice({"rubric": "stale"}, event_id="superseded")
-    current = build_goal_state_notice(state, event_id="current")
+    previous = build_goal_state_notice({"rubric": "old"}, event_id="previous")
     tool_call = AIMessage(
         content="calling",
         tool_calls=[{"name": "read_file", "args": {}, "id": "call-1"}],
@@ -654,7 +695,7 @@ def test_wrap_model_call_keeps_message_count_so_indices_stay_aligned() -> None:
         HumanMessage(content="m2"),
         tool_call,
         tool_result,
-        current,
+        previous,
     ]
     cutoff = 3
     summary = HumanMessage(content="SUMMARY")
@@ -671,42 +712,25 @@ def test_wrap_model_call_keeps_message_count_so_indices_stay_aligned() -> None:
     )
 
     inner = captured["request"].messages
-    # Index alignment is what the persisted cutoff depends on, in both
-    # directions: the list handed inward must be the same length as the
-    # checkpointed one, position for position.
-    assert len(inner) == len(messages)
-    # What the summarizer will actually send, before and after this middleware.
-    expected = [summary, *messages[cutoff:]]
-    effective = [summary, *inner[cutoff:]]
-    assert effective == expected
-    # The below-cutoff notice's slot is held by a stand-in, so its text is gone
-    # but nothing after it moved.
-    assert superseded not in inner
-    assert "stale" not in inner[1].content
-    assert "superseded goal/rubric state notice was omitted" in inner[1].content
-    # The tool-call pair must not be split by the filter.
-    assert tool_call in effective
-    assert tool_result in effective
+    assert inner[:-1] == messages
+    assert inner[1] is superseded
+    assert tool_call in inner[cutoff:]
+    assert tool_result in inner[cutoff:]
+    assert goal_state_notice_info(inner[-1]) is not None
+    assert inner[-1].additional_kwargs["state_fingerprint"] == (
+        goal_state_fingerprint(state)
+    )
 
 
-def test_wrap_model_call_holds_indices_with_no_prior_summarization_event() -> None:
-    """The no-event case is where removal shifted the most indices.
-
-    With no `_summarization_event` there is no cutoff to floor the filter at, so
-    every superseded notice in the whole history was previously dropped. The
-    summarizer then derives its next `cutoff_index` from the shortened list and
-    persists it against the unfiltered `state["messages"]`, so the recorded
-    cutoff is too small by the number dropped — and the following turn slices the
-    checkpoint that many messages too early. Same-index replacement removes the
-    divergence at its source.
-    """
+def test_wrap_model_call_preserves_history_without_summarization_event() -> None:
+    """A current tail notice leaves the whole cacheable history byte-stable."""
     state: dict[str, object] = {
         "_goal_objective": "ship the fix",
         "_goal_status": "active",
     }
     stale_one = build_goal_state_notice({"rubric": "stale one"}, event_id="stale-1")
     stale_two = build_goal_state_notice({"rubric": "stale two"}, event_id="stale-2")
-    current = build_goal_state_notice(state, event_id="current")
+    previous = build_goal_state_notice({"rubric": "old"}, event_id="previous")
     tool_call = AIMessage(
         content="calling",
         tool_calls=[{"name": "read_file", "args": {}, "id": "call-1"}],
@@ -719,7 +743,7 @@ def test_wrap_model_call_holds_indices_with_no_prior_summarization_event() -> No
         tool_call,
         stale_two,
         tool_result,
-        current,
+        previous,
     ]
     request = _fake_request(None, state=state, messages=messages)
     captured: dict[str, SimpleNamespace] = {}
@@ -730,20 +754,12 @@ def test_wrap_model_call_holds_indices_with_no_prior_summarization_event() -> No
     )
 
     inner = captured["request"].messages
-    assert len(inner) == len(messages)
-    # Every non-notice message keeps its exact index, so any cutoff the
-    # summarizer picks here is also valid against the checkpointed list.
-    for index, message in enumerate(messages):
-        if message is stale_one or message is stale_two:
-            continue
-        assert inner[index] is message
-    assert stale_one not in inner
-    assert stale_two not in inner
-    assert "stale one" not in inner[1].content
-    assert "stale two" not in inner[4].content
-    # The current notice is untouched and still the only live goal state.
-    assert inner[-1] is current
-    assert sum(goal_state_notice_info(m) is not None for m in inner) == 1
+    assert inner[:-1] == messages
+    assert inner[1] is stale_one
+    assert inner[4] is stale_two
+    assert inner[-2] is previous
+    assert goal_state_notice_info(inner[-1]) is not None
+    assert sum(goal_state_notice_info(m) is not None for m in inner) == 4
 
 
 def test_wrap_model_call_does_not_restore_stale_state_over_unsaved_fallback() -> None:
@@ -991,12 +1007,12 @@ async def test_awrap_model_call_restores_notice_after_compaction() -> None:
     assert goal_state_notice_info(notice) is not None
 
 
-def test_stale_schema_notice_is_replaced_then_settles() -> None:
+def test_stale_schema_notice_is_superseded_then_settles() -> None:
     """A resumed thread holding a prior-schema notice gets a current one, once.
 
     Prior notices could truncate required text or instruct the model to call read
     tools that no longer exist, so a resumed thread must not keep treating one as
-    authoritative. The replacement must also converge: the notice channel is
+    authoritative. The appended notice must also converge: the notice channel is
     append-only, so a predicate that never settles would grow history every turn.
     """
     state: dict[str, object] = {

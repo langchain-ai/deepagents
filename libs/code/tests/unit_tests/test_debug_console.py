@@ -71,12 +71,6 @@ def _snapshot() -> list[SnapshotField]:
     ]
 
 
-def test_snapshot_field_tuple_contract_includes_interaction_metadata() -> None:
-    field = SnapshotField("Thread", "thread-abc", copyable=True, thread_id="thread-abc")
-
-    assert tuple(field) == ("Thread", "thread-abc", True, "thread-abc")
-
-
 class TestDebugConsoleScreen:
     async def test_renders_snapshot_fields(self) -> None:
         app = _Harness()

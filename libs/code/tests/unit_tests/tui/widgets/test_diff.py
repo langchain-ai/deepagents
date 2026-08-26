@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from rich.cells import get_character_cell_size
 from textual.geometry import Offset
 from textual.selection import Selection
 from textual.style import Color, Style
@@ -147,6 +148,42 @@ def _visual_lines(widget: Static, width: int) -> list[str]:
     return [strip.text for strip in _visual_strips(widget, width)]
 
 
+def _offset_at(widget: Static, width: int, x: int, y: int) -> int | None:
+    """Resolve a visual cell to a logical offset the way Textual does.
+
+    Mirrors `Compositor.get_widget_and_offset_at`, which reads a segment's
+    `offset` metadata and then adds the character index *within* that segment.
+    Asserting on the metadata alone cannot tell a correct offset from one that
+    happens to share a segment base, so tests go through this instead.
+    """
+    strip = _visual_strips(widget, width)[y]
+    start = end = 0
+    for segment in strip:
+        end += segment.cell_length
+        offset = (segment.style.meta if segment.style else {}).get("offset")
+        if offset is None or offset[1] is None:
+            start = end
+            continue
+        if start <= x < end:
+            cut = x - start
+            size = index = 0
+            for character in segment.text:
+                if size >= cut:
+                    break
+                size += get_character_cell_size(character)
+                index += 1
+            return offset[0] + index
+        start = end
+    return None
+
+
+def _selected(widget: Static, width: int, x: int, y: int) -> str:
+    """Return the source text a drag from cell `(x, y)` to the row end copies."""
+    content = cast("Content", widget.render())
+    offset = _offset_at(widget, width, x, y)
+    return "" if offset is None else content.plain[offset:]
+
+
 # A diff exercising file headers, a hunk header, and context/add/remove lines.
 _SAMPLE_DIFF = (
     "--- a/f.py\n"
@@ -261,12 +298,22 @@ class TestComposeDiffLines:
         )
 
         assert _visual_lines(widget, 12) == ["680 + abcdef", "  …   ghijkl"]
-        segments = tuple(_visual_strips(widget, 12)[1])
-        offsets = set()
-        for segment in segments:
-            assert segment.style is not None
-            offsets.add(segment.style.meta["offset"])
-        assert offsets == {(12, 0)}
+
+    def test_continuation_gutter_maps_to_the_line_start(self) -> None:
+        """Every synthetic gutter cell selects from the line's first source char.
+
+        The gutter is decorative and absent from the logical content, so a
+        drag begun anywhere in it must copy the whole visual line rather than
+        skipping into the middle of it.
+        """
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+        prefix = cast("_DiffRowStatic", widget).selection_prefix
+
+        gutter = [_offset_at(widget, 12, x, 1) for x in range(prefix)]
+        assert gutter == [12] * prefix
+        assert _selected(widget, 12, 2, 1) == "ghijkl"
 
     def test_unnumbered_rows_keep_normal_wrapping(self) -> None:
         """Hiding line numbers must not clip wrapped source text."""
@@ -295,6 +342,37 @@ class TestComposeDiffLines:
         assert lines == ["680 +", "abcde", "f"]
         assert content.get_height({}, 5) == len(lines)
 
+    def test_wide_characters_survive_the_narrowest_body_column(self) -> None:
+        """A body column too narrow for one wide char falls back, never blanks."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+漢字漢字") if "漢" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+
+        for width in (7, 8, 9):
+            lines = _visual_lines(widget, width)
+            assert "".join(lines).count("漢") == 2, width
+            assert "".join(lines).count("字") == 2, width
+            assert content.get_height({}, width) == len(lines), width
+
+    def test_word_wrapped_rows_report_the_height_they_render(self) -> None:
+        """`Static` is `height: auto`, so a short count clips the last lines."""
+        widget = next(
+            w
+            for w in _rendered("@@ -680 +680 @@\n+alpha beta gamma delta epsilon")
+            if "alpha" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+
+        for width in (12, 20, 28):
+            lines = _visual_lines(widget, width)
+            assert len(lines) > 1, width
+            assert content.get_height({}, width) == len(lines), width
+            # Drop the synthetic gutter glyph each continuation repeats;
+            # at the narrowest width even a single word folds mid-token.
+            painted = "".join(lines).replace("…", "").replace(" ", "")
+            assert painted == "680+alphabetagammadeltaepsilon", width
+
     def test_wrapped_tabbed_lines_keep_all_source_text(self) -> None:
         """Tab expansion cannot make wrapping discard trailing source."""
         widget = next(
@@ -307,6 +385,28 @@ class TestComposeDiffLines:
             "  …   ef",
         ]
 
+    def test_tabbed_continuations_report_raw_logical_offsets(self) -> None:
+        """Offsets index the raw row, not the wider tab-expanded rendering.
+
+        Selections are extracted from `Content.plain`, where a tab is one
+        character; reporting expanded indexes made a tab-indented row copy the
+        wrong characters and, on its last lines, nothing at all.
+        """
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+\tabcdef") if "abc" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+
+        assert content.plain == "680 + \tabcdef"
+        # Visual cell -> the source character actually painted there.
+        for width, x, y, expected in ((12, 8, 1, "a"), (12, 6, 2, "e")):
+            offset = _offset_at(widget, width, x, y)
+            assert offset is not None
+            assert offset < len(content.plain)
+            assert content.plain[offset] == expected
+        assert _selected(widget, 12, 8, 1) == "abcdef"
+        assert _selected(widget, 12, 7, 2) == "f"
+
     def test_styled_continuations_keep_per_segment_offsets(self) -> None:
         """Clicks on later styled segments map to their source characters."""
         text = "value = alpha + beta + gamma"
@@ -317,25 +417,16 @@ class TestComposeDiffLines:
             )
             if isinstance(w, Static) and "alpha" in _plain(w)
         )
+        content = cast("Content", widget.render())
+        line = _visual_lines(widget, 18)[1]
+        prefix = cast("_DiffRowStatic", widget).selection_prefix
 
-        source = tuple(_visual_strips(widget, 18)[1])[2:]
-        assert [segment.text for segment in source] == [
-            "+",
-            " ",
-            "beta",
-            " ",
-            "+",
-            " ",
-        ]
-        offsets = [segment.style.meta["offset"] for segment in source if segment.style]
-        assert offsets == [
-            (19, 0),
-            (20, 0),
-            (21, 0),
-            (25, 0),
-            (26, 0),
-            (27, 0),
-        ]
+        # Highlighting cuts this line into several segments; each source cell
+        # must still resolve to the character drawn in it.
+        for x in range(prefix, len(line)):
+            offset = _offset_at(widget, 18, x, 1)
+            assert offset is not None, x
+            assert content.plain[offset] == line[x], x
 
     def test_ascii_continuation_fits_the_line_number_column(
         self, monkeypatch: pytest.MonkeyPatch
@@ -361,6 +452,39 @@ class TestComposeDiffLines:
         source = tuple(continuation)[-1]
         assert source.style is not None
         assert source.style.bgcolor == style.rich_style.bgcolor
+
+    def test_selection_ending_before_a_continuation_leaves_it_unstyled(self) -> None:
+        """A selection on the first line must not paint the whole next one."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+        style = Style(background=Color(1, 2, 3))
+
+        continuation = _visual_strips(
+            widget, 12, Selection(Offset(6, 0), Offset(9, 0)), style
+        )[1]
+        assert all(
+            segment.style is None or segment.style.bgcolor != style.rich_style.bgcolor
+            for segment in continuation
+        )
+
+    def test_selection_ending_inside_a_continuation_splits_it(self) -> None:
+        """Highlighting stops at the endpoint, mid-continuation."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+        style = Style(background=Color(1, 2, 3))
+
+        continuation = _visual_strips(
+            widget, 12, Selection(Offset(12, 0), Offset(15, 0)), style
+        )[1]
+        highlighted = "".join(
+            segment.text
+            for segment in continuation
+            if segment.style is not None
+            and segment.style.bgcolor == style.rich_style.bgcolor
+        )
+        assert highlighted == "ghi"
 
     def test_unwrapped_lines_keep_the_original_gutter(self) -> None:
         """A row that fits is unchanged by continuation support."""

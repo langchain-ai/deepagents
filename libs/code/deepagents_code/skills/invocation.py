@@ -5,6 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from deepagents_code._paths import (
+    get_built_in_skills_dir,
+    get_project_agent_skills_dir,
+    get_project_claude_skills_dir,
+    get_project_skills_dir,
+    get_user_agent_skills_dir,
+    get_user_claude_skills_dir,
+    get_user_skills_dir,
+)
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -47,26 +57,26 @@ def discover_skills_and_roots(
     from deepagents_code.skills.trust import load_trusted_skill_dirs
 
     skills = list_skills(
-        built_in_skills_dir=settings.get_built_in_skills_dir(),
+        built_in_skills_dir=get_built_in_skills_dir(),
         plugin_skill_sources=plugin_skill_sources,
-        user_skills_dir=settings.get_user_skills_dir(assistant_id),
-        project_skills_dir=settings.get_project_skills_dir(),
-        user_agent_skills_dir=settings.get_user_agent_skills_dir(),
-        project_agent_skills_dir=settings.get_project_agent_skills_dir(),
-        user_claude_skills_dir=settings.get_user_claude_skills_dir(),
-        project_claude_skills_dir=settings.get_project_claude_skills_dir(),
+        user_skills_dir=get_user_skills_dir(assistant_id),
+        project_skills_dir=get_project_skills_dir(settings.project_root),
+        user_agent_skills_dir=get_user_agent_skills_dir(),
+        project_agent_skills_dir=get_project_agent_skills_dir(settings.project_root),
+        user_claude_skills_dir=get_user_claude_skills_dir(),
+        project_claude_skills_dir=get_project_claude_skills_dir(settings.project_root),
     )
     roots = [
         path.resolve()
         for path in (
-            settings.get_built_in_skills_dir(),
+            get_built_in_skills_dir(),
             *plugin_skill_roots,
-            settings.get_user_skills_dir(assistant_id),
-            settings.get_project_skills_dir(),
-            settings.get_user_agent_skills_dir(),
-            settings.get_project_agent_skills_dir(),
-            settings.get_user_claude_skills_dir(),
-            settings.get_project_claude_skills_dir(),
+            get_user_skills_dir(assistant_id),
+            get_project_skills_dir(settings.project_root),
+            get_user_agent_skills_dir(),
+            get_project_agent_skills_dir(settings.project_root),
+            get_user_claude_skills_dir(),
+            get_project_claude_skills_dir(settings.project_root),
         )
         if path is not None
     ]

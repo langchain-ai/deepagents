@@ -15,6 +15,17 @@ import pytest
 
 from deepagents_code import _git as git_module, config as config_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
+from deepagents_code._paths import (
+    get_agent_dir,
+    get_project_agent_md_path,
+    get_project_agent_skills_dir,
+    get_project_claude_skills_dir,
+    get_user_agent_md_path,
+    get_user_agent_skills_dir,
+    get_user_claude_skills_dir,
+    user_agents_dir,
+    user_deepagents_dir,
+)
 from deepagents_code._version import __version__
 from deepagents_code.config import (
     _MCP_SHUTDOWN_RACE_MESSAGES,
@@ -834,36 +845,31 @@ class TestProjectAgentMdFinding:
         assert result[0].is_relative_to(link_root.resolve())
 
 
-class TestSettingsUserDeepagentsDir:
+class TestUserDeepagentsDir:
     """Test user-level paths derived from `DEEPAGENTS_HOME`."""
 
     def test_uses_deepagents_home(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Agent profiles and instructions use the configured root."""
-        import deepagents_code.config as config_module
+        import deepagents_code._paths as paths_module
         from deepagents_code._paths import _capture_paths
 
         configured = tmp_path / "custom-home"
         snapshot = _capture_paths(str(configured), launch_home=tmp_path)
-        monkeypatch.setattr(config_module, "PATHS", snapshot)
-        settings = Settings.__new__(Settings)
+        monkeypatch.setattr(paths_module, "PATHS", snapshot)
 
-        assert settings.user_deepagents_dir == configured
-        assert settings.get_agent_dir("coder") == configured / "coder"
-        assert settings.get_user_agent_md_path("coder") == (
-            configured / "coder" / "AGENTS.md"
-        )
+        assert user_deepagents_dir() == configured
+        assert get_agent_dir("coder") == configured / "coder"
+        assert get_user_agent_md_path("coder") == (configured / "coder" / "AGENTS.md")
 
 
-class TestSettingsGetProjectAgentMdPath:
-    """Test Settings.get_project_agent_md_path() integration."""
+class TestGetProjectAgentMdPath:
+    """Test `get_project_agent_md_path` integration."""
 
     def test_returns_empty_list_when_no_project_root(self) -> None:
         """Should return [] when project_root is None."""
-        s = Settings.__new__(Settings)
-        s.project_root = None
-        assert s.get_project_agent_md_path() == []
+        assert get_project_agent_md_path(None) == []
 
     def test_returns_existing_paths(self, tmp_path: Path) -> None:
         """Should return existing AGENTS.md paths from project root."""
@@ -875,17 +881,12 @@ class TestSettingsGetProjectAgentMdPath:
         root_md = tmp_path / "AGENTS.md"
         root_md.write_text("root")
 
-        s = Settings.__new__(Settings)
-        s.project_root = tmp_path
-
-        result = s.get_project_agent_md_path()
+        result = get_project_agent_md_path(tmp_path)
         assert result == [deepagents_md, root_md]
 
     def test_returns_empty_when_no_agents_md_files(self, tmp_path: Path) -> None:
         """Should return [] when project exists but has no AGENTS.md."""
-        s = Settings.__new__(Settings)
-        s.project_root = tmp_path
-        assert s.get_project_agent_md_path() == []
+        assert get_project_agent_md_path(tmp_path) == []
 
 
 class TestNewlineShortcut:
@@ -1058,35 +1059,32 @@ class TestValidateModelCapabilities:
 
 
 class TestAgentsAliasDirectories:
-    """Tests for .agents directory alias methods."""
+    """Tests for `.agents` directory path helpers."""
 
     def test_user_agents_dir(self) -> None:
         """Test user_agents_dir returns ~/.agents."""
-        settings = Settings.from_environment()
         expected = Path.home() / ".agents"
-        assert settings.user_agents_dir == expected
+        assert user_agents_dir() == expected
 
     def test_get_user_agent_skills_dir(self) -> None:
         """Test get_user_agent_skills_dir returns ~/.agents/skills."""
-        settings = Settings.from_environment()
         expected = Path.home() / ".agents" / "skills"
-        assert settings.get_user_agent_skills_dir() == expected
+        assert get_user_agent_skills_dir() == expected
 
     def test_home_aliases_are_skipped_when_home_is_unresolvable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An absolute profile stays usable without optional home aliases."""
-        import deepagents_code.config as config_module
+        import deepagents_code._paths as paths_module
         from deepagents_code._paths import _capture_paths
 
         with patch.object(Path, "home", side_effect=RuntimeError("no home")):
             snapshot = _capture_paths(str(tmp_path / "profile"))
-        monkeypatch.setattr(config_module, "PATHS", snapshot)
-        settings = Settings.__new__(Settings)
+        monkeypatch.setattr(paths_module, "PATHS", snapshot)
 
-        assert settings.user_agents_dir is None
-        assert settings.get_user_agent_skills_dir() is None
-        assert settings.get_user_claude_skills_dir() is None
+        assert user_agents_dir() is None
+        assert get_user_agent_skills_dir() is None
+        assert get_user_claude_skills_dir() is None
 
     def test_get_project_agent_skills_dir_with_project(self, tmp_path: Path) -> None:
         """Test get_project_agent_skills_dir returns .agents/skills in project."""
@@ -1095,27 +1093,21 @@ class TestAgentsAliasDirectories:
         project_root.mkdir()
         (project_root / ".git").mkdir()
 
-        settings = Settings.from_environment(start_path=project_root)
         expected = project_root / ".agents" / "skills"
-        assert settings.get_project_agent_skills_dir() == expected
+        assert get_project_agent_skills_dir(project_root) == expected
 
-    def test_get_project_agent_skills_dir_without_project(self, tmp_path: Path) -> None:
+    def test_get_project_agent_skills_dir_without_project(self) -> None:
         """Test get_project_agent_skills_dir returns None when not in a project."""
-        # Create a directory without .git
-        no_project = tmp_path / "no-project"
-        no_project.mkdir()
-
-        settings = Settings.from_environment(start_path=no_project)
-        assert settings.get_project_agent_skills_dir() is None
+        assert get_project_agent_skills_dir(None) is None
 
 
 class TestClaudeSkillsDirs:
-    """Tests for .claude/skills/ directory methods."""
+    """Tests for `.claude/skills` path helpers."""
 
     def test_get_user_claude_skills_dir(self) -> None:
         """Test get_user_claude_skills_dir returns ~/.claude/skills."""
         expected = Path.home() / ".claude" / "skills"
-        assert Settings.get_user_claude_skills_dir() == expected
+        assert get_user_claude_skills_dir() == expected
 
     def test_get_project_claude_skills_dir_with_project(self, tmp_path: Path) -> None:
         """Test get_project_claude_skills_dir returns .claude/skills in project."""
@@ -1123,17 +1115,12 @@ class TestClaudeSkillsDirs:
         project_root.mkdir()
         (project_root / ".git").mkdir()
 
-        settings = Settings.from_environment(start_path=project_root)
         expected = project_root / ".claude" / "skills"
-        assert settings.get_project_claude_skills_dir() == expected
+        assert get_project_claude_skills_dir(project_root) == expected
 
-    def test_project_claude_skills_dir_without_project(self, tmp_path: Path) -> None:
+    def test_project_claude_skills_dir_without_project(self) -> None:
         """Test get_project_claude_skills_dir returns None outside a project."""
-        no_project = tmp_path / "no-project"
-        no_project.mkdir()
-
-        settings = Settings.from_environment(start_path=no_project)
-        assert settings.get_project_claude_skills_dir() is None
+        assert get_project_claude_skills_dir(None) is None
 
 
 class TestCreateModelAllowlist:
@@ -8122,15 +8109,11 @@ class TestReservedAgentNames:
 
     @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
     def test_reserved_names_are_rejected(self, name: str) -> None:
-        settings = Settings.__new__(Settings)
-
         with pytest.raises(ValueError, match="reserved"):
-            settings.get_agent_dir(name)
+            get_agent_dir(name)
 
     def test_ordinary_names_still_resolve(self) -> None:
-        settings = Settings.__new__(Settings)
-
-        assert settings.get_agent_dir("coder").name == "coder"
+        assert get_agent_dir("coder").name == "coder"
 
     @pytest.mark.parametrize(
         "name", ["BIN", "Plugins", "CONVERSATION_HISTORY", "pLuGiNs"]
@@ -8145,10 +8128,9 @@ class TestReservedAgentNames:
         through and stamp agent state into app-owned directories.
         """
         monkeypatch.setattr(sys, "platform", "darwin")
-        settings = Settings.__new__(Settings)
 
         with pytest.raises(ValueError, match="reserved"):
-            settings.get_agent_dir(name)
+            get_agent_dir(name)
 
     def test_case_alias_is_allowed_on_case_sensitive_linux(
         self, monkeypatch: pytest.MonkeyPatch
@@ -8160,9 +8142,8 @@ class TestReservedAgentNames:
         must not be rejected.
         """
         monkeypatch.setattr(sys, "platform", "linux")
-        settings = Settings.__new__(Settings)
 
-        assert settings.get_agent_dir("Plugins").name == "Plugins"
+        assert get_agent_dir("Plugins").name == "Plugins"
 
     def test_windows_trailing_space_alias_is_rejected(
         self, monkeypatch: pytest.MonkeyPatch
@@ -8175,10 +8156,9 @@ class TestReservedAgentNames:
         it there; on POSIX `plugins ` is a genuinely different directory.
         """
         monkeypatch.setattr(sys, "platform", "win32")
-        settings = Settings.__new__(Settings)
 
         with pytest.raises(ValueError, match="reserved"):
-            settings.get_agent_dir("plugins ")
+            get_agent_dir("plugins ")
 
     def test_trailing_dot_never_reaches_the_reserved_check(self) -> None:
         """The character allowlist already rejects `.` on every platform.
@@ -8186,19 +8166,16 @@ class TestReservedAgentNames:
         A trailing-dot alias such as `plugins.` is refused as an invalid name
         before the reserved-name comparison runs.
         """
-        settings = Settings.__new__(Settings)
-
         with pytest.raises(ValueError, match="Invalid agent name"):
-            settings.get_agent_dir("plugins.")
+            get_agent_dir("plugins.")
 
     def test_trailing_space_is_allowed_off_windows(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """On POSIX a trailing space names a different, non-reserved directory."""
         monkeypatch.setattr(sys, "platform", "linux")
-        settings = Settings.__new__(Settings)
 
-        assert settings.get_agent_dir("plugins ").name == "plugins "
+        assert get_agent_dir("plugins ").name == "plugins "
 
     @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
     def test_the_agents_md_accessor_rejects_them_too(self, name: str) -> None:
@@ -8208,17 +8185,13 @@ class TestReservedAgentNames:
         parent directory, so leaving it unchecked is what would stamp
         `AGENTS.md` into app-owned state.
         """
-        settings = Settings.__new__(Settings)
-
         with pytest.raises(ValueError, match="reserved"):
-            settings.get_user_agent_md_path(name)
+            get_user_agent_md_path(name)
 
     def test_the_agents_md_accessor_rejects_invalid_characters(self) -> None:
         """It skipped the character check as well, not only reserved names."""
-        settings = Settings.__new__(Settings)
-
         with pytest.raises(ValueError, match="Invalid agent name"):
-            settings.get_user_agent_md_path("../escape")
+            get_user_agent_md_path("../escape")
 
 
 class TestAgentDirStaysOffTheHeavyImportPath:
@@ -8235,9 +8208,9 @@ class TestAgentDirStaysOffTheHeavyImportPath:
         source = textwrap.dedent(
             """
             import sys
-            from deepagents_code.config import Settings
+            from deepagents_code._paths import get_agent_dir
 
-            Settings.get_agent_dir(object.__new__(Settings), "demo")
+            get_agent_dir("demo")
             heavy = sorted(
                 name
                 for name in sys.modules

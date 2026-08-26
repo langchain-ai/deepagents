@@ -21,6 +21,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import re
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -49,12 +50,29 @@ __all__ = [
     "ProfilePaths",
     "ProjectPaths",
     "classify_path",
+    "ensure_agent_dir",
+    "ensure_project_skills_dir",
+    "ensure_user_skills_dir",
     "export_profile_env",
     "first_writable",
+    "get_agent_dir",
+    "get_built_in_skills_dir",
     "get_deepagents_home",
+    "get_project_agent_md_path",
+    "get_project_agent_skills_dir",
+    "get_project_agents_dir",
+    "get_project_claude_skills_dir",
+    "get_project_skills_dir",
+    "get_user_agent_md_path",
+    "get_user_agent_skills_dir",
+    "get_user_agents_dir",
+    "get_user_claude_skills_dir",
+    "get_user_skills_dir",
     "harden_state_dir",
     "probe_writable",
     "project_paths",
+    "user_agents_dir",
+    "user_deepagents_dir",
 ]
 
 DEEPAGENTS_HOME_ENV = "DEEPAGENTS_HOME"
@@ -219,6 +237,149 @@ def project_paths(root: Path) -> ProjectPaths:
         agents_dir=config_dir / "agents",
         hooks_file=config_dir / "hooks.json",
     )
+
+
+def user_deepagents_dir() -> Path:
+    """Return the immutable launch-time user profile root."""
+    return PATHS.profile.root
+
+
+def _validate_agent_name(agent_name: str) -> None:
+    """Raise when an agent name cannot safely identify a profile directory.
+
+    Raises:
+        ValueError: If the name is empty, unsafe, or reserved by dcode.
+    """
+    if (
+        not agent_name
+        or not agent_name.strip()
+        or not re.fullmatch(r"[a-zA-Z0-9_\-\s]+", agent_name)
+    ):
+        msg = (
+            f"Invalid agent name: {agent_name!r}. Agent names can only "
+            "contain letters, numbers, hyphens, underscores, and spaces."
+        )
+        raise ValueError(msg)
+    from deepagents_code._reserved_names import is_reserved_agent_dir_name
+
+    if is_reserved_agent_dir_name(agent_name):
+        msg = f"Invalid agent name: {agent_name!r} is reserved for dcode's own state."
+        raise ValueError(msg)
+
+
+def get_agent_dir(agent_name: str) -> Path:
+    """Return the validated profile directory for an agent name.
+
+    Args:
+        agent_name: Agent profile name.
+
+    Returns:
+        Path to the agent's profile directory.
+
+    """
+    _validate_agent_name(agent_name)
+    return PATHS.profile.agent_dir(agent_name)
+
+
+def ensure_agent_dir(agent_name: str) -> Path:
+    """Create the validated profile directory for an agent.
+
+    Returns:
+        Path to the agent's profile directory.
+    """
+    agent_dir = get_agent_dir(agent_name)
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    return agent_dir
+
+
+def get_user_agent_md_path(agent_name: str) -> Path:
+    """Return the user-level `AGENTS.md` path for an agent profile."""
+    return get_agent_dir(agent_name) / "AGENTS.md"
+
+
+def get_project_agent_md_path(project_root: Path | None) -> list[Path]:
+    """Return existing project-level `AGENTS.md` paths."""
+    if project_root is None:
+        return []
+    from deepagents_code.project_utils import find_project_agent_md
+
+    return find_project_agent_md(project_root)
+
+
+def get_user_skills_dir(agent_name: str) -> Path:
+    """Return the user-level skills directory for an agent profile."""
+    return get_agent_dir(agent_name) / "skills"
+
+
+def ensure_user_skills_dir(agent_name: str) -> Path:
+    """Create the user-level skills directory for an agent.
+
+    Returns:
+        Path to the agent's user-level skills directory.
+    """
+    skills_dir = get_user_skills_dir(agent_name)
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    return skills_dir
+
+
+def get_project_skills_dir(project_root: Path | None) -> Path | None:
+    """Return the project-level dcode skills directory, when in a project."""
+    return None if project_root is None else project_paths(project_root).skills_dir
+
+
+def ensure_project_skills_dir(project_root: Path | None) -> Path | None:
+    """Create the project-level dcode skills directory.
+
+    Returns:
+        Path to the project skills directory, or `None` outside a project.
+    """
+    skills_dir = get_project_skills_dir(project_root)
+    if skills_dir is not None:
+        skills_dir.mkdir(parents=True, exist_ok=True)
+    return skills_dir
+
+
+def get_user_agents_dir(agent_name: str) -> Path:
+    """Return the custom-subagent directory for an agent profile."""
+    return get_agent_dir(agent_name) / "agents"
+
+
+def get_project_agents_dir(project_root: Path | None) -> Path | None:
+    """Return the project-level custom-subagent directory, when available."""
+    return None if project_root is None else project_paths(project_root).agents_dir
+
+
+def user_agents_dir() -> Path | None:
+    """Return the launch user's tool-agnostic `~/.agents` directory."""
+    return None if PATHS.launch_home is None else PATHS.launch_home / ".agents"
+
+
+def get_user_agent_skills_dir() -> Path | None:
+    """Return the launch user's tool-agnostic `~/.agents/skills` directory."""
+    base = user_agents_dir()
+    return None if base is None else base / "skills"
+
+
+def get_project_agent_skills_dir(project_root: Path | None) -> Path | None:
+    """Return the project-level tool-agnostic `.agents/skills` directory."""
+    return None if project_root is None else project_root / ".agents" / "skills"
+
+
+def get_user_claude_skills_dir() -> Path | None:
+    """Return the launch user's experimental `~/.claude/skills` directory."""
+    if PATHS.launch_home is None:
+        return None
+    return PATHS.launch_home / ".claude" / "skills"
+
+
+def get_project_claude_skills_dir(project_root: Path | None) -> Path | None:
+    """Return the project's experimental `.claude/skills` directory."""
+    return None if project_root is None else project_root / ".claude" / "skills"
+
+
+def get_built_in_skills_dir() -> Path:
+    """Return the directory containing skills bundled with dcode."""
+    return Path(__file__).parent / "built_in_skills"
 
 
 class PathState(StrEnum):

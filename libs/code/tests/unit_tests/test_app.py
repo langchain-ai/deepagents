@@ -26534,6 +26534,10 @@ class TestSwitchAgentGuards:
         async with app.run_test():
             with (
                 patch("deepagents_code.config.settings") as mock_settings,
+                patch(
+                    "deepagents_code.app.user_deepagents_dir",
+                    return_value=tmp_path,
+                ),
                 patch.object(app, "run_worker") as worker,
             ):
                 mock_settings.user_deepagents_dir = tmp_path
@@ -26553,6 +26557,10 @@ class TestSwitchAgentGuards:
         async with app.run_test():
             with (
                 patch("deepagents_code.config.settings") as mock_settings,
+                patch(
+                    "deepagents_code.app.user_deepagents_dir",
+                    return_value=tmp_path,
+                ),
                 patch.object(app, "run_worker") as worker,
             ):
                 mock_settings.user_deepagents_dir = tmp_path

@@ -30,7 +30,6 @@ from deepagents_code._env_vars import (
 from deepagents_code._version import __version__
 from deepagents_code.config import (
     _assemble_langsmith_thread_url,
-    _get_editable_install_path,
     _is_editable_install,
     fetch_langsmith_project_url,
     get_glyphs,
@@ -608,12 +607,5 @@ class WelcomeBanner(Static):
         for line in warning_lines:
             parts.append("\n")
             parts.extend(line)
-
-        # Editable-install path for local development visibility.
-        if not self._hide_version and not self._hide_cwd:
-            editable_path = _get_editable_install_path()
-            if editable_path:
-                parts.append("\n")
-                parts.extend([("installed: ", "dim"), (editable_path, "dim")])
 
         return Content.assemble(*parts)

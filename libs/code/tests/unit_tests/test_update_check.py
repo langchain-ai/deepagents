@@ -3165,8 +3165,14 @@ class TestUpdateLogs:
             "dcode remains on v1.0.0. Try again in a few minutes."
         )
 
-    async def test_perform_upgrade_brew_skips_running_prefix_readback(self) -> None:
+    async def test_perform_upgrade_brew_skips_running_prefix_readback(
+        self, cache_file
+    ) -> None:
         """Homebrew's running process cannot verify the newly relinked Cellar."""
+        cache_file.write_text(
+            json.dumps({"release_prerelease_pins": {"1.1.0": []}}),
+            encoding="utf-8",
+        )
         with (
             patch(
                 "deepagents_code.update_check.detect_install_method",

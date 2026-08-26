@@ -1,6 +1,7 @@
 """Unit and subprocess tests for the immutable launch path snapshot."""
 
 import ast
+import logging
 import os
 import subprocess
 import sys
@@ -319,8 +320,38 @@ class TestProbeWritable:
         """A failed cleanup must not be reported as an unwritable directory."""
         directory = tmp_path / "sticky"
         directory.mkdir()
-        with patch.object(Path, "unlink", side_effect=OSError("cannot unlink")):
-            probe_writable(directory)
+        try:
+            with patch.object(Path, "unlink", side_effect=OSError("cannot unlink")):
+                probe_writable(directory)
+        finally:
+            _paths_module._LEAKED_PROBE_DIRS.discard(str(directory))
+            for probe in directory.glob(".deepagents-probe-*"):
+                probe.unlink()
+
+    def test_warns_on_first_rejected_unlink_only(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Every process makes its first stranded probe visible to the user."""
+        directory = tmp_path / "sticky"
+        directory.mkdir()
+        try:
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code._paths"),
+                patch.object(Path, "unlink", side_effect=OSError("cannot unlink")),
+            ):
+                probe_writable(directory)
+                probe_writable(directory)
+
+            messages = [
+                record.message
+                for record in caplog.records
+                if record.message.startswith("Cannot remove write probes")
+            ]
+            assert len(messages) == 1
+        finally:
+            _paths_module._LEAKED_PROBE_DIRS.discard(str(directory))
+            for probe in directory.glob(".deepagents-probe-*"):
+                probe.unlink()
 
 
 class TestDefaultProfileMarkerSurvivesChildProcesses:

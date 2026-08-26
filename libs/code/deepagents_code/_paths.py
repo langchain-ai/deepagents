@@ -300,21 +300,20 @@ def probe_writable(directory: Path, *, mode: int = 0o777) -> None:
     try:
         Path(name).unlink()
     except OSError:
-        # One stranded probe is harmless. Repeats are not: this runs on every
-        # launch, so a directory that never accepts an unlink (a sticky-bit
-        # directory owned by another user, an NFS or SMB mount with delete
-        # denied) grows an unbounded pile of `.deepagents-probe-*` files. Say so
-        # once per directory per process, so the pile has a discoverable cause.
-        if str(directory) in _LEAKED_PROBE_DIRS:
-            logger.warning(
-                "Cannot remove write probes in %s, so they are accumulating. "
-                "Delete the '.deepagents-probe-*' files there and check the "
-                "directory's delete permissions.",
-                directory,
-            )
-        else:
-            _LEAKED_PROBE_DIRS.add(str(directory))
-            logger.debug("Could not remove the write probe %s", name, exc_info=True)
+        # This runs on every launch, so a directory that never accepts an
+        # unlink (an NFS or SMB mount with delete denied, for example) grows an
+        # unbounded pile of `.deepagents-probe-*` files. Warn on the first leak
+        # per directory and suppress repeats in this process.
+        key = str(directory)
+        if key in _LEAKED_PROBE_DIRS:
+            return
+        _LEAKED_PROBE_DIRS.add(key)
+        logger.warning(
+            "Cannot remove write probes in %s, so they are accumulating. "
+            "Delete the '.deepagents-probe-*' files there and check the "
+            "directory's delete permissions.",
+            directory,
+        )
 
 
 _LEAKED_PROBE_DIRS: set[str] = set()

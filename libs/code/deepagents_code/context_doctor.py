@@ -76,7 +76,36 @@ def format_memory_prompt(contents: Sequence[tuple[str, str]], template: str) -> 
     return template.format(agent_memory=body or "(No memory loaded)")
 
 
-def format_skills_prompt(skills: Sequence[ExtendedSkillMetadata]) -> str:
+def format_skills_locations(sources: Sequence[str | tuple[str, ...]]) -> str:
+    """Format skills locations matching SkillsMiddleware display.
+
+    Returns:
+        The formatted skills locations text.
+    """
+    if not sources:
+        return ""
+    from deepagents.middleware.skills import (
+        _derive_source_label,  # noqa: PLC2701  # Matches SkillsMiddleware source label derivation
+        _source_path,  # noqa: PLC2701  # Matches SkillsMiddleware source path resolution
+    )
+
+    normalized_sources: list[tuple[str, str] | str] = [
+        (s[0], s[1]) if isinstance(s, tuple) else s for s in sources
+    ]
+    paths = [_source_path(s) for s in normalized_sources]
+    labels = [_derive_source_label(s) for s in normalized_sources]
+    last = len(normalized_sources) - 1
+    locations = [
+        f"**{label} Skills**: `{path}`{' (higher priority)' if i == last else ''}"
+        for i, (path, label) in enumerate(zip(paths, labels, strict=True))
+    ]
+    return "\n".join(locations)
+
+
+def format_skills_prompt(
+    skills: Sequence[ExtendedSkillMetadata],
+    sources: Sequence[str | tuple[str, ...]] = (),
+) -> str:
     """Approximate the progressive-disclosure skill index sent to the model.
 
     Returns:
@@ -97,8 +126,9 @@ def format_skills_prompt(skills: Sequence[ExtendedSkillMetadata]) -> str:
             lines.append(f"  -> Allowed tools: {', '.join(skill['allowed_tools'])}")
         lines.append(f"  -> Read `{skill['path']}` for full instructions")
     skills_list = "\n".join(lines) or "(No skills available yet)"
+    skills_locations = format_skills_locations(sources)
     return SKILLS_SYSTEM_PROMPT.format(
-        skills_locations="",
+        skills_locations=skills_locations,
         skills_load_warnings="",
         skills_list=skills_list,
     )

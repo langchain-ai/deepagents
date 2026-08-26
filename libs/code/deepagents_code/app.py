@@ -12657,6 +12657,7 @@ class DeepAgentsApp(App):
         from deepagents_code._constants import DEFAULT_AGENT_NAME
         from deepagents_code.agent import (
             _MEMORY_READONLY_SYSTEM_PROMPT,
+            get_skill_sources,
             get_system_prompt,
         )
         from deepagents_code.config import is_memory_auto_save_enabled, settings
@@ -12676,6 +12677,7 @@ class DeepAgentsApp(App):
         system_prompt: str | None = None
         memory_prompt: str | None = None
         memory_contents: list[tuple[str, str]] = []
+        skill_sources = []
         built_in = None
 
         if managed:
@@ -12713,6 +12715,12 @@ class DeepAgentsApp(App):
             except Exception:
                 logger.exception("Failed to format memory for /context-doctor")
             try:
+                skill_sources = get_skill_sources(
+                    assistant_id=self._assistant_id or DEFAULT_AGENT_NAME
+                )
+            except Exception:
+                logger.exception("Failed to resolve skill sources for /context-doctor")
+            try:
                 built_in = await asyncio.to_thread(
                     collect_built_in_tools,
                     assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
@@ -12745,7 +12753,7 @@ class DeepAgentsApp(App):
         skills = list(self._discovered_skills)
         skills_prompt = None
         try:
-            skills_prompt = format_skills_prompt(skills)
+            skills_prompt = format_skills_prompt(skills, sources=skill_sources)
         except Exception:
             logger.exception("Failed to format skills for /context-doctor")
         provider_tokens, conversation_tokens = await self._get_context_usage_counts()

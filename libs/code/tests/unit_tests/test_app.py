@@ -23842,7 +23842,9 @@ class TestInstallExtraModelSwitch:
         result = await app._install_extra("baseten", auto_restart=True)
 
         assert result is False
-        app._restart_after_install.assert_awaited_once_with("baseten")  # ty: ignore
+        app._restart_after_install.assert_awaited_once_with(  # ty: ignore
+            "baseten", mutation_lock_held=True
+        )
         mounted = " ".join(
             str(c.args[0]._content)
             for c in app._mount_message.await_args_list  # ty: ignore
@@ -23886,7 +23888,9 @@ class TestInstallExtraModelSwitch:
         result = await app._install_extra("baseten", auto_restart=True)
 
         assert result is False
-        app._restart_after_install.assert_awaited_once_with("baseten")  # ty: ignore
+        app._restart_after_install.assert_awaited_once_with(  # ty: ignore
+            "baseten", mutation_lock_held=True
+        )
         mounted = [
             str(c.args[0]._content)
             for c in app._mount_message.await_args_list  # ty: ignore
@@ -23928,12 +23932,59 @@ class TestInstallExtraModelSwitch:
         result = await app._install_extra("baseten", auto_restart=True)
 
         assert result is True
-        app._restart_after_install.assert_awaited_once_with("baseten")  # ty: ignore
+        app._restart_after_install.assert_awaited_once_with(  # ty: ignore
+            "baseten", mutation_lock_held=True
+        )
         mounted = [
             str(c.args[0]._content)
             for c in app._mount_message.await_args_list  # ty: ignore
         ]
         assert not any("couldn't restart" in text.lower() for text in mounted)
+
+    async def test_install_extra_auto_restart_reuses_the_mutation_lock(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The restart task must not deadlock on the install's mutation lock."""
+        from deepagents_code import config as config_mod, update_check
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: False)
+        monkeypatch.setattr(
+            update_check, "create_update_log_path", lambda: tmp_path / "install.log"
+        )
+        monkeypatch.setattr(
+            update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        monkeypatch.setattr(
+            update_check,
+            "perform_install_extra",
+            AsyncMock(return_value=(True, "")),
+        )
+
+        app = DeepAgentsApp()
+        app._ensure_restart_prompt_loaded = MagicMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._server_proc = object()
+        app._server_kwargs = {"model_name": "openai:gpt-5.5"}
+        app._agent_running = False
+        app._connecting = False
+
+        async def restart_command(
+            *, preserve_queue: bool, propagate_errors: bool
+        ) -> bool:
+            assert preserve_queue is True
+            assert propagate_errors is True
+            assert app._environment_mutation_lock.locked()
+            await asyncio.sleep(0)
+            return True
+
+        app._run_restart_command = restart_command  # ty: ignore
+
+        result = await asyncio.wait_for(
+            app._install_extra("baseten", auto_restart=True), timeout=1
+        )
+
+        assert result is True
+        assert not app._environment_mutation_lock.locked()
 
     async def test_prompt_model_auth_not_needed_when_credentials_present(
         self, monkeypatch: pytest.MonkeyPatch

@@ -7432,7 +7432,10 @@ class DeepAgentsApp(App):
                     AppMessage(f"Installed extra '{extra}'."),
                 )
                 return await self._reload_configuration_for_restart()
-            if await self._restart_after_install(extra):
+            if await self._restart_after_install(
+                extra,
+                mutation_lock_held=True,
+            ):
                 return True
             if self._server_kwargs is None:
                 await self._mount_message(
@@ -26305,11 +26308,19 @@ class DeepAgentsApp(App):
             )
         )
 
-    async def _restart_after_install(self, label: str) -> bool:
+    async def _restart_after_install(
+        self,
+        label: str,
+        *,
+        mutation_lock_held: bool = False,
+    ) -> bool:
         """Restart the app-owned server after installing a dependency.
 
         Args:
             label: Installed extra/package name, used for logs and fallback copy.
+            mutation_lock_held: Whether the caller already serializes environment
+                mutations. The install-on-select path holds the lock until this
+                restart completes, so its detached task must not acquire it again.
 
         Returns:
             `True` when the server restarted successfully; `False` when restart is
@@ -26327,6 +26338,7 @@ class DeepAgentsApp(App):
         restart = self._schedule_restart_command(
             preserve_queue=True,
             propagate_errors=True,
+            mutation_lock_held=mutation_lock_held,
         )
         return await restart
 
@@ -26418,6 +26430,7 @@ class DeepAgentsApp(App):
         *,
         preserve_queue: bool = False,
         propagate_errors: bool = False,
+        mutation_lock_held: bool = False,
     ) -> asyncio.Task[bool]:
         """Run config refresh and server respawn off the Textual message pump.
 
@@ -26436,6 +26449,8 @@ class DeepAgentsApp(App):
             preserve_queue: Keep prompts submitted during an active reload.
             propagate_errors: Preserve offered-restart exception behavior for
                 callers that await the returned task.
+            mutation_lock_held: Run under the caller's existing environment
+                mutation lock instead of acquiring it in the detached task.
 
         Returns:
             The restart task, so tests and shutdown can await it.
@@ -26447,6 +26462,7 @@ class DeepAgentsApp(App):
             self._run_restart_command_detached(
                 preserve_queue=preserve_queue,
                 propagate_errors=propagate_errors,
+                mutation_lock_held=mutation_lock_held,
             ),
             name="restart",
         )
@@ -26477,6 +26493,7 @@ class DeepAgentsApp(App):
         *,
         preserve_queue: bool = False,
         propagate_errors: bool = False,
+        mutation_lock_held: bool = False,
     ) -> bool:
         """Serialize and safely report a detached `/restart` continuation.
 
@@ -26484,6 +26501,8 @@ class DeepAgentsApp(App):
             preserve_queue: Keep prompts submitted during an active reload.
             propagate_errors: Re-raise unexpected restart failures to an
                 awaiting offered-restart caller.
+            mutation_lock_held: Whether the caller already holds the environment
+                mutation lock until this task completes.
 
         Returns:
             Whether the server restarted successfully.
@@ -26492,6 +26511,11 @@ class DeepAgentsApp(App):
             asyncio.CancelledError: If app teardown cancels the restart.
         """
         try:
+            if mutation_lock_held:
+                return await self._run_restart_command(
+                    preserve_queue=preserve_queue,
+                    propagate_errors=propagate_errors,
+                )
             async with self._environment_mutation_lock:
                 if not propagate_errors:
                     return await self._run_restart_command(

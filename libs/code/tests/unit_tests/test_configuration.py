@@ -308,6 +308,18 @@ _CONTROL_CHARACTER_REJECTION = "must not contain whitespace or control character
             "https://config.example.com/policy\x7ffile.toml",
             _CONTROL_CHARACTER_REJECTION,
         ),
+        (
+            "https://config.example.com/policy\u2028file.toml",
+            _CONTROL_CHARACTER_REJECTION,
+        ),
+        (
+            "https://config.example.com/policy\u200bfile.toml",
+            _CONTROL_CHARACTER_REJECTION,
+        ),
+        (
+            "https://config.example.com/policy-é.toml",
+            "must contain only ASCII URI characters",
+        ),
     ],
 )
 def test_remote_toml_provider_rejects_unsafe_urls(
@@ -326,6 +338,7 @@ def test_remote_toml_provider_rejects_unsafe_urls(
     assert snapshot.status.health is ProviderHealth.CORRUPT
     assert expected in (snapshot.status.detail or "")
     assert "secret" not in (snapshot.status.detail or "")
+    assert snapshot.status.remote_source is None
 
 
 def test_remote_toml_provider_loads_policy_without_environment_proxy(

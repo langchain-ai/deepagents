@@ -599,10 +599,16 @@ def _validate_remote_url(source: str) -> str:
     Raises:
         ValueError: If the source is not an absolute HTTPS URL, carries
             credentials, a query string, or a fragment, has an invalid port, or
-            contains whitespace or control characters.
+            contains non-ASCII, whitespace, or control characters.
     """
     from urllib.parse import urlsplit
 
+    if any(char.isspace() or not char.isprintable() for char in source):
+        # Check before parsing or retaining the source for diagnostics. Unicode
+        # separators and format controls can reflow or visually spoof terminal
+        # output even though they are outside the ASCII C0 range.
+        msg = "remote source must not contain whitespace or control characters"
+        raise ValueError(msg)
     try:
         parsed = urlsplit(source)
     except ValueError as exc:
@@ -613,13 +619,10 @@ def _validate_remote_url(source: str) -> str:
         # forward one from the parser either.
         msg = "remote source is not a valid URL"
         raise ValueError(msg) from exc
-    if any(char <= " " or char == "\x7f" for char in source):
-        # urllib raises `http.client.InvalidURL` for a control character, but
-        # only once `opener.open()` is under way. `load()` catches it as an
-        # `HTTPException`, so the operator is told the source "could not be
-        # read" and never learns the URL itself is malformed. Reject it here to
-        # name the real cause, and to skip a connection that cannot succeed.
-        msg = "remote source must not contain whitespace or control characters"
+    if not source.isascii():
+        # `urllib` does not consistently encode non-ASCII request targets, and
+        # confusable host/path text is unsafe to repeat in operator output.
+        msg = "remote source must contain only ASCII URI characters"
         raise ValueError(msg)
     if parsed.scheme.lower() != "https" or not parsed.hostname:
         msg = "remote source must be an absolute HTTPS URL"

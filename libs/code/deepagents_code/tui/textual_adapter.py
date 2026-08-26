@@ -1379,6 +1379,31 @@ async def _finalize_usage_round(
         _session_stats.finalize_recorded_requests(recorded_requests)
 
 
+def _apply_recorded_usage(
+    adapter: Any,  # noqa: ANN401  # adapter type is the TUI callback bundle
+    recorded_usage: _session_stats.RecordedUsage | None,
+) -> None:
+    """Refresh the usage display and provisional cost for one recorded request.
+
+    Args:
+        adapter: The stream adapter holding the display callbacks.
+        recorded_usage: What the request added to the turn's stats, or `None`
+            when nothing was recorded and there is nothing to show.
+    """
+    if recorded_usage is None:
+        return
+    if adapter._on_usage_update:
+        adapter._on_usage_update()
+    if recorded_usage.cost_usd is None or not adapter._on_provisional_cost:
+        return
+    # Display-only: the graph checkpoints the same spend and streams the
+    # authoritative total, which supersedes this estimate.
+    try:
+        adapter._on_provisional_cost(recorded_usage.cost_usd)
+    except Exception:
+        logger.warning("on_provisional_cost callback failed", exc_info=True)
+
+
 async def _mount_diff_note(adapter: Any, text: str) -> None:  # noqa: ANN401  # adapter type is the TUI callback bundle
     """Mount a standalone transcript note about a diff that could not be shown.
 
@@ -1821,11 +1846,16 @@ async def execute_task_textual(
                 # nested custom events never reach the panel; forwarding must
                 # never raise into the stream loop.
                 if current_stream_mode == "custom":
-                    try:
-                        from deepagents_code.config import settings
+                    # A nested request's usage arrives as soon as it completes,
+                    # so a long subagent shows its spend while it runs rather
+                    # than only once it returns. Consume the event whatever came
+                    # of it: a duplicate of a request the message stream already
+                    # recorded is still ours, not input for the handlers below.
+                    if not is_main_agent and _session_stats.is_model_usage_event(data):
+                        try:
+                            from deepagents_code.config import settings
 
-                        recorded_usage = (
-                            _session_stats.record_model_usage_event(
+                            recorded_usage = _session_stats.record_model_usage_event(
                                 turn_stats,
                                 data,
                                 active_thread_id=thread_id,
@@ -1833,27 +1863,13 @@ async def execute_task_textual(
                                 fallback_provider=settings.model_provider or "",
                                 recorded_requests=recorded_usage_requests,
                             )
-                            if not is_main_agent
-                            else None
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Nested model usage event handling failed", exc_info=True
-                        )
-                        recorded_usage = None
-                    if recorded_usage is not None:
-                        if adapter._on_usage_update:
-                            adapter._on_usage_update()
-                        if (
-                            recorded_usage.cost_usd is not None
-                            and adapter._on_provisional_cost
-                        ):
-                            try:
-                                adapter._on_provisional_cost(recorded_usage.cost_usd)
-                            except Exception:
-                                logger.warning(
-                                    "on_provisional_cost callback failed", exc_info=True
-                                )
+                        except Exception:
+                            logger.warning(
+                                "Nested model usage event handling failed",
+                                exc_info=True,
+                            )
+                            recorded_usage = None
+                        _apply_recorded_usage(adapter, recorded_usage)
                         continue
 
                     # The graph owns the cumulative thread cost and streams the
@@ -2146,21 +2162,7 @@ async def execute_task_textual(
                             ),
                             recorded_requests=recorded_usage_requests,
                         )
-                    if recorded_usage is not None and adapter._on_usage_update:
-                        adapter._on_usage_update()
-                    if recorded_usage is not None and (
-                        recorded_usage.cost_usd is not None
-                        and adapter._on_provisional_cost
-                    ):
-                        # Display-only: the graph checkpoints the same spend
-                        # and streams the authoritative total, which
-                        # supersedes this estimate.
-                        try:
-                            adapter._on_provisional_cost(recorded_usage.cost_usd)
-                        except Exception:
-                            logger.warning(
-                                "on_provisional_cost callback failed", exc_info=True
-                            )
+                    _apply_recorded_usage(adapter, recorded_usage)
 
                     # Skip subagent outputs - only render main agent content in chat
                     if not is_main_agent:

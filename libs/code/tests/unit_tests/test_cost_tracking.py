@@ -3094,7 +3094,10 @@ class TestSessionCostRecorder:
 
         assert events[0]["model_name"] == configured_model
         assert events[0]["provider"] == KNOWN_PROVIDER
-        assert recorder.drain(THREAD_ID)[0].model_name == ""
+        # The durable record carries the same identity, so the graph prices the
+        # request as the model that served it rather than falling back to the
+        # parent graph's checkpointed spec.
+        assert recorder.drain(THREAD_ID)[0].model_name == configured_model
 
     def test_root_or_unidentified_request_does_not_emit(
         self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch

@@ -1617,7 +1617,17 @@ def _emit_model_usage(
     record: _ModelCallRecord,
     context: _ModelCallContext,
 ) -> None:
-    """Best-effort stream provisional usage for one identified nested call."""
+    """Best-effort stream provisional usage for one identified nested call.
+
+    The client cannot see a nested request until the graph checkpoints and
+    charges it, which for a long subagent is many minutes. Streaming the usage
+    lets the client price it provisionally in the meantime; the graph's absolute
+    total still supersedes the estimate.
+
+    Args:
+        record: The completed request's usage, model, and response ID.
+        context: The request's thread and owning graph scope.
+    """
     if not context.scope or record.message_id is None:
         return
     try:
@@ -1629,7 +1639,7 @@ def _emit_model_usage(
                 "version": MODEL_USAGE_EVENT_VERSION,
                 "request_id": record.message_id,
                 "usage_metadata": dict(record.usage_metadata),
-                "model_name": record.model_name or context.configured_model,
+                "model_name": record.model_name,
                 "provider": record.provider,
                 "thread_id": context.thread_id,
                 "scope": context.scope,
@@ -1802,6 +1812,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
         try:
             record = _record_from_response(
                 response,
+                configured_model=context.configured_model,
                 configured_provider=context.configured_provider,
                 scope=context.scope,
             )
@@ -1914,6 +1925,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
 def _record_from_response(
     response: LLMResult,
     *,
+    configured_model: str = "",
     configured_provider: str = "",
     scope: str = "",
 ) -> _ModelCallRecord | None:
@@ -1921,6 +1933,10 @@ def _record_from_response(
 
     Args:
         response: Completed LangChain model response containing usage metadata.
+        configured_model: Model selected for this specific request. Used when the
+            response names none, so the record carries the model that actually
+            served it rather than leaving pricing to a caller's fallback -- which
+            for a nested call describes the parent, not this request.
         configured_provider: Provider selected for this specific request.
         scope: Checkpoint namespace of the graph that made the request.
 
@@ -1942,6 +1958,7 @@ def _record_from_response(
         return None
     model_name, provider = resolve_message_model(
         message,
+        fallback_model=configured_model,
         fallback_provider=configured_provider,
     )
     message_id = getattr(message, "id", None)

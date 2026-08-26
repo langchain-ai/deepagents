@@ -25,6 +25,7 @@ from deepagents_code._session_stats import (
     record_model_usage_event,
     usage_table_enabled,
 )
+from deepagents_code.cost_tracking import MODEL_USAGE_EVENT_VERSION
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -926,6 +927,7 @@ class TestRecordModelUsageEvent:
         "update",
         [
             {"version": True},
+            {"version": MODEL_USAGE_EVENT_VERSION + 1},
             {"request_id": ""},
             {"usage_metadata": "tokens"},
             {"scope": ""},

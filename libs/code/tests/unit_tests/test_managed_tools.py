@@ -1246,11 +1246,16 @@ class TestManagedBinDirFallback:
             managed_tools.prepend_managed_bin_to_path()
             parts = os.environ["PATH"].split(os.pathsep)
             shim = Path(parts[0])
+            exposed = shim / rg.name
 
             assert shim != profile
             assert {entry.name for entry in shim.iterdir()} == {rg.name}
-            assert (shim / rg.name).read_bytes() == rg.read_bytes()
+            assert not exposed.is_symlink()
+            assert exposed.read_bytes() == b"pinned-rg"
             assert str(profile) not in parts
+
+            rg.write_bytes(b"branch-switched-rg")
+            assert exposed.read_bytes() == b"pinned-rg"
 
     def test_path_prepends_only_the_active_location(self, tmp_path: Path) -> None:
         """With no binary installed, only the preferred directory is added.

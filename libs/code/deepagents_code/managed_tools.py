@@ -374,7 +374,7 @@ def _verified_fallback_shim(binary: Path) -> Path | None:
 def _create_verified_fallback_shim(
     binary: Path,
 ) -> tempfile.TemporaryDirectory[str] | None:
-    """Create a private shim that contains no profile-controlled siblings.
+    """Create a private snapshot that contains no profile-controlled siblings.
 
     Returns:
         The live temporary directory, or `None` if the entrypoint cannot be
@@ -388,10 +388,7 @@ def _create_verified_fallback_shim(
     )
     target = Path(shim.name) / managed_rg_filename()
     try:
-        if os.name == "nt":
-            shutil.copy2(binary, target)
-        else:
-            target.symlink_to(binary)
+        shutil.copy2(binary, target)
         if _managed_binary_is_verified(target):
             return shim
     except OSError:

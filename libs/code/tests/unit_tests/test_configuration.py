@@ -535,7 +535,7 @@ def test_remote_toml_provider_does_not_accumulate_stalled_open_threads(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Repeated reloads fail closed behind one unfinished blocking open."""
+    """Repeated reloads of the same URL fail closed behind its stuck open."""
     from deepagents_code.configuration import providers
 
     entered = Event()
@@ -574,6 +574,54 @@ def test_remote_toml_provider_does_not_accumulate_stalled_open_threads(
         for snapshot in snapshots[1:]
     )
     assert response.closed.wait(timeout=1)
+
+
+def test_remote_toml_provider_recovers_on_new_source_after_stalled_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A descriptor change to a healthy URL succeeds behind a stuck open."""
+    from deepagents_code.configuration import providers
+
+    stall_started = Event()
+    release = Event()
+    healthy_response = _RemoteResponse(b'[startup]\nmode = "manual"\n')
+
+    class Opener:
+        def open(self, request: Request, *, timeout: float) -> _RemoteResponse:
+            assert timeout > 0
+            if "stalled" in request.full_url:
+                stall_started.set()
+                release.wait()
+                msg = "stalled host never answered"
+                raise OSError(msg)
+            return healthy_response
+
+    monkeypatch.setattr(providers, "_build_remote_opener", lambda: Opener())
+    monkeypatch.setattr(providers, "REMOTE_MANAGED_CONFIG_TIMEOUT_SECONDS", 0.05)
+    try:
+        stalled = RemoteTomlProvider(
+            "managed config",
+            "https://stalled.example.com/policy.toml",
+            tmp_path / "managed.toml",
+        ).load()
+        # The worker reports the stall past the tiny deadline, so `load()`
+        # returns first; the deadline expiring proves the open was entered.
+        assert stalled.status.health is ProviderHealth.UNREADABLE
+        assert "timed out" in (stalled.status.detail or "")
+
+        # The abandoned open to the stalled host is still stuck, but the slot
+        # is per destination, so the new source gets its own worker.
+        snapshot = RemoteTomlProvider(
+            "managed config",
+            "https://config.example.com/policy.toml",
+            tmp_path / "managed.toml",
+        ).load()
+    finally:
+        release.set()
+
+    assert snapshot.status.health is ProviderHealth.OK
+    assert snapshot.data == {"startup": {"mode": "manual"}}
 
 
 def test_remote_toml_provider_closes_late_http_error_response(

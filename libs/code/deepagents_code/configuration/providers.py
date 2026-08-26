@@ -654,7 +654,7 @@ def _validate_remote_url(source: str) -> str:
 
 _READ_CHUNK_SIZE = 65536
 _remote_open_lock = threading.Lock()
-_remote_open_future: Future[HTTPResponse] | None = None
+_remote_open_requests: dict[str, Future[HTTPResponse]] = {}
 
 
 def _fail_if_expired(deadline: float) -> None:
@@ -710,7 +710,13 @@ def _close_completed_response(future: Future[HTTPResponse]) -> None:
 
 
 class _RemoteOpenInProgressError(OSError):
-    """Raised when an unfinished blocking open already owns the worker slot."""
+    """Raised when an unfinished open to the same destination is still stuck.
+
+    The slot is keyed by destination URL, so this means "the previous fetch of
+    this source has not returned", never "some other source is slow": a
+    stalled host must not block a descriptor the administrator has since
+    pointed at a healthy one.
+    """
 
 
 def _run_remote_open(
@@ -732,41 +738,45 @@ def _run_remote_open(
         future.set_result(response)
 
 
-def _release_remote_open(future: Future[HTTPResponse]) -> None:
-    """Release the single worker slot after its blocking open returns."""
-    global _remote_open_future  # noqa: PLW0603  # guarded module state
-
+def _release_remote_open(destination: str, future: Future[HTTPResponse]) -> None:
+    """Release the destination's worker slot after its blocking open returns."""
     with _remote_open_lock:
-        if _remote_open_future is future:
-            _remote_open_future = None
+        if _remote_open_requests.get(destination) is future:
+            del _remote_open_requests[destination]
 
 
 def _start_remote_open(
     opener: _RemoteOpener,
     request: Request,
 ) -> Future[HTTPResponse]:
-    """Start one bounded blocking open, rejecting overlap while it is stuck.
+    """Start one bounded blocking open, rejecting overlap to its destination.
+
+    Slots are keyed by `request.full_url` (the normalized HTTPS source): one
+    stalled host blocks only retries of that same URL, so a descriptor change
+    to a healthy source still recovers while the abandoned worker runs on.
+    Live slots stay bounded because each remote source gets exactly one.
 
     Returns:
         Future carrying the response opened by the bounded worker.
 
     Raises:
-        _RemoteOpenInProgressError: If an earlier blocking open has not returned.
+        _RemoteOpenInProgressError: If an earlier open to the same destination
+            has not returned.
         OSError: If the daemon worker cannot be started.
     """
     from concurrent.futures import Future
+    from functools import partial
     from threading import Thread
 
-    global _remote_open_future  # noqa: PLW0603  # guarded module state
-
+    destination = request.full_url
     with _remote_open_lock:
-        active = _remote_open_future
+        active = _remote_open_requests.get(destination)
         if active is not None and not active.done():
             msg = "another remote source open is still in progress"
             raise _RemoteOpenInProgressError(msg)
         future: Future[HTTPResponse] = Future()
-        _remote_open_future = future
-        future.add_done_callback(_release_remote_open)
+        _remote_open_requests[destination] = future
+        future.add_done_callback(partial(_release_remote_open, destination))
     worker = Thread(
         target=_run_remote_open,
         args=(future, opener, request),

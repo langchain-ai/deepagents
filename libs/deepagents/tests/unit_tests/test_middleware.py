@@ -41,6 +41,7 @@ from deepagents.backends.utils import (
     update_file_data,
 )
 from deepagents.middleware._message_eviction import (
+    PREVIEW_LINE_CHAR_LIMIT,
     _build_evicted_content,
     _create_content_preview,
     _extract_text_from_message,
@@ -3202,6 +3203,58 @@ class TestPreviewNote:
     def test_custom_subject(self):
         assert _preview_note(lines_omitted=False, subject="content") == "Here is a preview of the content:"
 
+    def test_explains_per_line_clipping(self):
+        assert _preview_note(lines_omitted=False, lines_clipped=True) == (
+            f"Here is a preview of the result (the output contains lines longer than {PREVIEW_LINE_CHAR_LIMIT} characters; "
+            f"this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters):"
+        )
+
+    def test_explains_both_kinds_of_loss(self):
+        """Exact wording, so a separator or ordering change is a deliberate edit."""
+        assert _preview_note(lines_omitted=True, lines_clipped=True) == (
+            "Here is a preview showing the head and tail of the result "
+            "(lines of the form `... [N lines truncated] ...` indicate omitted lines "
+            f"in the middle of the content; the output contains lines longer than {PREVIEW_LINE_CHAR_LIMIT} "
+            f"characters; this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters):"
+        )
+
+    def test_clipping_in_the_tail_is_reported(self):
+        """Clipping in the tail must be reported too.
+
+        A long *last* line is the common `.jsonl`/log shape, so the tail half of the
+        clipping check has to be live or its loss goes undisclosed.
+        """
+        content = "\n".join([f"line {i}" for i in range(20)] + ["Z" * (PREVIEW_LINE_CHAR_LIMIT + 1)])
+        preview = _create_content_preview(content)
+
+        assert preview.lines_omitted is True
+        assert preview.lines_clipped is True
+
+    def test_line_at_exactly_the_limit_is_not_reported_as_clipped(self):
+        """A line exactly at the limit is not clipped.
+
+        `PREVIEW_LINE_CHAR_LIMIT` characters survive whole, so claiming loss here
+        would be the same untruth as omitting a caveat, in the other direction.
+        """
+        assert _create_content_preview("C" * PREVIEW_LINE_CHAR_LIMIT).lines_clipped is False
+        assert _create_content_preview("C" * (PREVIEW_LINE_CHAR_LIMIT + 1)).lines_clipped is True
+
+    def test_offloaded_tool_message_explains_both_losses_together(self):
+        """Both caveats must be reachable from a real preview.
+
+        Otherwise the combined wording is only ever verified against hand-set flags.
+        """
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=10)
+        content = "\n".join([f"line {i}" for i in range(20)] + ["Z" * (PREVIEW_LINE_CHAR_LIMIT + 1)])
+        tool_message = ToolMessage(content=content, tool_call_id="test_both")
+
+        result = middleware._intercept_large_tool_result(tool_message)
+
+        assert isinstance(result, ToolMessage)
+        assert "lines of the form" in result.content
+        assert f"this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters" in result.content
+
     def test_marker_explanation_quotes_the_shared_template(self):
         """The shape the note describes comes from the marker's single source of truth."""
         assert TRUNCATION_MARKER_TEMPLATE.format(omitted_lines="N") in _preview_note(lines_omitted=True)
@@ -3218,6 +3271,21 @@ class TestPreviewNote:
         # numbering that shows nothing was dropped.
         assert "2  ... [42 lines truncated] ..." in preview.text
 
+    def test_offloaded_tool_message_discloses_clipping_for_one_long_line(self):
+        """A single huge line omits no lines, but the preview still loses most of it."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=10)
+        tool_message = ToolMessage(content="x" * 5000, tool_call_id="test_short")
+
+        result = middleware._intercept_large_tool_result(tool_message)
+
+        assert isinstance(result, ToolMessage)
+        # No lines were dropped, so no marker is explained...
+        assert "lines of the form" not in result.content
+        # ...but ~4000 characters were clipped away, and the note says so rather
+        # than presenting the excerpt as the whole result.
+        assert f"this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters" in result.content
+
     def test_offloaded_tool_message_explains_marker_when_lines_dropped(self):
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=10)
@@ -3228,6 +3296,8 @@ class TestPreviewNote:
         assert isinstance(result, ToolMessage)
         assert "Here is a preview showing the head and tail of the result" in result.content
         assert "lines of the form" in result.content
+        # Short lines, so nothing was clipped and that caveat stays out.
+        assert "this preview shows only their first" not in result.content
 
 
 class TestTruncatedHumanMessage:
@@ -3250,6 +3320,14 @@ class TestTruncatedHumanMessage:
 
         assert "Here is a preview of the content:" in result.content
         assert "lines of the form" not in result.content
+
+    def test_discloses_clipping_for_one_long_line(self):
+        message = HumanMessage(content="y" * 5000, id="h3")
+
+        result = _build_truncated_human_message(message, "/evicted/h3")
+
+        assert f"this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters" in result.content
+        assert "of the content (" in result.content
 
 
 class TestTooLargeToolMessage:

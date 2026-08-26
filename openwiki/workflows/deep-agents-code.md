@@ -5,12 +5,12 @@ description: Maintainer guide to dcode’s Textual transcript client and LangGra
 tags: [dcode, security, approvals, mcp, workflow, tui, transcript, tracing]
 openwiki:
   roles: [workflow, integration]
-  change_kinds: [ui, transcript, client-server, trace-metadata]
-  source_paths: [libs/code/deepagents_code/config.py, libs/code/deepagents_code/config_manifest.py, libs/code/deepagents_code/configuration/resolver.py, libs/code/deepagents_code/_ask_user_types.py, libs/code/deepagents_code/tui/widgets/messages.py, libs/code/deepagents_code/tui/textual_adapter.py, libs/code/deepagents_code/app.py, libs/code/deepagents_code/server_graph.py]
-  symbols: [build_stream_config, resolve_ranked, require_healthy_managed_config, encode_multi_select_answer, ask_user_answer_is_empty, UserMessage, QueuedUserMessage, AssistantMessage, append_content, _flush_pending_append, _stop_assistant_streams, create_cli_agent, make_graph]
-  test_paths: [libs/code/tests/unit_tests/test_coding_agent_metadata.py, libs/code/tests/unit_tests/test_configuration.py, libs/code/tests/unit_tests/test_configuration_resolver.py, libs/code/tests/unit_tests/test_ask_user_types.py, libs/code/tests/unit_tests/tui/test_textual_adapter.py, libs/code/tests/unit_tests/tui/widgets/test_messages.py, libs/code/tests/unit_tests/test_app.py]
-  invariants: ["A valid managed policy masks lower-precedence environment values for replacement options.", "An empty or malformed multi-select answer never becomes Auto consent evidence.", "Sent-prompt continuation lines align under the message body, not the prefix glyph.", "Full-message selection returns submitted text rather than display-truncated content.", "The first assistant-text fragment renders immediately and later fragments are batched without loss at stream shutdown.", "Trace-wide editable metadata is always a boolean and agrees with the dcode lc_versions value."]
-  validation_commands: ["cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_coding_agent_metadata.py tests/unit_tests/tui/test_textual_adapter.py -k 'ContractCompliance or versions_contains_cli_version or versions_marks_editable_cli_version'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_configuration.py tests/unit_tests/test_configuration_resolver.py -k 'managed_provider_failure_is_fail_closed or corrupt_managed_config_does_not_empty_the_mcp_deny_set or durable_found_masks_only_lower_priority_ephemeral_tiers'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_ask_user_types.py -k 'MultiSelectAnswerEncoding or AskUserAnswerIsEmpty'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k UserMessageAppearance", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k TestAssistantMessageStreamCoalescing"]
+  change_kinds: [ui, transcript, client-server, trace-metadata, configuration, managed-policy]
+  source_paths: [libs/code/deepagents_code/config.py, libs/code/deepagents_code/config_manifest.py, libs/code/deepagents_code/configuration/providers.py, libs/code/deepagents_code/configuration/service.py, libs/code/deepagents_code/configuration/types.py, libs/code/deepagents_code/configuration/resolver.py, libs/code/deepagents_code/_ask_user_types.py, libs/code/deepagents_code/tui/widgets/messages.py, libs/code/deepagents_code/tui/textual_adapter.py, libs/code/deepagents_code/app.py, libs/code/deepagents_code/server_graph.py]
+  symbols: [build_stream_config, resolve_ranked, RemoteTomlProvider, get_managed_snapshot, require_healthy_managed_config, encode_multi_select_answer, ask_user_answer_is_empty, UserMessage, QueuedUserMessage, AssistantMessage, append_content, _flush_pending_append, _stop_assistant_streams, create_cli_agent, make_graph]
+  test_paths: [libs/code/tests/unit_tests/test_coding_agent_metadata.py, libs/code/tests/unit_tests/test_configuration.py, libs/code/tests/unit_tests/test_configuration_resolver.py, libs/code/tests/unit_tests/test_server_graph.py, libs/code/tests/unit_tests/test_ask_user_types.py, libs/code/tests/unit_tests/tui/test_textual_adapter.py, libs/code/tests/unit_tests/tui/widgets/test_messages.py, libs/code/tests/unit_tests/test_app.py]
+  invariants: ["A valid managed policy masks lower-precedence environment values for replacement options.", "A remote managed descriptor contains only its HTTPS source, and a failed refresh does not evict the last enforceable policy.", "An empty or malformed multi-select answer never becomes Auto consent evidence.", "Sent-prompt continuation lines align under the message body, not the prefix glyph.", "Full-message selection returns submitted text rather than display-truncated content.", "The first assistant-text fragment renders immediately and later fragments are batched without loss at stream shutdown.", "Trace-wide editable metadata is always a boolean and agrees with the dcode lc_versions value."]
+  validation_commands: ["cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_coding_agent_metadata.py tests/unit_tests/tui/test_textual_adapter.py -k 'ContractCompliance or versions_contains_cli_version or versions_marks_editable_cli_version'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_configuration.py tests/unit_tests/test_configuration_resolver.py tests/unit_tests/test_server_graph.py -k 'remote_managed or failed_remote_refresh_keeps_policy_resolving_in_the_resolver or managed_health_gate_runs_off_event_loop'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_ask_user_types.py -k 'MultiSelectAnswerEncoding or AskUserAnswerIsEmpty'", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k UserMessageAppearance", "cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/tui/widgets/test_messages.py -k TestAssistantMessageStreamCoalescing"]
 ---
 # Deep Agents Code: runtime, approvals, and MCP trust
 
@@ -73,7 +73,11 @@ Consult this section when adding a dcode configuration option, changing preceden
 
 ```mermaid
 flowchart TD
-    Managed["Managed TOML policy"] --> Resolve["Ranked configuration resolver"]
+    Anchor["Fixed managed config file"] --> Descriptor{"Remote descriptor"}
+    Descriptor -->|No| Managed["Managed TOML policy"]
+    Descriptor -->|Yes| Remote["Validated HTTPS TOML policy"]
+    Remote --> Managed
+    Managed --> Resolve["Ranked configuration resolver"]
     Environment["Environment values"] --> Resolve
     UserConfig["User config TOML"] --> Resolve
     Defaults["Manifest defaults"] --> Resolve
@@ -82,19 +86,36 @@ flowchart TD
     Gate --> Effective
 ```
 
-This flow shows that the managed source participates both in normal resolution and in the launch-time enforcement gate.
+This flow shows that the fixed file either supplies policy directly or anchors one validated remote policy; the resulting managed source participates in normal resolution and the launch-time enforcement gate.
 
-`managed_config.toml` is an administrator-owned OS file: `/etc/dcode/managed_config.toml` on Linux, `/Library/Application Support/dcode/managed_config.toml` on macOS, and the registry-derived ProgramData location on Windows. The Windows production lookup intentionally ignores a caller-controlled `ProgramData` environment variable. `configuration/service.py::require_healthy_managed_config()` gates startup: corrupt, unreadable, indeterminate, or unenforceable managed policy raises an error instead of becoming an empty policy. A refresh retains the last enforceable snapshot rather than caching a broken replacement, and MCP disabled-server checks fail closed when policy cannot be read.
+`managed_config.toml` is an administrator-owned OS file: `/etc/dcode/managed_config.toml` on Linux, `/Library/Application Support/dcode/managed_config.toml` on macOS, and the registry-derived ProgramData location on Windows. The Windows production lookup intentionally ignores a caller-controlled `ProgramData` environment variable. `configuration/service.py::require_healthy_managed_config()` gates startup: corrupt, unreadable, indeterminate, or unenforceable managed policy raises an error instead of becoming an empty policy. MCP disabled-server checks also fail closed when policy cannot be read.
+
+### Remote managed-policy descriptors
+
+The fixed OS file can now remain a local trust anchor while the complete policy is published remotely. Its remote form is **exclusive**—it contains only this table and one non-empty source string:
+
+```toml
+[managed_config]
+source = "https://config.example.com/policy.toml"
+```
+
+`service.py::_remote_managed_snapshot()` rejects descriptor keys other than `source` and rejects any local policy keys beside `[managed_config]` before making a network request. The downloaded TOML is the managed tier at rank 200, so it has the same precedence and enforcement semantics as a local managed policy; it cannot itself contain `[managed_config]`, preventing policy-source chaining.
+
+`providers.py::RemoteTomlProvider` accepts only normalized, credential-free absolute HTTPS URLs with no query or fragment, uses system TLS validation, bypasses environment proxies, refuses redirects, and applies one five-second end-to-end fetch deadline with a 1 MiB response limit. It accepts only a complete HTTP 200 policy body; empty, malformed, partial, compressed, oversized, or nested-descriptor responses are unhealthy. These are availability and policy-integrity guards, not a substitute for controlling the publisher or TLS trust roots.
+
+The local descriptor remains the repair point only when it is malformed. Once its URL is validated, `ProviderStatus.remote_source` permits `doctor` and startup errors to identify the remote document safely; rejected URLs are not echoed, avoiding credential/query leakage. For a remote outage, repair the published source rather than deleting the anchor—removing it would drop the managed tier.
+
+`get_managed_snapshot()` fetches outside its snapshot lock, and server startup plus Textual `/restart` invoke their health/reload paths off the event loop. A failed first fetch fails startup. After a valid policy is in use, a failed or unenforceable refresh is reported but does not replace the cached last enforceable generation, so resolver reads cannot fall through to a user value during an outage. Preserve this ordering when changing caches, reloads, or diagnostics.
 
 For replacement options, a `Found` value from a durable managed source masks lower-precedence **environment** values; a lower-precedence durable user value cannot reverse an environment value that already wins. Union and deep-merge options deliberately retain valid contributions, including deny-list restrictions. Do not add a resolver bypass or treat a failed managed load as absent policy: that can turn an administrator restriction into a user-controlled configuration.
 
-When extending this seam, register the option in `config_manifest.py`, choose its typed coercion and merge strategy, route it through the ranked providers, and make the user config writer leave the managed path untouched. Validate precedence and failure behavior before UI polish:
+When extending this seam, register the option in `config_manifest.py`, choose its typed coercion and merge strategy, route it through the ranked providers, and make the user config writer leave the managed path untouched. For remote descriptors or fetch/reload changes, preserve descriptor exclusivity, validated-only diagnostics, bounded no-proxy/no-redirect HTTPS I/O, off-loop execution, and last-known-good resolution. Validate those behavior boundaries quietly before UI polish:
 
 ```bash
-cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_configuration.py tests/unit_tests/test_configuration_resolver.py -k 'managed_provider_failure_is_fail_closed or corrupt_managed_config_does_not_empty_the_mcp_deny_set or durable_found_masks_only_lower_priority_ephemeral_tiers'
+cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_configuration.py tests/unit_tests/test_configuration_resolver.py tests/unit_tests/test_server_graph.py -k 'remote_managed or failed_remote_refresh_keeps_policy_resolving_in_the_resolver or managed_health_gate_runs_off_event_loop'
 ```
 
-The named tests cover a corrupt policy startup gate, MCP-deny fail-closed behavior, and directional durable masking. Add `test_configuration_resolution.py` or the specific consumer suite when changing a concrete option. `DEEPAGENTS_CODE_SHOW_USAGE_STATS` is a narrow teardown-output option: falsy values suppress only the session usage table for both TUI and `-x`/`--execute`, not all headless output.
+`test_remote_managed_descriptor_must_be_exclusive`, `test_failed_remote_reload_keeps_previous_policy`, and `test_failed_remote_refresh_keeps_policy_resolving_in_the_resolver` cover anchor shape, refresh retention, and resolver-level authority retention. `test_managed_health_gate_runs_off_event_loop` verifies server scheduling does not wait for remote policy I/O. Use `TestRestartCommand::test_remote_config_refresh_keeps_chat_input_responsive` in `test_app.py` when changing the interactive restart path; it proves a slow refresh leaves the Textual message pump usable. Add `test_configuration_resolution.py` or the specific consumer suite when changing a concrete option. `DEEPAGENTS_CODE_SHOW_USAGE_STATS` is a narrow teardown-output option: falsy values suppress only the session usage table for both TUI and `-x`/`--execute`, not all headless output.
 
 ## Ask-user wire contract
 

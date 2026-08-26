@@ -165,12 +165,13 @@ def refresh_shared_resolver(config_path: Path) -> None:
     filesystem reads inside tests that passed a `tmp_path` - while leaving the
     written path's own view stale anyway.
 
-    Refreshes every tier, managed policy included. `reload()` re-reads the
-    managed file through `_reload_enforceable_managed_snapshot`, so an in-app
-    preference toggle also picks up policy installed since startup. That is
-    the price of one generation: leaving the managed provider alone would let
-    the user tier advance past the policy tier, which is the split-generation
-    state the whole design exists to prevent.
+    Refreshes every tier, managed policy included. The managed snapshot is
+    fetched before the resolver takes its generation lock, then installed as
+    an already-refreshed replacement. An in-app preference toggle therefore
+    still picks up policy installed since startup without making ordinary
+    event-loop config reads wait on remote I/O. Leaving the managed provider
+    alone would let the user tier advance past the policy tier, which is the
+    split-generation state the whole design exists to prevent.
 
     Failures are logged rather than returned. The write already landed and was
     replaced into place; reporting a stale in-process view as a failed write
@@ -194,7 +195,7 @@ def refresh_shared_resolver(config_path: Path) -> None:
     from deepagents_code.configuration.resolver import get_config_resolver
 
     try:
-        get_config_resolver().reload()
+        get_config_resolver(refresh_managed=True)
     except Exception as exc:  # noqa: BLE001  # Write committed; see docstring
         logger.warning(
             "Wrote %s but could not refresh the shared config resolver: %s. "

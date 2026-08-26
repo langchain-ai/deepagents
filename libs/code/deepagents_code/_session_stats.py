@@ -888,6 +888,108 @@ def record_message_usage(
     )
 
 
+def is_model_usage_event(data: object) -> bool:
+    """Report whether a custom-stream payload is a nested model-usage event.
+
+    Lets a client consume its own event whatever `record_model_usage_event` made
+    of it. A duplicate of a request the message stream already recorded is still
+    this client's event, not a payload for the unrelated handlers downstream.
+
+    Args:
+        data: A `custom` stream payload.
+
+    Returns:
+        `True` when the payload claims to be a nested model-usage event.
+    """
+    from deepagents_code.cost_tracking import MODEL_USAGE_EVENT_TYPE
+
+    return isinstance(data, Mapping) and data.get("type") == MODEL_USAGE_EVENT_TYPE
+
+
+def record_model_usage_event(
+    stats: SessionStats,
+    data: object,
+    *,
+    active_thread_id: str = "",
+    fallback_model: str = "",
+    fallback_provider: str = "",
+    recorded_requests: dict[str, RecordedRequest] | None = None,
+) -> RecordedUsage | None:
+    """Record a validated provisional usage event from a nested model call.
+
+    Returns:
+        The recorded usage delta, or `None` when the event is invalid or duplicate.
+    """
+    from deepagents_code.cost_tracking import (
+        MODEL_USAGE_EVENT_TYPE,
+        MODEL_USAGE_EVENT_VERSION,
+    )
+
+    if not isinstance(data, Mapping) or data.get("type") != MODEL_USAGE_EVENT_TYPE:
+        return None
+    version = data.get("version")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version != MODEL_USAGE_EVENT_VERSION
+    ):
+        # A newer graph process can stream a shape this client cannot read. The
+        # spend is still charged and streamed as the thread total, so only the
+        # provisional display is lost -- but silence would make that look like
+        # the graph never emitted anything.
+        logger.debug(
+            "Ignoring a nested usage event of version %r; this client reads %d.",
+            version,
+            MODEL_USAGE_EVENT_VERSION,
+        )
+        return None
+    request_id = data.get("request_id")
+    thread_id = data.get("thread_id")
+    scope = data.get("scope")
+    usage = data.get("usage_metadata")
+    model_name, provider = data.get("model_name"), data.get("provider")
+    if (
+        not isinstance(request_id, str)
+        or not request_id
+        or not isinstance(thread_id, str)
+        or not thread_id
+        or not isinstance(scope, str)
+        or not scope
+        or not isinstance(usage, Mapping)
+        or not usage
+        or not isinstance(model_name, str)
+        or not isinstance(provider, str)
+    ):
+        logger.debug("Ignoring a malformed nested usage event")
+        return None
+    if active_thread_id and thread_id != active_thread_id:
+        # Ordinary: a stream for a thread the user has since switched away from.
+        return None
+    try:
+        from langchain_core.messages import AIMessage
+
+        message = AIMessage(
+            content="",
+            id=request_id,
+            usage_metadata=cast("Any", dict(usage)),
+            response_metadata={
+                "model_name": model_name,
+                "model_provider": provider,
+            },
+        )
+    except (TypeError, ValueError):
+        logger.debug("Rejected malformed nested model usage", exc_info=True)
+        return None
+    return record_message_usage(
+        stats,
+        message,
+        fallback_model=fallback_model,
+        fallback_provider=fallback_provider,
+        kind="subagent",
+        recorded_requests=recorded_requests,
+    )
+
+
 def format_token_count(count: int) -> str:
     """Format a token count into a human-readable short string.
 

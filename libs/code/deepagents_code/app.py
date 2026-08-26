@@ -12655,8 +12655,11 @@ class DeepAgentsApp(App):
         from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT
 
         from deepagents_code._constants import DEFAULT_AGENT_NAME
-        from deepagents_code.agent import get_system_prompt
-        from deepagents_code.config import settings
+        from deepagents_code.agent import (
+            _MEMORY_READONLY_SYSTEM_PROMPT,
+            get_system_prompt,
+        )
+        from deepagents_code.config import is_memory_auto_save_enabled, settings
         from deepagents_code.context_doctor import (
             build_context_doctor_report,
             format_memory_prompt,
@@ -12700,10 +12703,13 @@ class DeepAgentsApp(App):
                         )
                 except OSError:
                     logger.warning("Could not read memory metadata for %s", path)
+            template = (
+                MEMORY_SYSTEM_PROMPT
+                if is_memory_auto_save_enabled()
+                else _MEMORY_READONLY_SYSTEM_PROMPT
+            )
             try:
-                memory_prompt = format_memory_prompt(
-                    memory_contents, MEMORY_SYSTEM_PROMPT
-                )
+                memory_prompt = format_memory_prompt(memory_contents, template)
             except Exception:
                 logger.exception("Failed to format memory for /context-doctor")
             try:

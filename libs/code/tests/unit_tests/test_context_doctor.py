@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT
+
+from deepagents_code.agent import _MEMORY_READONLY_SYSTEM_PROMPT
 from deepagents_code.context_doctor import (
     build_context_doctor_report,
     estimate_text_tokens,
@@ -88,3 +91,17 @@ def test_report_marks_uninspectable_sections_unavailable() -> None:
     )
 
     assert render_context_doctor_report(report).count("unavailable") >= 3
+
+
+def test_format_memory_prompt_supports_readonly_and_autosave_templates() -> None:
+    contents = [("/path/AGENTS.md", "guidelines here")]
+
+    autosave_prompt = format_memory_prompt(contents, MEMORY_SYSTEM_PROMPT)
+    readonly_prompt = format_memory_prompt(contents, _MEMORY_READONLY_SYSTEM_PROMPT)
+
+    assert "guidelines here" in autosave_prompt
+    assert "Learning from feedback:" in autosave_prompt
+
+    assert "guidelines here" in readonly_prompt
+    assert "Automatic memory saving is disabled:" in readonly_prompt
+    assert "Learning from feedback:" not in readonly_prompt

@@ -248,6 +248,35 @@ async def test_context_doctor_dispatches_to_handler(
     handler.assert_awaited_once_with("/context-doctor")
 
 
+@pytest.mark.parametrize("auto_save", [True, False])
+async def test_handle_context_doctor_command_renders_report(
+    monkeypatch: pytest.MonkeyPatch,
+    auto_save: bool,
+) -> None:
+    app = DeepAgentsApp()
+    app._server_kwargs = {"allow_fs_tools": ["read_file"]}
+    app._cwd = "/tmp"
+    app._discovered_skills = []
+    mount_message = AsyncMock()
+    monkeypatch.setattr(app, "_mount_message", mount_message)
+    monkeypatch.setattr(
+        app,
+        "_get_context_usage_counts",
+        AsyncMock(return_value=(100, 20)),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.config.is_memory_auto_save_enabled",
+        lambda: auto_save,
+    )
+
+    await app._handle_context_doctor_command("/context-doctor")
+
+    assert mount_message.await_count == 2
+    rendered_msg = mount_message.await_args_list[-1].args[0]
+    assert isinstance(rendered_msg, AppMessage)
+    assert "Fresh-session context audit" in str(rendered_msg._content)
+
+
 async def test_tokens_prompts_for_first_message_when_usage_is_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

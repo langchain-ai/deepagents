@@ -4944,6 +4944,7 @@ class TestConvertMessagesToData:
                 "goal_control",
                 "rubric_grader",
                 "summarization",
+                "local_context",
             )
         ]
         messages.append(HumanMessage(content="real user message"))

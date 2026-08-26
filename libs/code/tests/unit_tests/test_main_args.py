@@ -4139,8 +4139,19 @@ class TestModelParamsRetryOverrideWarning:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """`--model-params max_retries` is always overridden, so say so."""
+        # Pin the provider: without `--model` it resolves from available
+        # credentials, and on a credential-free machine the provider is
+        # unknown, so no retry kwarg is forced and the warning never fires.
         self._run_headless(
-            ["dcode", "--model-params", '{"max_retries": 10}', "-n", "hi"]
+            [
+                "dcode",
+                "--model",
+                "anthropic:claude-opus-4-5",
+                "--model-params",
+                '{"max_retries": 10}',
+                "-n",
+                "hi",
+            ]
         )
         stderr = capsys.readouterr().err
         assert "--model-params max_retries is ignored" in stderr

@@ -9,12 +9,12 @@ from pydantic import TypeAdapter
 from deepagents.backends.protocol import FileData, ReadResult
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
+    InvalidGlobPatternError,
     _get_backend_read_file_type,
     _get_file_type,
     _glob_search_files,
     _looks_like_regex,
     compile_grep_include_glob,
-    compile_recursive_glob,
     grep_matches_from_files,
     perform_string_replacement,
     regex_literal_hint,
@@ -291,25 +291,28 @@ class TestGlobSearchFiles:
         assert "/foo/b.txt" not in result
 
 
-class TestCompileRecursiveGlobSharesIncludeContract:
-    """`compile_recursive_glob` is the walk entry-point for the shared contract."""
+class TestCompileGrepIncludeGlobRefusals:
+    """Refusals are a public `ValueError` subtype backends can catch precisely."""
 
-    def test_delegates_to_include_glob_matcher(self) -> None:
-        paths = ["top.py", "src/app/main.py", "readme.md"]
-        for pattern in ("*.py", "**/*.py", "/*.py", "src/**/*.py"):
-            expected = [p for p in paths if compile_grep_include_glob(pattern)(p)]
-            actual = [p for p in paths if compile_recursive_glob(pattern)(p)]
-            assert actual == expected, pattern
+    def test_pattern_wcmatch_refuses_raises_invalid_glob_pattern(self) -> None:
+        """Backends catch `InvalidGlobPatternError`; wcmatch's own type is private."""
+        with pytest.raises(InvalidGlobPatternError, match="Invalid glob pattern"):
+            compile_grep_include_glob("{a,b}" * 40 + "*.py")
 
-    def test_pattern_wcmatch_refuses_raises_value_error(self) -> None:
-        """Backends catch `ValueError`; wcmatch's own type is private."""
-        with pytest.raises(ValueError, match="Invalid glob pattern"):
-            compile_recursive_glob("{a,b}" * 40 + "*.py")
+    def test_refusal_is_a_value_error(self) -> None:
+        """Subclassing `ValueError` keeps pre-existing handlers working."""
+        assert issubclass(InvalidGlobPatternError, ValueError)
+
+    def test_traversal_pattern_is_refused(self) -> None:
+        """`..` is rejected in the shared matcher so every backend agrees."""
+        for pattern in ("../*.py", "a/../../etc/*", "/../*.py"):
+            with pytest.raises(InvalidGlobPatternError, match="traversal"):
+                compile_grep_include_glob(pattern)
 
     def test_malformed_but_compilable_patterns_do_not_raise(self) -> None:
         """`*.{py` and `[a-` compile fine and simply match nothing."""
         for pattern in ("*.{py", "[a-", "a{b,c"):
-            assert compile_recursive_glob(pattern)("a.py") is False
+            assert compile_grep_include_glob(pattern)("a.py") is False
 
 
 class TestGrepIncludeGlob:
@@ -671,3 +674,23 @@ class TestGrepMaxCount:
         assert result.matches is not None
         assert len(result.matches) == 3
         assert result.truncated is False
+
+
+class TestGrepRefusedGlobIsAResultNotAnException:
+    """`grep(glob=...)` is a tool boundary too, and `sync_grep` has no try/except."""
+
+    def test_refused_glob_returns_error(self) -> None:
+        files = {"/a.py": {"content": "x", "created_at": "", "modified_at": ""}}
+
+        result = grep_matches_from_files(files, "x", "/", "{a,b}" * 40 + "*.py")
+
+        assert result.error is not None
+        assert "Invalid glob pattern" in result.error
+
+    def test_traversal_glob_returns_error(self) -> None:
+        files = {"/a.py": {"content": "x", "created_at": "", "modified_at": ""}}
+
+        result = grep_matches_from_files(files, "x", "/", "../*.py")
+
+        assert result.error is not None
+        assert "traversal" in result.error

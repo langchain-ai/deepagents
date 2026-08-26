@@ -55,6 +55,7 @@ from deepagents_code.approval_mode import (
     approval_mode_key,
 )
 from deepagents_code.auto_mode import (
+    _CLASSIFIER_POLICY,
     _MAX_CLASSIFIER_MODEL_CACHE,
     _MAX_EMITTED_EVENT_SCOPES,
     _MAX_PENDING_EVENT_SCOPES,
@@ -6562,3 +6563,25 @@ async def test_headless_guard_rejects_gated_mcp_without_execution() -> None:
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
     assert not executed
+
+
+def test_classifier_policy_section_order_and_references() -> None:
+    """Guard the policy's paragraph order and its internal cross-references.
+
+    The policy is one concatenated string whose paragraphs refer to each other
+    by direction ("below"). Reordering them without updating those references
+    silently changes which rules the classifier believes apply, so pin both the
+    order and every directional reference.
+    """
+    deny = _CLASSIFIER_POLICY.index("Deny rules take precedence")
+    scratch = _CLASSIFIER_POLICY.index("Managed scratch exception")
+    allow = _CLASSIFIER_POLICY.index("Otherwise, allow ordinary")
+    assert deny < scratch < allow
+
+    # Forward references must precede the paragraphs they point at.
+    assert _CLASSIFIER_POLICY.index("under the deny rules below") < deny
+    assert _CLASSIFIER_POLICY.index("may be allowed below") < allow
+    assert _CLASSIFIER_POLICY.index("managed scratch lifecycle below") < scratch
+
+    # A missing space between adjacent literals would silently join two words.
+    assert "  " not in _CLASSIFIER_POLICY

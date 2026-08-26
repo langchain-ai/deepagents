@@ -26629,6 +26629,17 @@ class DeepAgentsApp(App):
                 label,
             )
             return False
+        active = self._restart_respawn_task
+        if mutation_lock_held and active is not None and not active.done():
+            # The active task may be waiting to acquire the lock this caller
+            # holds. Awaiting that reused task here would deadlock the install
+            # continuation, so let the existing restart finish after the
+            # install releases the lock and leave this follow-up unapplied.
+            logger.info(
+                "Cannot auto-restart to load %s: another restart is in progress",
+                label,
+            )
+            return False
         restart = self._schedule_restart_command(
             preserve_queue=True,
             propagate_errors=True,
@@ -26646,6 +26657,10 @@ class DeepAgentsApp(App):
 
         try:
             changes = await self._reload_settings_from_environment()
+            if await self._report_managed_block(changes) is not None:
+                # The previous policy remains in force. Keep its caches and
+                # stop before a respawn could report "Restart complete."
+                return False
             clear_caches()
         except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
             logger.exception("Failed to reload configuration during restart")
@@ -26658,15 +26673,7 @@ class DeepAgentsApp(App):
                 ),
             )
             return False
-        # With a remote source a block is a routine network outcome, so
-        # treating it as success would mount "Restart complete." while the
-        # process silently kept the previous policy generation -- exactly what
-        # an administrator who restarted to pick up an edit must not be told.
-        # A block keeps the caller from respawning: the subprocess would come
-        # back up on the previous policy generation, and `_run_restart_respawn`
-        # would mount "Restart complete." for a restart that applied no policy
-        # change.
-        return await self._report_managed_block(changes) is None
+        return True
 
     async def _handle_restart_command(self, command: str) -> None:
         """Drive the `/restart` slash command.

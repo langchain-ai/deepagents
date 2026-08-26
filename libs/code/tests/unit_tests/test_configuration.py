@@ -5716,6 +5716,9 @@ def test_earlier_load_publishes_when_a_later_one_fails(
     assert good_result[0].data == {"startup": {"mode": "manual"}}
     assert service._snapshot_state.managed is not None
     assert service.get_managed_snapshot().data == {"startup": {"mode": "manual"}}
+    failure = service.managed_refresh_failure()
+    assert failure is not None
+    assert failure.health is ProviderHealth.UNREADABLE
 
 
 def test_stale_refresh_cannot_overwrite_a_newer_published_snapshot(
@@ -6362,15 +6365,23 @@ def test_provider_status_rejects_an_unvalidated_remote_source() -> None:
     construction site that skipped `_validate_remote_url` would put a rejected
     source -- credentials and all -- into a `doctor` row.
     """
-    from deepagents_code.configuration.types import ProviderStatus
+    from deepagents_code.configuration.types import (
+        REMOTE_SOURCE_MAX_CHARS,
+        ProviderStatus,
+    )
 
     for source in (
         "http://config.example.com/policy.toml",
+        "https://",
+        "https:///policy.toml",
+        "https://config.example.com:invalid/policy.toml",
         "https://user:pw@config.example.com/policy.toml",
         "https://config.example.com/policy.toml?token=s3cret",
         "https://config.example.com/policy.toml#frag",
         "https://config.example.com/pol\u200bicy.toml",
         "https://config.example.com/policy.toml\x1b[2J",
+        "https://config.example.com/" + "a" * REMOTE_SOURCE_MAX_CHARS,
+        "https://CONFIG.example.com./policy.toml",
     ):
         with pytest.raises(ValueError, match="validated absolute HTTPS URL"):
             ProviderStatus(
@@ -6416,7 +6427,7 @@ def test_remote_source_longer_than_the_bound_is_rejected(
     tmp_path: Path,
 ) -> None:
     """An unbounded source would be the one unbounded string on this path."""
-    from deepagents_code.configuration.providers import REMOTE_SOURCE_MAX_CHARS
+    from deepagents_code.configuration.types import REMOTE_SOURCE_MAX_CHARS
 
     source = "https://config.example.com/" + "a" * REMOTE_SOURCE_MAX_CHARS
     snapshot = RemoteTomlProvider(

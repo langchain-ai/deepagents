@@ -610,16 +610,12 @@ def _managed_config_row() -> DiagnosticItem:
     Returns:
         Managed config diagnostic row.
     """
-    from deepagents_code.configuration.resolver import (
-        MANAGED_RANK,
-        resolver_from_snapshots,
-    )
     from deepagents_code.configuration.service import (
         get_managed_snapshot,
         managed_refresh_failure,
         managed_snapshot_health,
     )
-    from deepagents_code.configuration.types import ProviderHealth, TomlSnapshot
+    from deepagents_code.configuration.types import ProviderHealth
 
     snapshot = get_managed_snapshot(refresh=True)
     # A refresh caller receives the failure it asked to see, while the process
@@ -631,14 +627,7 @@ def _managed_config_row() -> DiagnosticItem:
         if not snapshot.status.usable and managed_refresh_failure() is not None
         else None
     )
-    user = TomlSnapshot.absent("config.toml")
-    status = resolver_from_snapshots(managed=snapshot, user=user).provider_statuses()[
-        MANAGED_RANK
-    ]
-    # `status` round-trips from a provider seeded with this same snapshot, so
-    # re-wrapping it was a no-op that read as meaningful -- and the one place
-    # `TomlSnapshot.__post_init__` could raise inside the command whose job is
-    # to survive a broken config.
+    status = snapshot.status
     health = managed_snapshot_health(snapshot)
     path = status.path or "(unknown)"
     # Printing the URL relies on `remote_source` being set only from

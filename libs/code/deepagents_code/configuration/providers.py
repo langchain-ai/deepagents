@@ -58,6 +58,7 @@ from deepagents_code.configuration.types import (
     ProviderStatus,
     TomlSnapshot,
     Unset,
+    _validate_remote_source_url as _validate_remote_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -597,83 +598,12 @@ def _remote_status(
     )
 
 
-def _validate_remote_url(source: str) -> str:
-    """Validate and normalize one configured remote source.
-
-    Returns:
-        The normalized absolute HTTPS URL.
-
-    Raises:
-        ValueError: If the source is longer than `REMOTE_SOURCE_MAX_CHARS`, is
-            not an absolute HTTPS URL, carries credentials, a query string, or
-            a fragment, has an invalid port, or contains non-ASCII, whitespace,
-            or control characters.
-    """
-    from urllib.parse import urlsplit
-
-    if len(source) > REMOTE_SOURCE_MAX_CHARS:
-        # An accepted source is retained in `ProviderStatus.remote_source` and
-        # interpolated whole into operator messages. The descriptor is
-        # administrator-owned, so this is a legibility bound rather than a
-        # trust boundary -- but every other string rendered on this path is
-        # bounded, and an unbounded one here would be the exception.
-        msg = "remote source is too long"
-        raise ValueError(msg)
-    if any(char.isspace() or not char.isprintable() for char in source):
-        # Check before parsing or retaining the source for diagnostics. Unicode
-        # separators and format controls can reflow or visually spoof terminal
-        # output even though they are outside the ASCII C0 range.
-        msg = "remote source must not contain whitespace or control characters"
-        raise ValueError(msg)
-    try:
-        parsed = urlsplit(source)
-    except ValueError as exc:
-        # `urlsplit` embeds the whole netloc in its own message -- including
-        # `user:password@` -- and every caller renders the detail to the
-        # operator. Replace it with a fixed string: this function exists to
-        # keep a rejected source out of operator-visible text, so it must not
-        # forward one from the parser either.
-        msg = "remote source is not a valid URL"
-        raise ValueError(msg) from exc
-    if not source.isascii():
-        # `urllib` does not consistently encode non-ASCII request targets, and
-        # confusable host/path text is unsafe to repeat in operator output.
-        msg = "remote source must contain only ASCII URI characters"
-        raise ValueError(msg)
-    if parsed.scheme.lower() != "https" or not parsed.hostname:
-        msg = "remote source must be an absolute HTTPS URL"
-        raise ValueError(msg)
-    if parsed.username is not None or parsed.password is not None:
-        msg = "remote source must not contain credentials"
-        raise ValueError(msg)
-    if parsed.query or parsed.fragment:
-        msg = "remote source must not contain a query string or fragment"
-        raise ValueError(msg)
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        msg = "remote source has an invalid port"
-        raise ValueError(msg) from exc
-    host = parsed.hostname.rstrip(".")
-    netloc = f"[{host}]" if ":" in host else host
-    if port is not None:
-        netloc = f"{netloc}:{port}"
-    return parsed._replace(scheme="https", netloc=netloc).geturl()
-
-
 _TIMED_OUT_DETAIL = "remote source timed out"
 """Shared by the two deadline guards and by `load`'s timeout arms.
 
 `_fail_if_expired` and `_remaining_timeout` test the same condition from
 opposite directions, and `load` renders whichever one fired. One string keeps
 the three from drifting into differently-worded reports of one failure.
-"""
-
-REMOTE_SOURCE_MAX_CHARS = 2048
-"""Longest remote source URL the descriptor may declare.
-
-Well above any real policy URL and far below a length that would make an
-operator message unreadable.
 """
 
 _READ_CHUNK_SIZE = 65536

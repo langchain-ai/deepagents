@@ -43,6 +43,56 @@ class ProviderHealth(StrEnum):
     CORRUPT = "CORRUPT"
 
 
+REMOTE_SOURCE_MAX_CHARS = 2048
+"""Longest remote source URL retained in operator-facing diagnostics."""
+
+
+def _validate_remote_source_url(source: str) -> str:
+    """Validate and normalize one configured remote source URL.
+
+    Returns:
+        The normalized absolute HTTPS URL.
+
+    Raises:
+        ValueError: If the source is unsafe or is not an absolute HTTPS URL.
+    """
+    from urllib.parse import urlsplit
+
+    if len(source) > REMOTE_SOURCE_MAX_CHARS:
+        msg = "remote source is too long"
+        raise ValueError(msg)
+    if any(char.isspace() or not char.isprintable() for char in source):
+        msg = "remote source must not contain whitespace or control characters"
+        raise ValueError(msg)
+    try:
+        parsed = urlsplit(source)
+    except ValueError as exc:
+        msg = "remote source is not a valid URL"
+        raise ValueError(msg) from exc
+    if not source.isascii():
+        msg = "remote source must contain only ASCII URI characters"
+        raise ValueError(msg)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        msg = "remote source must be an absolute HTTPS URL"
+        raise ValueError(msg)
+    if parsed.username is not None or parsed.password is not None:
+        msg = "remote source must not contain credentials"
+        raise ValueError(msg)
+    if parsed.query or parsed.fragment:
+        msg = "remote source must not contain a query string or fragment"
+        raise ValueError(msg)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        msg = "remote source has an invalid port"
+        raise ValueError(msg) from exc
+    host = parsed.hostname.rstrip(".")
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return parsed._replace(scheme="https", netloc=netloc).geturl()
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderStatus:
     """Health and safe diagnostic detail for one provider."""
@@ -70,43 +120,22 @@ class ProviderStatus:
         It held by convention -- one construction site in each of two modules
         -- and `ProviderStatus` is public, so a third site is a rejected
         source, credentials and all, in a `doctor` row. This restates the
-        cheap, load-bearing half of `_validate_remote_url` rather than the
-        whole of it: the point is that an unvalidated string cannot get in.
+        canonical remote-source validator and also requires its normalized
+        output: the point is that an unvalidated string cannot get in.
 
         Raises:
-            ValueError: If `remote_source` is not an absolute HTTPS URL, is not
-                printable ASCII, or carries credentials, a query, or a
-                fragment.
+            ValueError: If `remote_source` is not the normalized output of the
+                remote-source validator.
         """
-        from urllib.parse import urlsplit
-
         source = self.remote_source
         if source is None:
             return
-        if (
-            not source.startswith("https://")
-            or not source.isascii()
-            or not source.isprintable()
-            or any(char in source for char in "?# ")
-        ):
-            msg = "remote_source must be a validated absolute HTTPS URL"
-            raise ValueError(msg)
+        msg = "remote_source must be a validated absolute HTTPS URL"
         try:
-            parsed = urlsplit(source)
+            normalized = _validate_remote_source_url(source)
         except ValueError as exc:
-            msg = "remote_source must be a validated absolute HTTPS URL"
             raise ValueError(msg) from exc
-        # Credentials live in the authority's userinfo, so parse for them
-        # rather than banning "@": that character is also valid in a URL path,
-        # and `_validate_remote_url` accepts it there.
-        try:
-            has_credentials = parsed.username is not None or parsed.password is not None
-        except ValueError as exc:
-            # Invalid bracketed host or port; not a validated URL either.
-            msg = "remote_source must be a validated absolute HTTPS URL"
-            raise ValueError(msg) from exc
-        if has_credentials:
-            msg = "remote_source must be a validated absolute HTTPS URL"
+        if normalized != source:
             raise ValueError(msg)
 
     @property

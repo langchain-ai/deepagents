@@ -24437,6 +24437,30 @@ class TestRestartAfterInstall:
         release_refresh.set()
         assert await offered_restart is False
 
+    async def test_restart_does_not_reuse_a_task_waiting_on_the_held_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A post-install restart cannot await a task blocked on its own lock."""
+        app = DeepAgentsApp()
+        app._server_proc = object()
+        app._server_kwargs = {}
+        app._agent_running = False
+        app._connecting = False
+        run_restart = AsyncMock(return_value=True)
+        monkeypatch.setattr(app, "_run_restart_command", run_restart)
+
+        async with app._environment_mutation_lock:
+            active = app._schedule_restart_command()
+            await asyncio.sleep(0)
+            result = await asyncio.wait_for(
+                app._restart_after_install("baseten", mutation_lock_held=True),
+                timeout=1,
+            )
+
+        assert result is False
+        assert await active is True
+        run_restart.assert_awaited_once_with(preserve_queue=False)
+
     @pytest.mark.parametrize(
         ("proc", "kwargs", "deferred", "error", "expected"),
         [
@@ -35187,11 +35211,13 @@ class TestRestartCommand:
                 "reload_from_environment",
                 lambda: [blocked],
             )
+            clear_caches = MagicMock()
             monkeypatch.setattr(
-                "deepagents_code.model_config.clear_caches", lambda: None
+                "deepagents_code.model_config.clear_caches", clear_caches
             )
 
             assert await app._reload_configuration_for_restart() is False
+            clear_caches.assert_not_called()
             assert any(
                 blocked in str(message._content) for message in app.query(ErrorMessage)
             )

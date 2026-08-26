@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
-    from deepagents_code.configuration.resolver import ConfigResolver, ResolvedValue
+    from deepagents_code.configuration.resolver import ResolvedValue
 
 from deepagents_code.configuration.paths import (
     managed_config_path,
@@ -584,14 +584,19 @@ class ManagedPolicyError(ManagedConfigError):
 class _SnapshotState:
     """Mutable process snapshot guarded by `_snapshot_lock`.
 
-    Loads run outside the lock, so several can overlap. The ticket pair keeps
-    them ordered: `begin_load` issues a monotonic ticket, and `publish` accepts
-    a candidate only when no *newer generation has already been published*.
-    Ordering on publication rather than on load start is what lets a load that
-    started earlier still fill an empty cache when a later load failed.
+    Loads run outside the lock, so several can overlap. `published_ticket`
+    orders enforceable generations while `outcome_ticket` independently orders
+    health outcomes. Keeping them separate lets an older successful load fill
+    an empty cache after a newer load fails without erasing that newer failure.
     """
 
-    __slots__ = ("latest_ticket", "managed", "published_ticket", "refresh_failure")
+    __slots__ = (
+        "latest_ticket",
+        "managed",
+        "outcome_ticket",
+        "published_ticket",
+        "refresh_failure",
+    )
 
     def __init__(self) -> None:
         """Start with no cached snapshot."""
@@ -603,6 +608,10 @@ class _SnapshotState:
         self.refresh_failure: ProviderStatus | None = None
         # Monotonic ticket issued when each load starts.
         self.latest_ticket = 0
+        # Ticket of the latest success or recorded refresh failure. Snapshot
+        # publication and health move independently when an older success
+        # finishes after a newer failure.
+        self.outcome_ticket = 0
         # Ticket of the load whose snapshot is currently cached. `reset` raises
         # it to `latest_ticket` so no load already in flight can republish the
         # generation being cleared.
@@ -638,7 +647,9 @@ class _SnapshotState:
                 # ticket and not against `latest_ticket`.
                 self.published_ticket = ticket
                 self.managed = candidate
-                self.refresh_failure = None
+                if ticket > self.outcome_ticket:
+                    self.outcome_ticket = ticket
+                    self.refresh_failure = None
                 return candidate
             return self.managed if self.managed is not None else candidate
 
@@ -649,14 +660,13 @@ class _SnapshotState:
             ticket: The value `begin_load` returned for this load.
             status: Failed candidate's status, kept for the next health read.
 
-        The same ordering rule as `publish` applies: when a newer generation
-        has already been published, a failure from an older load is stale and
-        must not overwrite the health that publication just established --
-        `doctor` would otherwise report the current, healthy policy as a
-        failed refresh.
+        Health has its own ordering ticket. A failure from an older load must
+        not overwrite a newer success, and an older success that is still
+        eligible to fill the cache must not erase a newer failure.
         """
         with _snapshot_lock:
-            if ticket > self.published_ticket:
+            if ticket > self.outcome_ticket:
+                self.outcome_ticket = ticket
                 self.refresh_failure = status
 
     def reset(self) -> None:
@@ -664,11 +674,11 @@ class _SnapshotState:
         with _snapshot_lock:
             self.managed = None
             self.refresh_failure = None
-            # Advance both tickets so a load started before the reset cannot
-            # republish the snapshot being cleared. Keeping these two writes
-            # together is what makes the invalidation atomic.
+            # Advance every ordering ticket so a load started before the reset
+            # cannot republish the snapshot or health being cleared.
             self.latest_ticket += 1
             self.published_ticket = self.latest_ticket
+            self.outcome_ticket = self.latest_ticket
 
 
 _snapshot_lock = threading.RLock()
@@ -942,26 +952,9 @@ def require_healthy_managed_config(*, refresh: bool = False) -> None:
     get_healthy_managed_snapshot(refresh=refresh)
 
 
-def _managed_resolver(snapshot: TomlSnapshot) -> ConfigResolver:
-    """Build a resolver whose managed provider owns `snapshot`.
-
-    Returns:
-        Resolver bound to the supplied managed generation.
-    """
-    from deepagents_code.configuration.resolver import resolver_from_snapshots
-
-    return resolver_from_snapshots(
-        managed=snapshot,
-        user=TomlSnapshot.absent("config.toml"),
-    )
-
-
 def managed_config_status(*, refresh: bool = False) -> ProviderStatus:
     """Return managed provider health for diagnostics and config inspection."""
-    from deepagents_code.configuration.resolver import MANAGED_RANK
-
-    snapshot = get_managed_snapshot(refresh=refresh)
-    return _managed_resolver(snapshot).provider_statuses()[MANAGED_RANK]
+    return get_managed_snapshot(refresh=refresh).status
 
 
 @dataclass(frozen=True, slots=True)
@@ -997,11 +990,8 @@ def managed_health(*, refresh: bool = False) -> ManagedHealth:
     Returns:
         Health, violations, and ignored rejections that cannot disagree.
     """
-    from deepagents_code.configuration.resolver import MANAGED_RANK
-
     snapshot = get_managed_snapshot(refresh=refresh)
-    status = _managed_resolver(snapshot).provider_statuses()[MANAGED_RANK]
-    return managed_snapshot_health(replace(snapshot, status=status))
+    return managed_snapshot_health(snapshot)
 
 
 def managed_snapshot_health(snapshot: TomlSnapshot) -> ManagedHealth:

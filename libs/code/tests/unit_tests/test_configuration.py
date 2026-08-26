@@ -4980,6 +4980,67 @@ def test_managed_refresh_does_not_hold_the_snapshot_lock(
     reader.join(timeout=5)
 
 
+def test_config_write_refresh_does_not_hold_the_resolver_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A remote refresh after a user write cannot block resolver reads."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import (
+        resolver as resolver_module,
+        service,
+        writer,
+    )
+
+    user = tmp_path / "config.toml"
+    managed = tmp_path / "managed.toml"
+    user.write_text("[feature]\nenabled = true\n", encoding="utf-8")
+    managed.write_text("[feature]\nenabled = false\n", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    resolver = resolver_module.get_config_resolver()
+    current = service.get_managed_snapshot()
+    fetching = Event()
+    release = Event()
+    reader_returned = Event()
+
+    def slow_load(_path: Path | None = None) -> TomlSnapshot:
+        fetching.set()
+        assert release.wait(timeout=5)
+        return current
+
+    monkeypatch.setattr(service, "_load_managed", slow_load)
+    refresh = Thread(
+        target=lambda: writer.refresh_shared_resolver(user),
+        name="config-write-refresh",
+        daemon=True,
+    )
+    refresh.start()
+    assert fetching.wait(timeout=5)
+    option = ConfigOption(
+        key="feature.enabled",
+        group="Test",
+        summary="test",
+        default=False,
+        toml_keys=("feature", "enabled"),
+        kind=OptionKind.BOOL,
+    )
+
+    def read() -> None:
+        resolver.get(option)
+        reader_returned.set()
+
+    reader = Thread(target=read, name="config-reader", daemon=True)
+    try:
+        reader.start()
+        assert reader_returned.wait(timeout=5)
+    finally:
+        release.set()
+    refresh.join(timeout=5)
+    reader.join(timeout=5)
+
+
 def test_invalidation_bars_an_in_flight_load_from_republishing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

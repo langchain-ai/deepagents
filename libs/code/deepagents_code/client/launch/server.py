@@ -61,6 +61,12 @@ _SHUTDOWN_TIMEOUT = 3
 _SIGKILL_TIMEOUT = 2
 """Seconds to wait for the group/process to exit after SIGKILL."""
 
+_WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
+"""Windows creation flag required for targeted console control signals."""
+
+_WINDOWS_CTRL_BREAK_EVENT = 1
+"""Windows Ctrl+Break event handled as a graceful SIGBREAK by Uvicorn."""
+
 _PROCESS_GROUP_POLL_INTERVAL = 0.05
 
 _LOG_TAIL_CHARS = 3000
@@ -449,11 +455,11 @@ def _server_process_group(pid: int) -> int | None:
     the same shutdown signals as the root rather than being left running when
     only the root is signaled.
 
-    Returns `None` — meaning "signal only the root process" — on Windows (no
-    POSIX process groups) and whenever the server is not the leader of its own
-    dedicated group. As a defensive check, the `pgid == os.getpgid(0)` clause
-    also refuses to return dcode's own group, so the group handed back can never
-    be the one whose termination would take down the TUI.
+    Returns `None` on Windows (which uses a console process group instead) and
+    whenever the server is not the leader of its own dedicated POSIX group. As
+    a defensive check, the `pgid == os.getpgid(0)` clause also refuses to return
+    dcode's own group, so the group handed back can never be the one whose
+    termination would take down the TUI.
 
     Args:
         pid: Process id of the server subprocess.
@@ -530,16 +536,20 @@ def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
     to SIGKILL. On POSIX the whole detached process group is signaled via
     `os.killpg`, and teardown waits for the entire group to exit — not just the
     root — so a child that outlives the `langgraph dev` root is still escalated
-    to SIGKILL rather than orphaned. On Windows (or if the server is not its own
-    group leader) only the root process is signaled. `_server_process_group`
-    guarantees dcode's own process group is never targeted.
+    to SIGKILL rather than orphaned. On Windows, the server's console process
+    group receives Ctrl+Break, which Uvicorn handles as a graceful SIGBREAK and
+    runs the Starlette lifespan shutdown. If no dedicated group is available on
+    POSIX, only the root process is signaled. `_server_process_group` guarantees
+    dcode's own POSIX process group is never targeted.
 
     Args:
         process: The running server subprocess to terminate.
     """
     pid = process.pid
     pgid = _server_process_group(pid)
-    scope = "process group" if pgid is not None else "process"
+    scope = (
+        "process group" if pgid is not None or sys.platform == "win32" else "process"
+    )
 
     logger.info("Stopping langgraph dev server (pid=%d)", pid)
     try:
@@ -547,7 +557,10 @@ def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
             os.killpg(pgid, signal.SIGTERM)
             stopped = _wait_for_process_group_exit(process, pgid, _SHUTDOWN_TIMEOUT)
         else:
-            process.send_signal(signal.SIGTERM)
+            graceful_signal = (
+                _WINDOWS_CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM
+            )
+            process.send_signal(graceful_signal)
             try:
                 process.wait(timeout=_SHUTDOWN_TIMEOUT)
             except subprocess.TimeoutExpired:
@@ -896,6 +909,9 @@ class ServerProcess:
                 stdout=self._log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=(sys.platform != "win32"),
+                creationflags=(
+                    _WINDOWS_CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+                ),
             )
             return self._process
 

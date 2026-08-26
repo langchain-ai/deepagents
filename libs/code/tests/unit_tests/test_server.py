@@ -1512,20 +1512,25 @@ class TestServerSessionIsolation:
         """On POSIX the server is spawned in its own session/process group."""
         popen = await self._spawn_and_capture(tmp_path, "linux", monkeypatch)
         assert popen.call_args.kwargs["start_new_session"] is True
+        assert popen.call_args.kwargs["creationflags"] == 0
 
-    async def test_windows_spawn_without_new_session(
+    async def test_windows_spawn_starts_new_process_group(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """On Windows the unsupported `setsid()` call is not requested."""
+        """On Windows a console group enables targeted Ctrl+Break shutdown."""
         popen = await self._spawn_and_capture(tmp_path, "win32", monkeypatch)
         assert popen.call_args.kwargs["start_new_session"] is False
+        assert (
+            popen.call_args.kwargs["creationflags"]
+            == server_module._WINDOWS_CREATE_NEW_PROCESS_GROUP
+        )
 
 
 class TestServerProcessGroup:
     """Tests for `_server_process_group` targeting logic."""
 
     def test_returns_none_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Windows has no POSIX process groups, so signaling targets the root."""
+        """Windows uses console groups instead of POSIX process groups."""
         monkeypatch.setattr(
             "deepagents_code.client.launch.server.sys.platform", "win32"
         )
@@ -1770,10 +1775,10 @@ class TestTerminateServerProcess:
         killpg.assert_not_called()
         process.send_signal.assert_called_once_with(signal.SIGTERM)
 
-    def test_windows_signals_root_process_only(
+    def test_windows_ctrl_break_timeout_escalates(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """On Windows only the root process is signaled (no `killpg`)."""
+        """On Windows Ctrl+Break permits graceful shutdown before escalation."""
         monkeypatch.setattr(
             "deepagents_code.client.launch.server.sys.platform", "win32"
         )
@@ -1785,8 +1790,27 @@ class TestTerminateServerProcess:
 
         _terminate_server_process(process)
 
-        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
         process.kill.assert_called_once_with()
+
+    def test_windows_ctrl_break_shutdown_is_graceful(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A responsive Windows server exits through Uvicorn's SIGBREAK path."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
+        process.wait.assert_called_once_with(timeout=server_module._SHUTDOWN_TIMEOUT)
+        process.kill.assert_not_called()
 
     def test_initial_sigterm_process_lookup_is_benign(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1982,10 +2006,10 @@ class TestTerminateServerProcess:
         start_mock.assert_awaited_once()
         assert server._process is None
 
-    def test_root_sigterm_process_lookup_is_benign(
+    def test_windows_ctrl_break_process_lookup_is_benign(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """On the root-only path a vanished process is not escalated to SIGKILL."""
+        """A Windows process that vanishes before Ctrl+Break needs no SIGKILL."""
         monkeypatch.setattr(
             "deepagents_code.client.launch.server.sys.platform", "win32"
         )
@@ -1994,13 +2018,15 @@ class TestTerminateServerProcess:
 
         _terminate_server_process(process)
 
-        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
         process.kill.assert_not_called()
 
-    def test_root_sigterm_oserror_reports_orphan(
+    def test_windows_ctrl_break_oserror_reports_orphan(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """On the root-only path an undeliverable SIGTERM reports the orphan."""
+        """An undeliverable Windows Ctrl+Break reports the orphan risk."""
         monkeypatch.setattr(
             "deepagents_code.client.launch.server.sys.platform", "win32"
         )
@@ -2010,14 +2036,16 @@ class TestTerminateServerProcess:
         with caplog.at_level(logging.ERROR):
             _terminate_server_process(process)
 
-        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
         process.kill.assert_not_called()
         assert "may be orphaned" in caplog.text
 
-    def test_root_sigkill_oserror_reports_orphan(
+    def test_windows_sigkill_oserror_reports_orphan(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """On the root-only path a failed escalation SIGKILL reports the orphan."""
+        """On Windows a failed escalation SIGKILL reports the orphan risk."""
         monkeypatch.setattr(
             "deepagents_code.client.launch.server.sys.platform", "win32"
         )

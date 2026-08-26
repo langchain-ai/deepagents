@@ -236,6 +236,18 @@ async def test_context_prefers_checkpoint_total_after_offload(
     focus.assert_called_once_with()
 
 
+async def test_context_doctor_dispatches_to_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    handler = AsyncMock()
+    monkeypatch.setattr(app, "_handle_context_doctor_command", handler)
+
+    await app._handle_command("/context-doctor")
+
+    handler.assert_awaited_once_with("/context-doctor")
+
+
 async def test_tokens_prompts_for_first_message_when_usage_is_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

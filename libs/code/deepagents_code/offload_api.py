@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Literal, cast
 from weakref import WeakValueDictionary
 
@@ -69,6 +70,31 @@ _active_operations: dict[_OperationKey, asyncio.Task[object]] = {}
 _operation_outcomes: OrderedDict[_OperationKey, _OperationOutcome] = OrderedDict()
 _MAX_OPERATION_OUTCOMES = 1024
 """Bound completed/cancelled ids retained to close request/cancel races."""
+_TRACE_FLUSH_TIMEOUT = 2.0
+
+
+async def _flush_traces() -> None:
+    """Flush the child process's existing LangSmith tracing client."""
+    from langsmith import run_trees
+
+    client = run_trees._CLIENT
+    if client is None:
+        return
+    try:
+        await asyncio.to_thread(client.flush, timeout=_TRACE_FLUSH_TIMEOUT)
+    except Exception:
+        logger.warning(
+            "Failed to flush LangSmith traces during shutdown", exc_info=True
+        )
+
+
+@asynccontextmanager
+async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
+    try:
+        yield
+    finally:
+        await _flush_traces()
+
 
 # One client for the process. `get_client` builds a fresh `httpx.AsyncClient`
 # (with its own connection pool) per call and exposes no close hook we own, so
@@ -917,6 +943,7 @@ async def cancel_offload(request: Request) -> JSONResponse:
 
 
 app = Starlette(
+    lifespan=_lifespan,
     routes=[
         Route(
             "/dcode/threads/{thread_id:str}/offload",
@@ -928,5 +955,5 @@ app = Starlette(
             cancel_offload,
             methods=["POST"],
         ),
-    ]
+    ],
 )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1344,6 +1345,52 @@ def test_validated_context_fields_exist_on_the_schema() -> None:
     }
 
     assert validated <= declared, validated - declared
+
+
+class TestLifespan:
+    async def test_flushes_existing_tracing_client(self) -> None:
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        client = MagicMock()
+        with patch.object(run_trees, "_CLIENT", client):
+            async with offload_api.app.router.lifespan_context(offload_api.app):
+                pass
+
+        client.flush.assert_called_once_with(timeout=offload_api._TRACE_FLUSH_TIMEOUT)
+
+    async def test_does_not_create_tracing_client(self) -> None:
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        with (
+            patch.object(run_trees, "_CLIENT", None),
+            patch.object(run_trees, "get_cached_client") as get_cached_client,
+        ):
+            async with offload_api.app.router.lifespan_context(offload_api.app):
+                pass
+
+        get_cached_client.assert_not_called()
+
+    async def test_flush_failure_does_not_block_shutdown(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from langsmith import run_trees
+
+        from deepagents_code import offload_api
+
+        client = MagicMock()
+        client.flush.side_effect = RuntimeError("flush failed")
+        with (
+            patch.object(run_trees, "_CLIENT", client),
+            caplog.at_level(logging.WARNING, logger=offload_api.__name__),
+        ):
+            async with offload_api.app.router.lifespan_context(offload_api.app):
+                pass
+
+        assert "Failed to flush LangSmith traces" in caplog.text
 
 
 class TestRouteRegistration:

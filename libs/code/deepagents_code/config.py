@@ -375,7 +375,9 @@ def _dotenv_files_are_same(first: Path | None, second: Path) -> bool:
     try:
         return first.samefile(second)
     except OSError:
-        return False
+        # Identity uncertainty must not let a project file become trusted by
+        # loading it again through the configured profile path.
+        return True
 
 
 def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]:

@@ -622,24 +622,29 @@ def _managed_replacement_provider(
     resolver: ConfigResolver,
     candidate: TomlSnapshot,
 ) -> ConfigProvider:
-    """Build a managed replacement that retains a failed refresh safely.
+    """Build a current managed replacement that retains failed refreshes safely.
 
     Args:
         resolver: Resolver currently serving the previous generation.
-        candidate: Snapshot fetched before taking the resolver lock.
+        candidate: Snapshot fetched before taking the resolver lock. A newer
+            enforceable generation may have published while this caller waited.
 
     Returns:
-        Replacement carrying the candidate or its failed-refresh status.
+        Replacement carrying the current enforceable generation or the
+        candidate's failed-refresh status.
 
     Raises:
         RuntimeError: If the shared resolver has no managed TOML provider.
     """
     from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.service import get_managed_snapshot
 
     installed = resolver.toml_snapshot(MANAGED_RANK)
     if installed is None:
         msg = "shared config resolver has no managed TOML provider"
         raise RuntimeError(msg)
+    if candidate.status.usable:
+        candidate = get_managed_snapshot()
     replacement = TomlFileProvider(
         name=candidate.status.name,
         path=candidate.status.path,

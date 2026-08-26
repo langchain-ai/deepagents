@@ -692,6 +692,75 @@ def test_an_ignored_managed_snapshot_is_rejected(
         service.invalidate_config_sources()
 
 
+def test_stale_managed_refresh_cannot_replace_a_newer_resolver_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A delayed resolver refresh must not restore superseded policy."""
+    from threading import Event, Thread, current_thread
+
+    from deepagents_code import model_config
+    from deepagents_code.configuration import resolver as resolver_module, service
+    from unit_tests.conftest import redirect_managed_config
+
+    managed_path = tmp_path / "managed.toml"
+    managed_path.write_text('[shell]\nallow_list = ["initial"]\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed_path)
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    service.invalidate_config_sources()
+    try:
+        option = get_option("shell.allow_list")
+        assert option is not None
+        resolver = resolver_module.get_config_resolver()
+        assert resolver.get(option).value == ["initial"]
+
+        def snapshot(command: str) -> TomlSnapshot:
+            return TomlSnapshot(
+                {"shell": {"allow_list": [command]}},
+                ProviderStatus("managed config", managed_path, ProviderHealth.OK, None),
+            )
+
+        stale_fetched = Event()
+        release_stale = Event()
+        original_get = service.get_managed_snapshot
+        monkeypatch.setattr(
+            service,
+            "_load_managed",
+            lambda _path=None: snapshot(
+                "stale"
+                if current_thread().name == "stale-resolver-refresh"
+                else "current"
+            ),
+        )
+
+        def delayed_get(
+            *, refresh: bool = False, path: Path | None = None
+        ) -> TomlSnapshot:
+            loaded = original_get(refresh=refresh, path=path)
+            if refresh and current_thread().name == "stale-resolver-refresh":
+                stale_fetched.set()
+                assert release_stale.wait(timeout=5)
+            return loaded
+
+        monkeypatch.setattr(service, "get_managed_snapshot", delayed_get)
+        stale = Thread(
+            target=lambda: resolver_module.get_config_resolver(refresh_managed=True),
+            name="stale-resolver-refresh",
+            daemon=True,
+        )
+        stale.start()
+        assert stale_fetched.wait(timeout=5)
+
+        resolver_module.get_config_resolver(refresh_managed=True)
+        assert resolver.get(option).value == ["current"]
+
+        release_stale.set()
+        stale.join(timeout=5)
+        assert not stale.is_alive()
+        assert resolver.get(option).value == ["current"]
+    finally:
+        service.invalidate_config_sources()
+
+
 def _nest(keys: tuple[str, ...], value: object) -> dict[str, Any]:
     """Wrap `value` in the nested tables named by a manifest option's keys."""
     nested: dict[str, Any] = {keys[-1]: value}

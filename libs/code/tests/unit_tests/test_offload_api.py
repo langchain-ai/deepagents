@@ -1464,25 +1464,37 @@ class TestLifespan:
         """A flush ignoring its own timeout is abandoned rather than waited on.
 
         `Client.flush` bounds only the wait on submitted sends, so its
-        synchronous drain can overrun the SIGTERM grace period; the outer
-        `wait_for` is the ceiling that actually holds.
+        synchronous drain can overrun the SIGTERM grace period; the flush runs
+        on an unjoined daemon thread so even that overrun cannot stall the
+        event loop's own shutdown.
         """
         from langsmith import run_trees
 
         from deepagents_code import offload_api
 
         client = self._client()
-        client.flush.side_effect = lambda **_: time.sleep(0.5)
+        client.flush.side_effect = lambda **_: time.sleep(1.0)
         with (
             patch.object(run_trees, "_CLIENT", client),
             patch.object(offload_api, "_TRACE_FLUSH_TIMEOUT", 0.0),
             patch.object(offload_api, "_TRACE_FLUSH_GRACE", 0.01),
             caplog.at_level(logging.WARNING, logger=offload_api.__name__),
         ):
+            started = time.monotonic()
             async with offload_api.app.router.lifespan_context(offload_api.app):
                 pass
+            elapsed = time.monotonic() - started
 
         assert "exceeded" in caplog.text
+        assert elapsed < 0.5
+
+        # The abandoned thread is a daemon, so nothing -- not even the
+        # `asyncio.run` runner's executor join -- waits on it at teardown.
+        orphan = next(
+            t for t in threading.enumerate() if t.name == "langsmith-shutdown-flush"
+        )
+        assert orphan.daemon
+        assert orphan.is_alive()
 
     async def test_flush_failure_does_not_block_shutdown(
         self, caplog: pytest.LogCaptureFixture

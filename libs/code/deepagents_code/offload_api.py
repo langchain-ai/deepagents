@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -85,7 +86,7 @@ _TRACE_FLUSH_GRACE = 0.5
 `Client.flush` bounds only the wait on already-submitted sends; its
 synchronous drain and submit steps -- including a retrying inline send when
 the client thread pool is already shut down -- ignore the timeout. The outer
-`asyncio.wait_for` supplies the hard ceiling that `flush` itself does not.
+deadline supplies the hard ceiling that `flush` itself does not.
 """
 
 
@@ -106,6 +107,62 @@ def _pending_trace_batches(client: Client) -> int:
     queue = getattr(client, "tracing_queue", None)
     pending = getattr(queue, "unfinished_tasks", 0) if queue is not None else 0
     return pending + len(getattr(client, "_futures", None) or ())
+
+
+async def _await_flush_thread(client: Client) -> None:
+    """Run `client.flush` on a daemon thread and wait, with a hard deadline.
+
+    `asyncio.to_thread` is unusable here: a timeout cancels only the
+    awaitable, not the default-executor thread running `flush`, and the
+    `asyncio.run` runner joins default-executor threads during loop shutdown
+    (up to five minutes). A hung flush would therefore still delay process
+    exit past the SIGKILL escalation, which is the exact case the deadline
+    exists for. The daemon thread is never joined, so a wedged flush is
+    simply left behind and dies with the process.
+
+    The deadline is a plain `call_later` handle instead of `asyncio.wait_for`
+    for the same reason: cancellation does not stop the thread, so the future
+    is discarded rather than cancelled.
+
+    Args:
+        client: The LangSmith client to flush.
+
+    Raises:
+        TimeoutError: The flush did not finish within
+            `_TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE`.
+    """
+    loop = asyncio.get_running_loop()
+    done = loop.create_future()
+    event = threading.Event()
+
+    def flush() -> None:
+        try:
+            client.flush(timeout=_TRACE_FLUSH_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001  # relayed to the waiter below
+            if not done.done():
+                loop.call_soon_threadsafe(done.set_exception, exc)
+        else:
+            loop.call_soon_threadsafe(done.set_result, False)
+        finally:
+            event.set()
+
+    def give_up() -> None:
+        # Resolve rather than raise so the `TimeoutError` surfaces at the
+        # `await` in the coroutine body; cancellation alone could not stop
+        # the thread anyway.
+        if not event.is_set() and not done.done():
+            done.set_result(True)
+
+    thread = threading.Thread(
+        target=flush, daemon=True, name="langsmith-shutdown-flush"
+    )
+    timer = loop.call_later(_TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE, give_up)
+    try:
+        thread.start()
+        if await done:
+            raise TimeoutError
+    finally:
+        timer.cancel()
 
 
 async def _flush_traces() -> None:
@@ -134,10 +191,7 @@ async def _flush_traces() -> None:
             logger.debug("No LangSmith client to flush during shutdown")
             return
 
-        await asyncio.wait_for(
-            asyncio.to_thread(client.flush, timeout=_TRACE_FLUSH_TIMEOUT),
-            timeout=_TRACE_FLUSH_TIMEOUT + _TRACE_FLUSH_GRACE,
-        )
+        await _await_flush_thread(client)
 
         if pending := _pending_trace_batches(client):
             logger.warning(

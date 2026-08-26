@@ -547,11 +547,12 @@ def get_config_resolver(
     from deepagents_code.configuration.service import get_managed_snapshot
     from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
-    managed = (
-        get_managed_snapshot(refresh=refresh_managed)
-        if managed_snapshot is None
-        else managed_snapshot
-    )
+    if managed_snapshot is not None:
+        managed = managed_snapshot
+    elif refresh_managed:
+        managed = _reload_enforceable_managed_snapshot()
+    else:
+        managed = get_managed_snapshot()
     key = _ResolverKey(DEFAULT_CONFIG_PATH, managed.status.path)
     with _resolver_cache_lock:
         installed_cli = _resolver_cache.cli_provider

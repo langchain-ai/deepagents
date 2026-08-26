@@ -987,6 +987,46 @@ def test_default_path_write_is_visible_to_the_shared_resolver(
         service.invalidate_config_sources()
 
 
+def test_default_path_write_retains_the_last_enforceable_managed_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preference write must not install parseable but invalid policy."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import (
+        resolver as resolver_module,
+        service,
+        writer,
+    )
+    from unit_tests.conftest import redirect_managed_config
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    managed_path = tmp_path / "managed.toml"
+    managed_path.write_text(
+        '[shell]\nallow_list = ["safe-command"]\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+    redirect_managed_config(monkeypatch, managed_path)
+    service.invalidate_config_sources()
+    try:
+        option = get_option("shell.allow_list")
+        assert option is not None
+        resolver = resolver_module.get_config_resolver()
+        assert resolver.get(option).value == ["safe-command"]
+
+        managed_path.write_text("[shell]\nallow_list = 5\n", encoding="utf-8")
+
+        def set_auto(data: dict[str, Any]) -> bool:
+            data.setdefault("startup", {})["mode"] = "auto"
+            return True
+
+        assert writer.update_user_config(set_auto, config_path=config_path).ok
+        assert resolver.get(option).value == ["safe-command"]
+    finally:
+        service.invalidate_config_sources()
+
+
 def test_write_to_an_override_path_leaves_the_default_resolver_alone(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

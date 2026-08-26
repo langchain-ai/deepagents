@@ -189,12 +189,17 @@ def test_provenance_endpoint_is_hidden_without_experimental_mode(
     assert _extensions(local).status_code == 404
 
 
-def test_builtin_http_app_hosts_extension_metadata() -> None:
+async def test_builtin_http_app_hosts_extension_metadata() -> None:
     """The built-in offload app also owns extension lifecycle and metadata."""
     from deepagents_code.offload_api import app
-    from deepagents_code.server_lifespan import _lifespan
 
-    assert app.router.lifespan_context is _lifespan
+    shutdown = AsyncMock()
+    with patch(
+        "deepagents_code.extensions.runtime.shutdown_server_extensions", shutdown
+    ):
+        async with app.router.lifespan_context(app):
+            pass
+    shutdown.assert_awaited_once_with()
     assert any(
         isinstance(route, Route) and route.path == "/extensions" for route in app.routes
     )

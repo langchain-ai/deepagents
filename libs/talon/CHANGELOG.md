@@ -2,10 +2,9 @@
 
 ## [0.0.5](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.4...deepagents-talon==0.0.5) (2026-08-26)
 
-
 ### Bug Fixes
 
-* **talon:** migrate MCP discovery to `discover_mcp_config_sources` ([#5803](https://github.com/langchain-ai/deepagents/issues/5803)) ([5cdd977](https://github.com/langchain-ai/deepagents/commit/5cdd97730708b0480cb7d32792717dcdcd02f4ea))
+- Migrated MCP discovery to `discover_mcp_config_sources`. ([#5803](https://github.com/langchain-ai/deepagents/issues/5803))
 
 ## [0.0.4](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.3...deepagents-talon==0.0.4) (2026-08-24)
 

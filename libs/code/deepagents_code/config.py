@@ -1682,6 +1682,22 @@ def _format_lc_version(base_version: str, *, editable: bool) -> str:
     return _with_editable_local_version(base_version)
 
 
+def _contract_editable_path(path: str) -> str:
+    """Contract an editable path beneath a usable home directory.
+
+    Returns:
+        The contracted path, or the original path when no usable home exists.
+    """
+    try:
+        home_path = Path.home()
+    except RuntimeError:
+        return path
+    if not home_path.is_absolute():
+        return path
+    home = str(home_path)
+    return "~" + path[len(home) :] if path.startswith(home) else path
+
+
 def _resolve_editable_info() -> tuple[bool, str | None]:
     """Parse PEP 610 `direct_url.json` once and cache both results.
 
@@ -1706,10 +1722,7 @@ def _resolve_editable_info() -> tuple[bool, str | None]:
             if editable:
                 url = data.get("url", "")
                 if url.startswith("file://"):
-                    path = url2pathname(urlparse(url).path)
-                    home = str(Path.home())
-                    if path.startswith(home):
-                        path = "~" + path[len(home) :]
+                    path = _contract_editable_path(url2pathname(urlparse(url).path))
     except (PackageNotFoundError, FileNotFoundError, json.JSONDecodeError, TypeError):
         logger.debug(
             "Failed to read editable install info from PEP 610 metadata",

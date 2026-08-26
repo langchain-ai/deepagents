@@ -412,6 +412,29 @@ class TestProjectDotenvDeniedKeys:
         assert env["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-from-project"
 
 
+class TestEditableInstallInfo:
+    """Editable-install detection degrades safely without a usable home."""
+
+    def test_missing_home_preserves_editable_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed home lookup leaves the absolute source path uncontracted."""
+        import deepagents_code.config as config_mod
+
+        checkout = tmp_path / "checkout"
+        dist = Mock()
+        dist.read_text.return_value = (
+            f'{{"dir_info": {{"editable": true}}, "url": "{checkout.as_uri()}"}}'
+        )
+        monkeypatch.setattr(config_mod, "distribution", lambda _name: dist)
+        monkeypatch.setattr(config_mod, "_editable_cache", None)
+        monkeypatch.setattr(
+            Path, "home", Mock(side_effect=RuntimeError("home unavailable"))
+        )
+
+        assert config_mod._resolve_editable_info() == (True, str(checkout))
+
+
 class TestResolveReadProjectDotenv:
     """`startup.read_project_dotenv` resolution across config layers."""
 

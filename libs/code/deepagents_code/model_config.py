@@ -907,6 +907,11 @@ known retry-count parameter receive their provider-specific disable value at
 construction time. Providers absent from this mapping either do not expose an
 integer retry-count parameter or must declare one with
 `[retries.<provider>].param` in `config.toml`.
+
+Membership is verified against each integration's chat model constructor, never
+inferred from the provider name. `cohere`, `huggingface`, `ibm`, `nvidia`, and
+`ollama` are absent because their chat models declare no retry-count field and
+ignore extra kwargs, so naming one here would be dropped rather than honored.
 """
 
 RETRY_DISABLE_VALUE_BY_PROVIDER: dict[str, int] = {"google_genai": 1}

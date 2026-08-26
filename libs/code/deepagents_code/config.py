@@ -2585,6 +2585,10 @@ def _resolve_config_retry_count(
     return config.max_retries
 
 
+_warned_unknown_retry_providers: set[str] = set()
+"""Providers already reported as having no identifiable retry control."""
+
+
 def _resolve_retry_param(
     config: _RetryConfig, provider: str, model_kwargs: Mapping[str, Any]
 ) -> str | None:
@@ -2641,14 +2645,19 @@ def _provider_retry_disable_kwargs(
         # The provider's own SDK retry loop can't be identified, so it stays
         # active and may multiply the middleware's attempts. Register the
         # provider in `RETRY_PARAM_BY_PROVIDER` or set `[retries.<provider>].param`.
-        logger.warning(
-            "No retry-disable kwarg known for provider %r, so its own SDK retries "
-            "stay active and may multiply dcode's retry attempts. Set "
-            "[retries.%s].param in config.toml to name the provider's "
-            "retry-count kwarg.",
-            provider,
-            provider,
-        )
+        # Said once per provider: nothing the user can do makes it stop, and
+        # `create_model` runs again for every subagent, rubric model, and
+        # runtime `/model` switch, so repeating it just buries the debug buffer.
+        if provider not in _warned_unknown_retry_providers:
+            _warned_unknown_retry_providers.add(provider)
+            logger.warning(
+                "No retry-disable kwarg known for provider %r, so its own SDK "
+                "retries stay active and may multiply dcode's retry attempts. "
+                "Set [retries.%s].param in config.toml to name the provider's "
+                "retry-count kwarg.",
+                provider,
+                provider,
+            )
         return {}
 
     disable_value = RETRY_DISABLE_VALUE_BY_PROVIDER.get(provider, 0)

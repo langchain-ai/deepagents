@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from deepagents_code import _git as git_module, model_config
+from deepagents_code import _git as git_module, config as config_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._version import __version__
 from deepagents_code.config import (
@@ -1791,12 +1791,30 @@ class TestRetriesConfig:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """An unknown provider's SDK retries multiply ours, so say so loudly."""
+        config_module._warned_unknown_retry_providers.discard("mystery")
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             config = _parse_retry_config(None)
             assert _provider_retry_disable_kwargs(config, "mystery", {}) == {}
 
         assert "may multiply" in caplog.text
         assert "[retries.mystery].param" in caplog.text
+
+    def test_unidentifiable_provider_warns_once_per_provider(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The warning is advice, not an event, so it must not repeat.
+
+        `create_model` runs again for every subagent, rubric model, and runtime
+        `/model` switch. Repeating an unactionable warning on each one buries
+        the debug buffer that the same run relies on for real diagnostics.
+        """
+        config_module._warned_unknown_retry_providers.discard("enigma")
+        config = _parse_retry_config(None)
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            for _ in range(3):
+                assert _provider_retry_disable_kwargs(config, "enigma", {}) == {}
+
+        assert len([r for r in caplog.records if "may multiply" in r.message]) == 1
 
     def test_clobbering_an_explicit_value_warns(
         self, caplog: pytest.LogCaptureFixture

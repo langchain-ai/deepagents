@@ -2036,6 +2036,37 @@ class TestDebugConsoleToggle:
             assert fields["CWD"].copyable is True
             assert fields["CWD"].value
 
+    async def test_build_snapshot_editable_install_path_is_copyable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod,
+            "_get_editable_install_path",
+            lambda: "~/oss/deepagents/libs/code",
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            field = next(
+                field
+                for field in app._build_debug_snapshot()
+                if field.label == "Install path"
+            )
+            assert field.value == "~/oss/deepagents/libs/code"
+            assert field.copyable is True
+
+    async def test_build_snapshot_omits_non_editable_install_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(config_mod, "_get_editable_install_path", lambda: None)
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            fields = {field.label: field for field in app._build_debug_snapshot()}
+            assert "Install path" not in fields
+
     async def test_build_snapshot_debug_log_path_is_copyable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

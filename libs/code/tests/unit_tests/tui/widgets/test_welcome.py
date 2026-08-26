@@ -33,7 +33,6 @@ from deepagents_code.tui.widgets.welcome import (
 )
 
 _EDITABLE = "deepagents_code.tui.widgets.welcome._is_editable_install"
-_EDITABLE_PATH = "deepagents_code.tui.widgets.welcome._get_editable_install_path"
 _PROJECT_NAME = "deepagents_code.tui.widgets.welcome.get_langsmith_project_name"
 _REPLICA_PROJECT = "deepagents_code.tui.widgets.welcome.get_langsmith_replica_project"
 _FETCH_URL = "deepagents_code.tui.widgets.welcome.fetch_langsmith_project_url"
@@ -324,11 +323,12 @@ class TestTitle:
         assert "(local)" not in plain
 
     def test_marks_editable_install_as_local(self) -> None:
-        """Editable installs show a `(local)` tag."""
+        """Editable installs show a `(local)` tag without the install path."""
         with patch(_EDITABLE, return_value=True):
             plain = _make_banner()._build_banner().plain
         assert f"v{__version__}" in plain
         assert "(local)" in plain
+        assert "installed:" not in plain
 
     def test_no_debug_tag_by_default(self) -> None:
         """No `(debug enabled)` tag when `DEEPAGENTS_CODE_DEBUG` is unset."""
@@ -1037,49 +1037,6 @@ class TestMcpWarnings:
         assert "1 MCP server needs login" in plain
         assert "2 MCP servers failed to load" in plain
         assert "3 MCP servers ready to load" in plain
-
-
-class TestEditableInstallPath:
-    """Tests for the editable-install path row."""
-
-    def test_shows_install_path_for_editable(self) -> None:
-        """The install path is shown for editable installs."""
-        with (
-            patch(_EDITABLE, return_value=True),
-            patch(_EDITABLE_PATH, return_value="~/oss/deepagents/libs/code"),
-        ):
-            plain = _make_banner()._build_banner().plain
-        assert "installed:" in plain
-        assert "~/oss/deepagents/libs/code" in plain
-
-    def test_no_install_path_for_non_editable(self) -> None:
-        """No install path row for non-editable installs."""
-        with (
-            patch(_EDITABLE, return_value=False),
-            patch(_EDITABLE_PATH, return_value=None),
-        ):
-            plain = _make_banner()._build_banner().plain
-        assert "installed:" not in plain
-
-    def test_no_install_path_when_version_hidden(self) -> None:
-        """Hiding the version also hides the editable-install path."""
-        with (
-            patch(_EDITABLE, return_value=True),
-            patch(_EDITABLE_PATH, return_value="~/code"),
-        ):
-            plain = _make_banner(env={HIDE_SPLASH_VERSION: "1"})._build_banner().plain
-        assert "installed:" not in plain
-        assert "~/code" not in plain
-
-    def test_no_install_path_when_cwd_hidden(self) -> None:
-        """No install path row when local path displays are hidden."""
-        with (
-            patch(_EDITABLE, return_value=True),
-            patch(_EDITABLE_PATH, return_value="~/code"),
-        ):
-            plain = _make_banner(env={HIDE_CWD: "1"})._build_banner().plain
-        assert "installed:" not in plain
-        assert "~/code" not in plain
 
 
 class TestRemovedSections:

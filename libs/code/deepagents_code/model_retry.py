@@ -6,6 +6,17 @@ counts are attached to constructed models upstream so runtime model switches
 carry their provider-specific budget into each request. This module owns the
 retry policy: which errors are transient, the backoff curve, and the user-facing
 status surfaced while retrying.
+
+Why not LangChain's `ModelRetryMiddleware`: it reads its retry count once at
+construction, so it can't honor the provider-specific budget we stamp on each
+model for runtime switches. It sleeps between attempts without saying
+anything, which in a streaming terminal just looks frozen. When the budget
+runs out it hands back an `AIMessage` containing the error text, so a dead
+provider ends the turn disguised as a model answer. Its retry check only
+inspects the raised exception, missing transport faults wrapped in exception
+groups, and it jitters at 25% while ignoring `Retry-After` headers. None of
+that is a knob; fixing any of it means overriding the whole loop, so we own
+the loop here.
 """
 
 from __future__ import annotations
@@ -53,7 +64,7 @@ __all__ = [
     "retry_status_from_event",
 ]
 
-# Curve parameters mirror Codex's retry defaults.
+# Tuned for interactive use: quick first retry, tight cap, modest jitter.
 _INITIAL_DELAY_SECONDS = 0.2
 _BACKOFF_FACTOR = 2.0
 _MAX_DELAY_SECONDS = 10.0
@@ -382,6 +393,9 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     through, which keeps a definite `ModelError.is_retryable` verdict (an
     authentication failure, say) authoritative over whatever it happens to
     wrap.
+
+    The stock retry check stops at the raised exception, so it would miss a
+    `httpx.ConnectError` wrapped in an `ExceptionGroup`; this walk catches it.
     """
     pending: list[tuple[BaseException, bool]] = [(exc, True)]
     seen: set[int] = set()
@@ -473,6 +487,9 @@ def _retry_call[ResultT](
             # the exhausted-budget log entirely.
             if not _is_retryable_model_error(exc) or attempt >= max_retries:
                 _log_give_up(exc, attempt + 1, max_retries)
+                # Re-raise, don't convert to an `AIMessage`: a dead provider
+                # should end the turn as an error, not as a reply the model
+                # never made.
                 raise
             # Drawn once: the backoff carries jitter, so re-deriving it for the
             # guard would authorise one delay and then sleep a different one.
@@ -516,6 +533,7 @@ async def _aretry_call[ResultT](
             # the exhausted-budget log entirely.
             if not _is_retryable_model_error(exc) or attempt >= max_retries:
                 _log_give_up(exc, attempt + 1, max_retries)
+                # Always re-raise (see `_retry_call`).
                 raise
             # Drawn once: the backoff carries jitter, so re-deriving it for the
             # guard would authorise one delay and then sleep a different one.
@@ -777,6 +795,8 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             logger.warning("Failed to emit model_retry stream event", exc_info=True)
 
     def _request_max_retries(self, request: ModelRequest) -> int:
+        # A `/model` switch stamps its own budget on the constructed model;
+        # that wins over the startup fallback, so read it per request.
         return _model_max_retries(getattr(request, "model", None), self.max_retries)
 
     def wrap_model_call(

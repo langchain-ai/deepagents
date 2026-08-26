@@ -30368,7 +30368,7 @@ class TestPrewarmAwait:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         app._model_kwargs = {
             "model_spec": "anthropic:claude-opus-4-7",
-            "cli_max_retries": 0,
+            "cli_max_retries": None,
         }
         app._server_kwargs = None
         app._mcp_preload_kwargs = None
@@ -30402,7 +30402,7 @@ class TestPrewarmAwait:
         assert call_order[:2] == ["prewarm", "create_model"], (
             f"prewarm must precede create_model; got {call_order}"
         )
-        assert create_model_kwargs["cli_max_retries"] == 0
+        assert create_model_kwargs["cli_max_retries"] is None
 
     async def test_start_server_background_persists_default_not_session_id(
         self,

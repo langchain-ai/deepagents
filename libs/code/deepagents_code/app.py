@@ -711,12 +711,19 @@ def _goal_state_change_notice(
     return build_goal_state_notice(current, prior_blocker=prior_blocker)
 
 
+class _UnsetCliMaxRetries:
+    """Mark helper calls that have no launch-time retry override to forward."""
+
+
+_CLI_MAX_RETRIES_UNSET = _UnsetCliMaxRetries()
+
+
 def _create_model_with_deepagents_import_lock(
     model_spec: str | None = None,
     *,
     extra_kwargs: dict[str, Any] | None = None,
     profile_overrides: dict[str, Any] | None = None,
-    cli_max_retries: int | None = None,
+    cli_max_retries: int | _UnsetCliMaxRetries | None = _CLI_MAX_RETRIES_UNSET,
 ) -> ModelResult:
     """Create a model while serializing Deep Agents SDK import entry.
 
@@ -724,7 +731,8 @@ def _create_model_with_deepagents_import_lock(
         model_spec: Model specification in `provider:model` format.
         extra_kwargs: Extra model constructor kwargs.
         profile_overrides: Model profile metadata overrides.
-        cli_max_retries: Explicit `--max-retries` value.
+        cli_max_retries: Explicit `--max-retries` value. Omitted by call paths
+            that do not carry the launch-time override.
 
     Returns:
         Created model and resolved metadata.
@@ -732,11 +740,14 @@ def _create_model_with_deepagents_import_lock(
     with _DEEPAGENTS_IMPORT_LOCK:
         from deepagents_code.config import create_model
 
+        retry_kwargs: dict[str, int | None] = {}
+        if not isinstance(cli_max_retries, _UnsetCliMaxRetries):
+            retry_kwargs["cli_max_retries"] = cli_max_retries
         return create_model(
             model_spec,
             extra_kwargs=extra_kwargs,
             profile_overrides=profile_overrides,
-            cli_max_retries=cli_max_retries,
+            **retry_kwargs,
         )
 
 

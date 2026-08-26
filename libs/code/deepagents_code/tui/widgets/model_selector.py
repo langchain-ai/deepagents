@@ -82,6 +82,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
     "baseten:zai-org/GLM-5.2": "GLM 5.2",
     "baseten:zai-org/GLM-5.2-Fast": "GLM 5.2 Fast",
+    "baseten:zai-org/GLM-5.3-Flash": "GLM 5.3 Flash",
     "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": (
         "DeepSeek V4 Flash 0731"
     ),

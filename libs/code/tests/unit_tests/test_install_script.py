@@ -47,10 +47,11 @@ def _make_executable(path: Path) -> None:
 def _clean_environ() -> dict[str, str]:
     """Return `os.environ` without vars that redirect the installer's writes.
 
-    A developer with `ZDOTDIR` or `XDG_CONFIG_HOME` set in their own shell would
-    otherwise have the PATH entry written into their real dotfiles instead of
-    the fake HOME, so profile assertions fail locally but pass in CI. Tests that
-    exercise those variables set them explicitly.
+    A developer with `ZDOTDIR`, `XDG_CONFIG_HOME`, or `XDG_DATA_HOME` set in
+    their own shell would otherwise redirect writes away from the fake HOME.
+    The data directory also selects the fallback installer-lock root when
+    `uv tool dir` is unavailable. Tests that exercise those variables set them
+    explicitly.
 
     `SHELL` is dropped for the same reason: it selects the candidate profile
     set, so a contributor whose login shell is fish would otherwise exercise a
@@ -67,10 +68,20 @@ def _clean_environ() -> dict[str, str]:
             "SHELL",
             "UV_TOOL_DIR",
             "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
             "ZDOTDIR",
         }
         and not key.startswith("DEEPAGENTS_CODE_")
     }
+
+
+def test_clean_environ_drops_xdg_data_home(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host data-directory settings cannot redirect installer test locks."""
+    monkeypatch.setenv("XDG_DATA_HOME", "/host-specific/data")
+
+    assert "XDG_DATA_HOME" not in _clean_environ()
 
 
 def _host_path_without_dcode() -> str:

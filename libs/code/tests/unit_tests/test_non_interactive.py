@@ -4597,23 +4597,23 @@ class TestAttemptLifecycle:
         assert "Retrying model request 1/5" in output.getvalue()
         assert () in state.active_attempts  # scope untouched
 
-    def test_legacy_retry_without_lifecycle_still_marks_the_buffer(self) -> None:
-        """A retry with no correlation fields keeps append-only presentation."""
+    def test_legacy_pre_output_retry_preserves_prior_model_output(self) -> None:
+        """An old server's retry cannot have emitted text from the failed call."""
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, color_system=None)
         state = StreamState(thread_id="thread-1", stream=False)
         tracker = FileOpTracker(assistant_id="assistant")
 
         ai_msg = MagicMock(spec=AIMessage)
-        ai_msg.content_blocks = [{"type": "text", "text": "partial"}]
+        ai_msg.content_blocks = [{"type": "text", "text": "complete step"}]
         _process_stream_chunk(((), "messages", (ai_msg, {})), state, console, tracker)
         _process_stream_chunk(
             ((), "custom", _retry_event(None, None)), state, console, tracker
         )
 
-        # No lifecycle at all, so nothing can be truncated; buffered mode still
-        # gets a marker so stdout never splices two generations silently.
-        assert state.full_response == ["partial", f"\n{_RETRY_BOUNDARY}\n"]
+        # Legacy retries predate post-output retry support, so this text belongs
+        # to an earlier successful model step and must not receive a boundary.
+        assert state.full_response == ["complete step"]
         assert "Retrying model request 1/5" in output.getvalue()
 
     def test_no_stream_truncation_keeps_earlier_model_steps(

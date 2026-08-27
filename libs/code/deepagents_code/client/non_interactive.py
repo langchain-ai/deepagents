@@ -1185,11 +1185,11 @@ def _reconcile_superseded_attempt(
         state.pending_tool_status_lines.clear()
         if offset is not None:
             del state.full_response[offset:]
-        elif state.full_response:
-            # No recorded offset (uncorrelated retry), so the failed text
-            # cannot be found and removed. Carry the boundary into the buffer
-            # instead: a consumer reading only stdout would otherwise see
-            # partial and regenerated text spliced with no marker at all.
+        elif output_may_have_started and state.full_response:
+            # No recorded offset, but the server says failed output may be in
+            # the buffer. Carry a boundary instead of silently splicing it into
+            # the replay. Legacy servers cannot retry after output and omit this
+            # flag, so their retries leave earlier successful steps untouched.
             state.full_response.append(f"\n{_RETRY_BOUNDARY}\n")
         return
 
@@ -1563,11 +1563,10 @@ def _process_stream_chunk(
                 )
             else:
                 # Unknown or malformed correlation: no scope to key transcript
-                # staging or a buffer offset by. Still reconcile what does not
-                # need one — the superseded attempt's tools never ran, and in
-                # `--no-stream` its text is in the buffer and unremovable, so it
-                # gets a boundary rather than being spliced silently into the
-                # replay. Presentation otherwise degrades to append-only.
+                # staging or a buffer offset by. Still reconcile the attempt's
+                # tool state. Legacy producers could only retry before output,
+                # so their missing visibility field must not mark buffered text
+                # from an earlier successful model step as incomplete.
                 if state.spinner:
                     state.spinner.stop()
                 _reconcile_superseded_attempt(

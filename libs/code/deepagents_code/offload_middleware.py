@@ -261,6 +261,20 @@ def _install_summary_token_counter(
     )
 
 
+def _is_blocking_error(exc: BaseException) -> bool:
+    """Whether `exc` is the event-loop blocking guard (`blockbuster`).
+
+    `BlockingError` marks a defect in the caller, not a bad model spec or a
+    provider failure, so the degrade-to-main-model fallbacks re-raise it rather
+    than absorb it. Matched by class name, as elsewhere in the package, because
+    the guard is a test-only dependency that must not be imported here.
+
+    Returns:
+        Whether any class in the exception's MRO is named `BlockingError`.
+    """
+    return any(cls.__name__ == "BlockingError" for cls in type(exc).__mro__)
+
+
 class _LazySummaryModel:
     """Configure a dedicated model immediately before summary generation."""
 
@@ -276,6 +290,11 @@ class _LazySummaryModel:
         self._lock = Lock()
         self._configured = False
         self._warned = False
+        # Main-model summary tuning, captured just before the override
+        # installs so `_degrade_to_main_model` can uninstall the override.
+        self._main_token_counter: Any = None
+        self._main_partial_token_counter: Any = None
+        self._main_trim_limit: Any = None
         self._create_summary = summarization._lc_helper._create_summary
         self._acreate_summary = summarization._lc_helper._acreate_summary
 
@@ -301,7 +320,7 @@ class _LazySummaryModel:
             except Exception as exc:
                 # BlockingError means this ran on the server event loop; that is
                 # a defect in the caller, not a bad model spec, so let it out.
-                if any(cls.__name__ == "BlockingError" for cls in type(exc).__mro__):
+                if _is_blocking_error(exc):
                     raise
                 _install_summary_model_retries(self._summarization)
                 if not self._warned:
@@ -316,10 +335,47 @@ class _LazySummaryModel:
                         exc_info=True,
                     )
                 return
+            helper = self._summarization._lc_helper
+            self._main_token_counter = helper.token_counter
+            self._main_partial_token_counter = helper._partial_token_counter
+            self._main_trim_limit = helper.trim_tokens_to_summarize
             _install_summary_model_retries(self._summarization, model)
             _install_summary_token_counter(self._summarization, model)
             _install_summary_trim_limit(self._summarization, model)
             self._configured = True
+
+    def _degrade_to_main_model(self, exc: Exception) -> None:
+        """Restore main-model summary generation after an invocation failure.
+
+        A dedicated model that builds but cannot generate (an unknown model ID,
+        say, or missing provider access) is the same broken optimization as one
+        that cannot build: the summary runs on the main model instead, and
+        `_configured` resets so the next compaction retries the override.
+
+        Args:
+            exc: The failure being logged. Passed explicitly because the async
+                path runs this on a worker thread, where `sys.exc_info()` is
+                thread-local and would log `NoneType: None`.
+        """
+        with self._lock:
+            _install_summary_model_retries(self._summarization)
+            helper = self._summarization._lc_helper
+            helper.token_counter = self._main_token_counter
+            helper._partial_token_counter = self._main_partial_token_counter
+            helper.trim_tokens_to_summarize = self._main_trim_limit
+            self._configured = False
+            if not self._warned:
+                # Shared with the build-failure warning: either failure mode
+                # means the override is suspect, and one warning per summarizer
+                # is enough.
+                self._warned = True
+                logger.warning(
+                    "The summarization model %r failed to generate a summary; "
+                    "compaction summaries use the main agent model instead. Run "
+                    "`/summarization-model clear` to stop trying it.",
+                    self._model_spec,
+                    exc_info=exc,
+                )
 
     def create_summary(self, messages: list[AnyMessage]) -> str:
         """Generate a synchronous summary after lazy configuration.
@@ -328,6 +384,14 @@ class _LazySummaryModel:
             The generated summary.
         """
         self._configure()
+        try:
+            return self._create_summary(messages)
+        except Exception as exc:
+            # `_configured` means the override, not the main model, was behind
+            # the failed call; a main-model failure has nothing to fall back to.
+            if _is_blocking_error(exc) or not self._configured:
+                raise
+            self._degrade_to_main_model(exc)
         return self._create_summary(messages)
 
     async def acreate_summary(self, messages: list[AnyMessage]) -> str:
@@ -337,6 +401,15 @@ class _LazySummaryModel:
             The generated summary.
         """
         await asyncio.to_thread(self._configure)
+        try:
+            return await self._acreate_summary(messages)
+        except Exception as exc:
+            # `_configured` means the override, not the main model, was behind
+            # the failed call; a main-model failure has nothing to fall back to.
+            if _is_blocking_error(exc) or not self._configured:
+                raise
+            # Locked like `_configure`, so it stays off the event loop.
+            await asyncio.to_thread(self._degrade_to_main_model, exc)
         return await self._acreate_summary(messages)
 
 

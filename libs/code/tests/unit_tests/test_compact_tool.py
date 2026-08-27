@@ -1104,6 +1104,202 @@ class TestLazySummaryModel:
 
         assert summarization._lc_helper._summary_model._model is summary_model
 
+    @staticmethod
+    def _dispatching_summarizer() -> SimpleNamespace:
+        """A summarizer whose hooks invoke the installed `_summary_model`.
+
+        Mirrors the SDK helper, which reads `_summary_model` at call time, so
+        the lazy wrapper's captured bound method follows a model swap.
+        """
+        helper = SimpleNamespace(
+            _summary_model=None,
+            trim_tokens_to_summarize=None,
+            token_counter="main-counter",
+            _partial_token_counter="main-partial-counter",
+        )
+        helper._create_summary = lambda messages: helper._summary_model.invoke(messages)
+
+        async def _acreate(messages: object) -> object:
+            return await helper._summary_model.ainvoke(messages)
+
+        helper._acreate_summary = _acreate
+        return SimpleNamespace(
+            _lc_helper=helper,
+            model=SimpleNamespace(profile={"max_input_tokens": 100_000}),
+        )
+
+    @staticmethod
+    def _broken_summary_model() -> SimpleNamespace:
+        """A dedicated model that builds but raises on every invocation."""
+
+        def _fail(_input: object, **_kwargs: object) -> object:
+            msg = "provider has no such model"
+            raise RuntimeError(msg)
+
+        async def _afail(_input: object, **_kwargs: object) -> object:
+            await asyncio.sleep(0)
+            msg = "provider has no such model"
+            raise RuntimeError(msg)
+
+        return SimpleNamespace(
+            profile={"max_input_tokens": 10_000},
+            _llm_type="summary",
+            invoke=_fail,
+            ainvoke=_afail,
+        )
+
+    def test_invocation_failure_degrades_to_the_main_model(self) -> None:
+        """A dedicated model that builds but cannot generate must not wedge compaction.
+
+        `create_model` succeeding only proves the spec parses; an unknown model
+        ID or missing provider access surfaces on the first summary call, and
+        raising there would abort compaction on every later turn once the
+        context threshold is reached.
+        """
+        summarization = self._dispatching_summarizer()
+        summarization.model.invoke = lambda _input, **_kwargs: "main-model-summary"
+        _install_lazy_summary_model(cast("Any", summarization), "p:broken", None)
+
+        with patch(
+            "deepagents_code.config.create_model",
+            return_value=SimpleNamespace(model=self._broken_summary_model()),
+        ):
+            assert summarization._lc_helper._create_summary([]) == "main-model-summary"
+
+        helper = summarization._lc_helper
+        assert helper._summary_model._model is summarization.model
+        assert helper.token_counter == "main-counter"
+        assert helper._partial_token_counter == "main-partial-counter"
+        assert helper.trim_tokens_to_summarize is None
+
+    def test_invocation_failure_retries_the_override_on_the_next_summary(
+        self,
+    ) -> None:
+        """A transient invocation failure must not disable the override for good.
+
+        Matches the build-failure path: after degrading, the next summary
+        rebuilds and retries the dedicated model.
+        """
+        summarization = self._dispatching_summarizer()
+        summarization.model.invoke = lambda _input, **_kwargs: "main-model-summary"
+        _install_lazy_summary_model(cast("Any", summarization), "p:flaky", None)
+
+        calls = 0
+
+        def _flaky(_input: object, **_kwargs: object) -> str:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                msg = "provider overloaded"
+                raise RuntimeError(msg)
+            return "dedicated-summary"
+
+        model = SimpleNamespace(
+            profile={"max_input_tokens": 10_000},
+            _llm_type="summary",
+            invoke=_flaky,
+        )
+        with patch(
+            "deepagents_code.config.create_model",
+            return_value=SimpleNamespace(model=model),
+        ):
+            assert summarization._lc_helper._create_summary([]) == "main-model-summary"
+            assert summarization._lc_helper._create_summary([]) == "dedicated-summary"
+
+        assert summarization._lc_helper._summary_model._model is model
+
+    def test_invocation_failure_warns_once(self) -> None:
+        summarization = self._dispatching_summarizer()
+        summarization.model.invoke = lambda _input, **_kwargs: "main-model-summary"
+        _install_lazy_summary_model(cast("Any", summarization), "p:broken", None)
+
+        with (
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=self._broken_summary_model()),
+            ),
+            patch("deepagents_code.offload_middleware.logger") as log,
+        ):
+            summarization._lc_helper._create_summary([])
+            summarization._lc_helper._create_summary([])
+            assert log.warning.call_count == 1
+
+    def test_invocation_blocking_error_is_not_swallowed(self) -> None:
+        """`BlockingError` on the summary call is a caller defect, re-raised."""
+
+        class BlockingError(Exception):
+            pass
+
+        def _fail(_input: object, **_kwargs: object) -> object:
+            msg = "blocking call in event loop"
+            raise BlockingError(msg)
+
+        summarization = self._dispatching_summarizer()
+        _install_lazy_summary_model(cast("Any", summarization), "p:summary", None)
+        model = SimpleNamespace(
+            profile={"max_input_tokens": 10_000},
+            _llm_type="summary",
+            invoke=_fail,
+        )
+        with (
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=model),
+            ),
+            pytest.raises(BlockingError),
+        ):
+            summarization._lc_helper._create_summary([])
+
+    def test_main_model_failure_is_not_masked_by_the_fallback(self) -> None:
+        """A main-model summary failure propagates instead of degrading.
+
+        The fallback exists for a broken dedicated model; when the override was
+        never installed there is nothing to fall back to, and restoring the
+        captured placeholders would clobber the helper's real token counters.
+        """
+        summarization = self._dispatching_summarizer()
+
+        def _fail(_input: object, **_kwargs: object) -> object:
+            msg = "main model down"
+            raise RuntimeError(msg)
+
+        summarization.model.invoke = _fail
+        _install_lazy_summary_model(cast("Any", summarization), "p:bad", None)
+
+        with (
+            patch(
+                "deepagents_code.config.create_model",
+                side_effect=RuntimeError("no such provider"),
+            ),
+            pytest.raises(RuntimeError, match="main model down"),
+        ):
+            summarization._lc_helper._create_summary([])
+
+        helper = summarization._lc_helper
+        assert helper.token_counter == "main-counter"
+        assert helper._partial_token_counter == "main-partial-counter"
+
+    async def test_async_invocation_failure_degrades_to_the_main_model(self) -> None:
+        summarization = self._dispatching_summarizer()
+
+        async def _main_ainvoke(_input: object, **_kwargs: object) -> str:
+            await asyncio.sleep(0)
+            return "main-model-summary"
+
+        summarization.model.ainvoke = _main_ainvoke
+        _install_lazy_summary_model(cast("Any", summarization), "p:broken", None)
+
+        with patch(
+            "deepagents_code.config.create_model",
+            return_value=SimpleNamespace(model=self._broken_summary_model()),
+        ):
+            assert (
+                await summarization._lc_helper._acreate_summary([])
+                == "main-model-summary"
+            )
+
+        assert summarization._lc_helper._summary_model._model is summarization.model
+
 
 class TestRetryingModelInvoker:
     """The wrapper that replaces LangChain's summary-model retries.

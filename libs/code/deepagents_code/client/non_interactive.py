@@ -2008,7 +2008,8 @@ async def run_non_interactive(
         rubric_max_iterations: Grader iterations per rubric attempt; `None`
             uses the middleware default.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-            from env / `config.toml` / default at agent-build time.
+            from env / `config.toml` at agent-build time, then leaves the
+            budget to the LangGraph server default.
         trust_project_hooks: When `True`, load project-scoped
             `.deepagents/hooks.json` handlers.
 

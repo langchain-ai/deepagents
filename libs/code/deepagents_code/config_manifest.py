@@ -101,10 +101,19 @@ through to the next layer / default.
 """
 
 RECURSION_LIMIT_FLOOR = 25
-"""Smallest accepted configured `recursion_limit` outside the CLI.
+"""Smallest `recursion_limit` accepted from managed config, the env var, or TOML.
 
-A value below this would break otherwise-valid runs, so a resolved value under
-the floor is rejected and falls through to the next layer or LangGraph default.
+`25` is the LangChain-core runnable default, the smallest budget any LangGraph
+run is expected to survive. A value below it would break otherwise-valid runs,
+so a resolved value under the floor is rejected and falls through to the next
+layer. The `--recursion-limit` flag is exempt and accepts any value `>= 1`
+(`_is_valid_cli_recursion_limit`): an operator who types a small budget on the
+command line is bounding one run on purpose.
+
+Rejection raises the effective budget rather than lowering it. A `config.toml`
+value of `20` is discarded, and the run falls through to the server default
+(`10_011`), so the user gets a far larger budget than they asked for. Use the
+CLI flag to bound a run below the floor.
 """
 
 RECURSION_LIMIT_CEILING = 100_000
@@ -1739,7 +1748,11 @@ def option_accepts_toml(
 
 
 def is_valid_recursion_limit(value: object) -> TypeIs[int]:
-    """Return whether `value` is an accepted main-agent `recursion_limit`.
+    """Return whether `value` is in bounds for a managed, env, or TOML tier.
+
+    The `--recursion-limit` flag does not go through this predicate: it uses the
+    looser `_is_valid_cli_recursion_limit` (`>= 1`), so a CLI value this function
+    rejects is still honored.
 
     Narrows so callers need no `cast`. `bool` is rejected at runtime but is a
     subclass of `int`, so the negative branch is not narrowed for it -- no
@@ -1768,8 +1781,7 @@ def resolve_recursion_limit(
     `config.toml` precedence. Explicit CLI values retain the documented `>= 1`
     contract. Other out-of-range values (below `RECURSION_LIMIT_FLOOR` or above
     `RECURSION_LIMIT_CEILING`) are discarded with a logged warning and the next
-    lower-precedence layer is tried. If no valid value is configured, LangGraph
-    applies its own default.
+    lower-precedence layer is tried.
 
     Managed values remain subject to the launch-time managed-health gate.
 
@@ -1780,7 +1792,10 @@ def resolve_recursion_limit(
             described in `_resolve_option`.
 
     Returns:
-        The explicit recursion limit, or `None` to use LangGraph's default.
+        The explicit recursion limit, or `None` when nothing valid is
+            configured and the LangGraph server default should stand. CLI values
+            are `>= 1`; values from all other tiers are within
+            `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
     """
     data = toml_data
     option = get_option("runtime.recursion_limit")
@@ -1817,7 +1832,8 @@ def resolve_recursion_limit(
             break
         logger.warning(
             "Ignoring %s recursion_limit %r (expected int in [%d, %d]); "
-            "falling through to the next config source",
+            "falling through to the next config source, then to the "
+            "LangGraph server default",
             source,
             value,
             RECURSION_LIMIT_FLOOR,

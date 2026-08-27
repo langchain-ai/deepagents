@@ -2524,8 +2524,9 @@ def create_cli_agent(
         recursion_limit: Explicit LangGraph `recursion_limit` (graph step budget)
             for the main agent. When `None`, it is resolved from the
             `DEEPAGENTS_CODE_RECURSION_LIMIT` env var and
-            `[runtime].recursion_limit` in `config.toml`; LangGraph's default
-            applies when neither is set.
+            `[runtime].recursion_limit` in `config.toml`. When neither is set,
+            no `recursion_limit` is bound and the LangGraph server budget
+            (`10_011`) stands.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         store: Optional LangGraph Store for runtime approval state.

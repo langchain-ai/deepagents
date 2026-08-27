@@ -1304,7 +1304,10 @@ def _resolved_recursion_limit(args: argparse.Namespace) -> int | None:
     process so its ordinary configuration sources remain authoritative.
 
     Returns:
-        The effective explicit limit, or `None` when the flag was absent.
+        The effective explicit limit, or `None` when the flag was absent or
+            every configured tier was rejected. `positive_int` on the flag makes
+            the latter unreachable today, but `resolve_recursion_limit` can
+            return `None` with the flag present.
     """
     if getattr(args, "recursion_limit", None) is None:
         return None
@@ -2647,7 +2650,8 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Override the main agent's LangGraph recursion_limit (graph step "
         "budget; must be >= 1). Overrides DEEPAGENTS_CODE_RECURSION_LIMIT and "
-        "[runtime].recursion_limit; defaults to LangGraph's setting.",
+        "[runtime].recursion_limit; defaults to the LangGraph server budget "
+        "(10011).",
     )
 
     parser.add_argument(
@@ -3130,7 +3134,8 @@ async def run_textual_cli_async(
             with no value: it overrides any env / `config.toml` classifier so
             reviews inherit the main agent model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-            from env / `config.toml` / default at agent-build time.
+            from env / `config.toml` at agent-build time, then leaves the
+            budget to the LangGraph server default.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3350,7 +3355,8 @@ async def _run_acp_cli_async(
 
             `None` leaves the SDK default (all tools).
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-            from env/`config.toml`/default at agent-build time.
+            from env / `config.toml` at agent-build time, then leaves the
+            budget to the LangGraph server default.
         auto: Enable classifier-backed approval routing.
         yolo: Disable approval prompts for this ACP server.
         auto_classifier_model: Optional model for Auto approval classification.

@@ -178,3 +178,94 @@ async def test_ls_with_invalid_path_returns_error_message_async() -> None:
 
     error_message = tool_messages[0].content
     assert error_message == "Error: Path traversal not allowed: ../../../etc"
+
+
+async def test_ls_with_limit_truncates_entries_async() -> None:
+    """Verify that async ls tool with limit truncates entries and appends a truncation note."""
+    from deepagents.backends.state import StateBackend
+
+    backend = StateBackend()
+    for i in range(1, 6):
+        backend.write(f"/project/file{i}.txt", "content")
+
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ls",
+                            "args": {
+                                "path": "/project",
+                                "limit": 2,
+                            },
+                            "id": "call_ls_limit_async",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="I see the truncated listing."),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=fake_model,
+        filesystem_backend=backend,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="List directory with limit async")]},
+        config={"configurable": {"thread_id": "test_ls_limit_async"}},
+    )
+
+    tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(tool_messages) >= 1, "Expected at least one ToolMessage"
+
+    content = tool_messages[0].content
+    assert tool_messages[0].status == "success"
+    assert "[Showing 2 of 5 entries" in content
+
+
+async def test_ls_with_invalid_limit_returns_error_async() -> None:
+    """Verify that async ls tool rejects non-positive limit values with a clear error."""
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ls",
+                            "args": {
+                                "path": "/project",
+                                "limit": -1,
+                            },
+                            "id": "call_ls_limit_neg_async",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="I see there was an error."),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=fake_model,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="List directory with negative limit")]},
+        config={"configurable": {"thread_id": "test_ls_limit_neg_async"}},
+    )
+
+    tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(tool_messages) >= 1
+
+    error_message = tool_messages[0].content
+    assert tool_messages[0].status == "error"
+    assert "Error: limit must be > 0, got -1" == error_message

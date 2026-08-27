@@ -587,3 +587,142 @@ def test_ls_with_invalid_path_returns_error_message() -> None:
 
     error_message = tool_messages[0].content
     assert error_message == "Error: Path traversal not allowed: ../../../etc"
+
+
+def test_ls_with_limit_truncates_entries() -> None:
+    """Verify that ls tool with limit truncates entries and appends a truncation note."""
+    backend = StateBackend()
+    # Pre-populate 5 files so the backend ls() returns 5 entries.
+    for i in range(1, 6):
+        backend.write(f"/project/file{i}.txt", "content")
+
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ls",
+                            "args": {
+                                "path": "/project",
+                                "limit": 3,
+                            },
+                            "id": "call_ls_limit",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="I see the truncated listing."),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=fake_model,
+        filesystem_backend=backend,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="List directory with limit")]},
+        config={"configurable": {"thread_id": "test_ls_limit"}},
+    )
+
+    tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(tool_messages) >= 1, "Expected at least one ToolMessage"
+
+    content = tool_messages[0].content
+    assert tool_messages[0].status == "success"
+    # Exactly 3 entries returned; truncation note present.
+    assert "[Showing 3 of 5 entries" in content
+
+
+def test_ls_with_limit_gte_total_no_truncation() -> None:
+    """Verify that ls tool with limit >= total entries returns all entries without a note."""
+    backend = StateBackend()
+    for i in range(1, 4):
+        backend.write(f"/project/file{i}.txt", "content")
+
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ls",
+                            "args": {
+                                "path": "/project",
+                                "limit": 10,
+                            },
+                            "id": "call_ls_limit_gte",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="I see all entries."),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=fake_model,
+        filesystem_backend=backend,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="List directory with generous limit")]},
+        config={"configurable": {"thread_id": "test_ls_limit_gte"}},
+    )
+
+    tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(tool_messages) >= 1
+
+    content = tool_messages[0].content
+    assert tool_messages[0].status == "success"
+    # No truncation note when limit >= total.
+    assert "[Showing" not in content
+
+
+def test_ls_with_invalid_limit_returns_error() -> None:
+    """Verify that ls tool rejects non-positive limit values with a clear error."""
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ls",
+                            "args": {
+                                "path": "/project",
+                                "limit": 0,
+                            },
+                            "id": "call_ls_limit_zero",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="I see there was an error."),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=fake_model,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="List directory with zero limit")]},
+        config={"configurable": {"thread_id": "test_ls_limit_zero"}},
+    )
+
+    tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(tool_messages) >= 1
+
+    error_message = tool_messages[0].content
+    assert tool_messages[0].status == "error"
+    assert "Error: limit must be > 0, got 0" == error_message

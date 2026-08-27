@@ -1122,6 +1122,15 @@ class LsSchema(BaseModel):
     """Input schema for the `ls` tool."""
 
     path: str = Field(description="Absolute path to the directory to list. Must be absolute, not relative.")
+    limit: int | None = Field(
+        default=None,
+        description=(
+            "Optional maximum number of directory entries to return. "
+            "Useful when inspecting large directories to avoid context overflow. "
+            "Must be a positive integer. When the result is truncated a note is "
+            "appended indicating how many total entries exist."
+        ),
+    )
 
 
 class ReadFileSchema(BaseModel):
@@ -1774,8 +1783,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         def sync_ls(
             runtime: ToolRuntime[None, FilesystemState],
             path: str,
+            limit: int | None = None,
         ) -> ToolMessage:
             """Synchronous wrapper for ls tool."""
+            if limit is not None and limit <= 0:
+                return ToolMessage(
+                    content=f"Error: limit must be > 0, got {limit!r}",
+                    name="ls",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(path)
@@ -1803,8 +1820,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             infos = ls_result.entries or []
             paths = _apply_permissions_to_ls_results(self._permissions, infos)
+            total = len(paths)
+            truncated = limit is not None and total > limit
+            if truncated:
+                paths = paths[:limit]
+            content = _format_file_paths(paths)
+            if truncated:
+                content = f"{content}\n\n[Showing {limit} of {total} entries. Use a larger limit or glob to list more.]"
             return ToolMessage(
-                content=_format_file_paths(paths),
+                content=content,
                 tool_call_id=runtime.tool_call_id,
                 name="ls",
                 status="success",
@@ -1813,8 +1837,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         async def async_ls(
             runtime: ToolRuntime[None, FilesystemState],
             path: str,
+            limit: int | None = None,
         ) -> ToolMessage:
             """Asynchronous wrapper for ls tool."""
+            if limit is not None and limit <= 0:
+                return ToolMessage(
+                    content=f"Error: limit must be > 0, got {limit!r}",
+                    name="ls",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(path)
@@ -1842,8 +1874,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             infos = ls_result.entries or []
             paths = _apply_permissions_to_ls_results(self._permissions, infos)
+            total = len(paths)
+            truncated = limit is not None and total > limit
+            if truncated:
+                paths = paths[:limit]
+            content = _format_file_paths(paths)
+            if truncated:
+                content = f"{content}\n\n[Showing {limit} of {total} entries. Use a larger limit or glob to list more.]"
             return ToolMessage(
-                content=_format_file_paths(paths),
+                content=content,
                 tool_call_id=runtime.tool_call_id,
                 name="ls",
                 status="success",

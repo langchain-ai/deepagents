@@ -48,6 +48,7 @@ from mcp.shared.auth import (
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from deepagents_code._env_vars import DEBUG, is_env_truthy
 from deepagents_code._paths import PATHS
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
@@ -2187,9 +2188,9 @@ async def login(
         ui=ui,
     )
 
-    success_message = (
-        f"Logged in to MCP server '{server_name}'. Tokens saved to {storage.path}."
-    )
+    success_message = f"Logged in to MCP server '{server_name}'."
+    if is_env_truthy(DEBUG):
+        success_message += f" Tokens saved to {storage.path}."
 
     if result.completed:
         await ui.show_success(success_message)

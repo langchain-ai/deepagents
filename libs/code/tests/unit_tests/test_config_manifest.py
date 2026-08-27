@@ -297,9 +297,11 @@ def test_resolver_reads_emit_ranked_diagnostics() -> None:
     )
 
 
-# Six `app.py` display toggles plus `display.show_usage_stats` in
-# `_session_stats.py`. The `app.py` wrapper forwards variables, not literals,
-# so it is deliberately not counted. Exact, not a floor — see the test.
+# Seven `app.py` display toggles, plus `display.show_usage_stats` in
+# `_session_stats.py` and `display.show_reasoning` in `main.py` (the headless
+# path resolves it directly rather than through the app). The `app.py` wrapper
+# forwards variables, not literals, so it is deliberately not counted. Exact,
+# not a floor — see the test.
 _EXPECTED_LITERAL_CALL_SITES = 9
 
 

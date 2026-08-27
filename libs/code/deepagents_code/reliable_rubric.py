@@ -163,6 +163,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
         tools: Sequence[BaseTool] | None = None,
         grader_middleware: Sequence[AgentMiddleware[Any, Any]] | None = None,
         grader_context_schema: type[Any] | None = None,
+        runtime_bootstrap_model: BaseChatModel | None = None,
         inherit_main_model: bool = False,
         max_iterations: int = 3,
         on_evaluation: Callable[[RubricEvaluation], None] | None = None,
@@ -176,6 +177,8 @@ class ReliableRubricMiddleware(RubricMiddleware):
         )
         self._grader_middleware = list(grader_middleware or ())
         self._grader_context_schema = grader_context_schema
+        self._runtime_bootstrap_model = runtime_bootstrap_model
+        self._runtime_grader: Any = None
         self._inherit_main_model = inherit_main_model
         self._runtime_grader_model: ContextVar[str | None] = ContextVar(
             "runtime_grader_model",
@@ -289,18 +292,19 @@ class ReliableRubricMiddleware(RubricMiddleware):
             grader_context.model_params = {}
         return grader_context
 
-    def _ensure_grader(self) -> Any:  # noqa: ANN401
-        if self._grader is not None:
-            return self._grader
+    def _build_grader(self, model: str | BaseChatModel) -> tuple[Any, BaseChatModel]:
+        """Build a nested grader around a resolved base model.
 
+        Returns:
+            The grader graph and its resolved base model.
+        """
         from deepagents._models import (  # noqa: PLC2701
             resolve_model,
         )
         from langchain.agents import create_agent
 
-        resolved_model = resolve_model(self._model)
-        self._resolved_model = resolved_model
-        self._grader = create_agent(
+        resolved_model = resolve_model(model)
+        grader = create_agent(
             model=resolved_model,
             system_prompt=self._system_prompt,
             tools=self._tools,
@@ -310,6 +314,19 @@ class ReliableRubricMiddleware(RubricMiddleware):
             state_schema=RubricGraderState,
             context_schema=self._grader_context_schema,
         )
+        return grader, resolved_model
+
+    def _ensure_grader(self) -> Any:  # noqa: ANN401
+        if self._grader is not None:
+            return self._grader
+        runtime_model = self._runtime_grader_model.get()
+        if runtime_model is not None and self._runtime_bootstrap_model is not None:
+            if self._runtime_grader is None:
+                self._runtime_grader, _ = self._build_grader(
+                    self._runtime_bootstrap_model
+                )
+            return self._runtime_grader
+        self._grader, self._resolved_model = self._build_grader(self._model)
         return self._grader
 
     def _invoke_grader(

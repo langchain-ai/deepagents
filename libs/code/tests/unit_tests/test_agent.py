@@ -6207,7 +6207,7 @@ class TestCreateCliAgentInterpreterWiring:
             ),
         ):
             create_cli_agent(
-                model="fake-model",
+                model=fake_model,
                 assistant_id="test",
                 enable_memory=False,
                 enable_skills=False,
@@ -6216,6 +6216,7 @@ class TestCreateCliAgentInterpreterWiring:
 
         _, kwargs = mock_rubric.call_args
         assert "max_iterations" not in kwargs
+        assert kwargs["runtime_bootstrap_model"] is fake_model
 
     def test_rubric_grader_read_tool_only_reads_large_results(
         self, tmp_path: Path

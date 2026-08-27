@@ -3312,6 +3312,7 @@ def create_cli_agent(
             "tools": grader_tools,
             "grader_middleware": grader_middleware,
             "grader_context_schema": CLIContextSchema,
+            "runtime_bootstrap_model": (model if not isinstance(model, str) else None),
             "inherit_main_model": rubric_model is None,
         }
         if rubric_max_iterations is not None:

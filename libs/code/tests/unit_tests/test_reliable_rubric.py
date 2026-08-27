@@ -770,6 +770,42 @@ class TestReliableRubricMiddleware:
             == "ProviderStrategy"
         )
 
+    def test_runtime_model_bypasses_an_unavailable_startup_grader(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A thread override must run before resolving its unused startup model."""
+        bootstrap = _FixedGenericFakeChatModel(messages=iter([]))
+        grader = MagicMock()
+        grader.invoke.return_value = _tool_satisfied_result()
+        resolved: list[object] = []
+
+        def resolve_model(model: object) -> object:
+            resolved.append(model)
+            if model == "unavailable:startup":
+                msg = "startup provider unavailable"
+                raise RuntimeError(msg)
+            return model
+
+        monkeypatch.setattr("deepagents._models.resolve_model", resolve_model)
+        monkeypatch.setattr("langchain.agents.create_agent", lambda **_kwargs: grader)
+        middleware = ReliableRubricMiddleware(
+            model="unavailable:startup",
+            runtime_bootstrap_model=bootstrap,
+        )
+        state = cast("ReliableRubricState", _state())
+        state["_rubric_model_spec"] = "openai:gpt-5.5"
+
+        result = middleware._invoke_grader(state, 0)
+
+        assert result.result == "satisfied"
+        assert resolved == [bootstrap]
+        assert middleware._grader is None
+        assert grader.invoke.call_args.kwargs["context"].model == "openai:gpt-5.5"
+        with pytest.raises(RuntimeError, match="startup provider unavailable"):
+            middleware._invoke_grader(_state(), 0)
+        assert resolved == [bootstrap, "unavailable:startup"]
+
     async def test_nested_grader_interrupt_propagates_with_context(
         self,
         monkeypatch: pytest.MonkeyPatch,

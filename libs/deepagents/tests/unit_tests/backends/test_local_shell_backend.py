@@ -21,7 +21,7 @@ import deepagents.backends.local_shell as local_shell_module
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="LocalShellBackend requires sh, not available on Windows")
+_POSIX_SHELL_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="test requires POSIX shell behavior")
 
 
 def _heartbeat_command(directory: Path) -> tuple[str, Path, Path]:
@@ -61,6 +61,17 @@ def _stop_test_descendant(pid_file: Path) -> None:
         os.kill(int(pid_file.read_text()), signal.SIGKILL)
 
 
+def _assert_platform_cleanup(process: MagicMock, killpg: MagicMock) -> None:
+    """Assert cleanup targets the POSIX group or Windows shell process."""
+    if sys.platform == "win32":
+        process.kill.assert_called_once_with()
+        killpg.assert_not_called()
+    else:
+        killpg.assert_called_once_with(1234, signal.SIGKILL)
+        process.kill.assert_not_called()
+    process.wait.assert_called_once_with(timeout=5)
+
+
 def test_local_shell_backend_initialization() -> None:
     """Test that LocalShellBackend initializes correctly."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -84,8 +95,8 @@ def test_local_shell_backend_execute_simple_command() -> None:
         assert result.truncated is False
 
 
-def test_local_shell_backend_execute_starts_new_session() -> None:
-    """Test that commands cannot access the parent's controlling terminal."""
+def test_local_shell_backend_execute_configures_session_for_platform() -> None:
+    """Test that only POSIX commands start in a new session."""
     process = MagicMock(returncode=0)
     process.communicate.return_value = ("hello\n", "")
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -93,9 +104,10 @@ def test_local_shell_backend_execute_starts_new_session() -> None:
         with patch("subprocess.Popen", return_value=process) as popen:
             backend.execute("echo hello")
 
-    assert popen.call_args.kwargs["start_new_session"] is True
+    assert popen.call_args.kwargs["start_new_session"] == (sys.platform != "win32")
 
 
+@_POSIX_SHELL_ONLY
 def test_local_shell_backend_execute_process_is_group_leader() -> None:
     """Test the real shell process leads its detached process group."""
     probe = "import os; parent = os.getppid(); print(parent, os.getpgid(parent))"
@@ -109,6 +121,7 @@ def test_local_shell_backend_execute_process_is_group_leader() -> None:
     assert process_group != os.getpgrp()
 
 
+@_POSIX_SHELL_ONLY
 def test_local_shell_backend_timeout_stops_descendant(tmp_path: Path) -> None:
     """Test a real background descendant stops after command timeout."""
     command, pid_file, heartbeat = _heartbeat_command(tmp_path)
@@ -122,20 +135,19 @@ def test_local_shell_backend_timeout_stops_descendant(tmp_path: Path) -> None:
         _stop_test_descendant(pid_file)
 
 
-def test_local_shell_backend_interrupt_kills_process_group() -> None:
-    """Test that an interrupt cannot leave detached descendants running."""
+def test_local_shell_backend_interrupt_cleans_up_platform_process_scope() -> None:
+    """Test an interrupt cleans up the platform's supported process scope."""
     process = MagicMock(pid=1234)
     process.communicate.side_effect = KeyboardInterrupt
     with (
         tempfile.TemporaryDirectory() as tmpdir,
         patch("subprocess.Popen", return_value=process),
-        patch("os.killpg") as killpg,
+        patch.object(local_shell_module.os, "killpg", create=True) as killpg,
         pytest.raises(KeyboardInterrupt),
     ):
         LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
 
-    killpg.assert_called_once_with(1234, signal.SIGKILL)
-    process.wait.assert_called_once_with(timeout=5)
+    _assert_platform_cleanup(process, killpg)
 
 
 def test_local_shell_backend_polling_interrupt_kills_process_group() -> None:
@@ -210,6 +222,7 @@ def test_local_shell_backend_failed_background_worker_is_logged(caplog: pytest.L
     assert "failed after its caller was cancelled" in caplog.text
 
 
+@_POSIX_SHELL_ONLY
 def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.LogCaptureFixture) -> None:
     """Test that cleanup failures cannot replace an active interrupt."""
     process = MagicMock(pid=1234)
@@ -238,20 +251,38 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.Lo
     assert "Failed to close stderr for local shell process 1234" in caplog.text
 
 
-def test_local_shell_backend_timeout_kills_process_group() -> None:
-    """Test that a timeout cannot leave detached descendants running."""
+def test_local_shell_backend_timeout_cleans_up_platform_process_scope() -> None:
+    """Test a timeout cleans up the platform's supported process scope."""
     process = MagicMock(pid=1234)
     process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
     with (
         tempfile.TemporaryDirectory() as tmpdir,
         patch("subprocess.Popen", return_value=process),
-        patch("os.killpg") as killpg,
+        patch.object(local_shell_module.os, "killpg", create=True) as killpg,
     ):
         result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
 
     assert result.exit_code == 124
-    killpg.assert_called_once_with(1234, signal.SIGKILL)
+    _assert_platform_cleanup(process, killpg)
+
+
+def test_local_shell_backend_windows_timeout_kills_direct_process() -> None:
+    """Test Windows timeout cleanup terminates and reaps the direct shell."""
+    process = MagicMock(pid=1234)
+    process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch.object(local_shell_module.sys, "platform", "win32"),
+        patch("subprocess.Popen", return_value=process) as popen,
+        patch.object(local_shell_module.os, "killpg", create=True) as killpg,
+    ):
+        result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
+
+    assert result.exit_code == 124
+    assert popen.call_args.kwargs["start_new_session"] is False
+    process.kill.assert_called_once_with()
     process.wait.assert_called_once_with(timeout=5)
+    killpg.assert_not_called()
 
 
 def test_local_shell_backend_timeout_bounds_process_reaping(caplog: pytest.LogCaptureFixture) -> None:
@@ -262,7 +293,7 @@ def test_local_shell_backend_timeout_bounds_process_reaping(caplog: pytest.LogCa
     with (
         tempfile.TemporaryDirectory() as tmpdir,
         patch("subprocess.Popen", return_value=process),
-        patch("os.killpg"),
+        patch.object(local_shell_module.os, "killpg", create=True),
         caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
     ):
         result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
@@ -272,6 +303,7 @@ def test_local_shell_backend_timeout_bounds_process_reaping(caplog: pytest.LogCa
     assert "did not exit within 5 seconds after termination" in caplog.text
 
 
+@_POSIX_SHELL_ONLY
 def test_local_shell_backend_execute_with_error() -> None:
     """Test executing a command that fails."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -284,6 +316,7 @@ def test_local_shell_backend_execute_with_error() -> None:
         assert "Exit code:" in result.output
 
 
+@_POSIX_SHELL_ONLY
 def test_local_shell_backend_execute_in_working_directory() -> None:
     """Test that commands execute in the specified working directory."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -311,6 +344,7 @@ def test_local_shell_backend_execute_empty_command() -> None:
         assert "must be a non-empty string" in result.output
 
 
+@_POSIX_SHELL_ONLY
 def test_local_shell_backend_execute_timeout() -> None:
     """Test that long-running commands timeout correctly."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -323,6 +357,7 @@ def test_local_shell_backend_execute_timeout() -> None:
         assert "timed out" in result.output
 
 
+@_POSIX_SHELL_ONLY
 def test_local_shell_backend_execute_output_truncation() -> None:
     """Test that large output gets truncated."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -364,6 +399,7 @@ def test_local_shell_backend_filesystem_operations() -> None:
         assert "World" not in content.file_data["content"]
 
 
+@_POSIX_SHELL_ONLY
 def test_local_shell_backend_integration_shell_and_filesystem() -> None:
     """Test that shell commands and filesystem operations work together."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -460,6 +496,7 @@ def test_local_shell_backend_virtual_mode_restrictions() -> None:
         assert isinstance(result, ExecuteResponse)
 
 
+@_POSIX_SHELL_ONLY
 def test_local_shell_backend_environment_variables() -> None:
     """Test that custom environment variables are passed to commands."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -472,6 +509,7 @@ def test_local_shell_backend_environment_variables() -> None:
         assert "custom_value" in result.output
 
 
+@_POSIX_SHELL_ONLY
 def test_local_shell_backend_inherit_env() -> None:
     """Test that inherit_env=True inherits parent environment."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -484,6 +522,7 @@ def test_local_shell_backend_inherit_env() -> None:
         assert len(result.output.strip()) > 0  # PATH should not be empty
 
 
+@_POSIX_SHELL_ONLY
 def test_local_shell_backend_empty_env_by_default() -> None:
     """Test that environment is empty by default (secure default)."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -541,8 +580,8 @@ async def test_local_shell_backend_async_execute_honors_execute_override() -> No
     popen.assert_not_called()
 
 
-async def test_local_shell_backend_async_cancellation_kills_process_group() -> None:
-    """Test that async cancellation reaps the detached command."""
+async def test_local_shell_backend_async_cancellation_cleans_up_platform_process_scope() -> None:
+    """Test async cancellation cleans up the platform's supported process scope."""
     communication_started = threading.Event()
     process = MagicMock(pid=1234)
 
@@ -555,7 +594,7 @@ async def test_local_shell_backend_async_cancellation_kills_process_group() -> N
     with (
         tempfile.TemporaryDirectory() as tmpdir,
         patch("subprocess.Popen", return_value=process),
-        patch("os.killpg") as killpg,
+        patch.object(local_shell_module.os, "killpg", create=True) as killpg,
     ):
         task = asyncio.create_task(LocalShellBackend(root_dir=tmpdir).aexecute("sleep 10"))
         assert await asyncio.to_thread(communication_started.wait, 1)
@@ -563,10 +602,10 @@ async def test_local_shell_backend_async_cancellation_kills_process_group() -> N
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    killpg.assert_called_once_with(1234, signal.SIGKILL)
-    process.wait.assert_called_once_with(timeout=5)
+    _assert_platform_cleanup(process, killpg)
 
 
+@_POSIX_SHELL_ONLY
 async def test_local_shell_backend_async_cancellation_stops_descendant(tmp_path: Path) -> None:
     """Test cancelling a real command stops its background descendant."""
     command, pid_file, heartbeat = _heartbeat_command(tmp_path)
@@ -641,7 +680,7 @@ async def test_local_shell_backend_async_cancellation_bypasses_execute_wrappers(
     with (
         tempfile.TemporaryDirectory() as tmpdir,
         patch("subprocess.Popen", return_value=process),
-        patch("os.killpg"),
+        patch.object(local_shell_module, "_kill_and_reap"),
     ):
         task = asyncio.create_task(ObservingLocalShellBackend(root_dir=tmpdir).aexecute("sleep 10"))
         assert await asyncio.to_thread(communication_started.wait, 1)
@@ -709,7 +748,7 @@ def test_local_shell_backend_async_cancellation_skips_queued_command() -> None:
             blocker = loop.run_in_executor(None, occupy_executor)
             await executor_started.wait()
 
-            with tempfile.TemporaryDirectory() as tmpdir, patch("subprocess.Popen") as popen, patch("os.killpg"):
+            with tempfile.TemporaryDirectory() as tmpdir, patch("subprocess.Popen") as popen:
                 task = asyncio.create_task(LocalShellBackend(root_dir=tmpdir).aexecute("echo queued"))
                 for _ in range(100):
                     if submit.call_count > 1:

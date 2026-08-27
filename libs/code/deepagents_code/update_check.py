@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TextIO
 
 from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name
+from packaging.utils import NormalizedName, canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from deepagents_code._paths import (
@@ -2944,6 +2944,52 @@ def _uv_tool_python(tool_root: Path | None = None) -> str | None:
     return python
 
 
+def _uv_tool_selected_extras(
+    *,
+    distribution_name: str = "deepagents-code",
+    tool_root: Path | None = None,
+) -> set[NormalizedName]:
+    """Return extras explicitly selected on the uv tool requirement.
+
+    Raises:
+        ToolRequirementIntrospectionError: If the receipt does not safely describe
+            the main tool requirement and its selected extras.
+    """
+    data = _uv_tool_receipt_data(tool_root)
+    tool = data.get("tool")
+    requirements = tool.get("requirements") if isinstance(tool, dict) else None
+    if not isinstance(requirements, list):
+        msg = "uv tool receipt is missing `[tool].requirements`"
+        raise ToolRequirementIntrospectionError(msg)
+
+    main = canonicalize_name(distribution_name)
+    for entry in requirements:
+        if not isinstance(entry, dict):
+            msg = "uv tool receipt contains a non-table requirement entry"
+            raise ToolRequirementIntrospectionError(msg)
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            msg = "uv tool receipt contains a requirement without a package name"
+            raise ToolRequirementIntrospectionError(msg)
+        if canonicalize_name(name) != main:
+            continue
+        extras = entry.get("extras", [])
+        if not isinstance(extras, list) or any(
+            not isinstance(extra, str) or not is_valid_extra_name(extra)
+            for extra in extras
+        ):
+            msg = "uv tool receipt contains invalid extras on the tool requirement"
+            raise ToolRequirementIntrospectionError(msg)
+        normalized = {canonicalize_name(extra) for extra in extras}
+        if len(normalized) != len(extras):
+            msg = "uv tool receipt contains duplicate canonical extra names"
+            raise ToolRequirementIntrospectionError(msg)
+        return normalized
+
+    msg = f"uv tool receipt does not contain a {distribution_name!r} requirement"
+    raise ToolRequirementIntrospectionError(msg)
+
+
 def _uv_tool_with_packages(
     *,
     distribution_name: str = "deepagents-code",
@@ -3063,6 +3109,7 @@ def _uv_tool_install_command(
     include_prereleases: bool | None,
     distribution_name: str,
     extras_to_add: Iterable[str] = (),
+    extras: Iterable[str] | None = None,
     with_packages_to_add: Iterable[str] = (),
     reinstall: bool = False,
     constraints_path: Path | None = None,
@@ -3078,6 +3125,8 @@ def _uv_tool_install_command(
             constraints drive the resolver instead of the global channel).
         distribution_name: Name of the installed distribution to inspect.
         extras_to_add: Extra names to merge with already-installed extras.
+        extras: Explicit complete extra set. When provided, metadata inference is
+            skipped.
         with_packages_to_add: Package names to merge with the receipt's existing
             `--with` packages. Names already present (compared canonically) are
             not duplicated; genuinely new names are appended after the preserved
@@ -3116,10 +3165,14 @@ def _uv_tool_install_command(
         installed_extra_names,
     )
 
-    extras = set(installed_extra_names(distribution_name, strict=True))
-    extras.update(extras_to_add)
+    selected_extras = (
+        set(installed_extra_names(distribution_name, strict=True))
+        if extras is None
+        else set(extras)
+    )
+    selected_extras.update(extras_to_add)
     try:
-        requirement = _dcode_extras_requirement(extras, version=version)
+        requirement = _dcode_extras_requirement(selected_extras, version=version)
     except ValueError as exc:
         if str(exc).startswith("Invalid deepagents-code version"):
             raise
@@ -3570,6 +3623,58 @@ def _install_extra_uv_tool_command(
     )
 
 
+class ExtraNotInstalledError(RuntimeError):
+    """Raised when an uninstall targets an extra that is not selected."""
+
+
+_BASE_PROVIDER_EXTRAS = frozenset({"anthropic", "google-genai", "openai"})
+
+
+def uninstall_extra_command(
+    extra: str,
+    *,
+    distribution_name: str = "deepagents-code",
+) -> str:
+    """Return the receipt-preserving command that removes one selected extra.
+
+    Raises:
+        ValueError: If `extra` is not a valid PEP 508 extra name.
+        ExtraNotInstalledError: If `extra` is not removable from this install.
+    """
+    if not is_valid_extra_name(extra):
+        msg = (
+            f"Invalid extra name {extra!r}: must match PEP 508 "
+            f"({_EXTRA_NAME_RE.pattern})"
+        )
+        raise ValueError(msg)
+    selected_extra = canonicalize_name(extra)
+    if selected_extra in _BASE_PROVIDER_EXTRAS:
+        msg = f"Extra {extra!r} is a base dependency and cannot be removed."
+        raise ExtraNotInstalledError(msg)
+
+    extras = _uv_tool_selected_extras(distribution_name=distribution_name)
+    if selected_extra not in extras:
+        msg = f"Extra {extra!r} is not installed."
+        raise ExtraNotInstalledError(msg)
+    extras.remove(selected_extra)
+    return _uv_tool_install_command(
+        version=__version__,
+        include_prereleases=True,
+        distribution_name=distribution_name,
+        extras=extras,
+        reinstall=True,
+    )
+
+
+def editable_extra_removal_hint(extra: str) -> str:
+    """Return the action hint for removing an extra from an editable install."""
+    return (
+        "Rerun your `uv tool install --editable` command without "
+        f"`--with 'deepagents-code[{extra}]'` so the extra is no longer "
+        "resolved against the editable source."
+    )
+
+
 def editable_extra_hint(extra: str) -> str:
     """Return the canonical action hint for editable installs missing an extra.
 
@@ -3666,6 +3771,46 @@ async def perform_install_extra(
         ToolRequirementIntrospectionError,
         ValueError,
     ) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+
+
+async def perform_uninstall_extra(
+    extra: str,
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+) -> tuple[bool, str]:
+    """Remove `extra` by rebuilding the current uv-managed tool environment.
+
+    Returns:
+        `(success, output)` with subprocess output or an explanatory error.
+    """
+    if not is_valid_extra_name(extra):
+        return False, (
+            f"Invalid extra name {extra!r}: must match {_EXTRA_NAME_RE.pattern}"
+        )
+    method = detect_install_method()
+    if method == "unknown":
+        return False, (
+            "Editable install detected — cannot remove extras automatically.\n"
+            + editable_extra_removal_hint(extra)
+        )
+    if method == "brew":
+        return False, "Homebrew install detected — extras cannot be removed in place."
+    if method == "other":
+        return False, (
+            "Unsupported install method detected — cannot remove extras without "
+            "knowing which environment provides `dcode`."
+        )
+    if not shutil.which("uv"):
+        return False, "`uv` not found on PATH; extras cannot be removed."
+
+    try:
+        cmd = uninstall_extra_command(extra)
+    except ExtraNotInstalledError as exc:
+        return False, str(exc)
+    except (ToolRequirementIntrospectionError, ValueError) as exc:
         return False, f"{type(exc).__name__}: {exc}"
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 

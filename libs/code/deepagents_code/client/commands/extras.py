@@ -26,6 +26,103 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def run_uninstall_command(args: argparse.Namespace) -> int:
+    """Dispatch `dcode uninstall <name>`.
+
+    Returns:
+        Process exit code.
+    """
+    name = getattr(args, "uninstall_target", None)
+    if not isinstance(name, str) or not name:
+        from deepagents_code import ui
+
+        ui.show_uninstall_help()
+        return 2
+    return run_uninstall_request(name=name)
+
+
+def run_uninstall_request(*, name: str) -> int:
+    """Remove one selected optional extra from the dcode tool environment.
+
+    Returns:
+        Process exit code.
+    """
+    from rich.markup import escape
+
+    from deepagents_code.config import _is_editable_install, console
+    from deepagents_code.update_check import (
+        ExtraNotInstalledError,
+        create_update_log_path,
+        editable_extra_removal_hint,
+        format_log_follow_command,
+        is_valid_extra_name,
+        perform_uninstall_extra,
+        uninstall_extra_command,
+    )
+
+    if not is_valid_extra_name(name):
+        console.print(
+            f"[bold red]Error:[/bold red] Invalid extra name '{escape(name)}'.",
+            highlight=False,
+        )
+        return 2
+    if _is_editable_install():
+        console.print(
+            "[bold yellow]Warning:[/bold yellow] "
+            "Removing extras is not supported on editable installs.\n"
+            + escape(editable_extra_removal_hint(name)),
+            highlight=False,
+        )
+        return 1
+
+    try:
+        manual_cmd = uninstall_extra_command(name)
+    except ExtraNotInstalledError as exc:
+        console.print(escape(str(exc)), highlight=False)
+        return 0
+    except Exception as exc:
+        logger.warning("uninstall command generation failed", exc_info=True)
+        console.print(
+            f"[bold red]Error:[/bold red] {type(exc).__name__}: {escape(str(exc))}",
+            highlight=False,
+        )
+        return 1
+
+    log_path = create_update_log_path()
+    console.print(f"Uninstalling extra '{name}'...")
+    console.print(
+        f"Uninstall log: {format_log_follow_command(log_path)}",
+        style="dim",
+        highlight=False,
+        markup=False,
+    )
+    try:
+        success, output = asyncio.run(perform_uninstall_extra(name, log_path=log_path))
+    except KeyboardInterrupt:
+        console.print("\nAborted.", style="dim")
+        return 130
+    except Exception as exc:
+        logger.warning("uninstall failed", exc_info=True)
+        console.print(
+            f"[bold red]Error:[/bold red] {type(exc).__name__}: {escape(str(exc))}\n"
+            f"Log: {log_path}\nRun manually: [cyan]{escape(manual_cmd)}[/cyan]",
+            highlight=False,
+        )
+        return 1
+    if success:
+        console.print(
+            f"[green]Uninstalled extra '{name}'.[/green] Relaunch dcode to apply."
+        )
+        return 0
+    detail = f": {output[-200:]}" if output else ""
+    console.print(
+        f"[bold red]Uninstall failed[/bold red]{escape(detail)}\n"
+        f"Log: {log_path}\nRun manually: [cyan]{escape(manual_cmd)}[/cyan]",
+        highlight=False,
+    )
+    return 1
+
+
 def run_install_command(args: argparse.Namespace) -> int:
     """Dispatch `dcode install <name>`.
 

@@ -7547,6 +7547,88 @@ class DeepAgentsApp(App):
         )
         return True
 
+    async def _handle_uninstall_command(self, command: str) -> None:
+        """Handle `/uninstall <extra>` while serializing environment mutation."""
+        parts = command.split()
+        names = [part for part in parts[1:] if not part.startswith("-")]
+        if not names:
+            await self._mount_message(
+                AppMessage("Usage: /uninstall <extra>\nExample: /uninstall ollama")
+            )
+            return
+        if len(names) != 1:
+            await self._mount_message(
+                AppMessage("Only one extra may be removed per /uninstall command.")
+            )
+            return
+        await self._mount_message(UserMessage(command))
+        async with self._environment_mutation_lock:
+            await self._uninstall_extra_unlocked(names[0].lower())
+
+    async def _uninstall_extra_unlocked(self, extra: str) -> None:
+        """Remove a selected extra and report the required relaunch."""
+        from deepagents_code.config import _is_editable_install
+        from deepagents_code.update_check import (
+            ExtraNotInstalledError,
+            create_update_log_path,
+            editable_extra_removal_hint,
+            is_valid_extra_name,
+            perform_uninstall_extra,
+            uninstall_extra_command,
+        )
+
+        if not is_valid_extra_name(extra):
+            await self._mount_message(AppMessage("Invalid extra name."))
+            return
+        if await asyncio.to_thread(_is_editable_install):
+            await self._mount_message(
+                AppMessage(
+                    "Editable install detected — cannot remove extras.\n"
+                    + editable_extra_removal_hint(extra)
+                )
+            )
+            return
+        try:
+            manual_cmd = await asyncio.to_thread(uninstall_extra_command, extra)
+        except ExtraNotInstalledError as exc:
+            await self._mount_message(AppMessage(str(exc)))
+            return
+        except Exception as exc:
+            logger.warning("/uninstall command generation failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Uninstall failed: {type(exc).__name__}: {exc}")
+            )
+            return
+
+        log_path = create_update_log_path()
+        self._ensure_restart_prompt_loaded()
+        await self._mount_message(AppMessage(f"Uninstalling extra '{extra}'..."))
+        try:
+            success, output = await perform_uninstall_extra(extra, log_path=log_path)
+        except OSError as exc:
+            logger.warning("/uninstall command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Uninstall failed: {type(exc).__name__}: {exc}\n"
+                    f"Log: {log_path}\nRun manually: {manual_cmd}"
+                )
+            )
+            return
+        if not success:
+            detail = f": {output[-200:]}" if output else ""
+            await self._mount_message(
+                ErrorMessage(
+                    f"Uninstall failed{detail}\nLog: {log_path}\n"
+                    f"Run manually: {manual_cmd}"
+                )
+            )
+            return
+        await self._mount_message(
+            AppMessage(
+                f"Uninstalled extra '{extra}'. Exit and relaunch dcode to apply."
+            )
+        )
+
     async def _handle_install_package(self, package: str, *, force: bool) -> None:
         """Install an arbitrary package into the dcode tool env via `uv --with`.
 
@@ -15885,6 +15967,8 @@ class DeepAgentsApp(App):
             await self._handle_auto_update_toggle()
         elif cmd == "/install" or cmd.startswith("/install "):
             await self._handle_install_command(command)
+        elif cmd == "/uninstall" or cmd.startswith("/uninstall "):
+            await self._handle_uninstall_command(command)
         elif cmd == "/scrollbar":
             await self._toggle_scrollbar()
             label = "shown" if self._show_scrollbar else "hidden"

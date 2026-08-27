@@ -21,6 +21,16 @@ curl -LsSf https://langch.in/dcode | bash
 DEEPAGENTS_CODE_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/dcode | bash
 ```
 
+Add or remove an optional extra after installation:
+
+```bash
+dcode install ollama       # or /install ollama in the TUI
+dcode uninstall ollama     # or /uninstall ollama in the TUI
+```
+
+Removal rebuilds the tool environment with the remaining selected extras. OpenAI,
+Anthropic, and Gemini are base dependencies and cannot be removed as extras.
+
 Run:
 
 ```bash

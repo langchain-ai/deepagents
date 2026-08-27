@@ -147,6 +147,9 @@ def show_help() -> None:
         "  dcode tools <install|list>                Manage managed tools (ripgrep)"
     )
     console.print("  dcode install NAME                        Install optional extras")
+    console.print(
+        "  dcode uninstall NAME                      Remove an optional extra"
+    )
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
@@ -280,6 +283,7 @@ def show_help() -> None:
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
     console.print("  --install NAME             Alias for `install NAME`")
+    console.print("  --uninstall NAME           Alias for `uninstall NAME`")
     console.print(
         "  --package                  With install/--install, treat NAME as a "
         "package (uv --with), not an extra"
@@ -736,6 +740,27 @@ def show_install_help() -> None:
     )
     console.print(
         "`dcode --install NAME`.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
+
+
+def show_uninstall_help() -> None:
+    """Show help information for the `uninstall` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode uninstall NAME")
+    console.print()
+    console.print("Remove an installed optional deepagents-code extra.")
+    console.print("The tool environment is rebuilt with the remaining selected extras.")
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode uninstall ollama")
+    console.print("  dcode --uninstall ollama")
+    console.print()
+    console.print(
+        "In-session equivalent: `/uninstall NAME`.",
         style=theme.MUTED,
         highlight=False,
     )

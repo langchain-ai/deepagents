@@ -1,0 +1,19 @@
+libs/partners/quickjs/langchain_quickjs/middleware.py
+  s_fe409a6aae2006::t_5257fb48b65b62 59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "fe1c898c2817252a9c5e02d887b1ee5db5f1d9c7",
+  "prompts": {},
+  "sessions": {
+    "s_fe409a6aae2006": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "beb73acb-a824-47ad-b5f4-dcddfcadc022",
+        "model": "claude-opus-5"
+      },
+      "human_author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    }
+  }
+}

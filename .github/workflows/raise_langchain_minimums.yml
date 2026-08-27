@@ -12,7 +12,7 @@
 # release (intentional prerelease coordination) is never lowered.
 #
 # Triggering:
-# - Runs on a weekly cron (Monday 09:00 UTC) for every release package
+# - Runs on a daily cron (09:00 UTC) for every release package
 #   (`package = all`).
 # - Can also be run manually from the Actions UI / `gh` CLI against a single
 #   package or `all`. The optional `dependencies` CSV input narrows the run to
@@ -48,8 +48,8 @@ name: "📦 Raise dependency minimums"
 
 on:
   schedule:
-    # Monday 09:00 UTC.
-    - cron: "0 9 * * 1"
+    # Daily 09:00 UTC.
+    - cron: "0 9 * * *"
   workflow_dispatch:
     inputs:
       package:
@@ -229,6 +229,9 @@ jobs:
           SUMMARY: ${{ steps.raise.outputs.summary }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           BOT_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          DEPENDENCIES: ${{ inputs.dependencies || '' }}
         run: |
           set -euo pipefail
 
@@ -295,7 +298,19 @@ jobs:
           {
             printf 'Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`) for `%s` to the latest compatible stable PyPI release, and regenerates every affected `uv.lock`. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$PACKAGE"
             printf '%s\n\n' "$SUMMARY"
-            printf 'Opened automatically by [`raise_langchain_minimums.yml`](%s). Review the raised bounds against any compatibility notes in the manifest comments before merging.\n' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/raise_langchain_minimums.yml"
+            # Say which trigger opened the PR. The workflow link alone cannot
+            # distinguish the daily cron from a human clicking "Run workflow",
+            # and a narrowed manual run otherwise reads as a complete bump.
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              printf 'Opened automatically by [`raise_langchain_minimums.yml`](%s), manually dispatched by @%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/raise_langchain_minimums.yml" "$ACTOR"
+              if [ -n "$DEPENDENCIES" ]; then
+                printf ' and restricted to `%s`' "$DEPENDENCIES"
+              fi
+              printf '.\n'
+            else
+              printf 'Opened automatically by [`raise_langchain_minimums.yml`](%s) on its daily schedule.\n' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/raise_langchain_minimums.yml"
+            fi
+            printf 'Review the raised bounds against any compatibility notes in the manifest comments before merging.\n'
           } > "$body_file"
 
           pr_url=$(gh pr create \

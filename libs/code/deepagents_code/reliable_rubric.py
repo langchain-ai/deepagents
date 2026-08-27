@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
@@ -35,6 +36,32 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_main_model_spec(value: object) -> str | None:
+    """Narrow checkpoint model metadata to a nonblank spec.
+
+    Args:
+        value: Raw checkpoint value.
+
+    Returns:
+        The stripped model spec, or `None` for malformed metadata.
+    """
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _coerce_main_model_params(value: object) -> dict[str, Any]:
+    """Copy checkpoint model params, or fail closed for malformed metadata.
+
+    Args:
+        value: Raw checkpoint value.
+
+    Returns:
+        A copied string-keyed mapping, or an empty mapping when malformed.
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    return {key: item for key, item in value.items() if isinstance(key, str)}
 
 
 def _without_internal_control_messages(state: RubricState) -> RubricState:
@@ -188,10 +215,12 @@ class ReliableRubricMiddleware(RubricMiddleware):
             # only after a main-model call, so on a thread's first grading pass
             # the channel is absent and the parent context still holds the live
             # `/model` override -- along with the params that belong to it.
-            main_model = state.get("_model_spec")
-            if main_model:
+            main_model = _coerce_main_model_spec(state.get("_model_spec"))
+            if main_model is not None:
                 grader_context.model = main_model
-                grader_context.model_params = dict(state.get("_model_params") or {})
+                grader_context.model_params = _coerce_main_model_params(
+                    state.get("_model_params")
+                )
         elif selected:
             grader_context.model = selected
             grader_context.model_params = {}

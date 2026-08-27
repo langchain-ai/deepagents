@@ -410,6 +410,41 @@ class TestReliableRubricMiddleware:
         assert selected.model == "openai:gpt-5.5"
         assert selected.model_params == {"temperature": 0.2}
 
+    @pytest.mark.parametrize(
+        ("checkpoint_model", "checkpoint_params", "expected_model", "expected_params"),
+        [
+            (42, {"temperature": 0.2}, "parent:model", {"max_tokens": 1}),
+            ("openai:gpt-5.5", "bad-params", "openai:gpt-5.5", {}),
+        ],
+    )
+    def test_inherit_tolerates_malformed_checkpoint_model_metadata(
+        self,
+        checkpoint_model: object,
+        checkpoint_params: object,
+        expected_model: str,
+        expected_params: dict[str, Any],
+    ) -> None:
+        """Malformed inherited metadata must not prevent rubric grading."""
+        middleware = ReliableRubricMiddleware(
+            model="startup:model", inherit_main_model=True
+        )
+        state = cast(
+            "Any",
+            {
+                "_model_spec": checkpoint_model,
+                "_model_params": checkpoint_params,
+            },
+        )
+        parent = CLIContextSchema(
+            model="parent:model",
+            model_params={"max_tokens": 1},
+        )
+
+        selected = middleware._grader_context(state, parent)
+
+        assert selected.model == expected_model
+        assert selected.model_params == expected_params
+
     def test_unrecognized_context_warns_instead_of_degrading_silently(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

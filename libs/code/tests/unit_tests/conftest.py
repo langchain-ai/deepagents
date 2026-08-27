@@ -834,7 +834,7 @@ def _close_leaked_debug_handlers() -> None:
 
 
 def resolve_option_for_test(
-    option: ConfigOption,
+    option: ConfigOption[object],
     *,
     toml_data: dict[str, Any],
     managed_toml_data: dict[str, Any] | None = None,

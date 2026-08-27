@@ -969,6 +969,12 @@ def _convert_human_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
 def _convert_tool_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
     """Convert a server tool message dict to a `ToolMessage`.
 
+    `additional_kwargs` is forwarded. The TUI reads markers from it, such as
+    `AUTO_DENIED_METADATA_KEY` on a synthetic auto-mode denial. The TUI always
+    runs against a server, so a marker dropped here never reaches the client.
+    Guarded by `isinstance`: the server payload is JSON, and a non-dict value
+    would fail `ToolMessage` validation and discard the whole message.
+
     Args:
         data: Raw message dict from the server.
 
@@ -977,6 +983,7 @@ def _convert_tool_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
     """
     from langchain_core.messages import ToolMessage
 
+    additional_kwargs = data.get("additional_kwargs")
     try:
         return ToolMessage(
             content=data.get("content", ""),
@@ -984,6 +991,9 @@ def _convert_tool_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
             name=data.get("name", ""),
             id=data.get("id"),
             status=data.get("status", "success"),
+            additional_kwargs=(
+                additional_kwargs if isinstance(additional_kwargs, dict) else {}
+            ),
         )
     except (TypeError, ValueError, KeyError):
         logger.warning(

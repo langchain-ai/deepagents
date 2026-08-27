@@ -221,7 +221,7 @@ def _load_stored_credentials() -> _StoredCredentialView:
 
 
 def _resolve(
-    option: ConfigOption,
+    option: ConfigOption[object],
     toml_data: dict[str, Any],
     *,
     stored: _StoredCredentialView | None = None,
@@ -337,7 +337,7 @@ def _resolve(
     return source != "default", source, resolved.value
 
 
-def _has_prefixed_env_override(option: ConfigOption) -> bool:
+def _has_prefixed_env_override(option: ConfigOption[object]) -> bool:
     """Return whether an option's `DEEPAGENTS_CODE_` env var is present."""
     if option.env_var is None:
         return False
@@ -347,7 +347,7 @@ def _has_prefixed_env_override(option: ConfigOption) -> bool:
     return f"{prefix}{option.env_var}" in os.environ
 
 
-def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
+def _display_value(option: ConfigOption[object], *, is_set: bool, value: object) -> str:
     """Render an option value for human output, redacting secrets.
 
     Returns:
@@ -386,7 +386,7 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
     return text
 
 
-def _source_label(source: str, *, option: ConfigOption | None = None) -> str:
+def _source_label(source: str, *, option: ConfigOption[object] | None = None) -> str:
     """Render the source column for human output.
 
     Returns:
@@ -407,7 +407,7 @@ def _env_source_name(source: str) -> str | None:
     return source[len(prefix) : -1]
 
 
-def _with_availability(option: ConfigOption, text: str) -> str:
+def _with_availability(option: ConfigOption[object], text: str) -> str:
     """Append provider availability to a credential display value when needed.
 
     Returns:
@@ -428,7 +428,7 @@ def _charset_display_value() -> str:
     return f"auto (using {label} glyphs)"
 
 
-def _missing_extra_hint(option: ConfigOption) -> bool:
+def _missing_extra_hint(option: ConfigOption[object]) -> bool:
     """Return whether a credential option's provider integration is unavailable."""
     if option.group != "Credentials" or option.dependency_module is None:
         return False
@@ -443,7 +443,7 @@ class ResolvedOption(NamedTuple):
     call site the way a bare positional tuple can.
     """
 
-    option: ConfigOption
+    option: ConfigOption[object]
     """The option being described."""
 
     is_set: bool
@@ -462,7 +462,7 @@ class ResolvedOption(NamedTuple):
 # --- Commands ---------------------------------------------------------------
 
 
-def _catalog_fields(option: ConfigOption) -> dict[str, Any]:
+def _catalog_fields(option: ConfigOption[object]) -> dict[str, Any]:
     """Return the static catalog fields `--verbose` folds into a JSON payload.
 
     Shared by the bare-`config`/section rows and the single-key payload so the
@@ -482,7 +482,7 @@ def _catalog_fields(option: ConfigOption) -> dict[str, Any]:
 
 
 def _option_provenance(
-    option: ConfigOption,
+    option: ConfigOption[object],
     *,
     source: str,
     toml_data: dict[str, Any] | None,
@@ -552,7 +552,7 @@ def _provenance_path(path: tuple[str, ...]) -> str:
 
 
 def _config_json_row(
-    option: ConfigOption,
+    option: ConfigOption[object],
     *,
     is_set: bool,
     source: str,
@@ -856,7 +856,7 @@ class _Selection(NamedTuple):
             alone — hence carrying it rather than re-deriving it.
     """
 
-    options: tuple[ConfigOption, ...]
+    options: tuple[ConfigOption[object], ...]
     is_exact: bool
 
 
@@ -906,7 +906,10 @@ def _report_unknown_get_key(key: str, output_format: OutputFormat) -> int:
 
 
 def _run_get_section(
-    options: Sequence[ConfigOption], output_format: OutputFormat, *, verbose: bool
+    options: Sequence[ConfigOption[object]],
+    output_format: OutputFormat,
+    *,
+    verbose: bool,
 ) -> int:
     """Resolve and print every option in a matched section.
 
@@ -1194,7 +1197,7 @@ def run_config_command(args: argparse.Namespace) -> int:
 # --- Helpers ----------------------------------------------------------------
 
 
-def _sources_line(option: ConfigOption) -> str:
+def _sources_line(option: ConfigOption[object]) -> str:
     """Render a compact 'set via' line for the verbose (`--verbose`) view.
 
     Returns:

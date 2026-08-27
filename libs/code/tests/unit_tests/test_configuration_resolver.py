@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, assert_type, cast
 
 import pytest
 
@@ -245,7 +245,7 @@ class _TrackingProvider:
     def __init__(
         self,
         rank: int,
-        result: ProviderResult[Any],
+        result: ProviderResult[object],
         calls: list[int] | None = None,
     ) -> None:
         """Store a fixed result and optional shared call log."""
@@ -255,15 +255,18 @@ class _TrackingProvider:
         self.calls = calls if calls is not None else []
         self.reloads = 0
 
-    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+    def get[T](self, option: ConfigOption[T]) -> RankedProviderValue[T]:
         """Return the fixed result and record provider order."""
         del option
         self.calls.append(self.rank)
+        # This test double intentionally injects arbitrary provider results so
+        # resolver precedence can be exercised independently of coercion.
+        result = cast("ProviderResult[T]", self.result)
         return RankedProviderValue(
             self.rank,
             self.durable,
             self.status(),
-            self.result,
+            result,
         )
 
     def status(self) -> ProviderStatus:
@@ -275,7 +278,7 @@ class _TrackingProvider:
         self.reloads += 1
 
 
-def _bool_option(key: str, toml_key: str) -> ConfigOption:
+def _bool_option(key: str, toml_key: str) -> ConfigOption[bool]:
     """Build a synthetic boolean manifest option."""
     return ConfigOption(
         key=key,
@@ -299,6 +302,84 @@ def test_concrete_providers_implement_protocol(tmp_path: Path) -> None:
     assert all(callable(provider.get) for provider in providers)
     assert all(callable(provider.status) for provider in providers)
     assert all(callable(provider.reload) for provider in providers)
+
+
+def test_config_resolver_preserves_option_type() -> None:
+    """`get` and `get_without_ranks` yield the value type `kind` implies.
+
+    The `assert_type` calls are enforced by `ty` under `make lint`, not by
+    pytest -- this test stays green under `pytest` even when every static
+    guarantee in it is broken.
+
+    The option is deliberately unparameterized, the way manifest entries are
+    written: `T` has to come from `kind` and `default` through the
+    `ConfigOption.__new__` overloads, or it does not reach production at all.
+    """
+    resolver = ConfigResolver((DefaultProvider(),))
+    option = ConfigOption(
+        key="test.count",
+        group="Test",
+        summary="test option",
+        kind=OptionKind.INT,
+        default=1,
+    )
+    assert_type(option, ConfigOption[int])
+
+    resolved = resolver.get(option)
+    assert_type(resolved, ResolvedValue[int])
+    assert_type(resolved.value, int)
+    assert_type(resolver.get_without_ranks(option, set()).value, int)
+    assert resolved.value == 1
+    # Not `== 1`, which `True` also satisfies.
+    assert type(resolved.value) is int
+
+
+def test_option_without_default_resolves_to_none() -> None:
+    """An option with no declared default carries `None` in its value type.
+
+    `_resolve` falls back to `option.default` when no provider supplies a
+    value, so a defaultless option resolves to `None`. The overloads put that
+    `None` in `T`, which is what stops a caller from writing `.value.upper()`
+    on a value that is not there.
+    """
+    resolver = ConfigResolver((DefaultProvider(),))
+    option = ConfigOption(
+        key="test.nodefault",
+        group="Test",
+        summary="test option",
+        kind=OptionKind.STR,
+    )
+    assert_type(option, ConfigOption[str | None])
+
+    resolved = resolver.get(option)
+    assert_type(resolved.value, str | None)
+    assert resolved.value is None
+
+
+def test_manifest_options_resolve_to_a_checked_type() -> None:
+    """A manifest-sourced option still resolves to a type that rejects misuse.
+
+    `get_option` is keyed on a runtime string, so it cannot report a specific
+    value type -- but it must not report an unchecked one either. `object`
+    keeps attribute and argument checking alive at the ~47 `.value` consumption
+    sites; a gradual type there silently disables all of it.
+    """
+    option = get_option("threads.sort_order")
+    assert option is not None
+    assert_type(option, ConfigOption[object])
+
+    resolved = ConfigResolver((DefaultProvider(),)).get(option)
+    assert_type(resolved.value, object)
+
+
+def test_get_without_ranks_excludes_the_named_rank() -> None:
+    """Excluding a rank drops that provider and falls back to the default."""
+    option = _bool_option("test.excluded", "excluded")
+    override = _TrackingProvider(rank=MANAGED_RANK, result=Found(True))
+    resolver = ConfigResolver((override, DefaultProvider()))
+
+    assert resolver.get(option).value is True
+    assert resolver.get_without_ranks(option, {MANAGED_RANK}).value is False
 
 
 def test_config_resolver_sorts_providers_by_rank() -> None:

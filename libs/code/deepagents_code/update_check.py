@@ -3761,7 +3761,7 @@ async def perform_install_package(
 
 def _resolve_update_setting(
     option_key: str,
-) -> tuple[ConfigSources, ConfigOption, ResolvedValue[object]]:
+) -> tuple[ConfigSources, ConfigOption[object], ResolvedValue[object]]:
     """Resolve one update option from one managed/user snapshot generation.
 
     Returns:

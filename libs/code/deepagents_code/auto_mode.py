@@ -88,6 +88,24 @@ AUTO_MODE_COUNTERS_NAMESPACE: tuple[str, str] = (
 )
 USER_PROMPT_METADATA_KEY = "deepagents_code_user_prompt"
 AUTO_MODE_EVENT_TYPE = "auto_mode"
+AUTO_DENIED_METADATA_KEY = "deepagents_code_auto_denied"
+"""`ToolMessage.additional_kwargs` flag set on a synthetic auto-mode denial.
+
+Set on both dispositions that synthesize a result instead of executing the
+tool: `policy_deny` and the `classifier_unavailable` fallback.
+
+The flag lets the TUI skip its uncorrelated-result warning for these. A
+result reaches that warning when no widget mounted for the call, and a widget
+mounts only when the streamed args parse (see `ToolCallBuffer.parse_args`).
+A no-argument call streams no args, so it never mounts, and its denial result
+arrives uncorrelated. The denial is not the cause of the miss; it is the
+routine case in which the miss is expected.
+
+The flag is carried in `additional_kwargs` so the adapter does not
+string-match the content. `additional_kwargs` is dropped by the server
+message converters unless they forward it; `_convert_tool_message` in
+`client/remote_client.py` does, which is what the TUI depends on.
+"""
 _CLASSIFIER_TIMEOUT_SECONDS = AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 # Building a classifier is a different kind of wait than asking one for a
 # verdict: a cold provider-package import, profile resolution, and credential
@@ -3610,6 +3628,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     name=call["name"],
                     tool_call_id=_tool_call_id(call),
                     status="error",
+                    additional_kwargs={AUTO_DENIED_METADATA_KEY: True},
                 )
             )
             event_kind = "unavailable" if unavailable else "denial"

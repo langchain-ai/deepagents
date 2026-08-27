@@ -48,6 +48,7 @@ from mcp.shared.auth import (
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from deepagents_code._env_vars import DEBUG, is_env_truthy
 from deepagents_code._paths import PATHS
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
@@ -696,18 +697,40 @@ class FileTokenStorage(TokenStorage):
         try:
             raw = path.read_text(encoding="utf-8")
             data = json.loads(raw)
-        except (OSError, json.JSONDecodeError) as exc:
+        # `UnicodeDecodeError` is a `ValueError`, not an `OSError`, so it needs
+        # its own entry — otherwise an undecodable file escapes without the
+        # remedy text that every other corruption mode gets.
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             msg = (
                 f"Failed to read MCP token file {path}: {exc}. "
                 f"Delete the file and run `/mcp login {self._server_name}` "
                 f"in the TUI (or `dcode mcp login {self._server_name}`)."
             )
             raise RuntimeError(msg) from exc
+        # `json.loads` yields a `dict` only for object literals; `null`, a list,
+        # or a bare scalar would make the `.get` below raise `AttributeError`,
+        # which callers do not catch. Fail as a normal corrupt-file error.
+        if not isinstance(data, dict):
+            msg = (
+                f"MCP token file {path} is not a JSON object (found "
+                f"{type(data).__name__}). Delete it and run "
+                f"`/mcp login {self._server_name}` in the TUI (or "
+                f"`dcode mcp login {self._server_name}`)."
+            )
+            # Not `TypeError` (TRY004): this is a corrupt-file report, not a
+            # caller type error, and callers catch the same `RuntimeError` the
+            # other corruption modes raise. `TypeError` would escape them.
+            raise RuntimeError(msg)  # noqa: TRY004
         if data.get("version") != _STORAGE_VERSION:
+            # Render only the value's type, never the value itself: callers
+            # print this message verbatim (e.g. `mcp login` list on stderr),
+            # and the version field is attacker-controlled file content that
+            # could carry credential material planted by a malformed write.
             msg = (
                 f"MCP token file {path} has unsupported version "
-                f"{data.get('version')!r} (expected {_STORAGE_VERSION}). "
-                f"Delete it and run `/mcp login {self._server_name}` in the "
+                f"({type(data.get('version')).__name__}; expected "
+                f"{_STORAGE_VERSION!r}). Delete it and run "
+                f"`/mcp login {self._server_name}` in the "
                 f"TUI (or `dcode mcp login {self._server_name}`)."
             )
             raise RuntimeError(msg)
@@ -2187,9 +2210,9 @@ async def login(
         ui=ui,
     )
 
-    success_message = (
-        f"Logged in to MCP server '{server_name}'. Tokens saved to {storage.path}."
-    )
+    success_message = f"Logged in to MCP server '{server_name}'."
+    if is_env_truthy(DEBUG):
+        success_message += f" Tokens saved to {storage.path}."
 
     if result.completed:
         await ui.show_success(success_message)

@@ -13453,7 +13453,7 @@ class DeepAgentsApp(App):
                 state_values.get("_pending_goal_completion_note")
             ),
             rubric_model_spec=rubric_model,
-            rubric_model_recorded="_rubric_model_spec" in state_values,
+            rubric_model_recorded=raw_rubric_model is not None,
             rubric_status=_as_str(state_values.get("_rubric_status")),
             rubric_grading_run_id=_as_nonblank_str(
                 state_values.get("_current_grading_run_id")

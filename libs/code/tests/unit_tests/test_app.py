@@ -8920,6 +8920,24 @@ class TestWarnDiscardedGoalChannels:
         assert app._rubric_model is None
         assert app._rubric_model_recorded is True
 
+    @pytest.mark.parametrize("malformed", [None, 1, "", "  "])
+    async def test_malformed_rubric_model_restores_startup_fallback(
+        self, malformed: object
+    ) -> None:
+        """Malformed grader state must not override startup configuration."""
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {"_rubric_model_spec": malformed},
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        app = DeepAgentsApp(server_kwargs={"rubric_model": "startup:model"})
+
+        await app._restore_goal_rubric_state(payload)
+
+        assert app._rubric_model == "startup:model"
+        assert app._rubric_model_recorded is False
+
     async def test_legacy_pending_proposal_without_metadata_is_preserved(
         self,
     ) -> None:
@@ -14508,7 +14526,7 @@ class TestRubricCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric grader model: active model" in rendered
+            assert "Rubric grader model: openai:gpt-5.5" in rendered
             assert "Rubric max iterations: 3 (SDK default)" in rendered
 
     async def test_set_rubric_max_iterations_rejects_without_owned_server(self) -> None:

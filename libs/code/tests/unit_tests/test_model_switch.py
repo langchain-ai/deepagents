@@ -1595,6 +1595,27 @@ class TestSummarizationModelCommand:
 
         assert app._summarization_model_override == "anthropic:claude-haiku-4-5"
 
+    async def test_external_remote_defers_validation_to_server(self) -> None:
+        """Remote-only packages and credentials must be resolved remotely."""
+        app = DeepAgentsApp()
+        app._agent = _make_remote_agent()  # ty: ignore[invalid-assignment]
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        captured, capture_init = self._capture_app_messages()
+
+        with (
+            patch(
+                "deepagents_code.app._create_model_with_deepagents_import_lock"
+            ) as create_model,
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._handle_command(
+                "/summarization-model server_provider:remote-model"
+            )
+
+        create_model.assert_not_called()
+        assert app._summarization_model_override == "server_provider:remote-model"
+        assert any("remote server will validate it" in text for text in captured)
+
     @pytest.mark.parametrize("word", ["clear", "--clear", "reset", "CLEAR"])
     async def test_every_clearing_spelling_effort_accepts_works_here(
         self, word: str

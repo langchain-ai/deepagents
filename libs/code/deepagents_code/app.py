@@ -28755,6 +28755,17 @@ class DeepAgentsApp(App):
             )
             return
 
+        if self._remote_agent() is not None and self._server_kwargs is None:
+            self._summarization_model_override = argument
+            await self._mount_message(
+                AppMessage(
+                    f"Summarization model requested: {argument}. The remote server "
+                    "will validate it at compaction time and use the main agent "
+                    "model if initialization fails."
+                )
+            )
+            return
+
         try:
             result = await asyncio.to_thread(
                 _create_model_with_deepagents_import_lock,

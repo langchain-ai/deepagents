@@ -12,12 +12,16 @@ respected and never lowered.
 
 A dependency whose PyPI metadata could not be fetched, or a manifest that could
 not be rewritten, is reported as a failure rather than silently omitted: an
-unattended weekly cron must never render "PyPI was unreachable" as "everything
+unattended daily cron must never render "PyPI was unreachable" as "everything
 is already up to date".
 
 `--dependencies` narrows the run to an exact comma-separated name list (the
 prefix scope no longer applies), so a manual dispatch can raise just
-`langchain-core,langsmith` without touching the rest of the ecosystem.
+`langchain-core,langsmith` without touching the rest of the ecosystem. Names are
+compared after PEP 503 normalization. A requested name that is not a raiseable
+PyPI requirement of the selected package fails the run rather than passing
+quietly, because a narrowed run that skipped what it was asked for must not
+report success.
 """
 
 from __future__ import annotations
@@ -121,12 +125,17 @@ class ManifestScope:
         text: The manifest's verbatim source text.
         requirements: `(raw_string, parsed_requirement)` pairs for every
             in-scope dependency, in manifest declaration order.
+        workspace_names: Canonical names declared here but resolved from the
+            workspace rather than PyPI (a URL, a `[tool.uv.sources]` path, or
+            the package itself). They have no PyPI floor to raise, which a
+            narrowed run must report differently from a name that is absent.
 
     """
 
     manifest_path: str
     text: str
     requirements: tuple[tuple[str, Requirement], ...]
+    workspace_names: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -289,6 +298,24 @@ def _self_name(project: Mapping[str, object]) -> str | None:
     return canonicalize_name(name) if isinstance(name, str) else None
 
 
+def _resolved_from_pypi(
+    requirement: Requirement,
+    canonical_name: str,
+    local_names: frozenset[str],
+    self_name: str | None,
+) -> bool:
+    """Return whether a requirement resolves from PyPI rather than the workspace.
+
+    A URL requirement, a `[tool.uv.sources]` path dependency, and the package's
+    own name all have no PyPI floor to raise. Kept separate from `_in_scope` so
+    a caller can tell *why* a name was excluded, which is what lets a narrowed
+    run say "resolved locally" instead of "not declared".
+    """
+    return not (
+        requirement.url or canonical_name in local_names or canonical_name == self_name
+    )
+
+
 def _in_scope(
     requirement: Requirement,
     canonical_name: str,
@@ -304,7 +331,7 @@ def _in_scope(
     When `narrow_to` is provided (the `--dependencies` CSV), it replaces the
     prefix scope: a name must be listed there exactly to be in scope.
     """
-    if requirement.url or canonical_name in local_names or canonical_name == self_name:
+    if not _resolved_from_pypi(requirement, canonical_name, local_names, self_name):
         return False
     if narrow_to is not None:
         return canonical_name in narrow_to
@@ -330,6 +357,7 @@ def _load_scope(
     local_names = local_dependency_names(manifest)
     self_name = _self_name(project)
     requirements: list[tuple[str, Requirement]] = []
+    workspace_names: set[str] = set()
     seen: set[str] = set()
     for raw in _project_requirement_strings(project) + _group_requirement_strings(
         manifest
@@ -345,13 +373,19 @@ def _load_scope(
             )
             continue
         canonical_name = canonicalize_name(requirement.name)
+        if not _resolved_from_pypi(requirement, canonical_name, local_names, self_name):
+            workspace_names.add(canonical_name)
+            continue
         if not _in_scope(
             requirement, canonical_name, local_names, self_name, narrow_to
         ):
             continue
         requirements.append((raw, requirement))
     return ManifestScope(
-        manifest_path=manifest_path, text=text, requirements=tuple(requirements)
+        manifest_path=manifest_path,
+        text=text,
+        requirements=tuple(requirements),
+        workspace_names=frozenset(workspace_names),
     )
 
 
@@ -633,15 +667,38 @@ def _run(package: str, narrow_to: frozenset[str] | None = None) -> int:
         for scope in scopes
         for _, requirement in scope.requirements
     }
-    if not in_scope_names:
-        if narrow_to is not None:
-            # A deliberate narrow can legitimately match nothing (typo, or the
-            # dependency was dropped) — that is "nothing to do", not a defect.
-            _notice(
-                f"None of the requested dependencies ({', '.join(sorted(narrow_to))}) "
-                f"appear in {package}'s manifests; nothing to do."
+    if narrow_to:
+        # Report every requested name that resolved to nothing, not just the
+        # all-miss case: narrowing to `langchain-core,langsmiht` otherwise
+        # raises one bound and never mentions the typo, so the run reads as
+        # having done what was asked. Fail closed, as with fetch failures below.
+        missing = narrow_to - in_scope_names
+        if missing:
+            workspace = missing & {
+                name for scope in scopes for name in scope.workspace_names
+            }
+            absent = missing - workspace
+            reasons = []
+            if absent:
+                reasons.append(
+                    "not declared as a PyPI requirement of "
+                    f"{package}: {', '.join(sorted(absent))}"
+                )
+            if workspace:
+                reasons.append(
+                    "declared but resolved from the workspace (a URL or a "
+                    "[tool.uv.sources] path), so there is no PyPI floor to "
+                    f"raise: {', '.join(sorted(workspace))}"
+                )
+            _error(
+                f"Requested dependencies were not raised for {package} — "
+                + "; ".join(reasons)
+                + ". Check the spelling, or drop --dependencies to raise every "
+                "in-scope bound. Not reporting a partial run as complete."
             )
-            return 0
+            return 1
+
+    if not in_scope_names:
         # Every release package declares in-scope dependencies, so an empty set
         # means the manifests are shaped differently than this script expects —
         # a defect to surface, not a quiet no-op.
@@ -677,6 +734,17 @@ def _run(package: str, narrow_to: frozenset[str] | None = None) -> int:
                 "as up to date."
             )
             return 1
+        if narrow_to:
+            # Every requested name is present (checked above) but none had a
+            # floor to move. Saying "already at or above the latest" would be a
+            # wrong answer to a direct question: an exact `==` pin or a bare
+            # upper bound is unraiseable, not current.
+            _notice(
+                f"No requested dependency of {package} had a raiseable floor: "
+                "each is an exact `==` pin, declares no lower bound, or is "
+                "already at the latest compatible stable release. Nothing to do."
+            )
+            return 0
         _notice(
             f"All in-scope minimums for {package} are already at or above the "
             "latest compatible stable PyPI releases; nothing to do."

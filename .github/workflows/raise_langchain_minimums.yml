@@ -18,7 +18,9 @@
 #   package or `all`. The optional `dependencies` CSV input narrows the run to
 #   the listed PyPI distribution names (e.g. `langchain-core,langsmith`); when
 #   empty, every `langchain*`/`langgraph*`/`langsmith*`/`deepagents*`
-#   dependency is in scope.
+#   dependency is in scope. A narrowed run fails if any requested name is not
+#   a raiseable PyPI requirement of the package, so a typo cannot come back
+#   green with the bump silently skipped.
 #
 # Notes:
 # - One PR is opened per run containing every raised bound plus the regenerated
@@ -45,6 +47,10 @@
 #   not just stop happening.
 
 name: "📦 Raise dependency minimums"
+
+# Run list shows the selected package (and dependency set, when narrowed)
+# instead of the bare workflow name; cron runs have no inputs and read `all`.
+run-name: "Raise dependency minimums for ${{ inputs.package || 'all' }}${{ inputs.dependencies && format(' [{0}]', inputs.dependencies) || '' }}"
 
 on:
   schedule:
@@ -87,7 +93,7 @@ concurrency:
 
 jobs:
   raise:
-    name: "Raise dependency minimums for ${{ inputs.package || 'all' }}${{ inputs.dependencies && format(' [{0}]', inputs.dependencies) || '' }}"
+    name: "Raise dependency minimums"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -125,11 +131,13 @@ jobs:
         run: |
           set -euo pipefail
           # Validate the free-text CSV before it is used as a shell argument.
-          # Reject anything outside a comma-separated identifier charset
-          # (PEP 508 distribution names: letters, digits, `.`, `-`, `_`) so a
-          # malformed dispatch value fails here rather than inside the script.
-          if [ -n "$DEPENDENCIES" ] && ! printf '%s' "$DEPENDENCIES" | grep -qE '^[A-Za-z0-9._-]+([[:space:]]*,[[:space:]]*[A-Za-z0-9._-]+)*$'; then
-            echo "::error::dependencies must be a comma-separated list of distribution names (letters, digits, '.', '-', '_'); got: $DEPENDENCIES"
+          # PEP 508 distribution names start and end alphanumeric and may carry
+          # `.`, `-`, `_` between, separated by commas and optional spaces.
+          # Matched with bash `=~` rather than `grep`: `grep` is line-oriented,
+          # so a multi-line value passes whenever any single line matches.
+          name='[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?'
+          if [ -n "$DEPENDENCIES" ] && ! [[ "$DEPENDENCIES" =~ ^${name}( *, *${name})*$ ]]; then
+            echo "::error::dependencies must be a comma-separated list of PyPI distribution names (letters, digits, '.', '-', '_'; each starting and ending alphanumeric); got: $DEPENDENCIES"
             exit 1
           fi
           args=(--package "$PACKAGE")
@@ -189,7 +197,7 @@ jobs:
           echo "No in-scope minimum needed raising for ${{ inputs.package || 'all' }}; nothing to do."
           echo "No in-scope minimum needed raising; no PR opened." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Skip if PR already open for this package
+      - name: Skip if PR already open for this branch
         id: existing
         if: steps.raise.outputs.changed == 'true'
         env:
@@ -292,13 +300,24 @@ jobs:
           for dir in "${dirs[@]}"; do
             lockfiles+=("$dir/uv.lock")
           done
+          # A narrowed run must not be titled or described as a full
+          # ecosystem bump: the title is what a reviewer reads before deciding
+          # this is "the usual automated bump", and the trailing attribution
+          # line is too late to correct that impression.
+          title="chore(deps): raise dependency minimums for \`$PACKAGE\`"
+          lead='Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`)'
+          if [ -n "$DEPENDENCIES" ]; then
+            title="$title (\`$DEPENDENCIES\` only)"
+            lead="Raises the dependency lower bounds for \`$DEPENDENCIES\` only"
+          fi
+
           git add -- "${files[@]}" "${lockfiles[@]}"
-          git commit -m "chore(deps): raise dependency minimums for \`$PACKAGE\`"
+          git commit -m "$title"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
 
           body_file="$(mktemp)"
           {
-            printf 'Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`) for `%s` to the latest compatible stable PyPI release, and regenerates every affected `uv.lock`. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$PACKAGE"
+            printf '%s for `%s` to the latest compatible stable PyPI release, and regenerates every affected `uv.lock`. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$lead" "$PACKAGE"
             printf '%s\n\n' "$SUMMARY"
             # Say which trigger opened the PR. The workflow link alone cannot
             # distinguish the daily cron from a human clicking "Run workflow",
@@ -318,7 +337,7 @@ jobs:
           pr_url=$(gh pr create \
             --head "$BRANCH" \
             --base "$DEFAULT_BRANCH" \
-            --title "chore(deps): raise dependency minimums for \`$PACKAGE\`" \
+            --title "$title" \
             --body-file "$body_file")
           echo "Opened dependency minimums PR: $pr_url"
           echo "::notice::Opened dependency minimums PR: $pr_url"
@@ -341,7 +360,7 @@ jobs:
             const title = 'Dependency minimums raising is failing';
             const body = [
               marker,
-              '`raise_langchain_minimums.yml` failed, so LangChain-ecosystem dependency lower bounds are no longer being raised weekly.',
+              '`raise_langchain_minimums.yml` failed, so LangChain-ecosystem dependency lower bounds are no longer being raised daily.',
               '',
               `Most recent failed run: ${runUrl}`,
               '',

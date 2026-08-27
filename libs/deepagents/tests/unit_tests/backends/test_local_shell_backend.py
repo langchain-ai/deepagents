@@ -72,7 +72,7 @@ def test_local_shell_backend_interrupt_kills_process_group() -> None:
     process.wait.assert_called_once_with(timeout=5)
 
 
-def test_local_shell_backend_cleanup_errors_preserve_interrupt() -> None:
+def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.LogCaptureFixture) -> None:
     """Test that cleanup failures cannot replace an active interrupt."""
     process = MagicMock(pid=1234)
     process.communicate.side_effect = KeyboardInterrupt
@@ -84,6 +84,7 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt() -> None:
         tempfile.TemporaryDirectory() as tmpdir,
         patch("subprocess.Popen", return_value=process),
         patch("os.killpg", side_effect=PermissionError),
+        caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
         pytest.raises(KeyboardInterrupt),
     ):
         LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
@@ -92,6 +93,11 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt() -> None:
     process.wait.assert_called_once_with(timeout=5)
     process.stdout.close.assert_called_once_with()
     process.stderr.close.assert_called_once_with()
+    assert "Failed to terminate local shell process group 1234" in caplog.text
+    assert "Failed to terminate local shell process 1234 after group cleanup failed" in caplog.text
+    assert "Failed to reap local shell process 1234" in caplog.text
+    assert "Failed to close stdout for local shell process 1234" in caplog.text
+    assert "Failed to close stderr for local shell process 1234" in caplog.text
 
 
 def test_local_shell_backend_timeout_kills_process_group() -> None:
@@ -110,7 +116,7 @@ def test_local_shell_backend_timeout_kills_process_group() -> None:
     process.wait.assert_called_once_with(timeout=5)
 
 
-def test_local_shell_backend_timeout_bounds_process_reaping() -> None:
+def test_local_shell_backend_timeout_bounds_process_reaping(caplog: pytest.LogCaptureFixture) -> None:
     """Test that a stuck process cannot extend cleanup indefinitely."""
     process = MagicMock(pid=1234)
     process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
@@ -119,11 +125,13 @@ def test_local_shell_backend_timeout_bounds_process_reaping() -> None:
         tempfile.TemporaryDirectory() as tmpdir,
         patch("subprocess.Popen", return_value=process),
         patch("os.killpg"),
+        caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
     ):
         result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
 
     assert result.exit_code == 124
     process.wait.assert_called_once_with(timeout=5)
+    assert "did not exit within 5 seconds after termination" in caplog.text
 
 
 def test_local_shell_backend_execute_with_error() -> None:

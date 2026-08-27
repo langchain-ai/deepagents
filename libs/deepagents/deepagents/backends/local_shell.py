@@ -18,7 +18,7 @@ import time
 import uuid
 from contextlib import suppress
 from contextvars import ContextVar
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol, execute_accepts_timeout
@@ -74,27 +74,55 @@ async def _wait_for_worker_shutdown(worker: asyncio.Task[ExecuteResponse]) -> bo
     return True
 
 
-def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None) -> None:
-    """Kill a command's process group and reap its shell."""
-    kill_succeeded = False
-    with suppress(BaseException):
+def _terminate_process(process: subprocess.Popen[str], process_group: int | None) -> None:
+    """Best-effort termination of a shell process or its POSIX group."""
+    target = f"process group {process_group}" if process_group is not None else f"process {process.pid}"
+    try:
         if process_group is None:
             process.kill()
         else:
             os.killpg(process_group, signal.SIGKILL)
-        kill_succeeded = True
-    if not kill_succeeded:
-        with suppress(BaseException):
+    except BaseException:  # noqa: BLE001  # Cleanup cannot replace the active control-flow exception.
+        logger.warning("Failed to terminate local shell %s", target, exc_info=True)
+    else:
+        return
+    if process_group is not None:
+        try:
             process.kill()
+        except BaseException:  # noqa: BLE001  # Cleanup cannot replace the active control-flow exception.
+            logger.warning("Failed to terminate local shell process %s after group cleanup failed", process.pid, exc_info=True)
 
-    with suppress(BaseException):
+
+def _reap_process(process: subprocess.Popen[str]) -> None:
+    """Wait briefly for a terminated shell without blocking indefinitely."""
+    try:
         process.wait(timeout=_PROCESS_REAP_TIMEOUT)
-    with suppress(BaseException):
-        if process.stdout is not None:
-            process.stdout.close()
-    with suppress(BaseException):
-        if process.stderr is not None:
-            process.stderr.close()
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "Local shell process %s did not exit within %s seconds after termination; abandoning its handle",
+            process.pid,
+            _PROCESS_REAP_TIMEOUT,
+        )
+    except BaseException:  # noqa: BLE001  # Cleanup cannot replace the active control-flow exception.
+        logger.warning("Failed to reap local shell process %s", process.pid, exc_info=True)
+
+
+def _close_pipe(pipe: IO[str] | None, name: str, process_id: int) -> None:
+    """Close one subprocess pipe without replacing an active exception."""
+    if pipe is None:
+        return
+    try:
+        pipe.close()
+    except BaseException:  # noqa: BLE001  # Cleanup cannot replace the active control-flow exception.
+        logger.warning("Failed to close %s for local shell process %s", name, process_id, exc_info=True)
+
+
+def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None) -> None:
+    """Best-effort terminate a command and release its local resources."""
+    _terminate_process(process, process_group)
+    _reap_process(process)
+    _close_pipe(process.stdout, "stdout", process.pid)
+    _close_pipe(process.stderr, "stderr", process.pid)
 
 
 def _communicate(

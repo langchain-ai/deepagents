@@ -18288,7 +18288,9 @@ class DeepAgentsApp(App):
             self._schedule_thread_cache_refresh()
 
     @staticmethod
-    def _convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
+    def _convert_messages_to_data(
+        messages: list[Any], *, show_reasoning: bool = False
+    ) -> list[MessageData]:
         """Convert LangChain messages into lightweight `MessageData` objects.
 
         This is a pure function with zero DOM operations. Tool call matching
@@ -18297,6 +18299,7 @@ class DeepAgentsApp(App):
 
         Args:
             messages: LangChain message objects from a thread checkpoint.
+            show_reasoning: Whether to include provider-visible reasoning blocks.
 
         Returns:
             Ordered list of `MessageData` ready for `MessageStore.bulk_load`.
@@ -18342,6 +18345,7 @@ class DeepAgentsApp(App):
                             MessageData(type=MessageType.ASSISTANT, content=text)
                         )
                 elif isinstance(content, list):
+                    content_start_index = len(result)
                     for block in content:
                         if isinstance(block, str):
                             text = block
@@ -18350,7 +18354,8 @@ class DeepAgentsApp(App):
                             text = block.get("text", "")
                             message_type = MessageType.ASSISTANT
                         elif (
-                            isinstance(block, dict)
+                            show_reasoning
+                            and isinstance(block, dict)
                             and block.get("type") == "reasoning"
                             and isinstance(block.get("reasoning"), str)
                         ):
@@ -18358,7 +18363,14 @@ class DeepAgentsApp(App):
                             message_type = MessageType.REASONING
                         else:
                             continue
-                        if text.strip():
+                        if not text.strip():
+                            continue
+                        if (
+                            len(result) > content_start_index
+                            and result[-1].type == message_type
+                        ):
+                            result[-1].content += text
+                        else:
                             result.append(MessageData(type=message_type, content=text))
 
                 # Track tool calls for later matching
@@ -18503,12 +18515,16 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _prepare_thread_history_messages(
-        messages: list[Any],
+        messages: list[Any], *, show_reasoning: bool = False
     ) -> tuple[list[MessageData], tuple[BaseMessage, ...]]:
         """Deserialize and project checkpoint messages for a resumed thread.
 
         Blocking and CPU-bound over the whole history; callers must offload it
         with `asyncio.to_thread` rather than run it on the event loop.
+
+        Args:
+            messages: Serialized or deserialized messages from the checkpoint.
+            show_reasoning: Whether to include provider-visible reasoning blocks.
 
         Returns:
             Render data and validated messages for hook transcript projection.
@@ -18522,7 +18538,9 @@ class DeepAgentsApp(App):
 
         from langchain_core.messages import BaseMessage
 
-        data = DeepAgentsApp._convert_messages_to_data(messages)
+        data = DeepAgentsApp._convert_messages_to_data(
+            messages, show_reasoning=show_reasoning
+        )
         transcript_messages = tuple(
             message for message in messages if isinstance(message, BaseMessage)
         )
@@ -18566,6 +18584,7 @@ class DeepAgentsApp(App):
         data, transcript_messages = await asyncio.to_thread(
             self._prepare_thread_history_messages,
             messages,
+            show_reasoning=self._show_reasoning,
         )
         return replace(
             payload,

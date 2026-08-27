@@ -21376,10 +21376,12 @@ class TestFetchThreadHistoryData:
         # Bind before patching, or the call below re-enters this stub.
         real_prepare = DeepAgentsApp._prepare_thread_history_messages
 
-        def blocking_prepare(messages: list[Any]) -> object:
+        def blocking_prepare(
+            messages: list[Any], *, show_reasoning: bool = False
+        ) -> object:
             entered.set()
             release.wait(timeout=5)
-            return real_prepare(messages)
+            return real_prepare(messages, show_reasoning=show_reasoning)
 
         async def tick() -> None:
             nonlocal ticks
@@ -21430,9 +21432,11 @@ class TestFetchThreadHistoryData:
         prepare_threads: list[int] = []
         original_prepare = app._prepare_thread_history_messages
 
-        def capture_prepare(messages: list[Any]) -> object:
+        def capture_prepare(
+            messages: list[Any], *, show_reasoning: bool = False
+        ) -> object:
             prepare_threads.append(threading.get_ident())
-            return original_prepare(messages)
+            return original_prepare(messages, show_reasoning=show_reasoning)
 
         with patch.object(
             DeepAgentsApp,
@@ -21450,6 +21454,40 @@ class TestFetchThreadHistoryData:
         assert isinstance(payload.messages[1], MessageData)
         assert payload.messages[1].type == MessageType.ASSISTANT
         assert payload.messages[1].content == "Hi there!"
+
+    async def test_reasoning_preference_applies_to_restored_messages(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        state = MagicMock()
+        state.values = {
+            "messages": [
+                AIMessage(
+                    content=[
+                        {"type": "text", "text": "Before "},
+                        {"type": "reasoning", "reasoning": "Thinking"},
+                        {"type": "text", "text": "after"},
+                    ]
+                )
+            ]
+        }
+        mock_agent = AsyncMock()
+        mock_agent.aget_state.return_value = state
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+
+        hidden = await app._fetch_thread_history_data("t-1")
+        app._show_reasoning = True
+        visible = await app._fetch_thread_history_data("t-1")
+
+        assert [(message.type, message.content) for message in hidden.messages] == [
+            (MessageType.ASSISTANT, "Before after")
+        ]
+        assert [(message.type, message.content) for message in visible.messages] == [
+            (MessageType.ASSISTANT, "Before "),
+            (MessageType.REASONING, "Thinking"),
+            (MessageType.ASSISTANT, "after"),
+        ]
 
     async def test_server_mode_ensures_thread_before_fetching_state(self) -> None:
         """Server-mode history reads should fetch state through the remote server."""

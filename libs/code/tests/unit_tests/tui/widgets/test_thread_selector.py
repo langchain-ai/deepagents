@@ -4995,6 +4995,31 @@ class TestConvertMessagesToData:
         assert result[0].type == MessageType.ASSISTANT
         assert result[0].content == "Part 1. Part 2."
 
+    def test_ai_message_reasoning_blocks_follow_preference(self) -> None:
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        messages = [
+            self._make_ai(
+                [
+                    {"type": "text", "text": "Before "},
+                    {"type": "reasoning", "reasoning": "Thinking"},
+                    {"type": "text", "text": "after"},
+                ]
+            )
+        ]
+
+        hidden = DeepAgentsApp._convert_messages_to_data(messages)
+        visible = DeepAgentsApp._convert_messages_to_data(messages, show_reasoning=True)
+
+        assert [(message.type, message.content) for message in hidden] == [
+            (MessageType.ASSISTANT, "Before after")
+        ]
+        assert [(message.type, message.content) for message in visible] == [
+            (MessageType.ASSISTANT, "Before "),
+            (MessageType.REASONING, "Thinking"),
+            (MessageType.ASSISTANT, "after"),
+        ]
+
     def test_ai_message_empty_text_skipped(self) -> None:
         """AIMessage with empty text should not produce an ASSISTANT entry."""
         msgs = [self._make_ai("   ")]

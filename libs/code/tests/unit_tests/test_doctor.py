@@ -732,6 +732,16 @@ class TestConfigurationSection:
         assert "Managed binaries" in labels
         assert "Update locks" in labels
 
+    def test_absent_managed_config_is_not_configured(self) -> None:
+        """An optional managed config must not read as a missing requirement."""
+        from deepagents_code.doctor import _managed_config_diagnostic
+
+        item = _managed_config_diagnostic()
+
+        assert item.ok is True
+        assert "(not configured)" in item.value
+        assert "(missing)" not in item.value
+
     def test_profile_fallbacks_appear_only_once_they_exist(
         self, tmp_path: Path
     ) -> None:

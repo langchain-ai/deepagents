@@ -638,7 +638,11 @@ def _managed_config_row() -> DiagnosticItem:
         if status.remote_source is not None
         else str(path)
     )
-    suffix = status.health.value.lower()
+    suffix = (
+        "not configured"
+        if status.health is ProviderHealth.MISSING
+        else status.health.value.lower()
+    )
     detail = f" - {status.detail}" if status.detail else ""
     # Doctor exists to explain a failure, so it must carry the parse detail and
     # say who can fix it. Without this a user who just saw exit 78 learns

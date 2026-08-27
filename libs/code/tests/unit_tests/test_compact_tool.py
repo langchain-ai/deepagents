@@ -477,7 +477,7 @@ class TestCLICompactionMiddleware:
         assert create_summarization.call_args.args[1] is startup._backend
         assert isinstance(selected._lc_helper._summary_model, _RetryingModelInvoker)
 
-    def test_runtime_summary_override_replaces_only_summary_invoker(self) -> None:
+    async def test_runtime_summary_override_replaces_only_summary_invoker(self) -> None:
         startup = self._summarization()
         middleware = CLICompactionMiddleware(startup, cli_max_retries=0)
         runtime = MagicMock()
@@ -491,6 +491,7 @@ class TestCLICompactionMiddleware:
         )
         selected = MagicMock()
         selected._lc_helper.trim_tokens_to_summarize = None
+        selected._lc_helper._acreate_summary = AsyncMock(return_value="summary")
 
         with (
             patch(
@@ -506,6 +507,8 @@ class TestCLICompactionMiddleware:
             ) as create_summarization,
         ):
             actual = middleware._summarization_for_runtime(runtime)
+            assert create_model.call_count == 1
+            await actual._lc_helper._acreate_summary([])
 
         assert actual is selected
         assert create_model.call_args_list[0].args == ("provider:main-model",)
@@ -515,7 +518,9 @@ class TestCLICompactionMiddleware:
         assert selected._lc_helper.trim_tokens_to_summarize == 8_000
         assert middleware._summarization is startup
 
-    def test_runtime_summary_override_uses_summary_counter_and_fallback(self) -> None:
+    async def test_runtime_summary_override_uses_summary_counter_and_fallback(
+        self,
+    ) -> None:
         startup = self._summarization()
         middleware = CLICompactionMiddleware(
             startup, summarization_model_spec="provider:summary-model"
@@ -525,6 +530,7 @@ class TestCLICompactionMiddleware:
         main_model = SimpleNamespace(profile={"max_input_tokens": 100_000})
         summary_model = SimpleNamespace(profile=None)
         selected = MagicMock()
+        selected._lc_helper._acreate_summary = AsyncMock(return_value="summary")
         counter = MagicMock()
 
         with (
@@ -534,7 +540,7 @@ class TestCLICompactionMiddleware:
                     SimpleNamespace(model=main_model),
                     SimpleNamespace(model=summary_model),
                 ],
-            ),
+            ) as create_model,
             patch(
                 "deepagents_code.offload_middleware.create_summarization_middleware",
                 return_value=selected,
@@ -545,6 +551,8 @@ class TestCLICompactionMiddleware:
             ) as get_counter,
         ):
             middleware._summarization_for_runtime(runtime)
+            assert create_model.call_count == 1
+            await selected._lc_helper._acreate_summary([])
 
         get_counter.assert_called_once_with(summary_model)
         assert selected._lc_helper.token_counter is counter

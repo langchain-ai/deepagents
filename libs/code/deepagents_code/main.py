@@ -3166,13 +3166,11 @@ async def run_textual_cli_async(
     from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
     from deepagents_code.config import (
         _get_default_model_spec,
-        create_model,
         detect_provider,
         resolve_auto_classifier_model_with_problem,
         runtime_state,
     )
     from deepagents_code.model_config import (
-        ModelConfig,
         ModelConfigError,
         ModelSpec,
         NoCredentialsConfiguredError,
@@ -3203,30 +3201,7 @@ async def run_textual_cli_async(
         console.print(f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False)
         return AppResult(return_code=1, thread_id=None)
 
-    resolved_summarization_model = (
-        summarization_model
-        if summarization_model is not None
-        else ModelConfig.load().summarization_default_model
-    )
-    if resolved_summarization_model:
-        try:
-            summary_result = await asyncio.to_thread(
-                create_model,
-                resolved_summarization_model,
-                cli_max_retries=cli_max_retries,
-            )
-            resolved_summarization_model = (
-                f"{summary_result.provider}:{summary_result.model_name}"
-            )
-        except (ModelConfigError, NoCredentialsConfiguredError) as e:
-            from rich.markup import escape
-
-            from deepagents_code.config import console
-
-            console.print(
-                f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False
-            )
-            return AppResult(return_code=1, thread_id=None)
+    resolved_summarization_model = _resolve_summarization_model(summarization_model)
 
     if resolved_spec:
         parsed = ModelSpec.try_parse(resolved_spec)

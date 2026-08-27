@@ -7,6 +7,7 @@ import hashlib
 import logging
 from functools import partial
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 from weakref import WeakValueDictionary
@@ -174,6 +175,77 @@ def _install_summary_token_counter(
     helper._partial_token_counter = partial(
         counter,
         use_usage_metadata_scaling=False,  # ty: ignore[unknown-argument]
+    )
+
+
+class _LazySummaryModel:
+    """Configure a dedicated model immediately before summary generation."""
+
+    def __init__(
+        self,
+        summarization: SummarizationMiddleware,
+        model_spec: str,
+        cli_max_retries: int | None,
+    ) -> None:
+        self._summarization = summarization
+        self._model_spec = model_spec
+        self._cli_max_retries = cli_max_retries
+        self._lock = Lock()
+        self._configured = False
+        self._create_summary = summarization._lc_helper._create_summary
+        self._acreate_summary = summarization._lc_helper._acreate_summary
+
+    def _configure(self) -> None:
+        """Construct and install the model once, retrying after failures."""
+        with self._lock:
+            if self._configured:
+                return
+            from deepagents_code.config import create_model
+
+            model = create_model(
+                self._model_spec,
+                cli_max_retries=self._cli_max_retries,
+            ).model
+            _install_summary_model_retries(self._summarization, model)
+            _install_summary_token_counter(self._summarization, model)
+            self._summarization._lc_helper.trim_tokens_to_summarize = (
+                _summary_trim_limit(model)
+            )
+            self._configured = True
+
+    def create_summary(self, messages: list[AnyMessage]) -> str:
+        """Generate a synchronous summary after lazy configuration.
+
+        Returns:
+            The generated summary.
+        """
+        self._configure()
+        return self._create_summary(messages)
+
+    async def acreate_summary(self, messages: list[AnyMessage]) -> str:
+        """Generate an asynchronous summary after lazy configuration.
+
+        Returns:
+            The generated summary.
+        """
+        await asyncio.to_thread(self._configure)
+        return await self._acreate_summary(messages)
+
+
+def _install_lazy_summary_model(
+    summarization: SummarizationMiddleware,
+    model_spec: str,
+    cli_max_retries: int | None,
+) -> None:
+    """Defer dedicated model construction until a summary is requested."""
+    lazy = _LazySummaryModel(summarization, model_spec, cli_max_retries)
+    # LangChain annotates these private attributes as unbound method shapes;
+    # instance-local bound wrappers are intentional so only this summarizer is lazy.
+    summarization._lc_helper._create_summary = (  # ty: ignore[invalid-assignment]
+        lazy.create_summary
+    )
+    summarization._lc_helper._acreate_summary = (  # ty: ignore[invalid-assignment]
+        lazy.acreate_summary
     )
 
 
@@ -1036,20 +1108,14 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         summarization = create_summarization_middleware(
             model, self._summarization._backend
         )
-        summary_model = (
-            create_model(
-                summary_model_spec,
-                cli_max_retries=self._cli_max_retries,
-            ).model
-            if summary_model_spec
-            else model
-        )
-        _install_summary_model_retries(summarization, summary_model)
         if summary_model_spec:
-            _install_summary_token_counter(summarization, summary_model)
-            summarization._lc_helper.trim_tokens_to_summarize = _summary_trim_limit(
-                summary_model
+            _install_lazy_summary_model(
+                summarization,
+                summary_model_spec,
+                self._cli_max_retries,
             )
+        else:
+            _install_summary_model_retries(summarization, model)
         return summarization
 
     async def _aplan_forced_compaction_update(

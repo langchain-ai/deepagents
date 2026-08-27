@@ -2859,9 +2859,7 @@ class TestRunTextualCliAsyncMcp:
             patch.object(ModelConfig, "load", return_value=config),
             patch(
                 "deepagents_code.config.create_model",
-                return_value=SimpleNamespace(
-                    provider="openai", model_name="flag-summary"
-                ),
+                side_effect=AssertionError("summary model constructed before TUI"),
             ) as create_model,
         ):
             await run_textual_cli_async(
@@ -2870,9 +2868,7 @@ class TestRunTextualCliAsyncMcp:
                 summarization_model="openai:flag-summary",
             )
 
-        create_model.assert_called_once_with(
-            "openai:flag-summary", cli_max_retries=None
-        )
+        create_model.assert_not_called()
         assert captured_kwargs["summarization_model"] == "openai:flag-summary"
 
     async def test_resolves_configured_summarization_model(self) -> None:
@@ -2890,13 +2886,12 @@ class TestRunTextualCliAsyncMcp:
             patch.object(ModelConfig, "load", return_value=config),
             patch(
                 "deepagents_code.config.create_model",
-                return_value=SimpleNamespace(
-                    provider="openai", model_name="config-summary"
-                ),
-            ),
+                side_effect=AssertionError("summary model constructed before TUI"),
+            ) as create_model,
         ):
             await run_textual_cli_async("agent", model_name="openai:gpt-5.5")
 
+        create_model.assert_not_called()
         assert captured_kwargs["summarization_model"] == "openai:config-summary"
 
     async def test_resolves_configured_auto_classifier_before_tui_launch(self) -> None:

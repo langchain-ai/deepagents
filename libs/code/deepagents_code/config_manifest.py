@@ -39,7 +39,16 @@ import os
 from dataclasses import dataclass
 from enum import Enum, StrEnum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    NotRequired,
+    TypedDict,
+    Unpack,
+    get_args,
+    overload,
+)
 
 from typing_extensions import TypeIs
 
@@ -47,6 +56,7 @@ from deepagents_code import _env_vars
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
+    from pathlib import Path
 
     from deepagents_code.configuration.resolver import ConfigResolver, ResolvedValue
 
@@ -266,7 +276,11 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.BOOL_PRESENCE: (bool,),
     OptionKind.INT: (int,),
     OptionKind.NON_NEGATIVE_INT: (int,),
-    OptionKind.FLOAT: (int, float),
+    # An int default would be returned verbatim by the default provider even
+    # though the overloads promise ConfigOption[float] and resolution-time
+    # readers (e.g. `_is_valid_auto_classifier_timeout`) reject bare ints, so
+    # accept float only.
+    OptionKind.FLOAT: (float,),
     OptionKind.STR: (str,),
     OptionKind.NON_EMPTY_STR: (str,),
     OptionKind.CURSOR_STYLE_DELEGATE: (str,),
@@ -323,9 +337,67 @@ class CliSpec:
         return self.dest or self.flag.removeprefix("--").replace("-", "_")
 
 
+# --- Constructor typing ------------------------------------------------------
+# `ConfigOption[T]` binds `T` to the value a caller gets back from
+# `ConfigResolver.get`. `T` cannot be inferred from `default` alone: an option
+# with no default would infer nothing, and a literal default infers `Literal[5]`
+# rather than `int`. So the mapping from `kind` to value type -- the same
+# mapping `_KIND_DEFAULT_TYPES` enforces at runtime -- is spelled once as
+# `__new__` overloads below. Manifest entries stay plain `ConfigOption(...)`
+# literals and pick up their `T` from the `kind` they already declare.
+
+
+class _CommonFields(TypedDict):
+    """Every `ConfigOption` field except `kind` and `default`.
+
+    The overloads discriminate on `kind`/`default` and forward the rest
+    unchanged, so this exists only to keep the other fields spelled once.
+    """
+
+    key: str
+    group: str
+    summary: str
+    env_var: NotRequired[str | None]
+    fallback_env_vars: NotRequired[tuple[str, ...]]
+    toml_keys: NotRequired[tuple[str, ...] | None]
+    invert_toml_bool: NotRequired[bool]
+    cli_flag: NotRequired[str | None]
+    cli: NotRequired[CliSpec | None]
+    redacted: NotRequired[bool]
+    settings_field: NotRequired[str | None]
+    dependency_module: NotRequired[str | None]
+    install_extra: NotRequired[str | None]
+    provider: NotRequired[str | None]
+    empty_env_is_false: NotRequired[bool]
+    merge_strategy: NotRequired[MergeStrategy]
+
+
+type _IntKind = Literal[OptionKind.INT, OptionKind.NON_NEGATIVE_INT]
+type _BoolKind = Literal[OptionKind.BOOL, OptionKind.BOOL_PRESENCE]
+type _StrKind = Literal[
+    OptionKind.STR,
+    OptionKind.NON_EMPTY_STR,
+    OptionKind.CURSOR_STYLE_DELEGATE,
+    OptionKind.STARTUP_MODE_DELEGATE,
+]
+# Kinds whose default is synthesized by `ranked_default_value` rather than
+# declared: resolution always yields a value, so `T` is not optional.
+type _SynthesizedStrKind = Literal[
+    OptionKind.LOG_LEVEL_DELEGATE, OptionKind.THEME_DELEGATE
+]
+
+
 @dataclass(frozen=True)
-class ConfigOption:
-    """One user-tunable configuration option and where it can be set."""
+class ConfigOption[T]:
+    """One user-tunable configuration option and where it can be set.
+
+    `T` is the type `ConfigResolver.get` yields for this option. It is not
+    supplied by hand: the `__new__` overloads below derive it from `kind`, so a
+    manifest entry is a plain `ConfigOption(...)` literal and its value type
+    follows from the `kind` it already declares. `T` includes `None` exactly
+    when resolution can produce `None` -- an option with no declared default
+    whose kind does not synthesize one.
+    """
 
     key: str
     """Canonical dotted identifier used by `config get`.
@@ -342,8 +414,15 @@ class ConfigOption:
     kind: OptionKind
     """How env/TOML values are coerced to a typed value."""
 
-    default: Any = None
-    """Typed default value, or `None` when there is no static default."""
+    default: T | None = None
+    """Typed default value, or `None` when there is no static default.
+
+    Declaring one is what removes `None` from `T`: `_resolve` falls back to
+    this field when no provider supplies a value, so an option without a
+    default resolves to `None` and its `T` says so. The `__new__` overloads
+    encode that, and `__post_init__` re-checks the value against `kind` for
+    options built dynamically.
+    """
 
     env_var: str | None = None
     """Primary environment variable name the loader reads, or `None`.
@@ -411,6 +490,131 @@ class ConfigOption:
 
     merge_strategy: MergeStrategy = MergeStrategy.REPLACE
     """How provider values compose after each tier has coerced its own input."""
+
+    # Each kind group gets a pair of overloads: one for a declared default
+    # (`T` is the value type) and one for none (`T` gains `| None`, because
+    # `_resolve` falls back to `default`). Spelling `default: None = None`
+    # explicitly in the second of each pair is load-bearing -- omitting it lets
+    # a wrong-typed default match the no-default overload instead of failing.
+    # Kinds whose default is synthesized, and delegate kinds that forbid a
+    # declared default, get a single overload each.
+
+    @overload
+    def __new__(
+        cls, *, kind: _IntKind, default: int, **rest: Unpack[_CommonFields]
+    ) -> ConfigOption[int]: ...
+    @overload
+    def __new__(
+        cls, *, kind: _IntKind, default: None = None, **rest: Unpack[_CommonFields]
+    ) -> ConfigOption[int | None]: ...
+    @overload
+    def __new__(
+        cls, *, kind: _BoolKind, default: bool, **rest: Unpack[_CommonFields]
+    ) -> ConfigOption[bool]: ...
+    @overload
+    def __new__(
+        cls, *, kind: _BoolKind, default: None = None, **rest: Unpack[_CommonFields]
+    ) -> ConfigOption[bool | None]: ...
+    @overload
+    def __new__(
+        cls,
+        *,
+        kind: Literal[OptionKind.FLOAT],
+        default: float,
+        **rest: Unpack[_CommonFields],
+    ) -> ConfigOption[float]: ...
+    @overload
+    def __new__(
+        cls,
+        *,
+        kind: Literal[OptionKind.FLOAT],
+        default: None = None,
+        **rest: Unpack[_CommonFields],
+    ) -> ConfigOption[float | None]: ...
+    @overload
+    def __new__(
+        cls, *, kind: _StrKind, default: str, **rest: Unpack[_CommonFields]
+    ) -> ConfigOption[str]: ...
+    @overload
+    def __new__(
+        cls, *, kind: _StrKind, default: None = None, **rest: Unpack[_CommonFields]
+    ) -> ConfigOption[str | None]: ...
+    @overload
+    def __new__(
+        cls,
+        *,
+        kind: Literal[OptionKind.BOOL_MODE_DEFAULT],
+        default: None = None,
+        **rest: Unpack[_CommonFields],
+    ) -> ConfigOption[bool]: ...
+    @overload
+    def __new__(
+        cls,
+        *,
+        kind: _SynthesizedStrKind,
+        default: None = None,
+        **rest: Unpack[_CommonFields],
+    ) -> ConfigOption[str]: ...
+    @overload
+    def __new__(
+        cls,
+        *,
+        kind: Literal[OptionKind.MODEL_LIST_DELEGATE],
+        default: None = None,
+        **rest: Unpack[_CommonFields],
+    ) -> ConfigOption[tuple[str, ...] | None]: ...
+    @overload
+    def __new__(
+        cls,
+        *,
+        kind: Literal[OptionKind.SHELL_LIST_DELEGATE],
+        default: None = None,
+        **rest: Unpack[_CommonFields],
+    ) -> ConfigOption[list[str] | None]: ...
+    @overload
+    def __new__(
+        cls,
+        *,
+        kind: Literal[OptionKind.SKILLS_DIRS_DELEGATE],
+        default: None = None,
+        **rest: Unpack[_CommonFields],
+    ) -> ConfigOption[list[Path] | None]: ...
+    # `list[str]` stays in the resolved value type but not in `default`:
+    # `__post_init__` rejects mutable defaults, so a list default would type-check
+    # here yet raise TypeError at construction.
+    @overload
+    def __new__(
+        cls,
+        *,
+        kind: Literal[OptionKind.PTC_DELEGATE],
+        default: str | bool,
+        **rest: Unpack[_CommonFields],
+    ) -> ConfigOption[str | bool | list[str]]: ...
+    @overload
+    def __new__(
+        cls,
+        *,
+        kind: Literal[OptionKind.PTC_DELEGATE],
+        default: None = None,
+        **rest: Unpack[_CommonFields],
+    ) -> ConfigOption[str | bool | list[str] | None]: ...
+    @overload
+    def __new__(
+        cls,
+        *,
+        kind: Literal[OptionKind.STRUCTURED],
+        default: None = None,
+        **rest: Unpack[_CommonFields],
+    ) -> ConfigOption[Mapping[str, Any] | list[Any] | None]: ...
+
+    def __new__(cls, **kwargs: object) -> ConfigOption[Any]:
+        """Construct an option whose `T` the overloads derived from `kind`.
+
+        Returns:
+            A new, uninitialized instance; the dataclass `__init__` fills it.
+        """
+        del kwargs
+        return super().__new__(cls)
 
     def __post_init__(self) -> None:
         """Reject a `default` that contradicts `kind` at construction time.
@@ -495,10 +699,18 @@ class ConfigOption:
                 f"{self.kind.value}"
             )
             raise TypeError(msg)
-        if self.kind is OptionKind.NON_NEGATIVE_INT and default < 0:
+        if (
+            self.kind is OptionKind.NON_NEGATIVE_INT
+            and isinstance(default, int)
+            and default < 0
+        ):
             msg = f"{self.key}: default {default!r} must be >= 0"
             raise TypeError(msg)
-        if self.kind is OptionKind.NON_EMPTY_STR and not default.strip():
+        if (
+            self.kind is OptionKind.NON_EMPTY_STR
+            and isinstance(default, str)
+            and not default.strip()
+        ):
             msg = f"{self.key}: default must not be blank"
             raise TypeError(msg)
 
@@ -616,7 +828,7 @@ def reset_source_diagnostics() -> None:
 
 
 def _coerce_toml(
-    option: ConfigOption, raw: object, *, source: str = "config.toml"
+    option: ConfigOption[object], raw: object, *, source: str = "config.toml"
 ) -> object:
     """Delegate TOML coercion to the provider boundary.
 
@@ -704,7 +916,7 @@ def _resolver_for_option_sources(
 
 
 def _resolve_option(
-    option: ConfigOption,
+    option: ConfigOption[object],
     *,
     toml_data: dict[str, Any] | None = None,
     managed_toml_data: dict[str, Any] | None = None,
@@ -726,7 +938,7 @@ def _resolve_option(
 
 
 def _resolve_option_without_managed(
-    option: ConfigOption,
+    option: ConfigOption[object],
     *,
     toml_data: dict[str, Any] | None,
 ) -> ResolvedValue[object]:
@@ -778,7 +990,7 @@ def _ranked_source(resolved: ResolvedValue[object]) -> str:
 
 
 def _warn_cli_flag_masked(
-    option: ConfigOption, resolved: ResolvedValue[object], cli_value: object
+    option: ConfigOption[object], resolved: ResolvedValue[object], cli_value: object
 ) -> None:
     """Tell the user a flag they passed lost to a stronger config tier.
 
@@ -802,7 +1014,7 @@ def _warn_cli_flag_masked(
     )
 
 
-def _cli_supplied_flag(option: ConfigOption, cli_value: object) -> str:
+def _cli_supplied_flag(option: ConfigOption[object], cli_value: object) -> str:
     """Return the single flag that produced `cli_value`.
 
     An option bound to several flags derives its value from the flag spelling
@@ -827,7 +1039,7 @@ def _cli_supplied_flag(option: ConfigOption, cli_value: object) -> str:
     return spec.flag
 
 
-def _cli_display_flags(option: ConfigOption) -> str:
+def _cli_display_flags(option: ConfigOption[object]) -> str:
     """Return the flag spelling to show the user for this option.
 
     Returns:
@@ -836,7 +1048,7 @@ def _cli_display_flags(option: ConfigOption) -> str:
     return option.cli.display_flags if option.cli else option.cli_flag or option.key
 
 
-def _warn_cli_value_rejected(option: ConfigOption, reason: str) -> None:
+def _warn_cli_value_rejected(option: ConfigOption[object], reason: str) -> None:
     """Tell the user the value they passed on a flag was rejected.
 
     A rejected CLI value falls through to the next tier, so without this the
@@ -898,7 +1110,7 @@ def _print_cli_warning(warning_key: tuple[str, str], message: str) -> None:
 
 
 def _emit_ranked_diagnostics(
-    option: ConfigOption,
+    option: ConfigOption[object],
     resolved: ResolvedValue[object],
     *,
     warn_masked_cli: bool = True,
@@ -1523,7 +1735,7 @@ def resolve_startup_mode_with_source(
 
 
 def option_accepts_toml(
-    option: ConfigOption, value: object, *, source: str = "config.toml"
+    option: ConfigOption[object], value: object, *, source: str = "config.toml"
 ) -> bool:
     """Return whether `value` has the type `option` declares for TOML.
 
@@ -1782,7 +1994,7 @@ def _is_secret_env(name: str) -> bool:
     return any(marker in upper for marker in _SECRET_NAME_MARKERS)
 
 
-def _credential_options() -> tuple[ConfigOption, ...]:
+def _credential_options() -> tuple[ConfigOption[object], ...]:
     """Build credential options from the canonical provider/key registries.
 
     Generating these from `PROVIDER_API_KEY_ENV` (rather than hand-listing
@@ -1795,7 +2007,7 @@ def _credential_options() -> tuple[ConfigOption, ...]:
     """
     from deepagents_code.model_config import PROVIDER_API_KEY_ENV
 
-    options: list[ConfigOption] = []
+    options: list[ConfigOption[object]] = []
     sources = {**PROVIDER_API_KEY_ENV, **_EXTRA_CREDENTIAL_ENV}
     for name, env_var in sorted(sources.items()):
         redacted = _is_secret_env(env_var)
@@ -1825,7 +2037,7 @@ def _credential_options() -> tuple[ConfigOption, ...]:
 # Options with a static (non-credential) definition, grouped by domain. The
 # drift test asserts every `DEEPAGENTS_CODE_*` constant in `_env_vars` appears
 # here (or in `NON_OPTION_ENV_VARS`).
-_STATIC_OPTIONS: tuple[ConfigOption, ...] = (
+_STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     # --- Credentials ----------------------------------------------------
     ConfigOption(
         key="credentials.google_cloud_location",
@@ -2833,7 +3045,7 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
 
 
 @lru_cache(maxsize=1)
-def get_config_options() -> tuple[ConfigOption, ...]:
+def get_config_options() -> tuple[ConfigOption[object], ...]:
     """Return every option, credentials-first then by domain group.
 
     Cached: provider credentials are generated once from `PROVIDER_API_KEY_ENV`
@@ -2846,7 +3058,7 @@ def get_config_options() -> tuple[ConfigOption, ...]:
     return _credential_options() + _STATIC_OPTIONS
 
 
-def get_option(key: str) -> ConfigOption | None:
+def get_option(key: str) -> ConfigOption[object] | None:
     """Return the manifest entry for `key`, or `None` when unknown."""
     return _options_by_key().get(key)
 
@@ -2856,7 +3068,7 @@ def option_keys() -> tuple[str, ...]:
     return tuple(opt.key for opt in get_config_options())
 
 
-def options_with_key_prefix(prefix: str) -> tuple[ConfigOption, ...]:
+def options_with_key_prefix(prefix: str) -> tuple[ConfigOption[object], ...]:
     """Return every option whose key sits under the dotted `prefix` section.
 
     Matching is exact on segment boundaries: `credentials` matches
@@ -2886,16 +3098,16 @@ def options_with_key_prefix(prefix: str) -> tuple[ConfigOption, ...]:
 
 
 @lru_cache(maxsize=1)
-def _options_by_key() -> dict[str, ConfigOption]:
+def _options_by_key() -> dict[str, ConfigOption[object]]:
     return {opt.key: opt for opt in get_config_options()}
 
 
 @lru_cache(maxsize=1)
-def _options_by_toml_path() -> dict[tuple[str, ...], ConfigOption]:
+def _options_by_toml_path() -> dict[tuple[str, ...], ConfigOption[object]]:
     return {opt.toml_keys: opt for opt in get_config_options() if opt.toml_keys}
 
 
-def option_for_toml_path(path: tuple[str, ...]) -> ConfigOption | None:
+def option_for_toml_path(path: tuple[str, ...]) -> ConfigOption[object] | None:
     """Return the manifest entry that owns a TOML path, or `None` when unknown.
 
     Indexed rather than scanned: the merge validates every managed leaf, and a
@@ -2910,7 +3122,7 @@ def option_for_toml_path(path: tuple[str, ...]) -> ConfigOption | None:
     return _options_by_toml_path().get(path)
 
 
-def iter_groups(options: Iterable[ConfigOption]) -> list[str]:
+def iter_groups(options: Iterable[ConfigOption[object]]) -> list[str]:
     """Return group names from `options` in first-seen order."""
     groups: list[str] = []
     for opt in options:

@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 
 def _resolve(
-    option: ConfigOption,
+    option: ConfigOption[object],
     *,
     toml_data: dict[str, Any],
     managed_toml_data: dict[str, Any] | None = None,

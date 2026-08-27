@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 
 from deepagents_code.configuration.resolver import CLI_RANK, RankedProviderValue
 from deepagents_code.configuration.types import (
-    Found,
     Invalid,
     ProviderHealth,
     ProviderResult,
@@ -76,7 +75,7 @@ class ConfigProvider(Protocol):
         """Whether the source survives the process."""
         ...
 
-    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+    def get[T](self, option: ConfigOption[T]) -> RankedProviderValue[T]:
         """Read and coerce one manifest option."""
         ...
 
@@ -118,7 +117,7 @@ class CliProvider:
         """Never durable: CLI state dies with this process."""
         return False
 
-    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+    def get[T](self, option: ConfigOption[T]) -> RankedProviderValue[T]:
         """Read and coerce one option from the parsed namespace.
 
         Args:
@@ -133,7 +132,7 @@ class CliProvider:
             return RankedProviderValue(self.rank, self.durable, status, Unset())
 
         if option.key == "startup.mode":
-            result = self._startup_mode(spec)
+            result = self._startup_mode(option, spec)
         else:
             raw = self.args.get(spec.dest_name)
             result = (
@@ -141,7 +140,9 @@ class CliProvider:
             )
         return RankedProviderValue(self.rank, self.durable, status, result)
 
-    def _startup_mode(self, spec: CliSpec) -> ProviderResult[object]:
+    def _startup_mode[T](
+        self, option: ConfigOption[T], spec: CliSpec
+    ) -> ProviderResult[T]:
         """Map the mutually exclusive approval flags to one config value.
 
         The companion destinations are derived from the spec rather than
@@ -152,12 +153,14 @@ class CliProvider:
         discrimination above guards against.
 
         Args:
+            option: Manifest option that owns the startup-mode value type.
             spec: CLI binding for `startup.mode`, carrying both flags.
 
         Returns:
             `Found` for an explicit mode, otherwise `Unset`.
         """
         from deepagents_code.config_manifest import CliSpec
+        from deepagents_code.configuration.providers import _found_for
 
         # Companions are checked first: `--yolo` is the stronger mode and wins
         # if a caller somehow supplies both. Each companion flag is spelled
@@ -165,15 +168,15 @@ class CliProvider:
         # `test_companion_flags_spell_their_startup_mode` pins.
         for flag in spec.companion_flags:
             if self.args.get(CliSpec(flag).dest_name) is True:
-                return Found(flag.removeprefix("--"))
+                return _found_for(option, flag.removeprefix("--"))
         if self.args.get(spec.dest_name) is True:
-            return Found("auto")
+            return _found_for(option, "auto")
         return Unset()
 
     @staticmethod
-    def _coerce(
-        option: ConfigOption, raw: object, *, flag: str
-    ) -> ProviderResult[object]:
+    def _coerce[T](
+        option: ConfigOption[T], raw: object, *, flag: str
+    ) -> ProviderResult[T]:
         """Coerce one already-parsed CLI value to its manifest type.
 
         Returns:
@@ -181,15 +184,16 @@ class CliProvider:
         """
         from deepagents_code.config_manifest import OptionKind
         from deepagents_code.configuration.providers import (
+            _found_for,
             coerce_environment_value,
             coerce_toml_value,
         )
 
         if option.key == "threads.sort_order":
             if raw == "created":
-                return Found("created_at")
+                return _found_for(option, "created_at")
             if raw == "updated":
-                return Found("updated_at")
+                return _found_for(option, "updated_at")
             return Invalid(f"Ignoring {flag}={raw!r} (expected 'created' or 'updated')")
         if option.kind is OptionKind.SHELL_LIST_DELEGATE and isinstance(raw, str):
             return coerce_environment_value(option, raw, flag)
@@ -199,7 +203,7 @@ class CliProvider:
                 return Invalid(f"Ignoring {flag}={raw!r} ({parsed.reason})")
             return coerce_toml_value(option, parsed, source=flag)
         if option.kind is OptionKind.STRUCTURED and isinstance(raw, (dict, list)):
-            return Found(raw)
+            return _found_for(option, raw)
         if isinstance(raw, str) and not raw.strip():
             # A CLI value is a shell string, not a TOML literal: `--flag ""` is
             # an absent value, not an empty one. `coerce_toml_value` accepts the
@@ -217,7 +221,7 @@ class CliProvider:
                 # introspection and the launch path on the same value.
                 from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
 
-                return Found(INHERIT_CLASSIFIER_MODEL)
+                return _found_for(option, INHERIT_CLASSIFIER_MODEL)
             if raw:
                 return Invalid(
                     f"Ignoring {flag}={raw!r} (whitespace-only; treated as unset)"

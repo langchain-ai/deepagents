@@ -56,7 +56,7 @@ pytestmark = pytest.mark.self_managed_update_check
 
 
 def _resolve_manifest_option(
-    option: ConfigOption,
+    option: ConfigOption[object],
     *,
     toml_data: dict[str, Any],
     managed_toml_data: dict[str, Any] | None = None,
@@ -968,7 +968,9 @@ def test_bool_mode_default_rejects_declared_default() -> None:
     assert option.default is None
 
     with pytest.raises(TypeError, match="must not declare a default"):
-        ConfigOption(
+        # The `__new__` overloads now reject this statically too; the
+        # runtime guard still matters for options built dynamically.
+        ConfigOption(  # ty: ignore[no-matching-overload]
             key="features.example",
             group="Tools",
             summary="Example.",
@@ -2290,7 +2292,9 @@ def test_config_option_rejects_type_mismatched_default() -> None:
     import pytest
 
     with pytest.raises(TypeError, match="not valid for kind int"):
-        ConfigOption(key="x", group="g", summary="s", kind=OptionKind.INT, default="5")
+        # The `__new__` overloads now reject this statically too; the
+        # runtime guard still matters for options built dynamically.
+        ConfigOption(key="x", group="g", summary="s", kind=OptionKind.INT, default="5")  # ty: ignore[no-matching-overload]
 
 
 def test_config_option_rejects_bool_default_for_int() -> None:
@@ -2306,9 +2310,37 @@ def test_config_option_rejects_mutable_default() -> None:
     import pytest
 
     with pytest.raises(TypeError, match="mutable default"):
-        ConfigOption(
+        # The `__new__` overloads now reject this statically too; the
+        # runtime guard still matters for options built dynamically.
+        ConfigOption(  # ty: ignore[no-matching-overload]
             key="x", group="g", summary="s", kind=OptionKind.STR, default=["a"]
         )
+
+
+def test_config_option_rejects_ptc_list_default() -> None:
+    """A PTC list default is rejected as mutable.
+
+    The resolved value type keeps `list[str]`, but the declared-default overload
+    must not advertise it.
+    """
+    import pytest
+
+    with pytest.raises(TypeError, match="mutable default"):
+        ConfigOption(  # ty: ignore[no-matching-overload]
+            key="x",
+            group="g",
+            summary="s",
+            kind=OptionKind.PTC_DELEGATE,
+            default=["python"],
+        )
+
+
+def test_config_option_rejects_int_default_for_float() -> None:
+    """An int FLOAT default would resolve to int while the overloads promise float."""
+    import pytest
+
+    with pytest.raises(TypeError, match="not valid for kind float"):
+        ConfigOption(key="x", group="g", summary="s", kind=OptionKind.FLOAT, default=1)  # ty: ignore[no-matching-overload]
 
 
 def test_config_option_rejects_default_on_structured() -> None:
@@ -2316,7 +2348,9 @@ def test_config_option_rejects_default_on_structured() -> None:
     import pytest
 
     with pytest.raises(TypeError, match="must not declare a default"):
-        ConfigOption(
+        # The `__new__` overloads now reject this statically too; the
+        # runtime guard still matters for options built dynamically.
+        ConfigOption(  # ty: ignore[no-matching-overload]
             key="x", group="g", summary="s", kind=OptionKind.STRUCTURED, default="x"
         )
 

@@ -24,6 +24,7 @@ from typing import Any, ClassVar
 
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.tools import tool
@@ -37,6 +38,7 @@ from deepagents.middleware.rubric import (
     GraderResponse,
     RubricEvaluation,
     RubricMiddleware,
+    RubricState,
     _build_grader_transcript,
     _sanitize_for_payload,
 )
@@ -203,6 +205,18 @@ class TestConstruction:
     def test_max_iterations_non_int_rejected(self) -> None:
         with pytest.raises(TypeError):
             RubricMiddleware(model=_STUB_MODEL, max_iterations="3")  # type: ignore[arg-type]
+
+    def test_build_grader_state_requires_a_state_schema(self) -> None:
+        with pytest.raises(ValueError, match="`grader_state_schema` is required"):
+            RubricMiddleware(model=_STUB_MODEL, build_grader_state=lambda _state, _iteration: {})
+
+    @pytest.mark.parametrize("name", ["prepare_messages_for_grader", "build_grader_state"])
+    def test_non_callable_grader_callback_rejected(self, name: str) -> None:
+        kwargs: dict[str, Any] = {name: "invalid"}
+        if name == "build_grader_state":
+            kwargs["grader_state_schema"] = AgentState
+        with pytest.raises(TypeError, match=f"`{name}` must be callable"):
+            RubricMiddleware(model=_STUB_MODEL, **kwargs)  # type: ignore[arg-type]
 
     def test_tools_default_to_empty(self) -> None:
         mw = RubricMiddleware(model=_STUB_MODEL)
@@ -514,7 +528,7 @@ class TestGraderPlumbing:
         """A grader with no tools is built only when first needed."""
         built: list[dict[str, Any]] = []
 
-        def fake_create_agent(*, model, system_prompt, tools, name, response_format):  # type: ignore[no-untyped-def]
+        def fake_create_agent(*, model, system_prompt, tools, name, response_format, **_kwargs: Any):  # type: ignore[no-untyped-def]
             built.append(
                 {
                     "model": model,
@@ -552,6 +566,35 @@ class TestGraderPlumbing:
         mw._ensure_grader()
         assert len(built) == 1
 
+    def test_nested_grader_configuration_passed_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: dict[str, Any] = {}
+        nested_middleware = AgentMiddleware()
+
+        class GraderContext:
+            pass
+
+        class GraderState(AgentState[GraderResponse]):
+            pass
+
+        def fake_create_agent(**kwargs: Any) -> SimpleNamespace:
+            seen.update(kwargs)
+            return SimpleNamespace()
+
+        monkeypatch.setattr("deepagents.middleware.rubric.create_agent", fake_create_agent)
+        monkeypatch.setattr("deepagents._models.resolve_model", lambda m: m)
+        mw = RubricMiddleware(
+            model=_STUB_MODEL,
+            grader_middleware=[nested_middleware],
+            grader_context_schema=GraderContext,
+            grader_state_schema=GraderState,
+        )
+
+        mw._ensure_grader()
+
+        assert seen["middleware"] == [nested_middleware]
+        assert seen["context_schema"] is GraderContext
+        assert seen["state_schema"] is GraderState
+
     def test_tools_passed_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
         @tool
         def shell(cmd: str) -> str:
@@ -560,7 +603,7 @@ class TestGraderPlumbing:
 
         seen: dict[str, Any] = {}
 
-        def fake_create_agent(*, model, system_prompt, tools, name, response_format):  # type: ignore[no-untyped-def]  # noqa: ARG001
+        def fake_create_agent(*, model, system_prompt, tools, name, response_format, **_kwargs: Any):  # type: ignore[no-untyped-def]  # noqa: ARG001
             seen["tools"] = list(tools)
             return SimpleNamespace()
 
@@ -573,7 +616,7 @@ class TestGraderPlumbing:
     def test_model_propagated(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: dict[str, Any] = {}
 
-        def fake_create_agent(*, model, system_prompt, tools, name, response_format):  # type: ignore[no-untyped-def]  # noqa: ARG001
+        def fake_create_agent(*, model, system_prompt, tools, name, response_format, **_kwargs: Any):  # type: ignore[no-untyped-def]  # noqa: ARG001
             seen["model"] = model
             return SimpleNamespace()
 
@@ -836,7 +879,7 @@ class TestGraderPlumbing:
         """A user-supplied `system_prompt` replaces the default grader prompt."""
         seen: dict[str, Any] = {}
 
-        def fake_create_agent(*, model, system_prompt, tools, name, response_format):  # type: ignore[no-untyped-def]  # noqa: ARG001
+        def fake_create_agent(*, model, system_prompt, tools, name, response_format, **_kwargs: Any):  # type: ignore[no-untyped-def]  # noqa: ARG001
             seen["system_prompt"] = system_prompt
             return SimpleNamespace()
 
@@ -1931,6 +1974,47 @@ class TestGraderExtensionContract:
 
         assert captured["payload"]["operation_id"] == "op-1"
         assert "messages" in captured["payload"]
+
+    def test_prepare_messages_and_build_state_hooks(self) -> None:
+        class GraderState(AgentState[GraderResponse]):
+            pass
+
+        visible = HumanMessage(content="visible")
+        internal = HumanMessage(content="internal")
+        state = self._state(messages=[visible, internal])
+        seen: dict[str, Any] = {}
+
+        def build_grader_state(prepared: RubricState, iteration: int) -> dict[str, str]:
+            seen["messages"] = prepared["messages"]
+            return {"operation_id": f"op:{iteration}"}
+
+        mw = RubricMiddleware(
+            model=_STUB_MODEL,
+            grader_state_schema=GraderState,
+            prepare_messages_for_grader=lambda messages: [messages[0]],
+            build_grader_state=build_grader_state,
+        )
+
+        grader_input = mw._grader_input(state, 2)
+
+        assert grader_input["operation_id"] == "op:2"
+        assert "visible" in grader_input["messages"][0].content
+        assert "internal" not in grader_input["messages"][0].content
+        assert seen["messages"] == [visible]
+        assert state["messages"] == [visible, internal]
+
+    def test_build_grader_state_cannot_replace_messages(self) -> None:
+        class GraderState(AgentState[GraderResponse]):
+            pass
+
+        mw = RubricMiddleware(
+            model=_STUB_MODEL,
+            grader_state_schema=GraderState,
+            build_grader_state=lambda _state, _iteration: {"messages": []},
+        )
+
+        with pytest.raises(ValueError, match="cannot set `messages`"):
+            mw._grader_input(self._state(), 0)
 
     def test_per_call_wrapper_composes_with_coverage_retry(
         self,

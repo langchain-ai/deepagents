@@ -18338,40 +18338,34 @@ class DeepAgentsApp(App):
                     result.append(MessageData(type=MessageType.USER, content=content))
 
             elif isinstance(msg, AIMessage):
-                content = msg.content
-                if isinstance(content, str):
-                    if text := content.strip():
-                        result.append(
-                            MessageData(type=MessageType.ASSISTANT, content=text)
-                        )
-                elif isinstance(content, list):
-                    content_start_index = len(result)
-                    for block in content:
-                        if isinstance(block, str):
-                            text = block
-                            message_type = MessageType.ASSISTANT
-                        elif isinstance(block, dict) and block.get("type") == "text":
-                            text = block.get("text", "")
-                            message_type = MessageType.ASSISTANT
-                        elif (
-                            show_reasoning
-                            and isinstance(block, dict)
-                            and block.get("type") == "reasoning"
-                            and isinstance(block.get("reasoning"), str)
-                        ):
-                            text = block["reasoning"]
-                            message_type = MessageType.REASONING
-                        else:
-                            continue
-                        if not text.strip():
-                            continue
-                        if (
-                            len(result) > content_start_index
-                            and result[-1].type == message_type
-                        ):
-                            result[-1].content += text
-                        else:
-                            result.append(MessageData(type=message_type, content=text))
+                content_start_index = len(result)
+                for block in msg.content_blocks:
+                    if block.get("type") == "text":
+                        text = block.get("text", "")
+                        message_type = MessageType.ASSISTANT
+                    elif (
+                        show_reasoning
+                        and block.get("type") == "reasoning"
+                        and isinstance(block.get("reasoning"), str)
+                    ):
+                        text = block["reasoning"]
+                        message_type = MessageType.REASONING
+                    else:
+                        continue
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    if (
+                        isinstance(msg.content, str)
+                        and message_type == MessageType.ASSISTANT
+                    ):
+                        text = text.strip()
+                    if (
+                        len(result) > content_start_index
+                        and result[-1].type == message_type
+                    ):
+                        result[-1].content += text
+                    else:
+                        result.append(MessageData(type=message_type, content=text))
 
                 # Track tool calls for later matching
                 for tc in getattr(msg, "tool_calls", []):

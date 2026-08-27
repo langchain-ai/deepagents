@@ -21466,10 +21466,19 @@ class TestFetchThreadHistoryData:
                 AIMessage(
                     content=[
                         {"type": "text", "text": "Before "},
-                        {"type": "reasoning", "reasoning": "Thinking"},
+                        {
+                            "type": "thinking",
+                            "thinking": "Thinking",
+                            "signature": "signed",
+                        },
                         {"type": "text", "text": "after"},
-                    ]
-                )
+                    ],
+                    response_metadata={"model_provider": "anthropic"},
+                ),
+                AIMessage(
+                    content=" Answer ",
+                    additional_kwargs={"reasoning_content": "Checking"},
+                ),
             ]
         }
         mock_agent = AsyncMock()
@@ -21481,12 +21490,15 @@ class TestFetchThreadHistoryData:
         visible = await app._fetch_thread_history_data("t-1")
 
         assert [(message.type, message.content) for message in hidden.messages] == [
-            (MessageType.ASSISTANT, "Before after")
+            (MessageType.ASSISTANT, "Before after"),
+            (MessageType.ASSISTANT, "Answer"),
         ]
         assert [(message.type, message.content) for message in visible.messages] == [
             (MessageType.ASSISTANT, "Before "),
             (MessageType.REASONING, "Thinking"),
             (MessageType.ASSISTANT, "after"),
+            (MessageType.REASONING, "Checking"),
+            (MessageType.ASSISTANT, "Answer"),
         ]
 
     async def test_server_mode_ensures_thread_before_fetching_state(self) -> None:

@@ -3195,6 +3195,11 @@ def create_cli_agent(
     )
 
     grader_middleware: list[AgentMiddleware[Any, Any]] = [
+        ConfigurableModelMiddleware(
+            persist_model_state=False,
+            cli_max_retries=cli_max_retries,
+            strict_model_resolution=True,
+        ),
         # Both clients filter this nested message stream. A transient fault can
         # safely retry the failed model node without replaying grader tools.
         CodeModelRetryMiddleware(
@@ -3261,6 +3266,7 @@ def create_cli_agent(
             "tools": grader_tools,
             "grader_middleware": grader_middleware,
             "grader_context_schema": CLIContextSchema,
+            "inherit_main_model": rubric_model is None,
         }
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations

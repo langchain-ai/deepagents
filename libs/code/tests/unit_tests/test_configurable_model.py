@@ -669,6 +669,26 @@ class TestModelSwap:
             "_model_spec": "anthropic:claude-sonnet-4-6",
         }
 
+    def test_strict_model_resolution_propagates_config_error(self) -> None:
+        """Nested grader routing must not silently retain its startup model."""
+        from deepagents_code.model_config import ModelConfigError
+
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model="unknown:bad-model"),
+        )
+        middleware = ConfigurableModelMiddleware(
+            openai_prompt_cache_key=False,
+            persist_model_state=False,
+            strict_model_resolution=True,
+        )
+
+        with (
+            patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")),
+            pytest.raises(ModelConfigError, match="no such provider"),
+        ):
+            middleware.wrap_model_call(request, lambda _request: _make_response())
+
     def test_model_policy_error_does_not_fall_back_to_original(self) -> None:
         """A blocked runtime switch propagates instead of using the old model."""
         from deepagents_code.model_config import ModelNotAllowedError

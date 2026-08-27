@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NotRequired, cast
+from dataclasses import replace
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents.middleware.rubric import (
     RUBRIC_GRADER_MESSAGE_SOURCE,
@@ -10,9 +11,15 @@ from deepagents.middleware.rubric import (
     RubricMiddleware,
     RubricState,
 )
-from langchain.agents.middleware.types import AgentMiddleware, AgentState
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    PrivateStateAttr,
+)
 
+from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.goal_state_notice import is_conversation_control_message
+from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -43,6 +50,14 @@ def _without_internal_control_messages(state: RubricState) -> RubricState:
     return cast("RubricState", updated)
 
 
+class ReliableRubricState(RubricState):
+    """Rubric state carrying dcode's private runtime model selections."""
+
+    _model_spec: Annotated[NotRequired[str], PrivateStateAttr]
+    _model_params: Annotated[NotRequired[dict[str, Any] | None], PrivateStateAttr]
+    _rubric_model_spec: Annotated[NotRequired[str], PrivateStateAttr]
+
+
 class RubricGraderState(AgentState[GraderResponse]):
     """Nested-grader state used to scope verification-tool budgets."""
 
@@ -66,6 +81,8 @@ class ReliableRubricMiddleware(RubricMiddleware):
     guard enabled.
     """
 
+    state_schema = ReliableRubricState
+
     def __init__(  # noqa: D107
         self,
         *,
@@ -74,6 +91,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
         tools: Sequence[BaseTool] | None = None,
         grader_middleware: Sequence[AgentMiddleware[Any, Any]] | None = None,
         grader_context_schema: type[Any] | None = None,
+        inherit_main_model: bool = False,
         max_iterations: int = 3,
         on_evaluation: Callable[[RubricEvaluation], None] | None = None,
     ) -> None:
@@ -86,6 +104,64 @@ class ReliableRubricMiddleware(RubricMiddleware):
         )
         self._grader_middleware = list(grader_middleware or ())
         self._grader_context_schema = grader_context_schema
+        self._inherit_main_model = inherit_main_model
+
+    @staticmethod
+    def _context(context: object | None) -> CLIContextSchema:
+        """Copy the parent runtime context into the nested grader schema.
+
+        Returns:
+            An independent context safe to customize for one grader call.
+        """
+        if isinstance(context, CLIContextSchema):
+            return replace(
+                context,
+                model_params=dict(context.model_params),
+                profile_overrides=dict(context.profile_overrides),
+                hooks_server_events=list(context.hooks_server_events),
+            )
+        if isinstance(context, dict):
+            payload = cast("CLIContext", context)
+            return CLIContextSchema(
+                model=payload.get("model"),
+                model_params=dict(payload.get("model_params") or {}),
+                profile_overrides=dict(payload.get("profile_overrides") or {}),
+                model_context_limit=payload.get("model_context_limit"),
+                classifier_model=payload.get("classifier_model"),
+                approval_mode=payload.get("approval_mode") or "manual",
+                auto_approve=bool(payload.get("auto_approve", False)),
+                approval_mode_key=payload.get("approval_mode_key"),
+                thread_id=payload.get("thread_id"),
+                turn_id=payload.get("turn_id"),
+                hooks_snapshot_id=payload.get("hooks_snapshot_id"),
+                hooks_server_events=list(payload.get("hooks_server_events") or []),
+                prompt_id=payload.get("prompt_id"),
+            )
+        return CLIContextSchema()
+
+    def _grader_context(
+        self, state: ReliableRubricState, context: object | None
+    ) -> CLIContextSchema:
+        """Select the effective grader model without mutating shared middleware.
+
+        Returns:
+            Request-local grader context carrying the selected model and params.
+        """
+        grader_context = self._context(context)
+        selected = state.get("_rubric_model_spec")
+        inherit = selected == INHERIT_RUBRIC_MODEL or (
+            selected is None and self._inherit_main_model
+        )
+        if inherit:
+            grader_context.model = state.get("_model_spec") or grader_context.model
+            grader_context.model_params = dict(state.get("_model_params") or {})
+        elif selected:
+            grader_context.model = selected
+            grader_context.model_params = {}
+        else:
+            grader_context.model = None
+            grader_context.model_params = {}
+        return grader_context
 
     def _ensure_grader(self) -> Any:  # noqa: ANN401
         if self._grader is not None:
@@ -109,6 +185,48 @@ class ReliableRubricMiddleware(RubricMiddleware):
             context_schema=self._grader_context_schema,
         )
         return self._grader
+
+    def _invoke_grader(
+        self,
+        state: RubricState,
+        iteration: int,
+        correction: str | None = None,
+        *,
+        context: object | None = None,
+    ) -> GraderResponse:
+        """Invoke the nested grader with the state-selected model context.
+
+        Returns:
+            Parsed grader response.
+        """
+        reliable_state = cast("ReliableRubricState", state)
+        return super()._invoke_grader(
+            state,
+            iteration,
+            correction,
+            context=self._grader_context(reliable_state, context),
+        )
+
+    async def _ainvoke_grader(
+        self,
+        state: RubricState,
+        iteration: int,
+        correction: str | None = None,
+        *,
+        context: object | None = None,
+    ) -> GraderResponse:
+        """Invoke the nested grader asynchronously with state-selected context.
+
+        Returns:
+            Parsed grader response.
+        """
+        reliable_state = cast("ReliableRubricState", state)
+        return await super()._ainvoke_grader(
+            state,
+            iteration,
+            correction,
+            context=self._grader_context(reliable_state, context),
+        )
 
     def _grader_input(
         self,

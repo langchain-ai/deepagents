@@ -30,6 +30,8 @@ write sites are called out below:
 - `_sticky_rubric` — the TUI-owned persistent rubric. This is separate from
     the public `rubric` graph input so one-shot rubric turns can be checkpointed
     without being restored as sticky state.
+- `_rubric_model_spec` — the thread-scoped rubric-grader model selection. It is
+    either a serializable model spec or the explicit inheritance sentinel.
 - `_pending_goal_objective` / `_pending_goal_rubric` / `_pending_goal_kind` /
     `_pending_goal_request_id` — a proposed goal or amendment and its originating
     request, written by `GoalCriteriaMiddleware` inside the main graph, then
@@ -77,6 +79,11 @@ from deepagents_code.goal_state_limits import GOAL_STATUS_VALUES, GoalStatus
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
+
+INHERIT_RUBRIC_MODEL = "__dcode_inherit_rubric__"
+"""Checkpoint value meaning the rubric grader follows the active main model."""
+
+
 GoalProposalKind = Literal["create", "amend"]
 """Whether a pending review creates a goal or amends the current one."""
 
@@ -111,6 +118,11 @@ auto-completion in `app.py`, the rubric-event formatters in `textual_adapter`)
 treat any value outside this set as an unrecognized grade rather than silently
 mishandling it.
 """
+
+
+def coerce_rubric_model_spec(value: object) -> str | None:
+    """Return a nonblank rubric-model spec or inheritance sentinel."""
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def coerce_goal_proposal_kind(value: object) -> GoalProposalKind | None:
@@ -185,6 +197,9 @@ class GoalRubricChannels(AgentState):
 
     _sticky_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Persistent rubric owned by the TUI, distinct from graph input `rubric`."""
+
+    _rubric_model_spec: Annotated[NotRequired[str], PrivateStateAttr]
+    """Thread-scoped rubric model spec or explicit inheritance sentinel."""
 
 
 class ResumeState(GoalRubricChannels):

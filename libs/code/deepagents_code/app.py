@@ -560,6 +560,7 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
     for channel in (
         "rubric",
         "_sticky_rubric",
+        "_rubric_model_spec",
         "_goal_objective",
         "_goal_status",
         "_goal_rubric",
@@ -2170,6 +2171,12 @@ class _ThreadHistoryPayload:
     pending_goal_completion_note: str | None = None
     """Persisted agent-provided completion evidence awaiting final grading."""
 
+    rubric_model_spec: str | None = None
+    """Thread-scoped rubric model spec, or `None` when inheriting the main model."""
+
+    rubric_model_recorded: bool = False
+    """Whether `_rubric_model_spec` was explicitly recorded in the checkpoint."""
+
     rubric_status: str | None = None
     """Latest rubric grading status from `RubricMiddleware`, if any."""
 
@@ -3759,8 +3766,16 @@ class DeepAgentsApp(App):
         Reset on the next successful refresh so the warning is not repeated every
         turn while a transient read failure persists."""
 
-        self._rubric_model: str | None = (server_kwargs or {}).get("rubric_model")
-        """Optional grader model spec for rubric evaluation."""
+        self._rubric_startup_model: str | None = (server_kwargs or {}).get(
+            "rubric_model"
+        )
+        """Construction-time dedicated grader model, if configured."""
+
+        self._rubric_model: str | None = self._rubric_startup_model
+        """Thread-scoped grader model; `None` follows the active main model."""
+
+        self._rubric_model_recorded: bool = False
+        """Whether the active thread explicitly selected a rubric model."""
 
         self._rubric_max_iterations: int | None = (server_kwargs or {}).get(
             "rubric_max_iterations"
@@ -12928,6 +12943,8 @@ class DeepAgentsApp(App):
         Returns:
             State update dict for the current goal/rubric metadata.
         """
+        from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
+
         # Goal-derived fields (`_goal_status`, `_goal_status_note`, `_goal_rubric`)
         # are gated on an active objective so the persisted dict can never
         # express a status or note without the goal they describe.
@@ -12944,6 +12961,15 @@ class DeepAgentsApp(App):
                 else self._active_rubric
             ),
             "_sticky_rubric": self._active_rubric,
+            **(
+                {
+                    "_rubric_model_spec": self._rubric_model
+                    if self._rubric_model is not None
+                    else INHERIT_RUBRIC_MODEL
+                }
+                if self._rubric_model_recorded
+                else {}
+            ),
             "_goal_objective": self._active_goal,
             "_goal_status": self._goal_status if self._active_goal else None,
             "_goal_rubric": self._active_rubric if self._active_goal else None,
@@ -13318,8 +13344,10 @@ class DeepAgentsApp(App):
             Payload with goal/rubric channels coerced to known types.
         """
         from deepagents_code.resume_state import (
+            INHERIT_RUBRIC_MODEL,
             coerce_goal_proposal_kind,
             coerce_goal_status,
+            coerce_rubric_model_spec,
         )
 
         def _as_str(value: object) -> str | None:
@@ -13330,6 +13358,12 @@ class DeepAgentsApp(App):
 
         session_cost_usd = _coerce_session_cost_usd(
             state_values.get("_session_cost_usd")
+        )
+        raw_rubric_model = coerce_rubric_model_spec(
+            state_values.get("_rubric_model_spec")
+        )
+        rubric_model = (
+            None if raw_rubric_model == INHERIT_RUBRIC_MODEL else raw_rubric_model
         )
 
         raw_pending_kind = state_values.get("_pending_goal_kind")
@@ -13385,6 +13419,8 @@ class DeepAgentsApp(App):
             pending_goal_completion_note=_as_str(
                 state_values.get("_pending_goal_completion_note")
             ),
+            rubric_model_spec=rubric_model,
+            rubric_model_recorded="_rubric_model_spec" in state_values,
             rubric_status=_as_str(state_values.get("_rubric_status")),
             rubric_grading_run_id=_as_nonblank_str(
                 state_values.get("_current_grading_run_id")
@@ -13449,6 +13485,12 @@ class DeepAgentsApp(App):
             self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
         self._pending_goal_completion_note = payload.pending_goal_completion_note
+        self._rubric_model = (
+            payload.rubric_model_spec
+            if payload.rubric_model_recorded
+            else self._rubric_startup_model
+        )
+        self._rubric_model_recorded = payload.rubric_model_recorded
         if payload.goal_rubric:
             self._active_rubric = payload.goal_rubric
         elif payload.sticky_rubric_recorded:
@@ -13975,12 +14017,17 @@ class DeepAgentsApp(App):
         """Return display strings for the shared grader model and iteration cap.
 
         When no explicit grader model is set, the model string reports the
-        construction-time startup chat model label. An unset iteration cap
+        active main model. An unset iteration cap
         reports the concrete SDK default (`SDK_DEFAULT_RUBRIC_MAX_ITERATIONS`)
         rather than the word "default". Shared by `/goal show` and
         `/rubric show` so the default wording stays in sync.
         """
-        model = self._rubric_model or self._startup_chat_model_label()
+        model = (
+            self._rubric_model
+            or self._effective_model_spec()
+            or self._rubric_default_model
+            or "active model"
+        )
         iterations = (
             str(self._rubric_max_iterations)
             if self._rubric_max_iterations is not None
@@ -15394,18 +15441,17 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.focus_input()
 
-        startup_model = self._startup_chat_model_label()
         if source == "goal":
             title = "Choose grader model for goal"
             description = (
                 "Pick the model used to grade goal acceptance criteria. Clear it "
-                f"with `/goal model clear` to reuse the {startup_model}."
+                "with `/goal model clear` to follow the active model."
             )
         else:
             title = "Choose grader model for rubric"
             description = (
                 "Pick the model used to grade rubric criteria. Clear it with "
-                f"`/rubric model clear` to reuse the {startup_model}."
+                "`/rubric model clear` to follow the active model."
             )
         screen = ModelSelectorScreen(
             current_model=current_model,
@@ -15513,10 +15559,9 @@ class DeepAgentsApp(App):
         *,
         source: Literal["goal", "rubric"] = "rubric",
     ) -> None:
-        """Set the grader model used by `RubricMiddleware`."""
+        """Set the thread's grader model without rebuilding the graph."""
         from functools import partial
 
-        from deepagents_code._env_vars import SERVER_ENV_PREFIX
         from deepagents_code.config import detect_provider
         from deepagents_code.model_config import ModelSpec, get_provider_auth_status
 
@@ -15530,15 +15575,6 @@ class DeepAgentsApp(App):
                 ),
             )
             self.notify(f"{label} model will switch after current work finishes.")
-            return
-
-        if self._server_kwargs is None and self._server_proc is None:
-            await self._mount_message(
-                ErrorMessage(
-                    f"{label} model switching is unavailable in this session "
-                    "because it does not own a restartable server."
-                )
-            )
             return
 
         display: str | None = None
@@ -15581,59 +15617,35 @@ class DeepAgentsApp(App):
                     ErrorMessage(_build_model_switch_error_body(exc))
                 )
                 return
-        elif self._rubric_model is None:
+        elif self._rubric_model is None and self._rubric_model_recorded:
             await self._mount_message(
-                AppMessage(
-                    f"{label} model already uses the "
-                    f"{self._startup_chat_model_label()}."
-                )
+                AppMessage(f"{label} model already follows the active model.")
             )
             return
 
         previous = self._rubric_model
+        previous_recorded = self._rubric_model_recorded
         self._rubric_model = display
-        if self._server_kwargs is not None:
-            self._server_kwargs["rubric_model"] = display
-
-        if self._server_proc is not None:
-            env_key = f"{SERVER_ENV_PREFIX}RUBRIC_MODEL"
-            env_value = display or ""
-            self._server_proc.update_env(
-                **{env_key: env_value},
+        self._rubric_model_recorded = True
+        persisted = False
+        try:
+            async with self._goal_state_mutation_boundary():
+                persisted = await self._persist_goal_rubric_state()
+        except Exception:
+            logger.warning("Failed to persist rubric model selection", exc_info=True)
+        if not persisted:
+            self._rubric_model = previous
+            self._rubric_model_recorded = previous_recorded
+            await self._mount_message(
+                ErrorMessage(f"{label} model could not be saved for this thread.")
             )
-            restart_result = await self._respawn_server(
-                log_message=(
-                    f"Server restart failed while changing {label.lower()} model"
-                ),
-                mcp_failure_log=(
-                    f"MCP metadata preload after {label.lower()} model change failed"
-                ),
-                mcp_failure_toast=(
-                    "MCP tool metadata could not be refreshed. Use /mcp to check."
-                ),
-            )
-            if not restart_result.restarted:
-                self._rubric_model = previous
-                if self._server_kwargs is not None:
-                    self._server_kwargs["rubric_model"] = previous
-                # A failed restart keeps the new value staged in the server's
-                # one-shot env overrides (retained for retry). Re-stage
-                # `previous` so a later restart cannot resurrect the model this
-                # command just rolled back.
-                self._server_proc.update_env(
-                    **{env_key: previous or ""},
-                )
-                return
-            self._server_proc.persist_env(**{env_key: env_value})
+            return
 
         if display:
             await self._mount_message(AppMessage(f"{label} model set to {display}."))
         else:
             await self._mount_message(
-                AppMessage(
-                    f"{label} model cleared; using the "
-                    f"{self._startup_chat_model_label()}."
-                ),
+                AppMessage(f"{label} model cleared; following the active model."),
             )
 
     async def _handle_command(self, command: str) -> None:

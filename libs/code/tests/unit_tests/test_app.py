@@ -8865,6 +8865,50 @@ class TestWarnDiscardedGoalChannels:
         assert payload.pending_goal_kind is None
         assert payload.pending_goal_request_id is None
 
+    async def test_rubric_model_payload_restores_recorded_selection(self) -> None:
+        """Checkpointed grader selection restores independently of startup config."""
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {"_rubric_model_spec": "openai:gpt-5.5"},
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        app = DeepAgentsApp(server_kwargs={"rubric_model": "startup:model"})
+
+        await app._restore_goal_rubric_state(payload)
+
+        assert app._rubric_model == "openai:gpt-5.5"
+        assert app._rubric_model_recorded is True
+
+    async def test_legacy_state_restores_startup_rubric_model(self) -> None:
+        """A missing grader channel keeps the construction-time fallback."""
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {}, messages=[], context_tokens=0, model_spec=""
+        )
+        app = DeepAgentsApp(server_kwargs={"rubric_model": "startup:model"})
+
+        await app._restore_goal_rubric_state(payload)
+
+        assert app._rubric_model == "startup:model"
+        assert app._rubric_model_recorded is False
+
+    async def test_rubric_model_payload_restores_explicit_inheritance(self) -> None:
+        """The sentinel overrides a startup dedicated grader model."""
+        from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
+
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {"_rubric_model_spec": INHERIT_RUBRIC_MODEL},
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        app = DeepAgentsApp(server_kwargs={"rubric_model": "startup:model"})
+
+        await app._restore_goal_rubric_state(payload)
+
+        assert app._rubric_model is None
+        assert app._rubric_model_recorded is True
+
     async def test_legacy_pending_proposal_without_metadata_is_preserved(
         self,
     ) -> None:
@@ -10604,7 +10648,7 @@ class TestGoalCommand:
             screen = push_screen.call_args.args[0]
             assert screen._title == "Choose grader model for goal"
             assert "/goal model clear" in screen._description
-            assert "startup chat model (openai:gpt-5.5)" in screen._description
+            assert "follow the active model" in screen._description
             assert "rubric" not in screen._title.lower()
             assert "/rubric" not in screen._description
 
@@ -10670,8 +10714,8 @@ class TestGoalCommand:
 
                 screen = push_screen.call_args.args[0]
                 assert clear_cmd in screen._description
-                assert "reuse the startup chat model." in screen._description
-                assert "startup chat model (" not in screen._description
+                assert "follow the active model." in screen._description
+                assert "startup chat model" not in screen._description
 
     async def test_goal_model_selector_cancel_reports_unchanged(self) -> None:
         """Escaping the goal grader picker should leave a short chat note."""
@@ -10696,8 +10740,8 @@ class TestGoalCommand:
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Model not changed." in rendered
 
-    async def test_goal_model_clear_already_default_short_circuits(self) -> None:
-        """`/goal model clear` should no-op when already on the startup chat model."""
+    async def test_goal_model_clear_already_inheriting_short_circuits(self) -> None:
+        """`/goal model clear` no-ops when inheritance is already recorded."""
         app = DeepAgentsApp(
             agent=MagicMock(),
             server_kwargs={"model_name": "openai:gpt-5.5"},
@@ -10706,6 +10750,7 @@ class TestGoalCommand:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._rubric_model = None
+            app._rubric_model_recorded = True
             app._server_kwargs = {"model_name": "openai:gpt-5.5"}
             app._server_proc = MagicMock()
 
@@ -10720,10 +10765,7 @@ class TestGoalCommand:
             respawn.assert_not_awaited()
             app._server_proc.update_env.assert_not_called()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert (
-                "Goal grader model already uses the startup chat model "
-                "(openai:gpt-5.5)." in rendered
-            )
+            assert "Goal grader model already follows the active model." in rendered
 
     async def test_goal_model_clear_already_default_uses_bare_label(self) -> None:
         """The already-default no-op omits the suffix when no startup model is known."""
@@ -10732,6 +10774,7 @@ class TestGoalCommand:
             await pilot.pause()
             assert app._rubric_default_model is None
             app._rubric_model = None
+            app._rubric_model_recorded = True
             app._server_kwargs = {}
             app._server_proc = MagicMock()
 
@@ -10745,8 +10788,7 @@ class TestGoalCommand:
 
             respawn.assert_not_awaited()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Goal grader model already uses the startup chat model." in rendered
-            assert "startup chat model (" not in rendered
+            assert "Goal grader model already follows the active model." in rendered
 
     async def test_goal_model_clear_uses_goal_copy(self) -> None:
         """A successful `/goal model clear` should use goal-branded confirmation."""
@@ -10766,18 +10808,15 @@ class TestGoalCommand:
 
             with patch.object(
                 app,
-                "_respawn_server",
+                "_persist_goal_rubric_state",
                 new_callable=AsyncMock,
-                return_value=_ServerRespawnResult(restarted=True),
+                return_value=True,
             ):
                 await app._handle_command("/goal model clear")
                 await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert (
-                "Goal grader model cleared; using the startup chat model "
-                "(openai:gpt-5.5)." in rendered
-            )
+            assert "Goal grader model cleared; following the active model." in rendered
             assert "Rubric grader model" not in rendered
 
     async def test_goal_max_iterations_alias_dispatches_to_setter(self) -> None:
@@ -10841,12 +10880,11 @@ class TestGoalCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert (
-                "Grader: startup chat model (openai:gpt-5.5) · "
-                "max iterations: 3 (SDK default)" in rendered
+                "Grader: openai:gpt-5.5 · max iterations: 3 (SDK default)" in rendered
             )
 
-    def test_grader_display_ignores_per_turn_model_override(self) -> None:
-        """A `/model` override should not be reported as the grader model."""
+    def test_grader_display_follows_per_turn_model_override(self) -> None:
+        """An inherited grader should report the active `/model` override."""
         app = DeepAgentsApp(
             agent=MagicMock(),
             server_kwargs={"model_name": "anthropic:claude-sonnet-4-5"},
@@ -10855,29 +10893,19 @@ class TestGoalCommand:
 
         model, _ = app._grader_display_values()
 
-        assert model == "startup chat model (anthropic:claude-sonnet-4-5)"
+        assert model == "openai:gpt-5.5"
 
-    def test_grader_display_reports_bare_default_without_startup_model(self) -> None:
-        """With no startup model captured, the grader line omits the spec.
-
-        This is the state a fresh, unconfigured user sees on `/goal show` or
-        `/rubric show`, so guard against a regression rendering a stray
-        "startup chat model (None)".
-        """
+    def test_grader_display_reports_active_model_without_override(self) -> None:
+        """A fresh, unconfigured session reports active-model inheritance."""
         app = DeepAgentsApp(agent=MagicMock())
         assert app._rubric_default_model is None
 
         model, _ = app._grader_display_values()
 
-        assert model == "startup chat model"
+        assert model == "active model"
 
-    def test_grader_display_falls_back_to_model_kwargs_spec(self) -> None:
-        """Without `server_kwargs`, the startup model comes from `model_kwargs`.
-
-        Guards the second arm of the `_rubric_default_model` `or` fallback,
-        which is the source when server startup was deferred with only a
-        `model_spec` supplied.
-        """
+    def test_grader_display_falls_back_to_construction_model(self) -> None:
+        """Without an active override, show the construction-time main model."""
         app = DeepAgentsApp(
             agent=MagicMock(),
             model_kwargs={"model_spec": "openai:gpt-5.5"},
@@ -10885,7 +10913,7 @@ class TestGoalCommand:
 
         model, _ = app._grader_display_values()
 
-        assert model == "startup chat model (openai:gpt-5.5)"
+        assert model == "openai:gpt-5.5"
 
     @pytest.mark.parametrize("command", ["/goal", "/goal show"])
     async def test_goal_state_omits_redundant_commands(self, command: str) -> None:
@@ -14469,9 +14497,7 @@ class TestRubricCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert (
-                "Rubric grader model: startup chat model (openai:gpt-5.5)" in rendered
-            )
+            assert "Rubric grader model: active model" in rendered
             assert "Rubric max iterations: 3 (SDK default)" in rendered
 
     async def test_set_rubric_max_iterations_rejects_without_owned_server(self) -> None:
@@ -14562,8 +14588,8 @@ class TestRubricCommand:
             rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
             assert "Missing credentials" in rendered
 
-    async def test_set_rubric_model_restarts_owned_server(self) -> None:
-        """Changing the grader model should update server env and respawn the graph."""
+    async def test_set_rubric_model_persists_without_restarting_server(self) -> None:
+        """Changing the grader model writes thread state without a server restart."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -14578,48 +14604,29 @@ class TestRubricCommand:
                 ),
                 patch.object(
                     app,
-                    "_respawn_server",
+                    "_persist_goal_rubric_state",
                     new_callable=AsyncMock,
-                    return_value=_ServerRespawnResult(restarted=True),
-                ) as respawn,
+                    return_value=True,
+                ) as persist,
+                patch.object(app, "_respawn_server", new_callable=AsyncMock) as respawn,
             ):
-                # Attach the env-staging calls and the respawn to a shared
-                # manager so their relative order can be asserted below.
-                manager = MagicMock()
-                manager.attach_mock(app._server_proc.update_env, "update_env")
-                manager.attach_mock(app._server_proc.persist_env, "persist_env")
-                manager.attach_mock(respawn, "respawn")
                 await app._set_rubric_model("openai:gpt-5.1")
             await pilot.pause()
 
             assert app._rubric_model == "openai:gpt-5.1"
-            assert app._server_kwargs["rubric_model"] == "openai:gpt-5.1"
-            app._server_proc.update_env.assert_called_once_with(
-                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="openai:gpt-5.1",
-            )
-            app._server_proc.persist_env.assert_called_once_with(
-                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="openai:gpt-5.1",
-            )
-            assert respawn.await_count == 1
-            # The persisted override must be written only after a successful
-            # respawn, never before the restart is confirmed healthy.
-            ordered = [
-                c[0]
-                for c in manager.mock_calls
-                if c[0] in {"update_env", "respawn", "persist_env"}
-            ]
-            assert ordered == ["update_env", "respawn", "persist_env"]
-            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric grader model set to openai:gpt-5.1" in rendered
+            assert app._rubric_model_recorded is True
+            assert app._server_kwargs == {}
+            persist.assert_awaited_once_with()
+            respawn.assert_not_awaited()
+            app._server_proc.update_env.assert_not_called()
 
-    async def test_set_rubric_model_rolls_back_on_failed_respawn(self) -> None:
-        """A failed server respawn rolls the grader model back to the previous one."""
+    async def test_set_rubric_model_rolls_back_on_failed_state_write(self) -> None:
+        """A failed checkpoint write restores the previous grader selection."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._rubric_model = "anthropic:claude-sonnet-4-6"
-            app._server_kwargs = {"rubric_model": "anthropic:claude-sonnet-4-6"}
-            app._server_proc = MagicMock()
+            app._rubric_model_recorded = True
 
             with (
                 patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
@@ -14629,64 +14636,45 @@ class TestRubricCommand:
                 ),
                 patch.object(
                     app,
-                    "_respawn_server",
+                    "_persist_goal_rubric_state",
                     new_callable=AsyncMock,
-                    return_value=_ServerRespawnResult(restarted=False),
+                    return_value=False,
                 ),
             ):
                 await app._set_rubric_model("openai:gpt-5.1")
 
             assert app._rubric_model == "anthropic:claude-sonnet-4-6"
-            assert app._server_kwargs["rubric_model"] == "anthropic:claude-sonnet-4-6"
-            app._server_proc.persist_env.assert_not_called()
-            # The failed forward staging must be re-staged back to the previous
-            # model so a later restart cannot resurrect the rolled-back value.
-            assert app._server_proc.update_env.call_count == 2
-            assert app._server_proc.update_env.call_args_list[-1].kwargs == {
-                "DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL": "anthropic:claude-sonnet-4-6",
-            }
+            assert app._rubric_model_recorded is True
 
-    async def test_set_rubric_model_clears_owned_server(self) -> None:
-        """Clearing the grader model persists an empty override and respawns."""
+    async def test_set_rubric_model_clear_persists_inheritance_sentinel(self) -> None:
+        """Clearing writes the explicit active-model inheritance sentinel."""
+        from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
+
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._rubric_model = "openai:gpt-5.1"
-            app._server_kwargs = {"rubric_model": "openai:gpt-5.1"}
-            app._server_proc = MagicMock()
+            app._rubric_model_recorded = True
+            persist = AsyncMock(return_value=True)
 
-            with patch.object(
-                app,
-                "_respawn_server",
-                new_callable=AsyncMock,
-                return_value=_ServerRespawnResult(restarted=True),
-            ) as respawn:
+            with patch.object(app, "_persist_goal_rubric_state", persist):
                 await app._set_rubric_model(None)
             await pilot.pause()
 
             assert app._rubric_model is None
-            assert app._server_kwargs["rubric_model"] is None
-            # Clearing must persist an empty override so a previously persisted
-            # model cannot resurrect on a later restart.
-            app._server_proc.update_env.assert_called_once_with(
-                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="",
-            )
-            app._server_proc.persist_env.assert_called_once_with(
-                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="",
-            )
-            assert respawn.await_count == 1
-            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert app._rubric_model_recorded is True
+            persist.assert_awaited_once_with()
             assert (
-                "Rubric grader model cleared; using the startup chat model." in rendered
+                app._goal_state_update()["_rubric_model_spec"] == INHERIT_RUBRIC_MODEL
             )
 
-    async def test_set_rubric_model_sets_before_owned_server_starts(self) -> None:
-        """With owned server config, the grader model is staged and confirmed."""
+    async def test_set_rubric_model_supports_external_graph(self) -> None:
+        """External graph sessions can persist a thread-local grader model."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._server_proc = None
-            app._server_kwargs = {}
+            app._server_kwargs = None
 
             with (
                 patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
@@ -14694,35 +14682,19 @@ class TestRubricCommand:
                     "deepagents_code.model_config.get_provider_auth_status",
                     return_value=None,
                 ),
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as persist,
             ):
-                await app._set_rubric_model("anthropic:claude-sonnet-4-6")
-            await pilot.pause()
-
-            assert app._rubric_model == "anthropic:claude-sonnet-4-6"
-            assert app._server_kwargs["rubric_model"] == "anthropic:claude-sonnet-4-6"
-            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric grader model set to" in rendered
-
-    async def test_set_rubric_model_rejects_without_owned_server(self) -> None:
-        """External graph sessions cannot switch the fixed rubric middleware model."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._rubric_model = "anthropic:claude-sonnet-4-6"
-            app._server_proc = None
-            app._server_kwargs = None
-
-            with patch(
-                "deepagents_code.app._create_model_with_deepagents_import_lock"
-            ) as create_model:
                 await app._set_rubric_model("openai:gpt-5.1")
             await pilot.pause()
 
-            create_model.assert_not_called()
-            assert app._rubric_model == "anthropic:claude-sonnet-4-6"
-            assert app._server_kwargs is None
-            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
-            assert "does not own a restartable server" in rendered
+            assert app._rubric_model == "openai:gpt-5.1"
+            assert app._rubric_model_recorded is True
+            persist.assert_awaited_once_with()
 
     async def test_rubric_set_clears_stale_goal_tracking(self) -> None:
         """`/rubric set` must drop a stale status note and one-shot rubric."""

@@ -25,12 +25,14 @@ from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 from pydantic import Field
 
+from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
 from deepagents_code.reliable_rubric import (
     ReliableRubricMiddleware,
     RubricGraderState,
     _without_internal_control_messages,
 )
+from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
 
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
@@ -259,6 +261,62 @@ class TestReliableRubricMiddleware:
         assert filtered["messages"] == [visible, summary]
         assert state["messages"] == [visible, state_notice, continuation, summary]
 
+    @pytest.mark.parametrize(
+        ("selection", "inherit_main", "expected_model", "expected_params"),
+        [
+            (None, True, "openai:gpt-5.5", {"temperature": 0.2}),
+            ("anthropic:claude-sonnet-4-6", True, "anthropic:claude-sonnet-4-6", {}),
+            (INHERIT_RUBRIC_MODEL, False, "openai:gpt-5.5", {"temperature": 0.2}),
+        ],
+    )
+    def test_selects_request_local_grader_context(
+        self,
+        selection: str | None,
+        inherit_main: bool,
+        expected_model: str,
+        expected_params: dict[str, Any],
+    ) -> None:
+        middleware = ReliableRubricMiddleware(
+            model="startup:model", inherit_main_model=inherit_main
+        )
+        state = cast(
+            "Any",
+            {
+                "_model_spec": "openai:gpt-5.5",
+                "_model_params": {"temperature": 0.2},
+            },
+        )
+        if selection is not None:
+            state["_rubric_model_spec"] = selection
+        parent = CLIContextSchema(
+            model="stale:model",
+            model_params={"max_tokens": 1},
+            profile_overrides={"context_window": 1000},
+        )
+
+        selected = middleware._grader_context(state, parent)
+
+        assert selected.model == expected_model
+        assert selected.model_params == expected_params
+        assert selected.profile_overrides == {"context_window": 1000}
+        assert parent.model == "stale:model"
+        assert parent.model_params == {"max_tokens": 1}
+
+    def test_startup_dedicated_model_ignores_main_context(self) -> None:
+        middleware = ReliableRubricMiddleware(
+            model="anthropic:claude-sonnet-4-6", inherit_main_model=False
+        )
+        parent = CLIContextSchema(
+            model="openai:gpt-5.5",
+            model_params={"temperature": 0.2},
+        )
+
+        selected = middleware._grader_context(cast("Any", {}), parent)
+
+        assert selected.model is None
+        assert selected.model_params == {}
+        assert parent.model == "openai:gpt-5.5"
+
     async def test_grading_does_not_mutate_agent_transcript(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")
         grader = AsyncMock()
@@ -274,7 +332,8 @@ class TestReliableRubricMiddleware:
         assert result.result == "satisfied"
         grader.ainvoke.assert_awaited_once()
         assert all(
-            call.kwargs["context"] is context for call in grader.ainvoke.await_args_list
+            call.kwargs["context"].approval_mode == context["approval_mode"]
+            for call in grader.ainvoke.await_args_list
         )
         operation_ids = {
             call.args[0]["rubric_grading_operation_id"]
@@ -382,16 +441,14 @@ class TestReliableRubricMiddleware:
         result = middleware._invoke_grader(_state(), 0, context=context)
 
         assert result.result == "satisfied"
-        assert grader.invoke.call_args.kwargs == {
-            "config": {
-                "metadata": {
-                    "tenant_id": "tenant-123",
-                    "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
-                    "rubric_grader_effective_strategy": "ProviderStrategy",
-                }
-            },
-            "context": context,
+        assert grader.invoke.call_args.kwargs["config"] == {
+            "metadata": {
+                "tenant_id": "tenant-123",
+                "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
+                "rubric_grader_effective_strategy": "ProviderStrategy",
+            }
         }
+        assert grader.invoke.call_args.kwargs["context"].approval_mode == "manual"
         assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
         assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
 
@@ -426,16 +483,14 @@ class TestReliableRubricMiddleware:
         result = await middleware._ainvoke_grader(_state(), 0, context=context)
 
         assert result.result == "satisfied"
-        assert grader.ainvoke.await_args.kwargs == {
-            "config": {
-                "metadata": {
-                    "experiment_id": "experiment-123",
-                    "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
-                    "rubric_grader_effective_strategy": "ProviderStrategy",
-                }
-            },
-            "context": context,
+        assert grader.ainvoke.await_args.kwargs["config"] == {
+            "metadata": {
+                "experiment_id": "experiment-123",
+                "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
+                "rubric_grader_effective_strategy": "ProviderStrategy",
+            }
         }
+        assert grader.ainvoke.await_args.kwargs["context"].approval_mode == "manual"
         assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
         assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
 

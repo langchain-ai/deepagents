@@ -5698,6 +5698,7 @@ class TestCreateCliAgentInterpreterWiring:
         from deepagents.middleware.rubric import RubricMiddleware
         from langchain_core.tools import StructuredTool
 
+        from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.model_retry import CodeModelRetryMiddleware
 
         def inspect_resource(resource_id: str) -> str:
@@ -5757,11 +5758,11 @@ class TestCreateCliAgentInterpreterWiring:
         ]
         assert "`notion_fetch`" in rubrics[0]._system_prompt
         assert rubrics[0]._grader_context_schema is CLIContextSchema
-        retry_middleware = next(
-            middleware
-            for middleware in rubrics[0]._grader_middleware
-            if isinstance(middleware, CodeModelRetryMiddleware)
-        )
+        configurable, retry_middleware = rubrics[0]._grader_middleware[:2]
+        assert isinstance(configurable, ConfigurableModelMiddleware)
+        assert configurable._persist_model_state is False
+        assert configurable._strict_model_resolution is True
+        assert isinstance(retry_middleware, CodeModelRetryMiddleware)
         assert retry_middleware.max_retries == 0
         assert retry_middleware.stream_output_is_visible is False
         assert any(

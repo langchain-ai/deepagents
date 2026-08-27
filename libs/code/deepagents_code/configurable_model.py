@@ -540,6 +540,7 @@ def _apply_overrides(
     *,
     openai_prompt_cache_key: bool,
     cli_max_retries: int | None,
+    strict_model_resolution: bool = False,
 ) -> _ResolvedModelRequest:
     """Apply model/param overrides and return checkpoint persistence metadata.
 
@@ -554,6 +555,7 @@ def _apply_overrides(
         openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
             opt-out, threaded through to `_build_overrides`.
         cli_max_retries: Explicit CLI retry count retained across model switches.
+        strict_model_resolution: Whether model construction failures should propagate.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
@@ -561,6 +563,7 @@ def _apply_overrides(
 
     Raises:
         ModelNotAllowedError: If runtime context requests a blocked model.
+        ModelConfigError: If strict resolution is enabled and construction fails.
     """
     ctx = _get_context(request)
     if ctx is None:
@@ -583,6 +586,8 @@ def _apply_overrides(
             # reported a switch. Not redundant -- do not remove.
             raise
         except ModelConfigError:
+            if strict_model_resolution:
+                raise
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "
                 "continuing with current model",
@@ -618,6 +623,7 @@ async def _apply_overrides_async(
     *,
     openai_prompt_cache_key: bool,
     cli_max_retries: int | None,
+    strict_model_resolution: bool = False,
 ) -> _ResolvedModelRequest:
     """Async variant of `_apply_overrides` that offloads model construction.
 
@@ -626,6 +632,7 @@ async def _apply_overrides_async(
         openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
             opt-out, threaded through to `_build_overrides`.
         cli_max_retries: Explicit CLI retry count retained across model switches.
+        strict_model_resolution: Whether model construction failures should propagate.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
@@ -633,6 +640,7 @@ async def _apply_overrides_async(
 
     Raises:
         ModelNotAllowedError: If runtime context requests a blocked model.
+        ModelConfigError: If strict resolution is enabled and construction fails.
     """
     ctx = _get_context(request)
     if ctx is None:
@@ -659,6 +667,8 @@ async def _apply_overrides_async(
             # reported a switch. Not redundant -- do not remove.
             raise
         except ModelConfigError:
+            if strict_model_resolution:
+                raise
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "
                 "continuing with current model",
@@ -852,6 +862,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         persist_model_state: bool = True,
         openai_prompt_cache_key: bool | None = None,
         cli_max_retries: int | None = None,
+        strict_model_resolution: bool = False,
     ) -> None:
         """Initialize the middleware.
 
@@ -872,9 +883,12 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 for tests).
             cli_max_retries: Explicit `--max-retries` value to retain across
                 runtime model switches.
+            strict_model_resolution: Whether invalid runtime model overrides should
+                fail the call instead of falling back to the construction-time model.
         """
         self._persist_model_state = persist_model_state
         self._cli_max_retries = cli_max_retries
+        self._strict_model_resolution = strict_model_resolution
         self._openai_prompt_cache_key = (
             _resolve_openai_prompt_cache_key_enabled()
             if openai_prompt_cache_key is None
@@ -896,6 +910,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             request,
             openai_prompt_cache_key=self._openai_prompt_cache_key,
             cli_max_retries=self._cli_max_retries,
+            strict_model_resolution=self._strict_model_resolution,
         )
         request_started_at = _utc_now_iso()
         response = handler(resolved.request)
@@ -932,6 +947,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             request,
             openai_prompt_cache_key=self._openai_prompt_cache_key,
             cli_max_retries=self._cli_max_retries,
+            strict_model_resolution=self._strict_model_resolution,
         )
         request_started_at = _utc_now_iso()
         response = await handler(resolved.request)

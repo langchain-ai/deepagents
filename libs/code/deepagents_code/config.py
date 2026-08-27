@@ -3622,6 +3622,59 @@ class Credentials:
 class Settings(Credentials):
     """Compatibility surface retained until the final dissolution layer."""
 
+    def __init__(
+        self,
+        openai_api_key: str | None,
+        anthropic_api_key: str | None,
+        google_api_key: str | None,
+        nvidia_api_key: str | None,
+        tavily_api_key: str | None,
+        google_cloud_project: str | None,
+        google_cloud_location: str | None,
+        deepagents_langchain_project: str | None,
+        user_langchain_project: str | None,
+        project_root: Path | None = None,
+    ) -> None:
+        """Preserve the legacy dataclass constructor during the migration."""
+        super().__init__(
+            CredentialsSnapshot(
+                openai_api_key=openai_api_key,
+                anthropic_api_key=anthropic_api_key,
+                google_api_key=google_api_key,
+                nvidia_api_key=nvidia_api_key,
+                tavily_api_key=tavily_api_key,
+                google_cloud_project=google_cloud_project,
+                google_cloud_location=google_cloud_location,
+                deepagents_langchain_project=deepagents_langchain_project,
+                user_langchain_project=user_langchain_project,
+                project_root=project_root,
+            )
+        )
+
+    @classmethod
+    def from_environment(cls, *, start_path: Path | None = None) -> Settings:
+        """Build the compatibility owner from the environment.
+
+        Args:
+            start_path: Directory to start project detection from.
+
+        Returns:
+            A compatibility owner containing the resolved snapshot.
+        """
+        active = Credentials.from_environment(start_path=start_path).active
+        return cls(
+            openai_api_key=active.openai_api_key,
+            anthropic_api_key=active.anthropic_api_key,
+            google_api_key=active.google_api_key,
+            nvidia_api_key=active.nvidia_api_key,
+            tavily_api_key=active.tavily_api_key,
+            google_cloud_project=active.google_cloud_project,
+            google_cloud_location=active.google_cloud_location,
+            deepagents_langchain_project=active.deepagents_langchain_project,
+            user_langchain_project=active.user_langchain_project,
+            project_root=active.project_root,
+        )
+
 
 credentials: Credentials
 """Lazily initialized process-wide credential and project snapshot."""

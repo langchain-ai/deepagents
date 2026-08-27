@@ -84,6 +84,35 @@ _RELOAD_ENV_KEYS = (
 )
 
 
+def test_settings_constructor_preserves_legacy_credential_fields(
+    tmp_path: Path,
+) -> None:
+    """The intermediate compatibility class keeps its dataclass signature."""
+    settings = Settings(
+        openai_api_key="openai",
+        anthropic_api_key="anthropic",
+        google_api_key="google",
+        nvidia_api_key="nvidia",
+        tavily_api_key="tavily",
+        google_cloud_project="project",
+        google_cloud_location="location",
+        deepagents_langchain_project="agent-project",
+        user_langchain_project="user-project",
+        project_root=tmp_path,
+    )
+
+    assert settings.openai_api_key == "openai"
+    assert settings.anthropic_api_key == "anthropic"
+    assert settings.google_api_key == "google"
+    assert settings.nvidia_api_key == "nvidia"
+    assert settings.tavily_api_key == "tavily"
+    assert settings.google_cloud_project == "project"
+    assert settings.google_cloud_location == "location"
+    assert settings.deepagents_langchain_project == "agent-project"
+    assert settings.user_langchain_project == "user-project"
+    assert settings.project_root == tmp_path
+
+
 class TestReloadFromEnvironment:
     """Tests for `Settings.reload_from_environment`."""
 

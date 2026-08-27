@@ -1499,7 +1499,11 @@ async def execute_task_textual(
     from pydantic import ValidationError
 
     from deepagents_code.approval_mode import ApprovalMode, awrite_approval_mode
-    from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY, user_prompt_metadata
+    from deepagents_code.auto_mode import (
+        AUTO_DENIED_METADATA_KEY,
+        USER_PROMPT_METADATA_KEY,
+        user_prompt_metadata,
+    )
     from deepagents_code.hooks.client_lifecycle import ClientHookStopError
     from deepagents_code.hooks.models.domain import HookEvent
 
@@ -2400,25 +2404,21 @@ async def execute_task_textual(
                             # widget concept; see `non_interactive.py`. The
                             # parity contract is documented in `_tool_stream`.
                             if tool_id:
-                                # An auto-mode policy denial synthesizes an error
-                                # ToolMessage without the tool ever executing, so
-                                # no tool.use fires and no widget mounts — a
-                                # routine path, not degraded audit fidelity. Skip
-                                # the warning for it; the tool.result hook below
-                                # still fires as today. The marker is set at the
-                                # source in `auto_mode`, not string-matched on
-                                # content.
-                                from deepagents_code.auto_mode import (
-                                    AUTO_DENIED_METADATA_KEY,
+                                # An auto-mode denial is stamped at the source in
+                                # `auto_mode`. For a no-argument call no widget
+                                # ever mounts, so the denial result lands here as
+                                # a matter of course. That is a routine path, not
+                                # degraded audit fidelity, so skip the warning.
+                                # The tool.result hook below still fires with
+                                # empty args. The headless twin in
+                                # `non_interactive.py` keeps its warning: auto
+                                # mode is never installed on that surface, so it
+                                # cannot see a denial.
+                                metadata = message.additional_kwargs
+                                is_auto_denied = isinstance(metadata, dict) and bool(
+                                    metadata.get(AUTO_DENIED_METADATA_KEY)
                                 )
-
-                                is_synthetic_denial = bool(
-                                    (
-                                        getattr(message, "additional_kwargs", None)
-                                        or {}
-                                    ).get(AUTO_DENIED_METADATA_KEY)
-                                )
-                                if not is_synthetic_denial:
+                                if not is_auto_denied:
                                     # Warning, not info/debug: a real-id result
                                     # with no mounted widget (its args never
                                     # parsed, so no tool.use fired) means a hook

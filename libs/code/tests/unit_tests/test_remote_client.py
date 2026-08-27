@@ -207,6 +207,40 @@ class TestConvertMessageData:
         assert msg.name == ""
         assert msg.status == "success"
 
+    def test_tool_message_forwards_additional_kwargs(self) -> None:
+        """Markers set server-side survive the conversion.
+
+        The TUI always runs against a server, so a marker dropped here never
+        reaches the adapter. `AUTO_DENIED_METADATA_KEY` is the live consumer.
+        """
+        from deepagents_code.auto_mode import AUTO_DENIED_METADATA_KEY
+
+        msg = _convert_message_data(
+            {
+                "type": "tool",
+                "content": "Auto denied [credential_access]: not authorized",
+                "tool_call_id": "tc1",
+                "name": "onepassword_authenticate",
+                "status": "error",
+                "id": "m4",
+                "additional_kwargs": {AUTO_DENIED_METADATA_KEY: True},
+            }
+        )
+        assert isinstance(msg, ToolMessage)
+        assert msg.additional_kwargs[AUTO_DENIED_METADATA_KEY] is True
+
+    def test_tool_message_additional_kwargs_defaults_to_empty(self) -> None:
+        """A missing or non-dict `additional_kwargs` does not discard the message."""
+        msg = _convert_message_data({"type": "tool", "id": "m1"})
+        assert isinstance(msg, ToolMessage)
+        assert msg.additional_kwargs == {}
+
+        msg = _convert_message_data(
+            {"type": "tool", "id": "m1", "additional_kwargs": "not-a-dict"}
+        )
+        assert isinstance(msg, ToolMessage)
+        assert msg.additional_kwargs == {}
+
     def test_unknown_type_returns_none(self) -> None:
         assert _convert_message_data({"type": "unknown"}) is None
 

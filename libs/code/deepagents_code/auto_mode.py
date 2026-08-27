@@ -91,13 +91,20 @@ AUTO_MODE_EVENT_TYPE = "auto_mode"
 AUTO_DENIED_METADATA_KEY = "deepagents_code_auto_denied"
 """`ToolMessage.additional_kwargs` flag set on a synthetic auto-mode denial.
 
-A policy denial (or classifier-unavailable fallback) synthesizes an error
-`ToolMessage` without the tool ever executing, so no `tool.use` fires and no
-widget mounts. The TUI's uncorrelated-result warning exists for the opposite
-case — a tool that *executed* but whose streamed args never parsed — so it
-must not fire for these. The flag travels in `additional_kwargs`, which
-survives the messages-mode stream, so the adapter can recognize the routine
-denial without string-matching the content.
+Set on both dispositions that synthesize a result instead of executing the
+tool: `policy_deny` and the `classifier_unavailable` fallback.
+
+The flag lets the TUI skip its uncorrelated-result warning for these. A
+result reaches that warning when no widget mounted for the call, and a widget
+mounts only when the streamed args parse (see `ToolCallBuffer.parse_args`).
+A no-argument call streams no args, so it never mounts, and its denial result
+arrives uncorrelated. The denial is not the cause of the miss; it is the
+routine case in which the miss is expected.
+
+The flag is carried in `additional_kwargs` so the adapter does not
+string-match the content. `additional_kwargs` is dropped by the server
+message converters unless they forward it; `_convert_tool_message` in
+`client/remote_client.py` does, which is what the TUI depends on.
 """
 _CLASSIFIER_TIMEOUT_SECONDS = AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 # Building a classifier is a different kind of wait than asking one for a

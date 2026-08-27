@@ -8798,10 +8798,14 @@ class TestToolHooksTextual:
     ) -> None:
         """A synthetic auto-mode denial does not log the uncorrelated warning.
 
-        The denial ToolMessage is synthesized without the tool executing, so no
-        tool.use fires and no widget mounts — a routine path. The marker set in
-        `auto_mode` must suppress the warning while the tool.result hook still
-        fires with empty args.
+        Covers the adapter branch given an already-marked message. A no-argument
+        call such as `onepassword_authenticate` streams no args, so no widget
+        mounts and its denial result arrives uncorrelated. The marker must
+        suppress the warning while the tool.result hook still fires with empty
+        args.
+
+        That the marker reaches this point is covered separately by
+        `test_policy_denial_marker_survives_server_round_trip`.
         """
         from deepagents_code.auto_mode import AUTO_DENIED_METADATA_KEY
 

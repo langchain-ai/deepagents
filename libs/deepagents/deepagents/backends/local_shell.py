@@ -30,6 +30,9 @@ DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
 
 _CANCELLATION_POLL_INTERVAL = 0.1
+_PROCESS_REAP_TIMEOUT = 5
+"""Maximum seconds to wait for a killed shell process to exit."""
+
 _ASYNC_EXECUTION_CONTEXT: ContextVar[tuple[object, threading.Event] | None] = ContextVar(
     "_ASYNC_EXECUTION_CONTEXT",
     default=None,
@@ -50,7 +53,7 @@ def _kill_and_reap(process: subprocess.Popen[str]) -> None:
             process.kill()
 
     with suppress(BaseException):
-        process.wait()
+        process.wait(timeout=_PROCESS_REAP_TIMEOUT)
     with suppress(BaseException):
         if process.stdout is not None:
             process.stdout.close()

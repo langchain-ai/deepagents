@@ -68,7 +68,7 @@ def test_local_shell_backend_interrupt_kills_process_group() -> None:
         LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
 
     killpg.assert_called_once_with(1234, signal.SIGKILL)
-    process.wait.assert_called_once_with()
+    process.wait.assert_called_once_with(timeout=5)
 
 
 def test_local_shell_backend_cleanup_errors_preserve_interrupt() -> None:
@@ -88,7 +88,7 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt() -> None:
         LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
 
     process.kill.assert_called_once_with()
-    process.wait.assert_called_once_with()
+    process.wait.assert_called_once_with(timeout=5)
     process.stdout.close.assert_called_once_with()
     process.stderr.close.assert_called_once_with()
 
@@ -106,7 +106,23 @@ def test_local_shell_backend_timeout_kills_process_group() -> None:
 
     assert result.exit_code == 124
     killpg.assert_called_once_with(1234, signal.SIGKILL)
-    process.wait.assert_called_once_with()
+    process.wait.assert_called_once_with(timeout=5)
+
+
+def test_local_shell_backend_timeout_bounds_process_reaping() -> None:
+    """Test that a stuck process cannot extend cleanup indefinitely."""
+    process = MagicMock(pid=1234)
+    process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
+    process.wait.side_effect = subprocess.TimeoutExpired("sleep 10", 5)
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("subprocess.Popen", return_value=process),
+        patch("os.killpg"),
+    ):
+        result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
+
+    assert result.exit_code == 124
+    process.wait.assert_called_once_with(timeout=5)
 
 
 def test_local_shell_backend_execute_with_error() -> None:
@@ -401,7 +417,7 @@ async def test_local_shell_backend_async_cancellation_kills_process_group() -> N
             await task
 
     killpg.assert_called_once_with(1234, signal.SIGKILL)
-    process.wait.assert_called_once_with()
+    process.wait.assert_called_once_with(timeout=5)
 
 
 async def test_local_shell_backend_async_cancellation_preserves_cancelled_error() -> None:

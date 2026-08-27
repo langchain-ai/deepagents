@@ -469,8 +469,8 @@ runs:
           exit 1
         fi
 
-        OUTPUT_FILE=$(mktemp)
-        trap 'rm -f "$OUTPUT_FILE"' EXIT
+        RESPONSE_FILE=$(mktemp)
+        trap 'rm -f "$RESPONSE_FILE"' EXIT
 
         # 10#$INPUT_TIMEOUT forces base-10: validate_positive_int accepts
         # leading-zero values (e.g. 08), which bare arithmetic would misparse as
@@ -479,15 +479,23 @@ runs:
         # set +e: let a non-zero agent exit through so we can capture it below
         # instead of aborting the step (composite bash runs with set -e).
         set +e
-        if [ "$INPUT_STDIN" = "true" ]; then
-          # stdin is special-cased: the prompt is piped in rather than passed
-          # positionally. Feed it via process substitution so the agent — not
-          # printf — is the pipeline head; a classic `printf | timeout` pipe
-          # would surface printf's SIGPIPE (agent closes stdin early on a large
-          # prompt) as the captured exit code.
-          timeout "${TIMEOUT_SECS}" "${CMD[@]}" "--stdin" < <(printf '%s' "$INPUT_PROMPT") 2>&1 | tee "$OUTPUT_FILE"
+        run_agent() {
+          if [ "$INPUT_STDIN" = "true" ]; then
+            # Feed stdin via process substitution so the agent — not printf —
+            # is the pipeline head; a classic `printf | timeout` pipe would
+            # surface printf's SIGPIPE if the agent closes stdin early.
+            timeout "${TIMEOUT_SECS}" "${CMD[@]}" "--stdin" < <(printf '%s' "$INPUT_PROMPT")
+          else
+            timeout "${TIMEOUT_SECS}" "${CMD[@]}" "--non-interactive" "$INPUT_PROMPT"
+          fi
+        }
+        if [ "$INPUT_JSON" = "true" ]; then
+          # Keep diagnostics on stderr while capturing only the JSON stdout
+          # document as the Action response output.
+          run_agent | tee "$RESPONSE_FILE"
         else
-          timeout "${TIMEOUT_SECS}" "${CMD[@]}" "--non-interactive" "$INPUT_PROMPT" 2>&1 | tee "$OUTPUT_FILE"
+          # Preserve the historical combined transcript for text mode.
+          run_agent 2>&1 | tee "$RESPONSE_FILE"
         fi
         # PIPESTATUS[0] is the agent/timeout stage (the pipeline head), so tee's
         # exit can't mask the agent's real code. Read before any other command
@@ -518,7 +526,7 @@ runs:
         if ! {
               echo "exit_code=$EXIT_CODE"
               echo "response<<${DELIMITER}"
-              cat "$OUTPUT_FILE"
+              cat "$RESPONSE_FILE"
               echo "${DELIMITER}"
             } >> "$GITHUB_OUTPUT"; then
           echo "::warning::failed to write agent output to \$GITHUB_OUTPUT — the 'response' output may be empty or truncated"

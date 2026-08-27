@@ -99,9 +99,7 @@ def _root_parser_flags() -> set[str]:
                 and keyword.value.attr == "BooleanOptionalAction"
                 for keyword in node.keywords
             ):
-                flags.update(
-                    f"--no-{option.removeprefix('--')}" for option in options
-                )
+                flags.update(f"--no-{option.removeprefix('--')}" for option in options)
         elif (
             isinstance(node.func, ast.Name)
             and node.func.id == "add_json_output_arg"
@@ -153,7 +151,7 @@ def test_root_action_does_not_forward_interactive_auto_approve() -> None:
 # pure-Python drift tests above stay active on a bash-less runner.
 # ---------------------------------------------------------------------------
 
-_SETUP_MARKER = "OUTPUT_FILE=$(mktemp)"
+_SETUP_MARKER = "RESPONSE_FILE=$(mktemp)"
 
 # Valid baseline: prompt is required and non-empty; everything else is unset
 # (empty string), matching how GitHub passes omitted inputs.
@@ -161,6 +159,7 @@ _BASE_INPUTS = {
     "INPUT_PROMPT": "do the thing",
     "INPUT_AGENT_NAME": "deepagents",
     "INPUT_SHELL_ALLOW_LIST": "recommended,git,gh",
+    "INPUT_TIMEOUT": "30",
 }
 
 
@@ -192,14 +191,14 @@ def _run_setup(**overrides: str) -> tuple[int, list[str]]:
 
 def _run_full(
     tmp_path: Path, *, dcode_body: str | None = None, **overrides: str
-) -> tuple[int, str]:
+) -> tuple[int, str, str, str]:
     """Run the whole "Run dcode" body with `uvx`/`timeout` stubbed on PATH.
 
     Substitutes a fake for the real dcode call so the execution/exit-code region
-    below ``OUTPUT_FILE=$(mktemp)`` runs for real — the timeout arithmetic, the
-    stdin vs ``--non-interactive`` dispatch, the ``PIPESTATUS`` capture, and the
-    ``$GITHUB_OUTPUT`` write — without ever launching dcode. Returns the process
-    exit code and the text written to ``$GITHUB_OUTPUT``.
+    below ``RESPONSE_FILE=$(mktemp)`` runs for real — the timeout arithmetic,
+    stdin vs ``--non-interactive`` dispatch, ``PIPESTATUS`` capture, and the
+    ``$GITHUB_OUTPUT`` write — without launching dcode. Returns the process exit
+    code, captured stdout/stderr, and the text written to ``$GITHUB_OUTPUT``.
     """
     if shutil.which("bash") is None:
         pytest.skip("bash is required for action.yml tests")
@@ -231,7 +230,7 @@ def _run_full(
         text=True,
         check=False,
     )
-    return proc.returncode, gh_output.read_text()
+    return proc.returncode, proc.stdout, proc.stderr, gh_output.read_text()
 
 
 @pytest.mark.parametrize(
@@ -391,7 +390,7 @@ def test_validate_json_object(value: str, should_pass: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Execution-region tests: run the full body (past `OUTPUT_FILE=$(mktemp)`) with
+# Execution-region tests: run the full body (past `RESPONSE_FILE=$(mktemp)`) with
 # uvx/timeout stubbed — covering timeout arithmetic, exit-code capture, and the
 # stdin pipeline, which the setup-slice tests above deliberately exclude.
 # ---------------------------------------------------------------------------
@@ -400,28 +399,57 @@ def test_validate_json_object(value: str, should_pass: bool) -> None:
 def test_full_run_leading_zero_timeout_does_not_crash(tmp_path: Path) -> None:
     # validate_positive_int accepts "08"; bare $((08 * 60)) would abort as
     # invalid octal, so the consumer must force base-10 (10#).
-    rc, out = _run_full(tmp_path, INPUT_TIMEOUT="08")
+    rc, _stdout, _stderr, output = _run_full(tmp_path, INPUT_TIMEOUT="08")
     assert rc == 0
-    assert "exit_code=0" in out
+    assert "exit_code=0" in output
 
 
 def test_full_run_propagates_agent_exit_code(tmp_path: Path) -> None:
     # A non-zero agent must fail the step (via the final `exit $EXIT_CODE`) and
     # be recorded in the exit_code output, not masked by tee.
-    rc, out = _run_full(tmp_path, FAKE_DCODE_EXIT="3")
+    rc, _stdout, _stderr, output = _run_full(tmp_path, FAKE_DCODE_EXIT="3")
     assert rc == 3
-    assert "exit_code=3" in out
+    assert "exit_code=3" in output
 
 
 def test_full_run_stdin_ignores_producer_sigpipe(tmp_path: Path) -> None:
     # Agent reads one byte and exits 0 without draining stdin. A classic
     # `printf | timeout` pipe would surface printf's SIGPIPE (141); process
     # substitution + PIPESTATUS[0] must report the agent's real code instead.
-    rc, out = _run_full(
+    rc, _stdout, _stderr, output = _run_full(
         tmp_path,
         INPUT_STDIN="true",
         INPUT_PROMPT="x" * 100_000,
         dcode_body="head -c 1 >/dev/null; exit 0",
     )
     assert rc == 0
-    assert "exit_code=0" in out
+    assert "exit_code=0" in output
+
+
+@pytest.mark.parametrize("stdin", ["", "true"])
+def test_json_response_excludes_stderr(tmp_path: Path, stdin: str) -> None:
+    rc, stdout, stderr, output = _run_full(
+        tmp_path,
+        INPUT_JSON="true",
+        INPUT_STDIN=stdin,
+        dcode_body='printf \'{"result":"ok"}\\n\'; printf "diagnostic\\n" >&2',
+    )
+
+    assert rc == 0
+    assert stdout == '{"result":"ok"}\n'
+    assert stderr == "diagnostic\n"
+    assert '{"result":"ok"}' in output
+    assert "diagnostic" not in output
+
+
+def test_text_response_keeps_combined_transcript(tmp_path: Path) -> None:
+    rc, stdout, stderr, output = _run_full(
+        tmp_path,
+        INPUT_JSON="false",
+        dcode_body='printf "response\\n"; printf "diagnostic\\n" >&2',
+    )
+
+    assert rc == 0
+    assert stdout == "response\ndiagnostic\n"
+    assert stderr == ""
+    assert "response\ndiagnostic\n" in output

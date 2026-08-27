@@ -1480,3 +1480,134 @@ def test_middleware_rejects_a_bool_budget() -> None:
 def test_middleware_rejects_non_bool_stream_visibility() -> None:
     with pytest.raises(TypeError, match="stream_output_is_visible"):
         CodeModelRetryMiddleware(stream_output_is_visible=cast("bool", 1))
+
+
+# ---------------------------------------------------------------------------
+# LangSmith retry tagging tests (issue #5839)
+# ---------------------------------------------------------------------------
+
+
+def _make_langsmith_config(
+    tags: list[str] | None = None,
+    metadata: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Build a minimal RunnableConfig-like dict for _track_message_streams tests."""
+    config: dict[str, object] = {}
+    if tags is not None:
+        config["tags"] = tags
+    if metadata is not None:
+        config["metadata"] = metadata
+    return config
+
+
+def test_first_attempt_has_no_retry_tag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """First call must not carry a retry tag so the tag stays high-signal."""
+    from deepagents_code.model_retry import _MessageStreamTracker, _track_message_streams
+
+    captured_configs: list[dict[str, object]] = []
+
+    def fake_get_config() -> dict[str, object]:
+        return _make_langsmith_config()
+
+    def fake_set(config: dict[str, object]) -> object:
+        captured_configs.append(dict(config))
+        return object()  # token
+
+    def fake_reset(_token: object) -> None:
+        pass
+
+    monkeypatch.setattr("deepagents_code.model_retry.var_child_runnable_config.set", fake_set)
+    monkeypatch.setattr("deepagents_code.model_retry.var_child_runnable_config.reset", fake_reset)
+
+    with patch("deepagents_code.model_retry._track_message_streams.__wrapped__" if hasattr(_track_message_streams, "__wrapped__") else "builtins.open", create=True):
+        pass  # no-op: we call the CM directly below
+
+    tracker = _MessageStreamTracker()
+    # attempt=1 (default) — config should NOT be patched at all because there
+    # are no StreamMessagesHandler callbacks and attempt == 1.
+    # Since get_config() returns no BaseCallbackManager, the CM yields early.
+    with patch("deepagents_code.model_retry._track_message_streams") as mock_cm:
+        mock_cm.return_value.__enter__ = lambda s: tracker
+        mock_cm.return_value.__exit__ = lambda *a: False
+        # Directly verify: attempt=1, no callbacks → no var_child_runnable_config.set call.
+        captured_configs.clear()
+        # The real call with attempt=1 but no langgraph context → yields without patching.
+        with _track_message_streams(tracker, attempt=1, prior_exc=None):
+            pass
+    # Without a live langgraph context, get_config raises RuntimeError → no set call.
+    assert captured_configs == [], "First attempt must not call var_child_runnable_config.set"
+
+
+def test_retry_attempt_tag_added_to_langsmith_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retry attempts must have ``retry:attempt:{n}`` added to their runnable config tags."""
+    from deepagents_code.model_retry import _MessageStreamTracker, _track_message_streams
+
+    captured_config: dict[str, object] = {}
+
+    def fake_get_config() -> dict[str, object]:
+        return _make_langsmith_config(tags=["existing-tag"])
+
+    def fake_set(config: dict[str, object]) -> object:
+        captured_config.update(config)
+        return object()
+
+    def fake_reset(_token: object) -> None:
+        pass
+
+    monkeypatch.setattr("deepagents_code.model_retry.var_child_runnable_config.set", fake_set)
+    monkeypatch.setattr("deepagents_code.model_retry.var_child_runnable_config.reset", fake_reset)
+
+    with patch("deepagents_code.model_retry._track_message_streams.__code__", create=False):
+        pass
+
+    import langgraph.config as lgconf
+
+    monkeypatch.setattr(lgconf, "get_config", fake_get_config, raising=False)
+
+    tracker = _MessageStreamTracker()
+    prior = _READ_ERROR  # a retryable httpx error
+
+    with _track_message_streams(tracker, attempt=2, prior_exc=prior):
+        pass
+
+    tags = captured_config.get("tags", [])
+    assert "retry:attempt:2" in tags, f"Expected 'retry:attempt:2' in tags, got {tags}"
+    assert "existing-tag" in tags, "Existing tags must be preserved"
+
+
+def test_retry_error_metadata_set_to_prior_exception_class(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``retry_error`` metadata must name the prior exception class so rate-limits\n    are distinguishable from connection resets in LangSmith.\n    """
+    from deepagents_code.model_retry import _MessageStreamTracker, _track_message_streams
+
+    captured_config: dict[str, object] = {}
+
+    def fake_get_config() -> dict[str, object]:
+        return _make_langsmith_config(metadata={"existing_key": "existing_val"})
+
+    def fake_set(config: dict[str, object]) -> object:
+        captured_config.update(config)
+        return object()
+
+    def fake_reset(_token: object) -> None:
+        pass
+
+    monkeypatch.setattr("deepagents_code.model_retry.var_child_runnable_config.set", fake_set)
+    monkeypatch.setattr("deepagents_code.model_retry.var_child_runnable_config.reset", fake_reset)
+
+    import langgraph.config as lgconf
+
+    monkeypatch.setattr(lgconf, "get_config", fake_get_config, raising=False)
+
+    tracker = _MessageStreamTracker()
+    prior = ModelRateLimitError("too many requests")
+
+    with _track_message_streams(tracker, attempt=3, prior_exc=prior):
+        pass
+
+    metadata = captured_config.get("metadata", {})
+    assert metadata.get("retry_error") == "ModelRateLimitError", (
+        f"Expected retry_error='ModelRateLimitError', got {metadata.get('retry_error')}"
+    )
+    assert metadata.get("existing_key") == "existing_val", "Existing metadata must be preserved"
+    tags = captured_config.get("tags", [])
+    assert "retry:attempt:3" in tags

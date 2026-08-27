@@ -151,7 +151,24 @@ class _MessageStreamTracker:
 @contextmanager
 def _track_message_streams(
     tracker: _MessageStreamTracker,
+    *,
+    attempt: int = 1,
+    prior_exc: Exception | None = None,
 ) -> Iterator[_MessageStreamTracker]:
+    """Context manager that tracks message-stream output and tags retry attempts.
+
+    When ``attempt > 1`` (i.e. the call is a retry, not the first attempt),
+    the ``var_child_runnable_config`` is patched with:
+
+    - Tag ``retry:attempt:{attempt}`` — mirrors ``langchain_core``'s
+      ``RunnableRetry._patch_config`` convention so LangSmith surfaces the
+      tag on the run without any extra instrumentation.
+    - Metadata key ``retry_error`` set to the prior exception class name,
+      making rate-limit retries distinguishable from connection resets.
+
+    The first attempt is left untagged so the tag stays high-signal: any run
+    carrying it means a retry happened.
+    """
     try:
         from langgraph.config import get_config
 
@@ -161,22 +178,41 @@ def _track_message_streams(
         return
 
     callbacks = config.get("callbacks")
-    if not isinstance(callbacks, BaseCallbackManager):
-        yield tracker
-        return
-    tracked_callbacks = tracker.callbacks_with_tracked_messages(callbacks)
-    if tracked_callbacks is None:
+    needs_callback_tracking = isinstance(callbacks, BaseCallbackManager)
+    tracked_callbacks = (
+        tracker.callbacks_with_tracked_messages(callbacks)
+        if needs_callback_tracking
+        else None
+    )
+
+    # Patch the child config if we're either tracking callbacks or tagging a
+    # retry — both operations require a modified var_child_runnable_config.
+    needs_config_patch = tracked_callbacks is not None or attempt > 1
+    if not needs_config_patch:
         yield tracker
         return
 
     tracked_config = config.copy()
-    tracked_config["callbacks"] = tracked_callbacks
+    if tracked_callbacks is not None:
+        tracked_config["callbacks"] = tracked_callbacks
+
+    # Tag retry attempts so they appear as filterable labels in LangSmith.
+    if attempt > 1:
+        existing_tags = list(tracked_config.get("tags") or [])
+        existing_tags.append(f"retry:attempt:{attempt}")
+        tracked_config["tags"] = existing_tags
+        if prior_exc is not None:
+            existing_metadata = dict(tracked_config.get("metadata") or {})
+            existing_metadata["retry_error"] = type(prior_exc).__name__
+            tracked_config["metadata"] = existing_metadata
+
     token = var_child_runnable_config.set(tracked_config)
     try:
         yield tracker
     finally:
         var_child_runnable_config.reset(token)
-        tracker.merge_seen()
+        if tracked_callbacks is not None:
+            tracker.merge_seen()
 
 
 def _extract_status_code(exc: Exception) -> int | None:
@@ -831,19 +867,31 @@ class CodeModelRetryMiddleware(AgentMiddleware):
         """
         max_retries = self._request_max_retries(request)
         stream_tracker = _MessageStreamTracker()
+        # Track which attempt we're on so retry runs can be tagged in LangSmith.
+        _current_attempt = [1]  # 1-indexed; starts at 1 for the initial call
+        _prior_exc: list[Exception | None] = [None]
 
         def call() -> ModelResponse:
             nonlocal stream_tracker
             stream_tracker = _MessageStreamTracker()
-            with _track_message_streams(stream_tracker):
+            with _track_message_streams(
+                stream_tracker,
+                attempt=_current_attempt[0],
+                prior_exc=_prior_exc[0],
+            ):
                 return handler(request)
+
+        def on_retry(retry_num: int, budget: int, exc: Exception) -> None:
+            # retry_num is the 1-indexed retry number; the *next* call will be
+            # attempt retry_num + 1 overall.
+            _current_attempt[0] = retry_num + 1
+            _prior_exc[0] = exc
+            self._emit_retry_status(request, retry_num, budget, exc)
 
         return _retry_call(
             call,
             max_retries=max_retries,
-            on_retry=lambda attempt, budget, exc: self._emit_retry_status(
-                request, attempt, budget, exc
-            ),
+            on_retry=on_retry,
             retry_guard=lambda exc, attempt, _delay: _allow_retry_after_stream(
                 stream_tracker,
                 exc,
@@ -864,19 +912,31 @@ class CodeModelRetryMiddleware(AgentMiddleware):
         """
         max_retries = self._request_max_retries(request)
         stream_tracker = _MessageStreamTracker()
+        # Track which attempt we're on so retry runs can be tagged in LangSmith.
+        _current_attempt = [1]  # 1-indexed; starts at 1 for the initial call
+        _prior_exc: list[Exception | None] = [None]
 
         async def call() -> ModelResponse:
             nonlocal stream_tracker
             stream_tracker = _MessageStreamTracker()
-            with _track_message_streams(stream_tracker):
+            with _track_message_streams(
+                stream_tracker,
+                attempt=_current_attempt[0],
+                prior_exc=_prior_exc[0],
+            ):
                 return await handler(request)
+
+        def on_retry(retry_num: int, budget: int, exc: Exception) -> None:
+            # retry_num is the 1-indexed retry number; the *next* call will be
+            # attempt retry_num + 1 overall.
+            _current_attempt[0] = retry_num + 1
+            _prior_exc[0] = exc
+            self._emit_retry_status(request, retry_num, budget, exc)
 
         return await _aretry_call(
             call,
             max_retries=max_retries,
-            on_retry=lambda attempt, budget, exc: self._emit_retry_status(
-                request, attempt, budget, exc
-            ),
+            on_retry=on_retry,
             retry_guard=lambda exc, attempt, _delay: _allow_retry_after_stream(
                 stream_tracker,
                 exc,

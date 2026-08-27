@@ -59,6 +59,7 @@ from deepagents_code import (
 )
 from deepagents_code._cli_context import (
     INHERIT_CLASSIFIER_MODEL,
+    INHERIT_SUMMARIZATION_MODEL,
     CLIContext,
 )
 from deepagents_code._constants import (
@@ -3751,8 +3752,12 @@ class DeepAgentsApp(App):
         )
         """Per-turn model params override set via startup or `/model` params."""
 
-        self._summarization_model_override = summarization_model
-        """Per-session model used only for context-compaction summaries."""
+        self._summarization_model_override: str | None = summarization_model
+        """Per-session model used only for context-compaction summaries.
+
+        `None` leaves the graph's startup choice unchanged, while
+        `INHERIT_SUMMARIZATION_MODEL` explicitly returns to the main model.
+        """
 
         self._last_model_unchanged: tuple[str, float] | None = None
         """Most recent same-model toast, as `(text, monotonic timestamp)`.
@@ -28732,12 +28737,14 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         argument = command.strip()[len("/summarization-model") :].strip()
         if not argument:
-            current = self._summarization_model_override or "the main agent model"
+            current = self._summarization_model_override
+            if current in {None, INHERIT_SUMMARIZATION_MODEL}:
+                current = "the main agent model"
             await self._mount_message(AppMessage(f"Summarization model: {current}"))
             return
         # Same spellings `/effort` accepts, so the habit transfers.
         if argument.lower() in {"clear", "--clear", "reset"}:
-            self._summarization_model_override = None
+            self._summarization_model_override = INHERIT_SUMMARIZATION_MODEL
             await self._mount_message(
                 AppMessage("Summarization model cleared; using the main agent model.")
             )

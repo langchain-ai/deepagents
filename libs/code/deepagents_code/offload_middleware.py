@@ -34,7 +34,10 @@ from langgraph.config import get_config
 from langgraph.types import Command  # noqa: TC002  # inspected for tool schema
 from typing_extensions import TypedDict
 
-from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code._cli_context import (
+    INHERIT_SUMMARIZATION_MODEL,
+    CLIContextSchema,
+)
 from deepagents_code.cost_tracking import CostState
 from deepagents_code.hooks.models.domain import (
     CompactTrigger,
@@ -1216,7 +1219,9 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         """
         config = _runtime_model_config(runtime)
         summary_model_spec = config.summarization_model_spec
-        if summary_model_spec is None:
+        if summary_model_spec == INHERIT_SUMMARIZATION_MODEL:
+            summary_model_spec = None
+        elif summary_model_spec is None:
             summary_model_spec = self._summarization_model_spec
         if not config.model_spec and not summary_model_spec:
             return self._summarization

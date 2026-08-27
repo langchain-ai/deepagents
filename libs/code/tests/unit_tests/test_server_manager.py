@@ -32,6 +32,7 @@ class TestServerConfigRoundTrip:
         """to_env -> from_env should reconstruct the original config."""
         original = ServerConfig(
             model="anthropic:claude-sonnet-4-6",
+            summarization_model="anthropic:claude-haiku-4-5",
             model_params={"temperature": 0.7},
             assistant_id="my-agent",
             system_prompt="Be helpful",
@@ -330,14 +331,14 @@ class TestStartServerAndGetAgent:
 
         assert mock_server_process.call_args.kwargs["scaffold"] is mock_scaffold
 
-    async def test_forwards_allow_fs_tools_into_server_config(
+    async def test_forwards_agent_options_into_server_config(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """`allow_fs_tools` reaches the `ServerConfig` written to the subprocess.
+        """Agent construction options reach the subprocess `ServerConfig`.
 
         The higher-level TUI/non-interactive forwarding tests mock this function
-        out, so without this a dropped kwarg here would disable the feature for
-        every server-backed session with no failing test.
+        out, so a dropped kwarg here would silently disable the option for every
+        server-backed session.
         """
         project_root = tmp_path / "project"
         project_root.mkdir()
@@ -379,10 +380,12 @@ class TestStartServerAndGetAgent:
                 assistant_id="agent",
                 mcp_config_path=None,
                 allow_fs_tools=["ls", "read_file"],
+                summarization_model="openai:summary-model",
             )
 
         assert len(captured) == 1
         assert captured[0].allow_fs_tools == ["ls", "read_file"]
+        assert captured[0].summarization_model == "openai:summary-model"
 
     async def test_stops_server_when_graph_readiness_fails(
         self, tmp_path: Path, monkeypatch

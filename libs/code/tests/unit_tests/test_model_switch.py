@@ -9,6 +9,7 @@ import pytest
 from textual.app import App, ComposeResult
 
 from deepagents_code import model_config
+from deepagents_code._cli_context import INHERIT_SUMMARIZATION_MODEL
 from deepagents_code._paths import PATHS
 from deepagents_code.app import (
     DeepAgentsApp,
@@ -1572,7 +1573,7 @@ class TestSummarizationModelCommand:
         assert app._model_override == "anthropic:claude-sonnet-4-5"
 
         await app._handle_command("/summarization-model --clear")
-        assert app._summarization_model_override is None
+        assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
         assert app._model_override == "anthropic:claude-sonnet-4-5"
 
     async def test_resolved_spec_is_normalized_not_echoed(self) -> None:
@@ -1612,7 +1613,7 @@ class TestSummarizationModelCommand:
             await app._handle_command(f"/summarization-model {word}")
 
         create_model.assert_not_called()
-        assert app._summarization_model_override is None
+        assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
 
     async def test_no_argument_reports_the_current_value(self) -> None:
         app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")

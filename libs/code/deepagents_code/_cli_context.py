@@ -30,6 +30,15 @@ startup classifier authorizing actions after the UI reported the clear, so the
 sentinel stays plain ASCII.
 """
 
+INHERIT_SUMMARIZATION_MODEL = "__dcode_inherit_summarization__"
+"""Per-run `summarization_model` value meaning "use the main agent model".
+
+An absent (or `None`) `summarization_model` leaves the graph's startup summary
+model in effect. `/summarization-model clear` needs the stronger statement that
+summaries go back to the main agent model, which this sentinel carries across
+the remote JSON boundary without being mistaken for a model spec.
+"""
+
 
 @dataclass
 class CLIContextSchema:
@@ -99,9 +108,10 @@ class CLIContext(TypedDict, total=False):
     summarization_model: str | None
     """Model spec used only for context-compaction summary generation.
 
-    `None` or an absent key reuses the main agent model. This value never
-    changes the main model or its system-prompt identity: its only consumers
-    are the summary-generation slots installed by
+    `None` or an absent key keeps the graph's startup summary model.
+    `INHERIT_SUMMARIZATION_MODEL` explicitly selects the main agent model. This
+    value never changes the main model or its system-prompt identity: its only
+    consumers are the summary-generation slots installed by
     `offload_middleware._summarization_for_runtime`, so compaction thresholds
     and token counting still track the main model.
     """

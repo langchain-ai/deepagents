@@ -3280,6 +3280,7 @@ async def run_textual_cli_async(
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
+        "summarization_model": resolved_summarization_model,
         "model_params": model_params,
         "cli_max_retries": cli_max_retries,
         "profile_overrides": profile_override,

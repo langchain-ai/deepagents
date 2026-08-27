@@ -296,6 +296,7 @@ async def start_server_and_get_agent(
     *,
     assistant_id: str,
     model_name: str | None = None,
+    summarization_model: str | None = None,
     model_params: dict[str, Any] | None = None,
     cli_max_retries: int | None = None,
     profile_overrides: dict[str, Any] | None = None,
@@ -328,6 +329,7 @@ async def start_server_and_get_agent(
     Args:
         assistant_id: Agent identifier.
         model_name: Model spec string.
+        summarization_model: Model spec used only for context-compaction summaries.
         model_params: Extra model kwargs.
         cli_max_retries: Explicit `--max-retries` value.
         profile_overrides: Model profile metadata overrides.
@@ -387,6 +389,7 @@ async def start_server_and_get_agent(
     config = ServerConfig.from_cli_args(
         project_context=project_context,
         model_name=model_name,
+        summarization_model=summarization_model,
         model_params=model_params,
         cli_max_retries=cli_max_retries,
         profile_overrides=profile_overrides,

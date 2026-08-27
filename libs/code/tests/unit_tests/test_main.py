@@ -2870,6 +2870,10 @@ class TestRunTextualCliAsyncMcp:
 
         create_model.assert_not_called()
         assert captured_kwargs["summarization_model"] == "openai:flag-summary"
+        assert (
+            captured_kwargs["server_kwargs"]["summarization_model"]
+            == "openai:flag-summary"
+        )
 
     async def test_resolves_configured_summarization_model(self) -> None:
         app_result = AppResult(return_code=0, thread_id="thread-123")
@@ -2893,6 +2897,10 @@ class TestRunTextualCliAsyncMcp:
 
         create_model.assert_not_called()
         assert captured_kwargs["summarization_model"] == "openai:config-summary"
+        assert (
+            captured_kwargs["server_kwargs"]["summarization_model"]
+            == "openai:config-summary"
+        )
 
     async def test_resolves_configured_auto_classifier_before_tui_launch(self) -> None:
         """The TUI and server receive the same effective env/TOML classifier."""

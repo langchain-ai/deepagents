@@ -565,6 +565,25 @@ class TestCLICompactionMiddleware:
         assert startup.model.profile == {"max_input_tokens": 100_000}
         assert middleware._summarization is startup
 
+    def test_explicit_clear_overrides_startup_summary_model(self) -> None:
+        """A runtime clear selects the main model despite a graph-level default."""
+        from deepagents_code._cli_context import INHERIT_SUMMARIZATION_MODEL
+
+        startup = self._summarization()
+        middleware = CLICompactionMiddleware(
+            startup, summarization_model_spec="provider:startup-summary"
+        )
+        runtime = MagicMock()
+        runtime.context = {"summarization_model": INHERIT_SUMMARIZATION_MODEL}
+
+        with patch(
+            "deepagents_code.offload_middleware.create_summarization_middleware"
+        ) as create_summarization:
+            actual = middleware._summarization_for_runtime(runtime)
+
+        assert actual is startup
+        create_summarization.assert_not_called()
+
     async def test_runtime_summary_override_uses_summary_counter_and_fallback(
         self,
     ) -> None:

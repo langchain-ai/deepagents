@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import textwrap
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
@@ -1580,6 +1581,103 @@ class AssistantMessage(Vertical):
         self._content = content
         if self._markdown:
             await self._markdown.update(content)
+
+
+class _ReasoningToggle(Static):
+    """Clickable header for a reasoning message."""
+
+
+class ReasoningMessage(Vertical):
+    """Collapsible plain-text provider-visible reasoning."""
+
+    DEFAULT_CSS = """
+    ReasoningMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        color: $text-muted;
+    }
+    ReasoningMessage #reasoning-body { display: none; padding: 0 1; }
+    ReasoningMessage.-expanded #reasoning-body { display: block; }
+    ReasoningMessage #reasoning-hint { color: $text-muted; text-style: italic; }
+    """
+
+    _expanded: var[bool] = var(True, toggle_class="-expanded")
+
+    class ExpansionChanged(Message):
+        """Report a reasoning expansion-state change."""
+
+        def __init__(self, widget: ReasoningMessage, expanded: bool) -> None:
+            """Initialize an expansion-state event."""
+            super().__init__()
+            self.widget = widget
+            self.expanded = expanded
+
+    def __init__(self, content: str = "", **kwargs: Any) -> None:
+        """Initialize a reasoning message."""
+        super().__init__(**kwargs)
+        self._content = content
+        self._streaming = not content
+        self._deferred_expanded: bool | None = None
+        self._published_expanded: bool | None = None
+
+    def compose(self) -> ComposeResult:
+        """Compose the reasoning message.
+
+        Yields:
+            Header, plain-text body, and toggle hint widgets.
+        """
+        yield _ReasoningToggle(Content.styled("Reasoning", "bold"))
+        yield Static(Content(self._content), id="reasoning-body")
+        yield Static(id="reasoning-hint")
+
+    def on_mount(self) -> None:
+        """Restore deferred expansion state and render content."""
+        if self._deferred_expanded is not None:
+            self._expanded = self._deferred_expanded
+        self._render_reasoning()
+
+    def _render_reasoning(self) -> None:
+        with suppress(NoMatches):
+            self.query_one("#reasoning-body", Static).update(Content(self._content))
+            action = "hide" if self._expanded else "show"
+            self.query_one("#reasoning-hint", Static).update(
+                Content.styled(f"click or Ctrl+O to {action} reasoning", "dim italic")
+            )
+
+    async def append_content(self, text: str) -> None:
+        """Append a plain-text reasoning fragment."""
+        if text:
+            self._content += text
+            self._render_reasoning()
+
+    async def stop_stream(self) -> None:
+        """Finalize and collapse the active reasoning phase."""
+        self._streaming = False
+        self._expanded = False
+        self._render_reasoning()
+
+    async def set_content(self, content: str) -> None:
+        """Replace the complete plain-text reasoning content."""
+        self._streaming = False
+        self._content = content
+        self._render_reasoning()
+
+    def toggle_expanded(self) -> None:
+        """Toggle the reasoning body visibility."""
+        self._expanded = not self._expanded
+        self._render_reasoning()
+
+    def watch__expanded(self, expanded: bool) -> None:
+        """Publish expansion changes for transcript persistence."""
+        if self.is_attached and expanded != self._published_expanded:
+            self._published_expanded = expanded
+            self.post_message(self.ExpansionChanged(self, expanded))
+
+    @on(Click, "_ReasoningToggle")
+    def _on_toggle_click(self, event: Click) -> None:
+        event.stop()
+        self.toggle_expanded()
 
 
 _ToolStatus = Literal["pending", "running", "success", "error", "rejected", "skipped"]

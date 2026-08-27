@@ -81,6 +81,46 @@ def console() -> Console:
     return Console(quiet=True)
 
 
+def test_visible_reasoning_is_opt_in_and_stays_out_of_final_answer(
+    console: Console, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    state = StreamState(show_reasoning=True)
+    message = AIMessage(
+        content=[
+            {"type": "reasoning", "reasoning": "first"},
+            {"type": "reasoning", "reasoning": " second"},
+            {"type": "text", "text": "answer"},
+            {"type": "reasoning", "reasoning": "third"},
+            {"type": "non_standard", "value": {"type": "redacted_thinking"}},
+        ]
+    )
+
+    _process_ai_message(message, state, console)
+
+    assert stdout.getvalue() == "answer"
+    assert stderr.getvalue() == "Reasoning:\nfirst secondReasoning:\nthird"
+    assert state.full_response == ["answer"]
+
+
+def test_visible_reasoning_defaults_off(
+    console: Console, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    _process_ai_message(
+        AIMessage(content=[{"type": "reasoning", "reasoning": "hidden"}]),
+        StreamState(),
+        console,
+    )
+
+    assert stderr.getvalue() == ""
+
+
 def test_nested_usage_event_updates_headless_stats(console: Console) -> None:
     state = StreamState(thread_id="thread-1")
     event = {

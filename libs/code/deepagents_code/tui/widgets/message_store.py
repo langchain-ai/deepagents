@@ -54,6 +54,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_group_expanded",
         "skill_expanded",
         "rubric_expanded",
+        "reasoning_expanded",
         "user_expanded",
         "is_streaming",
     }
@@ -73,6 +74,9 @@ class MessageType(StrEnum):
 
     ASSISTANT = "assistant"
     """Streamed agent response rendered with markdown."""
+
+    REASONING = "reasoning"
+    """Provider-visible reasoning rendered separately from the final answer."""
 
     TOOL = "tool"
     """Record of a tool invocation, including its args, status, and output."""
@@ -265,6 +269,9 @@ class MessageData:
     rubric_expanded: bool = False
     """Whether the grader details are expanded in the UI."""
 
+    reasoning_expanded: bool = False
+    """Whether provider-visible reasoning is expanded in the UI."""
+
     # USER message fields - only populated for USER messages
     user_expanded: bool = False
     """Whether a collapsed long user message is expanded in the UI."""
@@ -369,6 +376,7 @@ class MessageData:
             DiffMessage,
             ErrorMessage,
             LazyToolGroupSummary,
+            ReasoningMessage,
             RubricResultMessage,
             SkillMessage,
             SummarizationMessage,
@@ -393,6 +401,11 @@ class MessageData:
                 return AssistantMessage(
                     self.content, id=self.id, local_only=self.assistant_local_only
                 )
+
+            case MessageType.REASONING:
+                widget = ReasoningMessage(self.content, id=self.id)
+                widget._deferred_expanded = self.reasoning_expanded
+                return widget
 
             case MessageType.TOOL:
                 widget = ToolCallMessage(
@@ -494,6 +507,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            ReasoningMessage,
             RubricResultMessage,
             SkillMessage,
             SummarizationMessage,
@@ -532,6 +546,15 @@ class MessageData:
                 id=widget_id,
                 is_streaming=widget._stream is not None,
                 assistant_local_only=widget._local_only,
+            )
+
+        if isinstance(widget, ReasoningMessage):
+            return cls(
+                type=MessageType.REASONING,
+                content=widget._content,
+                id=widget_id,
+                is_streaming=widget._streaming,
+                reasoning_expanded=widget._expanded,
             )
 
         if isinstance(widget, ToolCallMessage):

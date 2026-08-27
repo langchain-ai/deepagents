@@ -549,6 +549,13 @@ the persisted value, so a `/timestamps` toggle will not appear to "stick"
 across restarts.
 """
 
+SHOW_REASONING = "DEEPAGENTS_CODE_SHOW_REASONING"
+"""Show provider-visible reasoning in local TUI and headless output.
+
+Disabled by default. A recognized Boolean value takes precedence over
+`[ui].show_reasoning` in config.toml; unrecognized values fall through.
+"""
+
 SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"
 """Show the vertical scrollbar in the chat area when enabled.
 

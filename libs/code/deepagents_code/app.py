@@ -151,6 +151,7 @@ from deepagents_code.tui.widgets.messages import (
     ErrorMessage,
     LazyToolGroupSummary,
     QueuedUserMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SkillMessage,
     ToolCallMessage,
@@ -1377,6 +1378,15 @@ def _load_show_diff_line_numbers() -> bool:
     return _load_bool_display_preference(
         "display.show_diff_line_numbers", fallback=True
     )
+
+
+def _load_show_reasoning() -> bool:
+    """Resolve whether local output shows provider-visible reasoning.
+
+    Returns:
+        The resolved preference, defaulting to `False`.
+    """
+    return _load_bool_display_preference("display.show_reasoning", fallback=False)
 
 
 def _load_show_scrollbar() -> bool:
@@ -3314,6 +3324,9 @@ class DeepAgentsApp(App):
 
         self._cursor_blink_enabled = _load_cursor_blink_preference()
         """Whether the chat input cursor should blink (user preference)."""
+
+        self._show_reasoning = _load_show_reasoning()
+        """Whether provider-visible reasoning is shown in the transcript."""
 
         self._terminal_progress_enabled = _load_terminal_progress_preference()
         """Whether to emit `OSC 9;4` taskbar progress (user preference)."""
@@ -8815,7 +8828,7 @@ class DeepAgentsApp(App):
         assistant_updates = [
             widget.set_content(data.content)
             for widget, data, _footer in entries
-            if isinstance(widget, AssistantMessage) and data.content
+            if isinstance(widget, AssistantMessage | ReasoningMessage) and data.content
         ]
         if assistant_updates:
             try:
@@ -17837,6 +17850,7 @@ class DeepAgentsApp(App):
                 session_state=self._session_state,
                 adapter=self._ui_adapter,
                 backend=self._backend,
+                show_reasoning=self._show_reasoning,
                 image_tracker=self._image_tracker,
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
@@ -18288,21 +18302,31 @@ class DeepAgentsApp(App):
                     result.append(MessageData(type=MessageType.USER, content=content))
 
             elif isinstance(msg, AIMessage):
-                # Extract text content
                 content = msg.content
-                text = ""
                 if isinstance(content, str):
-                    text = content.strip()
+                    if text := content.strip():
+                        result.append(
+                            MessageData(type=MessageType.ASSISTANT, content=text)
+                        )
                 elif isinstance(content, list):
                     for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text += block.get("text", "")
-                        elif isinstance(block, str):
-                            text += block
-                    text = text.strip()
-
-                if text:
-                    result.append(MessageData(type=MessageType.ASSISTANT, content=text))
+                        if isinstance(block, str):
+                            text = block
+                            message_type = MessageType.ASSISTANT
+                        elif isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text", "")
+                            message_type = MessageType.ASSISTANT
+                        elif (
+                            isinstance(block, dict)
+                            and block.get("type") == "reasoning"
+                            and isinstance(block.get("reasoning"), str)
+                        ):
+                            text = block["reasoning"]
+                            message_type = MessageType.REASONING
+                        else:
+                            continue
+                        if text.strip():
+                            result.append(MessageData(type=message_type, content=text))
 
                 # Track tool calls for later matching
                 for tc in getattr(msg, "tool_calls", []):
@@ -18956,7 +18980,8 @@ class DeepAgentsApp(App):
             assistant_updates = [
                 widget.set_content(msg_data.content)
                 for widget, msg_data in mounted
-                if isinstance(widget, AssistantMessage) and msg_data.content
+                if isinstance(widget, AssistantMessage | ReasoningMessage)
+                and msg_data.content
             ]
             if assistant_updates:
                 assistant_results = await asyncio.gather(
@@ -19261,7 +19286,11 @@ class DeepAgentsApp(App):
 
     async def _mount_message(
         self,
-        widget: Static | AssistantMessage | ToolCallMessage | SkillMessage,
+        widget: Static
+        | AssistantMessage
+        | ReasoningMessage
+        | ToolCallMessage
+        | SkillMessage,
     ) -> bool:
         """Mount a message widget to the messages area.
 
@@ -19711,6 +19740,18 @@ class DeepAgentsApp(App):
             self._message_store.update_message(
                 event.widget.id,
                 tool_group_expanded=event.expanded,
+            )
+            self._schedule_message_height_measurements([event.widget.id])
+
+    def on_reasoning_message_expansion_changed(
+        self,
+        event: ReasoningMessage.ExpansionChanged,
+    ) -> None:
+        """Keep reasoning expansion state across transcript virtualization."""
+        if event.widget.id:
+            self._message_store.update_message(
+                event.widget.id,
+                reasoning_expanded=event.expanded,
             )
             self._schedule_message_height_measurements([event.widget.id])
 
@@ -21984,6 +22025,9 @@ class DeepAgentsApp(App):
         for child in reversed(list(messages.children)):
             if isinstance(child, RubricResultMessage) and child._details:
                 child.toggle_details()
+                return
+            if isinstance(child, ReasoningMessage):
+                child.toggle_expanded()
                 return
             if isinstance(child, LazyToolGroupSummary | ToolGroupSummary):
                 child.toggle()

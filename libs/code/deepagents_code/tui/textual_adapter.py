@@ -122,6 +122,7 @@ from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -1436,6 +1437,7 @@ async def execute_task_textual(
     image_tracker: MediaTracker | None = None,
     context: CLIContext | None = None,
     *,
+    show_reasoning: bool = False,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
     graph_input: dict[str, Any] | None = None,
@@ -1456,6 +1458,7 @@ async def execute_task_textual(
         session_state: Session state with a typed approval mode.
         adapter: The TextualUIAdapter for UI operations.
         backend: Optional backend for file operations.
+        show_reasoning: Show provider-visible reasoning in the transcript.
         image_tracker: Optional tracker for images.
         context: Optional `CLIContext` with model override and params. The current
             mode is persisted and copied into runtime context before every stream
@@ -1658,6 +1661,7 @@ async def execute_task_textual(
     # when multiple subagents stream in parallel
     pending_text_by_namespace: dict[tuple, str] = {}
     assistant_message_by_namespace: dict[tuple, Any] = {}
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] = {}
     hooks = session_state.hooks
     transcript = hooks.recorder(thread_id)
 
@@ -2596,6 +2600,9 @@ async def execute_task_textual(
                         if block_type == "text":
                             text = block.get("text", "")
                             if text:
+                                await _flush_reasoning_ns(
+                                    adapter, ns_key, reasoning_message_by_namespace
+                                )
                                 # Track accumulated text for reference
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 pending_text += text
@@ -2635,7 +2642,38 @@ async def execute_task_textual(
                                 await current_msg.append_content(text)
                                 _notify_user_visible_output_started()
 
+                        elif block_type == "reasoning" and show_reasoning:
+                            reasoning = block.get("reasoning")
+                            if isinstance(reasoning, str) and reasoning.strip():
+                                pending_text = pending_text_by_namespace.get(ns_key, "")
+                                if pending_text:
+                                    await _flush_assistant_text_ns(
+                                        adapter,
+                                        pending_text,
+                                        ns_key,
+                                        assistant_message_by_namespace,
+                                    )
+                                    pending_text_by_namespace[ns_key] = ""
+                                    assistant_message_by_namespace.pop(ns_key, None)
+                                current_reasoning = reasoning_message_by_namespace.get(
+                                    ns_key
+                                )
+                                if current_reasoning is None:
+                                    msg_id = f"reason-{uuid.uuid4().hex}"
+                                    if adapter._set_active_message:
+                                        adapter._set_active_message(msg_id)
+                                    current_reasoning = ReasoningMessage(id=msg_id)
+                                    await adapter._mount_message(current_reasoning)
+                                    reasoning_message_by_namespace[ns_key] = (
+                                        current_reasoning
+                                    )
+                                await current_reasoning.append_content(reasoning)
+                                _notify_user_visible_output_started()
+
                         elif block_type in {"tool_call_chunk", "tool_call"}:
+                            await _flush_reasoning_ns(
+                                adapter, ns_key, reasoning_message_by_namespace
+                            )
                             chunk_name = block.get("name")
                             chunk_args = block.get("args")
                             chunk_id = block.get("id")
@@ -2786,6 +2824,10 @@ async def execute_task_textual(
                     )
             pending_text_by_namespace.clear()
             assistant_message_by_namespace.clear()
+            for ns_key in list(reasoning_message_by_namespace):
+                await _flush_reasoning_ns(
+                    adapter, ns_key, reasoning_message_by_namespace
+                )
 
             # Handle HITL after stream completes
             if interrupt_occurred:
@@ -3567,6 +3609,7 @@ async def execute_task_textual(
             config=config,
             pending_text_by_namespace=pending_text_by_namespace,
             assistant_message_by_namespace=assistant_message_by_namespace,
+            reasoning_message_by_namespace=reasoning_message_by_namespace,
             captured_input_tokens=captured_input_tokens,
             captured_output_tokens=captured_output_tokens,
             turn_stats=turn_stats,
@@ -3692,6 +3735,7 @@ async def _handle_interrupt_cleanup(
     config: RunnableConfig,
     pending_text_by_namespace: dict[tuple, str],
     assistant_message_by_namespace: dict[tuple, Any] | None = None,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] | None = None,
     captured_input_tokens: int,
     captured_output_tokens: int,
     turn_stats: _session_stats.SessionStats,
@@ -3706,6 +3750,7 @@ async def _handle_interrupt_cleanup(
         config: Runnable config with `thread_id`.
         pending_text_by_namespace: Accumulated text per namespace.
         assistant_message_by_namespace: Active assistant message widgets per namespace.
+        reasoning_message_by_namespace: Active reasoning widgets per namespace.
         captured_input_tokens: Input tokens captured before interrupt.
         captured_output_tokens: Output tokens captured before interrupt.
         turn_stats: Stats for the current turn.
@@ -3732,6 +3777,9 @@ async def _handle_interrupt_cleanup(
         await adapter._set_spinner(None)
 
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
+    if reasoning_message_by_namespace:
+        for ns_key in list(reasoning_message_by_namespace):
+            await _flush_reasoning_ns(adapter, ns_key, reasoning_message_by_namespace)
 
     if recover_interrupted_turn:
         glyphs = get_glyphs()
@@ -3900,6 +3948,22 @@ def _report_tokens(
             adapter._on_tokens_update(captured_input_tokens, approximate=approximate)
     elif adapter._on_tokens_show:
         adapter._on_tokens_show(approximate=approximate)
+
+
+async def _flush_reasoning_ns(
+    adapter: TextualUIAdapter,
+    ns_key: tuple,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage],
+) -> None:
+    """Finalize and collapse reasoning for one namespace."""
+    message = reasoning_message_by_namespace.pop(ns_key, None)
+    if message is None:
+        return
+    await message.stop_stream()
+    if adapter._sync_message_content and message.id:
+        adapter._sync_message_content(message.id, message._content)
+    if adapter._set_active_message:
+        adapter._set_active_message(None)
 
 
 async def _flush_assistant_text_ns(

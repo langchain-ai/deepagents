@@ -37,6 +37,7 @@ from deepagents_code.tui.widgets.messages import (
     DiffMessage,
     ErrorMessage,
     QueuedUserMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
@@ -7213,6 +7214,30 @@ class TestUserMessageTruncation:
             UserMessage("/" + "x" * 10_000, detect_mode=False).has_expandable_body
             is True
         )
+
+
+class _ReasoningApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield ReasoningMessage(id="reasoning")
+
+
+async def test_reasoning_message_renders_provider_text_as_plain_content() -> None:
+    app = _ReasoningApp()
+
+    async with app.run_test() as pilot:
+        message = app.query_one("#reasoning", ReasoningMessage)
+        await message.append_content("[bold]not markup[/bold]")
+        await pilot.pause()
+
+        assert str(message.query_one("#reasoning-body", Static).content) == (
+            "[bold]not markup[/bold]"
+        )
+        assert message._expanded is True
+
+        await message.stop_stream()
+        await pilot.pause()
+        assert message._expanded is False
+        assert message.query_one("#reasoning-body", Static).display is False
 
 
 class _RubricResultApp(App[None]):

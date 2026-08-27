@@ -82,6 +82,7 @@ from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -5085,6 +5086,98 @@ def _tool_call_message(
 def _text_message(text: str) -> SimpleNamespace:
     """Build a message-like object with content_blocks containing one text block."""
     return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
+
+
+async def test_reasoning_streams_separately_and_collapses_before_answer() -> None:
+    mounted: list[object] = []
+
+    async def mount_message(widget: object) -> bool:
+        mounted.append(widget)
+        await asyncio.sleep(0)
+        return True
+
+    chunks = [
+        (
+            (),
+            "messages",
+            (
+                SimpleNamespace(
+                    content_blocks=[
+                        {"type": "reasoning", "reasoning": "[bold]plain[/bold]"},
+                        {"type": "text", "text": "answer"},
+                    ]
+                ),
+                {},
+            ),
+        )
+    ]
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+    )
+
+    await execute_task_textual(
+        user_input="hi",
+        agent=_FakeAgent(chunks),
+        assistant_id="assistant",
+        session_state=_session_state(auto_approve=True),
+        adapter=adapter,
+        show_reasoning=True,
+    )
+
+    reasoning = next(
+        widget for widget in mounted if isinstance(widget, ReasoningMessage)
+    )
+    answer = next(widget for widget in mounted if isinstance(widget, AssistantMessage))
+    assert reasoning._content == "[bold]plain[/bold]"
+    assert reasoning._expanded is False
+    assert reasoning._streaming is False
+    assert answer._content == "answer"
+
+
+async def test_reasoning_is_disabled_and_nested_reasoning_is_suppressed() -> None:
+    for show_reasoning, namespace in [(False, ()), (True, ("tools:task",))]:
+        mounted: list[object] = []
+
+        async def mount_message(
+            widget: object, mounted: list[object] = mounted
+        ) -> bool:
+            mounted.append(widget)
+            await asyncio.sleep(0)
+            return True
+
+        chunks = [
+            (
+                namespace,
+                "messages",
+                (
+                    SimpleNamespace(
+                        content_blocks=[
+                            {"type": "reasoning", "reasoning": "hidden"},
+                            {"type": "non_standard", "reasoning": "opaque"},
+                        ]
+                    ),
+                    {},
+                ),
+            )
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+            show_reasoning=show_reasoning,
+        )
+
+        assert not any(isinstance(widget, ReasoningMessage) for widget in mounted)
 
 
 class TestExecuteTaskTextualUserVisibleOutputStarted:

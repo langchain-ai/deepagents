@@ -406,6 +406,12 @@ class StreamState:
     agent finishes.
     """
 
+    show_reasoning: bool = False
+    """Whether provider-visible reasoning is rendered to stderr."""
+
+    reasoning_active: bool = False
+    """Whether the current output phase has emitted its reasoning heading."""
+
     full_response: list[str] = field(default_factory=list)
     """Accumulated text fragments from the AI message stream."""
 
@@ -605,6 +611,15 @@ def _record_usage_from_message(
     )
 
 
+def _write_reasoning(text: str, state: StreamState) -> None:
+    """Write provider-visible reasoning to a phase-framed stderr stream."""
+    if not state.reasoning_active:
+        sys.stderr.write("Reasoning:\n")
+        state.reasoning_active = True
+    sys.stderr.write(text)
+    sys.stderr.flush()
+
+
 def _process_ai_message(
     message_obj: AIMessage,
     state: StreamState,
@@ -632,12 +647,24 @@ def _process_ai_message(
         if block_type == "text":
             text = block.get("text", "")
             if text:
+                state.reasoning_active = False
                 if state.stream:
                     if state.spinner:
                         state.spinner.stop()
                     _write_text(text)
                 state.full_response.append(text)
+        elif block_type == "reasoning":
+            reasoning = block.get("reasoning")
+            if (
+                state.show_reasoning
+                and isinstance(reasoning, str)
+                and reasoning.strip()
+            ):
+                if state.spinner:
+                    state.spinner.stop()
+                _write_reasoning(reasoning, state)
         elif block_type in {"tool_call_chunk", "tool_call"}:
+            state.reasoning_active = False
             chunk_name = block.get("name")
             chunk_id = block.get("id")
             chunk_index = block.get("index")
@@ -1433,6 +1460,7 @@ async def _run_agent_loop(
     *,
     quiet: bool = False,
     stream: bool = True,
+    show_reasoning: bool = False,
     message_kwargs: dict[str, Any] | None = None,
     thread_url_lookup: ThreadUrlLookupState | None = None,
     max_turns: int | None = None,
@@ -1460,6 +1488,7 @@ async def _run_agent_loop(
 
             When `False`, the full response is buffered and flushed at
             the end.
+        show_reasoning: Write provider-visible reasoning to stderr.
         message_kwargs: Extra fields merged into the initial HumanMessage
             dict (e.g., `additional_kwargs` for persisted skill metadata).
         thread_url_lookup: Optional non-blocking lookup state for rendering
@@ -1492,6 +1521,7 @@ async def _run_agent_loop(
         thread_id=thread_id if isinstance(thread_id, str) else "",
         quiet=quiet,
         stream=stream,
+        show_reasoning=show_reasoning,
         spinner=spinner,
         show_rubric_iterations=show_rubric_iterations,
     )
@@ -1898,6 +1928,7 @@ async def run_non_interactive(
     profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
+    show_reasoning: bool = False,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool = False,
@@ -1958,6 +1989,7 @@ async def run_non_interactive(
             stderr so that only the agent's response text appears on stdout.
         stream: When `True` (default), text chunks are written to stdout
             as they arrive.
+        show_reasoning: Write provider-visible reasoning to stderr.
 
             When `False`, the full response is buffered and written to stdout in
             one shot after the agent finishes.
@@ -2271,6 +2303,7 @@ async def run_non_interactive(
                 file_op_tracker,
                 quiet=quiet,
                 stream=stream,
+                show_reasoning=show_reasoning,
                 message_kwargs=message_kwargs,
                 thread_url_lookup=thread_url_lookup,
                 max_turns=max_turns,

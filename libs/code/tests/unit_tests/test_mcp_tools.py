@@ -27,6 +27,9 @@ if TYPE_CHECKING:
     from langchain_mcp_adapters.client import Connection
 
 from deepagents_code.mcp_auth import FileTokenStorage, MCPReauthRequiredError
+from deepagents_code.mcp_middleware import (
+    normalize_mcp_arguments as _normalize_mcp_arguments,
+)
 from deepagents_code.mcp_tools import (
     DiscoveredMCPConfig,
     MCPConfigIdentity,
@@ -43,7 +46,6 @@ from deepagents_code.mcp_tools import (
     _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
-    _normalize_mcp_arguments,
     _same_config_location,
     _server_stderr_log,
     _warm_mcp_adapter_imports,
@@ -175,30 +177,82 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 
-@pytest.fixture
-def fake_create_session() -> Generator[tuple[AsyncMock, list[Any]]]:
-    """Patch `FastMCPClient` and record the transport each server was given.
+class FakeMCPServer:
+    """A real in-memory MCP server standing in for a configured backend.
 
-    The loader now builds one FastMCP client per server instead of opening a
-    session per connection dict, so what a test can inspect is the transport:
-    `recorded[0].url`, `.headers`, `.auth`, `.env`. The stand-in client is
-    reentrant like the real one, so a tool may open it during a call even
-    though discovery already did.
+    Tests describe a server by its tools rather than by mocking the client, so
+    what runs underneath is FastMCP's own client, session and schema handling —
+    the same code paths production takes, minus a subprocess or a socket.
     """
-    client = AsyncMock()
-    client.list_tools = AsyncMock(return_value=[])
-    client.close = AsyncMock()
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=None)
 
-    recorded: list[Any] = []
+    def __init__(self, name: str, tools: Sequence[tuple[str, str]] = ()) -> None:
+        """Build a server exposing one echo tool per `(name, description)`."""
+        from fastmcp import FastMCP
 
-    def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
-        recorded.append(transport)
-        return client
+        self.name = name
+        self.server: Any = FastMCP(name)
+        for tool_name, description in tools:
+            self.add_tool(tool_name, description)
 
-    with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
-        yield client, recorded
+    def add_tool(self, tool_name: str, description: str = "") -> None:
+        """Expose one more echo tool, taking an optional `path` argument."""
+
+        def _echo(path: str = "") -> str:
+            return f"{self.name}:{tool_name}:{path}"
+
+        _echo.__doc__ = description or f"{tool_name} tool"
+        self.server.tool(_echo, name=tool_name)
+
+
+class MCPServerRegistry:
+    """The in-memory backends a test makes available, and what the loader built.
+
+    `register` names a server the way the config does. A configured server with
+    no registration is left to fail like an unreachable one, which is how
+    per-server failure isolation stays testable. `transports` holds the real
+    transports the loader constructed, so assertions about command, env, url,
+    headers or auth still have something to read.
+    """
+
+    def __init__(self) -> None:
+        self.servers: dict[str, FakeMCPServer] = {}
+        self.transports: list[Any] = []
+
+    def register(self, name: str, *tools: str) -> FakeMCPServer:
+        """Register a server exposing `tools`, and return it."""
+        server = FakeMCPServer(name, [(tool, f"{tool} tool") for tool in tools])
+        self.servers[name] = server
+        return server
+
+
+@pytest.fixture
+def mcp_servers() -> Generator[MCPServerRegistry]:
+    """Route every transport the loader builds at an in-memory server."""
+    from fastmcp.client.transports import FastMCPTransport
+
+    from deepagents_code import mcp_tools as module
+
+    registry = MCPServerRegistry()
+    real_build = module._build_transport  # noqa: SLF001
+
+    def _build(
+        server_name: str,
+        server_type: str,
+        server_config: Any,
+        **kwargs: Any,
+    ) -> Any:
+        # Build the real transport first, so tests can assert on what it carries.
+        registry.transports.append(
+            real_build(server_name, server_type, server_config, **kwargs)
+        )
+        server = registry.servers.get(server_name)
+        if server is None:
+            msg = f"no in-memory server registered for {server_name!r}"
+            raise ConnectionError(msg)
+        return FastMCPTransport(server.server)
+
+    with patch.object(module, "_build_transport", _build):
+        yield registry
 
 
 @pytest.fixture
@@ -2557,33 +2611,17 @@ class TestToolOrdering:
     async def test_tools_sorted_alphabetically(
         self,
         write_config: Callable[..., str],
+        mcp_servers: MCPServerRegistry,
     ) -> None:
         """Tools are sorted alphabetically across discovery order."""
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["server.js"]}}}
         )
 
-        session = AsyncMock()
-        session.initialize = AsyncMock()
-        session.__aenter__ = AsyncMock(return_value=session)
-        session.__aexit__ = AsyncMock(return_value=None)
-        session.list_tools = AsyncMock(
-            return_value=(
-[
-                    _make_mcp_tool("zeta", "z"),
-                    _make_mcp_tool("alpha", "a"),
-                    _make_mcp_tool("mu", "m"),
-                ]
-            )
-        )
+        # Registered out of order on purpose: the loader must sort, not the server.
+        mcp_servers.register("srv", "zeta", "alpha", "mu")
 
-        recorded: list[Any] = []
-        def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
-            recorded.append(transport)
-            return session
-
-        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
-            tools, manager, _ = await get_mcp_tools(path)
+        tools, manager, _ = await get_mcp_tools(path)
 
         assert [tool.name for tool in tools] == ["srv_alpha", "srv_mu", "srv_zeta"]
         assert manager is not None

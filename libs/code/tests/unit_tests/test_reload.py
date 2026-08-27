@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import dotenv as _dotenv_module
@@ -29,6 +29,28 @@ if TYPE_CHECKING:
 
 # Capture before any monkeypatching replaces it on the module.
 _real_load_dotenv = _dotenv_module.load_dotenv
+
+
+def _resolved_config_value(key: str, *, path_base: Path | None = None) -> object:
+    from deepagents_code.config import _use_extra_skills_path_base
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    option = get_option(key)
+    assert option is not None
+    with _use_extra_skills_path_base(path_base):
+        return get_config_resolver().get(option).value
+
+
+def _shell_allow_list() -> list[str] | None:
+    return cast("list[str] | None", _resolved_config_value("shell.allow_list"))
+
+
+def _extra_skills_dirs(*, path_base: Path | None = None) -> list[Path] | None:
+    return cast(
+        "list[Path] | None",
+        _resolved_config_value("skills.extra_allowed_dirs", path_base=path_base),
+    )
 
 
 def _test_plugin_fingerprint(version: str) -> _PluginFingerprint:
@@ -117,7 +139,7 @@ class TestReloadFromEnvironment:
         changes = settings.preview_reload_from_environment(start_path=target)
 
         assert any(change.startswith("shell_allow_list:") for change in changes)
-        assert settings.shell_allow_list is None
+        assert _shell_allow_list() is None
         assert "DEEPAGENTS_CODE_SHELL_ALLOW_LIST" not in os.environ
 
     def test_preview_reload_sees_shell_allow_list_toml_edit(
@@ -134,13 +156,13 @@ class TestReloadFromEnvironment:
 
         config_path = model_config.DEFAULT_CONFIG_PATH
         settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.shell_allow_list is None
+        assert _shell_allow_list() is None
 
         config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
         changes = settings.preview_reload_from_environment(start_path=tmp_path)
 
         assert any(change.startswith("shell_allow_list:") for change in changes)
-        assert settings.shell_allow_list is None
+        assert _shell_allow_list() is None
 
     def test_preview_reload_sees_extra_skill_roots_toml_edit(
         self, tmp_path: Path
@@ -152,7 +174,7 @@ class TestReloadFromEnvironment:
         skills_dir.mkdir()
         config_path = model_config.DEFAULT_CONFIG_PATH
         settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.extra_skills_dirs is None
+        assert _extra_skills_dirs() is None
 
         config_path.write_text(
             f'[skills]\nextra_allowed_dirs = ["{skills_dir}"]\n',
@@ -163,7 +185,7 @@ class TestReloadFromEnvironment:
 
         assert any(change.startswith("extra_skills_dirs:") for change in preview)
         assert preview == applied
-        assert settings.extra_skills_dirs == [skills_dir]
+        assert _extra_skills_dirs() == [skills_dir]
 
     def test_reload_resolves_relative_skill_roots_from_target_cwd(
         self,
@@ -183,11 +205,11 @@ class TestReloadFromEnvironment:
             encoding="utf-8",
         )
         settings = Settings.from_environment(start_path=current)
-        assert settings.extra_skills_dirs == [current / "shared-skills"]
+        assert _extra_skills_dirs() == [current / "shared-skills"]
 
         settings.reload_from_environment(start_path=target)
 
-        assert settings.extra_skills_dirs == [target / "shared-skills"]
+        assert _extra_skills_dirs(path_base=target) == [target / "shared-skills"]
 
     def test_preview_reload_retains_shell_allow_list_on_corrupt_toml(
         self, tmp_path: Path
@@ -196,7 +218,7 @@ class TestReloadFromEnvironment:
         config_path = tmp_path / "config.toml"
         config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
         settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.shell_allow_list == ["ls"]
+        assert _shell_allow_list() == ["ls"]
 
         config_path.write_text("[shell\n", encoding="utf-8")
 
@@ -205,7 +227,7 @@ class TestReloadFromEnvironment:
 
         assert not any(change.startswith("shell_allow_list:") for change in preview)
         assert not any(change.startswith("shell_allow_list:") for change in applied)
-        assert settings.shell_allow_list == ["ls"]
+        assert _shell_allow_list() == ["ls"]
 
     def test_reload_reports_an_unparseable_user_config(self, tmp_path: Path) -> None:
         """A corrupt `config.toml` must not be reported as a clean reload.
@@ -221,7 +243,7 @@ class TestReloadFromEnvironment:
         config_path = model_config.DEFAULT_CONFIG_PATH
         config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
         settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.shell_allow_list == ["ls"]
+        assert _shell_allow_list() == ["ls"]
 
         config_path.write_text("[shell\n", encoding="utf-8")
         changes = settings.reload_from_environment(start_path=tmp_path)
@@ -230,7 +252,7 @@ class TestReloadFromEnvironment:
         assert changes[0].startswith("Kept previous config.toml:")
         # The retained value is still in force -- the notice reports the
         # rejection, it does not describe a rollback.
-        assert settings.shell_allow_list == ["ls"]
+        assert _shell_allow_list() == ["ls"]
 
     def test_preview_reports_an_unparseable_user_config(self, tmp_path: Path) -> None:
         """The preview reports its own read, so accept/decline agree with it."""
@@ -245,7 +267,7 @@ class TestReloadFromEnvironment:
 
         assert preview
         assert preview[0].startswith("Kept previous config.toml:")
-        assert settings.shell_allow_list == ["ls"]
+        assert _shell_allow_list() == ["ls"]
 
     def test_reload_reports_no_notice_for_a_readable_config(
         self, tmp_path: Path
@@ -265,7 +287,7 @@ class TestReloadFromEnvironment:
         assert not any(
             change.startswith("Kept previous config.toml:") for change in changes
         )
-        assert settings.shell_allow_list == ["ls", "cat"]
+        assert _shell_allow_list() == ["ls", "cat"]
 
     def test_reload_retains_extra_skill_roots_on_corrupt_toml(
         self, tmp_path: Path
@@ -279,14 +301,14 @@ class TestReloadFromEnvironment:
             encoding="utf-8",
         )
         settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.extra_skills_dirs == [skills_dir]
+        assert _extra_skills_dirs() == [skills_dir]
 
         config_path.write_text("[skills\n", encoding="utf-8")
 
         changes = settings.reload_from_environment(start_path=tmp_path)
 
         assert not any(change.startswith("extra_skills_dirs:") for change in changes)
-        assert settings.extra_skills_dirs == [skills_dir]
+        assert _extra_skills_dirs() == [skills_dir]
 
     def test_reload_reads_managed_policy_once(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -381,12 +403,12 @@ class TestReloadFromEnvironment:
         """Reload should update parsed shell allow-list values."""
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "ls,cat")
         settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.shell_allow_list == ["ls", "cat"]
+        assert _shell_allow_list() == ["ls", "cat"]
 
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "ls,grep")
         changes = settings.reload_from_environment(start_path=tmp_path)
 
-        assert settings.shell_allow_list == ["ls", "grep"]
+        assert _shell_allow_list() == ["ls", "grep"]
         assert any(change.startswith("shell_allow_list:") for change in changes)
 
     def test_reload_preserves_cli_shell_allow_list(
@@ -398,13 +420,13 @@ class TestReloadFromEnvironment:
 
         install_cli_provider(CliProvider({"shell_allow_list": "ls,cat"}))
         settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.shell_allow_list == ["ls", "cat"]
+        assert _shell_allow_list() == ["ls", "cat"]
 
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "grep")
         preview = settings.preview_reload_from_environment(start_path=tmp_path)
         changes = settings.reload_from_environment(start_path=tmp_path)
 
-        assert settings.shell_allow_list == ["ls", "cat"]
+        assert _shell_allow_list() == ["ls", "cat"]
         assert not any(change.startswith("shell_allow_list:") for change in preview)
         assert not any(change.startswith("shell_allow_list:") for change in changes)
 
@@ -1313,12 +1335,12 @@ class TestReloadErrorPaths:
         """Malformed shell allow-list should fall back to previous value."""
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "ls,cat")
         settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.shell_allow_list == ["ls", "cat"]
+        assert _shell_allow_list() == ["ls", "cat"]
 
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "all,ls")
         changes = settings.reload_from_environment(start_path=tmp_path)
 
-        assert settings.shell_allow_list == ["ls", "cat"]
+        assert _shell_allow_list() == ["ls", "cat"]
         assert not any(change.startswith("shell_allow_list:") for change in changes)
 
     def test_deleted_cwd_keeps_previous_project_root(
@@ -1354,7 +1376,7 @@ class TestReloadErrorPaths:
         changes = settings.reload_from_environment(start_path=tmp_path)
 
         assert settings.openai_api_key == "sk-updated"
-        assert settings.shell_allow_list == ["ls"]
+        assert _shell_allow_list() == ["ls"]
         assert any(c.startswith("openai_api_key:") for c in changes)
 
     def test_invalid_extra_skills_dirs_keeps_previous(
@@ -1368,10 +1390,10 @@ class TestReloadErrorPaths:
         """
         import deepagents_code.config as config_mod
 
-        settings = Settings.from_environment(start_path=tmp_path)
         sentinel = [tmp_path / "skills"]
-        settings.extra_skills_dirs = sentinel
         monkeypatch.setenv("DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS", str(sentinel[0]))
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert _extra_skills_dirs() == sentinel
 
         def boom(*_args: object, **_kwargs: object) -> list[Path] | None:
             msg = "broken symlink loop"
@@ -1380,7 +1402,7 @@ class TestReloadErrorPaths:
         monkeypatch.setattr(config_mod, "_parse_extra_skills_dirs", boom)
         changes = settings.reload_from_environment(start_path=tmp_path)
 
-        assert settings.extra_skills_dirs == sentinel
+        assert _extra_skills_dirs() == sentinel
         assert not any(change.startswith("extra_skills_dirs:") for change in changes)
 
     def test_managed_skill_roots_are_validated_from_target_cwd(
@@ -1414,7 +1436,7 @@ class TestReloadErrorPaths:
         model_config.clear_caches()
         try:
             settings = Settings.from_environment(start_path=current)
-            previous = settings.extra_skills_dirs
+            previous = _extra_skills_dirs()
             assert previous == [current / "managed-skills"]
             original_resolve = config_mod._resolve_extra_skills_path
 
@@ -1433,8 +1455,8 @@ class TestReloadErrorPaths:
             changes = settings.reload_from_environment(start_path=target)
 
             assert config_mod.managed_reload_block(changes) is not None
-            assert settings.extra_skills_dirs == previous
-            assert settings.extra_skills_dirs != [user_skills]
+            assert _extra_skills_dirs() == previous
+            assert _extra_skills_dirs() != [user_skills]
         finally:
             service.invalidate_config_sources()
 
@@ -1912,7 +1934,6 @@ async def test_reload_notifies_when_managed_policy_newly_masks_cli(
     redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     install_cli_provider(CliProvider({"shell_allow_list": "ls"}))
-    original_allow_list = settings.shell_allow_list
     settings.reload_from_environment(start_path=tmp_path)
     notices: list[tuple[str, str | None]] = []
 
@@ -1930,7 +1951,6 @@ async def test_reload_notifies_when_managed_policy_newly_masks_cli(
             await reload_task
             await pilot.pause()
     finally:
-        settings.shell_allow_list = original_allow_list
         service.invalidate_config_sources()
 
     assert any(

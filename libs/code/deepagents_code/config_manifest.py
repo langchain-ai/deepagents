@@ -2458,7 +2458,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("shell", "allow_list"),
         cli_flag="--shell-allow-list",
         cli=CliSpec("--shell-allow-list"),
-        settings_field="shell_allow_list",
     ),
     ConfigOption(
         key="skills.extra_allowed_dirs",
@@ -2470,7 +2469,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.SKILLS_DIRS_DELEGATE,
         env_var=_env_vars.EXTRA_SKILLS_DIRS,
         toml_keys=("skills", "extra_allowed_dirs"),
-        settings_field="extra_skills_dirs",
     ),
     ConfigOption(
         key="models.ollama_discovery",
@@ -2562,7 +2560,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("interpreter", "enable_interpreter"),
         cli_flag="--interpreter",
         cli=CliSpec("--interpreter"),
-        settings_field="enable_interpreter",
     ),
     ConfigOption(
         key="interpreter.timeout_seconds",
@@ -2571,7 +2568,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.FLOAT,
         default=INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
         toml_keys=("interpreter", "timeout_seconds"),
-        settings_field="interpreter_timeout_seconds",
     ),
     ConfigOption(
         key="interpreter.memory_limit_mb",
@@ -2580,7 +2576,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.INT,
         default=INTERPRETER_MEMORY_LIMIT_MB_DEFAULT,
         toml_keys=("interpreter", "memory_limit_mb"),
-        settings_field="interpreter_memory_limit_mb",
     ),
     ConfigOption(
         key="interpreter.max_ptc_calls",
@@ -2589,7 +2584,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.INT,
         default=INTERPRETER_MAX_PTC_CALLS_DEFAULT,
         toml_keys=("interpreter", "max_ptc_calls"),
-        settings_field="interpreter_max_ptc_calls",
     ),
     ConfigOption(
         key="interpreter.max_result_chars",
@@ -2598,7 +2592,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.INT,
         default=INTERPRETER_MAX_RESULT_CHARS_DEFAULT,
         toml_keys=("interpreter", "max_result_chars"),
-        settings_field="interpreter_max_result_chars",
     ),
     ConfigOption(
         key="interpreter.ptc",
@@ -2609,7 +2602,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("interpreter", "ptc"),
         cli_flag="--interpreter-tools",
         cli=CliSpec("--interpreter-tools"),
-        settings_field="interpreter_ptc",
     ),
     ConfigOption(
         key="interpreter.ptc_acknowledge_unsafe",
@@ -2618,7 +2610,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.BOOL,
         default=INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT,
         toml_keys=("interpreter", "ptc_acknowledge_unsafe"),
-        settings_field="interpreter_ptc_acknowledge_unsafe",
     ),
     # --- Threads (config.toml-only; structured column table excepted) ---
     ConfigOption(

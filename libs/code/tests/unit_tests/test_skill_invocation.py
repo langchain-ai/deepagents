@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -311,6 +312,7 @@ def _make_app() -> MagicMock:
 
     app = MagicMock(spec=DeepAgentsApp)
     app._assistant_id = "agent"
+    app._cwd = str(Path.cwd())
     app._discovered_skills = []
     app._skill_allowed_roots = []
     app._skill_trust_denied = set()
@@ -885,21 +887,6 @@ class TestDiscoverSkillsAndRoots:
     as-is, is caught.
     """
 
-    def _settings_with_no_builtin_roots(self, extra: list[Path]) -> MagicMock:
-        settings = MagicMock()
-        for getter in (
-            "get_built_in_skills_dir",
-            "get_user_skills_dir",
-            "get_project_skills_dir",
-            "get_user_agent_skills_dir",
-            "get_project_agent_skills_dir",
-            "get_user_claude_skills_dir",
-            "get_project_claude_skills_dir",
-        ):
-            getattr(settings, getter).return_value = None
-        settings.get_extra_skills_dirs.return_value = extra
-        return settings
-
     def test_persisted_trust_added_as_is_while_extra_dirs_resolved(
         self, tmp_path: Path
     ) -> None:
@@ -922,11 +909,15 @@ class TestDiscoverSkillsAndRoots:
         real_extra.mkdir()
         link_extra = tmp_path / "link_extra"
         link_extra.symlink_to(real_extra, target_is_directory=True)
+        (tmp_path / "config.toml").write_text(
+            f'[skills]\nextra_allowed_dirs = ["{link_extra}"]\n',
+            encoding="utf-8",
+        )
 
         with (
             patch(
                 "deepagents_code.config.settings",
-                self._settings_with_no_builtin_roots([link_extra]),
+                SimpleNamespace(project_root=tmp_path),
             ),
             patch("deepagents_code.skills.load.list_skills", return_value=[]),
             patch(
@@ -941,6 +932,42 @@ class TestDiscoverSkillsAndRoots:
         assert real_trusted.resolve() not in roots
         # `extra_allowed_dirs` is the declarative allowlist and is resolved.
         assert real_extra.resolve() in roots
+
+    def test_relative_extra_dirs_use_user_cwd_not_project_root(
+        self, tmp_path: Path
+    ) -> None:
+        """Relative allowlist entries keep the cwd used by config loading."""
+        from deepagents_code.skills.invocation import discover_skills_and_roots
+
+        project_root = tmp_path / "project"
+        user_cwd = project_root / "subdir"
+        configured = user_cwd / "shared"
+        wrong = project_root / "shared"
+        configured.mkdir(parents=True)
+        wrong.mkdir()
+        (tmp_path / "config.toml").write_text(
+            '[skills]\nextra_allowed_dirs = ["shared"]\n',
+            encoding="utf-8",
+        )
+
+        with (
+            patch(
+                "deepagents_code.config.settings",
+                SimpleNamespace(project_root=project_root),
+            ),
+            patch("deepagents_code.skills.load.list_skills", return_value=[]),
+            patch(
+                "deepagents_code.skills.trust.load_trusted_skill_dirs",
+                return_value=[],
+            ),
+        ):
+            _skills, roots = discover_skills_and_roots(
+                "agent",
+                path_base=user_cwd,
+            )
+
+        assert configured.resolve() in roots
+        assert wrong.resolve() not in roots
 
 
 class TestResolveParentDir:

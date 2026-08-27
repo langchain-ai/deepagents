@@ -26,6 +26,7 @@ from deepagents_code.configuration.resolver import (
     DEFAULT_RANK,
     ENVIRONMENT_RANK,
     MANAGED_RANK,
+    RELOAD_RANK,
     USER_RANK,
     ConfigResolver,
     RankedProviderValue,
@@ -152,9 +153,9 @@ def test_deep_merge_provenance_uses_tuple_paths_and_numeric_ranks() -> None:
     assert resolved.provenance[USER_RANK] == frozenset({("a", "user"), ("sibling",)})
 
 
-def test_rank_space_reserves_but_does_not_require_a_cli_provider() -> None:
-    """The unwired CLI seam outranks environment and yields to managed policy."""
-    assert MANAGED_RANK < CLI_RANK < ENVIRONMENT_RANK < USER_RANK
+def test_rank_space_orders_invocation_and_reload_overrides() -> None:
+    """Invocation and retained reload values outrank the live environment."""
+    assert MANAGED_RANK < CLI_RANK < RELOAD_RANK < ENVIRONMENT_RANK < USER_RANK
 
     over_environment = resolve_ranked(
         (

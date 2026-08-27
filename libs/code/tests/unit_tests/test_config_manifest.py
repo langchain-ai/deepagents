@@ -1669,19 +1669,27 @@ def test_charset_auto_display_value_includes_effective_glyph_mode() -> None:
 # --- Single-source defaults -------------------------------------------------
 
 
-def test_interpreter_defaults_match_settings() -> None:
-    """Manifest interpreter defaults are the same objects `Settings` uses.
+def test_interpreter_defaults_match_resolver_snapshot() -> None:
+    """The interpreter snapshot consumes the manifest-owned defaults."""
+    from deepagents_code.configuration.interpreter import InterpreterConfig
+    from deepagents_code.configuration.resolver import get_config_resolver
 
-    This is what makes the manifest the single source of truth: the dataclass
-    default and the manifest default cannot diverge because they are one value.
-    """
-    from deepagents_code.config import Settings
-
-    settings = Settings.from_environment()
-    for opt in get_config_options():
-        if opt.group != "Interpreter" or opt.settings_field is None:
-            continue
-        assert getattr(settings, opt.settings_field) == opt.default
+    interpreter = InterpreterConfig.from_resolver()
+    values = {
+        "interpreter.timeout_seconds": interpreter.timeout_seconds,
+        "interpreter.memory_limit_mb": interpreter.memory_limit_mb,
+        "interpreter.max_ptc_calls": interpreter.max_ptc_calls,
+        "interpreter.max_result_chars": interpreter.max_result_chars,
+        "interpreter.ptc": interpreter.ptc,
+        "interpreter.ptc_acknowledge_unsafe": interpreter.ptc_acknowledge_unsafe,
+    }
+    for key, value in values.items():
+        option = get_option(key)
+        assert option is not None
+        assert value == option.default
+    enabled = get_option("interpreter.enable_interpreter")
+    assert enabled is not None
+    assert get_config_resolver().get(enabled).value == enabled.default
 
 
 def test_every_settings_field_names_a_real_settings_attribute() -> None:

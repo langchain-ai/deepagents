@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents_code._paths import (
     get_built_in_skills_dir,
@@ -40,6 +40,7 @@ def discover_skills_and_roots(
     *,
     plugin_skill_sources: tuple[tuple[Path, str], ...] = (),
     plugin_skill_roots: tuple[Path, ...] = (),
+    path_base: Path | None = None,
 ) -> tuple[list[ExtendedSkillMetadata], list[Path]]:
     """Discover skills and build pre-resolved containment roots.
 
@@ -48,11 +49,21 @@ def discover_skills_and_roots(
         plugin_skill_sources: Plugin-owned skill directories and namespaces,
             supplied by the plugin composition layer.
         plugin_skill_roots: Plugin-owned roots allowed for content loading.
+        path_base: User working directory for resolving relative skill roots.
+            Defaults to the process working directory.
 
     Returns:
         Tuple of `(skill metadata list, pre-resolved containment roots)`.
+
+    Raises:
+        RuntimeError: If the extra skill-directory option is absent from the
+            manifest.
     """
-    from deepagents_code.config import settings
+    from pathlib import Path
+
+    from deepagents_code.config import _use_extra_skills_path_base, settings
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
     from deepagents_code.skills.load import list_skills
     from deepagents_code.skills.trust import load_trusted_skill_dirs
 
@@ -80,7 +91,15 @@ def discover_skills_and_roots(
         )
         if path is not None
     ]
-    roots.extend(path.resolve() for path in settings.get_extra_skills_dirs())
+    option = get_option("skills.extra_allowed_dirs")
+    if option is None:
+        msg = "skills.extra_allowed_dirs is missing from the configuration manifest"
+        raise RuntimeError(msg)
+    with _use_extra_skills_path_base(path_base or Path.cwd()):
+        resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    extra_skills_dirs = cast("list[Path] | None", resolved.value)
+    roots.extend(path.resolve() for path in extra_skills_dirs or ())
     # Persisted in-the-moment approvals extend the containment allowlist just
     # like the declarative `extra_allowed_dirs`, but are managed by the trust
     # store rather than hand-edited config. These entries are already the

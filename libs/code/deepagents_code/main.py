@@ -1162,11 +1162,10 @@ def _resolve_interpreter_enabled(
     through would turn the redundant-but-harmless `enable_interpreter = true`
     into a launch failure for every remote-sandbox run.
 
-    Only the managed and CLI tiers are answered from `resolved`. When neither
-    decides, the value comes from `settings.enable_interpreter`, which resolves
-    the same manifest option through the same chain; the resolver read above
-    still runs for its diagnostics. `test_local_mode_uses_config_default` pins
-    the `settings` source, so the two are not interchangeable in tests.
+    Managed and CLI decisions are inspected separately so conflicts with a
+    remote sandbox can name the deciding tier. When neither decides, the same
+    resolved value already contains the environment, user-file, and default
+    tiers.
 
     Args:
         args: Parsed CLI arguments.
@@ -1214,9 +1213,7 @@ def _resolve_interpreter_enabled(
         return enabled
     if remote_sandbox:
         return False
-    from deepagents_code.config import settings
-
-    return settings.enable_interpreter
+    return bool(resolved.value)
 
 
 def _exit_interpreter_conflicts_with_sandbox(
@@ -1465,14 +1462,23 @@ def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
     Keyed on the raw `args.interpreter` tri-state so an explicit
     `--no-interpreter` opt-out stays silent (the predicate only fires for the
     unset default).
+
+    Raises:
+        RuntimeError: If the interpreter option is absent from the manifest.
     """
     from deepagents_code._server_config import _interpreter_suppressed_by_sandbox
-    from deepagents_code.config import settings
+    from deepagents_code.config_manifest import get_option
+
+    option = get_option("interpreter.enable_interpreter")
+    if option is None:
+        msg = "interpreter.enable_interpreter is missing from the config manifest"
+        raise RuntimeError(msg)
+    local_default = bool(_resolver_for_args(args).get(option).value)
 
     if not _interpreter_suppressed_by_sandbox(
         enable_interpreter=args.interpreter,
         sandbox_type=args.sandbox,
-        local_default=settings.enable_interpreter,
+        local_default=local_default,
     ):
         return
     from rich.console import Console as _Console
@@ -3109,8 +3115,7 @@ async def run_textual_cli_async(
             forwarded so the app can tell an explicit opt-out from a
             sandbox-suppressed default when surfacing the disabled-by-sandbox
             advisory.
-        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist
-            for `js_eval`).
+        interpreter_ptc: Invocation-scoped PTC allowlist override for `js_eval`.
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,

@@ -342,7 +342,7 @@ async def start_server_and_get_agent(
         enable_ask_user: Enable ask_user tool.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
             the main agent. `None` uses the sandbox-aware default.
-        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
+        interpreter_ptc: Invocation-scoped PTC allowlist override.
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param.
@@ -522,7 +522,7 @@ async def server_session(
         enable_ask_user: Enable ask_user tool.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
             the main agent. `None` uses the sandbox-aware default.
-        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
+        interpreter_ptc: Invocation-scoped PTC allowlist override.
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param.

@@ -407,7 +407,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         !!! danger "Unrestricted Execution"
 
             Commands are executed directly on your host system
-            using `subprocess.run()` with `shell=True`. There is **no sandboxing,
+            using `subprocess.Popen()` with `shell=True`. There is **no sandboxing,
             isolation, or security restrictions**. The command runs with
             your user's full permissions and can:
 
@@ -423,6 +423,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         The command is executed using the system shell (`/bin/sh` or equivalent)
         with the working directory set to the backend's `root_dir`.
         Stdout and stderr are combined into a single output stream.
+
+        On POSIX systems, each command starts in a new session without sharing
+        the parent's controlling terminal. Timeout, interruption, and async
+        cancellation terminate the command's entire process group with
+        `SIGKILL`, then wait briefly for the shell process to exit.
 
         Args:
             command: Shell command string to execute.

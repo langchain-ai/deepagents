@@ -39,8 +39,7 @@
 # - Idempotent per run identity: if a PR is already open for the selected
 #   package and dependency set (or no bound needs raising), the workflow exits
 #   without creating a duplicate. A cron `all` run, a manual broad run, and
-#   narrowed runs over different dependency sets each use their own branch, so
-#   they are not serialized against one another.
+#   narrowed runs over different dependency sets each use their own branch.
 # - Because this runs unattended, a failure would otherwise be invisible: the
 #   final step files (or refreshes) a tracking issue so a broken bump does
 #   not just stop happening.
@@ -78,19 +77,12 @@ on:
 permissions:
   contents: read
 
-# Cron runs have no `inputs.package`, so they fall back to `all`. Narrowed
-# dispatches also key on the dependency set (normalized: trimmed, lowercase,
-# `.`/`_` → `-`, sorted) so two runs narrowing the same package to different
-# sets do not serialize against each other — each publishes its own PR. The
-# `raise` step derives the branch slug with the same normalization, so the
-# group and the branch always identify the same run.
+# Cron runs have no `inputs.package`, so they fall back to `all`. GitHub Actions
+# expressions cannot canonicalize the free-text dependency CSV, so serialize at
+# package granularity. The `raise` step derives the canonical branch identity;
+# serializing here prevents equivalent spellings from racing its open-PR guard.
 concurrency:
-  group: >-
-    raise-dependency-minimums-${{ inputs.package || 'all' }}${{
-      inputs.dependencies && format('-{0}', join(sort(split(
-        replace(replace(replace(toLower(inputs.dependencies), '_', '-'), '.', '-'), ' ', '')
-      ), '-')) || ''
-    }}
+  group: "raise-dependency-minimums-${{ inputs.package || 'all' }}"
   cancel-in-progress: false
 
 jobs:

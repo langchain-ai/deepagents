@@ -3004,6 +3004,7 @@ def create_cli_agent(
             LocalContextMiddleware(
                 backend=backend,
                 ignore=ignore,
+                cwd=effective_cwd,
                 mcp_server_info=mcp_server_info,
                 tracing_project=get_langsmith_project_name(),
                 user_tracing_project=credentials.user_langchain_project,

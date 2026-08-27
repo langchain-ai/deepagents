@@ -876,6 +876,7 @@ _PATHS_BINDING_MODULES: tuple[str, ...] = (
     "app",
     "client.launch.server",
     "config",
+    "deepagentsignore",
     "main",
     "managed_tools",
     "mcp_auth",

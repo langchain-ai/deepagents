@@ -49,7 +49,33 @@ def test_matching_supports_anchoring_globstar_classes_and_case(tmp_path: Path) -
     assert ignore.is_ignored_relative("logs/app.log")
     assert ignore.is_ignored_relative("logs/old/app.log")
     assert ignore.is_ignored_relative("file7.txt")
-    assert ignore.is_ignored_relative("secrets/token.txt")
+    assert ignore.is_ignored_relative("Secrets/token.txt")
+    assert not ignore.is_ignored_relative("secrets/token.txt")
+
+
+def test_directory_only_rule_does_not_match_a_regular_file(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (tmp_path / ".deepagentsignore").write_text("secret/\n")
+    ignore = _ignore(tmp_path, profile)
+
+    assert not ignore.is_ignored_relative("nested/secret")
+    assert ignore.is_ignored_relative("nested/secret", is_dir=True)
+    assert ignore.is_ignored_relative("nested/secret/value.txt")
+
+
+def test_invalid_character_class_is_skipped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (tmp_path / ".deepagentsignore").write_text("[z-a]\nsecret.txt\n")
+
+    ignore = _ignore(tmp_path, profile)
+
+    assert not ignore.is_ignored_relative("z")
+    assert ignore.is_ignored_relative("secret.txt")
+    assert "Skipping invalid .deepagentsignore pattern" in caplog.text
 
 
 def test_escaped_comment_and_negation_are_literals(tmp_path: Path) -> None:
@@ -71,16 +97,40 @@ def test_unreadable_ignore_file_is_not_silently_skipped(
     ignore_file.write_text("secret\n")
     original = Path.read_text
 
-    def fail_read(path: Path, *args: object, **kwargs: object) -> str:
+    def fail_read(
+        path: Path, encoding: str | None = None, errors: str | None = None
+    ) -> str:
         if path == ignore_file:
             msg = "denied"
             raise PermissionError(msg)
-        return original(path, *args, **kwargs)
+        return original(path, encoding=encoding, errors=errors)
 
     monkeypatch.setattr(Path, "read_text", fail_read)
 
     with pytest.raises(PermissionError, match="denied"):
         _ignore(tmp_path, profile)
+
+
+def test_backend_blocks_ignored_symlink_name_and_target(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    visible = tmp_path / "visible.txt"
+    visible.write_text("visible\n")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret\n")
+    (tmp_path / "secret-link.txt").symlink_to(visible)
+    (tmp_path / "visible-link.txt").symlink_to(secret)
+    (tmp_path / ".deepagentsignore").write_text("secret.txt\nsecret-link.txt\n")
+    raw = FilesystemBackend(root_dir=tmp_path, virtual_mode=False)
+    backend = IgnoringBackend(
+        raw,
+        _ignore(tmp_path, profile),
+        backend_root=raw.cwd,
+        virtual_mode=raw.virtual_mode,
+    )
+
+    assert backend.read(str(tmp_path / "secret-link.txt")).error is not None
+    assert backend.read(str(tmp_path / "visible-link.txt")).error is not None
 
 
 def test_backend_filters_all_file_operations(tmp_path: Path) -> None:
@@ -117,6 +167,26 @@ def test_backend_filters_all_file_operations(tmp_path: Path) -> None:
     ]
     assert backend.upload_files([("/secret.txt", b"x")])[0].error == PERMISSION_DENIED
     assert backend.download_files(["/secret.txt"])[0].error == PERMISSION_DENIED
+
+
+def test_grep_applies_max_count_after_filtering(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (tmp_path / ".deepagentsignore").write_text("a-secret.txt\n")
+    (tmp_path / "a-secret.txt").write_text("needle\n")
+    (tmp_path / "visible.txt").write_text("needle\nneedle\n")
+    raw = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    backend = IgnoringBackend(
+        raw,
+        _ignore(tmp_path, profile),
+        backend_root=raw.cwd,
+        virtual_mode=raw.virtual_mode,
+    )
+
+    result = backend.grep("needle", "/", max_count=1)
+
+    assert [match["path"] for match in result.matches or []] == ["/visible.txt"]
+    assert result.truncated
 
 
 async def test_backend_async_methods_filter_and_preserve_metadata(

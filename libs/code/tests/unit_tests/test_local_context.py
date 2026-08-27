@@ -181,6 +181,31 @@ class TestLocalContextMiddleware:
         assert "**Tree**" not in context
         assert "**Makefile**" not in context
 
+    def test_before_agent_filters_files_relative_to_session_cwd(
+        self, tmp_path: Path
+    ) -> None:
+        profile = tmp_path / "profile"
+        profile.mkdir()
+        cwd = tmp_path / "sub"
+        cwd.mkdir()
+        (tmp_path / ".deepagentsignore").write_text("sub/secret.txt\n")
+        from deepagents_code.deepagentsignore import DeepagentsIgnore
+
+        ignore = DeepagentsIgnore.from_project(
+            cwd, project_root=tmp_path, profile_root=profile
+        )
+        backend = _make_backend(
+            output="## Local Context\n\n**Files** (2):\n- visible.txt\n- secret.txt\n"
+        )
+        middleware = LocalContextMiddleware(backend=backend, ignore=ignore, cwd=cwd)
+
+        result = middleware.before_agent({"messages": []}, Mock())
+
+        assert result is not None
+        context = result["_local_context"]
+        assert "visible.txt" in context
+        assert "secret.txt" not in context
+
     def test_before_agent_stores_context(self) -> None:
         """Test before_agent runs script and stores output in state."""
         backend = _make_backend(output=SAMPLE_CONTEXT)

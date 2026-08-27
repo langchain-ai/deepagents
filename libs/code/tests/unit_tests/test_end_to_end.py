@@ -22,6 +22,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
 from deepagents_code.agent import create_cli_agent
+from deepagents_code.deepagentsignore import IgnoringBackend
 
 
 @tool(description="Sample tool")
@@ -465,7 +466,8 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             assert isinstance(backend, CompositeBackend)
-            assert isinstance(backend.default, FilesystemBackend)
+            assert isinstance(backend.default, IgnoringBackend)
+            assert isinstance(backend.default._backend, FilesystemBackend)
 
     async def test_ask_user_argument_error_is_recoverable(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

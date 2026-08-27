@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import (
     PERMISSION_DENIED,
     BackendProtocol,
@@ -28,6 +30,8 @@ from deepagents.backends.utils import to_posix_path, validate_path
 from deepagents_code._paths import PATHS
 from deepagents_code.project_utils import find_project_root
 
+logger = logging.getLogger(__name__)
+
 IGNORE_FILENAME = ".deepagentsignore"
 DEFAULT_PATTERNS = (
     ".git/",
@@ -44,6 +48,7 @@ _EXCLUDED_ERROR = "Path is excluded by .deepagentsignore"
 @dataclass(frozen=True, slots=True)
 class _Rule:
     matcher: re.Pattern[str]
+    exact_matcher: re.Pattern[str]
     negated: bool
     directory_only: bool
 
@@ -85,7 +90,9 @@ class DeepagentsIgnore:
         ignored = False
         for rule in self.rules:
             if rule.matcher.fullmatch(normalized) and (
-                not rule.directory_only or is_dir or "/" in normalized
+                not rule.directory_only
+                or is_dir
+                or not rule.exact_matcher.fullmatch(normalized)
             ):
                 ignored = not rule.negated
         return ignored
@@ -97,13 +104,24 @@ class DeepagentsIgnore:
         base: str | Path | None = None,
         is_dir: bool = False,
     ) -> bool:
-        """Return whether a local path under the project root is excluded."""
+        """Return whether a local path or its resolved target is excluded."""
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
             candidate = Path(base or self.root) / candidate
+        if self._is_ignored_candidate(candidate, is_dir=is_dir):
+            return True
         try:
-            relative = candidate.resolve(strict=False).relative_to(self.root)
-        except (OSError, RuntimeError, ValueError):
+            resolved = candidate.resolve(strict=False)
+        except (OSError, RuntimeError):
+            return False
+        return resolved != candidate and self._is_ignored_candidate(
+            resolved, is_dir=is_dir
+        )
+
+    def _is_ignored_candidate(self, candidate: Path, *, is_dir: bool) -> bool:
+        try:
+            relative = candidate.relative_to(self.root)
+        except ValueError:
             return False
         return self.is_ignored_relative(relative.as_posix(), is_dir=is_dir)
 
@@ -263,8 +281,8 @@ class IgnoringBackend(BackendProtocol):
                 return GrepResult(matches=[])
         except ValueError as exc:
             return GrepResult(error=str(exc))
-        result = self._backend.grep(pattern, path, glob, max_count=max_count)
-        return self._filter_grep(result)
+        result = self._backend.grep(pattern, path, glob, max_count=None)
+        return self._filter_grep(result, max_count=max_count)
 
     async def agrep(
         self,
@@ -284,10 +302,12 @@ class IgnoringBackend(BackendProtocol):
                 return GrepResult(matches=[])
         except ValueError as exc:
             return GrepResult(error=str(exc))
-        result = await self._backend.agrep(pattern, path, glob, max_count=max_count)
-        return self._filter_grep(result)
+        result = await self._backend.agrep(pattern, path, glob, max_count=None)
+        return self._filter_grep(result, max_count=max_count)
 
-    def _filter_grep(self, result: GrepResult) -> GrepResult:
+    def _filter_grep(
+        self, result: GrepResult, *, max_count: int | None = None
+    ) -> GrepResult:
         if result.matches is None:
             return result
         try:
@@ -296,9 +316,11 @@ class IgnoringBackend(BackendProtocol):
             ]
         except ValueError as exc:
             return GrepResult(error=str(exc))
-        return GrepResult(
-            error=result.error, matches=matches, truncated=result.truncated
-        )
+        truncated = result.truncated
+        if max_count is not None and len(matches) > max_count:
+            matches = matches[:max_count]
+            truncated = True
+        return GrepResult(error=result.error, matches=matches, truncated=truncated)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Find non-ignored files.
@@ -525,7 +547,7 @@ class IgnoringBackend(BackendProtocol):
         return blocked, allowed
 
 
-class IgnoringSandboxBackend(IgnoringBackend, SandboxBackendProtocol):
+class IgnoringSandboxBackend(IgnoringBackend, LocalShellBackend):
     """Ignore-filtering wrapper that leaves shell execution unrestricted."""
 
     def __init__(
@@ -601,9 +623,16 @@ def _compile_rules(patterns: list[str]) -> list[_Rule]:
             continue
         source = _glob_source(pattern)
         prefix = "^" if anchored else r"^(?:.*/)?"
+        try:
+            matcher = re.compile(f"{prefix}{source}(?:/.*)?$")
+            exact_matcher = re.compile(f"{prefix}{source}$")
+        except re.error:
+            logger.warning("Skipping invalid .deepagentsignore pattern %r", line)
+            continue
         rules.append(
             _Rule(
-                matcher=re.compile(f"{prefix}{source}(?:/.*)?$", re.IGNORECASE),
+                matcher=matcher,
+                exact_matcher=exact_matcher,
                 negated=negated,
                 directory_only=directory_only,
             )

@@ -670,7 +670,7 @@ def build_detect_script() -> str:
 DETECT_CONTEXT_SCRIPT = build_detect_script()
 
 
-def _filter_file_context(output: str, ignore: DeepagentsIgnore) -> str:
+def _filter_file_context(output: str, ignore: DeepagentsIgnore, *, cwd: Path) -> str:
     """Remove ignored paths from file-derived local-context sections.
 
     Returns:
@@ -687,8 +687,8 @@ def _filter_file_context(output: str, ignore: DeepagentsIgnore) -> str:
                 item
                 for item in block[1:]
                 if not item.startswith("- ")
-                or not ignore.is_ignored_relative(
-                    item[2:].rstrip("/"), is_dir=item.endswith("/")
+                or not ignore.is_ignored_path(
+                    item[2:].rstrip("/"), base=cwd, is_dir=item.endswith("/")
                 )
             ]
             if entries:
@@ -774,6 +774,7 @@ class LocalContextMiddleware(AgentMiddleware):
         backend: _ExecutableBackend | _AsyncExecutableBackend,
         *,
         ignore: DeepagentsIgnore | None = None,
+        cwd: str | Path | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         tracing_project: str | None = None,
         user_tracing_project: str | None = None,
@@ -783,6 +784,7 @@ class LocalContextMiddleware(AgentMiddleware):
         Args:
             backend: Backend instance that provides shell command execution.
             ignore: Optional project ignore rules for file-derived context.
+            cwd: Working directory used by file-derived context.
             mcp_server_info: MCP server metadata to include in the system prompt.
             tracing_project: LangSmith project the agent's own runs trace to, or
                 `None` when tracing is disabled (the tracing section is omitted).
@@ -791,6 +793,7 @@ class LocalContextMiddleware(AgentMiddleware):
         """
         self.backend = backend
         self._ignore = ignore
+        self._cwd = Path(cwd or (ignore.root if ignore else Path.cwd())).resolve()
         tracing_context = _build_tracing_context(tracing_project, user_tracing_project)
         mcp_context = _build_mcp_context(mcp_server_info or [])
         self._static_context = "\n\n".join(
@@ -822,7 +825,7 @@ class LocalContextMiddleware(AgentMiddleware):
                 "Local context detection script succeeded but produced no output"
             )
         if output and self._ignore is not None:
-            output = _filter_file_context(output, self._ignore)
+            output = _filter_file_context(output, self._ignore, cwd=self._cwd)
         return output or None
 
     def _run_detect_script(self) -> str | None:

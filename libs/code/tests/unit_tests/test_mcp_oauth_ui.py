@@ -137,15 +137,15 @@ class TestLoginWithoutStdio:
 
         captured: list[str] = []
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            provider = connection["auth"]
+        async def _fake_handshake(transport: Any) -> None:
+            server_name, connection = ("srv", transport)
+            provider = connection.auth
             await provider.context.redirect_handler(
                 "https://slack.com/oauth/v2/authorize?client_id=x"
             )
             code, _state = await provider.context.callback_handler()
             captured.append(code)
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+            storage = FileTokenStorage(server_name, server_url=connection.url)
             await storage.set_tokens(OAuthToken(access_token="t", token_type="Bearer"))
 
         ui = RecordingOAuthInteraction(
@@ -288,14 +288,14 @@ class TestLoginWithoutStdio:
 
         secret = "super-secret-access-token"
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            provider = connection["auth"]
+        async def _fake_handshake(transport: Any) -> None:
+            server_name, connection = ("srv", transport)
+            provider = connection.auth
             await provider.context.redirect_handler(
                 "https://slack.com/oauth/v2/authorize?client_id=x"
             )
             await provider.context.callback_handler()
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+            storage = FileTokenStorage(server_name, server_url=connection.url)
             await storage.set_tokens(
                 OAuthToken(access_token=secret, token_type="Bearer")
             )

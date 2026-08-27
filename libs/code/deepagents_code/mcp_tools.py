@@ -31,11 +31,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 
-from fastmcp.client import Client as FastMCPClient
-from fastmcp.client.transports import (
-    ClientTransport,
-)
-
 from deepagents_code import _env_vars
 from deepagents_code._paths import PATHS, project_paths
 from deepagents_code.mcp_config import resolve_mcp_server_env
@@ -51,6 +46,8 @@ if TYPE_CHECKING:
     from typing import TextIO
 
     import httpx
+    from fastmcp.client import Client as FastMCPClient
+    from fastmcp.client.transports import ClientTransport
     from langchain_core.tools import BaseTool
 
     from deepagents_code.model_config import McpServerTrustLists
@@ -1775,6 +1772,7 @@ async def _mount_backends(
             `(status, error)` entry for each server that failed to connect.
     """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
     from fastmcp import FastMCP
+    from fastmcp.client import Client as FastMCPClient
     from fastmcp.server.providers.proxy import StatefulProxyClient
     from fastmcp.server.server import create_proxy
 

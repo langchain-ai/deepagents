@@ -292,15 +292,15 @@ class TestMCPLoginScreenWithLoginCoroutine:
 
         captured_urls: list[str] = []
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            provider = connection["auth"]
+        async def _fake_handshake(transport: Any) -> None:
+            server_name, connection = ("srv", transport)
+            provider = connection.auth
             await provider.context.redirect_handler(
                 "https://slack.com/oauth/v2/authorize?client_id=x"
             )
             code, _state = await provider.context.callback_handler()
             captured_urls.append(code)
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+            storage = FileTokenStorage(server_name, server_url=connection.url)
             await storage.set_tokens(OAuthToken(access_token="t", token_type="Bearer"))
 
         monkeypatch.setattr(

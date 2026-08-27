@@ -1180,6 +1180,8 @@ class TestBuiltInProfiles:
     @pytest.mark.parametrize(
         "model_key",
         [
+            "anthropic:claude-fable-5",
+            "anthropic:claude-mythos-5",
             "anthropic:claude-opus-4-7",
             "anthropic:claude-sonnet-4-6",
             "anthropic:claude-haiku-4-5",
@@ -1200,6 +1202,17 @@ class TestBuiltInProfiles:
         assert profile is not None
         assert "<tool_usage>" in profile.system_prompt_suffix
         assert "<subagent_usage>" in profile.system_prompt_suffix
+
+    def test_fable_and_mythos_5_share_model_specific_overlays(self) -> None:
+        """Fable 5 and Mythos 5 share long-horizon and final-summary overlays."""
+        fable = _get_harness_profile("anthropic:claude-fable-5")
+        mythos = _get_harness_profile("anthropic:claude-mythos-5")
+        assert fable is not None
+        assert mythos is not None
+        assert fable == mythos
+        assert "<long_horizon_completion>" in fable.system_prompt_suffix
+        assert "<final_summary_readability>" in fable.system_prompt_suffix
+        assert not fable.materialize_extra_middleware()
 
     @pytest.mark.parametrize(
         "model_key",
@@ -1227,12 +1240,18 @@ class TestBuiltInProfiles:
         the text, the others must follow or this test will flag it.
         """
         opus = _get_harness_profile("anthropic:claude-opus-4-7")
+        fable = _get_harness_profile("anthropic:claude-fable-5")
+        mythos = _get_harness_profile("anthropic:claude-mythos-5")
         sonnet = _get_harness_profile("anthropic:claude-sonnet-4-6")
         haiku = _get_harness_profile("anthropic:claude-haiku-4-5")
         assert opus is not None
+        assert fable is not None
+        assert mythos is not None
         assert sonnet is not None
         assert haiku is not None
         assert opus.system_prompt_suffix.startswith(sonnet.system_prompt_suffix)
+        assert fable.system_prompt_suffix.startswith(sonnet.system_prompt_suffix)
+        assert mythos.system_prompt_suffix.startswith(sonnet.system_prompt_suffix)
         assert sonnet.system_prompt_suffix == haiku.system_prompt_suffix
 
     @pytest.mark.parametrize(

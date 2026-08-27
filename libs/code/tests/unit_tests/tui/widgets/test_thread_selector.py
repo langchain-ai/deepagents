@@ -4627,7 +4627,9 @@ class TestResumeAdoptionFailureMessage:
 
     async def test_omits_fallback_when_no_current_model(self) -> None:
         """With no resolvable current model, the fallback clause is dropped."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         app = DeepAgentsApp()
         app._model_override = None
@@ -4654,7 +4656,9 @@ class TestEffectiveModelSpec:
 
     async def test_prefers_session_override(self) -> None:
         """A `/model` override wins over the startup default in `settings`."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         app = DeepAgentsApp()
         app._model_override = "openai:gpt-5.1"
@@ -4666,7 +4670,9 @@ class TestEffectiveModelSpec:
 
     async def test_falls_back_to_settings_spec(self) -> None:
         """With no override, the resolved `provider:model` from settings is used."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         app = DeepAgentsApp()
         app._model_override = None
@@ -4678,7 +4684,9 @@ class TestEffectiveModelSpec:
 
     async def test_none_when_spec_incomplete(self) -> None:
         """No override and a blank model yields `None` (no malformed spec)."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         app = DeepAgentsApp()
         app._model_override = None

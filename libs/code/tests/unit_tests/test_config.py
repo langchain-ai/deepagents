@@ -30,7 +30,6 @@ from deepagents_code.config import (
     LangSmithProjectNotFoundError,
     LangsmithShadowResult,
     ModelResult,
-    Settings,
     _apply_default_langsmith_project,
     _apply_stored_langsmith_tracing,
     _create_model_from_class,
@@ -62,10 +61,10 @@ from deepagents_code.config import (
     normalize_langsmith_endpoint,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
-    settings,
     validate_model_capabilities,
 )
 from deepagents_code.configuration.types import InterpreterConfig
+from deepagents_code.credentials import CredentialsOwner, get_credentials
 from deepagents_code.model_config import (
     ModelConfig,
     ModelConfigError,
@@ -79,6 +78,8 @@ from deepagents_code.project_utils import (
     get_server_project_context,
 )
 from deepagents_code.runtime_state import get_runtime_state
+
+settings = get_credentials()
 
 
 class TestRuntimeDotenvReload:
@@ -117,7 +118,7 @@ class TestRuntimeDotenvReload:
 
         try:
             config_mod._load_dotenv(start_path=current)
-            runtime = Settings.from_environment(start_path=current)
+            runtime = CredentialsOwner.from_environment(start_path=current)
             assert runtime.openai_api_key == "sk-current"
 
             changes = runtime.reload_from_environment(start_path=target)
@@ -152,7 +153,7 @@ class TestRuntimeDotenvReload:
         caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
         reset_env_resolution_log()
         try:
-            runtime = Settings.from_environment(start_path=tmp_path)
+            runtime = CredentialsOwner.from_environment(start_path=tmp_path)
             assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
             runtime.reload_from_environment(start_path=tmp_path)
             assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
@@ -204,7 +205,7 @@ class TestRuntimeDotenvReload:
             # Agent-project override is active before the reload, cleared after.
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "agent-project")
 
-            runtime = Settings.from_environment(start_path=current)
+            runtime = CredentialsOwner.from_environment(start_path=current)
             assert runtime.deepagents_langchain_project == "agent-project"
 
             monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
@@ -816,7 +817,8 @@ class TestProjectAgentMdFinding:
         regular-file candidate to fail the absolute-vs-resolved equality check
         and be returned as the canonical target rather than reported as missing.
         Pin behavior so that callers passing an uncanonicalized root (common
-        when `Settings.project_root` originates from an unresolved cwd) still
+        when the credential owner's `project_root` originates from an unresolved
+        cwd) still
         find a regular AGENTS.md.
         """
         real_root = tmp_path / "real"
@@ -5903,7 +5905,7 @@ max_tokens = 1024
 
         monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
         monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-east5")
-        runtime_settings = Settings.from_environment()
+        runtime_settings = CredentialsOwner.from_environment()
         monkeypatch.setattr(
             "deepagents_code.credentials.get_credentials", lambda: runtime_settings
         )
@@ -6475,14 +6477,7 @@ class TestDetectProvider:
 
 
 class TestLazyModuleAttributes:
-    """Tests for lazy `__getattr__` resolution of `settings` and `console`."""
-
-    def test_getattr_returns_settings(self) -> None:
-        """Module __getattr__ resolves 'settings' to a Settings instance."""
-        from deepagents_code.config import _get_settings
-
-        result = _get_settings()
-        assert isinstance(result, Settings)
+    """Tests for lazy `__getattr__` resolution of `console`."""
 
     def test_getattr_returns_console(self) -> None:
         """Module __getattr__ resolves 'console' to a Console instance."""
@@ -6507,7 +6502,7 @@ class TestLazyModuleAttributes:
         # First call already ran (settings was imported above).
         # Calling again should be a harmless no-op.
         _ensure_bootstrap()
-        assert isinstance(settings, Settings)
+        assert isinstance(settings, CredentialsOwner)
 
     def test_ensure_bootstrap_marks_done_on_failure(self) -> None:
         """_ensure_bootstrap sets flag even when the try body raises."""
@@ -6528,14 +6523,6 @@ class TestLazyModuleAttributes:
             assert config_mod._bootstrap_state.done is True
         finally:
             config_mod._bootstrap_state.done = original
-
-    def test_get_settings_returns_same_instance(self) -> None:
-        """_get_settings caches in globals — two calls return the same object."""
-        from deepagents_code.config import _get_settings
-
-        a = _get_settings()
-        b = _get_settings()
-        assert a is b
 
     def test_ensure_bootstrap_langsmith_override(
         self, monkeypatch: pytest.MonkeyPatch

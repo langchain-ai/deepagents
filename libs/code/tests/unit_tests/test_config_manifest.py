@@ -214,7 +214,7 @@ _SILENT_RESOLVER_READERS = frozenset(
         # `_reload_values` only matches the guard's heuristic: its `.get` call
         # reads `provider_statuses()` (provider health, not an option), and
         # option reads moved to `_resolve_report_options`, which emits.
-        "config.py:_reload_values",
+        "credentials.py:_reload_values",
         "configuration/service.py:resolve_managed_option",
         "integrations/sandbox_config.py:load",
         "theme.py:_load_user_themes",
@@ -1690,26 +1690,6 @@ def test_interpreter_defaults_match_interpreter_config() -> None:
         assert getattr(interpreter, field) == option.default
 
 
-def test_every_settings_field_names_a_real_settings_attribute() -> None:
-    """Catch a typo'd `settings_field` on any option, not just interpreter ones.
-
-    `settings_field` is a free-form string with no compile-time link to the
-    `Settings` dataclass, so a misspelling would only surface at runtime
-    `getattr`. This locks the mapping across the whole catalog.
-    """
-    from dataclasses import fields
-
-    from deepagents_code.config import Settings
-
-    valid = {f.name for f in fields(Settings)}
-    bad = {
-        opt.key: opt.settings_field
-        for opt in get_config_options()
-        if opt.settings_field is not None and opt.settings_field not in valid
-    }
-    assert not bad, f"options reference unknown Settings fields: {bad}"
-
-
 # --- Resolution -------------------------------------------------------------
 
 
@@ -3077,7 +3057,7 @@ def test_environment_coercion_delegate_returns_invalid_not_raw() -> None:
 
     PTC/STRUCTURED options declare no env var, so this branch is unreachable in
     the live manifest. The guard exists so that if one ever gains an env var,
-    an uncoerced raw string cannot leak into a typed `Settings` field.
+    an uncoerced raw string cannot leak into a typed runtime field.
     """
     from deepagents_code.configuration.providers import coerce_environment_value
     from deepagents_code.configuration.types import Invalid

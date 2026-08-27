@@ -17,7 +17,7 @@ from textual.widgets import OptionList
 from deepagents_code import model_config, reasoning_effort
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import COMMANDS
-from deepagents_code.config import settings
+from deepagents_code.credentials import get_credentials
 from deepagents_code.model_config import ModelProfileEntry
 from deepagents_code.reasoning_effort import (
     current_effort_from_model_params,
@@ -31,6 +31,8 @@ from deepagents_code.reasoning_effort import (
 from deepagents_code.runtime_state import get_runtime_state
 from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
 from deepagents_code.tui.widgets.messages import ErrorMessage
+
+settings = get_credentials()
 
 
 @pytest.fixture(autouse=True)

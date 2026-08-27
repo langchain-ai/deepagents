@@ -117,7 +117,9 @@ class TestCheckpointPersistence:
 
     def test_startup_custom_provider_uses_configured_spec(self) -> None:
         """Custom classes must checkpoint their configured provider alias."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         model = _make_model("fake")
         model._get_ls_params.return_value = {

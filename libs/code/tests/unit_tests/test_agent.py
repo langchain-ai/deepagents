@@ -57,8 +57,9 @@ from deepagents_code.agent import (
     list_agents,
     load_async_subagents,
 )
-from deepagents_code.config import Settings, get_glyphs
+from deepagents_code.config import get_glyphs
 from deepagents_code.configuration.types import InterpreterConfig
+from deepagents_code.credentials import CredentialsOwner
 from deepagents_code.managed_tools import BIN_DIR
 from deepagents_code.offload import (
     _FALLBACK_ARTIFACTS_ROOT,
@@ -3675,6 +3676,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.get_credentials", return_value=mock_settings),
+            patch(
+                "deepagents_code.agent.resolve_shell_allow_list",
+                return_value=mock_settings.shell_allow_list,
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
@@ -3714,6 +3719,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.get_credentials", return_value=mock_settings),
+            patch(
+                "deepagents_code.agent.resolve_shell_allow_list",
+                return_value=mock_settings.shell_allow_list,
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
@@ -3760,6 +3769,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.get_credentials", return_value=mock_settings),
+            patch(
+                "deepagents_code.agent.resolve_shell_allow_list",
+                return_value=mock_settings.shell_allow_list,
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
@@ -3818,6 +3831,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.get_credentials", return_value=mock_settings),
+            patch(
+                "deepagents_code.agent.resolve_shell_allow_list",
+                return_value=mock_settings.shell_allow_list,
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
@@ -3871,6 +3888,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.get_credentials", return_value=mock_settings),
+            patch(
+                "deepagents_code.agent.resolve_shell_allow_list",
+                return_value=mock_settings.shell_allow_list,
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
@@ -3924,6 +3945,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.get_credentials", return_value=mock_settings),
+            patch(
+                "deepagents_code.agent.resolve_shell_allow_list",
+                return_value=mock_settings.shell_allow_list,
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
@@ -4081,6 +4106,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.get_credentials", return_value=mock_settings),
+            patch(
+                "deepagents_code.agent.resolve_shell_allow_list",
+                return_value=mock_settings.shell_allow_list,
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
@@ -4194,6 +4223,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.get_credentials", return_value=mock_settings),
+            patch(
+                "deepagents_code.agent.resolve_shell_allow_list",
+                return_value=mock_settings.shell_allow_list,
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
@@ -4247,6 +4280,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.get_credentials", return_value=mock_settings),
+            patch(
+                "deepagents_code.agent.resolve_shell_allow_list",
+                return_value=mock_settings.shell_allow_list,
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
@@ -4297,6 +4334,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.get_credentials", return_value=mock_settings),
+            patch(
+                "deepagents_code.agent.resolve_shell_allow_list",
+                return_value=mock_settings.shell_allow_list,
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
@@ -4351,6 +4392,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.get_credentials", return_value=mock_settings),
+            patch(
+                "deepagents_code.agent.resolve_shell_allow_list",
+                return_value=mock_settings.shell_allow_list,
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(

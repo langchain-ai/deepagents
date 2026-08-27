@@ -1231,7 +1231,7 @@ class TestSplitCredentialSource:
     def _isolate_openai_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Clear every OpenAI key/endpoint env var so each test sets its own.
 
-        `dotenv.load_dotenv()` runs during config bootstrap (first `Settings`
+        `dotenv.load_dotenv()` runs during config bootstrap (first credential
         access) and may inject prefixed variants from a developer's
         `~/.deepagents/.env` that would otherwise leak into these assertions.
         """
@@ -6718,7 +6718,10 @@ recent = "openai:gpt-5.2"
 
     def test_env_used_when_neither_set(self, tmp_path):
         """Falls back to env var auto-detection when neither default nor recent set."""
-        from deepagents_code.config import _get_default_model_spec, settings
+        from deepagents_code.config import _get_default_model_spec
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         config_path = tmp_path / "config.toml"
         config_path.write_text("")
@@ -6759,7 +6762,10 @@ recent = "openai:gpt-5.2"
 
     def test_vertex_project_does_not_drive_env_default(self, tmp_path):
         """Vertex project alone should not select an automatic default model."""
-        from deepagents_code.config import _get_default_model_spec, settings
+        from deepagents_code.config import _get_default_model_spec
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
         from deepagents_code.model_config import ModelConfigError
 
         config_path = tmp_path / "config.toml"
@@ -6780,7 +6786,10 @@ recent = "openai:gpt-5.2"
 
     def test_nvidia_key_does_not_drive_env_default(self, tmp_path):
         """NVIDIA key alone should not select an automatic default model."""
-        from deepagents_code.config import _get_default_model_spec, settings
+        from deepagents_code.config import _get_default_model_spec
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
         from deepagents_code.model_config import ModelConfigError
 
         config_path = tmp_path / "config.toml"

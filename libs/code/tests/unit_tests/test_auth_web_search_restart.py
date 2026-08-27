@@ -35,7 +35,9 @@ class TestNoteWebSearchRestart:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A saved Tavily key on a Tavily-less running server arms the offer."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
@@ -51,7 +53,9 @@ class TestNoteWebSearchRestart:
 
     def test_ignores_non_tavily_service(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Model-provider keys don't gate a spawn-time tool, so no offer."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
         _fake_tavily_export(monkeypatch)
@@ -68,7 +72,9 @@ class TestNoteWebSearchRestart:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A server spawned with Tavily already bound `web_search`."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(settings.active, "tavily_api_key", "tvly-existing")
 
@@ -82,7 +88,9 @@ class TestNoteWebSearchRestart:
 
     def test_skips_when_no_owned_server(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """With no owned subprocess there is nothing to respawn."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
         _fake_tavily_export(monkeypatch)
@@ -104,7 +112,9 @@ class TestNoteWebSearchRestart:
         `apply_stored_service_credentials` exports nothing; without an env key
         a respawn couldn't bind `web_search`, so there is nothing to offer.
         """
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
@@ -141,7 +151,9 @@ class TestNoteWebSearchRestart:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Deleting Tavily still removes `/auth` export after prompt scheduling."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
@@ -162,7 +174,9 @@ class TestNoteWebSearchRestart:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Deleting Tavily restores a shell key that `/auth` temporarily replaced."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setenv("TAVILY_API_KEY", "tvly-from-shell")
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
@@ -234,7 +248,9 @@ class TestOfferRestartForWebSearch:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A remote/not-owned server can't be `/restart`ed — recommend relaunch."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
@@ -256,7 +272,9 @@ class TestOfferRestartForWebSearch:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An owned-but-busy server points at `/restart`, never a relaunch."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
@@ -279,7 +297,9 @@ class TestOfferRestartForWebSearch:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Choosing restart respawns the owned server via `_restart_after_install`."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
@@ -301,7 +321,9 @@ class TestOfferRestartForWebSearch:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A chosen restart that can't run surfaces a web-search fallback hint."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
@@ -330,7 +352,9 @@ class TestOfferRestartForWebSearch:
         auto-restarted the server (reloading config and rebinding `web_search`),
         so by the time the reopened manager closes there is nothing left to do.
         """
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(settings.active, "tavily_api_key", "tvly-now-configured")
         app = DeepAgentsApp()
@@ -357,7 +381,9 @@ class TestOfferRestartForWebSearch:
         stays silent (neither restarts nor mounts a `/restart` hint) when the
         user picks "later".
         """
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
@@ -378,7 +404,9 @@ class TestOfferRestartForWebSearch:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A prompt that never resolves is bounded by the watchdog → manual hint."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
@@ -404,7 +432,9 @@ class TestOfferRestartForWebSearch:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If the modal can't be mounted at all, degrade to the manual hint."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(settings.active, "tavily_api_key", None)
         app = DeepAgentsApp()
@@ -436,7 +466,9 @@ class TestCredentialSavedHandler:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Saving Tavily flags the offer without waiting for the manager to close."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
         from deepagents_code.tui.widgets.auth import AuthManagerScreen
 
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)

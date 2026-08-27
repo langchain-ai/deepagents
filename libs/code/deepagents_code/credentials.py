@@ -1,8 +1,8 @@
 """Reloadable API keys, Google Cloud routing, and project root ownership.
 
 `Credentials` is the holder; `CredentialsOwner` is the process-wide owner that
-`get_credentials()` hands out lazily. All `Settings` reads for these values
-moved here so `Settings` can shrink to an empty shell.
+`get_credentials()` hands out lazily. Credential reads moved here so ownership
+is explicit.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ _RELOADABLE_FIELDS = (
 )
 """Credential fields refreshed on `/reload` and cwd switches.
 
-`shell.allow_list` and `skills.extra_allowed_dirs` left `Settings` when their
+`shell.allow_list` and `skills.extra_allowed_dirs` became callsite-resolved when their
 consumers moved to callsite resolution; the reload still refreshes the shared
 resolver's tiers so those callsites see the new generation. Runtime model
 state (`model_name`, `model_provider`, `model_context_limit`) and the original
@@ -357,7 +357,7 @@ class CredentialsOwner:
         # resolver with the snapshot just validated above; asking it to refresh
         # managed policy again would let one reload observe multiple files.
         # Manifest-backed values (`shell.allow_list`, `skills.extra_allowed_dirs`,
-        # `interpreter.*`) no longer live on `Settings`: their consumers resolve
+        # `interpreter.*`) are resolved at their callsites: their consumers resolve
         # them through this refreshed resolver, so advancing the generation here
         # is what applies their reloads.
         resolver = get_config_resolver(

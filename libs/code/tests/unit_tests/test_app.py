@@ -98,6 +98,7 @@ from deepagents_code.cold_cache import (
     PromptCachePolicy,
     RewarmEstimate,
 )
+from deepagents_code.credentials import CredentialsOwner
 from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.goal_state_limits import (
     GOAL_APPLICATION_CHAR_LIMIT,
@@ -227,7 +228,7 @@ async def test_context_prefers_checkpoint_total_after_offload(
 
     with (
         patch("deepagents_code.app.ContextUsageScreen") as screen_type,
-        patch("deepagents_code.config.settings") as _settings,
+        patch("deepagents_code.credentials.get_credentials") as _settings,
     ):
         get_runtime_state().model_provider = "anthropic"
         get_runtime_state().model_name = "claude-sonnet"
@@ -447,7 +448,7 @@ class TestInitialPromptOnMount:
         app.run_worker = MagicMock(side_effect=_closing_run_worker_mock)  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings") as _mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as _mock_settings,
             patch("asyncio.create_task", side_effect=_closing_run_worker_mock),
         ):
             get_runtime_state().model_provider = "openai"
@@ -476,7 +477,7 @@ class TestInitialPromptOnMount:
         status_bar = MagicMock(spec=StatusBar)
         app._status_bar = status_bar
 
-        with patch("deepagents_code.config.settings") as _mock_settings:
+        with patch("deepagents_code.credentials.get_credentials") as _mock_settings:
             get_runtime_state().model_provider = "anthropic"
             get_runtime_state().model_name = "claude-opus-4-7"
             app.on_deep_agents_app_server_ready(
@@ -537,7 +538,7 @@ class TestInitialPromptOnMount:
         app._status_bar = status_bar
 
         with (
-            patch("deepagents_code.config.settings") as _mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as _mock_settings,
             caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
         ):
             get_runtime_state().model_provider = None
@@ -557,7 +558,7 @@ class TestInitialPromptOnMount:
         # isn't invisible.
         status_bar.set_model.assert_called_once_with(provider="", model="", effort="")
         assert any(
-            "Settings missing model identity" in record.message
+            "Runtime state is missing model identity" in record.message
             for record in caplog.records
         )
 
@@ -5695,7 +5696,9 @@ class TestMessageQueue:
             app._server_proc = MagicMock()
             app._server_kwargs = {}
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", list)
             monkeypatch.setattr(
@@ -24622,7 +24625,9 @@ class TestDispatchModelSwitch:
         app._push_screen_wait = AsyncMock(return_value=False)  # ty: ignore
         app._switch_model = AsyncMock()  # ty: ignore
         app.notify = MagicMock()  # ty: ignore
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         get_runtime_state().model_provider = "anthropic"
         get_runtime_state().model_name = "claude-opus-4-5"
@@ -24644,7 +24649,9 @@ class TestDispatchModelSwitch:
         app._model_switch_warning_threshold = 100_000
         app._switch_model = AsyncMock()  # ty: ignore
         app.notify = MagicMock()  # ty: ignore
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         get_runtime_state().model_provider = "anthropic"
         get_runtime_state().model_name = "claude-opus-4-5"
@@ -24703,7 +24710,9 @@ class TestDispatchModelSwitch:
         app._model_switch_warning_threshold = 0
         app._push_screen_wait = AsyncMock(return_value=True)  # ty: ignore
         app._switch_model = AsyncMock()  # ty: ignore
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         get_runtime_state().model_provider = "anthropic"
         get_runtime_state().model_name = "claude-opus-4-5"
@@ -24724,7 +24733,9 @@ class TestDispatchModelSwitch:
         app._model_switch_warning_threshold = 100_000
         app._push_screen_wait = AsyncMock()  # ty: ignore
         app._switch_model = AsyncMock()  # ty: ignore
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         get_runtime_state().model_provider = "anthropic"
         get_runtime_state().model_name = "claude-opus-4-5"
@@ -35053,7 +35064,9 @@ class TestRestartCommand:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A remote policy fetch cannot block Textual event dispatch."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         app = DeepAgentsApp()
         loop_thread_id = threading.get_ident()
@@ -35096,7 +35109,9 @@ class TestRestartCommand:
                 assert release_reload.wait(timeout=5)
                 return []
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", slow_reload)
             monkeypatch.setattr(
@@ -35147,7 +35162,9 @@ class TestRestartCommand:
                 assert release_reload.wait(timeout=5)
                 return []
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", slow_reload)
             monkeypatch.setattr(
@@ -35214,10 +35231,10 @@ class TestRestartCommand:
         the server on the previous policy generation and mount "Restart
         complete." for a restart that applied no policy change.
         """
-        from deepagents_code.config import (
-            MANAGED_RELOAD_BLOCKED_PREFIX,
-            settings,
-        )
+        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -35254,10 +35271,10 @@ class TestRestartCommand:
         during the refresh to the chat input, and never mount "Restart
         complete.".
         """
-        from deepagents_code.config import (
-            MANAGED_RELOAD_BLOCKED_PREFIX,
-            settings,
-        )
+        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -35330,7 +35347,9 @@ class TestRestartCommand:
                 assert release_reload.wait(timeout=5)
                 return []
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", slow_reload)
             monkeypatch.setattr(
@@ -35409,7 +35428,9 @@ class TestRestartCommand:
                 nonlocal called
                 called = True
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", list)
             monkeypatch.setattr(
@@ -35446,7 +35467,9 @@ class TestRestartCommand:
                 nonlocal called
                 called = True
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", list)
             monkeypatch.setattr(
@@ -35485,7 +35508,9 @@ class TestRestartCommand:
                 nonlocal called
                 called = True
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", list)
             monkeypatch.setattr(
@@ -35531,7 +35556,9 @@ class TestRestartCommand:
                 restart_called = True
                 return True
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", _reload)
             monkeypatch.setattr("deepagents_code.model_config.clear_caches", _clear)
@@ -35583,7 +35610,9 @@ class TestRestartCommand:
                 await gate.wait()
                 return True
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", list)
             monkeypatch.setattr(
@@ -35628,7 +35657,9 @@ class TestRestartCommand:
 
             restart = AsyncMock(return_value=False)
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", list)
             monkeypatch.setattr(
@@ -35689,7 +35720,9 @@ class TestRestartCommand:
                 await gate.wait()
                 return True
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", list)
             monkeypatch.setattr(
@@ -35755,7 +35788,9 @@ class TestRestartCommand:
                 restart_called = True
                 return False
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", _reload)
             monkeypatch.setattr(
@@ -35806,7 +35841,9 @@ class TestRestartCommand:
                 msg = "respawn exploded"
                 raise RuntimeError(msg)
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", list)
             monkeypatch.setattr(
@@ -35853,7 +35890,9 @@ class TestRestartCommand:
                 nonlocal restart_called
                 restart_called = True
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", _boom)
             monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
@@ -35883,7 +35922,9 @@ class TestRestartCommand:
             async def _noop_restart() -> None:  # noqa: RUF029  # awaited by handler
                 return
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             monkeypatch.setattr(settings, "reload_from_environment", _boom)
             monkeypatch.setattr(app, "_restart_server_manual", _noop_restart)
@@ -35914,7 +35955,9 @@ class TestRestartCommand:
             app._agent_turn_started = True
             app._pending_messages.append(QueuedMessage(text="hi", mode="normal"))
 
-            from deepagents_code.config import settings
+            from deepagents_code.credentials import get_credentials
+
+            settings = get_credentials()
 
             def _reload() -> list[str]:
                 return []
@@ -36414,7 +36457,9 @@ class TestRespawnServer:
     ) -> None:
         """`/reload` may restart inline without retaining its message-loop caller."""
         from deepagents_code import theme
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
         from deepagents_code.mcp_tools import MCPServerInfo
 
         removed = MCPServerInfo(name="removed-plugin:server", transport="stdio")
@@ -36487,7 +36532,10 @@ class TestRespawnServer:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A retained policy snapshot must not be followed by a server restart."""
-        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX, settings
+        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -36554,7 +36602,9 @@ class TestRespawnServer:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A late worker error cannot replace the caller's cancellation."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         started = threading.Event()
         release = threading.Event()
@@ -36591,7 +36641,9 @@ class TestRespawnServer:
         would vanish.
         """
         from deepagents_code import theme
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -37659,7 +37711,9 @@ class TestWelcomeBannerLiveUpdates:
         with patch.dict(os.environ, {SPLASH_SHOW_MODEL: "1"}):
             app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
             async with app.run_test() as pilot:
-                with patch("deepagents_code.config.settings") as _mock_settings:
+                with patch(
+                    "deepagents_code.credentials.get_credentials"
+                ) as _mock_settings:
                     get_runtime_state().model_provider = "openai"
                     get_runtime_state().model_name = "gpt-5.5"
                     app._sync_status_model()
@@ -37688,7 +37742,7 @@ class TestWelcomeBannerLiveUpdates:
         async with app.run_test() as pilot:
             await pilot.pause()
             with (
-                patch("deepagents_code.config.settings") as _mock_settings,
+                patch("deepagents_code.credentials.get_credentials") as _mock_settings,
                 patch.object(
                     app,
                     "query_one",
@@ -37710,7 +37764,7 @@ class TestWelcomeBannerLiveUpdates:
         async with app.run_test() as pilot:
             await pilot.pause()
             with (
-                patch("deepagents_code.config.settings") as _mock_settings,
+                patch("deepagents_code.credentials.get_credentials") as _mock_settings,
                 patch.object(
                     app,
                     "query_one",
@@ -38166,7 +38220,9 @@ class TestResumeThreadCwdSwitch:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Accepting the prompt switches process and UI cwd."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         current = tmp_path / "current"
         target = tmp_path / "target"
@@ -38225,7 +38281,9 @@ class TestResumeThreadCwdSwitch:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Launch-time cwd switches keep CLI paths rooted at launch cwd."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         current = tmp_path / "current"
         target = tmp_path / "target"
@@ -38269,7 +38327,9 @@ class TestResumeThreadCwdSwitch:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A live cwd switch refreshes the cached skill metadata."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         current = tmp_path / "current"
         target = tmp_path / "target"
@@ -38652,7 +38712,9 @@ class TestResumeThreadCwdSwitch:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Wire an app with an owned server and stub cwd-refresh side effects."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         monkeypatch.setattr(
             settings,
@@ -38856,8 +38918,9 @@ class TestResumeThreadCwdSwitch:
         import os
 
         import deepagents_code.config as config_mod
-        from deepagents_code.config import Settings, settings
-        from deepagents_code.credentials import _RELOADABLE_FIELDS
+        from deepagents_code.credentials import _RELOADABLE_FIELDS, get_credentials
+
+        settings = get_credentials()
 
         current = tmp_path / "current"
         target = tmp_path / "target"
@@ -38885,7 +38948,9 @@ class TestResumeThreadCwdSwitch:
             monkeypatch.setattr(
                 settings,
                 "reload_from_environment",
-                Settings.reload_from_environment.__get__(settings, Settings),
+                CredentialsOwner.reload_from_environment.__get__(
+                    settings, CredentialsOwner
+                ),
             )
             settings.reload_from_environment(start_path=current)
             assert settings.openai_api_key == "sk-current"
@@ -39011,7 +39076,9 @@ class TestResumeThreadCwdSwitch:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A cwd refresh cannot overlap another environment mutation."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         app = DeepAgentsApp(thread_id="t", cwd=tmp_path)
         reload_started = threading.Event()
@@ -39044,7 +39111,9 @@ class TestResumeThreadCwdSwitch:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Cancellation cannot let a target reload outlive the rollback reload."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         current = tmp_path / "current"
         target = tmp_path / "target"
@@ -39111,7 +39180,9 @@ class TestResumeThreadCwdSwitch:
         diverged here, `_restore_cwd_after_failed_thread_switch` would see a
         false match and silently skip restoring.
         """
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         current = tmp_path / "current"
         target = tmp_path / "target"
@@ -39144,7 +39215,10 @@ class TestResumeThreadCwdSwitch:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A retained old-project policy must prevent the cwd from changing."""
-        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX, settings
+        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         current = tmp_path / "current"
         target = tmp_path / "target"
@@ -39196,7 +39270,9 @@ class TestResumeThreadCwdSwitch:
         leave settings and model caches pointing at a directory the process
         never entered.
         """
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
 
         current = tmp_path / "current"
         target = tmp_path / "target"
@@ -39774,7 +39850,9 @@ class TestNotifyInterpreterDisabledBySandbox:
 
     def test_toasts_when_sandbox_suppresses_default(self) -> None:
         """A remote sandbox with the unset, default-on interpreter warns once."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         app = DeepAgentsApp(
             server_kwargs={
@@ -39801,7 +39879,9 @@ class TestNotifyInterpreterDisabledBySandbox:
 
     def test_no_toast_in_local_mode(self) -> None:
         """Local mode keeps the interpreter, so there is nothing to warn about."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         app = DeepAgentsApp(
             server_kwargs={
@@ -39824,7 +39904,9 @@ class TestNotifyInterpreterDisabledBySandbox:
 
     def test_no_toast_on_explicit_opt_out(self) -> None:
         """An explicit `--no-interpreter` opt-out under a sandbox is not announced."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         app = DeepAgentsApp(
             server_kwargs={
@@ -39848,7 +39930,9 @@ class TestNotifyInterpreterDisabledBySandbox:
 
     def test_no_toast_when_config_default_off(self) -> None:
         """A user who disabled the interpreter in config is not nagged."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
 
         app = DeepAgentsApp(
             server_kwargs={

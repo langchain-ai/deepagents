@@ -3,11 +3,11 @@
 This module is the single source of truth for the configuration *surface*: the
 set of options, their types, typed defaults, env-var names, and `config.toml`
 locations. The typed defaults for config-file-only options (notably the
-`[interpreter]` section) live here as module constants, and `Settings` derives
-its dataclass defaults from them — so a default is defined in exactly one place.
+`[interpreter]` section) live here as module constants, and runtime readers derive
+their defaults from them — so a default is defined in exactly one place.
 
 Resolution runs through the shared `ConfigResolver` (see
-`configuration.resolver`): the runtime (`Settings.from_environment`) reads the
+`configuration.resolver`): runtime call sites read the
 shared process resolver and the `config` CLI command builds one from the
 generation it snapshots, so introspection can never drift from what the app
 actually reads. Resolution precedence mirrors the loaders: managed TOML beats
@@ -381,12 +381,6 @@ class ConfigOption:
     logging heuristic when written to stdout.
     """
 
-    settings_field: str | None = None
-    """Name of the `Settings` attribute this option backs, or `None`.
-
-    `None` means the option is read elsewhere inline or is descriptive.
-    """
-
     dependency_module: str | None = None
     """Import module required to use the option, or `None`.
 
@@ -418,8 +412,8 @@ class ConfigOption:
         The manifest is a hand-edited literal table with `default: Any`, so a
         mistyped default (an `INT` option defaulting to a `str`) or a mutable
         one would otherwise slip through to runtime — a wrong-typed default
-        feeds `Settings` unchecked, and a mutable default is shared by reference
-        through the `get_config_options` `lru_cache` and returned verbatim by
+        reaches runtime readers unchecked, and a mutable default is shared by
+        reference through the `get_config_options` `lru_cache` and returned verbatim by
         the resolver's default provider. Catching it here fails the import (and
         the test suite).
 
@@ -1765,17 +1759,6 @@ def is_provider_package_installed(provider: str) -> bool:
         return False
 
 
-# Credentials that back a `Settings` field, keyed by canonical env var.
-_CREDENTIAL_SETTINGS_FIELD: dict[str, str] = {
-    "OPENAI_API_KEY": "openai_api_key",
-    "ANTHROPIC_API_KEY": "anthropic_api_key",
-    "GOOGLE_API_KEY": "google_api_key",
-    "NVIDIA_API_KEY": "nvidia_api_key",
-    "TAVILY_API_KEY": "tavily_api_key",
-    "GOOGLE_CLOUD_PROJECT": "google_cloud_project",
-}
-
-
 def _is_secret_env(name: str) -> bool:
     """Return whether a credential env var name carries secret material."""
     upper = name.upper()
@@ -1814,7 +1797,6 @@ def _credential_options() -> tuple[ConfigOption, ...]:
                 env_var=env_var,
                 redacted=redacted,
                 provider=name,
-                settings_field=_CREDENTIAL_SETTINGS_FIELD.get(env_var),
                 dependency_module=dependency[0] if dependency else None,
                 install_extra=dependency[1] if dependency else None,
             )
@@ -1833,7 +1815,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Google Cloud region for Anthropic models on Vertex AI.",
         kind=OptionKind.NON_EMPTY_STR,
         env_var="GOOGLE_CLOUD_LOCATION",
-        settings_field="google_cloud_location",
     ),
     # --- Display / UI ---------------------------------------------------
     ConfigOption(
@@ -2204,7 +2185,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=LANGSMITH_PROJECT_DEFAULT,
         env_var=_env_vars.LANGSMITH_PROJECT,
         fallback_env_vars=("LANGSMITH_PROJECT",),
-        settings_field="deepagents_langchain_project",
     ),
     ConfigOption(
         key="tracing.langsmith_redact",

@@ -360,7 +360,7 @@ class TestSkillsCreateIdempotency:
         mock_settings = MagicMock()
         mock_settings.project_root = None
         with (
-            patch("deepagents_code.config.Settings") as settings_cls,
+            patch("deepagents_code.credentials.CredentialsOwner") as settings_cls,
             patch("deepagents_code.config.console", test_console),
             patch(
                 "deepagents_code.skills.commands.ensure_user_skills_dir",
@@ -386,7 +386,7 @@ class TestSkillsCreateIdempotency:
         mock_settings = MagicMock()
         mock_settings.project_root = None
         with (
-            patch("deepagents_code.config.Settings") as settings_cls,
+            patch("deepagents_code.credentials.CredentialsOwner") as settings_cls,
             patch("deepagents_code.config.console"),
             patch(
                 "deepagents_code.skills.commands.ensure_user_skills_dir",

@@ -439,7 +439,7 @@ class TestHandleSkillCommand:
         app = _make_app()
         with (
             patch("deepagents_code.skills.load.list_skills", return_value=[]),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.credentials.get_credentials"),
         ):
             await app._handle_skill_command("/skill:nonexistent")
 
@@ -453,7 +453,7 @@ class TestHandleSkillCommand:
         with (
             patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
             patch("deepagents_code.skills.load.load_skill_content", return_value=None),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.credentials.get_credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -473,7 +473,7 @@ class TestHandleSkillCommand:
                     "all allowed skill directories."
                 ),
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.credentials.get_credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -487,7 +487,7 @@ class TestHandleSkillCommand:
         with (
             patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
             patch("deepagents_code.skills.load.load_skill_content", return_value=""),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.credentials.get_credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -506,7 +506,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.load_skill_content",
                 return_value="# Instructions\nDo stuff",
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.credentials.get_credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -530,7 +530,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.load_skill_content",
                 return_value="# Instructions\nDo stuff",
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.credentials.get_credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill find quantum")
 
@@ -551,7 +551,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.load_skill_content",
                 return_value="# Instructions\nDo stuff",
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.credentials.get_credentials"),
         ):
             await app._invoke_skill("test-skill", "  keep leading whitespace")
 
@@ -570,7 +570,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.list_skills",
                 side_effect=PermissionError("access denied"),
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.credentials.get_credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -585,7 +585,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.list_skills",
                 side_effect=TypeError("bad argument"),
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.credentials.get_credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -638,7 +638,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.load_skill_content",
                 return_value="# Fresh\nContent",
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.credentials.get_credentials"),
         ):
             await app._handle_skill_command("/skill:new-skill")
 
@@ -899,7 +899,9 @@ class TestDiscoverSkillsAndRoots:
         """
         import deepagents_code._paths as paths_module
         from deepagents_code._paths import _capture_paths
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        settings = get_credentials()
         from deepagents_code.skills.invocation import discover_skills_and_roots
 
         real_trusted = tmp_path / "real_trusted"

@@ -1323,8 +1323,8 @@ def test_cli_main_installs_the_shell_allow_list_before_dispatch() -> None:
     Nothing else fails if that ordering breaks -- the flag still parses, no
     warning fires, and shell auto-approval simply stops applying.
 
-    Asserted against the resolver and a freshly built `Settings`, not the
-    `deepagents_code.config.settings` singleton. `_get_settings` caches
+    Asserted against the resolver and a freshly resolved configuration, not the
+    `deepagents_code.credentials.get_credentials` singleton. `_get_settings` caches
     permanently on first access, and under pytest `agent.py` is already
     imported (it binds `settings` at module scope), so the singleton in this
     process was built long before this test ran. Reading it here would assert
@@ -1337,12 +1337,12 @@ def test_cli_main_installs_the_shell_allow_list_before_dispatch() -> None:
     the flag survives; do not read a pass here as proof the explicit call is
     still in place.
     """
-    from deepagents_code.config import Settings
     from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration.resolver import (
         CLI_RANK,
         get_config_resolver,
     )
+    from deepagents_code.credentials import CredentialsOwner
     from deepagents_code.main import cli_main
 
     seen: dict[str, object] = {}
@@ -1353,7 +1353,7 @@ def test_cli_main_installs_the_shell_allow_list_before_dispatch() -> None:
         resolved = get_config_resolver().get(option)
         seen["value"] = resolved.value
         seen["ranks"] = resolved.ranks
-        Settings.from_environment()
+        CredentialsOwner.from_environment()
         from deepagents_code.config import resolve_shell_allow_list
 
         seen["settings"] = resolve_shell_allow_list()
@@ -3548,7 +3548,9 @@ class TestResolveInterpreterEnabled:
     """Tests for `_resolve_interpreter_enabled`."""
 
     def test_local_mode_uses_config_default(self, mock_argv: MockArgvType) -> None:
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.main import _resolve_interpreter_enabled
 
         with mock_argv("-n", "task"):
@@ -3565,7 +3567,9 @@ class TestResolveInterpreterEnabled:
             assert _resolve_interpreter_enabled(args) is True
 
     def test_sandbox_defaults_disabled(self, mock_argv: MockArgvType) -> None:
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.main import _resolve_interpreter_enabled
 
         with mock_argv("-n", "task", "--sandbox", "daytona"):
@@ -3601,7 +3605,9 @@ class TestResolveInterpreterEnabled:
     def test_explicit_no_flag_overrides_local_default(
         self, mock_argv: MockArgvType
     ) -> None:
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.main import _resolve_interpreter_enabled
 
         with mock_argv("-n", "task", "--no-interpreter"):
@@ -3622,7 +3628,9 @@ class TestResolveInterpreterEnabled:
         """
         import argparse
 
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.main import _resolve_interpreter_enabled
 
         args = argparse.Namespace(interpreter=None, sandbox="")
@@ -3784,7 +3792,9 @@ class TestResolveInterpreterEnabled:
         """With policy silent on the key, the sandbox default stands."""
         import argparse
 
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.configuration import service
         from deepagents_code.main import _resolve_interpreter_enabled
         from unit_tests.conftest import redirect_managed_config
@@ -3953,7 +3963,9 @@ class TestWarnInterpreterDisabledBySandbox:
         self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """A `--sandbox` run with the default-on interpreter warns on stderr."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
 
         with mock_argv("-n", "task", "--sandbox", "daytona"):
@@ -3969,7 +3981,9 @@ class TestWarnInterpreterDisabledBySandbox:
         self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """Local mode keeps the interpreter, so there is nothing to warn about."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
 
         with mock_argv("-n", "task"):
@@ -3985,7 +3999,9 @@ class TestWarnInterpreterDisabledBySandbox:
         self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """An explicit `--no-interpreter` is the user's choice, not a drop."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
 
         with mock_argv("-n", "task", "--sandbox", "daytona", "--no-interpreter"):
@@ -4001,7 +4017,9 @@ class TestWarnInterpreterDisabledBySandbox:
         self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """A user who disabled the interpreter in config is not nagged."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
 
         with mock_argv("-n", "task", "--sandbox", "daytona"):
@@ -4019,7 +4037,9 @@ class TestWarnInterpreterDisabledBySandbox:
         Guards the `cli_main` -> `run_non_interactive` wiring: a dropped or
         reverted assignment (e.g. back to a hard-coded `False`) fails here.
         """
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.main import cli_main
 
         run_mock = AsyncMock(return_value=0)
@@ -4051,7 +4071,9 @@ class TestWarnInterpreterDisabledBySandbox:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """End-to-end: `-n --sandbox` forwards the disabled interpreter and warns."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.main import cli_main
 
         run_mock = AsyncMock(return_value=0)
@@ -4089,7 +4111,9 @@ class TestWarnInterpreterDisabledBySandbox:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """End-to-end: `-n --sandbox --no-interpreter` disables without an advisory."""
-        from deepagents_code.config import settings
+        from deepagents_code.credentials import get_credentials
+
+        get_credentials()
         from deepagents_code.main import cli_main
 
         run_mock = AsyncMock(return_value=0)

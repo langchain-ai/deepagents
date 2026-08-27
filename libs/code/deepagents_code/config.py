@@ -41,7 +41,6 @@ from deepagents_code._paths import (
 )
 from deepagents_code._version import __version__
 from deepagents_code.config_manifest import RECURSION_LIMIT_DEFAULT
-from deepagents_code.credentials import CredentialsOwner
 from deepagents_code.runtime_state import get_runtime_state
 
 if TYPE_CHECKING:
@@ -1428,8 +1427,6 @@ if TYPE_CHECKING:
 
     # Static type stubs for lazy module attributes resolved by __getattr__.
     # `console` is created on first access by `_get_console()` and cached in
-    # globals(); `settings` is the process-wide credentials owner.
-    settings: Settings
     console: Console
 
 MODE_PREFIXES: dict[str, str] = {
@@ -3049,10 +3046,6 @@ def resolve_enable_interpreter_default(*, start_path: Path | None = None) -> boo
             ("interpreter.enable_interpreter",), start_path=start_path
         )["interpreter.enable_interpreter"]
     )
-
-
-# Back-compat alias while PR5 removes the remaining references.
-Settings = CredentialsOwner
 
 
 DANGEROUS_SHELL_PATTERNS = (
@@ -5480,22 +5473,8 @@ def _get_console() -> Console:
         return inst
 
 
-def _get_settings() -> Settings:
-    """Return the lazily-initialized global credentials owner.
-
-    Kept under the old name for the callers PR5 still has to move; the value
-    is the process-wide `CredentialsOwner` from `get_credentials()`.
-
-    Returns:
-        The global `Settings` singleton.
-    """
-    from deepagents_code.credentials import get_credentials
-
-    return get_credentials()
-
-
-def __getattr__(name: str) -> Settings | Console:
-    """Lazy module attributes for `settings` and `console`.
+def __getattr__(name: str) -> Console:
+    """Lazily provide the shared console.
 
     Defers heavy initialization until first access. Subsequent accesses hit
     the module-level attribute directly (no `__getattr__` overhead).
@@ -5506,8 +5485,6 @@ def __getattr__(name: str) -> Settings | Console:
     Raises:
         AttributeError: If *name* is not a lazily-provided attribute.
     """
-    if name == "settings":
-        return _get_settings()
     if name == "console":
         return _get_console()
     msg = f"module {__name__!r} has no attribute {name!r}"

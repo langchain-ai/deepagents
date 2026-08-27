@@ -17,6 +17,7 @@ from textual.widgets import Input, OptionList, RadioButton, RadioSet, Static
 from deepagents_code import auth_store, model_config
 from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs
+from deepagents_code.credentials import get_credentials
 from deepagents_code.tui.widgets.auth import (
     _ENDPOINT_BY_REGION,
     PROVIDER_API_KEY_URLS,
@@ -1378,8 +1379,7 @@ api_key_url = "javascript:alert(1)"
             return []
 
         monkeypatch.setattr(
-            "deepagents_code.config.settings.reload_from_environment",
-            blocked_reload,
+            get_credentials(), "reload_from_environment", blocked_reload
         )
         app = _AuthHostApp()
         async with app.run_test() as pilot:
@@ -1407,8 +1407,7 @@ api_key_url = "javascript:alert(1)"
             return []
 
         monkeypatch.setattr(
-            "deepagents_code.config.settings.reload_from_environment",
-            reload_from_environment,
+            get_credentials(), "reload_from_environment", reload_from_environment
         )
         app = _AuthHostApp()
         async with app.run_test() as pilot:
@@ -1441,8 +1440,7 @@ api_key_url = "javascript:alert(1)"
             notices.append((str(message), severity))
 
         monkeypatch.setattr(
-            "deepagents_code.config.settings.reload_from_environment",
-            lambda: [blocked],
+            get_credentials(), "reload_from_environment", lambda: [blocked]
         )
         cache_cleared = False
 
@@ -1533,9 +1531,7 @@ api_key_url = "javascript:alert(1)"
                 msg = "bad .env"
                 raise ValueError(msg)
 
-            monkeypatch.setattr(
-                "deepagents_code.config.settings.reload_from_environment", _boom
-            )
+            monkeypatch.setattr(get_credentials(), "reload_from_environment", _boom)
             await pilot.press("ctrl+r")
             await pilot.pause()
             assert app.prompt_dismissed is False

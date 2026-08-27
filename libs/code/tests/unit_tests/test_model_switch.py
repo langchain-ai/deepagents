@@ -16,7 +16,7 @@ from deepagents_code.app import (
     _format_model_params,
 )
 from deepagents_code.client.remote_client import RemoteAgent
-from deepagents_code.config import settings
+from deepagents_code.credentials import get_credentials
 from deepagents_code.model_config import (
     ModelSpec,
     ProviderAuthSource,
@@ -27,6 +27,8 @@ from deepagents_code.model_config import (
 from deepagents_code.runtime_state import get_runtime_state
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 from deepagents_code.tui.widgets.status import StatusBar
+
+settings = get_credentials()
 
 _CONFIGURED_AUTH_STATUS = ProviderAuthStatus(
     state=ProviderAuthState.CONFIGURED,

@@ -349,7 +349,7 @@ async def _make_graphs() -> ServerRuntime:
 
         # Build the interpreter snapshot locally and hand it to the agent
         # build; `ServerConfig` overrides replace the resolved value. No
-        # process-global `Settings` mutation happens here: the server owns its
+        # process-global configuration mutation happens here: the server owns its
         # own snapshot, and the config tiers it resolves from are the same
         # shared resolver every other callsite reads.
         from dataclasses import replace as _replace

@@ -3255,7 +3255,7 @@ class TestExecuteTaskTextualUsageStats:
         adapter._on_provisional_cost = record_cost
 
         with (
-            patch("deepagents_code.config.settings") as _mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as _mock_settings,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
         ):
             get_runtime_state().model_name = "gpt-5.5"
@@ -3308,7 +3308,7 @@ class TestExecuteTaskTextualUsageStats:
         )
 
         with (
-            patch("deepagents_code.config.settings") as _mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as _mock_settings,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
         ):
             get_runtime_state().model_name = "gpt-5.5"
@@ -3376,7 +3376,7 @@ class TestExecuteTaskTextualUsageStats:
         ]
 
         with (
-            patch("deepagents_code.config.settings") as _mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as _mock_settings,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.1),
         ):
             get_runtime_state().model_name = "gpt-5.5"
@@ -3452,7 +3452,7 @@ class TestExecuteTaskTextualUsageStats:
         turn_stats = SessionStats()
 
         with (
-            patch("deepagents_code.config.settings") as _mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as _mock_settings,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.1),
         ):
             get_runtime_state().model_name = "gpt-5.5"
@@ -3509,7 +3509,7 @@ class TestExecuteTaskTextualUsageStats:
         turn_stats = SessionStats()
 
         with (
-            patch("deepagents_code.config.settings") as _mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as _mock_settings,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.1),
         ):
             get_runtime_state().model_name = "configured-model"
@@ -3640,7 +3640,7 @@ class TestSessionCostEvents:
         turn_stats = SessionStats()
 
         with (
-            patch("deepagents_code.config.settings") as _mock_settings,
+            patch("deepagents_code.credentials.get_credentials") as _mock_settings,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
         ):
             get_runtime_state().model_name = "gpt-5.5"

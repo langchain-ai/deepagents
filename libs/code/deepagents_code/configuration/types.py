@@ -155,7 +155,7 @@ class InterpreterConfig:
     """Frozen snapshot of the `interpreter.*` manifest group for agent builds.
 
     `create_cli_agent` receives one of these instead of reaching into the
-    global `Settings`, so every callsite resolves the group from the config
+    global mutable object, so every callsite resolves the group from the config
     tiers in force at the time of the build.
     """
 

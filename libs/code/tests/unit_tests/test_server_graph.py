@@ -454,7 +454,7 @@ class TestServerGraph:
     async def test_interpreter_snapshot_passed_to_agent_construction(self) -> None:
         """`ServerConfig` interpreter overrides reach `create_cli_agent`.
 
-        They travel in a local frozen snapshot; the global `Settings` object
+        They travel in a local frozen snapshot; the global configuration owner
         is never mutated.
         """
         from dataclasses import FrozenInstanceError

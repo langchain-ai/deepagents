@@ -16471,7 +16471,7 @@ class DeepAgentsApp(App):
             await reload_task
         except Exception:
             logger.warning(
-                "Settings reload failed while settling caller cancellation",
+                "Configuration reload failed while settling caller cancellation",
                 exc_info=True,
             )
 
@@ -17394,7 +17394,7 @@ class DeepAgentsApp(App):
         self._status_bar.set_context_limit(runtime_state.model_context_limit)
         if not provider or not model:
             logger.warning(
-                "Settings missing model identity at status sync "
+                "Runtime state is missing model identity at status sync "
                 "(provider=%r, model=%r); status bar will render blank",
                 provider,
                 model,
@@ -27848,7 +27848,7 @@ class DeepAgentsApp(App):
                     await self._mount_message(
                         ErrorMessage(
                             "Could not restore the previous project settings "
-                            f"after a failed switch to {cwd}. Settings may "
+                            f"after a failed switch to {cwd}. Configuration may "
                             f"still reflect {cwd} while the session is in "
                             f"{previous_cwd}. Run `/reload` to resynchronize.",
                         ),

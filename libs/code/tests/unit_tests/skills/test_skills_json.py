@@ -25,7 +25,7 @@ class TestSkillsListJson:
         buf = StringIO()
         with ExitStack() as stack:
             mock_settings_cls = stack.enter_context(
-                patch("deepagents_code.config.Settings")
+                patch("deepagents_code.credentials.CredentialsOwner")
             )
             stack.enter_context(
                 patch(
@@ -77,7 +77,7 @@ class TestSkillsListJson:
         buf = StringIO()
         with ExitStack() as stack:
             mock_settings_cls = stack.enter_context(
-                patch("deepagents_code.config.Settings")
+                patch("deepagents_code.credentials.CredentialsOwner")
             )
             stack.enter_context(
                 patch("deepagents_code.skills.load.list_skills", return_value=[])
@@ -137,7 +137,7 @@ class TestSkillsInfoJson:
         buf = StringIO()
         with ExitStack() as stack:
             mock_settings_cls = stack.enter_context(
-                patch("deepagents_code.config.Settings")
+                patch("deepagents_code.credentials.CredentialsOwner")
             )
             stack.enter_context(
                 patch(
@@ -195,7 +195,7 @@ class TestSkillsCreateJson:
         buf = StringIO()
         with ExitStack() as stack:
             mock_settings_cls = stack.enter_context(
-                patch("deepagents_code.config.Settings")
+                patch("deepagents_code.credentials.CredentialsOwner")
             )
             stack.enter_context(patch("sys.stdout", buf))
             settings = mock_settings_cls.from_environment.return_value
@@ -237,7 +237,7 @@ class TestSkillsDeleteJson:
         buf = StringIO()
         with ExitStack() as stack:
             mock_settings_cls = stack.enter_context(
-                patch("deepagents_code.config.Settings")
+                patch("deepagents_code.credentials.CredentialsOwner")
             )
             stack.enter_context(
                 patch(

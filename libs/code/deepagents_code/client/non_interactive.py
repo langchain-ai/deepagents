@@ -72,7 +72,6 @@ from deepagents_code.config import (
     create_model,
     is_shell_command_allowed,
     resolve_shell_allow_list,
-    settings,
 )
 from deepagents_code.file_ops import FileOpTracker, record_display_caveat
 from deepagents_code.hooks import (
@@ -1067,22 +1066,6 @@ def _process_stream_chunk(
         )
 
 
-def _shell_allow_list() -> Any:  # noqa: ANN401  # list[str] | _ShellAllowAll | None
-    """Resolve the shell allow-list from the config tiers in force.
-
-    A module-level seam rather than inline `resolve_shell_allow_list()` calls
-    so tests that patch `non_interactive.settings` with a
-    `shell_allow_list`-attributed stand-in keep working.
-
-    Returns:
-        The configured allow-list, the `SHELL_ALLOW_ALL` sentinel, or `None`.
-    """
-    configured = getattr(settings, "shell_allow_list", None)
-    if configured is not None:
-        return configured
-    return resolve_shell_allow_list()
-
-
 def _make_hitl_decision(
     action_request: ActionRequest, console: Console
 ) -> dict[str, str]:
@@ -1114,7 +1097,7 @@ def _make_hitl_decision(
     action_name = action_request.get("name", "")
 
     if action_name == "execute":
-        shell_allow_list = _shell_allow_list()
+        shell_allow_list = resolve_shell_allow_list()
         if not shell_allow_list:
             command = action_request.get("args", {}).get("command", "")
             console.print(
@@ -2178,7 +2161,7 @@ async def run_non_interactive(
         from deepagents_code.hooks.models.domain import HookEvent
         from deepagents_code.hooks.trust import WorkspaceTrust
 
-        shell_allow_list = _shell_allow_list()
+        shell_allow_list = resolve_shell_allow_list()
         enable_shell = bool(shell_allow_list)
         shell_is_unrestricted = isinstance(shell_allow_list, type(SHELL_ALLOW_ALL))
         # Currently, non-shell tools have no HITL handler in non-interactive

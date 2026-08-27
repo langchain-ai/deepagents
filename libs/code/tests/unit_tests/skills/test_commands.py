@@ -15,6 +15,7 @@ import pytest
 from deepagents.middleware.skills import SkillMetadata, _parse_skill_metadata
 from rich.console import Console
 
+from deepagents_code.credentials import CredentialsOwner
 from deepagents_code.main import parse_args
 from deepagents_code.skills.commands import (
     _delete,
@@ -633,7 +634,7 @@ class TestInfoShadowWarning:
                 return_value=None,
             ),
             patch(
-                "deepagents_code.config.Settings.from_environment",
+                "deepagents_code.CredentialsOwner.from_environment",
                 return_value=MagicMock(project_root=None),
             ),
         ]
@@ -681,7 +682,7 @@ class TestInfoShadowWarning:
                 return_value=None,
             ),
             patch(
-                "deepagents_code.config.Settings.from_environment",
+                "deepagents_code.CredentialsOwner.from_environment",
                 return_value=MagicMock(project_root=None),
             ),
         ]
@@ -746,7 +747,7 @@ class TestInfoBuiltInSkill:
                 return_value=None,
             ),
             patch(
-                "deepagents_code.config.Settings.from_environment",
+                "deepagents_code.CredentialsOwner.from_environment",
                 return_value=MagicMock(project_root=None),
             ),
         ]
@@ -796,7 +797,7 @@ class TestInfoBuiltInSkill:
                 return_value=None,
             ),
             patch(
-                "deepagents_code.config.Settings.from_environment",
+                "deepagents_code.CredentialsOwner.from_environment",
                 return_value=MagicMock(project_root=None),
             ),
         ]
@@ -856,7 +857,7 @@ class TestListBuiltInSkillsDisplay:
                 return_value=None,
             ),
             patch(
-                "deepagents_code.config.Settings.from_environment",
+                "deepagents_code.CredentialsOwner.from_environment",
                 return_value=MagicMock(project_root=None),
             ),
         ]
@@ -903,7 +904,7 @@ class TestListBuiltInSkillsDisplay:
                 return_value=None,
             ),
             patch(
-                "deepagents_code.config.Settings.from_environment",
+                "deepagents_code.CredentialsOwner.from_environment",
                 return_value=MagicMock(project_root=None),
             ),
         ]
@@ -954,7 +955,7 @@ class TestSkillsLsDispatch:
                 return_value=None,
             ),
             patch(
-                "deepagents_code.config.Settings.from_environment",
+                "deepagents_code.CredentialsOwner.from_environment",
                 return_value=MagicMock(project_root=None),
             ),
         ]

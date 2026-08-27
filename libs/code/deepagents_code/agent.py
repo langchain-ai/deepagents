@@ -2339,23 +2339,6 @@ def get_skill_sources(
     return sources
 
 
-def _settings_shell_allow_list() -> Any:  # noqa: ANN401  # list[str] | _ShellAllowAll | None
-    """Shell allow-list for this build, from settings stand-in or the tiers.
-
-    Reads `settings.shell_allow_list` first so test doubles that attribute a
-    patched `settings` keep their meaning; the production `Settings` no longer
-    carries the field, so the fall-through resolves `shell.allow_list` from
-    the config tiers in force.
-
-    Returns:
-        The configured allow-list, the `SHELL_ALLOW_ALL` sentinel, or `None`.
-    """
-    configured = getattr(get_credentials(), "shell_allow_list", None)
-    if configured is not None:
-        return configured
-    return resolve_shell_allow_list()
-
-
 def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -2608,7 +2591,7 @@ def create_cli_agent(
         # the server subprocess path.
         if shell_allow_list:
             restrictive_shell_allow_list = list(shell_allow_list)
-        elif (resolved_shell_allow_list := _settings_shell_allow_list()) and (
+        elif (resolved_shell_allow_list := resolve_shell_allow_list()) and (
             not isinstance(resolved_shell_allow_list, _ShellAllowAll)
         ):
             restrictive_shell_allow_list = list(resolved_shell_allow_list)
@@ -3008,7 +2991,7 @@ def create_cli_agent(
     interrupt_on: dict[str, bool | InterruptOnConfig] = {}
     auto_mode_config: tuple[Path, list[str]] | None = None
     if resolved_interrupt_on is not None and auto_mode_enabled:
-        configured_allow_list = shell_allow_list or _settings_shell_allow_list()
+        configured_allow_list = shell_allow_list or resolve_shell_allow_list()
         narrow_allow_list = (
             configured_allow_list if isinstance(configured_allow_list, list) else []
         )

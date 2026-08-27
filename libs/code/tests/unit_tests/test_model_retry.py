@@ -958,7 +958,11 @@ async def test_failed_attempt_is_retried_after_streaming(
         for message in [data[0]]
         if isinstance(message, AIMessageChunk)
     )
-    events = [data for _namespace, mode, data in chunks if mode == "custom"]
+    events = [
+        cast("dict[str, Any]", data)
+        for _namespace, mode, data in chunks
+        if mode == "custom"
+    ]
 
     assert model.attempts == 2
     assert message_text == "orphanedfinal"
@@ -1133,7 +1137,7 @@ def test_retry_event_rejects_partial_correlation(
     kwargs: dict[str, object], message: str
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        build_retry_event(1, 3, **kwargs)  # type: ignore[arg-type]
+        build_retry_event(1, 3, **cast("Any", kwargs))
 
 
 def test_build_attempt_event() -> None:

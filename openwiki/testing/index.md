@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - How the Deep Agents monorepo splits unit, integration, and benchmark tests across the deepagents and code packages, how to run them via make targets, and how to write offline tests with fake models and shared utilities.
+- [Testing Guide](testing-guide.md) - Test topology and execution guidance for the Deep Agents SDK, dcode, ACP, Talon, and evaluation suite. Use the appropriate package entrypoint and preserve the offline-unit, networked-integration, and warnings-as-errors boundaries.

@@ -77,7 +77,7 @@ def _build_long_prompt(turn: int) -> str:
 
 async def _run_turn(agent, *, thread_id: str, assistant_id: str, prompt: str) -> None:
     """Execute one real remote agent turn and drain the stream to completion."""
-    from deepagents_code.config import build_stream_config, settings
+    from deepagents_code.config import build_stream_config, runtime_state
 
     config = build_stream_config(thread_id, assistant_id)
     stream_input = {"messages": [{"role": "user", "content": prompt}]}
@@ -89,7 +89,7 @@ async def _run_turn(agent, *, thread_id: str, assistant_id: str, prompt: str) ->
         stream_mode=["messages", "updates"],
         subgraphs=True,
         config=config,
-        context={"model_context_limit": settings.model_context_limit},
+        context={"model_context_limit": runtime_state.model_context_limit},
         durability="exit",
     ):
         pass
@@ -210,7 +210,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
     model_config.clear_caches()
     try:
-        create_model("itest:fake").apply_to_settings()
+        create_model("itest:fake").apply_to_runtime_state()
         thread_id = generate_thread_id()
 
         async with server_session(
@@ -415,7 +415,7 @@ async def test_concurrent_run_during_offload_preserves_messages(
 
     model_config.clear_caches()
     try:
-        create_model("itest:fake").apply_to_settings()
+        create_model("itest:fake").apply_to_runtime_state()
         thread_id = generate_thread_id()
 
         async with server_session(
@@ -578,7 +578,7 @@ async def test_offload_route_respects_configured_auth(
     model_config.clear_caches()
     server: ServerProcess | None = None
     try:
-        create_model("itest:fake").apply_to_settings()
+        create_model("itest:fake").apply_to_runtime_state()
 
         # The auth module lives in the server work dir (the subprocess's cwd,
         # which `langgraph dev` puts on `sys.path`) so its import path stays
@@ -713,7 +713,7 @@ async def test_server_shutdown_flushes_existing_tracers(
     model_config.clear_caches()
     server: ServerProcess | None = None
     try:
-        create_model("itest:fake").apply_to_settings()
+        create_model("itest:fake").apply_to_runtime_state()
         (work_dir / "itest_flush_app.py").write_text(_TEST_FLUSH_APP)
         generated = generate_langgraph_json(work_dir)
         config = json.loads(generated.read_text())

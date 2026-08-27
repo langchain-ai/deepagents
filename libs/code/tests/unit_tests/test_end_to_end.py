@@ -89,7 +89,8 @@ def mock_settings(
 
     # Patch settings
     with (
-        patch("deepagents_code.agent.settings") as mock_settings_obj,
+        patch("deepagents_code.agent.credentials") as mock_settings_obj,
+        patch("deepagents_code.agent.runtime_state") as mock_runtime_state,
         patch(
             "deepagents_code.agent._offload_fallback_root",
             return_value=tmp_path / ".deepagents",
@@ -114,10 +115,11 @@ def mock_settings(
         mock_settings_obj.get_agent_dir = get_agent_dir
         mock_settings_obj.project_root = None
 
-        # Model identity settings (used in system prompt generation)
-        mock_settings_obj.model_name = None
-        mock_settings_obj.model_provider = None
-        mock_settings_obj.model_context_limit = None
+        # Model identity state (used in system prompt generation)
+        mock_runtime_state.model_name = None
+        mock_runtime_state.model_provider = None
+        mock_runtime_state.model_context_limit = None
+        mock_runtime_state.model_unsupported_modalities = frozenset()
 
         yield agent_dir
 

@@ -396,7 +396,13 @@ class TestCrossAgentResume:
         app._offer_thread_cwd_switch = AsyncMock(return_value="continue")  # ty: ignore
         app._restart_server_for_agent_swap = AsyncMock(return_value=True)  # ty: ignore
 
-        with patch("deepagents_code.config.settings") as settings:
+        with (
+            patch("deepagents_code.config.credentials") as settings,
+            patch(
+                "deepagents_code.app.user_deepagents_dir",
+                return_value=tmp_path,
+            ),
+        ):
             settings.user_deepagents_dir = tmp_path
             await app._confirm_then_resume_cross_agent_thread(
                 _ThreadsResumeTarget("research-thread", "researcher")
@@ -425,7 +431,13 @@ class TestCrossAgentResume:
         fetch = AsyncMock()
         app._fetch_thread_history_data = fetch  # ty: ignore
 
-        with patch("deepagents_code.config.settings") as settings:
+        with (
+            patch("deepagents_code.config.credentials") as settings,
+            patch(
+                "deepagents_code.app.user_deepagents_dir",
+                return_value=tmp_path,
+            ),
+        ):
             settings.user_deepagents_dir = tmp_path
             await app._confirm_then_resume_cross_agent_thread(
                 _ThreadsResumeTarget("research-thread", "researcher")

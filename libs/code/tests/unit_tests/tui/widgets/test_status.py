@@ -688,7 +688,7 @@ class TestCostDisplay:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             # A `None` limit renders `--` only once tokens are non-zero, so pin
-            # the limit rather than inheriting `settings.model_context_limit`.
+            # the limit rather than inheriting `runtime_state.model_context_limit`.
             bar.set_context_limit(None)
             bar.set_tokens(5000)
             bar.set_cost(0.0)

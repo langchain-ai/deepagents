@@ -1374,7 +1374,48 @@ class SkillMessage(Vertical):
             self.toggle_body()
 
 
-class AssistantMessage(Vertical):
+class _StreamedTextParts:
+    """Chunk buffering shared by the streamed-text message widgets.
+
+    `AssistantMessage` and `ReasoningMessage` both accumulate streamed
+    fragments in a rope that is joined only on access, and both coalesce their
+    renders on a single throttled timer. Holding that contract in one place
+    keeps the two from drifting.
+    """
+
+    _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
+    """Seconds between coalesced flushes of streamed text to the widget."""
+
+    def __init__(self, content: str = "", **kwargs: Any) -> None:
+        """Initialize the streamed-text buffer.
+
+        Args:
+            content: Initial content, if the text is already complete.
+            **kwargs: Additional arguments passed to the widget base.
+        """
+        super().__init__(**kwargs)
+        self._content_parts: list[str] = [content] if content else []
+        self._flush_timer: Timer | None = None
+
+    @property
+    def _content(self) -> str:
+        """Full message text, materialized from streamed chunks on access."""
+        if len(self._content_parts) > 1:
+            self._content_parts = ["".join(self._content_parts)]
+        return self._content_parts[0] if self._content_parts else ""
+
+    @_content.setter
+    def _content(self, value: str) -> None:
+        self._content_parts = [value] if value else []
+
+    def _stop_flush_timer(self) -> None:
+        """Cancel the coalescing flush timer if it is running."""
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
+
+
+class AssistantMessage(_StreamedTextParts, Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
@@ -1393,9 +1434,6 @@ class AssistantMessage(Vertical):
     UI event loop, which starved keyboard input while the model streamed;
     batching subsequent writes keeps typing responsive.
     """
-
-    _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
-    """Seconds between coalesced flushes of streamed text to the markdown widget."""
 
     DEFAULT_CSS = """
     AssistantMessage {
@@ -1430,24 +1468,11 @@ class AssistantMessage(Vertical):
                 this thread" must not count such a message.
             **kwargs: Additional arguments passed to parent
         """
-        super().__init__(**kwargs)
+        super().__init__(content, **kwargs)
         self._local_only = local_only
-        self._content_parts: list[str] = [content] if content else []
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
         self._pending_append = ""
-        self._flush_timer: Timer | None = None
-
-    @property
-    def _content(self) -> str:
-        """Full message text, materialized from streamed chunks on access."""
-        if len(self._content_parts) > 1:
-            self._content_parts = ["".join(self._content_parts)]
-        return self._content_parts[0] if self._content_parts else ""
-
-    @_content.setter
-    def _content(self, value: str) -> None:
-        self._content_parts = [value] if value else []
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the assistant message layout.
@@ -1542,12 +1567,6 @@ class AssistantMessage(Vertical):
             self._pending_append = pending + self._pending_append
             logger.exception("Failed to flush streamed markdown fragment")
 
-    def _stop_flush_timer(self) -> None:
-        """Cancel the coalescing flush timer if it is running."""
-        if self._flush_timer is not None:
-            self._flush_timer.stop()
-            self._flush_timer = None
-
     async def write_initial_content(self) -> None:
         """Write initial content if provided at construction time."""
         if self._content:
@@ -1586,10 +1605,8 @@ class _ReasoningToggle(Static):
     """Clickable header for a reasoning message."""
 
 
-class ReasoningMessage(Vertical):
+class ReasoningMessage(_StreamedTextParts, Vertical):
     """Collapsible plain-text provider-visible reasoning."""
-
-    _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
 
     DEFAULT_CSS = """
     ReasoningMessage {
@@ -1616,28 +1633,20 @@ class ReasoningMessage(Vertical):
 
     def __init__(self, content: str = "", **kwargs: Any) -> None:
         """Initialize a reasoning message."""
-        super().__init__(**kwargs)
-        self._content_parts: list[str] = [content] if content else []
+        super().__init__(content, **kwargs)
         self._render_pending = False
-        self._flush_timer: Timer | None = None
         self._streaming = not content
+        self._body: Static | None = None
+        self._hint: Static | None = None
+        # Last (has_content, expanded) pair written to the hint, so a 10 Hz
+        # streaming flush does not rebuild an unchanged line every tick.
+        self._hint_state: tuple[bool, bool] | None = None
         self._deferred_expanded = True
         # Last expansion value published to the message store. Deduping against
         # it keeps the reactive's initialization watcher and the deferred restore
         # from re-emitting a value the store already holds. Seeded to the
         # `_expanded` default so a fresh mount publishes nothing.
         self._published_expanded = True
-
-    @property
-    def _content(self) -> str:
-        """Full reasoning text, materialized from streamed chunks on access."""
-        if len(self._content_parts) > 1:
-            self._content_parts = ["".join(self._content_parts)]
-        return self._content_parts[0] if self._content_parts else ""
-
-    @_content.setter
-    def _content(self, value: str) -> None:
-        self._content_parts = [value] if value else []
 
     def compose(self) -> ComposeResult:
         """Compose the reasoning message.
@@ -1654,7 +1663,8 @@ class ReasoningMessage(Vertical):
     @property
     def has_content(self) -> bool:
         """Whether there is reasoning text worth revealing."""
-        return bool(self._content.strip())
+        content = self._content
+        return bool(content) and not content.isspace()
 
     def on_mount(self) -> None:
         """Restore deferred expansion state and render content."""
@@ -1674,13 +1684,22 @@ class ReasoningMessage(Vertical):
         """
         if not self.is_attached:
             return
-        self.query_one("#reasoning-body", Static).update(Content(self._content))
-        hint = self.query_one("#reasoning-hint", Static)
-        hint.display = self.has_content
-        if not self.has_content:
+        if self._body is None or self._hint is None:
+            # Cached rather than re-queried: this runs on every streaming tick.
+            self._body = self.query_one("#reasoning-body", Static)
+            self._hint = self.query_one("#reasoning-hint", Static)
+        content = self._content
+        has_content = bool(content) and not content.isspace()
+        self._body.update(Content(content))
+        hint_state = (has_content, self._expanded)
+        if hint_state == self._hint_state:
+            return
+        self._hint_state = hint_state
+        self._hint.display = has_content
+        if not has_content:
             return
         action = "hide" if self._expanded else "show"
-        hint.update(
+        self._hint.update(
             Content.styled(f"click or Ctrl+O to {action} reasoning", "dim italic")
         )
 
@@ -1706,12 +1725,6 @@ class ReasoningMessage(Vertical):
         except Exception:  # a render hiccup must not crash the app
             self._render_pending = True
             logger.exception("Failed to flush streamed reasoning fragments")
-
-    def _stop_flush_timer(self) -> None:
-        """Cancel the coalescing flush timer if it is running."""
-        if self._flush_timer is not None:
-            self._flush_timer.stop()
-            self._flush_timer = None
 
     async def stop_stream(self) -> None:
         """Finalize and collapse the active reasoning phase."""

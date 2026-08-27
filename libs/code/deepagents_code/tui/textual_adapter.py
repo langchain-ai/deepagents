@@ -94,6 +94,7 @@ from deepagents_code._ask_user_types import (
 )
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._content_blocks import reasoning_text
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
@@ -2600,9 +2601,10 @@ async def execute_task_textual(
                         if block_type == "text":
                             text = block.get("text", "")
                             if text:
-                                await _flush_reasoning_ns(
-                                    adapter, ns_key, reasoning_message_by_namespace
-                                )
+                                if reasoning_message_by_namespace:
+                                    await _flush_reasoning_ns(
+                                        adapter, ns_key, reasoning_message_by_namespace
+                                    )
                                 # Track accumulated text for reference
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 pending_text += text
@@ -2643,8 +2645,8 @@ async def execute_task_textual(
                                 _notify_user_visible_output_started()
 
                         elif block_type == "reasoning" and show_reasoning:
-                            reasoning = block.get("reasoning")
-                            if isinstance(reasoning, str) and reasoning:
+                            reasoning = reasoning_text(block)
+                            if reasoning is not None:
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 if pending_text:
                                     await _flush_assistant_text_ns(
@@ -2671,9 +2673,10 @@ async def execute_task_textual(
                                 _notify_user_visible_output_started()
 
                         elif block_type in {"tool_call_chunk", "tool_call"}:
-                            await _flush_reasoning_ns(
-                                adapter, ns_key, reasoning_message_by_namespace
-                            )
+                            if reasoning_message_by_namespace:
+                                await _flush_reasoning_ns(
+                                    adapter, ns_key, reasoning_message_by_namespace
+                                )
                             chunk_name = block.get("name")
                             chunk_args = block.get("args")
                             chunk_id = block.get("id")

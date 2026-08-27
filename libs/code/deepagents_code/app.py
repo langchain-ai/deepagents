@@ -67,6 +67,7 @@ from deepagents_code._constants import (
     SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
     SESSION_END_DRAIN_TIMEOUT_SECONDS,
 )
+from deepagents_code._content_blocks import reasoning_text
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -332,6 +333,14 @@ feedback) are not conversation turns, so they do not get timestamp footers.
 reason. `REASONING` is part of the assistant turn that follows it rather than a
 turn of its own, so the answer's footer times the whole turn and a second footer
 above it would only add noise.
+"""
+
+_STREAMED_TEXT_WIDGETS = (AssistantMessage, ReasoningMessage)
+"""Widget types whose content is (re)written from a stored transcript row.
+
+A module-level tuple rather than an inline `A | B` union: the `isinstance`
+checks live in scroll-driven hydration comprehensions, and an inline union
+builds a fresh `types.UnionType` on every iteration.
 """
 
 _SERVER_OUTPUT_MESSAGE_TYPES: frozenset[MessageType] = frozenset(
@@ -8866,7 +8875,7 @@ class DeepAgentsApp(App):
         assistant_updates = [
             widget.set_content(data.content)
             for widget, data, _footer in entries
-            if isinstance(widget, AssistantMessage | ReasoningMessage) and data.content
+            if isinstance(widget, _STREAMED_TEXT_WIDGETS) and data.content
         ]
         if assistant_updates:
             try:
@@ -18341,40 +18350,36 @@ class DeepAgentsApp(App):
                     result.append(MessageData(type=MessageType.USER, content=content))
 
             elif isinstance(msg, AIMessage):
-                content_start_index = len(result)
+                # Accumulated separately from `result` so the runs of this one
+                # message can be merged and filtered without indexing back into
+                # the shared list.
+                runs: list[MessageData] = []
                 for block in msg.content_blocks:
-                    if block.get("type") == "text":
-                        text = block.get("text", "")
-                        message_type = MessageType.ASSISTANT
-                    elif (
-                        show_reasoning
-                        and block.get("type") == "reasoning"
-                        and isinstance(block.get("reasoning"), str)
-                    ):
-                        text = block["reasoning"]
+                    reasoning = reasoning_text(block) if show_reasoning else None
+                    if reasoning is not None:
+                        text = reasoning
                         message_type = MessageType.REASONING
+                    elif block.get("type") == "text":
+                        text = block.get("text", "")
+                        if not isinstance(text, str):
+                            continue
+                        message_type = MessageType.ASSISTANT
                     else:
                         continue
-                    if not isinstance(text, str):
-                        continue
-                    if (
-                        isinstance(msg.content, str)
-                        and message_type == MessageType.ASSISTANT
-                    ):
-                        text = text.strip()
-                    if (
-                        len(result) > content_start_index
-                        and result[-1].type == message_type
-                    ):
-                        result[-1].content += text
+                    if runs and runs[-1].type == message_type:
+                        runs[-1].content += text
                     else:
-                        result.append(MessageData(type=message_type, content=text))
+                        runs.append(MessageData(type=message_type, content=text))
 
-                result[content_start_index:] = [
-                    message
-                    for message in result[content_start_index:]
-                    if message.content.strip()
-                ]
+                # A bare-string `msg.content` yields a single text block whose
+                # surrounding whitespace is transport padding, not layout.
+                if isinstance(msg.content, str):
+                    for run in runs:
+                        if run.type == MessageType.ASSISTANT:
+                            run.content = run.content.strip()
+                result.extend(
+                    run for run in runs if run.content and not run.content.isspace()
+                )
 
                 # Track tool calls for later matching
                 for tc in getattr(msg, "tool_calls", []):
@@ -19035,8 +19040,7 @@ class DeepAgentsApp(App):
             assistant_updates = [
                 widget.set_content(msg_data.content)
                 for widget, msg_data in mounted
-                if isinstance(widget, AssistantMessage | ReasoningMessage)
-                and msg_data.content
+                if isinstance(widget, _STREAMED_TEXT_WIDGETS) and msg_data.content
             ]
             if assistant_updates:
                 assistant_results = await asyncio.gather(

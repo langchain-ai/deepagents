@@ -41,6 +41,7 @@ from rich.text import Text
 
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SESSION_END_DRAIN_TIMEOUT_SECONDS
+from deepagents_code._content_blocks import reasoning_text
 from deepagents_code._session_stats import (
     RecordedRequest,
     SessionStats,
@@ -683,8 +684,8 @@ def _process_ai_message(
                     state.text_line_open = not text.endswith("\n")
                 state.full_response.append(text)
         elif block_type == "reasoning":
-            reasoning = block.get("reasoning")
-            if state.show_reasoning and isinstance(reasoning, str) and reasoning:
+            reasoning = reasoning_text(block)
+            if state.show_reasoning and reasoning is not None:
                 if state.spinner:
                     state.spinner.stop()
                 _write_reasoning(reasoning, state)

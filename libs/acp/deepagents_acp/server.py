@@ -25,6 +25,7 @@ from acp import (
     tool_content,
     tool_diff_content,
     update_agent_message,
+    update_agent_thought_text,
     update_tool_call,
 )
 from acp.exceptions import RequestError
@@ -32,6 +33,7 @@ from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
     AgentPlanUpdate,
+    AgentThoughtChunk,
     AudioContentBlock,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
@@ -132,24 +134,51 @@ def _is_mcp_servers(
     return all(isinstance(server, _MCP_SERVER_TYPES) for server in mcp_servers)
 
 
+def _replay_content_block(
+    block: Mapping[str, Any],
+) -> TextContentBlock | ImageContentBlock | AudioContentBlock | None:
+    """Convert one persisted LangChain content block into an ACP block."""
+    block_type = block.get("type")
+    if block_type == "text":
+        text = block.get("text")
+        return text_block(text) if isinstance(text, str) else None
+    data = block.get("base64")
+    mime_type = block.get("mime_type")
+    if not (isinstance(data, str) and isinstance(mime_type, str)):
+        return None
+    if block_type == "image":
+        return image_block(data, mime_type, uri=block.get("url"))
+    if block_type == "audio":
+        return audio_block(data, mime_type)
+    return None
+
+
 def _replay_content_blocks(
     message: Any,
 ) -> list[TextContentBlock | ImageContentBlock | AudioContentBlock]:
     """Convert persisted LangChain content into replayable ACP blocks."""
-    replay_blocks: list[TextContentBlock | ImageContentBlock | AudioContentBlock] = []
+    return [block for item in message.content_blocks if (block := _replay_content_block(item))]
+
+
+def _visible_reasoning(block: Mapping[str, Any]) -> str | None:
+    """Return provider-visible reasoning from a canonical content block."""
+    reasoning = block.get("reasoning")
+    if block.get("type") != "reasoning" or not isinstance(reasoning, str):
+        return None
+    return reasoning if reasoning.strip() else None
+
+
+def _agent_content_updates(message: Any) -> list[AgentMessageChunk | AgentThoughtChunk]:
+    """Project normalized assistant content into ordered ACP updates."""
+    updates: list[AgentMessageChunk | AgentThoughtChunk] = []
     for block in message.content_blocks:
-        block_type = block.get("type")
-        data = block.get("base64")
-        mime_type = block.get("mime_type")
-        if block_type == "text":
-            replay_blocks.append(text_block(block["text"]))
-        elif not (isinstance(data, str) and isinstance(mime_type, str)):
-            continue
-        elif block_type == "image":
-            replay_blocks.append(image_block(data, mime_type, uri=block.get("url")))
-        elif block_type == "audio":
-            replay_blocks.append(audio_block(data, mime_type))
-    return replay_blocks
+        if block.get("type") == "text":
+            text = block.get("text")
+            if isinstance(text, str) and text:
+                updates.append(update_agent_message(text_block(text)))
+        elif reasoning := _visible_reasoning(block):
+            updates.append(update_agent_thought_text(reasoning))
+    return updates
 
 
 @dataclass(frozen=True, slots=True)
@@ -805,14 +834,21 @@ class AgentServerACP(ACPAgent):
         active_tool_calls: dict[str, dict[str, Any]],
     ) -> None:
         """Replay one persisted assistant message and its tool calls."""
-        for block in _replay_content_blocks(message):
+        for block in message.content_blocks:
+            if reasoning := _visible_reasoning(block):
+                update = update_agent_thought_text(reasoning)
+            else:
+                replay_block = _replay_content_block(block)
+                if replay_block is None:
+                    continue
+                update = AgentMessageChunk(
+                    session_update="agent_message_chunk",
+                    content=replay_block,
+                    message_id=message_id,
+                )
             await self._conn.session_update(
                 session_id=session_id,
-                update=AgentMessageChunk(
-                    session_update="agent_message_chunk",
-                    content=block,
-                    message_id=message_id,
-                ),
+                update=update,
                 source="DeepAgent",
             )
         for tool_call in message.tool_calls:
@@ -1053,23 +1089,13 @@ class AgentServerACP(ACPAgent):
                             session_id=session_id, update=update, source="DeepAgent"
                         )
 
-                elif message_chunk.content:
-                    # content can be a string or a list of content blocks
-                    if isinstance(message_chunk.content, str):
-                        text = message_chunk.content
-                    elif isinstance(message_chunk.content, list):
-                        # Extract text from content blocks
-                        text = ""
-                        for block in message_chunk.content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text += block.get("text", "")
-                            elif isinstance(block, str):
-                                text += block
-                    else:
-                        text = str(message_chunk.content)
-
-                    if text and not _namespace:
-                        await self._log_text(text=text, session_id=session_id)
+                elif not _namespace and hasattr(message_chunk, "content_blocks"):
+                    for update in _agent_content_updates(message_chunk):
+                        await self._conn.session_update(
+                            session_id=session_id,
+                            update=update,
+                            source="DeepAgent",
+                        )
 
             # After streaming completes, check if we need to exit the loop
             # The loop continues while there are interrupts (line 467)

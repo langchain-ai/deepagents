@@ -74,14 +74,14 @@ async def _wait_for_worker_shutdown(worker: asyncio.Task[ExecuteResponse]) -> bo
     return True
 
 
-def _kill_and_reap(process: subprocess.Popen[str]) -> None:
+def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None) -> None:
     """Kill a command's process group and reap its shell."""
     kill_succeeded = False
     with suppress(BaseException):
-        if sys.platform == "win32":
+        if process_group is None:
             process.kill()
         else:
-            os.killpg(process.pid, signal.SIGKILL)
+            os.killpg(process_group, signal.SIGKILL)
         kill_succeeded = True
     if not kill_succeeded:
         with suppress(BaseException):
@@ -101,29 +101,31 @@ def _communicate(
     process: subprocess.Popen[str],
     timeout: int,
     cancellation_event: threading.Event | None = None,
+    *,
+    process_group: int | None = None,
 ) -> tuple[str, str]:
     """Collect output while ensuring interrupted commands cannot outlive us."""
     if cancellation_event is None:
         try:
             return process.communicate(timeout=timeout)
         except BaseException:
-            _kill_and_reap(process)
+            _kill_and_reap(process, process_group)
             raise
 
     deadline = time.monotonic() + timeout
     while not cancellation_event.is_set():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            _kill_and_reap(process)
+            _kill_and_reap(process, process_group)
             raise subprocess.TimeoutExpired(process.args, timeout)
         try:
             return process.communicate(timeout=min(remaining, _CANCELLATION_POLL_INTERVAL))
         except subprocess.TimeoutExpired:
             continue
         except BaseException:
-            _kill_and_reap(process)
+            _kill_and_reap(process, process_group)
             raise
-    _kill_and_reap(process)
+    _kill_and_reap(process, process_group)
     raise _CommandCancelled
 
 
@@ -494,6 +496,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             raise ValueError(msg)
 
         try:
+            start_new_session = sys.platform != "win32"
             process = subprocess.Popen(  # noqa: S602
                 command,
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
@@ -503,9 +506,15 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 text=True,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
-                start_new_session=(sys.platform != "win32"),
+                start_new_session=start_new_session,
             )
-            stdout, stderr = _communicate(process, effective_timeout, cancellation_event)
+            process_group = process.pid if start_new_session else None
+            stdout, stderr = _communicate(
+                process,
+                effective_timeout,
+                cancellation_event,
+                process_group=process_group,
+            )
 
             # Combine stdout and stderr
             # Prefix each stderr line with [stderr] for clear attribution.

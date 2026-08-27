@@ -13,6 +13,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
+    MouseMove,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
 from textual.fuzzy import Matcher
 from textual.message import Message
@@ -331,6 +332,16 @@ class CurrentModelTitle(Static):
             failure_noun="selection",
             success_message=f"{label} copied",
         )
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer over the copyable model span."""
+        self.styles.pointer = (
+            "pointer" if copy_span_target(event.style) is not None else "default"
+        )
+
+    def on_leave(self) -> None:
+        """Reset the pointer when it leaves the title."""
+        self.styles.pointer = "default"
 
 
 class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):

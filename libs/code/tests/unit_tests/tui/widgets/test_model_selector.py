@@ -285,15 +285,23 @@ class TestModelSelectorChrome:
             await pilot.pause()
             title = screen.query_one("#model-selector-title", Static)
             x = title.content_region.x - title.region.x
-            offset = None
+            model_offset = None
+            plain_offset = None
             for segment in title.render_line(0):
+                if segment.text.startswith("Select Model"):
+                    plain_offset = Offset(x, 0)
                 if segment.style and segment.style.meta.get("copy_text"):
-                    offset = Offset(x, 0)
+                    model_offset = Offset(x, 0)
                     break
                 x += segment.cell_length
-            assert offset is not None
+            assert model_offset is not None
+            assert plain_offset is not None
 
-            await pilot.click(title, offset=offset)
+            await pilot.hover(title, offset=model_offset)
+            assert title.styles.pointer == "pointer"
+            await pilot.hover(title, offset=plain_offset)
+            assert title.styles.pointer == "default"
+            await pilot.click(title, offset=model_offset)
             await pilot.pause()
 
             assert copied == ["anthropic:claude-sonnet-4-5"]

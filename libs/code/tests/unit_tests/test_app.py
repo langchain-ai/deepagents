@@ -24505,6 +24505,28 @@ class TestRestartAfterInstall:
 class TestDispatchModelSwitch:
     """Tests for the defer-vs-immediate model switch dispatcher."""
 
+    @pytest.fixture(autouse=True)
+    def _restore_runtime_model(self) -> Iterator[None]:
+        """Undo the real-`runtime_state` writes these tests make.
+
+        Unlike the rest of this module, which patches
+        `deepagents_code.config.runtime_state`, the confirmation-threshold
+        tests below set the process-global directly so
+        `_dispatch_model_switch` reads a spec worth warning about. Leaving
+        those values behind poisons any later test whose own model shares the
+        name: `configurable_model._model_spec_from_model` prefers
+        `runtime_state` over the model's own `ls_provider` whenever
+        `runtime_state.model_name` matches, so the leaked provider silently
+        wins.
+        """
+        original_provider = runtime_state.model_provider
+        original_name = runtime_state.model_name
+        try:
+            yield
+        finally:
+            runtime_state.model_provider = original_provider
+            runtime_state.model_name = original_name
+
     @pytest.mark.parametrize(
         ("flag", "should_notify"),
         [

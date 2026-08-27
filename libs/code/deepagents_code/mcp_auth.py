@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from _thread import LockType
     from pathlib import Path
 
+    from fastmcp.client.transports import ClientTransport
     from mcp.client.auth.oauth2 import OAuthContext
 
     from deepagents_code.mcp_oauth_ui import OAuthInteraction
@@ -2142,13 +2143,19 @@ def find_oauth_challenge(exc: BaseException) -> str | None:
     return None
 
 
-async def _drive_handshake(connections: dict) -> None:
-    """Open a one-shot MCP session for `connections` to trigger OAuth handshake."""
-    from langchain_mcp_adapters.client import MultiServerMCPClient
+async def _drive_handshake(transport: ClientTransport) -> None:
+    """Open a one-shot MCP session to trigger the OAuth handshake.
 
-    client = MultiServerMCPClient(connections=connections)
-    server_name = next(iter(connections))
-    async with client.session(server_name):
+    Connecting is the whole point: the provider attached to `transport` runs
+    its authorization flow during the connect, and persists tokens on success.
+    Nothing is done with the session itself.
+
+    Args:
+        transport: A remote transport carrying the OAuth provider to drive.
+    """
+    from fastmcp.client import Client
+
+    async with Client(transport):
         pass
 
 
@@ -2174,11 +2181,6 @@ async def login(
         RuntimeError: If the device flow fails or times out, or the
             OAuth handshake aborts.
     """  # noqa: DOC502 - `RuntimeError` surfaces via the device flow / handshake
-    from langchain_mcp_adapters.sessions import (
-        SSEConnection,
-        StreamableHttpConnection,
-    )
-
     from deepagents_code.mcp_tools import MCPConfigError, _resolve_server_type
 
     # OAuth login is discovery-based (RFC 9728), so it works for any remote
@@ -2231,22 +2233,15 @@ async def login(
         extra_auth_params=result.extra_auth_params or None,
         ui=ui,
     )
-    conn: StreamableHttpConnection | SSEConnection
-    if transport == "http":
-        conn = StreamableHttpConnection(
-            transport="streamable_http",
-            url=resolved_config["url"],
-            auth=provider,
-        )
-    else:
-        conn = SSEConnection(
-            transport="sse",
-            url=resolved_config["url"],
-            auth=provider,
-        )
+    from deepagents_code.mcp_tools import _build_transport
 
-    if "headers" in resolved_config:
-        conn["headers"] = resolved_config["headers"]
-
-    await _drive_handshake({server_name: conn})
+    await _drive_handshake(
+        _build_transport(
+            server_name,
+            transport,
+            {**resolved_config, "headers": resolved_config.get("headers") or {}},
+            auth=provider,
+            keep_alive=False,
+        )
+    )
     await ui.show_success(success_message)

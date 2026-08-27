@@ -173,7 +173,7 @@ asyncio.run(main())
         module = _import_fresh_server_graph()
         from deepagents_code.tools import fetch_url, web_search
 
-        readonly_metadata = ToolAnnotations(readOnlyHint=True).model_dump()
+        readonly_metadata = ToolAnnotations(readOnlyHint=True).model_dump(by_alias=True, exclude_none=True)
         assert readonly_metadata["readOnlyHint"] is True
         readonly = SimpleNamespace(
             name="search",

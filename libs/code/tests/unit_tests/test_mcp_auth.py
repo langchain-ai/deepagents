@@ -3555,9 +3555,8 @@ class TestLogin:
 
         from deepagents_code.mcp_auth import login
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+        async def _fake_handshake(transport: Any) -> None:
+            storage = FileTokenStorage("notion", server_url=transport.url)
             await storage.set_tokens(
                 OAuthToken(access_token="new", token_type="Bearer")
             )
@@ -3603,13 +3602,13 @@ class TestLogin:
 
         seen: dict[str, Any] = {}
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            provider_storage = connection["auth"].context.storage
+        async def _fake_handshake(transport: Any) -> None:
+            server_name, connection = "notion", transport
+            provider_storage = connection.auth.context.storage
             seen["tokens"] = await provider_storage.get_tokens()
             seen["expiry"] = await provider_storage.get_tokens_with_expiry()
             seen["client_info"] = await provider_storage.get_client_info()
-            fresh = FileTokenStorage(server_name, server_url=connection["url"])
+            fresh = FileTokenStorage(server_name, server_url=connection.url)
             await fresh.set_tokens(OAuthToken(access_token="new", token_type="Bearer"))
 
         with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
@@ -3641,7 +3640,7 @@ class TestLogin:
         await storage.set_tokens(OAuthToken(access_token="old", token_type="Bearer"))
         await storage.set_client_info(_make_client_info())
 
-        async def _failing_handshake(connections: dict) -> None:
+        async def _failing_handshake(transport: Any) -> None:
             msg = "user aborted"
             raise RuntimeError(msg)
 
@@ -3664,9 +3663,8 @@ class TestLogin:
         from deepagents_code.mcp_auth import login
         from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+        async def _fake_handshake(transport: Any) -> None:
+            storage = FileTokenStorage("notion", server_url=transport.url)
             await storage.set_tokens(
                 OAuthToken(access_token="new", token_type="Bearer")
             )
@@ -3710,9 +3708,10 @@ class TestLogin:
         monkeypatch.setenv("MCP_GATEWAY_TOKEN", "gw-token")
         captured: dict[str, Any] = {}
 
-        async def _fake_handshake(connections: dict) -> None:
+        async def _fake_handshake(transport: Any) -> None:
             await asyncio.sleep(0)
-            captured.update(next(iter(connections.values())))
+            captured["url"] = transport.url
+            captured["headers"] = dict(transport.headers or {})
 
         from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
@@ -3911,12 +3910,12 @@ class TestLogin:
 
         ui = _CapturingUI()
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            provider = connection["auth"]
+        async def _fake_handshake(transport: Any) -> None:
+            server_name, connection = "notion", transport
+            provider = connection.auth
             redirect = provider.context.redirect_handler
             await redirect("https://slack.com/oauth/v2/authorize?client_id=x")
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+            storage = FileTokenStorage(server_name, server_url=connection.url)
             await storage.set_tokens(OAuthToken(access_token="t", token_type="Bearer"))
 
         with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):

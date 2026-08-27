@@ -29,8 +29,8 @@ dcode uninstall ollama     # or /uninstall ollama in the TUI
 ```
 
 Removing an extra rebuilds the tool environment with the remaining extras. The
-`openai`, `anthropic`, and `google-genai` extras are base dependencies, so they
-cannot be removed. An extra that arrived through `all-providers` or
+`openai`, `anthropic`, `google-genai`, and `quickjs` extras are base dependencies,
+so they cannot be removed. An extra that arrived through `all-providers` or
 `all-sandboxes` cannot be removed on its own either — remove the composite extra,
 then reinstall the extras you want individually.
 

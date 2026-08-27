@@ -759,9 +759,8 @@ def show_uninstall_help() -> None:
     console.print("  dcode uninstall ollama")
     console.print()
     console.print("[bold]Restrictions:[/bold]", style=theme.PRIMARY)
-    console.print(
-        "  The openai, anthropic, and google-genai extras are base dependencies."
-    )
+    console.print("  The openai, anthropic, google-genai, and quickjs extras are")
+    console.print("  base dependencies.")
     console.print("  They cannot be removed.")
     console.print("  Editable and Homebrew installs cannot remove extras in place.")
     console.print(

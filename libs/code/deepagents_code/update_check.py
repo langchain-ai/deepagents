@@ -3660,7 +3660,7 @@ class ExtraNotInstalledError(RuntimeError):
 
 
 class ProtectedExtraError(ExtraNotInstalledError):
-    """Raised when an uninstall targets a required base provider extra.
+    """Raised when an uninstall targets a required base-dependency extra.
 
     A subclass so callers that only care about "cannot remove" can catch the
     base class, while the CLI and TUI can report a refusal separately from a
@@ -3672,7 +3672,7 @@ class CompositeExtraConflictError(ExtraNotInstalledError):
     """Raised when a selected composite still supplies the requested extra."""
 
 
-_BASE_PROVIDER_EXTRAS = frozenset({"anthropic", "google-genai", "openai"})
+_BASE_DEPENDENCY_EXTRAS = frozenset({"anthropic", "google-genai", "openai", "quickjs"})
 
 
 def uninstall_extra_command(
@@ -3690,7 +3690,7 @@ def uninstall_extra_command(
 
     Raises:
         ValueError: If `extra` is not a valid PEP 508 extra name.
-        ProtectedExtraError: If `extra` is a required base provider.
+        ProtectedExtraError: If `extra` is a required base dependency.
         CompositeExtraConflictError: If a selected composite supplies `extra`.
         ExtraNotInstalledError: If `extra` is not selected in this install.
 
@@ -3705,7 +3705,7 @@ def uninstall_extra_command(
         )
         raise ValueError(msg)
     selected_extra = canonicalize_name(extra)
-    if selected_extra in _BASE_PROVIDER_EXTRAS:
+    if selected_extra in _BASE_DEPENDENCY_EXTRAS:
         msg = f"Extra {extra!r} is a base dependency and cannot be removed."
         raise ProtectedExtraError(msg)
 

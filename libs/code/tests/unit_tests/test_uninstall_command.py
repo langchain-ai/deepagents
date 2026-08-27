@@ -149,8 +149,10 @@ class TestUninstallExtraCommand:
         assert f"deepagents-code[ollama]=={__version__}" in command
         assert "my-extra" not in command
 
-    @pytest.mark.parametrize("extra", ["openai", "anthropic", "google-genai"])
-    def test_base_provider_is_not_removable_even_when_receipt_lists_it(
+    @pytest.mark.parametrize(
+        "extra", ["openai", "anthropic", "google-genai", "quickjs"]
+    )
+    def test_base_dependency_is_not_removable_even_when_receipt_lists_it(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -551,6 +553,7 @@ class TestUninstallCli:
         out = capsys.readouterr().out
         assert "dcode uninstall NAME" in out
         assert "base dependencies" in out
+        assert "quickjs" in out
 
     def test_missing_subcommand_name_shows_help(self) -> None:
         args = argparse.Namespace(uninstall_target=None)
@@ -602,7 +605,9 @@ class TestUninstallCli:
         perform.assert_awaited_once()
         assert "all-providers" in self._console_text(console)
 
-    @pytest.mark.parametrize("extra", ["openai", "anthropic", "google-genai"])
+    @pytest.mark.parametrize(
+        "extra", ["openai", "anthropic", "google-genai", "quickjs"]
+    )
     def test_protected_extra_is_failure(self, extra: str) -> None:
         console = MagicMock()
         with (

@@ -7604,11 +7604,11 @@ class DeepAgentsApp(App):
         """
         try:
             from deepagents_code.update_check import (
-                _BASE_PROVIDER_EXTRAS,
+                _BASE_DEPENDENCY_EXTRAS,
                 _uv_tool_selected_extras,
             )
 
-            selected = sorted(_uv_tool_selected_extras() - _BASE_PROVIDER_EXTRAS)
+            selected = sorted(_uv_tool_selected_extras() - _BASE_DEPENDENCY_EXTRAS)
         except Exception:
             logger.debug("could not list selected extras", exc_info=True)
             return "Could not read the selected extras for this install."

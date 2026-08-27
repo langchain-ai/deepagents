@@ -86,9 +86,8 @@ class TestUninstallExtraCommand:
     ) -> None:
         _write_receipt(tmp_path, ("ollama",))
         monkeypatch.setattr(sys, "prefix", str(tmp_path))
-        monkeypatch.setattr("deepagents_code.update_check.__version__", "1.2.0rc1")
 
-        assert uninstall_extra_command("ollama") == (
+        assert uninstall_extra_command("ollama", version="1.2.0rc1") == (
             "uv tool install --reinstall -U "
             "deepagents-code==1.2.0rc1 --prerelease allow"
         )
@@ -232,8 +231,13 @@ class TestPerformUninstallExtra:
             finally:
                 events.append("release")
 
-        def command(_extra: str) -> str:
+        def read_version() -> str:
+            events.append("version")
+            return "9.8.7"
+
+        def command(_extra: str, *, version: str) -> str:
             events.append("command")
+            assert version == "9.8.7"
             return "uv tool install safe-command"
 
         with (
@@ -245,6 +249,10 @@ class TestPerformUninstallExtra:
             ),
             patch("deepagents_code.update_check.update_install_lock", lock),
             patch(
+                "deepagents_code.update_check.read_installed_distribution_version",
+                side_effect=read_version,
+            ),
+            patch(
                 "deepagents_code.update_check.uninstall_extra_command",
                 side_effect=command,
             ),
@@ -253,10 +261,35 @@ class TestPerformUninstallExtra:
             result = await perform_uninstall_extra("ollama", log_path=Path("/tmp/log"))
 
         assert result == (True, "done")
-        assert events == ["acquire", "command", "run", "release"]
+        assert events == ["acquire", "version", "command", "run", "release"]
         run.assert_awaited_once_with(
             "uv tool install safe-command", progress=None, log_path=Path("/tmp/log")
         )
+
+    async def test_unknown_installed_version_refuses_rebuild(self) -> None:
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method", return_value="uv"
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which", return_value="/usr/bin/uv"
+            ),
+            patch(
+                "deepagents_code.update_check.read_installed_distribution_version",
+                return_value=None,
+            ),
+            patch("deepagents_code.update_check.uninstall_extra_command") as command,
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run,
+        ):
+            success, output = await perform_uninstall_extra("ollama")
+
+        assert success is False
+        assert "Could not determine the installed" in output
+        command.assert_not_called()
+        run.assert_not_awaited()
 
     async def test_contended_lock_skips_receipt_read_and_subprocess(self) -> None:
         command = MagicMock()

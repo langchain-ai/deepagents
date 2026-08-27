@@ -3634,8 +3634,14 @@ def uninstall_extra_command(
     extra: str,
     *,
     distribution_name: str = "deepagents-code",
+    version: str = __version__,
 ) -> str:
     """Return the receipt-preserving command that removes one selected extra.
+
+    Args:
+        extra: Extra name to remove.
+        distribution_name: Name of the installed distribution to inspect.
+        version: Exact installed `deepagents-code` version to preserve.
 
     Raises:
         ValueError: If `extra` is not a valid PEP 508 extra name.
@@ -3658,8 +3664,10 @@ def uninstall_extra_command(
         raise ExtraNotInstalledError(msg)
     extras.remove(selected_extra)
     return _uv_tool_install_command(
-        version=__version__,
-        include_prereleases=None,
+        version=version,
+        include_prereleases=_resolve_include_prereleases(
+            None, installed=_parse_version(version)
+        ),
         distribution_name=distribution_name,
         extras=extras,
         reinstall=True,
@@ -3812,8 +3820,14 @@ async def perform_uninstall_extra(
     with update_install_lock() as holding_update_lock:
         if not holding_update_lock:
             return False, "Another dcode session is modifying the tool environment."
+        installed_version = read_installed_distribution_version()
+        if installed_version is None:
+            return False, (
+                "Could not determine the installed deepagents-code version; "
+                "refusing to rebuild the tool environment."
+            )
         try:
-            cmd = uninstall_extra_command(extra)
+            cmd = uninstall_extra_command(extra, version=installed_version)
         except ExtraNotInstalledError as exc:
             return False, str(exc)
         except (ToolRequirementIntrospectionError, ValueError) as exc:

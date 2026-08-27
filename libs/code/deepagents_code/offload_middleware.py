@@ -300,6 +300,7 @@ class _LazySummaryModel:
                 # a defect in the caller, not a bad model spec, so let it out.
                 if any(cls.__name__ == "BlockingError" for cls in type(exc).__mro__):
                     raise
+                _install_summary_model_retries(self._summarization)
                 if not self._warned:
                     # Warned once per summarizer: compaction is rare, but a
                     # broken spec would otherwise log on every attempt.

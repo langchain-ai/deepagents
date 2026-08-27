@@ -1012,7 +1012,10 @@ class TestLazySummaryModel:
         ):
             assert summarization._lc_helper._create_summary([]) == "main-model-summary"
 
-        assert summarization._lc_helper._summary_model is None
+        assert isinstance(
+            summarization._lc_helper._summary_model, _RetryingModelInvoker
+        )
+        assert summarization._lc_helper._summary_model._model is summarization.model
         assert summarization._lc_helper.trim_tokens_to_summarize is None
 
     def test_failure_warns_once_then_retries_the_override(self) -> None:

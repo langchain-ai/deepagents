@@ -356,7 +356,10 @@ class TestThreadFunctions:
 
     def test_delete_thread(self, temp_db, monkeypatch, tmp_path):
         """Delete thread removes thread."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.offload.get_deepagents_home",
+            lambda: tmp_path / ".deepagents",
+        )
         with patch.object(sessions, "get_db_path", return_value=temp_db):
             result = asyncio.run(sessions.delete_thread("thread1"))
             assert result is True
@@ -364,7 +367,10 @@ class TestThreadFunctions:
 
     def test_delete_thread_not_found(self, temp_db, monkeypatch, tmp_path):
         """Delete thread returns False for non-existing thread."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.offload.get_deepagents_home",
+            lambda: tmp_path / ".deepagents",
+        )
         with patch.object(sessions, "get_db_path", return_value=temp_db):
             result = asyncio.run(sessions.delete_thread("nonexistent"))
             assert result is False
@@ -373,7 +379,10 @@ class TestThreadFunctions:
         self, temp_db, monkeypatch, tmp_path
     ):
         """Deleting a thread removes its offloaded conversation history."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.offload.get_deepagents_home",
+            lambda: tmp_path / ".deepagents",
+        )
         archive_dir = tmp_path / ".deepagents" / "conversation_history"
         archive_dir.mkdir(parents=True)
         archive = archive_dir / "thread1.md"
@@ -387,7 +396,10 @@ class TestThreadFunctions:
         self, temp_db, monkeypatch, tmp_path
     ):
         """Checkpoint deletion drives the result; history cleanup is best-effort."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.offload.get_deepagents_home",
+            lambda: tmp_path / ".deepagents",
+        )
         # `delete_thread` imports the helper from `offload` at call time, so
         # patching it there simulates a failed (but swallowed) cleanup.
         from deepagents_code import offload
@@ -403,7 +415,10 @@ class TestThreadFunctions:
         self, temp_db, monkeypatch, tmp_path
     ):
         """A thread with no checkpoints still has its orphaned archive cleaned."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.offload.get_deepagents_home",
+            lambda: tmp_path / ".deepagents",
+        )
         archive_dir = tmp_path / ".deepagents" / "conversation_history"
         archive_dir.mkdir(parents=True)
         archive = archive_dir / "orphan-thread.md"
@@ -3078,6 +3093,13 @@ class TestCountMessagesFromDeltas:
                     additional_kwargs={"lc_source": "summarization"},
                 )
             ],
+            [
+                HumanMessage(
+                    content="hidden local context",
+                    id="h6",
+                    additional_kwargs={"lc_source": "local_context"},
+                )
+            ],
         ]
 
         assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
@@ -3143,6 +3165,11 @@ def test_inlined_checkpoint_count_excludes_internal_messages() -> None:
                         content="hidden",
                         id="h2",
                         additional_kwargs={"lc_source": "goal_state"},
+                    ),
+                    HumanMessage(
+                        content="hidden context",
+                        id="h3",
+                        additional_kwargs={"lc_source": "local_context"},
                     ),
                 ]
             }
@@ -3228,6 +3255,24 @@ class TestInitialPromptFromMessages:
         )
 
         assert result == "real prompt"
+
+    def test_skips_rendered_goal_context_with_objective_and_criteria(self) -> None:
+        """Detailed model context must not leak into a thread title."""
+        from deepagents_code.goal_state_notice import build_goal_state_notice
+
+        notice = build_goal_state_notice(
+            {
+                "_goal_objective": "Keep the SSO migration confidential",
+                "_goal_status": "active",
+                "_goal_rubric": "Do not expose the customer rollout list",
+            }
+        )
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [notice, {"role": "user", "content": "continue the migration"}]
+        )
+
+        assert result == "continue the migration"
 
     def test_unknown_source_can_be_the_initial_prompt(self) -> None:
         from langchain_core.messages import HumanMessage

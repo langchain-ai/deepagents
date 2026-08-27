@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (40)
+## Public (42)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -17,15 +17,16 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/auto` |  | Switch to Auto approval mode or manage its classifier model |
 | `/auto-update` |  | Turn automatic updates on or off |
 | `/changelog` |  | Open the changelog in a browser |
-| `/clear` |  | Clear the chat and start a new thread |
+| `/clear` |  | Start a fresh thread |
 | `/context` |  | Show current context window usage |
+| `/context-doctor` |  | Audit what a session injects and its estimated token cost |
 | `/copy` |  | Copy the latest assistant message to clipboard |
 | `/cost` |  | Show estimated thread cost |
 | `/docs` |  | Open the docs |
 | `/editor` |  | Open prompt in an external editor ($EDITOR) |
 | `/effort` |  | Set reasoning effort for the current model |
 | `/feedback` |  | Send feedback or report an issue |
-| `/force-clear` |  | Stop active work, clear the chat, and start a new thread |
+| `/force-clear` |  | Recover a stuck session with a fresh thread |
 | `/goal` |  | Set and manage a persistent objective with acceptance criteria |
 | `/help` |  | Show help and available commands |
 | `/install` |  | Install an optional integration |
@@ -36,6 +37,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/notifications` |  | Review notifications and configure warning settings |
 | `/offload` | `/compact` | Summarize and offload older messages to free context |
 | `/plugins` |  | Manage plugins |
+| `/prompts` |  | Search and reuse a previous prompt |
 | `/quit` | `/q` | Exit app |
 | `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |

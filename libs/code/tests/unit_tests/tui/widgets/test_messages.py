@@ -2,10 +2,11 @@
 
 import asyncio
 import logging
+from pathlib import Path
 from time import time
 from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from deepagents.backends.utils import (
@@ -18,6 +19,7 @@ from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.widgets import Markdown, Static
 
+import deepagents_code
 from deepagents_code import theme
 from deepagents_code._ask_user_types import ASK_USER_ANSWERED_SUMMARY
 from deepagents_code.diff_utils import DiffStats
@@ -29,6 +31,7 @@ from deepagents_code.tool_display import (
 )
 from deepagents_code.tui.widgets.message_store import MessageData
 from deepagents_code.tui.widgets.messages import (
+    _TOOL_ROW_ACTION_CLASS,
     AppMessage,
     AssistantMessage,
     DiffMessage,
@@ -540,8 +543,8 @@ class TestAssistantMessagePointer:
 class TestAssistantMessageStreamCoalescing:
     """Tests for the throttled streaming flush that keeps input responsive."""
 
-    async def test_append_buffers_until_flush(self) -> None:
-        """Tokens accumulate in `_content` but defer the markdown write."""
+    async def test_first_append_flushes_immediately(self) -> None:
+        """The first fragment renders immediately while later text is buffered."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
             stream = MagicMock()
@@ -549,16 +552,17 @@ class TestAssistantMessageStreamCoalescing:
             msg._stream = stream
 
             await msg.append_content("hello ")
+            stream.write.assert_awaited_once_with("hello ")
+
             await msg.append_content("world")
 
-            # No immediate write — tokens are buffered for the timer.
-            stream.write.assert_not_awaited()
+            assert stream.write.await_count == 1
             assert msg._content == "hello world"
-            assert msg._pending_append == "hello world"
+            assert msg._pending_append == "world"
             assert msg._flush_timer is not None
 
-    async def test_timer_flushes_coalesced_text_once(self) -> None:
-        """The throttled timer writes buffered tokens as a single fragment."""
+    async def test_timer_flushes_later_text(self) -> None:
+        """The throttled timer coalesces fragments after the immediate first write."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
             stream = MagicMock()
@@ -570,7 +574,7 @@ class TestAssistantMessageStreamCoalescing:
             await asyncio.sleep(msg._STREAM_FLUSH_INTERVAL * 2)
             await pilot.pause()
 
-            stream.write.assert_awaited_once_with("foobar")
+            assert stream.write.await_args_list[:2] == [call("foo"), call("bar")]
             assert msg._pending_append == ""
 
     async def test_stop_stream_flushes_and_cancels_timer(self) -> None:
@@ -615,8 +619,9 @@ class TestAssistantMessageStreamCoalescing:
 
             assert msg._flush_timer is None
             assert msg._pending_append == ""
-            # Buffered token must not bleed into the replacement render.
-            stream.write.assert_not_awaited()
+            # The initial fragment rendered immediately and must not bleed into
+            # the replacement render again.
+            stream.write.assert_awaited_once_with("buffered")
             markdown.update.assert_awaited_once_with("replacement")
 
     async def test_timer_created_once_across_appends(self) -> None:
@@ -681,7 +686,8 @@ class TestAssistantMessageStreamCoalescing:
             # via the Textual timer's exception handler.
             await msg._flush_pending_append()
 
-            stream.write.assert_awaited_once_with("kept")
+            assert stream.write.await_count == 2
+            stream.write.assert_awaited_with("kept")
             assert msg._pending_append == "kept"
 
             # Text arriving after the failure queues behind the retried fragment.
@@ -1014,6 +1020,9 @@ class TestToolCallMessageDuration:
             content = status._Static__content  # ty: ignore
             assert isinstance(content, Content)
             assert content.plain == "Took 4.9s"
+            assert app.msg._preview_row is not None
+            children = list(app.msg.children)
+            assert children.index(status) > children.index(app.msg._preview_row)
 
     async def test_execute_shows_fractional_seconds(self) -> None:
         """Sub-minute `execute` runs report tenths — `elapsed` is a float.
@@ -1552,6 +1561,12 @@ class _ToolMsgApp(App[None]):
         yield self.msg
 
 
+class _AsciiToolMsgApp(_ToolMsgApp):
+    """Tool-message app that loads the app-level ASCII overrides."""
+
+    CSS_PATH = Path(deepagents_code.__file__).resolve().parent / "app.tcss"
+
+
 def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
     """Build a single-`ToolCallMessage` Textual app for pilot-driven tests.
 
@@ -1566,7 +1581,7 @@ def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
 
 
 class TestToolCallMessageAppearance:
-    """Tool rows align their prefix glyph with the transcript edge."""
+    """Tool rows align their prefix and hover affordance with real actions."""
 
     async def test_has_flush_left_glyph_with_right_padding(self) -> None:
         """The tool prefix has no left inset while content keeps its right inset."""
@@ -1574,6 +1589,277 @@ class TestToolCallMessageAppearance:
         async with app.run_test():
             assert app.msg.styles.padding.left == 0
             assert app.msg.styles.padding.right == 1
+
+    async def test_output_prefix_aligns_with_tool_name(self) -> None:
+        """The output prefix starts beneath the tool name after its marker."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test():
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_row.styles.margin.left == 2
+
+    async def test_short_execute_output_has_no_actionable_hover(self) -> None:
+        """Fully visible shell output must not advertise a dead row action."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("hi")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_not_called()
+            assert app.msg._expanded is False
+
+    async def test_expandable_execute_output_has_actionable_hover(self) -> None:
+        """Truncated shell output opts the row into hover and click expansion."""
+        output = "\n".join(f"line {index}" for index in range(10))
+        app = _tool_msg_app("execute", {"command": "printf lots"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._expanded is True
+
+    async def test_emptied_output_drops_the_actionable_hover(self) -> None:
+        """Losing the output must release the hover border, not just the click.
+
+        `_update_output_display` bails out early when `_output` is empty, so the
+        row would otherwise keep the class its expandable output added and
+        advertise a click that `on_click` now refuses.
+        """
+        output = "\n".join(f"line {index}" for index in range(30))
+        app = _tool_msg_app("read_file", {"file_path": "example.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+            assert app.msg.has_class("-row-actionable")
+
+            app.msg.set_error("")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_not_called()
+
+    async def test_hover_rule_targets_the_row_action_class(self) -> None:
+        """The CSS selector and the constant must not drift apart.
+
+        Renaming one without the other leaves hover permanently dead with the
+        whole suite green, since nothing else reads the selector.
+        """
+        assert (
+            f"ToolCallMessage.{_TOOL_ROW_ACTION_CLASS}:hover"
+            in ToolCallMessage.DEFAULT_CSS
+        )
+
+    async def test_long_execute_command_is_actionable_without_expandable_output(
+        self,
+    ) -> None:
+        """A truncated command carries the row action even when output is short.
+
+        Guards the `has_expandable_args` term of `has_row_action`: dropping it
+        leaves this row unclickable, because `on_click` returns before reaching
+        its args fallthrough.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        app = _tool_msg_app("execute", {"command": command})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("hi")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._args_expanded is True
+
+    async def test_multiline_js_eval_is_actionable_without_expandable_output(
+        self,
+    ) -> None:
+        """A short `js_eval` result still leaves its code block clickable."""
+        app = _tool_msg_app("js_eval", {"code": "const a = 1;\nreturn a;"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("1")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_long_task_description_is_actionable_without_other_expansions(
+        self,
+    ) -> None:
+        """A truncated `task` description alone earns the row action.
+
+        Guards the `has_expandable_task_desc` term: without it this row loses
+        both its hover border and its click.
+        """
+        app = _tool_msg_app("task", {"description": "d" * 300})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_expandable_args is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._task_desc_expanded is True
+
+    async def test_short_task_description_is_not_actionable(self) -> None:
+        """A `task` row with nothing truncated advertises no row action."""
+        app = _tool_msg_app("task", {"description": "short"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_pending_row_is_actionable_before_output_arrives(self) -> None:
+        """A long command is clickable while the tool is still running.
+
+        Covers the `on_mount` sync, the only path that classes a row whose
+        output has never been set.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        app = _tool_msg_app("execute", {"command": command})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_pending_short_row_is_not_actionable(self) -> None:
+        """A pending row with nothing to reveal stays inert."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_short_read_file_output_is_actionable(self) -> None:
+        """Collapse-by-default output is actionable regardless of its size.
+
+        The counter-example to "short output means no action": `read_file`
+        hides its whole body because the header already names the path, so a
+        five-character result still expands. Covers the
+        `_COLLAPSE_OUTPUT_BY_DEFAULT` return in `_update_output_display`, which
+        exits before the shared sync at the end.
+        """
+        app = _tool_msg_app("read_file", {"file_path": "example.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("x = 1")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    @pytest.mark.parametrize(
+        ("tool_name", "output"),
+        [("grep", "No matches found"), ("glob", "No files found")],
+    )
+    async def test_empty_search_result_is_not_actionable(
+        self, tool_name: str, output: str
+    ) -> None:
+        """A terminal no-result message renders inline, so nothing can expand."""
+        app = _tool_msg_app(tool_name, {"pattern": "zzz"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_short_error_row_is_force_expanded_without_row_action(self) -> None:
+        """A force-expanded short error offers no collapse to advertise."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error("boom")
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_row_action_class_survives_rehydration(self) -> None:
+        """A row rebuilt from stored data re-derives its action from its args.
+
+        The hydrated path never calls `set_success`, so the class comes solely
+        from the `on_mount` sync after `_restore_deferred_state`. Also pins that
+        the store keeps `tool_args`: without them the row loses its action.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        source = _tool_msg_app("execute", {"command": command})
+        async with source.run_test() as pilot:
+            await pilot.pause()
+            source.msg.set_success("hi")
+            await pilot.pause()
+            data = MessageData.from_widget(source.msg)
+
+        assert data is not None
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+
+        class _RestoredApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _RestoredApp().run_test() as pilot:
+            await pilot.pause()
+
+            assert restored.has_row_action is True
+            assert restored.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_ascii_hover_requires_actionable_row(self) -> None:
+        """ASCII borders brighten only when clicking the row has an effect."""
+        app = _AsciiToolMsgApp("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            app.msg.set_success("hi")
+            app.msg.add_class("-ascii")
+            await pilot.pause()
+            default_border = app.msg.styles.border_left
+
+            await pilot.hover(app.msg)
+
+            assert app.msg.mouse_hover
+            assert app.msg.styles.border_left == default_border
+
+        output = "\n".join(f"line {index}" for index in range(10))
+        app = _AsciiToolMsgApp("execute", {"command": "printf lots"})
+        async with app.run_test() as pilot:
+            app.msg.set_success(output)
+            app.msg.add_class("-ascii")
+            await pilot.pause()
+            default_border = app.msg.styles.border_left
+
+            await pilot.hover(app.msg)
+
+            assert app.msg.mouse_hover
+            assert app.msg.styles.border_left != default_border
 
 
 class TestToolCallMessageOutputGutter:

@@ -1,8 +1,9 @@
-"""Tests for transient rubric grader transport retries."""
+"""Tests for CLI-specific rubric grader behavior."""
 
+import json
 from collections.abc import Callable, Iterator, Sequence
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -12,9 +13,11 @@ from deepagents.middleware.rubric import GraderResponse, RubricState
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.agents.middleware.human_in_the_loop import ApproveDecision
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.language_models import LanguageModelInput
+from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -26,7 +29,6 @@ from deepagents_code._constants import SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
 from deepagents_code.reliable_rubric import (
     ReliableRubricMiddleware,
     RubricGraderState,
-    _is_transient_grader_transport_error,
     _without_internal_control_messages,
 )
 
@@ -48,6 +50,80 @@ class _FixedGenericFakeChatModel(GenericFakeChatModel):
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Return this deterministic model after tool binding."""
         return self
+
+
+class _RetryingGraderModel(BaseChatModel):
+    """Stream a partial verdict, fail once, then return structured output."""
+
+    attempts: ClassVar[int] = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "retrying-grader"
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
+        *,
+        tool_choice: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        """Return this deterministic model after structured-output binding."""
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ChatResult:
+        return ChatResult(
+            generations=[
+                ChatGeneration(
+                    message=_grader_call(
+                        result="satisfied",
+                        explanation="verified after retry",
+                        criteria=[{"name": "tests pass", "passed": True}],
+                    )
+                )
+            ]
+        )
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Iterator[ChatGenerationChunk]:
+        type(self).attempts += 1
+        if type(self).attempts == 1:
+            yield ChatGenerationChunk(message=AIMessageChunk(content="partial"))
+            msg = "grader connection dropped"
+            raise httpx.ReadError(msg)
+        args = json.dumps(
+            {
+                "result": "satisfied",
+                "explanation": "verified after retry",
+                "criteria": [{"name": "tests pass", "passed": True}],
+            }
+        )
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(
+                content="",
+                tool_call_chunks=[
+                    {
+                        "name": "GraderResponse",
+                        "args": args,
+                        "id": "grader-call",
+                        "index": 0,
+                        "type": "tool_call_chunk",
+                    }
+                ],
+                chunk_position="last",
+            )
+        )
 
 
 def _grader_call(
@@ -73,19 +149,6 @@ def _grader_call(
     )
 
 
-def _read_error() -> httpx.ReadError:
-    return httpx.ReadError(
-        "connection closed while reading",
-        request=httpx.Request("POST", "https://grader.test"),
-    )
-
-
-def _typed_error(module: str, name: str, message: str = "boom") -> Exception:
-    """Build an exception whose type mimics an external library's error class."""
-    error_type = type(name, (Exception,), {"__module__": module})
-    return error_type(message)
-
-
 def _state() -> RubricState:
     return cast(
         "RubricState",
@@ -100,13 +163,50 @@ def _state() -> RubricState:
 
 
 def _satisfied_result() -> dict[str, Any]:
+    """A usable verdict: at least one per-criterion result, so no coverage retry."""
     return {
         "structured_response": GraderResponse(
             result="satisfied",
             explanation="all checks pass",
-            criteria=[],
+            criteria=[{"name": "tests pass", "passed": True}],
         )
     }
+
+
+def _frozen_criteria_state() -> RubricState:
+    """State whose frozen criteria list the grader is expected to cover exactly."""
+    state = _state()
+    state["_rubric_criteria"] = ["compiles", "tests pass"]
+    return state
+
+
+def _under_reported_result() -> dict[str, Any]:
+    """A `satisfied` verdict backed by fewer criteria than the rubric froze."""
+    return {
+        "structured_response": GraderResponse(
+            result="satisfied",
+            explanation="looks fine",
+            criteria=[{"name": "compiles", "passed": True}],
+        )
+    }
+
+
+def _fully_reported_result() -> dict[str, Any]:
+    return {
+        "structured_response": GraderResponse(
+            result="satisfied",
+            explanation="all checks pass",
+            criteria=[
+                {"name": "compiles", "passed": True},
+                {"name": "tests pass", "passed": True},
+            ],
+        )
+    }
+
+
+def _grader_payload(call: Any) -> str:  # noqa: ANN401
+    """Return the prompt text of the grader input passed to a recorded call."""
+    return str(call.args[0]["messages"][0].content)
 
 
 def _tool_satisfied_result() -> dict[str, Any]:
@@ -119,57 +219,6 @@ def _tool_satisfied_result() -> dict[str, Any]:
             )
         ],
     }
-
-
-class TestTransientGraderTransportClassification:
-    def test_read_error_is_transient(self) -> None:
-        assert _is_transient_grader_transport_error(_read_error()) is True
-
-    def test_remote_protocol_error_is_transient(self) -> None:
-        assert (
-            _is_transient_grader_transport_error(httpx.RemoteProtocolError("boom"))
-            is True
-        )
-
-    def test_httpcore_read_error_is_transient(self) -> None:
-        # httpcore errors cannot be caught via a stable isinstance, so the
-        # classifier matches them by module/name; exercise that path directly.
-        error = _typed_error("httpcore", "ReadError")
-
-        assert _is_transient_grader_transport_error(error) is True
-
-    def test_httpcore_remote_protocol_error_is_transient(self) -> None:
-        error = _typed_error("httpcore._exceptions", "RemoteProtocolError")
-
-        assert _is_transient_grader_transport_error(error) is True
-
-    def test_read_error_in_exception_group_is_transient(self) -> None:
-        group = ExceptionGroup(
-            "grading failed", [ValueError("unrelated"), _read_error()]
-        )
-
-        assert _is_transient_grader_transport_error(group) is True
-
-    def test_read_error_in_context_chain_is_transient(self) -> None:
-        wrapper = RuntimeError("grader request failed")
-        wrapper.__context__ = _read_error()
-
-        assert _is_transient_grader_transport_error(wrapper) is True
-
-    def test_transfer_encoding_error_in_cause_chain_is_transient(self) -> None:
-        error_type = type(
-            "TransferEncodingError",
-            (Exception,),
-            {"__module__": "aiohttp.http_exceptions"},
-        )
-        cause = error_type("Not enough data to satisfy transfer length header")
-        wrapper = RuntimeError("grader request failed")
-        wrapper.__cause__ = cause
-
-        assert _is_transient_grader_transport_error(wrapper) is True
-
-    def test_unrelated_exception_is_not_transient(self) -> None:
-        assert _is_transient_grader_transport_error(RuntimeError("bug")) is False
 
 
 class TestReliableRubricMiddleware:
@@ -210,14 +259,10 @@ class TestReliableRubricMiddleware:
         assert filtered["messages"] == [visible, summary]
         assert state["messages"] == [visible, state_notice, continuation, summary]
 
-    async def test_retries_only_grading_without_mutating_agent_transcript(self) -> None:
+    async def test_grading_does_not_mutate_agent_transcript(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")
-        error = httpx.ReadError(
-            "connection closed while reading",
-            request=httpx.Request("POST", "https://grader.test"),
-        )
         grader = AsyncMock()
-        grader.ainvoke.side_effect = [error, _satisfied_result()]
+        grader.ainvoke.return_value = _satisfied_result()
         middleware._grader = grader
         state = _state()
         state["_current_grading_run_id"] = "run-123"
@@ -227,7 +272,7 @@ class TestReliableRubricMiddleware:
         result = await middleware._agrade(state, 2, context=context)
 
         assert result.result == "satisfied"
-        assert grader.ainvoke.await_count == 2
+        grader.ainvoke.assert_awaited_once()
         assert all(
             call.kwargs["context"] is context for call in grader.ainvoke.await_args_list
         )
@@ -238,27 +283,73 @@ class TestReliableRubricMiddleware:
         assert operation_ids == {"run-123:2"}
         assert state["messages"] == messages_before
 
-    async def test_does_not_retry_unrelated_exception(self) -> None:
+    @pytest.mark.filterwarnings(
+        r"ignore:The middleware `RubricMiddleware` is in beta\..*"
+    )
+    async def test_midstream_failure_retries_and_parses_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hidden partial grader response retries only its failed model node."""
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        monkeypatch.setattr(
+            "deepagents_code.model_retry._retry_delay_seconds", lambda *_: 0
+        )
+        main_model = _FixedGenericFakeChatModel(
+            messages=iter([AIMessage(content="implementation complete")])
+        )
+        _RetryingGraderModel.attempts = 0
+        grader_model = _RetryingGraderModel()
+        rubric = ReliableRubricMiddleware(
+            model=grader_model,
+            grader_middleware=[
+                CodeModelRetryMiddleware(
+                    max_retries=1,
+                    stream_output_is_visible=False,
+                )
+            ],
+        )
+        agent = create_deep_agent(model=main_model, middleware=[rubric])
+
+        result: dict[str, Any] = {}
+        async for namespace, mode, data in agent.astream(
+            {
+                "messages": [HumanMessage(content="implement it")],
+                "rubric": "- tests pass",
+            },
+            stream_mode=["messages", "values"],
+            subgraphs=True,
+        ):
+            if not namespace and mode == "values" and isinstance(data, dict):
+                result = data
+
+        assert _RetryingGraderModel.attempts == 2
+        assert result["_rubric_status"] == "satisfied"
+        assert result["_rubric_evaluations"][-1]["criteria"] == [
+            {"name": "tests pass", "passed": True}
+        ]
+
+    async def test_does_not_apply_legacy_retry_async(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")
         grader = AsyncMock()
-        grader.ainvoke.side_effect = RuntimeError("programming error")
+        grader.ainvoke.side_effect = TimeoutError("provider timed out")
         middleware._grader = grader
 
-        with pytest.raises(RuntimeError, match="programming error"):
+        with pytest.raises(TimeoutError, match="provider timed out"):
             await middleware._agrade(_state(), 0)
 
         grader.ainvoke.assert_awaited_once()
 
-    def test_sync_grade_retries_transient_transport_failure(self) -> None:
+    def test_does_not_apply_legacy_retry_sync(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")
         grader = MagicMock()
-        grader.invoke.side_effect = [_read_error(), _satisfied_result()]
+        grader.invoke.side_effect = TimeoutError("provider timed out")
         middleware._grader = grader
 
-        result = middleware._grade(_state(), 0)
+        with pytest.raises(TimeoutError, match="provider timed out"):
+            middleware._grade(_state(), 0)
 
-        assert result.result == "satisfied"
-        assert grader.invoke.call_count == 2
+        grader.invoke.assert_called_once()
 
     def test_sync_grade_preserves_trace_metadata_and_context(
         self,
@@ -288,7 +379,7 @@ class TestReliableRubricMiddleware:
         )
         context = {"approval_mode": "manual"}
 
-        result = middleware._grade_once(_state(), 0, context=context)
+        result = middleware._invoke_grader(_state(), 0, context=context)
 
         assert result.result == "satisfied"
         assert grader.invoke.call_args.kwargs == {
@@ -332,7 +423,7 @@ class TestReliableRubricMiddleware:
         )
         context = {"approval_mode": "manual"}
 
-        result = await middleware._agrade_once(_state(), 0, context=context)
+        result = await middleware._ainvoke_grader(_state(), 0, context=context)
 
         assert result.result == "satisfied"
         assert grader.ainvoke.await_args.kwargs == {
@@ -348,29 +439,39 @@ class TestReliableRubricMiddleware:
         assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
         assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
 
-    async def test_second_transient_failure_propagates_async(self) -> None:
-        # The retry is bounded to one attempt: a second transient failure must
-        # surface so the base middleware can report it as a grader_error.
-        middleware = ReliableRubricMiddleware(model="fake-model")
-        grader = AsyncMock()
-        grader.ainvoke.side_effect = [_read_error(), _read_error()]
-        middleware._grader = grader
-
-        with pytest.raises(httpx.ReadError):
-            await middleware._agrade(_state(), 0)
-
-        assert grader.ainvoke.await_count == 2
-
-    def test_second_transient_failure_propagates_sync(self) -> None:
+    def test_inherits_sdk_coverage_retry_sync(self) -> None:
+        # The SDK's coverage retry still fires when the grader under-reports its
+        # criteria; this is separate from model transport retries.
         middleware = ReliableRubricMiddleware(model="fake-model")
         grader = MagicMock()
-        grader.invoke.side_effect = [_read_error(), _read_error()]
+        grader.invoke.side_effect = [
+            _under_reported_result(),
+            _fully_reported_result(),
+        ]
         middleware._grader = grader
 
-        with pytest.raises(httpx.ReadError):
-            middleware._grade(_state(), 0)
+        result = middleware._grade(_frozen_criteria_state(), 0)
 
+        assert result.result == "satisfied"
         assert grader.invoke.call_count == 2
+        assert "1 of the 2 criteria" in _grader_payload(grader.invoke.call_args_list[1])
+
+    async def test_inherits_sdk_coverage_retry_async(self) -> None:
+        middleware = ReliableRubricMiddleware(model="fake-model")
+        grader = AsyncMock()
+        grader.ainvoke.side_effect = [
+            _under_reported_result(),
+            _fully_reported_result(),
+        ]
+        middleware._grader = grader
+
+        result = await middleware._agrade(_frozen_criteria_state(), 0)
+
+        assert result.result == "satisfied"
+        assert grader.ainvoke.await_count == 2
+        assert "1 of the 2 criteria" in _grader_payload(
+            grader.ainvoke.await_args_list[1]
+        )
 
     def test_builds_context_aware_nested_grader(
         self,

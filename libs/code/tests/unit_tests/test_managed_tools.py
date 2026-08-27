@@ -2,24 +2,33 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
+import logging
 import os
 import subprocess
+import sys
 import tarfile
 import zipfile
 from email.message import Message
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest import mock
+from unittest.mock import patch
 
 import pytest
 
-from deepagents_code import managed_tools
+from deepagents_code import _paths, managed_tools
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER
+from deepagents_code._paths import PATHS
 from deepagents_code.managed_tools import (
     ChecksumMismatchError,
     ManagedToolUnavailableError,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _EXPECTED_PLATFORM_ARCHS = {
     ("darwin", "arm64"),
@@ -31,8 +40,25 @@ _EXPECTED_PLATFORM_ARCHS = {
 }
 
 
+@pytest.fixture
+def _isolated_fallback_shim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Keep the process-lifetime shim cache isolated and explicitly cleaned."""
+    monkeypatch.setattr(managed_tools, "_FALLBACK_SHIM", None)
+    yield
+    managed_tools._cleanup_fallback_shim()
+
+
+def test_managed_bin_is_installation_scoped() -> None:
+    """Managed helpers belong to the tool environment, not the active profile."""
+    assert PATHS.installation.managed_bin_dir == managed_tools.BIN_DIR
+    assert not managed_tools.BIN_DIR.is_relative_to(PATHS.profile.root)
+
+
 def test_ripgrep_assets_has_all_expected_keys() -> None:
     assert set(managed_tools.RIPGREP_ASSETS.keys()) == _EXPECTED_PLATFORM_ARCHS
+    assert set(managed_tools.RIPGREP_BINARY_SHA256) == _EXPECTED_PLATFORM_ARCHS
 
 
 def test_ripgrep_assets_filenames_match_platform_arch() -> None:
@@ -59,6 +85,9 @@ def test_ripgrep_assets_values_are_well_formed() -> None:
     for (platform_, arch), entry in managed_tools.RIPGREP_ASSETS.items():
         asset, sha256 = entry
         assert managed_tools.RIPGREP_VERSION in asset, (platform_, arch, asset)
+        assert len(sha256) == 64
+        int(sha256, 16)
+    for sha256 in managed_tools.RIPGREP_BINARY_SHA256.values():
         assert len(sha256) == 64
         int(sha256, 16)
 
@@ -97,6 +126,7 @@ async def test_ensure_ripgrep_returns_managed_when_current(
     managed = tmp_path / "rg"
     managed.write_bytes(b"#!/bin/sh\necho rg\n")
     monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
 
     fake = mock.Mock()
     fake.returncode = 0
@@ -829,36 +859,45 @@ async def test_ensure_ripgrep_preserves_stale_on_download_failure(
     assert managed.read_bytes() == stale_bytes
 
 
-def test_managed_binary_is_current_detects_match(tmp_path: Path) -> None:
+def test_managed_binary_is_current_detects_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     binary = tmp_path / "rg"
     binary.write_text("")
     fake = mock.Mock()
     fake.returncode = 0
     fake.stdout = f"ripgrep {managed_tools.RIPGREP_VERSION} (rev abc)\n"
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", return_value=fake):
         assert managed_tools._managed_binary_is_current(binary) is True
 
 
-def test_managed_binary_is_current_detects_stale(tmp_path: Path) -> None:
+def test_managed_binary_is_current_detects_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     binary = tmp_path / "rg"
     binary.write_text("")
     fake = mock.Mock()
     fake.returncode = 0
     fake.stdout = "ripgrep 13.0.0 (rev abc)\n"
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", return_value=fake):
         assert managed_tools._managed_binary_is_current(binary) is False
 
 
-def test_managed_binary_is_current_treats_oserror_as_stale(tmp_path: Path) -> None:
+def test_managed_binary_is_current_treats_oserror_as_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A binary that won't even exec (corrupt, wrong-arch) is not trusted."""
     binary = tmp_path / "rg"
     binary.write_bytes(b"not-a-real-binary")
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", side_effect=OSError("ENOEXEC")):
         assert managed_tools._managed_binary_is_current(binary) is False
 
 
 def test_managed_binary_is_current_treats_nonzero_exit_as_stale(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A binary that prints the right version but exits non-zero is not trusted."""
     binary = tmp_path / "rg"
@@ -866,12 +905,13 @@ def test_managed_binary_is_current_treats_nonzero_exit_as_stale(
     fake = mock.Mock()
     fake.returncode = 1
     fake.stdout = f"ripgrep {managed_tools.RIPGREP_VERSION} (rev abc)\n"
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", return_value=fake):
         assert managed_tools._managed_binary_is_current(binary) is False
 
 
 def test_managed_binary_is_current_treats_empty_stdout_as_stale(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A binary that exits 0 with no output is not trusted."""
     binary = tmp_path / "rg"
@@ -879,17 +919,40 @@ def test_managed_binary_is_current_treats_empty_stdout_as_stale(
     fake = mock.Mock()
     fake.returncode = 0
     fake.stdout = ""
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", return_value=fake):
         assert managed_tools._managed_binary_is_current(binary) is False
 
 
-def test_managed_binary_is_current_falls_open_on_timeout(tmp_path: Path) -> None:
+def test_managed_binary_is_current_falls_open_on_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A timed-out probe (sandboxed subprocess) does not force a redownload."""
     binary = tmp_path / "rg"
     binary.write_text("")
     timeout = subprocess.TimeoutExpired(cmd=[str(binary), "--version"], timeout=5)
+    monkeypatch.setattr(managed_tools, "_managed_binary_is_verified", lambda _: True)
     with mock.patch.object(subprocess, "run", side_effect=timeout):
         assert managed_tools._managed_binary_is_current(binary) is True
+
+
+def test_managed_binary_checksum_is_checked_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repository bytes cannot reach the version probe without a pinned hash."""
+    binary = tmp_path / "rg"
+    binary.write_bytes(b"repository-controlled executable")
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: "x86_64")
+
+    with mock.patch.object(
+        subprocess,
+        "run",
+        side_effect=AssertionError("unverified binary must not execute"),
+    ) as probe:
+        assert managed_tools._managed_binary_is_current(binary) is False
+
+    probe.assert_not_called()
 
 
 def test_download_to_enforces_total_deadline(
@@ -954,3 +1017,363 @@ def test_download_to_rejects_non_200_status(
     with pytest.raises(urllib.error.URLError, match="HTTP 503"):
         managed_tools._download_to("https://example.invalid/x", dest)
     assert dest.read_bytes() == b""
+
+
+@pytest.mark.usefixtures("_isolated_fallback_shim")
+class TestManagedBinDirFallback:
+    """A root-owned install prefix must not mean "no managed ripgrep".
+
+    `BIN_DIR` lives under `sys.prefix` so profiles can share one verified
+    download. On a system or root-owned prefix that directory is unwritable for
+    a normal user, which previously left the slow grep fallback as the
+    permanent steady state.
+    """
+
+    def test_prefers_the_shared_installation_directory(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared"
+        profile = tmp_path / "profile"
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+        ):
+            assert managed_tools._resolve_install_bin_dir() == shared
+        assert shared.is_dir()
+
+    def test_falls_back_to_the_profile_directory(self, tmp_path: Path) -> None:
+        # An existing *file* stands in for an uncreatable directory: `mkdir`
+        # raises the same way it does on an unwritable prefix.
+        shared = tmp_path / "shared"
+        shared.write_text("")
+        profile = tmp_path / "profile"
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+        ):
+            assert managed_tools._resolve_install_bin_dir() == profile
+        assert profile.is_dir()
+
+    def test_falls_back_when_existing_dir_is_unwritable(self, tmp_path: Path) -> None:
+        """A pre-existing root-owned dir passes `mkdir(exist_ok=True)` but must
+        not be selected — the fallback must be tried instead.
+        """  # noqa: D205
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        profile = tmp_path / "profile"
+        original_probe = _paths.probe_writable
+
+        def fake_probe(directory: Path, *, mode: int = 0o777) -> None:
+            if directory == shared:
+                msg = "Permission denied"
+                raise OSError(msg)
+            original_probe(directory, mode=mode)
+
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            # `first_writable` lives in `_paths`, so that is the seam.
+            patch.object(_paths, "probe_writable", side_effect=fake_probe),
+        ):
+            assert managed_tools._resolve_install_bin_dir() == profile
+        assert profile.is_dir()
+
+    def test_raises_when_no_location_is_usable(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Both candidates are named, and each real errno is logged."""
+        first = tmp_path / "a"
+        second = tmp_path / "b"
+        first.write_text("")
+        second.write_text("")
+        with (
+            patch.object(managed_tools, "BIN_DIR", first),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", second),
+            caplog.at_level(logging.INFO, logger="deepagents_code._paths"),
+            pytest.raises(managed_tools._NoWritableBinDirError) as exc_info,
+        ):
+            managed_tools._resolve_install_bin_dir()
+
+        assert str(first) in str(exc_info.value)
+        assert str(second) in str(exc_info.value)
+        # Each candidate's own failure is logged with a traceback, so --debug
+        # still shows which errno stopped it.
+        assert str(first) in caplog.text
+        assert str(second) in caplog.text
+
+    def test_a_non_permission_write_failure_still_raises_visibly(
+        self, tmp_path: Path
+    ) -> None:
+        """A full disk must not become the caller's "brew install" hint.
+
+        `probe_writable` raises `PermissionError` only for EACCES/EPERM. EROFS,
+        ENOSPC, and EDQUOT arrive as a plain `OSError`, which the generic
+        handler would turn into `None` and the misleading missing-tool hint.
+        """
+        first = tmp_path / "a"
+        second = tmp_path / "b"
+        with (
+            patch.object(managed_tools, "BIN_DIR", first),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", second),
+            patch.object(
+                _paths,
+                "probe_writable",
+                side_effect=OSError(errno.ENOSPC, "No space left on device"),
+            ),
+            pytest.raises(managed_tools._NoWritableBinDirError),
+        ):
+            managed_tools._resolve_install_bin_dir()
+
+    def test_managed_rg_path_finds_an_existing_fallback_binary(
+        self, tmp_path: Path
+    ) -> None:
+        """An `rg` left in the profile by an older layout is still found."""
+        shared = tmp_path / "shared"
+        profile = tmp_path / "profile"
+        profile.mkdir(parents=True)
+        name = "rg.exe" if sys.platform == "win32" else "rg"
+        existing = profile / name
+        existing.write_text("")
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+        ):
+            assert managed_tools.managed_rg_path() == existing
+
+    async def test_current_fallback_shadows_stale_shared_binary(
+        self, tmp_path: Path
+    ) -> None:
+        """A verified fallback avoids repeat installs and gets a private shim."""
+        shared = tmp_path / "shared"
+        profile = tmp_path / "profile"
+        shared.mkdir()
+        profile.mkdir()
+        name = "rg.exe" if sys.platform == "win32" else "rg"
+        stale = shared / name
+        current = profile / name
+        stale.write_text("")
+        current.write_text("")
+        install = mock.Mock(side_effect=AssertionError("must not reinstall"))
+
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            patch.object(
+                managed_tools,
+                "_managed_binary_is_current",
+                side_effect=lambda candidate: candidate == current,
+            ),
+            patch.object(
+                managed_tools,
+                "_managed_binary_is_verified",
+                return_value=True,
+            ),
+            patch.object(managed_tools, "_install_ripgrep_sync", install),
+            patch.dict(os.environ, {"PATH": "/usr/bin", OFFLINE: ""}, clear=False),
+        ):
+            assert await managed_tools.ensure_ripgrep() == current
+            managed_tools.prepend_managed_bin_to_path()
+            assert managed_tools.managed_rg_path() == current
+            parts = os.environ["PATH"].split(os.pathsep)
+            assert parts[0] not in {str(profile), str(shared)}
+            assert (Path(parts[0]) / name).read_text() == current.read_text()
+            assert str(shared) not in parts
+            assert str(profile) not in parts
+        install.assert_not_called()
+
+    async def test_unverified_fallback_is_replaced_without_execution(
+        self, tmp_path: Path
+    ) -> None:
+        """A checkout-provided profile binary never reaches `--version`."""
+        shared = tmp_path / "shared"
+        fallback = tmp_path / "checkout" / "profile" / "bin"
+        fallback.mkdir(parents=True)
+        candidate = fallback / managed_tools.managed_rg_filename()
+        candidate.write_bytes(b"repository-controlled executable")
+        replacement = b"checksum-verified replacement"
+
+        def install(_asset: str, _sha256: str) -> Path:
+            candidate.write_bytes(replacement)
+            return candidate
+
+        installed = mock.Mock(side_effect=install)
+
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", fallback),
+            patch.object(managed_tools, "_install_ripgrep_sync", installed),
+            patch.object(managed_tools.sys, "platform", "linux"),
+            patch.object(managed_tools, "_normalized_arch", return_value="x86_64"),
+            patch.dict(
+                managed_tools.RIPGREP_BINARY_SHA256,
+                {("linux", "x86_64"): hashlib.sha256(replacement).hexdigest()},
+            ),
+            patch.dict(os.environ, {"PATH": "/usr/bin", OFFLINE: ""}, clear=False),
+            patch("shutil.which", return_value=None),
+            patch.object(
+                subprocess,
+                "run",
+                side_effect=AssertionError("unverified binary must not execute"),
+            ) as probe,
+        ):
+            assert await managed_tools.ensure_ripgrep() == candidate
+            active = Path(os.environ["PATH"].split(os.pathsep)[0])
+            assert active != fallback
+            exposed = active / managed_tools.managed_rg_filename()
+            assert exposed.read_bytes() == replacement
+
+        probe.assert_not_called()
+        installed.assert_called_once()
+        assert candidate.read_bytes() == replacement
+
+    def test_verified_fallback_keeps_profile_siblings_off_path(
+        self, tmp_path: Path
+    ) -> None:
+        """A pinned `rg` does not make a repository-provided `git` trusted."""
+        shared = tmp_path / "shared"
+        profile = tmp_path / "checkout" / "profile" / "bin"
+        profile.mkdir(parents=True)
+        rg = profile / managed_tools.managed_rg_filename()
+        rg.write_bytes(b"pinned-rg")
+        (profile / "git").write_bytes(b"repository-controlled sibling")
+
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            patch.object(
+                managed_tools, "_managed_binary_is_verified", return_value=True
+            ),
+            patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False),
+        ):
+            managed_tools.prepend_managed_bin_to_path()
+            parts = os.environ["PATH"].split(os.pathsep)
+            shim = Path(parts[0])
+            exposed = shim / rg.name
+
+            assert shim != profile
+            assert {entry.name for entry in shim.iterdir()} == {rg.name}
+            assert not exposed.is_symlink()
+            assert exposed.read_bytes() == b"pinned-rg"
+            assert str(profile) not in parts
+
+            rg.write_bytes(b"branch-switched-rg")
+            assert exposed.read_bytes() == b"pinned-rg"
+
+    def test_path_prepends_only_the_active_location(self, tmp_path: Path) -> None:
+        """With no binary installed, only the preferred directory is added.
+
+        The profile fallback must not be prepended on spec. TB14 permits a
+        `DEEPAGENTS_HOME` inside a checkout, so `<profile>/bin` can hold
+        repository-controlled executables; prepending it when no managed
+        binary lives there would put them ahead of the system `PATH` for every
+        subprocess the agent starts.
+        """
+        shared = tmp_path / "shared"
+        profile = tmp_path / "profile"
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False),
+        ):
+            managed_tools.prepend_managed_bin_to_path()
+            parts = os.environ["PATH"].split(os.pathsep)
+
+        assert parts[0] == str(shared)
+        assert str(profile) not in parts
+        # Pre-existing entries survive.
+        assert "/usr/bin" in parts
+
+    def test_path_prepend_keeps_a_repo_bin_out_when_unused(
+        self, tmp_path: Path
+    ) -> None:
+        """A populated profile `bin/` stays off `PATH` without a managed rg.
+
+        Regression guard for the TB14 case: the directory exists and holds an
+        executable, but no managed ripgrep was installed there.
+        """
+        shared = tmp_path / "shared"
+        profile = tmp_path / "checkout" / "bin"
+        profile.mkdir(parents=True)
+        (profile / "make").write_text("")
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False),
+        ):
+            managed_tools.prepend_managed_bin_to_path()
+            parts = os.environ["PATH"].split(os.pathsep)
+
+        assert str(profile) not in parts
+
+    def test_path_prepend_is_idempotent(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared"
+        profile = tmp_path / "profile"
+        with (
+            patch.object(managed_tools, "BIN_DIR", shared),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile),
+            patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False),
+        ):
+            managed_tools.prepend_managed_bin_to_path()
+            once = os.environ["PATH"]
+            managed_tools.prepend_managed_bin_to_path()
+
+            assert os.environ["PATH"] == once
+
+
+async def test_ensure_ripgrep_raises_when_neither_bin_dir_is_writable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A write failure must not be reported to the user as "not installed".
+
+    Returning `None` sent the caller down the generic missing-tool notice,
+    which tells the user to `brew install ripgrep` — advice that cannot fix a
+    permission problem on a download that already succeeded.
+    """
+    bin_dir = tmp_path / "bin"
+    fallback = tmp_path / "profile-bin"
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "FALLBACK_BIN_DIR", fallback)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: bin_dir / "rg")
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: "x86_64")
+    monkeypatch.setattr(
+        managed_tools,
+        "_install_ripgrep_sync",
+        mock.Mock(side_effect=PermissionError("read-only")),
+    )
+
+    with (
+        mock.patch("shutil.which", return_value=None),
+        pytest.raises(ManagedToolUnavailableError) as exc_info,
+    ):
+        await managed_tools.ensure_ripgrep()
+
+    error = exc_info.value
+    assert error.reason == "permission_denied"
+    # Both locations are named: the fix depends on which one the user owns.
+    assert str(bin_dir) in error.message
+    assert str(fallback) in error.message
+
+
+def test_the_permission_error_reaches_the_cli_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI path renders the message instead of the missing-tool hint."""
+    from rich.console import Console
+
+    from deepagents_code.main import _auto_install_ripgrep_cli
+
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=200, force_terminal=False)
+    monkeypatch.setattr(
+        managed_tools,
+        "ensure_ripgrep",
+        mock.Mock(side_effect=managed_tools._unwritable_bin_dir_error()),
+    )
+
+    remaining = _auto_install_ripgrep_cli(console, ["ripgrep"])
+
+    output = buffer.getvalue()
+    assert "Could not write ripgrep to" in output
+    assert "brew install" not in output
+    # `rg` is still unavailable, so the tool stays in the missing list.
+    assert remaining == ["ripgrep"]

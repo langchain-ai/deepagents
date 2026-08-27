@@ -1,83 +1,26 @@
-"""Rubric middleware retries for transient grader transport failures."""
+"""CLI-specific rubric middleware customizations."""
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any, NotRequired, cast
 
-import httpx
 from deepagents.middleware.rubric import (
     RUBRIC_GRADER_MESSAGE_SOURCE,
     GraderResponse,
     RubricMiddleware,
     RubricState,
-    _strategy_from_result,  # noqa: PLC2701
 )
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, hook_config
-from langchain_core.messages import HumanMessage
-from langgraph.errors import GraphBubbleUp
+from langchain.agents.middleware.types import AgentMiddleware, AgentState
 
 from deepagents_code.goal_state_notice import is_conversation_control_message
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Sequence
 
     from deepagents.middleware.rubric import RubricEvaluation
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import AnyMessage
     from langchain_core.tools import BaseTool
-    from langgraph.runtime import Runtime
-
-logger = logging.getLogger(__name__)
-
-
-def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
-    """Yield an exception, its explicit/implicit causes, and group members once.
-
-    Descends into `BaseExceptionGroup` members as well as `__cause__` and
-    `__context__`, so a transient transport error wrapped in an async task group
-    is still discovered. Each exception is yielded at most once.
-    """
-    pending = [exc]
-    seen: set[int] = set()
-    while pending:
-        current = pending.pop()
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
-        yield current
-        if isinstance(current, BaseExceptionGroup):
-            pending.extend(current.exceptions)
-        if current.__cause__ is not None:
-            pending.append(current.__cause__)
-        elif current.__context__ is not None:
-            pending.append(current.__context__)
-
-
-def _is_transient_grader_transport_error(exc: BaseException) -> bool:
-    """Return whether a grader failure is a retryable transport/read error.
-
-    Matches response-read faults (`httpx`/`httpcore` `ReadError`) and
-    response-framing faults (`RemoteProtocolError`, aiohttp
-    `TransferEncodingError`). Connect/timeout errors are intentionally excluded
-    so only mid-response transport failures trigger the retry.
-    """
-    for current in _exception_chain(exc):
-        if isinstance(current, (httpx.ReadError, httpx.RemoteProtocolError)):
-            return True
-        error_type = type(current)
-        if error_type.__module__.startswith("httpcore") and error_type.__name__ in {
-            "ReadError",
-            "RemoteProtocolError",
-        }:
-            return True
-        if (
-            error_type.__module__ == "aiohttp.http_exceptions"
-            and error_type.__name__ == "TransferEncodingError"
-            and "Not enough data to satisfy transfer length header" in str(current)
-        ):
-            return True
-    return False
 
 
 def _without_internal_control_messages(state: RubricState) -> RubricState:
@@ -107,12 +50,20 @@ class RubricGraderState(AgentState[GraderResponse]):
 
 
 class ReliableRubricMiddleware(RubricMiddleware):
-    """Run a context-aware nested grader and retry transient transport failures.
+    """Run a context-aware nested grader with CLI verification middleware.
 
     The nested grader receives Deep Agents Code's verification middleware and
     runtime context without requiring those application-specific capabilities in
-    the SDK's `RubricMiddleware`. A transport retry re-invokes only the grader,
-    never the task agent, so grader tools must be read-only or idempotent.
+    the SDK's `RubricMiddleware`. The grader middleware stack owns model retries,
+    so transient failures follow the same budget and taxonomy as every other
+    dcode model call without replaying completed grader tools.
+
+    The CLI configures the grader's `CodeModelRetryMiddleware` with hidden
+    stream output. Grader messages use a nested namespace that both clients
+    filter before rendering, so a dropped read or truncated body can retry the
+    failed model node without duplicating visible output or replaying completed
+    grader tools. Other model retry middleware instances keep the streamed-output
+    guard enabled.
     """
 
     def __init__(  # noqa: D107
@@ -135,93 +86,6 @@ class ReliableRubricMiddleware(RubricMiddleware):
         )
         self._grader_middleware = list(grader_middleware or ())
         self._grader_context_schema = grader_context_schema
-
-    @hook_config(can_jump_to=["model"])
-    def after_agent(
-        self,
-        state: RubricState,
-        runtime: Runtime[Any],
-    ) -> dict[str, Any] | None:
-        """Grade synchronously while preserving nested graph interrupts.
-
-        Returns:
-            The rubric state update, or `None` when no rubric is active.
-
-        Raises:
-            GraphBubbleUp: If the nested grader pauses or otherwise bubbles control.
-        """
-        prep = self._prepare_evaluation(state, runtime)
-        if prep is None:
-            return None
-        grading_run_id, iteration = prep
-
-        try:
-            graded = self._grade(
-                state,
-                iteration,
-                context=getattr(runtime, "context", None),
-            )
-        except GraphBubbleUp:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            return self._handle_grader_exception(
-                runtime,
-                state,
-                grading_run_id,
-                iteration,
-                exc,
-            )
-
-        return self._finalize_evaluation(
-            graded,
-            state,
-            runtime,
-            grading_run_id,
-            iteration,
-        )
-
-    async def aafter_agent(
-        self,
-        state: RubricState,
-        runtime: Runtime[Any],
-    ) -> dict[str, Any] | None:
-        """Grade asynchronously while preserving nested graph interrupts.
-
-        Returns:
-            The rubric state update, or `None` when no rubric is active.
-
-        Raises:
-            GraphBubbleUp: If the nested grader pauses or otherwise bubbles control.
-        """
-        prep = self._prepare_evaluation(state, runtime)
-        if prep is None:
-            return None
-        grading_run_id, iteration = prep
-
-        try:
-            graded = await self._agrade(
-                state,
-                iteration,
-                context=getattr(runtime, "context", None),
-            )
-        except GraphBubbleUp:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            return self._handle_grader_exception(
-                runtime,
-                state,
-                grading_run_id,
-                iteration,
-                exc,
-            )
-
-        return self._finalize_evaluation(
-            graded,
-            state,
-            runtime,
-            grading_run_id,
-            iteration,
-        )
 
     def _ensure_grader(self) -> Any:  # noqa: ANN401
         if self._grader is not None:
@@ -250,96 +114,23 @@ class ReliableRubricMiddleware(RubricMiddleware):
         self,
         state: RubricState,
         iteration: int,
+        correction: str | None = None,
     ) -> dict[str, Any]:
         """Build nested-grader input with a stable verification-operation ID.
+
+        Drops dcode control turns before delegating to the SDK, which applies
+        the delimiter sanitization for the untrusted transcript.
+
+        Args:
+            state: Agent state, read for the rubric and transcript.
+            iteration: Zero-based grading iteration.
+            correction: Feedback about a previous unusable response, if any.
 
         Returns:
             The nested grader's input state.
         """
         grading_run_id = state.get("_current_grading_run_id") or "untracked"
         grader_state = _without_internal_control_messages(state)
-        payload = self._build_grader_payload(grader_state, iteration)
-        return {
-            "messages": [HumanMessage(content=payload)],
-            "rubric_grading_operation_id": f"{grading_run_id}:{iteration}",
-        }
-
-    def _grade_once(
-        self,
-        state: RubricState,
-        iteration: int,
-        *,
-        context: object | None,
-    ) -> GraderResponse:
-        grader = self._ensure_grader()
-        metadata = self._grader_trace_metadata()
-        self._record_grader_trace_metadata(metadata)
-        result = grader.invoke(
-            self._grader_input(state, iteration),
-            config=self._grader_invocation_config(metadata),
-            context=context,
-        )
-        self._record_grader_trace_metadata(
-            self._grader_trace_metadata(
-                effective_strategy=_strategy_from_result(result),
-            )
-        )
-        return self._extract_graded(result)
-
-    async def _agrade_once(
-        self,
-        state: RubricState,
-        iteration: int,
-        *,
-        context: object | None,
-    ) -> GraderResponse:
-        grader = self._ensure_grader()
-        metadata = self._grader_trace_metadata()
-        self._record_grader_trace_metadata(metadata)
-        result = await grader.ainvoke(
-            self._grader_input(state, iteration),
-            config=self._grader_invocation_config(metadata),
-            context=context,
-        )
-        self._record_grader_trace_metadata(
-            self._grader_trace_metadata(
-                effective_strategy=_strategy_from_result(result),
-            )
-        )
-        return self._extract_graded(result)
-
-    def _grade(
-        self,
-        state: RubricState,
-        iteration: int,
-        *,
-        context: object | None = None,
-    ) -> GraderResponse:
-        try:
-            return self._grade_once(state, iteration, context=context)
-        except Exception as exc:
-            if not _is_transient_grader_transport_error(exc):
-                raise
-            logger.warning(
-                "Rubric grader transport failed; retrying grading once",
-                exc_info=True,
-            )
-        return self._grade_once(state, iteration, context=context)
-
-    async def _agrade(
-        self,
-        state: RubricState,
-        iteration: int,
-        *,
-        context: object | None = None,
-    ) -> GraderResponse:
-        try:
-            return await self._agrade_once(state, iteration, context=context)
-        except Exception as exc:
-            if not _is_transient_grader_transport_error(exc):
-                raise
-            logger.warning(
-                "Rubric grader transport failed; retrying grading once",
-                exc_info=True,
-            )
-        return await self._agrade_once(state, iteration, context=context)
+        grader_input = super()._grader_input(grader_state, iteration, correction)
+        grader_input["rubric_grading_operation_id"] = f"{grading_run_id}:{iteration}"
+        return grader_input

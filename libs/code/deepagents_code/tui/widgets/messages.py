@@ -297,6 +297,15 @@ _STATUS_CLASSES: frozenset[str] = frozenset(
     {"-status-success", "-status-error", "-status-rejected", "-status-skipped"}
 )
 
+_TOOL_ROW_ACTION_CLASS: str = "-row-actionable"
+"""Marks a `ToolCallMessage` whose row click toggles something.
+
+Gates the hover border in `ToolCallMessage.DEFAULT_CSS` and the ASCII
+variant in `app.tcss`; both selectors name the literal, so a rename here
+must reach them too (`test_hover_rule_targets_the_row_action_class` covers
+the former).
+"""
+
 
 _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
@@ -1377,11 +1386,12 @@ class AssistantMessage(Vertical):
     update) re-yields the stale value and wrapped fenced-code bodies vanish.
     A full re-parse rebuilds every fence with correct internal state.
 
-    Streamed tokens are coalesced in `_pending_append` and flushed to the
-    `MarkdownStream` on a throttled timer (`_STREAM_FLUSH_INTERVAL`). Writing
-    every token immediately forced a markdown re-parse per chunk on the UI
-    event loop, which starved keyboard input while the model streamed.
-    Batching the writes keeps the event loop free so typing stays responsive.
+    The first streamed fragment is written immediately so the response appears
+    without waiting for `_STREAM_FLUSH_INTERVAL`. Later tokens are coalesced in
+    `_pending_append` and flushed to the `MarkdownStream` on a throttled timer.
+    Writing every token immediately forced a markdown re-parse per chunk on the
+    UI event loop, which starved keyboard input while the model streamed;
+    batching subsequent writes keeps typing responsive.
     """
 
     _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
@@ -1414,9 +1424,9 @@ class AssistantMessage(Vertical):
         Args:
             content: Initial markdown content
             local_only: `True` when the content came from the client rather
-                than the agent — currently only non-incognito `!` shell
-                output, which borrows this widget for its markdown rendering
-                and streaming. Callers that ask "did the agent do anything in
+                than the agent — currently `!` and `!!` shell output, both of
+                which borrow this widget for its markdown rendering and
+                streaming. Callers that ask "did the agent do anything in
                 this thread" must not count such a message.
             **kwargs: Additional arguments passed to parent
         """
@@ -1493,11 +1503,11 @@ class AssistantMessage(Vertical):
         return self._stream
 
     async def append_content(self, text: str) -> None:
-        """Append streamed content, coalescing writes onto a throttled timer.
+        """Append streamed content, then coalesce later writes on a timer.
 
-        Tokens are buffered in `_pending_append` and written to the
-        `MarkdownStream` at most once per `_STREAM_FLUSH_INTERVAL` so the UI
-        event loop stays free to process keypresses while the model streams.
+        The first fragment is written immediately. Later fragments are buffered
+        and written at most once per `_STREAM_FLUSH_INTERVAL` so the UI event
+        loop stays free to process keypresses while the model streams.
 
         Args:
             text: Text to append
@@ -1507,6 +1517,7 @@ class AssistantMessage(Vertical):
         self._content_parts.append(text)
         self._pending_append += text
         if self._flush_timer is None:
+            await self._flush_pending_append()
             self._flush_timer = self.set_interval(
                 self._STREAM_FLUSH_INTERVAL, self._flush_pending_append
             )
@@ -1670,6 +1681,7 @@ class ToolCallMessage(Vertical):
         layout: horizontal;
         height: auto;
         width: 1fr;
+        margin-left: 2;
     }
 
     /* Fixed gutter holds the output glyph so soft-wrapped content lines stay
@@ -1718,11 +1730,11 @@ class ToolCallMessage(Vertical):
         background: $warning 8%;
     }
 
-    ToolCallMessage:hover {
+    ToolCallMessage.-row-actionable:hover {
         border-left: wide $tool-hover;
     }
     """
-    """Left border tracks tool lifecycle; hover brightens for interactivity."""
+    """Left border tracks tool lifecycle; actionable rows brighten on hover."""
 
     _PREVIEW_LINES = 6
     """Maximum number of lines to show in preview mode."""
@@ -1912,6 +1924,7 @@ class ToolCallMessage(Vertical):
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
+        self._sync_row_actionability()
         # `to_widget` sets `_diff_superseded` before mount, but not every
         # `_restore_deferred_state` branch applies visibility. Applied here so
         # hiding does not depend on which branch a tool takes.
@@ -2215,6 +2228,8 @@ class ToolCallMessage(Vertical):
         self._status_widget.update(
             Content.styled(f"Took {format_duration(duration)}", "dim")
         )
+        if self._hint_widget is not None:
+            self.move_child(self._status_widget, after=self._hint_widget)
         self._status_widget.display = True
 
     def _show_success_status(self) -> None:
@@ -2478,6 +2493,44 @@ class ToolCallMessage(Vertical):
                 _TOOL_SUPERSEDED_ACCESSORY_CLASS,
             )
 
+    @property
+    def has_row_action(self) -> bool:
+        """Whether clicking this row can reveal or hide additional detail.
+
+        Kept in exact lockstep with `on_click`'s routing: every term here must
+        reach a toggle there, or the row brightens on hover over a click that
+        does nothing — the bug this predicate exists to prevent. The reverse
+        also holds, so `on_click` can return early on a False.
+
+        `on_click` guards its output branch with an extra `self._output` check,
+        but that cannot strand a True: `_has_expandable_output` strips `_output`
+        first and returns False when it is empty, so `has_expandable_output`
+        already implies a truthy `_output`.
+        """
+        return (
+            self.has_expandable_output
+            or self.has_expandable_args
+            or self.has_expandable_task_desc
+        )
+
+    def _sync_row_actionability(self) -> None:
+        """Keep the hover affordance aligned with the row's click behavior.
+
+        Called from `on_mount` and from every exit of `_update_output_display`.
+        That set is sufficient rather than arbitrary: `_args` is assigned once
+        in `__init__` and never mutated, so `has_expandable_args` and
+        `has_expandable_task_desc` are fixed after construction, and every write
+        to `_output`/`_status` that can move `has_expandable_output` routes
+        through `_update_output_display`. `set_rejected`/`set_skipped` are the
+        exception and need no sync, because a row reaching them carries no
+        output for the status flip to reinterpret.
+
+        Anything that starts mutating `_args`, or that sets output outside
+        `_update_output_display`, must call this too or the row keeps a hover
+        border over a dead click.
+        """
+        self.set_class(self.has_row_action, _TOOL_ROW_ACTION_CLASS)
+
     def toggle_output(self) -> None:
         """Toggle expansion of the tool's preview/full output."""
         if not self._output:
@@ -2517,8 +2570,23 @@ class ToolCallMessage(Vertical):
         unexpandable result sitting below a multi-line, collapsible code block,
         and the old "output wins whenever it exists" rule left that code block
         stuck.
+
+        A row with nothing to toggle handles nothing and lets the click bubble
+        (see `has_row_action`); the routing below applies only to actionable
+        rows.
         """
-        event.stop()  # Prevent click from bubbling up and scrolling
+        if not self.has_row_action:
+            # Deliberate: an inert row should behave like transcript
+            # background, so the click reaches `DeepAgentsApp.on_click` and
+            # refocuses the chat input — matching `AssistantMessage`, which has
+            # no handler at all. `_ChatScroll` sets `FOCUS_ON_CLICK = False`,
+            # so bubbling cannot scroll the transcript, and tool group members
+            # are DOM siblings rather than children, so it cannot reach
+            # `ToolGroupSummary.on_click` and collapse the group either.
+            return
+        # Actionable rows own their click: stopping it keeps the transcript from
+        # scrolling and the chat input from stealing focus mid-toggle.
+        event.stop()
         if self.has_expandable_task_desc and self._click_targets_task_desc_region(
             event.widget
         ):
@@ -3692,6 +3760,11 @@ class ToolCallMessage(Vertical):
             or not self._full_row
             or not self._hint_widget
         ):
+            # Syncs like every other exit: emptying `_output` drops the row's
+            # output action, and without this the row keeps a hover border over
+            # a click that no longer does anything. Reached pre-mount too, where
+            # `on_mount` syncs again afterwards, so the duplicate is harmless.
+            self._sync_row_actionability()
             return
 
         output_stripped = self._output.strip()
@@ -3724,6 +3797,7 @@ class ToolCallMessage(Vertical):
             self._preview_row.display = False
             self._full_row.display = False
             self._hint_widget.display = False
+            self._sync_row_actionability()
             return
 
         if self._expanded:
@@ -3767,6 +3841,7 @@ class ToolCallMessage(Vertical):
                     )
                 )
                 self._hint_widget.display = True
+                self._sync_row_actionability()
                 return
             # Truncate the preview only when the output is large enough to
             # warrant it; `_ALWAYS_PREVIEW_TOOLS` use their compact preview
@@ -3796,6 +3871,8 @@ class ToolCallMessage(Vertical):
                 self._hint_widget.display = True
             else:
                 self._hint_widget.display = False
+
+        self._sync_row_actionability()
 
     def _output_hint_keys(self) -> str:
         """Affordances to advertise in the output expand/collapse hint.

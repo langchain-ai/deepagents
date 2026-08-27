@@ -288,9 +288,10 @@ class MessageData:
     assistant_local_only: bool = False
     """Whether an `ASSISTANT` row holds client-side output, not agent output.
 
-    Set for non-incognito `!` shell output, which renders through
+    Set for both `!` and `!!` shell output, which render through
     `AssistantMessage` without invoking the agent. Lets callers ask whether the
-    *agent* produced anything in a thread rather than trusting the row type.
+    *agent* produced anything in a thread rather than trusting the row type —
+    see `_store_has_server_output` and the `/copy` scan in `app.py`.
     Never set on a restored transcript: shell output reaches thread state as a
     `<user_shell_command>` human message, not as an assistant turn.
     """
@@ -646,7 +647,7 @@ class MessageStore:
             hydration starts.
     """
 
-    INITIAL_WINDOW_SIZE: int = 100
+    INITIAL_WINDOW_SIZE: int = 30
     WINDOW_SIZE: int = 800
     HARD_WINDOW_SIZE: int = 900
     HYDRATE_BUFFER: int = 8

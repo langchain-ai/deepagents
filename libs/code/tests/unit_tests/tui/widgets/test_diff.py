@@ -6,11 +6,14 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from rich.cells import get_character_cell_size
 from textual.geometry import Offset
 from textual.selection import Selection
+from textual.style import Color, Style
+from textual.visual import RenderOptions
 from textual.widgets import Static
 
-from deepagents_code.config import get_glyphs
+from deepagents_code.config import ASCII_GLYPHS, get_glyphs, reset_glyphs_cache
 from deepagents_code.diff_utils import (
     DiffStats,
     count_diff_change_lines,
@@ -18,6 +21,7 @@ from deepagents_code.diff_utils import (
 )
 from deepagents_code.tui.widgets import diff as diff_module
 from deepagents_code.tui.widgets.diff import (
+    _DiffRowContent,
     _DiffRowStatic,
     clamp_selection,
     compose_diff_lines,
@@ -30,6 +34,7 @@ if TYPE_CHECKING:
 
     from textual.app import ComposeResult
     from textual.content import Content
+    from textual.strip import Strip
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +48,22 @@ def _clear_highlight_cache() -> Iterator[None]:
     diff_module._highlight_lines_cached.cache_clear()
     yield
     diff_module._highlight_lines_cached.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _unicode_glyphs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Render every diff row with the Unicode glyph set, regardless of ambient state.
+
+    The diff renderer reads `get_glyphs()`, which is cached process-wide from the
+    terminal charset detection. An unrelated test that forces ASCII mode (e.g. in
+    `test_charset.py`) would otherwise leave `.` as the continuation glyph and
+    break the `…` expectations below, with xdist scheduling deciding which run
+    order exposes the leak.
+    """
+    monkeypatch.setenv("UI_CHARSET_MODE", "unicode")
+    reset_glyphs_cache()
+    yield
+    reset_glyphs_cache()
 
 
 def _rendered(diff: str, max_lines: int | None = 100) -> list[Static]:
@@ -125,6 +146,59 @@ def _texts(widgets: list[Static]) -> list[str]:
         The plain-text rendering of each widget, in order.
     """
     return [_plain(w) for w in widgets]
+
+
+def _visual_strips(
+    widget: Static,
+    width: int,
+    selection: Selection | None = None,
+    selection_style: Style | None = None,
+) -> list[Strip]:
+    """Render a diff widget at `width` and return its visual strips."""
+    content = cast("Content", widget.render())
+    options = RenderOptions(lambda _: Style.null(), {}, selection, selection_style)
+    return content.render_strips(width, None, Style.null(), options)
+
+
+def _visual_lines(widget: Static, width: int) -> list[str]:
+    """Render a diff widget at `width` and return its visual lines."""
+    return [strip.text for strip in _visual_strips(widget, width)]
+
+
+def _offset_at(widget: Static, width: int, x: int, y: int) -> int | None:
+    """Resolve a visual cell to a logical offset the way Textual does.
+
+    Mirrors `Compositor.get_widget_and_offset_at`, which reads a segment's
+    `offset` metadata and then adds the character index *within* that segment.
+    Asserting on the metadata alone cannot tell a correct offset from one that
+    happens to share a segment base, so tests go through this instead.
+    """
+    strip = _visual_strips(widget, width)[y]
+    start = end = 0
+    for segment in strip:
+        end += segment.cell_length
+        offset = (segment.style.meta if segment.style else {}).get("offset")
+        if offset is None or offset[1] is None:
+            start = end
+            continue
+        if start <= x < end:
+            cut = x - start
+            size = index = 0
+            for character in segment.text:
+                if size >= cut:
+                    break
+                size += get_character_cell_size(character)
+                index += 1
+            return offset[0] + index
+        start = end
+    return None
+
+
+def _selected(widget: Static, width: int, x: int, y: int) -> str:
+    """Return the source text a drag from cell `(x, y)` to the row end copies."""
+    content = cast("Content", widget.render())
+    offset = _offset_at(widget, width, x, y)
+    return "" if offset is None else content.plain[offset:]
 
 
 # A diff exercising file headers, a hunk header, and context/add/remove lines.
@@ -233,6 +307,285 @@ class TestComposeDiffLines:
         # The gutter glyph, right-aligned line number, and separator must be
         # the same width on every row so the diff body lines up vertically.
         assert ctx.index("ctx") == removed.index("removed") == added1.index("added1")
+
+    def test_wrapped_lines_replace_line_numbers_with_ellipsis(self) -> None:
+        """Continuation text stays aligned under source, not the gutter."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+
+        assert _visual_lines(widget, 12) == ["680 + abcdef", "  …   ghijkl"]
+
+    def test_continuation_gutter_maps_to_the_line_start(self) -> None:
+        """Every synthetic gutter cell selects from the line's first source char.
+
+        The gutter is decorative and absent from the logical content, so a
+        drag begun anywhere in it must copy the whole visual line rather than
+        skipping into the middle of it.
+        """
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+        prefix = cast("_DiffRowStatic", widget).selection_prefix
+
+        gutter = [_offset_at(widget, 12, x, 1) for x in range(prefix)]
+        assert gutter == [12] * prefix
+        assert _selected(widget, 12, 2, 1) == "ghijkl"
+
+    def test_unnumbered_rows_keep_normal_wrapping(self) -> None:
+        """Hiding line numbers must not clip wrapped source text."""
+        widget = next(
+            w
+            for w in compose_diff_lines(
+                "@@ -1 +1 @@\n+abcdefghijkl", show_numbers=False
+            )
+            if isinstance(w, Static) and "abc" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+        lines = _visual_lines(widget, 6)
+
+        assert len(lines) > 1
+        assert "".join(lines).replace(" ", "") == "+abcdefghijkl"
+        assert content.get_height({}, 6) == len(lines)
+
+    def test_narrow_width_uses_normal_wrapping_without_clipping(self) -> None:
+        """Rows narrower than the gutter still render every source cell."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdef") if "abc" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+        lines = _visual_lines(widget, 5)
+
+        assert lines == ["680 +", "abcde", "f"]
+        assert content.get_height({}, 5) == len(lines)
+
+    def test_wide_characters_survive_the_narrowest_body_column(self) -> None:
+        """A body column too narrow for one wide char falls back, never blanks."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+漢字漢字") if "漢" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+
+        for width in (7, 8, 9):
+            lines = _visual_lines(widget, width)
+            assert "".join(lines).count("漢") == 2, width
+            assert "".join(lines).count("字") == 2, width
+            assert content.get_height({}, width) == len(lines), width
+
+    def test_wide_character_with_zero_width_suffix_survives(self) -> None:
+        """A zero-width suffix cannot hide the preceding wide character."""
+        text = "漢\ufe0f"
+        widget = next(
+            w for w in _rendered(f"@@ -680 +680 @@\n+{text}") if "漢" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+        lines = _visual_lines(widget, 7)
+
+        assert "漢" in "".join(lines)
+        assert content.get_height({}, 7) == len(lines)
+
+    def test_word_wrapped_rows_report_the_height_they_render(self) -> None:
+        """`Static` is `height: auto`, so a short count clips the last lines."""
+        widget = next(
+            w
+            for w in _rendered("@@ -680 +680 @@\n+alpha beta gamma delta epsilon")
+            if "alpha" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+
+        for width in (12, 20, 28):
+            lines = _visual_lines(widget, width)
+            assert len(lines) > 1, width
+            assert content.get_height({}, width) == len(lines), width
+            # Drop the synthetic gutter glyph each continuation repeats;
+            # at the narrowest width even a single word folds mid-token.
+            painted = "".join(lines).replace("…", "").replace(" ", "")
+            assert painted == "680+alphabetagammadeltaepsilon", width
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "x" * (diff_module._MAX_WRAPPED_OFFSET_CHARS + 1),
+            "\t" * (diff_module._MAX_WRAPPED_OFFSET_CHARS // 8 + 1),
+        ],
+        ids=["plain", "tabs"],
+    )
+    def test_oversized_rows_do_not_cache_per_character_offsets(self, body: str) -> None:
+        """Large rows fall back before allocating custom offset tables."""
+        widget = next(
+            w
+            for w in _rendered(f"@@ -680 +680 @@\n+{body}")
+            if isinstance(w, _DiffRowStatic)
+        )
+        content = cast("_DiffRowContent", widget.render())
+
+        content.get_height({}, 12)
+        assert "_body" not in content.__dict__
+        assert "_body_offsets" not in content.__dict__
+
+    def test_wrapped_tabbed_lines_keep_all_source_text(self) -> None:
+        """Tab expansion cannot make wrapping discard trailing source."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+\tabcdef") if "abc" in _plain(w)
+        )
+
+        assert _visual_lines(widget, 12) == [
+            "680 +       ",
+            "  …     abcd",
+            "  …   ef",
+        ]
+
+    def test_tabbed_continuations_report_raw_logical_offsets(self) -> None:
+        """Offsets index the raw row, not the wider tab-expanded rendering.
+
+        Selections are extracted from `Content.plain`, where a tab is one
+        character; reporting expanded indexes made a tab-indented row copy the
+        wrong characters and, on its last lines, nothing at all.
+        """
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+\tabcdef") if "abc" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+
+        assert content.plain == "680 + \tabcdef"
+        # Visual cell -> the source character actually painted there.
+        for width, x, y, expected in ((12, 8, 1, "a"), (12, 6, 2, "e")):
+            offset = _offset_at(widget, width, x, y)
+            assert offset is not None
+            assert offset < len(content.plain)
+            assert content.plain[offset] == expected
+        assert _selected(widget, 12, 8, 1) == "abcdef"
+        assert _selected(widget, 12, 7, 2) == "f"
+
+    def test_unstyled_wide_character_before_tab_keeps_source_offsets(self) -> None:
+        """Cell-aware tab expansion keeps painted characters copyable."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+漢\tabcdef") if "漢" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+
+        for expected in "abcdef":
+            y, line = next(
+                (y, line)
+                for y, line in enumerate(_visual_lines(widget, 12))
+                if expected in line
+            )
+            index = line.index(expected)
+            x = sum(get_character_cell_size(char) for char in line[:index])
+            offset = _offset_at(widget, 12, x, y)
+            assert offset is not None
+            assert content.plain[offset] == expected
+            if expected == "a":
+                assert content.plain[offset:] == "abcdef"
+
+    def test_styled_continuations_keep_per_segment_offsets(self) -> None:
+        """Clicks on later styled segments map to their source characters."""
+        text = "value = alpha + beta + gamma"
+        widget = next(
+            w
+            for w in compose_diff_lines(
+                f"@@ -0,0 +1 @@\n+{text}", path="m.py", after=f"{text}\n"
+            )
+            if isinstance(w, Static) and "alpha" in _plain(w)
+        )
+        content = cast("Content", widget.render())
+        line = _visual_lines(widget, 18)[1]
+        prefix = cast("_DiffRowStatic", widget).selection_prefix
+
+        # Highlighting cuts this line into several segments; each source cell
+        # must still resolve to the character drawn in it.
+        for x in range(prefix, len(line)):
+            offset = _offset_at(widget, 18, x, 1)
+            assert offset is not None, x
+            assert content.plain[offset] == line[x], x
+
+    def test_ascii_continuation_fits_the_line_number_column(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ASCII mode uses one dot, preserving the gutter width."""
+        monkeypatch.setattr(diff_module, "get_glyphs", lambda: ASCII_GLYPHS)
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+
+        assert _visual_lines(widget, 12) == ["680 + abcdef", "  .   ghijkl"]
+
+    def test_selection_style_reaches_wrapped_source(self) -> None:
+        """Logical selections remain visibly highlighted after wrapping."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+        style = Style(background=Color(1, 2, 3))
+
+        continuation = _visual_strips(
+            widget, 12, Selection(Offset(12, 0), None), style
+        )[1]
+        source = tuple(continuation)[-1]
+        assert source.style is not None
+        assert source.style.bgcolor == style.rich_style.bgcolor
+
+    def test_selection_ending_before_a_continuation_leaves_it_unstyled(self) -> None:
+        """A selection on the first line must not paint the whole next one."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+        style = Style(background=Color(1, 2, 3))
+
+        continuation = _visual_strips(
+            widget, 12, Selection(Offset(6, 0), Offset(9, 0)), style
+        )[1]
+        assert all(
+            segment.style is None or segment.style.bgcolor != style.rich_style.bgcolor
+            for segment in continuation
+        )
+
+    def test_selection_ending_inside_a_continuation_splits_it(self) -> None:
+        """Highlighting stops at the endpoint, mid-continuation."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abcdefghijkl") if "abc" in _plain(w)
+        )
+        style = Style(background=Color(1, 2, 3))
+
+        continuation = _visual_strips(
+            widget, 12, Selection(Offset(12, 0), Offset(15, 0)), style
+        )[1]
+        highlighted = "".join(
+            segment.text
+            for segment in continuation
+            if segment.style is not None
+            and segment.style.bgcolor == style.rich_style.bgcolor
+        )
+        assert highlighted == "ghi"
+
+    def test_unwrapped_lines_keep_the_original_gutter(self) -> None:
+        """A row that fits is unchanged by continuation support."""
+        widget = next(
+            w for w in _rendered("@@ -680 +680 @@\n+abc") if "abc" in _plain(w)
+        )
+
+        assert _visual_lines(widget, 12) == ["680 + abc"]
+
+    @pytest.mark.parametrize("text", ["", " ", "abcdefghijkl", "\tabc", "alpha beta"])
+    def test_every_visual_line_carries_an_offset(self, text: str) -> None:
+        """No visual line may end up with an empty offset list.
+
+        `render_strips` reads `offsets[0]` to point a continuation's synthetic
+        gutter at its line, and `get_height` counts the same lines it must
+        render. Skipping an offsetless line in only one of them desynchronises
+        the two, and `Static` is `height: auto`, so the row grows a blank line.
+        """
+        widget = next(
+            w
+            for w in _rendered(f"@@ -680 +680 @@\n+{text}\n+tail")
+            if _plain(w).endswith(text)
+        )
+        content = cast("_DiffRowContent", widget.render())
+
+        for width in range(7, 20):
+            lines = content._wrapped(width)
+            assert lines
+            assert all(line.offsets for line in lines), width
+            assert content.get_height({}, width) == len(_visual_lines(widget, width))
 
     def test_max_lines_truncates_with_marker(self) -> None:
         """Beyond `max_lines`, a truncation marker replaces remaining rows."""
@@ -580,27 +933,17 @@ class TestClampSelection:
         selection = Selection(Offset(7, 0), None)
         assert clamp_selection(row, selection) == selection
 
-    def test_wrapped_row_keeps_continuation_coordinates(self) -> None:
-        """A wrapped row's gutter exists only on its first visual line.
-
-        Continuation lines restart at column 0 with source text, so a small
-        `x` on a `y > 0` line already indexes source and must not be clamped.
-        """
+    def test_wrapped_row_keeps_logical_continuation_offsets(self) -> None:
+        """Continuation selections already point into the logical source row."""
         row = self._row("added1")
         prefix = row.selection_prefix
+        start = Offset(prefix + 2, 0)
 
-        # A drag starting on a continuation: skip nothing.
-        start = Offset(2, 1)
         assert clamp_selection(row, Selection(start, None)) == Selection(start, None)
-
-        # A selection from above ending on a continuation keeps the row.
-        selection = Selection(None, Offset(2, 1))
-        assert clamp_selection(row, selection) == Selection(
-            Offset(prefix, 0), Offset(2, 1)
+        assert clamp_selection(row, Selection(None, start)) == Selection(
+            Offset(prefix, 0), start
         )
-
-        # A range wholly inside a continuation is likewise untouched.
-        selection = Selection(Offset(1, 1), Offset(3, 1))
+        selection = Selection(start, Offset(prefix + 4, 0))
         assert clamp_selection(row, selection) == selection
 
     def test_non_diff_widgets_are_untouched(self) -> None:

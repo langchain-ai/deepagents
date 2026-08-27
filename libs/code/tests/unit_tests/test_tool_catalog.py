@@ -65,6 +65,56 @@ class TestCollectBuiltInTools:
         for tool in tools:
             assert tool.description
             assert "\n" not in tool.description
+            assert tool.schema is not None
+            assert tool.schema["type"] == "function"
+
+    def test_enumeration_survives_a_policy_blocked_subagent_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Listing tools must not raise because a subagent names a blocked model.
+
+        `collect_built_in_tools` compiles a graph with a placeholder model purely
+        to read its bound tool node -- nothing is ever invoked. Enforcing
+        `models.allowed` here turned `dcode tools list` into a crash and made
+        `/tools` report a false reason.
+
+        The subagent's own model is still resolved by the SDK during assembly,
+        which is pre-existing behavior and needs a credential for the provider
+        it names. A placeholder key isolates this test to the policy question
+        rather than the environment's credentials. Dcode's runtime model factory
+        must not eagerly reconstruct it because that factory enforces policy.
+        """
+        from deepagents_code.model_config import ModelConfig
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test-placeholder-not-a-real-key")
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.agent.list_subagents",
+            lambda **_kwargs: [
+                {
+                    "name": "blocked",
+                    "description": "Names a model the policy forbids",
+                    "system_prompt": "Help.",
+                    "model": "openai:blocked",
+                    "path": "/agents/blocked/AGENTS.md",
+                }
+            ],
+        )
+
+        with patch("deepagents_code.agent._resolve_retry_owned_model") as resolve:
+            names = {tool.name for tool in collect_built_in_tools()}
+
+        assert names >= _CORE_BUILT_IN
+        resolve.assert_not_called()
 
     def test_respects_filesystem_allowlist(self) -> None:
         """The catalog listing is narrowed to an explicit allowlist.

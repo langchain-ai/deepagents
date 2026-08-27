@@ -52,13 +52,22 @@ from deepagents_code.main import (
     format_tool_warning_cli,
     run_textual_cli_async,
 )
-from deepagents_code.mcp_tools import ProjectServerSummary
+from deepagents_code.mcp_tools import (
+    DiscoveredMCPConfig,
+    MCPConfigScope,
+    ProjectServerSummary,
+)
 from deepagents_code.update_check import update_install_lock
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` and patch
 # `is_update_check_enabled()` to avoid accidental PyPI/DNS work. This module
 # tests startup update behavior itself, so each test must control those values.
 pytestmark = pytest.mark.self_managed_update_check
+
+
+def _project_mcp_source(path: Path, project_root: Path) -> DiscoveredMCPConfig:
+    """Build an explicitly project-scoped discovery fixture."""
+    return DiscoveredMCPConfig(path, MCPConfigScope.PROJECT, project_root)
 
 
 class TestTerminationSignalHandling:
@@ -1433,10 +1442,16 @@ class TestStartupAutoUpdate:
         """Text wider than the pane counts each wrapped row.
 
         Deliberately left unmocked: this is the canary that should fail if a
-        future Rich version changes how it wraps text, so its `options` must
-        stay real rather than being pinned to a forced width.
+        future Rich version changes how it wraps text. Pin both constructor
+        dimensions so Rich honors the requested width even under `TERM=dumb`.
         """
-        console = Console(file=StringIO(), force_terminal=True, no_color=True, width=10)
+        console = Console(
+            file=StringIO(),
+            force_terminal=True,
+            no_color=True,
+            width=10,
+            height=25,
+        )
         # 20 characters at width 10 wraps to exactly 2 rows.
         assert _terminal_row_count(console, "abcdefghijklmnopqrst") == 2
 
@@ -2011,7 +2026,7 @@ class TestPrintSessionStats:
         The spy records rather than raises: `usage_table_enabled` catches
         exceptions and returns `True`, so a raising stub would make a regressed
         guard order pass vacuously. `load_config_toml` is the read being
-        trapped; it is evaluated as an argument before `resolve_scalar` runs, so
+        trapped; `load_bool_display_preference` loads it before resolving, so
         no lookup can slip past it.
         """
         calls: list[object] = []
@@ -2083,6 +2098,7 @@ class TestRenderTeardownThreadHints:
         *,
         thread_exists_mock: AsyncMock,
         thread_url: str | None,
+        tmp_path: Path | None = None,
         return_code: int = 0,
         launch_name: str = "dcode",
         term_program: str = "",
@@ -2093,7 +2109,14 @@ class TestRenderTeardownThreadHints:
         toml_data: dict | None = None,
         toml_error: Exception | None = None,
     ) -> str:
-        """Render teardown hints under controlled feature configuration."""
+        """Render teardown hints under controlled feature configuration.
+
+        The hint reads the option through the shared resolver, which loads the
+        user tier from `DEFAULT_CONFIG_PATH` (the `_isolate_state_dir` fixture
+        redirects it under the test's `tmp_path`), so TOML cases write a real
+        file rather than patching a loader the renderer no longer calls.
+        `tmp_path` is required exactly for those cases.
+        """
         buffer = StringIO()
         console = Console(file=buffer, width=200)
         # `launch_name` is resolved (and cached) inside the renderer.
@@ -2108,16 +2131,25 @@ class TestRenderTeardownThreadHints:
             env[LAUNCH_TERM_PROGRAM] = launch_term_program
         if resume_term_program is not None:
             env[RESUME_TERM_PROGRAM] = "1" if resume_term_program else "0"
+        if toml_data is not None:
+            assert tmp_path is not None, "toml_data requires tmp_path"
+            import tomli_w
+
+            (tmp_path / "config.toml").write_text(
+                tomli_w.dumps(toml_data), encoding="utf-8"
+            )
+        elif toml_error is not None:
+            # A corrupt file exercises the same failure class as a raising read:
+            # the user tier degrades to unusable and resolution falls through.
+            assert tmp_path is not None, "toml_error requires tmp_path"
+            (tmp_path / "config.toml").write_text(
+                "not = = valid toml\n", encoding="utf-8"
+            )
         with (
             patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
             patch(
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
-            ),
-            patch(
-                "deepagents_code.config_manifest.load_config_toml",
-                side_effect=toml_error,
-                return_value={} if toml_data is None else toml_data,
             ),
             patch.dict(os.environ, env),
             patch.object(sys, "platform", "darwin"),
@@ -2144,10 +2176,10 @@ class TestRenderTeardownThreadHints:
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
 
-    def test_resume_hint_honors_toml_feature_flag(self) -> None:
+    def test_resume_hint_honors_toml_feature_flag(self, tmp_path: Path) -> None:
         """`[features] resume_term_program` reaches the hint without an env var.
 
-        The helper otherwise stubs `load_config_toml` to `{}`, so without this
+        The helper otherwise leaves the user config absent, so without this
         case the entire config.toml route to the prefix could break with the
         suite still green.
         """
@@ -2156,27 +2188,32 @@ class TestRenderTeardownThreadHints:
         output = self._render(
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
+            tmp_path=tmp_path,
             launch_term_program="iTerm.app",
             toml_data={"features": {"resume_term_program": True}},
         )
 
         assert "TERM_PROGRAM=iTerm.app dcode -r test123" in output
 
-    def test_resume_hint_survives_config_read_failure(self) -> None:
-        """A raising config read must not take down the exit path.
+    def test_resume_hint_survives_config_read_failure(self, tmp_path: Path) -> None:
+        """A failed config read must not take down the exit path.
 
         `_render_teardown_thread_hints` runs from a bare `finally` in
         `cli_main`, so an exception escaping here would replace whatever is
         already unwinding -- including the `KeyboardInterrupt` that produces
         exit code 130.
+
+        The option is enabled only in the (corrupt) user file: an unreadable
+        user tier resolves to unset, so the mode-dependent default (`False`
+        here) applies and the prefix stays out.
         """
         thread_exists_mock = AsyncMock(return_value=True)
 
         output = self._render(
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
+            tmp_path=tmp_path,
             launch_term_program="iTerm.app",
-            resume_term_program=True,
             toml_error=RecursionError("deeply nested TOML"),
         )
 
@@ -2371,7 +2408,6 @@ class TestRenderTeardownThreadHints:
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=None,
             ),
-            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
             patch.object(sys, "platform", platform),
             patch.dict(os.environ, env),
         ):
@@ -2653,41 +2689,9 @@ class TestLangSmithTeardownUrl:
         # Without LangSmith configured, should return None
         assert thread_url is None
 
-    def test_thread_url_not_shown_for_none_thread_id(self) -> None:
-        """Guard condition: thread_url and thread_exists both needed."""
-        thread_url = None
-        thread_exists = True
-        show_link = bool(thread_url and thread_exists)
-        assert not show_link
-
-    def test_thread_url_not_shown_when_no_checkpoints(self) -> None:
-        """Guard condition: thread must have checkpointed content."""
-        thread_url = "https://smith.langchain.com/o/org/projects/p/proj/t/abc"
-        thread_exists = False
-        show_link = bool(thread_url and thread_exists)
-        assert not show_link
-
-    def test_thread_url_shown_when_all_conditions_met(self) -> None:
-        """Guard condition: both thread_url and thread_exists must be truthy."""
-        thread_url = "https://smith.langchain.com/o/org/projects/p/proj/t/abc"
-        thread_exists = True
-        show_link = bool(thread_url and thread_exists)
-        assert show_link
-
 
 class TestAppResult:
     """Tests for the AppResult dataclass."""
-
-    def test_fields_accessible(self) -> None:
-        """AppResult should expose return_code and thread_id."""
-        result = AppResult(return_code=0, thread_id="tid-abc")
-        assert result.return_code == 0
-        assert result.thread_id == "tid-abc"
-
-    def test_thread_id_none(self) -> None:
-        """AppResult should accept None for thread_id."""
-        result = AppResult(return_code=1, thread_id=None)
-        assert result.thread_id is None
 
     def test_frozen(self) -> None:
         """AppResult should be immutable."""
@@ -2696,45 +2700,6 @@ class TestAppResult:
         result = AppResult(return_code=0, thread_id="tid")
         with pytest.raises(FrozenInstanceError):
             result.return_code = 1  # ty: ignore
-
-
-class TestRunTextualAppReturnType:
-    """Test that run_textual_app returns AppResult."""
-
-    async def test_run_textual_app_returns_app_result(self) -> None:
-        """run_textual_app should return an AppResult."""
-        sig = inspect.signature(run_textual_app)
-        annotation = sig.return_annotation
-        assert annotation in (AppResult, "AppResult"), (
-            f"run_textual_app should return AppResult, got {annotation}"
-        )
-
-
-class TestRunTextualCliAsyncReturnType:
-    """Test that run_textual_cli_async returns AppResult."""
-
-    def test_run_textual_cli_async_returns_app_result(self) -> None:
-        """run_textual_cli_async should return an AppResult."""
-        sig = inspect.signature(run_textual_cli_async)
-        assert sig.return_annotation in (AppResult, "AppResult"), (
-            "run_textual_cli_async should return AppResult, "
-            f"got {sig.return_annotation}"
-        )
-
-
-class TestThreadMessage:
-    """Test thread info display format.
-
-    Thread info is now displayed in the WelcomeBanner widget rather than via
-    pre-TUI console output, so we verify the banner receives the thread ID.
-    """
-
-    def test_thread_id_forwarded_to_app(self) -> None:
-        """run_textual_cli_async passes thread_id to run_textual_app."""
-        source = inspect.getsource(run_textual_cli_async)
-        assert "thread_id=thread_id" in source, (
-            "thread_id should be forwarded to run_textual_app"
-        )
 
 
 class TestRunTextualCliAsyncMcp:
@@ -2801,6 +2766,82 @@ class TestRunTextualCliAsyncMcp:
             )
 
         assert captured_kwargs["mcp_preload_kwargs"] is None
+
+    def test_auto_classifier_problem_reports_model_policy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Startup diagnostics identify an administrator-blocked classifier."""
+        from deepagents_code.main import _auto_classifier_spec_problem
+        from deepagents_code.model_config import ModelConfig
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        problem = _auto_classifier_spec_problem("openai:blocked")
+
+        assert problem is not None
+        assert "administrator-managed" in problem
+
+    def test_policy_blocked_classifier_does_not_reach_agent_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blocked classifier is neutralized, not warned about and forwarded.
+
+        `create_cli_agent` raises on a blocked classifier spec, so forwarding it
+        after printing an advisory would kill the session the advisory was
+        warning about. The runtime model -- already policy-checked -- is used
+        instead, matching how the other two classifier problems degrade.
+        """
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+        from deepagents_code.model_config import ModelConfig
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        from deepagents_code.main import _classifier_model_after_policy
+
+        # Blocked -> inherit the (already checked) runtime model.
+        assert (
+            _classifier_model_after_policy("openai:blocked") == INHERIT_CLASSIFIER_MODEL
+        )
+        # Allowed, absent, and the sentinel itself all pass through untouched.
+        assert _classifier_model_after_policy("anthropic:allowed") == (
+            "anthropic:allowed"
+        )
+        assert _classifier_model_after_policy(None) is None
+        assert (
+            _classifier_model_after_policy(INHERIT_CLASSIFIER_MODEL)
+            == INHERIT_CLASSIFIER_MODEL
+        )
+
+    def test_classifier_policy_is_a_no_op_without_an_allowlist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no policy, any resolved classifier spec is forwarded unchanged."""
+        from deepagents_code.main import _classifier_model_after_policy
+        from deepagents_code.model_config import ModelConfig
+
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: ModelConfig()),
+        )
+
+        assert _classifier_model_after_policy("openai:anything") == "openai:anything"
 
     async def test_resolves_configured_auto_classifier_before_tui_launch(self) -> None:
         """The TUI and server receive the same effective env/TOML classifier."""
@@ -2920,7 +2961,10 @@ class TestRunTextualCliAsyncMcp:
 
 
 class TestServerCleanupLifecycle:
-    """Verify server_proc.stop() is guaranteed after the TUI exits.
+    """Verify TUI setup and teardown around `run_textual_app`.
+
+    Covers both the stderr-guard/driver wiring installed before `run_async`
+    and the cleanup guaranteed after it.
 
     The `Server log preserved at:` notice is drained by the process-global
     `emit_preserved_log_notices()` (patched here), called unconditionally once
@@ -2932,15 +2976,121 @@ class TestServerCleanupLifecycle:
         """run_textual_app must call server_proc.stop() in the finally block."""
         server_proc = SimpleNamespace(stop=MagicMock())
 
+        guard = MagicMock(active=False)
         with (
-            patch.object(
-                DeepAgentsApp,
-                "run_async",
-                new_callable=AsyncMock,
+            patch.object(DeepAgentsApp, "run_async", new_callable=AsyncMock),
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
             ),
             patch(
                 "deepagents_code.client.launch.server.emit_preserved_log_notices",
             ) as emit,
+        ):
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
+
+        guard.close.assert_called_once_with()
+        server_proc.stop.assert_called_once_with()
+        emit.assert_called_once_with()
+
+    async def test_stdout_driver_installed_while_stderr_is_suppressed(self) -> None:
+        """An active guard must redirect Textual to stdout before it renders.
+
+        The guard points fd 2 at /dev/null and Textual's stock Unix driver
+        renders to `sys.__stderr__`, so the driver must already be swapped by
+        the time `run_async` starts — a black screen otherwise.
+        """
+        driver_class = MagicMock()
+        observed: list[object] = []
+
+        async def _run_async(app: DeepAgentsApp) -> None:  # noqa: RUF029
+            observed.append(app.driver_class)
+
+        guard = MagicMock(active=True)
+        with (
+            patch.object(DeepAgentsApp, "run_async", new=_run_async),
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
+            ),
+            patch(
+                "deepagents_code._terminal_stderr.stdout_driver_class",
+                return_value=driver_class,
+            ),
+            patch("deepagents_code.client.launch.server.emit_preserved_log_notices"),
+        ):
+            await run_textual_app(server_proc=None, thread_id="t-1")  # ty: ignore
+
+        assert observed == [driver_class]
+
+    async def test_driver_untouched_while_stderr_is_not_suppressed(self) -> None:
+        """An inactive guard must leave Textual's auto-detected driver alone."""
+        stdout_driver = MagicMock()
+        observed: list[object] = []
+
+        async def _run_async(app: DeepAgentsApp) -> None:  # noqa: RUF029
+            observed.append(app.driver_class)
+
+        guard = MagicMock(active=False)
+        with (
+            patch.object(DeepAgentsApp, "run_async", new=_run_async),
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
+            ),
+            patch(
+                "deepagents_code._terminal_stderr.stdout_driver_class",
+                return_value=stdout_driver,
+            ) as stdout_driver_class,
+            patch("deepagents_code.client.launch.server.emit_preserved_log_notices"),
+        ):
+            await run_textual_app(server_proc=None, thread_id="t-1")  # ty: ignore
+
+        stdout_driver_class.assert_not_called()
+        assert len(observed) == 1
+        assert observed[0] is not stdout_driver
+
+    async def test_stderr_suppression_dropped_when_stdout_unusable(self) -> None:
+        """A visible TUI on stderr beats an invisible one on a dead stdout."""
+        observed: list[object] = []
+
+        async def _run_async(app: DeepAgentsApp) -> None:  # noqa: RUF029
+            observed.append(app.driver_class)
+
+        guard = MagicMock(active=True)
+        with (
+            patch.object(DeepAgentsApp, "run_async", new=_run_async),
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                return_value=guard,
+            ),
+            patch(
+                "deepagents_code._terminal_stderr.stdout_driver_class",
+                return_value=None,
+            ),
+            patch("deepagents_code.client.launch.server.emit_preserved_log_notices"),
+        ):
+            await run_textual_app(server_proc=None, thread_id="t-1")  # ty: ignore
+
+        guard.close.assert_called_with()
+        # Textual's auto-detected driver must survive; `None` would crash
+        # `_build_driver`, and the stdout class was never available.
+        assert len(observed) == 1
+        assert observed[0] is not None
+
+    async def test_server_proc_stopped_when_stderr_guard_install_fails(self) -> None:
+        """Server cleanup must run when the stderr guard cannot be installed."""
+        server_proc = SimpleNamespace(stop=MagicMock())
+
+        with (
+            patch(
+                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
+                side_effect=OSError("too many open files"),
+            ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
+            pytest.raises(TextualAppError, match="too many open files"),
         ):
             await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
@@ -3897,12 +4047,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
                 return_value=[],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], []),
             ),
             patch("builtins.input", return_value="y"),
         ):
@@ -3937,12 +4083,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
                 return_value=[],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], []),
             ),
             patch(
                 "deepagents_code.main._select_trust_action",
@@ -3981,12 +4123,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
                 return_value=[],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], []),
             ),
             patch(
                 "deepagents_code.main._select_trust_action",
@@ -4018,12 +4156,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4066,12 +4200,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4124,12 +4254,11 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[lower_cfg, higher_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [lower_cfg, higher_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(lower_cfg, project_root),
+                    _project_mcp_source(higher_cfg, project_root),
+                ],
             ),
             patch("builtins.input", return_value="y"),
         ):
@@ -4175,12 +4304,11 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[lower, higher],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [lower, higher]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(lower, project_root),
+                    _project_mcp_source(higher, project_root),
+                ],
             ),
             patch("builtins.input", return_value="n"),
         ):
@@ -4222,12 +4350,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4281,12 +4405,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4339,12 +4459,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4415,12 +4531,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4487,12 +4599,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, project_root)],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4548,12 +4656,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4620,12 +4726,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4676,12 +4780,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4750,12 +4852,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4813,12 +4913,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4864,12 +4962,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4908,12 +5004,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -4967,12 +5061,10 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_tools.classify_discovered_configs",
-                return_value=([], [project_cfg]),
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    _project_mcp_source(project_cfg, project_context.project_root)
+                ],
             ),
             patch(
                 "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
@@ -5294,11 +5386,16 @@ class TestSelectProjectServersToPersist:
         )
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
-    def test_refresh_picker_action_follows_abort(
+    def test_refresh_picker_defaults_to_refresh(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Moving down once from the safe default selects environment refresh."""
+        """With a refresh option, a bare Enter repairs the environment.
+
+        "Abort launch" keeps the leading row, but the highlight starts on
+        "Refresh environment now" — fixing the environment is the action the
+        prompt steers toward, and aborting is one keystroke away.
+        """
         from rich.console import Console
 
         from deepagents_code.main import (
@@ -5323,17 +5420,11 @@ class TestSelectProjectServersToPersist:
                         exit=lambda *, result: holder.update(value=result)
                     )
                 )
-                move_down = next(
-                    binding.handler
-                    for binding in bindings
-                    if binding.handler.__name__ == "_down"
-                )
                 confirm = next(
                     binding.handler
                     for binding in bindings
                     if binding.handler.__name__ == "_confirm"
                 )
-                move_down(event)
                 confirm(event)
                 return holder["value"]
 
@@ -5360,6 +5451,62 @@ class TestSelectProjectServersToPersist:
         assert rendered.index("Continue this session only") < rendered.index(
             "Continue and hide until versions change"
         )
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_refresh_picker_abort_launch_is_one_move_up(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Moving up once from the refresh default selects "Abort launch"."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _run_trust_action_picker,
+            _TrustAction,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _TrustAction:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, _TrustAction] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                move_up = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_up"
+                )
+                confirm = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_confirm"
+                )
+                move_up(event)
+                confirm(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        result = _run_trust_action_picker(
+            Console(stderr=True),
+            remember_label="Continue and hide until versions change",
+            allow_label="Continue this session only",
+            deny_label="Abort launch",
+            refresh_label="Refresh environment now",
+            deny_first=True,
+        )
+
+        assert result is _TrustAction.DENY
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_abort_on_deny_maps_picker_deny_to_cancelled(
@@ -6221,11 +6368,15 @@ class TestSelectProjectMcpTrustAction:
 
         assert result is _TrustAction[expected_name]
 
-    @pytest.mark.parametrize("token", ["u", "update", "f", "refresh"])
+    @pytest.mark.parametrize("token", ["", "u", "update", "f", "refresh"])
     def test_text_fallback_refresh_tokens(
         self, token: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The dependency-floor fallback accepts update and refresh spellings."""
+        """The dependency-floor fallback accepts update and refresh spellings.
+
+        An empty answer (a bare Enter) also refreshes: refresh is the default
+        in this prompt shape, matching the inline picker's initial highlight.
+        """
         from rich.console import Console
 
         from deepagents_code.main import (
@@ -6244,6 +6395,30 @@ class TestSelectProjectMcpTrustAction:
         )
 
         assert result is _TrustAction.REFRESH
+
+    @pytest.mark.parametrize("token", ["n", "no"])
+    def test_text_fallback_refresh_prompt_refuse_tokens(
+        self, token: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refusing the dependency-floor prompt stays an explicit choice."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _select_trust_action,
+            _TrustAction,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": token)
+
+        result = _select_trust_action(
+            Console(stderr=True), refresh_label="Refresh environment now"
+        )
+
+        assert result is _TrustAction.DENY
 
 
 class TestCheckMcpProjectTrustDedupe:
@@ -6414,3 +6589,76 @@ class TestCheckMcpProjectTrustDedupe:
         combined = self._captured_prompt(capsys)
         assert combined.count('  "alpha" (stdio):') == 1, combined
         assert combined.count('  "beta" (stdio):') == 1, combined
+
+
+class TestCheckMcpProjectTrustScopeFilter:
+    """Only project-scoped configs may reach the approval prompt.
+
+    The user's own profile `.mcp.json` is already trusted. Listing its servers
+    in the "untrusted project servers" prompt would train users to approve
+    their own configuration, which is exactly the signal the prompt exists to
+    carry.
+    """
+
+    def _write_config(self, path: Path, servers: dict[str, Any]) -> None:
+        import json
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+    def test_user_scoped_servers_are_not_prompted(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A mixed source list prompts for the project server only."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        profile = tmp_path / "profile"
+        project = tmp_path / "repo"
+        user_cfg = profile / ".mcp.json"
+        project_cfg = project / ".mcp.json"
+        self._write_config(user_cfg, {"user_srv": {"command": "uvx", "args": ["u"]}})
+        self._write_config(
+            project_cfg, {"project_srv": {"command": "uvx", "args": ["p"]}}
+        )
+        monkeypatch.chdir(project)
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_config_sources",
+            return_value=[
+                DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+                _project_mcp_source(project_cfg, project),
+            ],
+        ):
+            result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is False
+        combined = capsys.readouterr()
+        text = combined.out + combined.err
+        assert "project_srv" in text
+        assert "user_srv" not in text
+
+    def test_only_user_scoped_sources_skip_the_prompt_entirely(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With nothing project-scoped there is nothing to approve."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        user_cfg = tmp_path / "profile" / ".mcp.json"
+        self._write_config(user_cfg, {"user_srv": {"command": "uvx", "args": ["u"]}})
+        monkeypatch.chdir(tmp_path)
+
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_config_sources",
+            return_value=[DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER)],
+        ):
+            result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is None
+        assert "user_srv" not in capsys.readouterr().err

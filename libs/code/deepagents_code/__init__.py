@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING
 
 from deepagents_code._debug import configure_debug_logging
 from deepagents_code._debug_buffer import install_log_buffer
+from deepagents_code._home_error import DeepAgentsHomeError
 from deepagents_code._version import __version__
 
 if TYPE_CHECKING:
@@ -33,9 +35,25 @@ def __getattr__(name: str) -> Callable[[], None]:
 
     Raises:
         AttributeError: If *name* is not a lazily-provided attribute.
+
+    Note:
+        Any import error other than an unresolvable profile location
+        propagates unchanged; `DeepAgentsHomeError` is reported as a message
+        plus exit 2 instead of a traceback.
     """
     if name == "cli_main":
-        from deepagents_code.main import cli_main
+        try:
+            from deepagents_code.main import cli_main
+        except DeepAgentsHomeError as exc:
+            # `_paths` resolves the profile at import, so a bad DEEPAGENTS_HOME
+            # or an unresolvable home surfaces here. Report it as a message
+            # rather than a traceback: the user has a value to fix, and every
+            # module that imports `_paths` would fail the same way.
+            message = str(exc)
+
+            def cli_main() -> None:
+                print(f"dcode: {message}", file=sys.stderr)  # noqa: T201
+                raise SystemExit(2)
 
         return cli_main
     msg = f"module {__name__!r} has no attribute {name!r}"

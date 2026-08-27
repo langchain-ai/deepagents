@@ -54,6 +54,7 @@ from deepagents.middleware.filesystem import (
     FilesystemPermission,
     FilesystemState,
     GrepSchema,
+    _format_glob_tool_result,
     supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -3708,3 +3709,33 @@ class TestBuiltinTruncationTools:
 
         with pytest.raises(ValueError, match="max_execute_timeout must be positive"):
             FilesystemMiddleware(max_execute_timeout=-1)
+
+
+class TestGlobTruncationNoteMatchesTheCause:
+    """The remedy differs by cause, so the note must not assert the wrong one."""
+
+    def test_budget_truncation_advises_narrowing(self):
+        content = _format_glob_tool_result(["/a.py"], truncated=True, truncation_reason="budget")
+
+        assert "Narrow the search" in content
+
+    def test_unreadable_truncation_does_not_advise_narrowing(self):
+        """Narrowing can never surface files under a directory we cannot read.
+
+        Telling the model to narrow here sends it into a retry loop that cannot
+        succeed, which is why the cause is carried through `GlobResult`.
+        """
+        content = _format_glob_tool_result(["/a.py"], truncated=True, truncation_reason="unreadable")
+
+        assert "could not be read" in content
+        assert "will NOT reveal" in content
+
+    def test_unknown_cause_falls_back_to_the_generic_note(self):
+        content = _format_glob_tool_result(["/a.py"], truncated=True, truncation_reason=None)
+
+        assert "Narrow the search" in content
+
+    def test_complete_result_has_no_note(self):
+        content = _format_glob_tool_result(["/a.py"], truncated=False)
+
+        assert "Note:" not in content

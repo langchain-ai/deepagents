@@ -1,8 +1,12 @@
 """Estimate and persist cumulative model cost for each thread.
 
-The graph owns the durable total. `CostTrackingMiddleware` is the only writer of
-`_session_cost_usd`, so each cost update rides the model checkpoint and works for
-local, headless, and remote graph execution without a client-side state update.
+The graph owns the durable total. `CostTrackingMiddleware` writes ordinary graph
+deltas, while `prepare_operation_cost` gives server-owned operations a
+rollback-safe delta to commit with their state update. Each cost update therefore
+rides a graph checkpoint and works for local, headless, and remote execution
+without a client-side state update -- the middleware also runs in local
+in-process agents, where there is no server and the delta rides the local
+checkpoint.
 The client is a reader: it renders the streamed total and never maintains its own
 lifetime figure.
 
@@ -55,7 +59,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
@@ -63,6 +67,8 @@ from langchain.agents.middleware.types import (
     ContextT,
     OmitFromInput,
     PrivateStateAttr,
+    TracePolicy,
+    omit_payload,
 )
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage
@@ -85,6 +91,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+MODEL_USAGE_EVENT_TYPE = "model_usage"
+"""Custom-stream event type carrying provisional nested model usage."""
+
+MODEL_USAGE_EVENT_VERSION = 1
+"""Current shape version for nested model-usage events."""
+
 SESSION_COST_EVENT_TYPE = "session_cost"
 """Custom-stream event type carrying the thread's absolute cumulative cost.
 
@@ -101,6 +113,7 @@ tell a broken remote install from models with no published rates.
 _PROVIDER_ALIASES: dict[str, str] = {
     "azure_openai": "azure",
     "bedrock": "aws",
+    "google_anthropic_vertex": "google",
     "google_genai": "google",
     "google_vertexai": "google",
     "mistralai": "mistral",
@@ -114,35 +127,46 @@ _UNPRICEABLE_PROVIDERS: frozenset[str] = frozenset({"openai_codex"})
 _CONFIGURED_PROVIDER_METADATA_KEY = "deepagents_code_configured_provider"
 """Model metadata key preserving the provider selected by `create_model`."""
 
+_CONFIGURED_MODEL_METADATA_KEY = "deepagents_code_configured_model"
+"""Model metadata key preserving the model selected by `create_model`."""
+
 _CHECKPOINT_NAMESPACE_METADATA_KEY = "langgraph_checkpoint_ns"
 """Callback metadata key identifying the graph node that made a request."""
 
 
-def _set_configured_provider_metadata(model: object, provider: str) -> None:
-    """Attach the configured provider to every request made by a model.
+def _set_configured_model_metadata(
+    model: object,
+    model_name: str,
+    provider: str,
+) -> None:
+    """Attach the configured model identity to every request made by a model.
 
     LangChain provider integrations can report a generic backend in response
-    metadata: Azure and the Codex subscription model both report `openai`.
-    Model metadata reaches `on_chat_model_start`, so recording the configured
-    provider there preserves the distinction for main, side, and nested calls.
+    metadata, and some omit the model name. Model metadata reaches
+    `on_chat_model_start`, so recording the configured identity there preserves
+    the model and provider for main, side, and nested calls.
 
     Args:
-        model: Chat model whose callback metadata should carry the provider.
+        model: Chat model whose callback metadata should carry the identity.
+        model_name: Model selected while constructing the model.
         provider: Provider selected while constructing the model.
     """
-    if not provider:
+    if not model_name and not provider:
         return
     try:
         current = getattr(model, "metadata", None)
         metadata = dict(current) if isinstance(current, Mapping) else {}
-        metadata[_CONFIGURED_PROVIDER_METADATA_KEY] = provider
+        if model_name:
+            metadata[_CONFIGURED_MODEL_METADATA_KEY] = model_name
+        if provider:
+            metadata[_CONFIGURED_PROVIDER_METADATA_KEY] = provider
         model.metadata = metadata  # ty: ignore[unresolved-attribute]
     except Exception:
         # Cost estimation is best-effort and must never make a usable model fail
         # construction. The response metadata and main-message fallback still
         # cover providers whose model object rejects metadata assignment.
         logger.debug(
-            "Could not attach configured provider metadata to %s",
+            "Could not attach configured model metadata to %s",
             type(model).__name__,
             exc_info=True,
         )
@@ -454,7 +478,7 @@ def _build_price_updater(update_prices_cls: type[UpdatePrices]) -> UpdatePrices:
 def _prices_auto_update_enabled() -> bool:
     """Resolve the `update.prices_auto_update` option through the manifest.
 
-    Routing the gate through `resolve_scalar` keeps env-over-TOML precedence
+    Routing the gate through the shared resolver keeps env-over-TOML precedence
     and the `config get update.prices_auto_update` report in lockstep with what
     the updater actually does; reading the env var inline would show a user who
     opted out in `config.toml` `false` while the hourly fetch still started.
@@ -463,17 +487,15 @@ def _prices_auto_update_enabled() -> bool:
         `True` unless the option resolved to disabled or its manifest entry is
             missing.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("update.prices_auto_update")
     if option is None:
         return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def _start_price_updater() -> None:
@@ -494,9 +516,8 @@ def _start_price_updater() -> None:
 
     Does nothing when the `update.prices_auto_update` option resolves to
     disabled or `DEEPAGENTS_CODE_OFFLINE` is truthy. Either opt-out still marks
-    the start as attempted: config is read once at process start in practice,
-    so a later flip would not take effect anyway, and re-resolving on every
-    priced request would re-read `config.toml` each time.
+    the start as attempted: the updater thread is started once and never
+    stopped, so a later flip would not take effect anyway.
     """
     global _PRICE_UPDATER, _PRICE_UPDATER_ATTEMPTED  # noqa: PLW0603
     if is_env_truthy(OFFLINE):
@@ -1582,11 +1603,50 @@ class _ModelCallContext:
     thread_id: str
     """Thread that owns the request's eventual cost."""
 
+    configured_model: str
+    """Model selected for this request, or `""` when unavailable."""
+
     configured_provider: str
     """Provider selected for this request, or `""` when unavailable."""
 
     scope: str
     """Checkpoint namespace of the graph that owns this request."""
+
+
+def _emit_model_usage(
+    record: _ModelCallRecord,
+    context: _ModelCallContext,
+) -> None:
+    """Best-effort stream provisional usage for one identified nested call.
+
+    The client cannot see a nested request until the graph checkpoints and
+    charges it, which for a long subagent is many minutes. Streaming the usage
+    lets the client price it provisionally in the meantime; the graph's absolute
+    total still supersedes the estimate.
+
+    Args:
+        record: The completed request's usage, model, and response ID.
+        context: The request's thread and owning graph scope.
+    """
+    if not context.scope or record.message_id is None:
+        return
+    try:
+        from langgraph.config import get_stream_writer
+
+        get_stream_writer()(
+            {
+                "type": MODEL_USAGE_EVENT_TYPE,
+                "version": MODEL_USAGE_EVENT_VERSION,
+                "request_id": record.message_id,
+                "usage_metadata": dict(record.usage_metadata),
+                "model_name": record.model_name,
+                "provider": record.provider,
+                "thread_id": context.thread_id,
+                "scope": context.scope,
+            }
+        )
+    except Exception:
+        logger.debug("Could not emit nested model usage", exc_info=True)
 
 
 def _parent_checkpoint_scope(namespace: object) -> str:
@@ -1655,12 +1715,21 @@ class _SessionCostRecorder(BaseCallbackHandler):
             with self._lock:
                 self._run_contexts[run_id] = _ModelCallContext(
                     thread_id="",
+                    configured_model="",
                     configured_provider="",
                     scope="",
                 )
                 while len(self._run_contexts) > _MAX_INFLIGHT_REQUESTS:
                     self._run_contexts.popitem(last=False)
             return
+        model_name = (
+            metadata.get(_CONFIGURED_MODEL_METADATA_KEY)
+            if metadata is not None
+            else None
+        )
+        configured_model = (
+            model_name if isinstance(model_name, str) and model_name else ""
+        )
         provider = (
             metadata.get(_CONFIGURED_PROVIDER_METADATA_KEY)
             if metadata is not None
@@ -1677,6 +1746,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
         with self._lock:
             self._run_contexts[run_id] = _ModelCallContext(
                 thread_id=thread_id,
+                configured_model=configured_model,
                 configured_provider=configured_provider,
                 scope=_parent_checkpoint_scope(namespace),
             )
@@ -1742,6 +1812,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
         try:
             record = _record_from_response(
                 response,
+                configured_model=context.configured_model,
                 configured_provider=context.configured_provider,
                 scope=context.scope,
             )
@@ -1775,6 +1846,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
                     "their cost is missing from the session total.",
                     dropped,
                 )
+        _emit_model_usage(record, context)
 
     def on_llm_error(
         self,
@@ -1853,6 +1925,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
 def _record_from_response(
     response: LLMResult,
     *,
+    configured_model: str = "",
     configured_provider: str = "",
     scope: str = "",
 ) -> _ModelCallRecord | None:
@@ -1860,6 +1933,10 @@ def _record_from_response(
 
     Args:
         response: Completed LangChain model response containing usage metadata.
+        configured_model: Model selected for this specific request. Used when the
+            response names none, so the record carries the model that actually
+            served it rather than leaving pricing to a caller's fallback -- which
+            for a nested call describes the parent, not this request.
         configured_provider: Provider selected for this specific request.
         scope: Checkpoint namespace of the graph that made the request.
 
@@ -1881,6 +1958,7 @@ def _record_from_response(
         return None
     model_name, provider = resolve_message_model(
         message,
+        fallback_model=configured_model,
         fallback_provider=configured_provider,
     )
     message_id = getattr(message, "id", None)
@@ -1966,6 +2044,142 @@ def _restore_recorded_costs(
         return False
     recorder.restore(thread_id, records)
     return True
+
+
+@dataclass(slots=True)
+class PreparedOperationCost:
+    """A priced side-operation delta pending checkpoint persistence.
+
+    Use exactly once: every prepare must be either committed (its `update`
+    persisted) or rolled back. `_drain_recorded_costs` is destructive, so a
+    prepare that is neither deletes that spend from the thread's lifetime total
+    permanently, and nothing can detect the loss afterwards.
+
+    `_settled` is `init=False` so a caller cannot construct a pre-neutralized
+    instance whose `rollback` is already a no-op. The class stays unfrozen only
+    because marking settlement on a frozen dataclass needs
+    `object.__setattr__`, which this project's lint rules reject.
+    """
+
+    thread_id: str
+    records: list[_ModelCallRecord]
+    delta_usd: float
+    _settled: bool = field(default=False, init=False)
+
+    @property
+    def update(self) -> dict[str, float]:
+        """Additive checkpoint update for this prepared charge."""
+        return {"_session_cost_usd": self.delta_usd} if self.delta_usd > 0 else {}
+
+    def rollback(self) -> None:
+        """Return claimed records to the recorder when no charge was committed.
+
+        `_drain_recorded_costs` **removes** the entries from the process-wide
+        recorder, so a prepare that is neither committed nor rolled back deletes
+        that spend from the thread's lifetime total permanently. Restoring lets
+        the next drain price it again.
+
+        Only call this when the checkpoint write did not land: restoring records
+        for a write that *did* commit double-charges the thread on the next
+        drain. Repeat calls are ignored for the same reason.
+        """
+        if self._settled:
+            return
+        self._settled = True
+        if not _restore_recorded_costs(self.thread_id, self.records):
+            logger.warning(
+                "Could not restore %d operation cost record(s) after a failed "
+                "checkpoint update; $%.6f is dropped from the thread total",
+                len(self.records),
+                self.delta_usd,
+            )
+
+    def commit(self) -> None:
+        """Mark the prepared charge as persisted.
+
+        Records nothing: the delta reaches the thread through `update`, which
+        the caller writes to the checkpoint. This only settles the instance so
+        an abandoned prepare can be told apart from a completed one.
+        """
+        self._settled = True
+
+    def __del__(self) -> None:
+        """Warn when a prepare was abandoned without settling.
+
+        The drain is destructive, so an instance collected while unsettled has
+        silently deleted its spend from the thread's lifetime total. Committing
+        and rolling back are both observable; only the leak was not, which is
+        the one case the class docstring calls unrecoverable.
+        """
+        if not self._settled:
+            logger.warning(
+                "Operation cost prepare for thread %s was abandoned without "
+                "commit or rollback; $%.6f across %d record(s) is lost from the "
+                "thread total",
+                self.thread_id,
+                self.delta_usd,
+                len(self.records),
+            )
+
+
+def prepare_operation_cost(
+    state: CostState,
+    thread_id: str,
+) -> PreparedOperationCost:
+    """Price model calls made by a server operation without committing them.
+
+    The caller must persist `PreparedOperationCost.update` atomically with the
+    operation state, or call `rollback()` if that write fails or is abandoned.
+    A prepare with a zero delta still consumes its records, so an abandoned
+    prepare must roll back even when it has nothing to write.
+
+    Args:
+        state: Current thread state used for model/provider fallback metadata.
+        thread_id: Thread that owns the side-operation model calls.
+
+    Returns:
+        Prepared additive cost delta and the claimed recorder entries.
+
+    """
+    records = _drain_recorded_costs(thread_id)
+    fallback = _checkpointed_model_spec(state)
+    delta_usd = 0.0
+    try:
+        for record in records:
+            cost_usd = estimate_cost(
+                record.usage_metadata,
+                *_pricing_target(record.model_name, record.provider, fallback),
+            )
+            if cost_usd is None:
+                # Matches `CostTrackingMiddleware`: silently omitting an
+                # unpriceable call leaves the total quietly short, so name what
+                # could not be priced.
+                logger.warning(
+                    "No pricing for operation model call %r (provider %r); "
+                    "its cost is omitted from the thread total",
+                    record.model_name,
+                    record.provider,
+                )
+                continue
+            delta_usd += cost_usd
+    except BaseException:
+        if not _restore_recorded_costs(thread_id, records):
+            # `_restore_recorded_costs` returns `bool` so callers can report a
+            # failed restore; the other two call sites both log. Without this a
+            # pricing crash could drop the drained spend with no record.
+            logger.warning(
+                "Could not restore %d drained cost record(s) for thread %s "
+                "after a pricing failure; that spend is lost from the "
+                "lifetime total",
+                len(records),
+                thread_id,
+            )
+        raise
+    return PreparedOperationCost(
+        thread_id=thread_id,
+        records=records,
+        delta_usd=delta_usd,
+    )
 
 
 class _CostTransfer(TypedDict):
@@ -2084,6 +2298,9 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
     deltas before an interrupt can pause their graph, then transfer the completed
     subagent total through state for its owning parent graph to checkpoint.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     state_schema = CostState
 

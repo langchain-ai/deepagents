@@ -24,6 +24,8 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     ResponseT,
+    TracePolicy,
+    omit_payload,
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -47,6 +49,7 @@ from deepagents.backends.protocol import (
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
     GlobResult,
+    GlobTruncationReason,
     GrepMatch,
     GrepResult,
     LsResult,
@@ -778,11 +781,22 @@ def _format_file_paths(paths: list[str]) -> str:
     return str(truncate_if_too_long(paths))
 
 
-def _format_glob_tool_result(paths: list[str], *, truncated: bool) -> str:
-    """Render glob paths for the tool boundary, appending the truncation note when partial."""
+def _format_glob_tool_result(
+    paths: list[str],
+    *,
+    truncated: bool,
+    truncation_reason: GlobTruncationReason | None = None,
+) -> str:
+    """Render glob paths for the tool boundary, appending the truncation note when partial.
+
+    The note depends on *why* the result is partial. Telling the model to narrow
+    its search when a subtree was unreadable sends it into a retry loop that can
+    never succeed, so that case gets its own note.
+    """
     content = _format_file_paths(paths)
     if truncated:
-        return f"{content}\n\n{GLOB_TRUNCATION_NOTE}"
+        note = GLOB_UNREADABLE_NOTE if truncation_reason == "unreadable" else GLOB_TRUNCATION_NOTE
+        return f"{content}\n\n{note}"
     return content
 
 
@@ -864,11 +878,18 @@ GREP_TRUNCATION_NOTE = (
     "The matches above are valid but incomplete. Narrow the search (a more specific pattern or a "
     "narrower path), or raise max_count, to see the rest."
 )
-# Glob has no match-count cap and no `max_count` argument, so its note names only
-# the time/size limit and omits the (inapplicable) "raise max_count" remedy.
+# Glob takes no `max_count` argument, so its note omits the (inapplicable)
+# "raise max_count" remedy. Backends do cap matches internally (`MAX_MATCHES` in
+# the sandbox script), hence "or size limit" rather than naming only the clock.
 GLOB_TRUNCATION_NOTE = (
-    "Note: the search stopped early because it hit its time limit. The paths above are valid but "
-    "incomplete. Narrow the search (a more specific pattern or a narrower path) to see the rest."
+    "Note: the search stopped early because it hit its time or size limit. The paths above are "
+    "valid but incomplete. Narrow the search (a more specific pattern or a narrower path) to see "
+    "the rest."
+)
+GLOB_UNREADABLE_NOTE = (
+    "Note: some directories could not be read, so the paths above are valid but incomplete. "
+    "Narrowing the search will NOT reveal the missing files -- they are inaccessible. Continue "
+    "with what is listed, or report the access problem rather than retrying."
 )
 
 
@@ -1215,7 +1236,7 @@ class ExecuteSchema(BaseModel):
 
     timeout: int | None = Field(
         default=None,
-        description="Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
+        description="Optional timeout in seconds for this command. Overrides the default timeout.",
     )
 
 
@@ -1316,7 +1337,7 @@ _EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated 
 Usage:
 - Quote paths containing spaces (e.g. cd "/path/with spaces").
 - Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
-- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default (0 disables it on backends that support that).
+- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.
 - {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}
 
 Only available on backends implementing SandboxBackendProtocol; otherwise it returns an error."""
@@ -1614,6 +1635,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         agent = create_agent(middleware=[FilesystemMiddleware(backend=sandbox)])
         ```
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     state_schema: type[FilesystemState]
 
@@ -2391,7 +2415,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=_format_glob_tool_result(paths, truncated=glob_result.truncated),
+                content=_format_glob_tool_result(
+                    paths,
+                    truncated=glob_result.truncated,
+                    truncation_reason=glob_result.truncation_reason,
+                ),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",
@@ -2455,7 +2483,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=_format_glob_tool_result(paths, truncated=glob_result.truncated),
+                content=_format_glob_tool_result(
+                    paths,
+                    truncated=glob_result.truncated,
+                    truncation_reason=glob_result.truncation_reason,
+                ),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",

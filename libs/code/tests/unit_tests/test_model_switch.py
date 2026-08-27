@@ -9,6 +9,7 @@ import pytest
 from textual.app import App, ComposeResult
 
 from deepagents_code import model_config
+from deepagents_code._paths import PATHS
 from deepagents_code.app import (
     DeepAgentsApp,
     _extract_model_params_flag,
@@ -98,8 +99,9 @@ def mock_create_model() -> Iterator[Mock]:
         *,
         extra_kwargs: dict[str, object] | None = None,
         profile_overrides: dict[str, object] | None = None,
+        cli_max_retries: int | None = None,
     ) -> _FakeModelResult:
-        del extra_kwargs, profile_overrides
+        del extra_kwargs, profile_overrides, cli_max_retries
         parsed = ModelSpec.try_parse(model_spec)
         if parsed is None:
             provider = "openai"
@@ -155,6 +157,105 @@ class TestFormatModelParams:
         assert _format_model_params({"stop": '"end"'}) == (
             ' with model params {"stop": "\\"end\\""}'
         )
+
+
+class TestModelSwitchWarning:
+    """Tests for the large-context confirmation gate."""
+
+    @pytest.mark.parametrize("tokens", [99_999, 100_000])
+    async def test_below_or_equal_threshold_switches_without_warning(
+        self, tokens: int
+    ) -> None:
+        app = DeepAgentsApp()
+        app._context_tokens = tokens
+        app._model_switch_warning_threshold = 100_000
+        app._push_screen_wait = AsyncMock()  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+
+        await app._confirm_and_switch_model("openai:gpt-5.5")
+
+        app._push_screen_wait.assert_not_called()
+        app._switch_model.assert_awaited_once_with("openai:gpt-5.5", extra_kwargs=None)
+
+    async def test_above_threshold_requires_explicit_confirmation(self) -> None:
+        app = DeepAgentsApp()
+        app._context_tokens = 100_001
+        app._tokens_approximate = True
+        app._model_switch_warning_threshold = 100_000
+        app._push_screen_wait = AsyncMock(return_value=True)  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+
+        await app._confirm_and_switch_model("openai:gpt-5.5")
+
+        assert app._push_screen_wait.await_args is not None
+        screen = app._push_screen_wait.await_args.args[0]
+        assert screen._context_tokens == 100_001
+        assert screen._threshold == 100_000
+        assert screen._approximate is True
+        app._switch_model.assert_awaited_once()
+
+    @pytest.mark.parametrize("result", [False, None])
+    async def test_cancel_or_dismissal_fails_closed(self, result: bool | None) -> None:
+        app = DeepAgentsApp()
+        app._context_tokens = 100_001
+        app._model_switch_warning_threshold = 100_000
+        app._push_screen_wait = AsyncMock(return_value=result)  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+
+        await app._confirm_and_switch_model("openai:gpt-5.5")
+
+        app._switch_model.assert_not_awaited()
+
+    async def test_modal_failure_fails_closed_and_reports_error(self) -> None:
+        app = DeepAgentsApp()
+        app._context_tokens = 100_001
+        app._model_switch_warning_threshold = 100_000
+        app._push_screen_wait = AsyncMock(side_effect=RuntimeError("boom"))  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+
+        await app._confirm_and_switch_model("openai:gpt-5.5")
+
+        app._switch_model.assert_not_awaited()
+        assert app._mount_message.await_args is not None
+        message = app._mount_message.await_args.args[0]
+        assert "confirmation could not be shown" in message._content
+
+    async def test_zero_disables_warning(self) -> None:
+        app = DeepAgentsApp()
+        app._context_tokens = 1_000_000
+        app._model_switch_warning_threshold = 0
+        app._push_screen_wait = AsyncMock()  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+
+        await app._confirm_and_switch_model("openai:gpt-5.5")
+
+        app._push_screen_wait.assert_not_called()
+        app._switch_model.assert_awaited_once()
+
+    async def test_same_model_no_op_bypasses_warning(self) -> None:
+        app = DeepAgentsApp()
+        app._context_tokens = 1_000_000
+        app._model_switch_warning_threshold = 100_000
+        app._push_screen_wait = AsyncMock()  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-opus-4-5"
+
+        await app._confirm_and_switch_model("anthropic:claude-opus-4-5")
+
+        app._push_screen_wait.assert_not_called()
+        app._switch_model.assert_awaited_once()
 
 
 class TestModelSwitchNoOp:
@@ -624,7 +725,7 @@ class TestModelSwitchErrorHandling:
         # Should warn about save failure
         assert len(captured_errors) == 1
         assert "could not save" in captured_errors[0].lower()
-        assert "~/.deepagents/" in captured_errors[0]
+        assert PATHS.display(PATHS.profile.root) in captured_errors[0]
 
         # Should NOT show success message when save fails
         assert not any("Switched to" in m for m in captured_messages)
@@ -697,6 +798,7 @@ class TestModelSwitchErrorHandling:
             "anthropic:claude-sonnet-4-5",
             extra_kwargs={"temperature": 0.7},
             profile_overrides={"max_input_tokens": 180_000},
+            cli_max_retries=None,
         )
 
     async def test_remote_agent_sets_model_params_override(self) -> None:
@@ -1395,6 +1497,17 @@ class TestModelCommandIntegration:
         assert "Invalid JSON" in captured_errors[0]
         assert "Expected format" in captured_errors[0]
 
+    async def test_direct_switch_routes_through_warning_dispatcher(self) -> None:
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._dispatch_model_switch = Mock()  # ty: ignore
+
+        await app._handle_command("/model openai:gpt-5.5")
+
+        app._dispatch_model_switch.assert_called_once_with(  # ty: ignore
+            "openai:gpt-5.5", extra_kwargs=None
+        )
+
     async def test_model_params_with_default_rejected(self) -> None:
         """/model --model-params with --default shows error."""
         app = DeepAgentsApp()
@@ -1459,10 +1572,11 @@ class TestModelSwitchBusyIndicator:
                 *,
                 extra_kwargs: dict[str, object] | None = None,
                 profile_overrides: dict[str, object] | None = None,
+                cli_max_retries: int | None = None,
             ) -> _FakeModelResult:
                 # Runs in the worker thread: record what the bar shows while the
                 # (normally slow) provider import is notionally in progress.
-                del model_spec, extra_kwargs, profile_overrides
+                del model_spec, extra_kwargs, profile_overrides, cli_max_retries
                 busy_mid_flight.append(bar._busy_message)
                 return _FakeModelResult(
                     model_name="claude-sonnet-4-5",
@@ -1514,8 +1628,9 @@ class TestModelSwitchBusyIndicator:
                 *,
                 extra_kwargs: dict[str, object] | None = None,
                 profile_overrides: dict[str, object] | None = None,
+                cli_max_retries: int | None = None,
             ) -> _FakeModelResult:
-                del model_spec, extra_kwargs, profile_overrides
+                del model_spec, extra_kwargs, profile_overrides, cli_max_retries
                 busy_mid_flight.append(bar._busy_message)
                 msg = "provider import blew up"
                 raise RuntimeError(msg)

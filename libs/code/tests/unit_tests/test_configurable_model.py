@@ -27,8 +27,27 @@ from deepagents_code.configurable_model import (
     _is_anthropic_model,
     _is_fireworks_model,
     _is_openai_model,
+    _model_spec_from_model,
     _ResolvedModelRequest,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_model_settings() -> None:
+    """Reset the settings singleton's runtime model state around each test.
+
+    `_model_spec_from_model` falls back to `settings.model_provider` /
+    `settings.model_name` for the resumable spec. Tests elsewhere in the
+    suite (e.g. deferred model-switch tests in `test_app.py`) mutate those
+    attributes on the real singleton without restoring them, so under random
+    ordering this module's expected `openai:...` specs can resolve to the
+    leaked `anthropic:...` instead. `None` is the fresh-process default the
+    module's expectations assume.
+    """
+    from deepagents_code.config import settings
+
+    settings.model_provider = None
+    settings.model_name = None
 
 
 def _make_model(name: str) -> MagicMock:
@@ -112,6 +131,20 @@ _mw = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
 
 class TestCheckpointPersistence:
     """Tests for private resume-state checkpoint updates."""
+
+    def test_startup_custom_provider_uses_configured_spec(self) -> None:
+        """Custom classes must checkpoint their configured provider alias."""
+        from deepagents_code.config import settings
+
+        model = _make_model("fake")
+        model._get_ls_params.return_value = {
+            "ls_provider": "deterministicintegrationchatmodel"
+        }
+        with (
+            patch.object(settings, "model_provider", "itest"),
+            patch.object(settings, "model_name", "fake"),
+        ):
+            assert _model_spec_from_model(model) == "itest:fake"
 
     def test_records_request_start_only_after_success(self) -> None:
         middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
@@ -653,6 +686,52 @@ class TestModelSwap:
         assert _checkpoint_update(result) == {
             "_model_spec": "anthropic:claude-sonnet-4-6",
         }
+
+    def test_model_policy_error_does_not_fall_back_to_original(self) -> None:
+        """A blocked runtime switch propagates instead of using the old model."""
+        from deepagents_code.model_config import ModelNotAllowedError
+
+        original = _make_model("claude-sonnet-4-6")
+        request = _make_request(
+            original,
+            context=CLIContext(model="openai:blocked"),
+        )
+        denial = ModelNotAllowedError(
+            model_spec="openai:blocked",
+            source="managed config",
+            allowed_models=("anthropic:allowed",),
+        )
+
+        with (
+            patch(_PATCH_CREATE, side_effect=denial),
+            pytest.raises(ModelNotAllowedError, match="administrator-managed"),
+        ):
+            _mw.wrap_model_call(request, lambda _request: _make_response())
+
+    async def test_async_model_policy_error_does_not_fall_back(self) -> None:
+        """The asynchronous runtime-switch path propagates policy denials."""
+        from deepagents_code.model_config import ModelNotAllowedError
+
+        original = _make_model("claude-sonnet-4-6")
+        request = _make_request(
+            original,
+            context=CLIContext(model="openai:blocked"),
+        )
+        denial = ModelNotAllowedError(
+            model_spec="openai:blocked",
+            source="config.toml",
+            allowed_models=("anthropic:allowed",),
+        )
+
+        async def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            await asyncio.sleep(0)
+            return _make_response()
+
+        with (
+            patch(_PATCH_CREATE, side_effect=denial),
+            pytest.raises(ModelNotAllowedError, match=r"config\.toml"),
+        ):
+            await _mw.awrap_model_call(request, handler)
 
     def test_failed_override_records_original_as_cache_identity(self) -> None:
         """The cache model spec tracks the model that served the call."""
@@ -1792,3 +1871,68 @@ class TestModelIdentityPatch:
         assert "may not be available" not in patched
         assert "`deepseek-r1`" not in patched
         assert "### Skills Directory" in patched
+
+
+class TestRuntimeModelRetryBudget:
+    """A `/model` switch must carry the explicit CLI retry budget."""
+
+    @staticmethod
+    def _switch(
+        model_params: dict[str, Any], *, cli_max_retries: int | None = None
+    ) -> tuple[MagicMock, ModelRequest]:
+        """Drive a runtime model switch and return the `create_model` mock.
+
+        Returns:
+            The patched `create_model` mock and the request the handler saw.
+        """
+        request = _make_request(
+            _make_model("gpt-5.5"),
+            context=CLIContextSchema(
+                model="anthropic:claude-sonnet-4-6", model_params=model_params
+            ),
+        )
+        replacement = _make_model("claude-sonnet-4-6")
+        replacement._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        captured: list[ModelRequest] = []
+        middleware = ConfigurableModelMiddleware(
+            openai_prompt_cache_key=True,
+            cli_max_retries=cli_max_retries,
+        )
+        with patch(
+            _PATCH_CREATE, return_value=_make_model_result(replacement)
+        ) as create:
+            middleware.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+        return create, captured[0]
+
+    def test_budget_survives_the_switch(self) -> None:
+        """Without this the switched-to model reverts to the default budget.
+
+        `--max-retries 0` or a raised budget would silently stop applying the
+        moment the user ran `/model`.
+        """
+        create, _request = self._switch({}, cli_max_retries=2)
+        _args, kwargs = create.call_args
+        assert kwargs["cli_max_retries"] == 2
+
+    def test_cli_budget_stays_separate_from_model_settings(self) -> None:
+        """The explicit retry field is never a provider request parameter."""
+        _create, request = self._switch({"top_p": 1}, cli_max_retries=2)
+        assert request.model_settings == {"top_p": 1}
+
+    def test_cli_budget_alone_leaves_settings_untouched(self) -> None:
+        """A retry override alone must not create model settings."""
+        _create, request = self._switch({}, cli_max_retries=2)
+        assert not request.model_settings
+
+    def test_real_params_still_merge(self) -> None:
+        """The explicit retry field must not drop actual model overrides."""
+        _create, request = self._switch({"top_p": 1}, cli_max_retries=2)
+        assert (request.model_settings or {})["top_p"] == 1
+
+    def test_absent_sentinel_sends_no_extra_kwargs(self) -> None:
+        """A model with no flag set must resolve its own configured budget."""
+        create, _request = self._switch({"top_p": 1})
+        _args, kwargs = create.call_args
+        assert "cli_max_retries" not in kwargs

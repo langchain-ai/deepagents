@@ -9,11 +9,13 @@ import argparse
 from rich.markup import escape
 
 from deepagents_code import theme
+from deepagents_code._paths import PATHS
 from deepagents_code._version import DOCS_URL, __version__
 from deepagents_code.config import (
     _get_editable_install_path,
     _is_editable_install,
     console,
+    parse_shell_allow_list,
 )
 
 _JSON_OPTION_LINE = "  --json                  Emit machine-readable JSON"
@@ -64,6 +66,28 @@ def non_negative_int(value: str) -> int:
         msg = f"must be a non-negative integer (>= 0), got {parsed}"
         raise argparse.ArgumentTypeError(msg)
     return parsed
+
+
+def shell_allow_list_arg(value: str) -> str:
+    """Argparse type that validates a shell allow-list without normalizing it.
+
+    Args:
+        value: Raw comma-separated CLI value.
+
+    Returns:
+        The original value for the CLI configuration provider.
+
+    Raises:
+        argparse.ArgumentTypeError: If the allow-list is malformed.
+    """
+    try:
+        parsed = parse_shell_allow_list(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if parsed is None:
+        msg = "must contain at least one non-empty command"
+        raise argparse.ArgumentTypeError(msg)
+    return value
 
 
 def _print_option_section(*lines: str, title: str = "Options") -> None:
@@ -135,7 +159,7 @@ def show_help() -> None:
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
     )
     console.print(
-        "  --max-retries N            Override max retries for transient model errors"
+        "  --max-retries N            Retries after a failed model request; 0 disables"
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
@@ -144,7 +168,10 @@ def show_help() -> None:
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
     console.print(
-        "  -y, --auto-approve         Enable classifier-backed Auto mode (TUI or ACP)"
+        "  -y, --auto-approve         Enable classifier-backed Auto mode (TUI or ACP);"
+    )
+    console.print(
+        "                             ignored with a warning in headless mode"
     )
     console.print("  --auto-classifier-model MODEL")
     console.print(
@@ -156,7 +183,10 @@ def show_help() -> None:
     )
     console.print(
         "  --yolo                     Run gated actions without review after "
-        "acknowledgement (TUI or ACP)"
+        "acknowledgement (TUI or ACP);"
+    )
+    console.print(
+        "                             ignored with a warning in headless mode"
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
@@ -297,8 +327,9 @@ def show_list_help() -> None:
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  dcode list [options]")
     console.print()
+    agents_dir = escape(PATHS.display(PATHS.profile.root))
     console.print(
-        "List all agents found in ~/.deepagents/. Each agent has its own",
+        f"List all agents found in {agents_dir}. Each agent has its own",
     )
     console.print(
         "AGENTS.md system prompt and separate thread history.",
@@ -397,11 +428,12 @@ def show_skills_help() -> None:
         "[bold]Skill directories (highest precedence first):[/bold]",
         style=theme.PRIMARY,
     )
+    user_skills = escape(PATHS.display(PATHS.profile.agent_skills_dir("<agent>")))
     console.print(
         "  1. .agents/skills/                 project skills\n"
         "  2. .deepagents/skills/             project skills (alias)\n"
         "  3. ~/.agents/skills/               user skills\n"
-        "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
+        f"  4. {user_skills}   user skills (alias)\n"
         "  5. <package>/built_in_skills/      built-in skills",
     )
     console.print()
@@ -516,10 +548,11 @@ def show_skills_trust_help() -> None:
     console.print("  revoke <dir>      Revoke trust for a directory")
     console.print("  clear             Remove all trusted skill directories")
     console.print()
+    trust_store = escape(PATHS.display(PATHS.profile.state_dir / "skill_trust.json"))
     console.print(
         "Directories are trusted when you approve a skill that resolves "
         "outside the standard skill roots (for example, a symlink target). "
-        "Trust is stored in ~/.deepagents/.state/skill_trust.json."
+        f"Trust is stored in {trust_store}."
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
@@ -637,10 +670,10 @@ def show_tools_install_help() -> None:
         "Download the pinned, SHA-256-verified ripgrep binary into",
     )
     console.print(
-        "~/.deepagents/bin (no sudo). Reuses a system `rg` already on PATH and",
+        "dcode's installation (no sudo). Reuses a system `rg` already on PATH",
     )
     console.print(
-        "is also handy for repairing a missing or stale managed binary.",
+        "and is also handy for repairing a missing or stale managed binary.",
     )
     console.print()
     _print_option_section()
@@ -719,7 +752,7 @@ def _print_mcp_discovery_paths() -> None:
     )
     width = max(len(path) for path, _ in MCP_CONFIG_DISCOVERY_PATHS)
     for path, label in MCP_CONFIG_DISCOVERY_PATHS:
-        console.print(f"  {path:<{width}}  ({label})")
+        console.print(f"  {path:<{width}}  ({label})", markup=False, highlight=False)
     console.print(
         "  <project-root> = nearest ancestor with a `.git` entry, else CWD.",
         style=theme.MUTED,

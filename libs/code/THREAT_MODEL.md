@@ -2,7 +2,7 @@
 
 > **Note:** `deepagents-code` was forked from `deepagents-cli` at v0.1.0. References to "the CLI" throughout this document describe the `deepagents-code` runtime.
 
-> Generated: 2026-03-28 | Commit: e859077f | Scope: libs/code only
+> Generated: 2026-08-19 | Scope: libs/code only
 
 > **Disclaimer:** This threat model is automatically generated to help developers and security researchers understand where trust is placed in this system and where boundaries exist. It is experimental, subject to change, and not an authoritative security reference — findings should be validated before acting on them. The analysis may be incomplete or contain inaccuracies. We welcome suggestions and corrections to improve this document.
 
@@ -28,6 +28,8 @@
 - Custom subagent loader (`subagents.py`, `agent.py:load_async_subagents`)
 - Conversation offload (`offload.py`)
 - Skill management (`skills/commands.py`)
+- Persisted goal/rubric state notices (`goal_state_notice.py`, `goal_tools.py`,
+  `goal_state_limits.py`)
 
 ### Out of Scope
 
@@ -42,9 +44,11 @@
 
 ### Assumptions
 
+> Throughout this document `~/.deepagents/` names the *effective* user profile directory. That is the default location; `DEEPAGENTS_HOME` selects a different one (TB14), and every claim about profile-owned files applies to whichever directory is selected at launch.
+
 1. The CLI runs locally on the user's machine; the user is a developer who invoked `deepagents` themselves.
-2. The project provides the HITL approval framework; users control model selection, API keys, and whether to disable approval gates.
-3. `~/.deepagents/` is only writable by the authenticated local user — no multi-user shared home directories.
+2. The project provides the HITL approval framework. Users control model selection, API keys, and whether to disable approval gates. Managed policy can narrow each of these; `[models].allowed` narrows model selection.
+3. The user profile directory is only writable by the authenticated local user — no multi-user shared home directories. `DEEPAGENTS_HOME` (see TB14) can relocate that directory outside `$HOME`; keeping the selected location single-user is then the operator's responsibility.
 4. Sandbox backends are trusted third-party services. CLI responsibility ends at correctly constructing and dispatching requests to them.
 5. LangSmith tracing, if enabled, is user-opted-in via environment variables.
 6. The LangGraph dev server subprocess binds to `127.0.0.1` by default (`client/launch/server.py:_DEFAULT_HOST`) and is ephemeral — started and stopped per CLI session.
@@ -83,7 +87,13 @@
 │                 └─►C12: RemoteAgent────┘ (HTTP+SSE on 127.0.0.1)    │
 │                     (client/remote_client.py)                        │
 │                            │                                         │
-│                     C3: Agent Engine (server_graph.py)               │
+│                 ┌──────────┴───────────┐                             │
+│                 ▼                      ▼                             │
+│       C18: Offload HTTP Boundary  C3: Agent Engine                   │
+│       (custom route + operation)  (server_graph.py)                  │
+│                 │                      │                             │
+│                 └──────────┬───────────┘                             │
+│                            │                                         │
 │                     (create_cli_agent, deepagents SDK)               │
 │                            │                                         │
 │  User Prompt ──────────────┘                                         │
@@ -138,7 +148,9 @@
 | C14 | Async Subagent Config       | Loads remote LangGraph deployment specs from `[async_subagents]` in `config.toml`                                  | user-controlled      | No       | `agent.load_async_subagents`                                                                      |
 | C15 | LocalContext Middleware      | Runs a bash detection script via backend; injects git/project/env context into system prompt each turn              | framework-controlled | Yes⁶     | `local_context.LocalContextMiddleware.before_agent`, `local_context.build_detect_script`          |
 | C16 | Custom Subagent Loader      | Reads `{dir}/{name}/AGENTS.md` YAML frontmatter from `.deepagents/agents/` and project `.agents/` directories      | user-controlled      | No       | `subagents.list_subagents`, `subagents._parse_subagent_file`                                      |
-| C17 | Model Config Loader         | Resolves model provider, supports `class_path` for arbitrary `BaseChatModel` instantiation via `importlib`          | user-controlled      | N/A      | `config.create_model`, `config._create_model_from_class`, `model_config.ModelConfig.load`         |
+| C17 | Model Config Loader         | Resolves model providers, enforces the `models.allowed` policy (exact specs and `provider:*` wildcards), and supports `class_path` for arbitrary `BaseChatModel` instantiation via `importlib` | administrator/user-controlled | N/A | `config.create_model`, `config._create_model_from_class`, `model_config.ModelConfig.load` |
+| C18 | Server Offload Boundary     | Custom HTTP route registered with LangGraph's route-auth layer (inert under the shipped `noop` auth, which relies on the loopback bind); reads thread state, runs the agent's shared compaction/hooks/backend, and commits a state-only result plus cost | framework-controlled | Yes for built-in graph⁷ | `offload_api.offload`, `offload_api._execute_offload`, `offload_middleware.OffloadOperation.execute` |
+| C19 | Goal/Rubric State Notice    | Projects persisted goal objectives, active criteria, and status notes into synthetic messages for the primary model | framework-controlled | Yes      | `goal_state_notice.build_goal_state_notice`, `goal_tools.GoalToolsMiddleware`                     |
 
 **Notes:**
 1. `http_request` and `fetch_url` enabled by default; `web_search` requires `TAVILY_API_KEY`.
@@ -147,6 +159,7 @@
 4. Sandbox mode requires explicit `--sandbox` CLI flag.
 5. Both TUI and non-interactive modes now always spawn a local LangGraph dev server and connect via `RemoteAgent`.
 6. `LocalContextMiddleware` is added whenever `LocalShellBackend` or an `_AsyncExecutableBackend` is in use (`agent.py:create_cli_agent`).
+7. Custom graph references do not receive dcode's HTTP app and do not support `/offload`.
 
 ---
 
@@ -155,9 +168,9 @@
 | ID  | PII Category           | Specific Fields                                   | Sensitivity | Storage Location(s)              | Encrypted at Rest | Retention          | Regulatory |
 |-----|------------------------|---------------------------------------------------|-------------|----------------------------------|-------------------|--------------------|------------|
 | DC1 | API Keys / Credentials | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `TAVILY_API_KEY`, `LANGSMITH_API_KEY`, `LANGGRAPH_API_KEY` | Critical | Process environment only; never written to disk by CLI code | N/A (in-memory) | Process lifetime | All — breach trigger |
-| DC2 | Conversation Messages  | User prompts, LLM responses, tool args/results   | High        | SQLite (`~/.deepagents/*.db`) via LangGraph checkpointer | No (local file, unencrypted) | Unbounded (session files persist) | GDPR if personal data is discussed |
+| DC2 | Conversation Messages  | User prompts, LLM responses, tool args/results, goal objectives, rubric criteria, and status notes | High | SQLite (`~/.deepagents/*.db`) via LangGraph checkpointer | No (local file, unencrypted) | Unbounded (session files persist) | GDPR if personal data is discussed |
 | DC3 | System Prompt Content  | `DA_SERVER_SYSTEM_PROMPT` env var; custom AGENTS.md contents | Medium | Process environment (transient); `~/.deepagents/{agent}/AGENTS.md` on disk | No | Config lifetime | None direct |
-| DC5 | Offloaded Conversation History | Summarized + raw conversation messages written to sandbox backend | High | Sandbox filesystem at `/conversation_history/{thread_id}.md` | Depends on sandbox provider | Sandbox session lifetime | GDPR if personal data is discussed |
+| DC5 | Offloaded Conversation History | Summarized + raw conversation messages written to sandbox backend | High | Sandbox filesystem at `/conversation_history/session_{uuid4hex}.md` | Depends on sandbox provider | Sandbox session lifetime | GDPR if personal data is discussed |
 
 ### Data Classification Details
 
@@ -173,7 +186,7 @@
 
 #### DC2: Conversation Messages
 
-- **Fields**: Full conversation history (HumanMessage, AIMessage, ToolMessage) stored as LangGraph checkpoint state.
+- **Fields**: Full conversation history (HumanMessage, AIMessage, ToolMessage) stored as LangGraph checkpoint state, including synthetic notices that embed actionable goal objectives, active rubric criteria, and status notes.
 - **Storage**: SQLite at `~/.deepagents/{agent}/{thread_id}.db` (via `sessions.get_db_path`).
 - **Access**: Local filesystem; readable by any process running as the same user.
 - **Encryption**: None — plaintext SQLite.
@@ -183,13 +196,18 @@
 
 #### DC5: Offloaded Conversation History
 
-- **Fields**: Timestamped, formatted conversation messages written by `offload.offload_messages_to_backend`.
-- **Storage**: Sandbox backend filesystem at path `/conversation_history/{thread_id}.md` where `thread_id` is a UUID7 (via `sessions.generate_thread_id`).
+- **Fields**: Timestamped, formatted conversation messages written by the SDK's `SummarizationMiddleware._aoffload_to_backend`, reached through `offload_middleware.CLICompactionMiddleware`.
+- **Producers**: Three paths write this data.
+  - Automatic trigger-based compaction.
+  - The model-initiated `compact_conversation` tool (HITL-gated, see TB2).
+  - The explicit `/offload` command. This one is available only through C18 on a built-in server, which reads checkpoint state and writes the archive without entering the tool-approval path.
+  - **Read guard**: The server-owned `/offload` path wraps the backend in `offload_middleware._ArchiveReadGuard`, which fails closed rather than truncating existing history when its prerequisite read fails. The automatic and model-initiated paths write through the raw backend on the SDK's own code path. The guard is applied per write site rather than by the backend's type, so a new write site does not inherit it — see the `_guarded_backend()` call site.
+- **Storage**: Sandbox backend filesystem at path `/conversation_history/session_{uuid4hex}.md`. The leaf is the *summarization session* id (`SummarizationMiddleware._get_history_path`), not the thread id: it is minted per summarization session and persisted under `_summarization_session_id` so later compactions append to the same file. One thread can therefore own several archives.
 - **Access**: Accessible within the sandbox session; depends on provider access controls.
 - **Encryption**: Depends on sandbox provider storage backend.
 - **Retention**: Sandbox session lifetime (destroyed when sandbox is deleted).
 - **Logging exposure**: Contains full message history including tool results.
-- **Gaps**: Thread ID is UUID7 (no path injection risk), but offloaded content is unstructured markdown containing raw conversation data.
+- **Gaps**: The filename is a framework-minted `session_<uuid4 hex>` with no user-controlled component (no path injection risk), but offloaded content is unstructured markdown containing raw conversation data.
 
 ---
 
@@ -208,7 +226,9 @@
 | TB9  | LocalContextMiddleware → Host Env     | Bash detect script output (git info, project files, Makefile) injected into system prompt | Script is framework-generated static code; 30s timeout; exit-code check | Content of Makefile, pyproject.toml, git branch names, directory listing |
 | TB10 | RemoteAgent → LangGraph Dev Server    | CLI communicates with agent via HTTP+SSE on localhost                       | Server bound to `127.0.0.1` (`client/launch/server.py:_DEFAULT_HOST`); ephemeral per session | No authentication (`LANGGRAPH_AUTH_TYPE=noop`); any localhost process can reach the API |
 | TB11 | Config File → Code Execution          | `class_path` in `config.toml` triggers `importlib.import_module()`; project/global `.env` values are loaded into the process environment and can reach Bash startup hooks | Format validation (`module:ClassName`); `issubclass(BaseChatModel)` check; dotenv loading denies shell startup / environment-hijack keys (`BASH_ENV`, `ENV`) | Module-level side effects execute during import; user controls config file; project files in the working directory influence execution |
-| TB12 | Managed Config → Runtime              | A fixed administrator-deployed TOML file overrides CLI, environment, and user preferences | Fixed non-redirectable path; the CLI never writes the file; fail-closed startup for every command except diagnostics; typed resolution; diagnostics remain available | Filesystem ownership/mode and privileged deployment are outside the CLI; a host administrator can weaken or strengthen policy |
+| TB12 | Goal/Rubric State → Model Context     | Persisted user- and agent-controlled goal state becomes a synthetic `HumanMessage` in a primary-model request | State projection, lifecycle filtering, notice fingerprinting, raw-character limits, HTML escaping of boundary tags | Natural-language instructions, sensitivity, post-escape size, and provider-specific byte/token budgets |
+| TB13 | Managed Config → Runtime              | A fixed administrator-deployed TOML file overrides CLI, environment, and user preferences | Fixed non-redirectable path; the CLI never writes the file; fail-closed startup for every command except diagnostics; typed resolution; model-policy checks before credentials/imports/construction; diagnostics remain available | Filesystem ownership/mode and privileged deployment are outside the CLI; a host administrator can weaken or strengthen policy |
+| TB14 | Launch Env → User Trust Root          | Inherited `DEEPAGENTS_HOME` selects the profile whose config, credentials, and user MCP file are trusted | Captured and normalized once before dotenv loading; absolute/`~/` validation; denied from every dotenv layer; propagated unchanged to the server | A user can deliberately select a profile inside or above a checkout; only the exact profile `.mcp.json` receives user provenance |
 
 ### Boundary Details
 
@@ -224,6 +244,13 @@
 - **Outside**: Once the user clicks "approve" (interactive) or a command passes the allow-list check (non-interactive), the tool executes with no further framework-level gating.
 - **Crossing mechanism**: LangGraph HITL interrupt routed through `RemoteAgent` SSE stream.
 - **Key note**: `auto_approve` mode bypasses all HITL approval prompts while still displaying Unicode/URL warnings.
+- **Key note**: This boundary gates the *model-initiated* `compact_conversation` tool.
+  - **Authorization**: The explicit `/offload` command does *not* cross it. C18 invokes the agent's shared compaction service directly, with no tool node and no synthetic message. The slash command is the authorization.
+  - **Hook events**: The operation still dispatches `PreCompact` and `PreToolUse` against an in-memory forced call. Hooks may veto or interrupt. The TUI returns opaque hook replies over the operation protocol.
+  - **`ask` is fail-closed**: A `PreToolUse` `ask` decision cannot prompt on this path. The operation transport carries hook invocations, not HITL review requests, and `interrupt()` requires a Pregel task. `_ask_permission_via_hitl` therefore converts `ask` into a deny that carries the reason.
+  - **Archive write**: It reaches `backend.awrite()` without traversing tool approval. See DF25 and DF26.
+  - **Unsupported deployments**: Local in-process `Pregel` agents, including ACP mode, do not support `/offload`. Custom and older servers without C18 fail at the HTTP boundary rather than entering a client-driven tool path.
+- **Key note**: Only the *pre* hook events fire for `/offload` through C18. `PostToolUse`/`PostToolUseFailure`, which `ServerHooksMiddleware` records in `awrap_tool_call` and dispatches from `_before_model` via `_maybe_post_tool_use` on the next model turn, do not fire: there is no tool node to record the pending entry, and no following model turn to drain it. Likewise an allowing `PreToolUse` hook's `additionalContext` is discarded (logged, not injected): there is no tool result to carry it.
 
 #### TB3: Tool Result → LLM Context
 
@@ -233,7 +260,7 @@
 
 #### TB4: MCP Config → Process / Network
 
-- **Inside**: `mcp_tools._validate_server_config` validates JSON structure and field types. Project-level servers (stdio and remote) require approval: an interactive prompt (`main._check_mcp_project_trust`) that offers allow-for-this-session ("y"), remember a chosen subset of servers ("r"), or deny ("N") — unless `--trust-project-mcp` is set, which trusts the whole config for the run. Whole-config trust is never persisted; it exists only as in-memory run state, set by `--trust-project-mcp` or by an interactive allow-once/remember decision. The remembered subset governs only what is persisted for future runs — both allow-once and remember load every prompted server for the current session. Persistent "remember" (a.k.a. "always allow") decisions are stored in `[mcp].enabled_project_server_approvals` with a local-project identity, server name, and server definition fingerprint. Remote server approvals with fixed URLs are shared by main checkouts and linked worktrees only through validated reciprocal Git common-directory metadata; independent clones remain separate, and non-Git or malformed/forged metadata falls back to the exact resolved root. Remote definitions with interpolated URLs remain exact-worktree scoped because project `.env` files can resolve the same template to different endpoints. Local stdio server approvals always use the exact resolved worktree root because the same command can execute different files in another checkout. A changed command, URL, or transport under the same name requires re-approval. Users can reject individual project server names via `[mcp].disabled_project_servers` (or `DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS`). There is also an explicit process-wide escape hatch, `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS`, that approves matching names globally and intentionally bypasses the project/fingerprint binding. Reject wins over approval and over full trust, with one documented exception: if the user's `config.toml` is unreadable (see below), any deny defined *only* there is lost, so a name that is both TOML-`disabled` and exported in `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` survives — an accepted footgun (`load_mcp_server_trust_lists` documents it inline) that requires a self-contradicting config plus the explicit dangerous opt-in, and the read error is surfaced to the user. These policies are read by `model_config.load_mcp_server_trust_lists` only from user-controlled sources — the user-level `~/.deepagents/config.toml`, the global `~/.deepagents/.env`, and shell-exported env — never from `.mcp.json` or any repo-committed file, so a committed config cannot self-approve its own servers. In particular, the env forms (`DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` / `..._DISABLED_...`) are added to `config._PROJECT_DOTENV_DENIED_ENV_KEYS`, so a committed *project* `.env` cannot inject them into `os.environ` even though it is loaded at bootstrap. The dangerous enable env var and scoped TOML approvals are independent grants: setting the env var, including to an empty value, does not suppress remembered approvals. Disabled *unions* TOML and env so a deny can never be silently emptied by the other source. If the user's `config.toml` exists but cannot be read or parsed, the loader fails closed (project configs are treated as untrusted and the error is surfaced) rather than proceeding with an empty deny list. Only scoped-approved, dangerously env-enabled, or fully trusted names survive into the merged config, so a non-approved remote entry is never preflighted and its interpolated headers are never resolved.
+- **Inside**: `mcp_tools._validate_server_config` validates JSON structure and field types. Discovery emits typed `(path, scope, project_root)` records; runtime and login preserve that provenance instead of inferring trust from path containment. Only the exact configured profile `.mcp.json` is a user candidate. Standard project-root and `.deepagents/.mcp.json` candidates remain project-scoped when `DEEPAGENTS_HOME` is an ancestor of, inside, or equal to the checkout; a user/project path or symlink collision fails closed to project scope. Project-level servers (stdio and remote) require approval: an interactive prompt (`main._check_mcp_project_trust`) that offers allow-for-this-session ("y"), remember a chosen subset of servers ("r"), or deny ("N") — unless `--trust-project-mcp` is set, which trusts the whole config for the run. Whole-config trust is never persisted; it exists only as in-memory run state, set by `--trust-project-mcp` or by an interactive allow-once/remember decision. The remembered subset governs only what is persisted for future runs — both allow-once and remember load every prompted server for the current session. Persistent "remember" (a.k.a. "always allow") decisions are stored in `[mcp].enabled_project_server_approvals` with a local-project identity, server name, and server definition fingerprint. Remote server approvals with fixed URLs are shared by main checkouts and linked worktrees only through validated reciprocal Git common-directory metadata; independent clones remain separate, and non-Git or malformed/forged metadata falls back to the exact resolved root. Remote definitions with interpolated URLs remain exact-worktree scoped because project `.env` files can resolve the same template to different endpoints. Local stdio server approvals always use the exact resolved worktree root because the same command can execute different files in another checkout. A changed command, URL, or transport under the same name requires re-approval. Users can reject individual project server names via `[mcp].disabled_project_servers` (or `DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS`). There is also an explicit process-wide escape hatch, `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS`, that approves matching names globally and intentionally bypasses the project/fingerprint binding. Reject wins over approval and over full trust, with one documented exception: if the user's `config.toml` is unreadable (see below), any deny defined *only* there is lost, so a name that is both TOML-`disabled` and exported in `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` survives — an accepted footgun (`load_mcp_server_trust_lists` documents it inline) that requires a self-contradicting config plus the explicit dangerous opt-in, and the read error is surfaced to the user. These policies are read by `model_config.load_mcp_server_trust_lists` only from user-controlled sources — the user-level profile `config.toml`, its global `.env`, and shell-exported env — never from `.mcp.json` or any repo-committed file, so a committed config cannot self-approve its own servers. In particular, the trust-list env forms are denied from project dotenv, while `DEEPAGENTS_HOME` is denied from every dotenv source under TB14. The dangerous enable env var and scoped TOML approvals are independent grants: setting the env var, including to an empty value, does not suppress remembered approvals. Disabled *unions* TOML and env so a deny can never be silently emptied by the other source. If the user's `config.toml` exists but cannot be read or parsed, the loader fails closed (project configs are treated as untrusted and the error is surfaced) rather than proceeding with an empty deny list. Only scoped-approved, dangerously env-enabled, or fully trusted names survive into the merged config, so a non-approved remote entry is never preflighted and its interpolated headers are never resolved.
 - **Outside**: Stdio server `command`, `args`, and `env` fields are user-controlled strings passed directly to `StdioConnection`. The `env` dict from MCP config is forwarded without filtering — users can set arbitrary environment variables (including `PATH`, `LD_PRELOAD`, `PYTHONPATH`) for the MCP subprocess.
 - **Crossing mechanism**: `subprocess.Popen` (via `langchain_mcp_adapters`) for stdio; HTTP/SSE for remote servers.
 
@@ -253,35 +280,77 @@
 
 - **Inside**: Server bound to `127.0.0.1` by default; `client/launch/server.py:_DEFAULT_HOST = "127.0.0.1"`. `RemoteAgent` only connects to the URL returned by `ServerProcess.url`. Server is ephemeral — started at session start, stopped at session end. Binds a free ephemeral port by default (`client/launch/server.py:_EPHEMERAL_PORT`); an explicit port is honored but still falls back to a free port if occupied.
 - **Outside**: `LANGGRAPH_AUTH_TYPE=noop` disables all LangGraph server authentication. Any process on localhost that discovers the port can submit requests, read thread state, or inject messages.
-- **Crossing mechanism**: HTTP POST/GET to `http://127.0.0.1:{port}` using `langgraph.pregel.remote.RemoteGraph`.
+- **Crossing mechanism**: HTTP POST/GET to `http://127.0.0.1:{port}` using `langgraph.pregel.remote.RemoteGraph` for graph operations and the same configured HTTP client for C18.
+- **Key note**: Graph registration and the accepted payload are both narrowed here.
+  - **Registration**: The default built-in `graph_ref` registers one `agent` graph plus the C18 custom HTTP app. A custom `graph_ref` registers only its graph and does not support `/offload`.
+  - **Accepted**: Operation identity, model/hook context, and opaque hook replies.
+  - **Rejected**: Messages, checkpoint identifiers, graph names, and state updates. The server refuses any operation update whose channels fall outside `OffloadStateUpdate`.
+  - **Checkpoint invariant**: The server reads and hydrates checkpoint messages itself and rejects active, pending, or changed threads. Its final thread-state update is state-only and targets the latest checkpoint, so it cannot branch from a stale checkpoint and hide concurrently appended messages.
+  - **Enforced by**: `offload_api._execute_offload` and `client.remote_client.RemoteAgent.aoffload`.
 
 #### TB11: Config File → Code Execution
 
 - **Inside**: `config._create_model_from_class` validates `class_path` format (`module:ClassName`), imports the module via `importlib.import_module()`, and checks `issubclass(cls, BaseChatModel)` before instantiation.
 - **Outside**: Module-level code in the imported module executes unconditionally during `import_module()`. The `issubclass` check only runs after import. Any side effects (file I/O, network calls, subprocess spawning) in the module's top-level scope execute before the type check.
 - **Crossing mechanism**: `importlib.import_module(module_path)` in `config._create_model_from_class`.
-- **Inside (dotenv)**: `config._load_dotenv` loads project and global `.env` values with `override=False` and drops shell startup / environment-hijack keys (`BASH_ENV`, `ENV`, and related) so a project `.env` cannot register a script that Bash would source at startup. The denylist is best-effort: it enumerates environment variables known to reach a code-execution consumer (a shell's startup hook, the dynamic linker, an interpreter's startup path) and cannot claim completeness — any tool `dcode` spawns that honors an environment-driven execution hook not yet in the list remains a live vector until the key is added. The preview path (`_preview_dotenv_environ`) applies the same denylist so a dry-run config change cannot report a value a real reload would reject.
+- **Inside (dotenv)**: `config._load_dotenv` loads project and global `.env` values with `override=False` and drops shell startup / environment-hijack keys (`BASH_ENV`, `ENV`, and related) so a project `.env` cannot register a script that Bash would source at startup. `DEEPAGENTS_HOME` is also denied from both layers because profile selection has already crossed TB14. The denylist is best-effort for execution-hook variables: it enumerates variables known to reach a code-execution consumer (a shell's startup hook, the dynamic linker, an interpreter's startup path) and cannot claim completeness — any tool `dcode` spawns that honors an environment-driven execution hook not yet in the list remains a live vector until the key is added. The preview path (`_preview_dotenv_environ`) applies the same denylist so a dry-run config change cannot report a value a real reload would reject.
 - **Outside (dotenv)**: All other `.env` keys are applied to the process environment, and any project file in the working directory (`.env`, `Makefile`, build scripts) can still influence execution. See T12.
 
-#### TB12: Managed Config → Runtime
+#### TB12: Goal/Rubric State → Model Context
+
+- **Inside**: `goal_state_notice.project_goal_state` only exposes an objective and status note while the goal is actionable, and `build_goal_state_notice` HTML-escapes embedded text before wrapping it in boundary tags. `GoalToolsMiddleware` fingerprints notices, appends a fresh notice when state is stale or compacted, and re-pins the notice into model requests when necessary. Earlier bounded notices remain unchanged for prompt-cache stability; oversized legacy notices are replaced transiently with bounded same-index stand-ins, and each fresh notice explicitly supersedes them.
+- **Outside**: Goal objectives and criteria originate from user input. `/rubric file` reads the selected local text file. Status notes can be model-authored through `update_goal`. `goal_state_limits` rejects raw text above these limits:
+
+    | Value | Limit (characters) |
+    | --- | --- |
+    | Goal objective | 8,000 |
+    | Rubric or acceptance criteria | 12,000 |
+    | Accepted objective and criteria combined | 12,000 |
+    | Status note or prior blocker | 4,000 |
+    | Total text across one notice | 16,000 |
+
+    These counts do not account for expansion during HTML escaping, provider tokenization, or a provider-specific request budget. Labels such as "context data, not instructions" and escaping preserve message structure. They do not prevent the model from interpreting natural-language content as instructions. This flow has no provider-transmission confirmation.
+- **Crossing mechanism**: `DeepAgentsApp._persist_goal_rubric_state` writes state and notices to the checkpoint; `GoalToolsMiddleware._notice_update` and `_request_with_goal_notice` append them to the persisted or transient model-message list.
+
+#### TB13: Managed Config → Runtime
 
 - **Inside**: The resolver reads one fixed OS path. The writer rejects that path, so the managed source is read-only by guard and not only by convention. Valid managed values take the highest precedence. The rules are:
   - Tables deep-merge. Deny lists union. An explicit managed allow or trust list replaces lower-precedence grants.
+  - `[models].allowed` is a local-model ceiling of exact `provider:model` specs and `provider:*` wildcards. Discovery and selector filtering improve usability only.
+  - `create_model` is authoritative. It checks the canonical `provider:model` before credential bridging, provider hooks, imports, or constructors, so a blocked specification touches no stored key and runs no provider hook.
+  - Preflight checks on text a user typed resolve a bare name to the same canonical form first, so they neither reject a model that construction would allow nor accept one it would block. A name whose provider cannot be established stays unmatchable.
+  - `create_cli_agent` checks every model *string* it forwards: the primary model, the Auto classifier, the rubric grader, and an explicit local-subagent model. The SDK resolves a string through `init_chat_model`, which does not pass through `create_model`. A prebuilt model object came from a path that already checked.
+  - Runtime-context switches are rechecked server-side. A policy denial propagates instead of falling back to the previous model.
+  - A malformed `[models].allowed` blocks all model use at either layer. The managed layer also refuses to start.
+  - Remote async-subagent deployments select their models outside this local boundary. Tool enumeration also skips the check, because it compiles a graph it never invokes.
   - A managed scalar replaces a colliding user table at any depth, so a user cannot defeat policy by changing the shape of a key. This holds on the top-level merge and inside a structured table: both apply the manifest validator, so the effective value and the audited provenance agree.
   - A wrong-typed managed scalar is skipped, and the lower-precedence value stays in effect.
   - Inside a structured table (`[models.providers]`, `[themes]`, `[async_subagents]`, `[sandboxes.providers]`, `[ui.terminal_themes]`, `[threads.columns]`) the dedicated typed reader validates instead. A wrong-typed managed leaf there can displace a valid user leaf, after which the reader falls back to the built-in default.
-  - An enforced key whose managed value cannot be applied stops every command except the diagnostics listed below. It also blocks `/reload`. Skipping it would leave the user's CLI flag or environment variable in force. The enforced keys are `startup.mode`, `startup.yolo_switcher`, `shell.allow_list`, `skills.extra_allowed_dirs`, `interpreter.enable_interpreter`, `interpreter.ptc`, `interpreter.ptc_acknowledge_unsafe`, `models.auto_classifier`, `runtime.recursion_limit`, `sandboxes.default`, and `tracing.langsmith_redact`.
+  - An enforced key whose managed value cannot be applied stops every command except the diagnostics listed below. It also blocks `/reload`. Skipping it would leave the user's CLI flag or environment variable in force. The enforced keys are `startup.mode`, `startup.yolo_switcher`, `shell.allow_list`, `skills.extra_allowed_dirs`, `interpreter.enable_interpreter`, `interpreter.ptc`, `interpreter.ptc_acknowledge_unsafe`, `models.allowed`, `models.auto_classifier`, `runtime.recursion_limit`, `sandboxes.default`, and `tracing.langsmith_redact`.
   - Three conditions make an enforced key unapplicable: a wrong-typed value, a `runtime.recursion_limit` outside its bounds, and a key made unreachable by a scalar ancestor (`startup = "manual"` in place of `[startup]` and `mode`). A managed `[sandboxes].default` that names an unavailable backend stops a sandboxed launch.
   - A scalar at a known section is rejected for the same reason, so it cannot replace the user's whole section. `[effort]` is included, although it has no manifest option.
   - Any other rejected managed value is ignored, and `dcode doctor` and `dcode config` name it. An ignored key is never silent.
   - A missing file is accepted and applies no policy.
   - A present unreadable, undecodable, or syntactically corrupt file blocks every command except `--help`, `--version`, `help`, `config`, `doctor`, and `auth path`. It also blocks `/reload`.
   - On Windows, a ProgramData directory that cannot be read from the registry blocks the same commands. The path would be a guess, and an empty read at a guessed path does not prove that no policy is deployed. Reporting it as a missing file made every managed setting silently inert on a host whose ProgramData is relocated.
-  - A failed `/reload` keeps the last snapshot that parsed cleanly, so policy is never dropped mid-session.
+  - A failed `/reload` keeps the last enforceable snapshot, so policy is never dropped mid-session. A snapshot that parses but cannot be enforced is not cached either, so a rejected edit cannot become the generation later readers observe.
   - An unusable user `config.toml` drops only the user layer, so managed policy still applies.
   - A deny list that cannot be read is treated as denying everything, never as empty. This covers a managed `[mcp].disabled_servers` that is neither an array of names nor a comma-separated string, and a `[mcp]` section that is not a table. A managed `[mcp].enabled_project_server_approvals` that is not an array is treated the same way: the key is present, so policy means to narrow access, and reading its presence as absence would keep both the user's approvals and the `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` bypass in force.
-- **Outside**: Ownership, permission-mode validation, privileged installation, and `sudo` policy are deployment responsibilities. Anyone who can replace the administrator-managed file can control model, sandbox, interpreter, MCP trust, and other supported runtime settings. On macOS, note that stock `/Library/Application Support` is group-writable by `admin`, so any admin-group member can create the file and grant themselves policy. Deployments that rely on this boundary must tighten ownership and mode on the `dcode` directory.
-- **Crossing mechanism**: Synchronous local file read through `configuration.TomlFileProvider`, followed by typed resolution and CLI/server startup gates.
+- **Outside**: Ownership, permission-mode validation, privileged installation, and `sudo` policy are deployment responsibilities. Anyone who can replace the administrator-managed file can control model, sandbox, interpreter, MCP trust, and other supported runtime settings. Model policy constrains official dcode selection and construction paths; it does not stop a hostile local user from replacing the package, modifying the process, or calling a provider SDK directly. On macOS, note that stock `/Library/Application Support` is group-writable by `admin`, so any admin-group member can create the file and grant themselves policy. Deployments that rely on this boundary must tighten ownership and mode on the `dcode` directory.
+- **Remote source**: The fixed local file may contain only `[managed_config].source`. Its administrator-owned HTTPS URL is then the explicit destination allowlist. The remote document becomes the whole managed policy. It cannot chain to another source. URLs with userinfo, query strings, or fragments are rejected. So are URLs carrying whitespace, control characters, or any non-ASCII character: confusable host text must not reach operator output, and `urllib` does not encode a non-ASCII request target consistently.
+  - Requests validate the certificate against Python's default TLS trust store, bypass environment proxies, and refuse redirects. One five-second budget covers the whole fetch: the connection, the TLS handshake, the headers, and the body. The fetch is abandoned once that budget is spent. At most 1 MiB is accepted.
+  - Only a complete document is accepted. The status must be 200. The media type must be `application/toml`, `text/plain`, or `application/octet-stream`, and the body must not be compressed. A captive portal or gateway error page that answers 200 with `text/html` is rejected before it is parsed. This is not a complete guard, and it is not relied on as one: a response with no `Content-Type`, or one claiming `application/octet-stream`, is read, because a bare object store answers that way. Such a body still has to parse as TOML and satisfy every rule below. Framing must show the body arrived whole: one matching `Content-Length`, or chunked encoding. A response that sends both, or that repeats `Content-Length` with different values, is rejected — the first value wins in `http.client`, so a duplicate header would otherwise let a prefix pass as a whole document. A keyless document is rejected as a failed publish. Truncated TOML often still parses, so a partial document would otherwise enforce a policy with entries silently missing, and would replace the last enforceable generation.
+  - The proxy bypass stops a local user redirecting the fetch through `HTTPS_PROXY`. The trust store itself is not pinned. `SSL_CERT_FILE` and `SSL_CERT_DIR` still select the certificate authorities, so the same actor can substitute the CA set for this request. This is the same deployment responsibility as the local file ownership in the **Outside** bullet above. This boundary does not apply on a host where an unprivileged user controls the `dcode` process environment.
+  - No disk cache or authentication material is stored. Private enterprise hosts remain reachable because the local trust anchor, not user input, selects the host. A fetch failure stops startup. A failed reload keeps the process's last enforceable snapshot, and `dcode doctor` reports that the refresh failed so a host that stopped answering is not silent.
+
+- **Crossing mechanism**: Synchronous local file read through `configuration.TomlFileProvider`, optionally followed by one bounded HTTPS fetch through `configuration.RemoteTomlProvider`, then typed resolution and CLI/server startup gates.
+
+#### TB14: Launch Environment → User Trust Root
+
+- **Inside**: `_paths.PATHS` captures `DEEPAGENTS_HOME` before either dotenv layer is inspected. Empty/unset selects the launch user's `~/.deepagents`; absolute paths and a leading `~/` are normalized without requiring the target to exist. Other relative paths and `~user` forms stop startup, as do a dangling symlink and a root that exists but denies traversal. The unreadable case is rejected explicitly: `Path.is_symlink` reports `False` under EACCES, so it would otherwise pass every guard and fail one file at a time later. The normalized absolute value is frozen for the client and explicitly copied into every server subprocess environment, so reloads, cwd changes, and server cwd differences cannot move the profile.
+- **Trust invariant**: Project-controlled input cannot relocate the user trust root. `DEEPAGENTS_HOME` is in the deny set shared by project and global dotenv loading. MCP discovery separately records user/project provenance and gives project scope precedence when standard discovery locations collide. `$HOME` itself is rejected at startup, in any spelling: the comparison uses device and inode, so a symlink or a case variant on a case-insensitive filesystem is caught too. The home comparison fails closed: when identity cannot be determined at all, startup stops rather than accepting the path. For the roots that are accepted — an ancestor of a checkout, the checkout root, or a directory inside it — collision handling keeps the checkout's standard MCP files project-scoped. `PATH` is treated the same way: the installation-scoped managed bin may be prepended directly, but a verified `rg` in the profile fallback is exposed through a process-private shim containing only that entrypoint. A repository-controlled `<profile>/bin` and every sibling executable in it stay off `PATH` for agent subprocesses.
+- **Outside**: A shell or process supervisor can deliberately select any accepted absolute profile path at launch. Protecting ownership and permissions on that selected directory is the operator's responsibility.
+- **Crossing mechanism**: Inherited process environment → immutable standard-library-only path snapshot → normalized child environment.
 
 ---
 
@@ -313,8 +382,12 @@
 | DF22 | C14 Async Config | C3 Agent | AsyncSubAgent specs (URL, graph_id, headers) from config.toml | — | None | TOML parse + dict |
 | DF23 | C9 Config    | C17 Model Config | `class_path` string from `config.toml` | —              | TB11             | TOML parse → importlib |
 | DF24 | C5 MCP Config | MCP Subprocess | `env` dict from `.mcp.json` forwarded to stdio subprocess | DC1 | TB4 | subprocess environment |
-| DF25 | C3 Agent     | C7 Sandbox   | Conversation messages for offload             | DC5            | TB6              | `backend.awrite()`     |
-| DF26 | Administrator | C9 Config   | Managed TOML policy                            | DC1            | TB12             | Fixed local file read |
+| DF25 | C3 Agent, C18 Server Offload Boundary | C7 Sandbox | Conversation messages for offload | DC5 | TB6 | `backend.awrite()` |
+| DF26 | C12 RemoteAgent | C18 Server Offload Boundary | Thread ID, operation identity, model/hook context, opaque hook replies; typed result or hook request | — | TB10 | HTTP+JSON (localhost) |
+| DF27 | C18 Server Offload Boundary | C8 Sessions | Checkpoint message read; summarization event and additive cost update (never a messages write) | DC2 | None | In-process LangGraph SDK |
+| DF28 | User / Host FS | C19 Goal/Rubric State Notice | Goal objective, criteria, and status notes; `/rubric file` content | DC2 | TB1, TB12 | TUI command + local file read + checkpoint update |
+| DF29 | C19 Goal/Rubric State Notice | External LLM | Synthetic user-role message containing actionable objective, active criteria, and status note | DC2 | TB12, TB7 | LangChain model request over configured provider transport |
+| DF30 | Administrator | C9 Config   | Managed TOML policy                            | DC1            | TB13             | Fixed local file read |
 
 ### Flow Details
 
@@ -354,6 +427,12 @@
 - **Validation**: Type check only — `env` must be a dict (`mcp_tools._validate_server_config`). No filtering of key names or values. Forwarded directly to `StdioConnection` which passes to `subprocess.Popen`.
 - **Trust assumption**: User authored or approved the MCP config. Project-level configs go through the approval gate (allow-list or interactive prompt) before loading.
 
+#### DF28/DF29: Goal/Rubric State → Primary-Model Context
+
+- **Data**: User-entered goal objectives and rubric criteria, full text loaded through `/rubric file`, and agent-written completion or blocker notes. These are persisted in checkpoint state and embedded in a synthetic `HumanMessage` whenever the current notice must be restored or re-pinned.
+- **Validation**: Direct, file-loaded, generated, and tool-authored goal-state paths enforce raw-character limits: 8,000 for an objective, 12,000 for a rubric, 12,000 for an accepted objective and criteria combined, 4,000 for a status note or prior blocker, and 16,000 across a notice. `goal_state_notice._embedded_text` then escapes `<`, `>`, and `&` to prevent boundary-tag forgery; lifecycle projection suppresses a paused or complete goal's objective. The scoped code has no content-safety, secret-detection, byte, token, or post-escape rendered-size limit.
+- **Trust assumption**: The user intentionally designates this content for model processing and accepts the configured provider's handling of the resulting request. Provider retention, location, and request authentication are configured outside this scoped flow.
+
 ---
 
 ## Threats
@@ -365,7 +444,7 @@
 | T3  | DF7       | —              | Unicode-homoglyph URL in LLM-generated tool args deceives user during approval              | TB2      | Low      | Disproven  | `unicode_security.check_url_safety`, `agent._format_fetch_url_description` |
 | T4  | DF5, DF9  | —              | Auto-approve mode bypasses all HITL gates; any LLM-initiated tool call executes             | TB2      | Low      | Verified   | `agent.create_cli_agent` (`auto_approve` param), `agent._add_interrupt_on` |
 | T5  | DF13, DF14| DC2            | Local SQLite checkpoint file tampered with to inject adversarial content into future LLM context | None | Low   | Unverified | `sessions.get_db_path`                                                 |
-| T6  | DF3, DF4  | DC2            | Unauthenticated LangGraph dev server on localhost can be accessed by any local process     | TB10     | Medium   | Verified   | `server._build_server_env`, `server._DEFAULT_HOST`                    |
+| T6  | DF3, DF4, DF26 | DC2       | Unauthenticated LangGraph dev server on localhost can be accessed by any local process     | TB10     | Medium   | Verified   | `server._build_server_env`, `server._DEFAULT_HOST`, `offload_api.app` |
 | T7  | DF19, DF20| DC3            | Makefile or project file content injected into system prompt via LocalContextMiddleware    | TB9      | Low      | Verified   | `local_context._section_makefile`, `local_context.LocalContextMiddleware._get_modified_request` |
 | T8  | DF21      | DC3            | Custom subagent AGENTS.md body used verbatim as system_prompt without content validation   | None     | Low      | Verified   | `subagents._parse_subagent_file`, `agent.create_cli_agent`            |
 | T9  | DF23      | —              | `class_path` in config.toml triggers arbitrary Python code execution via `importlib.import_module()` | TB11 | Low | Verified | `config._create_model_from_class`, `model_config.ProviderConfig`      |
@@ -373,6 +452,9 @@
 | T12 | DF10      | —              | Project `.env` sets shell startup-hook variables (`BASH_ENV`, `ENV`) that run attacker-controlled scripts when `dcode` spawns Bash, before any HITL approval | TB11 | High | Verified | `config._load_dotenv`, `local_context.build_detect_script` |
 | T13 | DF7       | —              | Configured shell allow-list checks only the first token, so an allow-listed interpreter/wrapper (`python3`, `bash`, `env`, `xargs`, …) runs arbitrary code via its arguments without approval in non-interactive mode | TB2 | Medium | Verified | `config.is_shell_command_allowed`, `config.contains_dangerous_patterns` |
 | T14 | DF7, DF9  | —              | A weaker model configured for the Auto approval classifier reviews gated actions less reliably, including untrusted text carried in tool arguments and file content | TB2 | Low | Verified | `auto_mode.AutoModeHITLMiddleware._classifier_model`, `config.resolve_auto_classifier_model`, `config_manifest.resolve_auto_classifier_timeout` |
+| T15 | DF28, DF29 | DC2 | Stored prompt injection through a goal, rubric, or status note influences later primary-model tool requests | TB12 | Medium | Likely | `goal_state_notice.build_goal_state_notice`, `goal_tools.GoalToolsMiddleware._request_with_goal_notice` |
+| T16 | DF28, DF29 | DC2 | Sensitive local-file content, up to the 12,000-character rubric limit, is automatically persisted and transmitted to the configured model provider as rubric criteria | TB12 | Medium | Verified | `app.DeepAgentsApp._set_rubric_from_file`, `goal_state_notice.build_goal_state_notice` |
+| T17 | DF28, DF29 | DC2 | Character-bounded goal/rubric/status-note text can still exceed provider context budgets after escaping or tokenization | TB12 | Medium | Verified | `goal_state_limits`, `goal_state_notice.build_goal_state_notice`, `goal_tools.GoalToolsMiddleware._request_with_goal_notice` |
 
 ### Threat Details
 
@@ -381,6 +463,24 @@
 - **Flow**: DF8 (external web) → DF9 (tool result) → C3 Agent context
 - **Description**: When the agent calls `fetch_url` or `web_search`, the response body enters the LLM's context window as a `ToolMessage`. A maliciously crafted web page or search snippet can embed natural-language instructions that the LLM may interpret as authoritative commands, leading to unexpected tool call requests in the next turn.
 - **Preconditions**: (1) User or LLM-initiated call to `fetch_url`/`web_search` reaches a malicious page; (2) LLM interprets injected instructions as directives; (3) In interactive mode, user must still approve the resulting tool call.
+
+#### T15: Stored Prompt Injection Through Goal/Rubric State
+
+- **Flow**: DF28/DF29 (user or local-file content → checkpointed notice → primary-model context)
+- **Description**: The goal-state notice embeds the full actionable objective, active criteria, and status note in a synthetic `HumanMessage`. A rubric loaded from an untrusted repository file, or a crafted status note, can therefore persist instructions that influence later model behavior. Bounded superseded notices remain in the append-only request history until compaction; the latest notice identifies itself as authoritative, but a model can still attend to older text. Oversized legacy notices are replaced only in the transient model request. HTML escaping and boundary labels prevent literal tag forgery. They do not stop natural-language prompt injection. Interactive HITL still gates side-effecting tool calls. Auto and non-interactive configurations can reduce that protection.
+- **Preconditions**: (1) The user accepts a goal/rubric or loads a file containing attacker-controlled instructions; (2) the state is actionable or the rubric remains active; (3) the primary model follows the injected content; (4) for side effects, the resulting tool call is approved or an approval-bypassing mode is active.
+
+#### T16: Automatic Disclosure of File-Loaded Rubrics
+
+- **Flow**: DF28/DF29 (`/rubric file` → checkpoint → primary-model request)
+- **Description**: `/rubric file` reads the entire selected UTF-8 text file and persists its nonempty contents, up to the 12,000-character rubric limit (see TB12); a larger file is rejected outright rather than truncated. The notice then embeds the criteria into primary-model context. There is no warning or confirmation specific to provider transmission, so a user can inadvertently select a secret-bearing or proprietary file. This flow handles user content, not provider credentials. Credential storage and provider retention are outside the scoped implementation.
+- **Preconditions**: (1) A user selects a file with sensitive content; (2) it becomes an active rubric; (3) a model request is made while the rubric is active.
+
+#### T17: Provider Context Pressure Despite Character Limits
+
+- **Flow**: DF28/DF29 (character-bounded text → escaped notice → model request)
+- **Description**: Direct, file-loaded, generated, and tool-authored goal-state paths enforce raw-character limits before persistence or notice construction. HTML escaping happens afterward and can expand the rendered notice (for example, `&` becomes `&amp;`), while provider tokenization and available context budgets vary. The middleware restores or re-pins the current notice after compaction. A valid near-limit notice therefore remains recurring model-request overhead. This increases spend. It can also contribute to a provider context-limit failure.
+- **Preconditions**: (1) A user, file, or model-supplied status note produces a valid near-limit notice; (2) its escaped or tokenized representation is large relative to the configured provider's available context; (3) the corresponding goal or rubric remains model-visible.
 
 #### T2: Shell Allow-List Bypass via `SHELL_ALLOW_ALL`
 
@@ -408,8 +508,8 @@
 
 #### T6: Unauthenticated LangGraph Dev Server on Localhost
 
-- **Flow**: DF3/DF4 (CLI ↔ LangGraph dev server)
-- **Description**: The CLI spawns a `langgraph dev` server subprocess with `LANGGRAPH_AUTH_TYPE=noop` (`client/launch/server.py:_build_server_env`). This disables all server-side authentication. The server binds to `127.0.0.1:{port}` (a free ephemeral port by default, so it no longer squats the well-known `langgraph dev` port 2024). Any local process that discovers the port can: send arbitrary inputs to the running agent thread, read the agent's conversation state (including tool results that may contain file contents or secrets), inject messages into the conversation history, or trigger state updates. The server is ephemeral — it lives only for the duration of the CLI session — but this is the entire attack window. Port discovery is feasible via localhost port scanning or by reading `/proc/{pid}/cmdline` which contains the `--port` argument.
+- **Flow**: DF3/DF4/DF26 (CLI ↔ LangGraph dev server)
+- **Description**: The CLI spawns a `langgraph dev` server subprocess with `LANGGRAPH_AUTH_TYPE=noop` (`client/launch/server.py:_build_server_env`). This disables all server-side authentication. The server binds to `127.0.0.1:{port}` (a free ephemeral port by default, so it no longer squats the well-known `langgraph dev` port 2024). Any local process that discovers the port can send inputs, read conversation state (including tool results that may contain file contents or secrets), inject messages, trigger state updates, or request server-owned offload for a known thread. The offload route does not accept conversation state and cannot write `messages`, so its direct impact is additional model/archive work plus a state-only summarization update. The server is ephemeral — it lives only for the duration of the CLI session — but this is the entire attack window. Port discovery is feasible via localhost port scanning or by reading `/proc/{pid}/cmdline` which contains the `--port` argument.
 - **Preconditions**: (1) Attacker has a local process running as the same user (or as root); (2) Attacker discovers the server port (port scan on localhost, or reads process arguments).
 
 #### T7: LocalContextMiddleware Injects Host File Contents into System Prompt
@@ -439,8 +539,8 @@
 #### T11: Auto-Installed ripgrep Binary from Upstream Release
 
 - **Flow**: Download performed by `managed_tools.ensure_ripgrep` when `rg` is not on `PATH` — either on first run, or eagerly at install time via `dcode tools install` (invoked by `scripts/install.sh`).
-- **Description**: Without a system `rg`, Deep Agents Code fetches the pinned ripgrep release tarball from `github.com/BurntSushi/ripgrep/releases/...`, verifies it against an in-tree SHA-256 (`RIPGREP_ASSETS`), extracts it under a `TemporaryDirectory`, and atomically moves the binary into `~/.deepagents/bin/rg`. The binary then runs unsandboxed, inheriting the same trust as a user-installed `rg` (the SDK invokes it via `subprocess.run(["rg", ...])`). The same verified path backs the `dcode tools install` verb, so the install script reuses it rather than re-encoding the version + checksum table in bash.
-- **Mitigations**: (1) SHA-256 verified against the pinned hash table before move — a mismatch aborts the install and leaves `BIN_DIR` clean. (2) Network egress is limited to `github.com`. (3) Opt-out via `DEEPAGENTS_CODE_OFFLINE` for air-gapped environments, or `DEEPAGENTS_CODE_RIPGREP_INSTALLER=system` to defer to the OS package manager instead of the managed binary. (4) Pinned version + checksums are bumped in-tree, so a compromised upstream release is detected on the next Deep Agents Code release rather than silently propagating. (5) Atomic move-into-place avoids partial installs when concurrent CLI invocations race. (6) The eager install-script path is non-`sudo` (no system package manager is invoked in the default `managed` mode).
+- **Description**: Without a system `rg`, Deep Agents Code fetches the pinned ripgrep release tarball from `github.com/BurntSushi/ripgrep/releases/...`, verifies it against an in-tree SHA-256 (`RIPGREP_ASSETS`), extracts it under a `TemporaryDirectory`, and atomically moves the binary into `managed_tools.BIN_DIR` (`<sys.prefix>/share/deepagents-code/bin/rg`, shared by every profile), or into the profile-scoped `managed_tools.FALLBACK_BIN_DIR` when that directory is not writable. The binary then runs unsandboxed, inheriting the same trust as a user-installed `rg` (the SDK invokes it via `subprocess.run(["rg", ...])`). The same verified path backs the `dcode tools install` verb, so the install script reuses it rather than re-encoding the version + checksum table in bash.
+- **Mitigations**: (1) SHA-256 verified against the pinned hash table before move — a mismatch aborts the install and leaves the chosen bin directory clean. (2) Network egress is limited to `github.com`. (3) Opt-out via `DEEPAGENTS_CODE_OFFLINE` for air-gapped environments, or `DEEPAGENTS_CODE_RIPGREP_INSTALLER=system` to defer to the OS package manager instead of the managed binary. (4) Pinned version + checksums are bumped in-tree, so a compromised upstream release is detected on the next Deep Agents Code release rather than silently propagating. (5) Atomic move-into-place avoids partial installs when concurrent CLI invocations race. (6) The eager install-script path is non-`sudo` (no system package manager is invoked in the default `managed` mode).
 - **Preconditions**: User has not installed `rg` via their package manager, `DEEPAGENTS_CODE_OFFLINE` is unset, `DEEPAGENTS_CODE_RIPGREP_INSTALLER` is not `system`, and the host can reach `github.com`. The pinned SHA-256 in `RIPGREP_ASSETS` would need to be incorrect (a supply-chain compromise of the deepagents-code release) for a tampered binary to be installed.
 
 #### T11b: Unpinned Pricing Catalog Fetched Hourly from a Mutable Upstream Ref
@@ -481,11 +581,13 @@
 | Configuration         | DF10, DF12, DF15, DF23| T9, T10, T12, T14  | Dotenv shell-env precedence; TOML schema; MCP schema + allow/deny lists; JSON structure check; `class_path` format check; dotenv denylist for execution-hook env keys and project-`.env` trust vars | User | Dotenv denylist is best-effort — execution-hook env keys consumed by tools not yet enumerated still reach subprocesses; `class_path` executes module code before type check; MCP env dict unfiltered; Auto classifier strength is a user choice with no floor enforced (T14) |
 | Session restore       | DF14                  | T5            | OS file permissions; SQLite                                                | Project        | Unencrypted at rest                                                                           |
 | Server IPC (env vars) | DF18                  | T6            | `ServerConfig` serialization; parent env passed to child                   | Project        | Provider API keys flow to server subprocess; system prompt in env                            |
+| Offload operation     | DF26, DF27            | T6            | Per-field request schema on consumed context keys; endpoint/transport keys stripped from client `model_params` (`offload_api._strip_transport_model_params`); idle/pending/checkpoint checks; state-only update typed to permitted channels; messages writes rejected | Project | `context.model`/`profile_overrides` are type-checked but their values flow to `config.create_model` (see C17/TB11 for `class_path`); unknown context keys pass through by design; local built-in route relies on loopback and `noop` auth; custom deployments own route auth and thread authorization |
 | Host environment      | DF19, DF20            | T7            | Static script; exit code check; 30s timeout                                | Shared         | Makefile content injected into system prompt without sanitization                            |
 | Custom subagents (FS) | DF21                  | T8            | `yaml.safe_load`; HITL on `task` tool                                      | User           | Subagent body text not content-filtered                                                      |
 | Async subagent config | DF22                  | None direct   | TOML parse; type validation in `load_async_subagents`                      | User           | URL and headers for remote subagents are user-controlled; no URL validation                 |
 | MCP subprocess env    | DF24                  | T10           | Dict type check only (`_validate_server_config`)                           | User           | No key/value filtering; arbitrary env vars forwarded to subprocess                           |
-| Offloaded history     | DF25                  | None direct   | Thread ID is UUID7 (no path injection); backend handles storage            | Shared         | Raw conversation content written to sandbox filesystem                                       |
+| Offloaded history     | DF25                  | None direct   | Filename is a framework-minted session id (no path injection); backend handles storage | Shared         | Raw conversation content written to sandbox filesystem                                       |
+| Goal/rubric state     | DF28, DF29            | T15, T16, T17 | Lifecycle projection; notice fingerprinting; raw-character validation (8,000 objective; 12,000 rubric and objective-plus-criteria; 4,000 note/blocker; 16,000 notice); boundary-tag escaping | Shared | Untrusted instructions remain model-readable; file contents are automatically transmitted; no post-escape, byte, or token budget or provider-transmission warning |
 
 ---
 
@@ -517,6 +619,15 @@ Threats that appear valid in isolation but fall outside project responsibility b
 
 ---
 
+## Open Questions
+
+1. Should the raw-character limits for goal objectives, rubric criteria, status notes, and complete notices instead account for HTML-escaped/rendered size or provider tokenization and available context? This is required to resolve the residual risk in T17.
+2. Should `/rubric file` display a provider-disclosure warning or require confirmation before its full contents are persisted and sent to the configured model provider? This determines the intended handling for T16.
+3. Is automatic injection permitted only for content the user intentionally designates as agent-control input, or may it include arbitrary repository-file content? This trust contract determines whether T15 is an accepted product risk or needs a different retrieval design.
+4. What retention, deletion, geographic-processing, and logging commitments does each configured model provider make for goal/rubric notices? The model provider and its credentials are user-configured; those facts are not established by the scoped code.
+
+---
+
 ## Investigated and Dismissed
 
 | ID | Original Threat | Investigation | Evidence | Conclusion |
@@ -524,7 +635,7 @@ Threats that appear valid in isolation but fall outside project responsibility b
 | D1 | Unsafe msgpack deserialization in langgraph checkpoint loading | Verified fix status — confirmed fixed and closed upstream. | Users on current `langgraph` versions are not exposed. | Upstream langgraph has patched the unsafe msgpack deserialization. No longer an active risk. |
 | D2 | Unicode URL homoglyph as project vulnerability | Traced `check_url_safety` + `strip_dangerous_unicode` + `format_warning_detail` → approval dialog display | `unicode_security.check_url_safety`, `agent._format_fetch_url_description` | Warning system is the intended control — the project correctly surfaces the risk to the user in the approval dialog. Not a project vulnerability; classified as mitigated by design (UI warning). |
 | D3 | SSRF via `http_request` / `fetch_url` to internal services | Traced `tools.http_request` and `tools.fetch_url` — no URL scheme or host blocklist. However, both tools require HITL approval in interactive mode. In non-interactive mode, only shell commands are auto-approved via the allow-list; HTTP tools still go through the HITL interrupt gate. | `tools.http_request`, `tools.fetch_url`, `agent._add_interrupt_on` | Not a project vulnerability in isolation — the HITL gate is the intended control for all HTTP tool calls. The user sees the full URL before approving. SSRF is only reachable if the user approves the request (interactive) or enables auto-approve (explicit opt-in). Classified as out-of-scope for the same reason as prompt injection in interactive mode. |
-| D4 | Offload path injection via thread_id | Checked `sessions.generate_thread_id` — returns UUID7 string (alphanumeric + hyphens only, no path separators). | `sessions.generate_thread_id`, `offload.offload_messages_to_backend` | Thread IDs are UUID7 strings generated by the framework. No user-controlled path components reach the file path. Not exploitable. |
+| D4 | Offload path injection via archive filename | Checked `SummarizationMiddleware._get_session_id`/`_get_history_path` — the leaf is `session_` plus a `uuid4().hex`. | `SummarizationMiddleware._get_session_id`, `SummarizationMiddleware._get_history_path` | The archive filename is minted by the framework from a UUID4 hex, so no user-controlled path component reaches the file path. Not exploitable. |
 
 ---
 
@@ -544,5 +655,13 @@ Threats that appear valid in isolation but fall outside project responsibility b
 | 2026-07-28 | manual update                      | Extended the out-of-scope hooks row for plugin-contributed hooks: enabled plugins may supply `hooks/hooks.json`, gated by install plus enablement rather than workspace trust, with each handler's environment overlaid only by its own plugin path variables |
 | 2026-08-03 | manual update                      | Added T14 (a weaker Auto classifier model weakens action review) under TB2, covering the selectable classifier (`--auto-classifier-model`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`, `[models].auto_classifier`, `/auto model`), its restriction to trusted config surfaces via `config._PROJECT_DOTENV_DENIED_ENV_KEYS`, and its fail-closed construction behavior (deny, then latch to human approval; never fall back to the main model). Extended the "LLM output" and "Configuration" input-coverage rows with T14 |
 | 2026-08-04 | manual update                      | Extended T14 for the configurable Auto classifier review deadline (`DEEPAGENTS_CODE_AUTO_CLASSIFIER_TIMEOUT`, `[models].auto_classifier_timeout`): bounded by `config_manifest.resolve_auto_classifier_timeout` between a floor and ceiling so the deadline cannot be removed, denied from a project `.env` via `config._PROJECT_DOTENV_DENIED_ENV_KEYS`, and fail-closed on expiry |
+| 2026-08-11 | langster-threat-model (automated)  | Added C19, TB12, and DF28/DF29 for persisted goal/rubric state injected into primary-model context after removal of the goal/rubric read tools. Updated DC2 and input-source coverage; added T15 (stored prompt injection), T16 (automatic disclosure of file-loaded criteria), and T17 (context-budget pressure), with provider-handling and trust-contract gaps recorded as Open Questions. |
+| 2026-08-11 | langster-threat-model (automated)  | Corrected TB12, DF28/DF29, and T17 to document the enforced raw-character limits and the narrower residual risk from post-escape expansion and provider-specific byte/token budgets. |
+| 2026-08-17 | langster-threat-model (diff)       | Added C18, a server-owned custom HTTP boundary, and updated the architecture, DC5, TB2, TB10, DF25-DF27, T6, and input coverage. The route owns checkpoint hydration, shared compaction/hooks/backend selection, state-only persistence typed to permitted channels, and cost rollback; the client sends no graph or checkpoint state. Recorded that `PreToolUse` `ask` is fail-closed (converted to a deny) on this path because the operation transport carries no HITL channel; no new threat was identified. |
+| 2026-08-17 | manual update                      | Noted that the goal-state character budget is re-validated when a one-shot `/rubric next` is consumed, not only when it is set: the goal state it is measured against is mutable between those points (`/goal amend`, an `update_goal` blocker note), so a set-time-only check could still degrade the notice and silently disable the promised grade. The degraded notice now also reports `Goal status: unavailable` rather than leaving a live status beside `Goal actionable: no`. |
 | 2026-08-17 | manual update                      | Extended T14 for `ask_user` question text as a classifier injection source: the receipt attests display and answer, not content, so a question claiming prior or blanket authorization is untrusted content; recorded the `_CLASSIFIER_POLICY` clauses that keep a paired question to an action/target description matched against canonical arguments. Narrowed the T14 "deterministic allow/deny" guard wording, which overstated the deny side: deterministic denies do not cover the Deny categories, and an affirmative classifier allow is not re-checked downstream |
+| 2026-08-19 | manual update                      | Recorded that a superseded goal-state notice is replaced in place rather than removed from a model request, because the summarizer derives its next cutoff from that list and persists it against the unfiltered checkpoint; and that a combined objective-plus-criteria overflow now ends the criteria turn with its character limit instead of retrying blind to the recursion limit. Noted that an unrecognized persisted goal status degrades to `paused` in the notice, so a corrupt or forward-version checkpoint cannot present itself to the model as a goal to work toward. Dropped the stale generated-commit pin and bounded T16's disclosure to the enforced rubric limit |
 | 2026-08-21 | manual update                      | Clarified that the dotenv execution-hook denylist (`config._DOTENV_DENIED_ENV_KEYS`) is a best-effort enumeration of known code-execution consumers, not a closed set: TB11's inside-detail and T12's description now state this explicitly, and the Configuration input-coverage gap was reworded from the stale "project `.env` can set shell startup-hook vars" (denylisted since #4288) to the actual residual — execution-hook keys consumed by not-yet-enumerated tools still reach subprocesses |
+| 2026-08-24 | langster-threat-model (diff)       | Removed the client-seeded `/offload` fallback. `/offload` is now available only through C18 on built-in servers; local in-process and ACP agents do not support it, and custom or older servers without the route fail at the HTTP boundary. Updated DC5, TB2, TB10, and T6 to remove the client self-approval and synthetic-message attack surface. The server route, hook behavior, archive guard, and state-only persistence controls are unchanged; no new threat was identified. |
+| 2026-08-24 | manual update                      | The C18 boundary now strips endpoint/proxy/transport keys (`base_url`, `openai_proxy`, `http_client`, and similar) from client-supplied `model_params` before they reach `config.create_model` (`offload_api._strip_transport_model_params`), closing the credential-redirection consequence of T6 for this route. Client-supplied `model` and behavioral params still flow through; in-process `CLIContextSchema` model params remain trusted and unfiltered |
+| 2026-08-25 | manual update                      | Stopped replacing bounded superseded goal-state notices in model requests while retaining bounded same-index stand-ins for oversized legacy notices. Goal/rubric history now remains append-only for prompt-cache stability where safe, and the latest notice explicitly supersedes earlier notices. Updated T15 to record the residual risk that a model can still attend to older bounded goal text until compaction. |

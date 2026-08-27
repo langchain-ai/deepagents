@@ -43,6 +43,7 @@ from deepagents_code.client.non_interactive import (
     _process_ai_message,
     _process_hitl_interrupts,
     _process_message_chunk,
+    _process_stream_chunk,
     _record_usage_from_message,
     _run_agent_loop,
     _run_startup_command,
@@ -70,6 +71,7 @@ from deepagents_code.hooks.models.domain import (
     SessionStartDecision,
     UserPromptSubmitDecision,
 )
+from deepagents_code.hooks.transcript import TranscriptRecorder, TranscriptStore
 from deepagents_code.tool_display import format_tool_message_content
 
 
@@ -77,6 +79,62 @@ from deepagents_code.tool_display import format_tool_message_content
 def console() -> Console:
     """Console that captures output."""
     return Console(quiet=True)
+
+
+def test_nested_usage_event_updates_headless_stats(console: Console) -> None:
+    state = StreamState(thread_id="thread-1")
+    event = {
+        "type": "model_usage",
+        "version": 1,
+        "request_id": "child-1",
+        "usage_metadata": {
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "total_tokens": 1_100,
+        },
+        "model_name": "gpt-5.5",
+        "provider": "openai",
+        "thread_id": "thread-1",
+        "scope": "tools:task",
+    }
+
+    _process_stream_chunk(
+        (("tools:task",), "custom", event),
+        state,
+        console,
+        FileOpTracker(assistant_id="assistant"),
+    )
+
+    assert state.stats.request_count == 1
+    assert state.stats.per_kind["subagent"].request_count == 1
+
+
+def test_nested_grader_output_is_not_rendered_or_transcribed(tmp_path: Path) -> None:
+    """Headless grading hides partial tokens from output and hook transcripts."""
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    state = StreamState(
+        thread_id="thread-1",
+        transcript=TranscriptRecorder(transcripts, "thread-1"),
+    )
+    chunk = (
+        ("ReliableRubricMiddleware.after_agent:grader",),
+        "messages",
+        (AIMessage(id="grader-partial", content="partial verdict"), {}),
+    )
+
+    _process_stream_chunk(
+        chunk,
+        state,
+        console,
+        FileOpTracker(assistant_id="assistant"),
+    )
+
+    assert output.getvalue() == ""
+    assert state.full_response == []
+    transcript = transcripts.materialize("thread-1")
+    assert transcript.path.read_text(encoding="utf-8") == ""
 
 
 def test_subagent_summarization_does_not_signal_compaction() -> None:

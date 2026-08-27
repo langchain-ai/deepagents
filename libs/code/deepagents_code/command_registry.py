@@ -115,7 +115,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/clear",
-        description="Clear the chat and start a new thread",
+        description="Start a fresh thread",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="reset",
     ),
@@ -131,6 +131,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="tokens window usage remaining offload compact",
     ),
     SlashCommand(
+        name="/context-doctor",
+        description="Audit what a session injects and its estimated token cost",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="tokens prompt skills memory mcp schemas bloat",
+    ),
+    SlashCommand(
         name="/cost",
         description="Show estimated thread cost",
         bypass_tier=BypassTier.QUEUED,
@@ -138,7 +144,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/force-clear",
-        description="Stop active work, clear the chat, and start a new thread",
+        description="Recover a stuck session with a fresh thread",
         bypass_tier=BypassTier.ALWAYS,
         hidden_keywords="reset interrupt",
     ),
@@ -179,6 +185,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Manage plugins",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="plugin marketplace skills mcp enable disable install",
+    ),
+    SlashCommand(
+        name="/prompts",
+        description="Search and reuse a previous prompt",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="history clipboard recent recall submitted",
     ),
     SlashCommand(
         name="/model",

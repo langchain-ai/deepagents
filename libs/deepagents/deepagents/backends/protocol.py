@@ -27,6 +27,15 @@ This gives `FilesystemBackend` enough headroom to finish the worst-case sync
 path: ripgrep timeout, then Python fallback timeout.
 """
 
+ASYNC_GLOB_TIMEOUT: Final = 30
+"""Timeout in seconds for a sandbox glob round-trip.
+
+The remote script bounds its own walk (`TIME_BUDGET` in `sandbox.py`), but that
+covers neither interpreter startup, the sandbox round-trip, nor transferring up
+to `MAX_MATCHES` records. Without an outer bound a wedged sandbox hangs the
+caller indefinitely.
+"""
+
 FileOperationError = Literal[
     "file_not_found",
     "permission_denied",
@@ -356,6 +365,19 @@ def _apply_grep_max_count(result: GrepResult, max_count: int | None) -> GrepResu
     return GrepResult(error=result.error, matches=result.matches[:max_count], truncated=True)
 
 
+GlobTruncationReason = Literal["budget", "unreadable", "transport"]
+"""Why a `GlobResult` is incomplete.
+
+The distinction decides what advice is useful to the caller:
+
+- `budget`: the walk hit its time limit or match cap. Narrowing the pattern or
+  the path surfaces the rest.
+- `unreadable`: a subtree could not be read (e.g. permissions). Narrowing will
+  *never* surface those files, so advising it sends the caller in a loop.
+- `transport`: the sandbox transport clipped the output.
+"""
+
+
 @dataclass
 class GlobResult:
     """Result from backend `glob` operations.
@@ -367,11 +389,15 @@ class GlobResult:
             stopping. `None` only on a hard failure.
         truncated: True when the walk stopped early (e.g. hit its time limit)
             and `matches` is therefore incomplete but still valid.
+        truncation_reason: Why `matches` is incomplete. Set whenever the
+            producing backend can distinguish the cause; `None` when
+            `truncated` is False or the cause is unknown.
     """
 
     error: str | None = None
     matches: list["FileInfo"] | None = None
     truncated: bool = False
+    truncation_reason: GlobTruncationReason | None = None
 
 
 # @abstractmethod to avoid breaking subclasses that only implement a subset
@@ -614,8 +640,12 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         Returns:
             `GlobResult` with matching files or error. Patterns the matcher
-            refuses (e.g. brace expansion past its limit) are reported as
-            `error`, not raised.
+            refuses -- brace expansion past its limit, or a `..` segment -- are
+            reported as `error` with `matches=None`, not raised.
+
+            `FileInfo.path` is always absolute. `_check_fs_permission` matches
+            `deny` rules against absolute patterns only, so a backend returning
+            a relative path silently bypasses every deny rule.
 
         Raises:
             NotImplementedError: If the backend does not implement `glob`.

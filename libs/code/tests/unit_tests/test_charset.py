@@ -1,11 +1,17 @@
 """Tests for charset mode configuration and glyph selection."""
 
+from __future__ import annotations
+
 import os
 import sys
 from dataclasses import fields
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 from deepagents_code._env_vars import HIDE_SPLASH_VERSION
 from deepagents_code.config import (
@@ -22,6 +28,20 @@ from deepagents_code.config import (
     is_ascii_mode,
     reset_glyphs_cache,
 )
+
+
+@pytest.fixture(autouse=True)
+def _restore_glyphs_cache() -> Iterator[None]:
+    """Keep the process-global glyph cache from leaking across tests.
+
+    Several tests force the charset to ASCII or Unicode and leave the detected
+    mode in `config`'s module-level caches; xdist scheduling then decides which
+    unrelated test inherits that state. Reset before *and* after each test so
+    the ambient mode is always recomputed from the environment.
+    """
+    reset_glyphs_cache()
+    yield
+    reset_glyphs_cache()
 
 
 class TestCharsetMode:
@@ -133,10 +153,6 @@ class TestGlyphs:
 class TestDetectCharsetMode:
     """Tests for _detect_charset_mode function."""
 
-    def setup_method(self) -> None:
-        """Reset glyphs cache before each test."""
-        reset_glyphs_cache()
-
     @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
     def test_explicit_unicode_mode(self) -> None:
         """Test explicit unicode mode via env var."""
@@ -209,10 +225,6 @@ class TestDetectCharsetMode:
 class TestGetGlyphs:
     """Tests for get_glyphs function."""
 
-    def setup_method(self) -> None:
-        """Reset glyphs cache before each test."""
-        reset_glyphs_cache()
-
     @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
     def test_get_glyphs_returns_unicode_for_unicode_mode(self) -> None:
         """Test get_glyphs returns UNICODE_GLYPHS for unicode mode."""
@@ -270,20 +282,18 @@ class TestGlyphUsability:
         assert UNICODE_GLYPHS.box_horizontal == "─"
         assert UNICODE_GLYPHS.box_horizontal_heavy == "━"
         assert UNICODE_GLYPHS.hunk_break == "⋮"
+        assert UNICODE_GLYPHS.line_continuation == "…"
 
     def test_ascii_box_drawing_characters(self) -> None:
         """Test ASCII box-drawing alternatives are simple ASCII."""
         assert ASCII_GLYPHS.box_horizontal == "-"
         assert ASCII_GLYPHS.box_horizontal_heavy == "="
         assert ASCII_GLYPHS.hunk_break == ":"
+        assert ASCII_GLYPHS.line_continuation == "."
 
 
 class TestGetBanner:
     """Tests for get_banner function."""
-
-    def setup_method(self) -> None:
-        """Reset glyphs cache before each test."""
-        reset_glyphs_cache()
 
     @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
     def test_get_banner_returns_unicode_for_unicode_mode(self) -> None:
@@ -342,10 +352,6 @@ class TestGetBanner:
 
 class TestIsAsciiMode:
     """Tests for is_ascii_mode helper."""
-
-    def setup_method(self) -> None:
-        """Reset glyphs cache before each test."""
-        reset_glyphs_cache()
 
     @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
     def test_false_in_unicode_mode(self) -> None:

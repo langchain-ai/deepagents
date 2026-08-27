@@ -48,6 +48,7 @@ from deepagents_code._session_stats import (
     finalize_recorded_requests,
     print_usage_table,
     record_message_usage,
+    record_model_usage_event,
     usage_table_enabled,
 )
 from deepagents_code._tool_stream import (
@@ -389,6 +390,9 @@ def _plain_hook_notice(console: Console) -> HookNoticeCallback:
 @dataclass
 class StreamState:
     """Mutable state accumulated while iterating over the agent stream."""
+
+    thread_id: str = ""
+    """Thread whose streamed usage this state accepts."""
 
     quiet: bool = False
     """When `True`, stream-time diagnostics (the tool-call and file-operation
@@ -1002,7 +1006,16 @@ def _process_stream_chunk(
 
     # Nested agent spend still counts even when chat rendering is skipped.
     if not is_main_agent:
-        if (
+        if stream_mode == "custom":
+            record_model_usage_event(
+                state.stats,
+                data,
+                active_thread_id=state.thread_id,
+                fallback_model=settings.model_name or "",
+                fallback_provider=settings.model_provider or "",
+                recorded_requests=state.recorded_usage_requests,
+            )
+        elif (
             stream_mode == "messages"
             and isinstance(data, tuple)
             and len(data) == (_MESSAGE_DATA_LENGTH)
@@ -1023,7 +1036,24 @@ def _process_stream_chunk(
     if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
         _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
     elif stream_mode == "custom" and isinstance(data, dict):
-        _process_rubric_event(cast("dict[str, Any]", data), state, console)
+        if data.get("type") == "model_retry":
+            from deepagents_code.model_retry import retry_status_from_event
+
+            # A `Retry-After` backoff can hold the turn for a minute, so this
+            # line is the only explanation for the stall; stop the spinner first
+            # so it cannot overwrite it. `highlight=False` keeps Rich from
+            # bolding the "1/5", which would cancel the `dim`.
+            if state.spinner:
+                state.spinner.stop()
+            status = retry_status_from_event(data)
+            console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
+            # Restart it: the backoff is the longest stall of the turn, and
+            # leaving the spinner stopped reads as a hang until some unrelated
+            # later event happens to restart it.
+            if state.spinner:
+                state.spinner.start()
+        else:
+            _process_rubric_event(cast("dict[str, Any]", data), state, console)
     elif stream_mode == "messages":
         _process_message_chunk(
             cast("tuple[AIMessage | ToolMessage, dict[str, str]]", data),
@@ -1457,7 +1487,9 @@ async def _run_agent_loop(
         ClientHookStopError: If a client-owned hook stops processing.
     """
     spinner = None if quiet else _ConsoleSpinner(console)
+    thread_id = config.get("configurable", {}).get("thread_id", "")
     state = StreamState(
+        thread_id=thread_id if isinstance(thread_id, str) else "",
         quiet=quiet,
         stream=stream,
         spinner=spinner,
@@ -1473,7 +1505,7 @@ async def _run_agent_loop(
     if rubric is not None:
         stream_input["rubric"] = rubric
 
-    thread_id = config.get("configurable", {}).get("thread_id", "")
+    thread_id = state.thread_id
     # An empty or missing thread ID carries no session identity, so leave it
     # unset in context rather than passing a blank string to model middleware.
     context_thread_id = thread_id if isinstance(thread_id, str) and thread_id else None
@@ -1860,6 +1892,7 @@ async def run_non_interactive(
     sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     *,
+    cli_max_retries: int | None = None,
     initial_skill: str | None = None,
     startup_cmd: str | None = None,
     profile_override: dict[str, Any] | None = None,
@@ -1903,6 +1936,7 @@ async def run_non_interactive(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
+        cli_max_retries: Explicit `--max-retries` value.
         sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
             `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
         sandbox_id: Optional existing sandbox ID to reuse.
@@ -2075,6 +2109,7 @@ async def run_non_interactive(
             model_name,
             extra_kwargs=model_params,
             profile_overrides=profile_override,
+            cli_max_retries=cli_max_retries,
         )
     except ModelConfigError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
@@ -2186,6 +2221,7 @@ async def run_non_interactive(
             assistant_id=assistant_id,
             model_name=model_name,
             model_params=model_params,
+            cli_max_retries=cli_max_retries,
             profile_overrides=profile_override,
             auto_approve=use_auto_approve,
             interrupt_shell_only=use_interrupt_shell_only,

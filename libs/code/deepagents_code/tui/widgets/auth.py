@@ -21,7 +21,7 @@ import logging
 import os
 from enum import StrEnum
 from functools import partial
-from typing import TYPE_CHECKING, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, ClassVar, NamedTuple, Protocol, cast
 from urllib.parse import urlsplit
 
 from textual.binding import Binding, BindingType
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from deepagents_code.tui.widgets.xai_oauth_auth import XaiOAuthSignedInAction
 
 from deepagents_code import auth_store, theme
+from deepagents_code._paths import PATHS
 from deepagents_code.auth_display import format_auth_badge
 from deepagents_code.config import (
     LANGSMITH_EU_ENDPOINT,
@@ -71,12 +72,20 @@ from deepagents_code.model_config import (
     get_service_auth_status,
     is_langsmith,
     is_service,
+    resolve_env_var,
     resolved_env_var_name,
 )
 from deepagents_code.tui.key_hints import modal_navigation_hint
 from deepagents_code.tui.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
+
+
+class _EnvironmentReloadHost(Protocol):
+    """App surface used to serialize auth-triggered environment reloads."""
+
+    async def _reload_settings_from_environment_serialized(self) -> list[str]:
+        """Reload process settings without racing another environment mutation."""
 
 
 CONFIGURATION_DOCS_URL = (
@@ -166,6 +175,7 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "cohere": "Cohere",
     "deepseek": "DeepSeek",
     "fireworks": "Fireworks",
+    "google_anthropic_vertex": "Google Vertex AI (Anthropic)",
     "google_genai": "Google Gemini",
     "google_vertexai": "Google Vertex AI",
     "groq": "Groq",
@@ -885,18 +895,15 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             if self._env_var:
                 key_meta = Static(
                     Content.assemble(
-                        "Alternatively, environment variables can be used in place "
-                        "of the key stored above. Set ",
+                        "Environment variables: ",
                         (f"DEEPAGENTS_CODE_{self._env_var}", TStyle(bold=True)),
-                        " for a dcode-only key; it has the highest priority. Set ",
+                        " (dcode only, highest priority) or ",
                         (self._env_var, TStyle(bold=True)),
-                        " to share a key with other provider SDK tools; it is used "
-                        "only when no scoped or stored key exists. After setting one "
-                        "in a .env file, press ",
+                        " (shared, lowest priority). Put either in the project .env "
+                        f"or {PATHS.display(PATHS.profile.dotenv_file)}; press ",
                         ("Ctrl+R", TStyle(bold=True)),
-                        " to reload without restarting. A variable exported in a "
-                        "separate shell after launch is invisible to this process; "
-                        "it needs a full relaunch. ",
+                        " in this dialog to reload. New shell exports require "
+                        "restarting the app. ",
                         (
                             "Configuration docs",
                             self._link_style(CONFIGURATION_DOCS_URL),
@@ -1372,10 +1379,18 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         with SAVED so the caller retries the original operation; otherwise
         refresh the modal in place and toast the outcome.
         """
-        from deepagents_code.config import settings
+        from deepagents_code import config as config_module
 
         try:
-            settings.reload_from_environment()
+            app = cast("_EnvironmentReloadHost", self.app)
+            changes = await app._reload_settings_from_environment_serialized()
+            blocked = config_module.managed_reload_block(changes)
+            if blocked is not None:
+                # No cache clear: policy refused the refresh, so the values
+                # behind those caches are the ones still in force. Matches
+                # `_run_reload_unlocked` and the cwd-switch refresh.
+                self.app.notify(blocked, severity="error", markup=False)
+                return
             clear_caches()
         except (OSError, ValueError) as exc:
             logger.warning("Failed to reload configuration from auth prompt: %s", exc)
@@ -1743,7 +1758,8 @@ class AuthManagerScreen(ModalScreen[None]):
         )
         return Content.assemble(
             "Lists installed model providers, services like web search, and any "
-            "providers you've configured in ~/.deepagents/config.toml. Greyed-out "
+            "providers you've configured in "
+            f"{PATHS.display(PATHS.profile.config_file)}. Greyed-out "
             "providers aren't installed yet — select one to install it. ",
             ("Docs", link_style),
         )
@@ -2094,13 +2110,30 @@ class AuthManagerScreen(ModalScreen[None]):
         # Once an OAuth sibling (`openai_codex`, `xai_oauth`) is available, the
         # raw API-key provider it piggybacks on (`openai`, `xai`) is only
         # useful as that gate — hide its own row unless it actually has real
-        # credentials of its own (`stored`/`config_providers`), so it doesn't
-        # clutter the list as a redundant "[missing]" entry the user will
-        # never fill in. Adding a real key later still surfaces it normally.
+        # credentials of its own (stored key, config-declared `api_key_env`,
+        # or an env-var credential), so it doesn't clutter the list as a
+        # redundant "[missing]" entry the user will never fill in. Adding a
+        # real key later still surfaces it normally. `resolve_env_var` is the
+        # redundant "[missing]" entry the user will never fill in. Adding a
+        # real key later still surfaces it normally. `resolve_env_var` is the
+        # same lookup the status badge uses, so an env-configured row stays
+        # visible with its `[env set: …]` badge rather than being hidden.
+        def _has_env_credential(provider: str) -> bool:
+            env_var = config.providers.get(provider, {}).get(
+                "api_key_env"
+            ) or PROVIDER_API_KEY_ENV.get(provider)
+            return bool(env_var and resolve_env_var(env_var))
+
         oauth_gated_only = {
             base
-            for base, oauth in (("openai", codex_installed), ("xai", xai_oauth_installed))
-            if oauth and base not in stored and base not in config_providers
+            for base, oauth in (
+                ("openai", codex_installed),
+                ("xai", xai_oauth_installed),
+            )
+            if oauth
+            and base not in stored
+            and base not in config_providers
+            and not _has_env_credential(base)
         }
 
         shown = (

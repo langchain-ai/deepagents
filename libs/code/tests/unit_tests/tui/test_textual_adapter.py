@@ -9,7 +9,7 @@ from pathlib import Path
 from time import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -57,18 +57,20 @@ from deepagents_code.hooks.models.domain import (
 )
 from deepagents_code.hooks.permissions import PermissionPlan, permission_hook_outcome
 from deepagents_code.tui.textual_adapter import (
+    _MAX_COMPLETED_AUTO_REVIEWS,
     RubricEvaluationEnd,
     TextualUIAdapter,
+    _AutoModeReviewEvent,
     _build_interrupted_ai_message,
     _dispatch_tool_result_hook,
     _format_rubric_details,
     _format_rubric_event,
-    _frame_reject_reason,
     _handle_interrupt_cleanup,
     _interrupt_owned_tool_rows,
     _is_auto_mode_classifier_chunk,
     _is_renderable_auto_mode_event,
     _is_summarization_chunk,
+    _parse_auto_mode_review_event,
     _read_mentioned_file,
     _session_cost_pricing_ok,
     _session_cost_thread_id,
@@ -1542,6 +1544,719 @@ class TestIsRenderableAutoModeEvent:
         assert _is_renderable_auto_mode_event(payload, is_main_agent=True) is False
 
 
+class TestParseAutoModeReviewEvent:
+    """Tests for strict Auto classifier lifecycle event validation."""
+
+    def test_accepts_opaque_main_agent_lifecycle(self) -> None:
+        started = _parse_auto_mode_review_event(
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1", "call-2"],
+            },
+            is_main_agent=True,
+        )
+        completed = _parse_auto_mode_review_event(
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1", "call-2"],
+                "approved_tool_call_ids": ["call-2"],
+            },
+            is_main_agent=True,
+        )
+
+        assert started is not None
+        assert started.tool_call_ids == ("call-1", "call-2")
+        assert completed is not None
+        assert completed.approved_tool_call_ids == ("call-2",)
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "",
+                "tool_call_ids": ["call-1"],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1", "call-1"],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1"],
+                "reason": "must not cross the adapter boundary",
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": [],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": "call-1",
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": [123],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": [""],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": 123,
+                "tool_call_ids": ["call-1"],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "",
+                "tool_call_ids": ["call-1"],
+            },
+        ],
+    )
+    def test_rejects_malformed_lifecycle(self, payload: object) -> None:
+        assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1"],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1"],
+                "approved_tool_call_ids": ["call-2"],
+            },
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1"],
+                "approved_tool_call_ids": ["call-1", "call-1"],
+            },
+        ],
+    )
+    def test_recovers_the_batch_from_a_malformed_completion(
+        self, payload: object
+    ) -> None:
+        """Dropping a completion would strand paused rows, so recover instead."""
+        event = _parse_auto_mode_review_event(payload, is_main_agent=True)
+
+        assert event is not None
+        assert event.recovered
+        assert event.batch_id == "batch-1"
+        assert event.tool_call_ids == ()
+        assert event.approved_tool_call_ids == ()
+
+    def test_rejects_nested_agent_lifecycle(self) -> None:
+        payload = {
+            "type": "auto_mode",
+            "event": "review_started",
+            "batch_id": "batch-1",
+            "tool_call_ids": ["call-1"],
+        }
+
+        assert _parse_auto_mode_review_event(payload, is_main_agent=False) is None
+
+    def test_warns_when_a_lifecycle_payload_is_malformed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        payload = {
+            "type": "auto_mode",
+            "event": "review_started",
+            "batch_id": "batch-1",
+            "tool_call_ids": ["call-1"],
+            "latency_ms": 42,
+        }
+
+        with caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"):
+            assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
+
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if "Auto review event" in record.getMessage()
+        ] == [
+            (
+                "Rejected malformed Auto review event: "
+                "event=review_started batch_id=batch-1 "
+                "keys=['type', 'event', 'batch_id', 'tool_call_ids', 'latency_ms']"
+            )
+        ]
+
+    def test_warns_when_a_lifecycle_payload_has_non_string_keys(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Mixed key types cannot be sorted, so the log lists keys in order."""
+        payload = {
+            "type": "auto_mode",
+            "event": "review_started",
+            "batch_id": "batch-1",
+            "tool_call_ids": ["call-1"],
+            1: "bad",
+        }
+
+        with caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"):
+            assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
+
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if "Auto review event" in record.getMessage()
+        ] == [
+            (
+                "Rejected malformed Auto review event: "
+                "event=review_started batch_id=batch-1 "
+                "keys=['type', 'event', 'batch_id', 'tool_call_ids', 1]"
+            )
+        ]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"type": "auto_mode", "event": "fallback", "reason": "unavailable"},
+            {"type": "rubric", "event": "review_started"},
+            {},
+        ],
+    )
+    def test_foreign_events_are_rejected_without_a_warning(
+        self, payload: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A rejection is only a defect for payloads claiming a review phase."""
+        with caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"):
+            assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
+
+        assert not [
+            record
+            for record in caplog.records
+            if "Auto review event" in record.getMessage()
+        ]
+
+
+class TestAutoModeReviewLifecycle:
+    """Tests for targeted classifier progress transitions."""
+
+    @staticmethod
+    def _event(payload: dict[str, object]) -> _AutoModeReviewEvent:
+        event = _parse_auto_mode_review_event(payload, is_main_agent=True)
+        assert event is not None
+        return event
+
+    async def test_pauses_reviewed_rows_and_resumes_only_approved(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spinner = AsyncMock()
+        synced = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=spinner,
+            sync_tool_message=synced,
+        )
+        approved = ToolCallMessage("delete", {"file_path": "a.py"})
+        blocked = ToolCallMessage("delete", {"file_path": "b.py"})
+        unreviewed = ToolCallMessage("write_file", {"file_path": "c.py"})
+        rows = {
+            "call-approved": approved,
+            "call-blocked": blocked,
+            "call-unreviewed": unreviewed,
+        }
+        adapter._current_tool_messages.update(rows)
+        pause_mocks = {tool_id: MagicMock() for tool_id in rows}
+        running_mocks = {tool_id: MagicMock() for tool_id in rows}
+        for tool_id, row in rows.items():
+            monkeypatch.setattr(row, "pause_running", pause_mocks[tool_id])
+            monkeypatch.setattr(row, "set_running", running_mocks[tool_id])
+
+        started = self._event(
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-approved", "call-blocked"],
+            }
+        )
+        completed = self._event(
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-approved", "call-blocked"],
+                "approved_tool_call_ids": ["call-approved"],
+            }
+        )
+        await adapter._handle_auto_mode_review_event(started)
+        await adapter._handle_auto_mode_review_event(completed)
+
+        pause_mocks["call-approved"].assert_called_once_with()
+        pause_mocks["call-blocked"].assert_called_once_with()
+        pause_mocks["call-unreviewed"].assert_not_called()
+        running_mocks["call-approved"].assert_called_once_with()
+        running_mocks["call-blocked"].assert_not_called()
+        running_mocks["call-unreviewed"].assert_not_called()
+        assert [args.args[0] for args in synced.call_args_list] == [
+            approved,
+            blocked,
+            approved,
+        ]
+        assert spinner.await_args_list == [
+            call("Reviewing approval request"),
+            call("Thinking"),
+        ]
+
+    async def test_a_partly_mutated_row_still_syncs_to_the_store(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raising mutation has still changed the widget.
+
+        Skipping the sync would leave the store disagreeing with the widget
+        until the next full redraw.
+        """
+        synced = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            sync_tool_message=synced,
+        )
+        row = ToolCallMessage("delete", {"file_path": "a.py"})
+        monkeypatch.setattr(
+            row, "pause_running", MagicMock(side_effect=RuntimeError("boom"))
+        )
+        adapter._current_tool_messages["call-1"] = row
+
+        adapter._move_reviewed_row("call-1", running=False)
+
+        synced.assert_called_once_with(row)
+
+    async def test_ignores_duplicate_and_unmatched_events(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spinner = AsyncMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=spinner,
+        )
+        row = ToolCallMessage("delete", {"file_path": "a.py"})
+        pause = MagicMock()
+        running = MagicMock()
+        monkeypatch.setattr(row, "pause_running", pause)
+        monkeypatch.setattr(row, "set_running", running)
+        adapter._current_tool_messages["call-1"] = row
+        started = self._event(
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1"],
+            }
+        )
+        late = self._event(
+            {
+                "type": "auto_mode",
+                "event": "review_started",
+                "batch_id": "batch-stale",
+                "tool_call_ids": ["call-1"],
+            }
+        )
+        unmatched = self._event(
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "batch-stale",
+                "tool_call_ids": ["call-1"],
+                "approved_tool_call_ids": ["call-1"],
+            }
+        )
+        completed = self._event(
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1"],
+                "approved_tool_call_ids": ["call-1"],
+            }
+        )
+
+        await adapter._handle_auto_mode_review_event(unmatched)
+        await adapter._handle_auto_mode_review_event(late)
+        await adapter._handle_auto_mode_review_event(started)
+        await adapter._handle_auto_mode_review_event(started)
+        await adapter._handle_auto_mode_review_event(completed)
+        await adapter._handle_auto_mode_review_event(completed)
+
+        pause.assert_called_once_with()
+        running.assert_called_once_with()
+        assert spinner.await_args_list == [
+            call("Reviewing approval request"),
+            call("Thinking"),
+        ]
+
+    async def test_overlapping_batches_keep_the_review_spinner(self) -> None:
+        """A second in-flight batch still owns the spinner when the first ends."""
+        spinner = AsyncMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=spinner,
+        )
+
+        for batch_id, tool_call_id in (("batch-1", "call-1"), ("batch-2", "call-2")):
+            await adapter._handle_auto_mode_review_event(
+                self._event(
+                    {
+                        "type": "auto_mode",
+                        "event": "review_started",
+                        "batch_id": batch_id,
+                        "tool_call_ids": [tool_call_id],
+                    }
+                )
+            )
+        for batch_id, tool_call_id in (("batch-1", "call-1"), ("batch-2", "call-2")):
+            await adapter._handle_auto_mode_review_event(
+                self._event(
+                    {
+                        "type": "auto_mode",
+                        "event": "review_completed",
+                        "batch_id": batch_id,
+                        "tool_call_ids": [tool_call_id],
+                        "approved_tool_call_ids": [tool_call_id],
+                    }
+                )
+            )
+
+        assert spinner.await_args_list == [
+            call("Reviewing approval request"),
+            call("Reviewing approval request"),
+            call("Reviewing approval request"),
+            call("Thinking"),
+        ]
+
+    async def test_mismatched_completion_resumes_every_reviewed_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disagreeing ID set makes the approval list untrustworthy."""
+        adapter, running_mocks = self._adapter_with_rows(
+            monkeypatch, ["call-1", "call-2"]
+        )
+
+        await adapter._handle_auto_mode_review_event(
+            self._event(
+                {
+                    "type": "auto_mode",
+                    "event": "review_started",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1", "call-2"],
+                }
+            )
+        )
+        await adapter._handle_auto_mode_review_event(
+            self._event(
+                {
+                    "type": "auto_mode",
+                    "event": "review_completed",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1"],
+                    "approved_tool_call_ids": [],
+                }
+            )
+        )
+
+        running_mocks["call-1"].assert_called_once_with()
+        running_mocks["call-2"].assert_called_once_with()
+
+    async def test_recovered_completion_resumes_every_reviewed_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rejected completion must not strand the rows its start paused."""
+        adapter, running_mocks = self._adapter_with_rows(
+            monkeypatch, ["call-1", "call-2"]
+        )
+
+        await adapter._handle_auto_mode_review_event(
+            self._event(
+                {
+                    "type": "auto_mode",
+                    "event": "review_started",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1", "call-2"],
+                }
+            )
+        )
+        recovery = _parse_auto_mode_review_event(
+            {
+                "type": "auto_mode",
+                "event": "review_completed",
+                "batch_id": "batch-1",
+                "tool_call_ids": ["call-1", "call-2"],
+                "latency_ms": 42,
+            },
+            is_main_agent=True,
+        )
+        assert recovery is not None
+        assert recovery.recovered
+        await adapter._handle_auto_mode_review_event(recovery)
+
+        running_mocks["call-1"].assert_called_once_with()
+        running_mocks["call-2"].assert_called_once_with()
+
+    async def test_one_failing_row_does_not_strand_its_batch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bad widget must not hold the rest of the batch paused."""
+        spinner = AsyncMock()
+        adapter, running_mocks = self._adapter_with_rows(
+            monkeypatch, ["call-1", "call-2"], spinner=spinner
+        )
+        running_mocks["call-1"].side_effect = RuntimeError("unmounted")
+
+        await adapter._handle_auto_mode_review_event(
+            self._event(
+                {
+                    "type": "auto_mode",
+                    "event": "review_started",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1", "call-2"],
+                }
+            )
+        )
+        await adapter._handle_auto_mode_review_event(
+            self._event(
+                {
+                    "type": "auto_mode",
+                    "event": "review_completed",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1", "call-2"],
+                    "approved_tool_call_ids": ["call-1", "call-2"],
+                }
+            )
+        )
+
+        running_mocks["call-2"].assert_called_once_with()
+        assert spinner.await_args_list == [
+            call("Reviewing approval request"),
+            call("Thinking"),
+        ]
+
+    async def test_reset_clears_lifecycle_tracking(self) -> None:
+        """A reused batch ID must not be swallowed by the previous turn."""
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        adapter._active_auto_reviews["batch-1"] = frozenset({"call-1"})
+        adapter._completed_auto_reviews["batch-0"] = None
+
+        adapter._reset_auto_mode_review_tracking()
+
+        assert adapter._active_auto_reviews == {}
+        assert adapter._completed_auto_reviews == {}
+
+    def test_completed_batches_stay_bounded(self) -> None:
+        """Eviction is oldest-first, so recent batches keep their replay guard."""
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        for index in range(_MAX_COMPLETED_AUTO_REVIEWS + 5):
+            adapter._remember_completed_auto_review(f"batch-{index}")
+
+        assert len(adapter._completed_auto_reviews) == _MAX_COMPLETED_AUTO_REVIEWS
+        assert "batch-0" not in adapter._completed_auto_reviews
+        assert f"batch-{_MAX_COMPLETED_AUTO_REVIEWS + 4}" in (
+            adapter._completed_auto_reviews
+        )
+
+    async def test_the_stream_loop_routes_lifecycle_events(self) -> None:
+        """The turn resets stale tracking, then dispatches lifecycle chunks."""
+        spinner = AsyncMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=spinner,
+        )
+        # A stale guard from an earlier turn would swallow this batch ID.
+        adapter._completed_auto_reviews["batch-1"] = None
+        chunks = [
+            (
+                (),
+                "custom",
+                {
+                    "type": "auto_mode",
+                    "event": "review_started",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1"],
+                },
+            ),
+            (
+                (),
+                "custom",
+                {
+                    "type": "auto_mode",
+                    "event": "review_completed",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["call-1"],
+                    "approved_tool_call_ids": ["call-1"],
+                },
+            ),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+            turn_stats=SessionStats(),
+        )
+
+        assert call("Reviewing approval request") in spinner.await_args_list
+        assert adapter._active_auto_reviews == {}
+        assert adapter._completed_auto_reviews == {"batch-1": None}
+
+    async def test_a_row_from_the_message_stream_pauses_and_resumes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The two streams must interleave the way the feature assumes.
+
+        Rows are created when a tool-call buffer flushes on the `messages`
+        stream, while lifecycle events arrive on `custom`. Every other test
+        pre-populates `_current_tool_messages`, so nothing else catches a row
+        that does not exist yet when `review_started` lands — the pause would
+        silently no-op with the suite still green.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> bool:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+            return True
+
+        transitions: list[str] = []
+        for name in ("pause_running", "set_running"):
+            original = getattr(ToolCallMessage, name)
+
+            def record(
+                self: ToolCallMessage,
+                _original: Callable[[ToolCallMessage], None] = original,
+                _name: str = name,
+            ) -> None:
+                transitions.append(f"{_name}:{self._status}")
+                _original(self)
+
+            monkeypatch.setattr(ToolCallMessage, name, record)
+
+        chunks = [
+            _tool_chunk(name="delete", args='{"file_path": "a.py"}', chunk_id="t1"),
+            (
+                (),
+                "custom",
+                {
+                    "type": "auto_mode",
+                    "event": "review_started",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["t1"],
+                },
+            ),
+            (
+                (),
+                "custom",
+                {
+                    "type": "auto_mode",
+                    "event": "review_completed",
+                    "batch_id": "batch-1",
+                    "tool_call_ids": ["t1"],
+                    "approved_tool_call_ids": ["t1"],
+                },
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+            turn_stats=SessionStats(),
+        )
+
+        rows = [msg for msg in mounted if isinstance(msg, ToolCallMessage)]
+        assert len(rows) == 1
+        # The row is set running as it mounts, so the pause has something to
+        # act on. A row that did not exist yet would drop both calls, and a
+        # pause that arrived before the mount would return early.
+        assert transitions == [
+            "set_running:pending",
+            "pause_running:running",
+            "set_running:pending",
+        ]
+
+    @staticmethod
+    def _adapter_with_rows(
+        monkeypatch: pytest.MonkeyPatch,
+        tool_call_ids: list[str],
+        *,
+        spinner: AsyncMock | None = None,
+    ) -> tuple[TextualUIAdapter, dict[str, MagicMock]]:
+        """Build an adapter whose rows record their pause/resume calls."""
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=spinner or AsyncMock(),
+        )
+        running_mocks: dict[str, MagicMock] = {}
+        for tool_call_id in tool_call_ids:
+            row = ToolCallMessage("delete", {"file_path": f"{tool_call_id}.py"})
+            running_mocks[tool_call_id] = MagicMock()
+            monkeypatch.setattr(row, "pause_running", MagicMock())
+            monkeypatch.setattr(row, "set_running", running_mocks[tool_call_id])
+            adapter._current_tool_messages[tool_call_id] = row
+        return adapter, running_mocks
+
+
 class TestFormatRubricEvent:
     """Tests for rubric custom-stream event formatting."""
 
@@ -1693,7 +2408,7 @@ class TestFormatRubricEvent:
         assert explanation.strip() in details
         assert "Exact copy remains intact" in details
         assert "Expected 'Not ready'; found 'Pending'." in details
-        assert "Passing criterion" not in details
+        assert "Satisfied criteria\n- Passing criterion" in details
         assert "Address every unmet criterion, then retry the check." in details
         assert "{'name':" not in details
         assert "truncated" not in details
@@ -1758,6 +2473,104 @@ class TestFormatRubricEvent:
 
         assert "The goal remains active" in details
         assert "`/goal clear`" in details
+
+    def test_details_report_the_full_pass_fail_accounting(self) -> None:
+        """Both verdicts render so a partial evaluation is visible as partial."""
+        details = _format_rubric_details(
+            {
+                "result": "needs_revision",
+                "criteria": [
+                    {"name": "Reports infeasibility", "passed": True},
+                    {"name": "Lists 15 shops", "passed": False, "gap": "Only 5."},
+                    {"name": "Two sources each", "passed": False},
+                ],
+            }
+        )
+
+        assert (
+            "Unmet criteria\n- Lists 15 shops\n  Only 5.\n- Two sources each" in details
+        )
+        assert "Satisfied criteria\n- Reports infeasibility" in details
+        # The satisfied list comes first so the panel reads as an accounting of
+        # the whole rubric rather than a list of defects.
+        assert details.index("Satisfied criteria") < details.index("Unmet criteria")
+
+    def test_criterion_without_a_boolean_verdict_is_listed_in_neither_section(
+        self,
+    ) -> None:
+        """A missing or non-boolean `passed` must not be guessed either way."""
+        details = _format_rubric_details(
+            {
+                "result": "needs_revision",
+                "criteria": [
+                    {"name": "No verdict"},
+                    {"name": "Null verdict", "passed": None},
+                    {"name": "Truthy non-bool", "passed": 1},
+                ],
+            }
+        )
+
+        assert "Unmet criteria" not in details
+        assert "Satisfied criteria" not in details
+
+    def test_all_criteria_passing_still_renders_on_a_failure_verdict(self) -> None:
+        """A downgraded verdict has passing criteria but no failing ones."""
+        details = _format_rubric_details(
+            {
+                "result": "needs_revision",
+                "unverified": True,
+                "criteria": [{"name": "compiles", "passed": True}],
+            }
+        )
+
+        assert "Unmet criteria" not in details
+        assert "Satisfied criteria\n- compiles" in details
+        assert "could not account for every criterion" in details
+        # The next step must not deny the criteria the same panel just listed.
+        assert "nothing was confirmed" not in details
+        assert "the full rubric was not verified" in details
+
+    def test_unverified_verdict_reads_as_a_verification_gap(self) -> None:
+        """A downgraded `satisfied` has no failing criteria to address."""
+        event = {
+            "type": "rubric_evaluation_end",
+            "result": "needs_revision",
+            "unverified": True,
+            "explanation": "Grading was incomplete.",
+            "criteria": [{"name": "compiles", "passed": True}],
+        }
+
+        assert _format_rubric_event(event) == (
+            "↻ Acceptance criteria could not be verified"
+        )
+        details = _format_rubric_details(event)
+        assert "Unmet criteria" not in details
+        assert "Address every unmet criterion" not in details
+        assert "could not account for every criterion" in details
+
+    def test_unverified_max_iterations_marks_the_limit_and_the_gap(self) -> None:
+        """The iteration-limit verdict keeps its suffix when nothing was verified."""
+        event = {
+            "type": "rubric_evaluation_end",
+            "result": "max_iterations_reached",
+            "unverified": True,
+        }
+
+        assert _format_rubric_event(event) == (
+            "⚠ Acceptance criteria could not be verified (iteration limit reached)"
+        )
+
+    def test_verified_revision_keeps_the_unmet_criteria_wording(self) -> None:
+        """Without `unverified`, confirmed defects still drive the next step."""
+        event = {
+            "type": "rubric_evaluation_end",
+            "result": "needs_revision",
+            "unverified": False,
+            "criteria": [{"name": "tests pass", "passed": False}],
+        }
+
+        assert _format_rubric_event(event) == "↻ Acceptance criteria not yet satisfied"
+        assert "Address every unmet criterion" in _format_rubric_details(event)
 
     def test_end_event_without_result_returns_none(self) -> None:
         """Partial end events should not render a spurious warning."""
@@ -1907,6 +2720,42 @@ class _FailingApprovalStoreAgent(_SequencedAgent):
 
 class TestExecuteTaskTextualStreamCompletion:
     """Report only clean stream endings to the app."""
+
+    async def test_retry_event_ignores_untrusted_status_markup(self) -> None:
+        """Retry spinner text is rebuilt instead of parsing event-provided markup."""
+        statuses: list[str | None] = []
+
+        async def set_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+        )
+        event = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 5,
+            "message": "[/tmp/x]",
+        }
+
+        with patch(
+            "deepagents_code.tui.textual_adapter.get_glyphs",
+            return_value=ASCII_GLYPHS,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent([((), "custom", event)]),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert "Retrying model request 1/5" in statuses
+        assert all("[/tmp/x]" not in status for status in statuses if status)
 
     async def test_hook_stop_after_clean_stream_calls_completion_callback(self) -> None:
         mount_message = AsyncMock()
@@ -2685,6 +3534,128 @@ class TestExecuteTaskTextualUsageStats:
 
 class TestSessionCostEvents:
     """The graph's absolute cost total drives the client display."""
+
+    async def test_nested_usage_updates_provisional_cost(self) -> None:
+        async def mount_message(_: object) -> bool:
+            await asyncio.sleep(0)
+            return True
+
+        updates: list[float] = []
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        adapter._on_usage_update = lambda: None
+        adapter._on_provisional_cost = updates.append
+        chunks = [
+            (
+                ("tools:task",),
+                "custom",
+                {
+                    "type": "model_usage",
+                    "version": 1,
+                    "request_id": "child-1",
+                    "usage_metadata": {
+                        "input_tokens": 1_000,
+                        "output_tokens": 100,
+                        "total_tokens": 1_100,
+                    },
+                    "model_name": "gpt-5.5",
+                    "provider": "openai",
+                    "thread_id": "thread-1",
+                    "scope": "tools:task",
+                },
+            ),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+        turn_stats = SessionStats()
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+            turn_stats=turn_stats,
+        )
+
+        assert len(updates) == 1
+        assert updates[0] > 0
+        assert turn_stats.per_kind["subagent"].request_count == 1
+
+    async def test_usage_already_counted_from_messages_is_not_added_twice(
+        self,
+    ) -> None:
+        """A nested request the message stream recorded stays a single charge.
+
+        The graph streams provisional usage for every nested call, including the
+        ones whose messages do reach this client. Both paths share one ledger, so
+        the second arrival must move neither the stats nor the displayed cost.
+        """
+        from langchain_core.messages import AIMessageChunk
+
+        async def mount_message(_: object) -> bool:
+            await asyncio.sleep(0)
+            return True
+
+        updates: list[float] = []
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        adapter._on_provisional_cost = updates.append
+        usage = {
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "total_tokens": 1_100,
+        }
+        chunks = [
+            (
+                ("tools:task",),
+                "messages",
+                (
+                    AIMessageChunk(content="", id="child-1", usage_metadata=usage),  # ty: ignore[invalid-argument-type]
+                    {},
+                ),
+            ),
+            (
+                ("tools:task",),
+                "custom",
+                {
+                    "type": "model_usage",
+                    "version": 1,
+                    "request_id": "child-1",
+                    "usage_metadata": usage,
+                    "model_name": "gpt-5.5",
+                    "provider": "openai",
+                    "thread_id": "thread-1",
+                    "scope": "tools:task",
+                },
+            ),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+        turn_stats = SessionStats()
+
+        with (
+            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
+        ):
+            mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_provider = "openai"
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+                turn_stats=turn_stats,
+            )
+
+        assert updates == [pytest.approx(0.42)]
+        assert turn_stats.per_kind["subagent"].request_count == 1
+        assert turn_stats.total_cost_usd == pytest.approx(0.42)
 
     async def test_streamed_total_reaches_the_app(self) -> None:
         """A session-cost event is applied as the displayed lifetime total."""
@@ -4299,6 +5270,29 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
         )
 
         user_visible_output_started.assert_not_called()
+
+    async def test_nested_grader_output_is_not_mounted(self) -> None:
+        """Rubric-grader tokens stay hidden with other nested message streams."""
+        mount_message = AsyncMock(return_value=True)
+        grader_namespace = ("ReliableRubricMiddleware.after_agent:grader",)
+        chunks = [
+            (grader_namespace, "messages", (_text_message("partial verdict"), {}))
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+        )
+
+        mount_message.assert_not_awaited()
 
     async def test_not_fired_for_hidden_summarization_output(self) -> None:
         """Hidden main-namespace summarization text does not count."""
@@ -6553,7 +7547,7 @@ class TestExecuteTaskTextualAskUser:
         assert decisions == [
             {
                 "type": "reject",
-                "message": _frame_reject_reason("use a safer command"),
+                "message": "use a safer command",
             }
         ]
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
@@ -8558,8 +9552,8 @@ class TestToolHooksTextual:
         # Stayed rejected despite the resumed error ToolMessage driving set_error.
         assert execute_widgets[0]._status == "rejected"
 
-    async def test_hitl_reasoned_reject_frames_reason_for_model(self) -> None:
-        """The model gets framed rejection text; the row keeps the raw reason."""
+    async def test_hitl_reasoned_reject_forwards_raw_reason(self) -> None:
+        """The middleware receives the raw reason and the row renders it unchanged."""
         mounted: list[ToolCallMessage] = []
 
         async def capture_mount(widget: object) -> bool:
@@ -8624,11 +9618,8 @@ class TestToolHooksTextual:
         resume_cmd = agent.stream_inputs[1]
         assert isinstance(resume_cmd, Command)
         resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
-        expected_message = (
-            "User rejected the tool call with reason: use another command"
-        )
         assert resume_payload["interrupt-1"]["decisions"] == [
-            {"type": "reject", "message": expected_message}
+            {"type": "reject", "message": "use another command"}
         ]
         execute_widgets = [w for w in mounted if w.tool_name == "execute"]
         assert len(execute_widgets) == 1

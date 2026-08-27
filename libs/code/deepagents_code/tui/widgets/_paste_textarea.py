@@ -890,11 +890,8 @@ def _collapse_pastes_enabled() -> bool:
     Returns:
         The resolved preference (defaults to `True`).
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("display.collapse_pastes")
     if option is None:
@@ -904,5 +901,6 @@ def _collapse_pastes_enabled() -> bool:
             "Unknown config option %r; defaulting to enabled", "display.collapse_pastes"
         )
         return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)

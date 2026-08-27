@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict
 
 from textual.binding import Binding, BindingType
@@ -18,6 +19,10 @@ if TYPE_CHECKING:
 
 from deepagents_code.config import get_glyphs
 from deepagents_code.editor import editor_display_name
+from deepagents_code.goal_state_limits import (
+    GoalStateSizeError,
+    validate_goal_application,
+)
 from deepagents_code.tui.widgets._inline_prompt import (
     InlinePromptCompletion,
     InlinePromptOption,
@@ -26,6 +31,8 @@ from deepagents_code.tui.widgets._inline_prompt import (
     newline_hint,
     stop_inline_prompt_blur,
 )
+
+logger = logging.getLogger(__name__)
 
 # Menu options in display order: (label, `action_*` suffix). The list index is
 # the cursor position, so labels and dispatch stay aligned from one source.
@@ -347,6 +354,14 @@ class GoalReviewMenu(Container):
         if not criteria:
             self._hint_empty_submission("criteria")
             return
+        try:
+            validate_goal_application(self._objective, criteria)
+        except GoalStateSizeError as exc:
+            # Narrower than `ValueError` on purpose: the hint frames its text as
+            # "shorten this", so an unrelated `ValueError` must not be rendered
+            # there as if it were a size problem.
+            self._hint_invalid_submission(str(exc))
+            return
         self._submit({"type": "edited", "criteria": criteria})
 
     def _submit_rejection(self) -> None:
@@ -374,6 +389,22 @@ class GoalReviewMenu(Container):
         self._help_widget.update(
             f"Enter some {what}, or press Esc to go back {glyphs.bullet} "
             f"{newline_hint()} {glyphs.bullet} {_editor_hint()}"
+        )
+
+    def _hint_invalid_submission(self, error: str) -> None:
+        """Keep an invalid edit open and explain how to correct it inline."""
+        if self._help_widget is None:
+            # The caller has already abandoned the submission, so without the
+            # hint the editor no-ops on Enter with nothing shown at all. Log it
+            # rather than leaving the rejection completely invisible.
+            logger.warning(
+                "Suppressed goal-review validation hint (no help widget): %s",
+                error,
+            )
+            return
+        glyphs = get_glyphs()
+        self._help_widget.update(
+            f"{error} {glyphs.bullet} Ctrl+X external editor {glyphs.bullet} Esc back"
         )
 
     def _submit(self, result: GoalReviewResult) -> None:

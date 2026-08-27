@@ -2317,6 +2317,32 @@ def test_config_option_rejects_mutable_default() -> None:
         )
 
 
+def test_config_option_rejects_ptc_list_default() -> None:
+    """A PTC list default is rejected as mutable.
+
+    The resolved value type keeps `list[str]`, but the declared-default overload
+    must not advertise it.
+    """
+    import pytest
+
+    with pytest.raises(TypeError, match="mutable default"):
+        ConfigOption(  # ty: ignore[no-matching-overload]
+            key="x",
+            group="g",
+            summary="s",
+            kind=OptionKind.PTC_DELEGATE,
+            default=["python"],
+        )
+
+
+def test_config_option_rejects_int_default_for_float() -> None:
+    """An int FLOAT default would resolve to int while the overloads promise float."""
+    import pytest
+
+    with pytest.raises(TypeError, match="not valid for kind float"):
+        ConfigOption(key="x", group="g", summary="s", kind=OptionKind.FLOAT, default=1)  # ty: ignore[no-matching-overload]
+
+
 def test_config_option_rejects_default_on_structured() -> None:
     """STRUCTURED options are display-only pass-throughs and take no default."""
     import pytest

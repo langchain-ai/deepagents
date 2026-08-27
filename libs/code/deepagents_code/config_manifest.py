@@ -276,7 +276,11 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.BOOL_PRESENCE: (bool,),
     OptionKind.INT: (int,),
     OptionKind.NON_NEGATIVE_INT: (int,),
-    OptionKind.FLOAT: (int, float),
+    # An int default would be returned verbatim by the default provider even
+    # though the overloads promise ConfigOption[float] and resolution-time
+    # readers (e.g. `_is_valid_auto_classifier_timeout`) reject bare ints, so
+    # accept float only.
+    OptionKind.FLOAT: (float,),
     OptionKind.STR: (str,),
     OptionKind.NON_EMPTY_STR: (str,),
     OptionKind.CURSOR_STYLE_DELEGATE: (str,),
@@ -575,12 +579,15 @@ class ConfigOption[T]:
         default: None = None,
         **rest: Unpack[_CommonFields],
     ) -> ConfigOption[list[Path] | None]: ...
+    # `list[str]` stays in the resolved value type but not in `default`:
+    # `__post_init__` rejects mutable defaults, so a list default would type-check
+    # here yet raise TypeError at construction.
     @overload
     def __new__(
         cls,
         *,
         kind: Literal[OptionKind.PTC_DELEGATE],
-        default: str | bool | list[str],
+        default: str | bool,
         **rest: Unpack[_CommonFields],
     ) -> ConfigOption[str | bool | list[str]]: ...
     @overload

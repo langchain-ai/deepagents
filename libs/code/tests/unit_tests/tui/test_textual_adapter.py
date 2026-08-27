@@ -8793,6 +8793,67 @@ class TestToolHooksTextual:
             for record in caplog.records
         )
 
+    async def test_auto_denied_tool_result_skips_uncorrelated_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A synthetic auto-mode denial does not log the uncorrelated warning.
+
+        The denial ToolMessage is synthesized without the tool executing, so no
+        tool.use fires and no widget mounts — a routine path. The marker set in
+        `auto_mode` must suppress the warning while the tool.result hook still
+        fires with empty args.
+        """
+        from deepagents_code.auto_mode import AUTO_DENIED_METADATA_KEY
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="Auto denied [credential_access]: not authorized",
+                        tool_call_id="call-1",
+                        name="onepassword_authenticate",
+                        status="error",
+                        additional_kwargs={AUTO_DENIED_METADATA_KEY: True},
+                    ),
+                    {},
+                ),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with (
+            caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"),
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+        result_payloads = [
+            c[0][1] for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(result_payloads) == 1
+        assert result_payloads[0]["tool_id"] == "call-1"
+        assert result_payloads[0]["tool_args"] == {}
+        assert not any(
+            "call-1" in record.message
+            and "no correlated" in record.message
+            and record.levelname == "WARNING"
+            for record in caplog.records
+        )
+
     async def test_ask_user_interrupt_dispatches_tool_hooks(self) -> None:
         """ask_user interrupt rows emit tool.use and tool.result hooks."""
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()

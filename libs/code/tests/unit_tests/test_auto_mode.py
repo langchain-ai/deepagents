@@ -60,6 +60,7 @@ from deepagents_code.auto_mode import (
     _MAX_CLASSIFIER_MODEL_CACHE,
     _MAX_EMITTED_EVENT_SCOPES,
     _MAX_PENDING_EVENT_SCOPES,
+    AUTO_DENIED_METADATA_KEY,
     AUTO_MODE_COUNTERS_NAMESPACE,
     USER_PROMPT_METADATA_KEY,
     AutoDecision,
@@ -5979,6 +5980,9 @@ async def test_policy_denial_becomes_error_tool_message(tmp_path: Path) -> None:
     assert denial.status == "error"
     assert denial.tool_call_id == "call-1"
     assert "destructive_action" in denial.content
+    # Stamped so the TUI can recognize a synthetic denial (no tool executed, no
+    # widget mounted) and skip its uncorrelated-result warning.
+    assert denial.additional_kwargs[AUTO_DENIED_METADATA_KEY] is True
 
 
 async def test_classifier_unavailable_emits_single_event_for_batch(

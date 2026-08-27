@@ -88,6 +88,17 @@ AUTO_MODE_COUNTERS_NAMESPACE: tuple[str, str] = (
 )
 USER_PROMPT_METADATA_KEY = "deepagents_code_user_prompt"
 AUTO_MODE_EVENT_TYPE = "auto_mode"
+AUTO_DENIED_METADATA_KEY = "deepagents_code_auto_denied"
+"""`ToolMessage.additional_kwargs` flag set on a synthetic auto-mode denial.
+
+A policy denial (or classifier-unavailable fallback) synthesizes an error
+`ToolMessage` without the tool ever executing, so no `tool.use` fires and no
+widget mounts. The TUI's uncorrelated-result warning exists for the opposite
+case — a tool that *executed* but whose streamed args never parsed — so it
+must not fire for these. The flag travels in `additional_kwargs`, which
+survives the messages-mode stream, so the adapter can recognize the routine
+denial without string-matching the content.
+"""
 _CLASSIFIER_TIMEOUT_SECONDS = AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 # Building a classifier is a different kind of wait than asking one for a
 # verdict: a cold provider-package import, profile resolution, and credential
@@ -3610,6 +3621,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     name=call["name"],
                     tool_call_id=_tool_call_id(call),
                     status="error",
+                    additional_kwargs={AUTO_DENIED_METADATA_KEY: True},
                 )
             )
             event_kind = "unavailable" if unavailable else "denial"

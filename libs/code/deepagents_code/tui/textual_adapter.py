@@ -2400,19 +2400,39 @@ async def execute_task_textual(
                             # widget concept; see `non_interactive.py`. The
                             # parity contract is documented in `_tool_stream`.
                             if tool_id:
-                                # Warning, not info/debug: a real-id result with
-                                # no mounted widget (its args never parsed, so no
-                                # tool.use fired) means a hook consumer sees a
-                                # `tool.result` with empty args for a tool that
-                                # actually executed — degraded audit fidelity worth
-                                # surfacing at default log levels, matching the
-                                # headless path.
-                                logger.warning(
-                                    "ToolMessage tool_call_id=%s not in "
-                                    "_current_tool_messages; no correlated "
-                                    "tool.use, sending empty tool_args",
-                                    tool_id,
+                                # An auto-mode policy denial synthesizes an error
+                                # ToolMessage without the tool ever executing, so
+                                # no tool.use fires and no widget mounts — a
+                                # routine path, not degraded audit fidelity. Skip
+                                # the warning for it; the tool.result hook below
+                                # still fires as today. The marker is set at the
+                                # source in `auto_mode`, not string-matched on
+                                # content.
+                                from deepagents_code.auto_mode import (
+                                    AUTO_DENIED_METADATA_KEY,
                                 )
+
+                                is_synthetic_denial = bool(
+                                    (
+                                        getattr(message, "additional_kwargs", None)
+                                        or {}
+                                    ).get(AUTO_DENIED_METADATA_KEY)
+                                )
+                                if not is_synthetic_denial:
+                                    # Warning, not info/debug: a real-id result
+                                    # with no mounted widget (its args never
+                                    # parsed, so no tool.use fired) means a hook
+                                    # consumer sees a `tool.result` with empty
+                                    # args for a tool that actually executed —
+                                    # degraded audit fidelity worth surfacing at
+                                    # default log levels, matching the headless
+                                    # path.
+                                    logger.warning(
+                                        "ToolMessage tool_call_id=%s not in "
+                                        "_current_tool_messages; no correlated "
+                                        "tool.use, sending empty tool_args",
+                                        tool_id,
+                                    )
                             if tool_status == "error":
                                 _dispatch_tool_error_hook(tool_name)
                             _dispatch_tool_result_hook(

@@ -224,12 +224,22 @@ def _load_stored_credentials() -> _StoredCredentialView:
     return _StoredCredentialView(keys=keys)
 
 
-def _langgraph_default_recursion_limit() -> tuple[bool, str, int]:
-    """Return the graph step budget inherited by the local API server."""
+def _langgraph_default_recursion_limit() -> tuple[bool, str, object]:
+    """Return the graph step budget inherited by the local API server.
+
+    A present but non-numeric `LANGGRAPH_DEFAULT_RECURSION_LIMIT` cannot be
+    reported as an int, and letting `int()` raise here would crash the
+    diagnostic command the user runs to find the bad value. Surface it as the
+    raw string with an `invalid` marker instead; the local API fails on its own
+    when it reads the variable.
+    """
     raw = os.environ.get(_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV)
     if raw is not None:
         source = f"env ({_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV})"
-        return True, source, int(raw)
+        try:
+            return True, source, int(raw)
+        except ValueError:
+            return True, f"{source}; invalid", raw
     return False, "default", _LANGGRAPH_API_DEFAULT_RECURSION_LIMIT
 
 

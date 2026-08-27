@@ -2780,6 +2780,29 @@ def test_run_get_recursion_limit_reports_upstream_env(monkeypatch, capsys) -> No
     assert data["set"] is True
 
 
+def test_run_get_recursion_limit_reports_malformed_upstream_env(
+    monkeypatch, capsys
+) -> None:
+    """A non-numeric upstream value surfaces as data, not a traceback.
+
+    The user sets the malformed variable and then runs `dcode config` to find
+    it, so the inspection path must not be the thing that crashes.
+    """
+    monkeypatch.setenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", "not-an-int")
+
+    data = _get_json_object("runtime.recursion_limit", capsys)
+    assert data["value"] == "not-an-int"
+    assert data["source"] == "env (LANGGRAPH_DEFAULT_RECURSION_LIMIT); invalid"
+    assert data["set"] is True
+
+    assert run_config_command(_get_args("runtime.recursion_limit")) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert rendered == (
+        "runtime.recursion_limit = not-an-int "
+        "(env (LANGGRAPH_DEFAULT_RECURSION_LIMIT); invalid)"
+    )
+
+
 def test_run_get_credentials_section_lists_every_credential(
     capsys, monkeypatch
 ) -> None:

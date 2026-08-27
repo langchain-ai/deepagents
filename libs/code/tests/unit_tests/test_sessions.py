@@ -617,8 +617,23 @@ class TestFormatTimestamp:
         result = sessions.format_timestamp("not a timestamp")
         assert result == ""
 
-    def test_renders_where_strftime_rejects_glibc_flags(self):
-        """Stays populated where the platform strftime has no `-` flag.
+    # Naive inputs keep these exact: `astimezone` attaches the local zone to a
+    # naive datetime without shifting the wall clock, so the rendering is the
+    # same in every `TZ`. Offset-bearing inputs would not be.
+    RENDERINGS: ClassVar = [
+        ("2024-12-30T00:30:00", "dec 30, 12:30am"),  # midnight is 12, not 0
+        ("2024-12-30T12:30:00", "dec 30, 12:30pm"),  # noon is 12, not 0
+        ("2024-12-30T09:05:00", "dec 30, 9:05am"),  # hour unpadded, day padded
+        ("2024-12-05T21:18:00", "dec 05, 9:18pm"),  # 12-hour clock, not 24
+    ]
+
+    def test_renders_expected_clock(self):
+        """Pins the hand-derived 12-hour clock at every boundary."""
+        for iso_timestamp, expected in self.RENDERINGS:
+            assert sessions.format_timestamp(iso_timestamp) == expected
+
+    def test_renders_where_strftime_rejects_dash_flag(self):
+        """Renders identically where the platform strftime has no `-` flag.
 
         MSVC's CRT documents `#` as its only strftime flag and treats any
         other flag as an invalid formatting code; CPython surfaces that as
@@ -633,14 +648,9 @@ class TestFormatTimestamp:
                     raise ValueError(msg)
                 return super().strftime(format)
 
-            def __format__(self, spec: str) -> str:
-                return self.strftime(spec) if spec else str(self)
-
         with patch.object(sessions, "datetime", _NoDashFlagDatetime):
-            result = sessions.format_timestamp("2024-12-30T21:18:00+00:00")
-
-        assert result
-        assert "dec" in result.lower()
+            for iso_timestamp, expected in self.RENDERINGS:
+                assert sessions.format_timestamp(iso_timestamp) == expected
 
 
 class TestFormatRelativeTimestamp:

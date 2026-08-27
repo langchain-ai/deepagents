@@ -238,7 +238,7 @@ class _CheckpointSummary(NamedTuple):
 
 
 def format_timestamp(iso_timestamp: str | None) -> str:
-    """Format ISO timestamp for display (e.g., 'Dec 30, 6:10pm').
+    """Format ISO timestamp for display (e.g., 'dec 05, 6:10pm').
 
     Args:
         iso_timestamp: ISO 8601 timestamp string, or `None`.

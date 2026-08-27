@@ -30,21 +30,17 @@ import re
 
 from deepagents_code.mcp_auth import FileTokenStorage, MCPReauthRequiredError
 from deepagents_code.mcp_tools import (
-    _MCP_STDERR_DRAIN_JOIN_TIMEOUT,
-    _MCP_STDERR_LINE_LIMIT,
-    _MCP_STDERR_TRUNCATION_MARKER,
     DiscoveredMCPConfig,
     MCPConfigScope,
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
     _apply_tool_filter,
-    _create_mcp_session,
+    _check_remote_server,
+    _check_stdio_server,
     _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
-    _mcp_tool_name,
-    _MCPStderrSink,
     _normalize_mcp_arguments,
     _warm_mcp_adapter_imports,
     discover_mcp_config_sources,

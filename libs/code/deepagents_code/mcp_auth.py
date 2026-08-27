@@ -40,7 +40,9 @@ from mcp.client.auth.utils import (
     handle_auth_metadata_response,
     handle_protected_resource_response,
 )
-from mcp.client.streamable_http import MCP_PROTOCOL_VERSION
+from mcp.client.streamable_http import (
+    MCP_PROTOCOL_VERSION_HEADER as MCP_PROTOCOL_VERSION,
+)
 from mcp.shared.auth import (
     OAuthClientInformationFull,
     OAuthMetadata,

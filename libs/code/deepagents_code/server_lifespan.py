@@ -22,12 +22,9 @@ async def _lifespan(_: Starlette) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+        from deepagents_code.extensions.runtime import shutdown_server_extensions
 
-        if is_env_truthy(EXPERIMENTAL):
-            from deepagents_code.extensions.runtime import shutdown_server_extensions
-
-            await shutdown_server_extensions()
+        await shutdown_server_extensions()
 
 
 def _extensions(request: Request) -> JSONResponse:

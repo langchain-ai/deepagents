@@ -151,8 +151,10 @@ def test_internal_backend_route_overlap_fails_agent_startup(tmp_path: Path) -> N
         )
 
 
-async def test_server_lifespan_releases_extensions() -> None:
-    """LangGraph shutdown awaits server-owned extension teardown."""
+async def test_server_lifespan_releases_extensions_after_flag_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LangGraph shutdown does not depend on the mutable experimental flag."""
     from starlette.applications import Starlette
 
     from deepagents_code.server_lifespan import _lifespan
@@ -162,7 +164,7 @@ async def test_server_lifespan_releases_extensions() -> None:
         "deepagents_code.extensions.runtime.shutdown_server_extensions", shutdown
     ):
         async with _lifespan(Starlette()):
-            pass
+            monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL")
     shutdown.assert_awaited_once_with()
 
 

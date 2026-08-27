@@ -15440,14 +15440,14 @@ class DeepAgentsApp(App):
         source: Literal["goal", "rubric"] = "rubric",
     ) -> None:
         """Open the model selector for choosing a grader model."""
-        from deepagents_code.config import runtime_state
         from deepagents_code.model_config import ModelSpec
         from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
-        current_provider = runtime_state.model_provider
-        current_model = runtime_state.model_name
-        if self._rubric_model:
-            parsed = ModelSpec.try_parse(self._rubric_model)
+        current_provider = None
+        current_model = None
+        current_spec = self._rubric_model or self._effective_model_spec()
+        if current_spec:
+            parsed = ModelSpec.try_parse(current_spec)
             if parsed:
                 current_provider = parsed.provider
                 current_model = parsed.model

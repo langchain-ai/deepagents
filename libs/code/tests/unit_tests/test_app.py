@@ -10681,6 +10681,23 @@ class TestGoalCommand:
             assert "rubric" not in screen._title.lower()
             assert "/rubric" not in screen._description
 
+    async def test_grader_model_selector_uses_effective_model_when_inheriting(
+        self,
+    ) -> None:
+        """An inherited grader picker should follow a live `/model` override."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._model_override = "anthropic:claude-sonnet-4-6"
+            app._rubric_model = None
+            with patch.object(app, "push_screen") as push_screen:
+                await app._show_rubric_model_selector()
+                await pilot.pause()
+
+            screen = push_screen.call_args.args[0]
+            assert screen._current_provider == "anthropic"
+            assert screen._current_model == "claude-sonnet-4-6"
+
     async def test_grader_model_selector_disables_ctrl_s(self) -> None:
         """Ctrl+S must not persist the agent's model from a grader picker.
 

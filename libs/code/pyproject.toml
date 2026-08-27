@@ -89,7 +89,7 @@ dependencies = [
     "tomli-w>=1.2.0,<2.0.0",
 
     # MCP
-    "fastmcp-slim[client]>=4.0.0b4,<5.0.0",
+    "fastmcp>=4.0.0b4,<5.0.0",
     # Cross-process lock serializing MCP OAuth token refreshes.
     # Capped below 3.30: it runs a blocking temp-dir probe at import time
     # (_probe_link_follow_symlinks), which trips Blockbuster's os.getcwd guard

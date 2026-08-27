@@ -513,7 +513,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 examples = [
-    { name = "langchain-baseten", specifier = ">=0.2.3" },
+    { name = "langchain-baseten", specifier = ">=0.2.4" },
     { name = "langchain-openai", specifier = ">=1.6.0" },
 ]
 test = [
@@ -825,16 +825,16 @@ wheels = [
 
 [[package]]
 name = "langchain-baseten"
-version = "0.2.3"
+version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "baseten-performance-client" },
     { name = "langchain-core" },
     { name = "langchain-openai" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b0/6b/e18045117bd59d055bcb5b9586009dfc6d03974511ae567f2133c25d92c1/langchain_baseten-0.2.3.tar.gz", hash = "sha256:3d15f3ba78e294ddc027c45aa841683418d52c3f1e59a08bde0b33e45ab2cdc4", size = 156745, upload-time = "2026-07-27T16:33:30.277Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0b/c4/14a7235c74ec352076ce40da32df10e1f88d160ce111138d016c82791c49/langchain_baseten-0.2.4.tar.gz", hash = "sha256:a7ad775841c0657b0a19b7723bae3db1c90cf2804544af8b2a32ed8e323b5f1c", size = 159334, upload-time = "2026-08-27T01:06:02.703Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/12/9b/a794392ec17b4e4f96d25e4b1f003408bc42d447e69562b3f800d15ac107/langchain_baseten-0.2.3-py3-none-any.whl", hash = "sha256:7bc64ed9f08bf5d0ccbb0d89ccb6c552241fc478ed35e701d07dec836936dcbc", size = 14349, upload-time = "2026-07-27T16:33:29.38Z" },
+    { url = "https://files.pythonhosted.org/packages/be/c5/661c5a9b89b2d434e5e77bf8c03c77ea20d720cae89ef039303e5853bd79/langchain_baseten-0.2.4-py3-none-any.whl", hash = "sha256:f1e24f2659cece388afb53787d4dde29a1f529e6f5d503ccef216318054cce7d", size = 15540, upload-time = "2026-08-27T01:06:01.874Z" },
 ]
 
 [[package]]

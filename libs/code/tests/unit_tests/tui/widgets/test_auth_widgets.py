@@ -2082,8 +2082,14 @@ class TestAuthManagerScreen:
 
         assert app.credential_deleted_count == 0
 
-    async def test_lists_known_providers(self) -> None:
+    async def test_lists_known_providers(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every well-known provider appears in the option list."""
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "XAI_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_manager()
@@ -2093,14 +2099,20 @@ class TestAuthManagerScreen:
                 options.get_option_at_index(i).id for i in range(options.option_count)
             }
         assert "anthropic" in ids
-        assert "openai" in ids
-        if "openai_codex" in ids:
-            label = next(
-                str(options.get_option_at_index(i).prompt)
-                for i in range(options.option_count)
-                if options.get_option_at_index(i).id == "openai_codex"
-            )
-            assert "OpenAI (Subscription login)" in label
+        # With no credential of its own, `openai` hides behind its OAuth
+        # sibling (both `langchain-openai` and `langchain-xai` are installed
+        # in the test env, so both OAuth siblings are gated on and both raw
+        # rows are hidden).
+        assert "openai" not in ids
+        assert "xai" not in ids
+        assert "openai_codex" in ids
+        label = next(
+            str(options.get_option_at_index(i).prompt)
+            for i in range(options.option_count)
+            if options.get_option_at_index(i).id == "openai_codex"
+        )
+        assert "OpenAI (Subscription login)" in label
+        assert "xai_oauth" in ids
 
     async def test_configured_provider_uses_display_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2488,9 +2500,13 @@ api_key_env = "MY_GATEWAY_API_KEY"
         """Installed providers show as live rows; uninstalled ones grey out.
 
         When `openai` is installed, `openai_codex` rides along because it shares
-        the same `langchain-openai` package. Every other known provider remains
-        a greyed install-on-select row below the live entries.
+        the same `langchain-openai` package, and the raw `openai` row hides
+        behind its OAuth sibling since it has no credential of its own. Every
+        other known provider remains a greyed install-on-select row below the
+        live entries.
         """
+        for var in ("OPENAI_API_KEY", "DEEPAGENTS_CODE_OPENAI_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda provider: provider in {"openai", "anthropic"},
@@ -2508,7 +2524,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
         # Non-model services (Tavily search, LangSmith tracing) are always
         # listed for key entry.
         assert live_ids == {
-            "openai",
             "openai_codex",
             "anthropic",
             "tavily",
@@ -2574,6 +2589,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
         provider's LangChain package first.
         """
         auth_store.set_stored_key("groq", "k")
+        for var in ("OPENAI_API_KEY", "DEEPAGENTS_CODE_OPENAI_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
             lambda provider: provider == "openai",
@@ -2587,7 +2604,9 @@ api_key_env = "MY_GATEWAY_API_KEY"
                 options.get_option_at_index(i).id for i in range(options.option_count)
             }
         assert "groq" in ids
-        assert "openai" in ids
+        # `openai` hides behind `openai_codex` here: no credential of its own.
+        assert "openai" not in ids
+        assert "openai_codex" in ids
 
     async def test_uninstalled_known_provider_shown_greyed(
         self, monkeypatch: pytest.MonkeyPatch

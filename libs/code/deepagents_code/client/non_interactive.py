@@ -1177,7 +1177,13 @@ def _reconcile_superseded_attempt(
         )
     # Buffers from earlier model steps are unaffected: indices restart per
     # message and a completed call's buffer is already popped.
+    discarded_buffer_ids = {
+        buffer.tool_id
+        for buffer in state.tool_call_buffers.values()
+        if isinstance(buffer.tool_id, str)
+    }
     state.tool_call_buffers.clear()
+    state.displayed_tool_call_ids.difference_update(discarded_buffer_ids)
 
     if not state.stream:
         # Buffered output never reached stdout, so discard the failed attempt

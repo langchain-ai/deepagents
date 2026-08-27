@@ -4830,6 +4830,76 @@ class TestAttemptLifecycle:
         assert results[1]["tool_status"] == "success"
         assert results[1]["tool_args"] == {"command": "ls"}
 
+    def test_reused_id_from_incomplete_tool_buffer_displays_replay(
+        self, tmp_path: Path
+    ) -> None:
+        """Discarded partial args do not suppress the replay's tool line."""
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path, stream=False)
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        def _tool_call_message(args: str) -> MagicMock:
+            msg = MagicMock(spec=AIMessage)
+            msg.content_blocks = [
+                {
+                    "type": "tool_call_chunk",
+                    "name": "execute",
+                    "id": "call-x",
+                    "index": 0,
+                    "args": args,
+                }
+            ]
+            return msg
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        _process_stream_chunk(
+            ((), "messages", (_tool_call_message('{"command":'), {})),
+            state,
+            console,
+            tracker,
+        )
+        assert state.displayed_tool_call_ids == {"call-x"}
+        assert state.in_flight_tool_calls == {}
+
+        _process_stream_chunk(
+            ((), "custom", _retry_event("call-1", 0)), state, console, tracker
+        )
+        assert state.displayed_tool_call_ids == set()
+
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_stream_chunk(
+                ((), "custom", _attempt_event("call-1", 1, phase="start")),
+                state,
+                console,
+                tracker,
+            )
+            _process_stream_chunk(
+                ((), "messages", (_tool_call_message('{"command":"ls"}'), {})),
+                state,
+                console,
+                tracker,
+            )
+            _process_stream_chunk(
+                ((), "custom", _attempt_event("call-1", 1, phase="complete")),
+                state,
+                console,
+                tracker,
+            )
+
+        assert output.getvalue().count("Calling tool: execute") == 1
+        uses = [
+            call for call in mock_dispatch.call_args_list if call.args[0] == "tool.use"
+        ]
+        assert len(uses) == 1
+
     def test_duplicate_retry_event_is_a_no_op(self, tmp_path: Path) -> None:
         """Reconciling without a scope match must stay idempotent.
 

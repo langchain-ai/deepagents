@@ -13100,6 +13100,16 @@ class DeepAgentsApp(App):
             return False
         return True
 
+    async def _carry_rubric_model_to_fresh_thread(self) -> None:
+        """Persist the current grader selection after a thread reset."""
+        if not self._rubric_model_recorded:
+            return
+        async with self._goal_state_mutation_boundary():
+            carried = await self._persist_goal_rubric_state()
+        if not carried:
+            self._rubric_model = self._rubric_startup_model
+            self._rubric_model_recorded = False
+
     async def _ensure_goal_state_notice(
         self,
         *,
@@ -15826,12 +15836,7 @@ class DeepAgentsApp(App):
                 # fresh thread does not have yet. Carry it over, and on a
                 # failed write fall back to what the grader will actually use
                 # so `/rubric show` cannot report a model that is not in use.
-                if self._rubric_model_recorded:
-                    async with self._goal_state_mutation_boundary():
-                        carried = await self._persist_goal_rubric_state()
-                    if not carried:
-                        self._rubric_model = self._rubric_startup_model
-                        self._rubric_model_recorded = False
+                await self._carry_rubric_model_to_fresh_thread()
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.update_thread_id(new_thread_id)
@@ -23702,6 +23707,10 @@ class DeepAgentsApp(App):
                     exc_info=True,
                 )
             self._sync_status_connection()
+            if resume_thread_id is None and self._session_state is not None:
+                # A picker swap starts a fresh thread whose checkpoint does not
+                # yet contain the selection still shown by `/rubric show`.
+                await self._carry_rubric_model_to_fresh_thread()
             from deepagents_code.hooks.models.domain import SessionStartCause
 
             await self._reload_hooks()

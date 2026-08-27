@@ -26949,6 +26949,59 @@ class TestRestartServerForAgentSwap:
             assert any("Switched to researcher" in s for s in plain)
             assert any("dcode -r old-thread" in s and "to resume" in s for s in plain)
 
+    async def test_fresh_swap_carries_the_grader_selection(self) -> None:
+        """A new agent thread checkpoints the grader model shown by the UI."""
+        app, _server_proc = self._make_app()
+        app._rubric_model = "openai:gpt-5.5"
+        app._rubric_model_recorded = True
+        persist = AsyncMock(return_value=True)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(app, "_persist_goal_rubric_state", persist),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        persist.assert_awaited_once_with()
+        assert app._lc_thread_id != "old-thread"
+        assert app._rubric_model == "openai:gpt-5.5"
+        assert app._rubric_model_recorded is True
+
+    async def test_fresh_swap_drops_a_grader_selection_it_cannot_carry(
+        self,
+    ) -> None:
+        """A failed checkpoint write restores the grader model actually in use."""
+        app, _server_proc = self._make_app()
+        app._rubric_startup_model = "startup:model"
+        app._rubric_model = "openai:gpt-5.5"
+        app._rubric_model_recorded = True
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new_callable=AsyncMock,
+                    return_value=False,
+                ),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        assert app._rubric_model == "startup:model"
+        assert app._rubric_model_recorded is False
+
     async def test_cross_agent_resume_targets_thread_without_persisting_agent(
         self,
     ) -> None:

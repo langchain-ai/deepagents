@@ -721,10 +721,15 @@ class FileTokenStorage(TokenStorage):
             # other corruption modes raise. `TypeError` would escape them.
             raise RuntimeError(msg)  # noqa: TRY004
         if data.get("version") != _STORAGE_VERSION:
+            # Render only the value's type, never the value itself: callers
+            # print this message verbatim (e.g. `mcp login` list on stderr),
+            # and the version field is attacker-controlled file content that
+            # could carry credential material planted by a malformed write.
             msg = (
                 f"MCP token file {path} has unsupported version "
-                f"{data.get('version')!r} (expected {_STORAGE_VERSION}). "
-                f"Delete it and run `/mcp login {self._server_name}` in the "
+                f"({type(data.get('version')).__name__}; expected "
+                f"{_STORAGE_VERSION!r}). Delete it and run "
+                f"`/mcp login {self._server_name}` in the "
                 f"TUI (or `dcode mcp login {self._server_name}`)."
             )
             raise RuntimeError(msg)

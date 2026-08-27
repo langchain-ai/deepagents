@@ -265,13 +265,15 @@ class TestReliableRubricMiddleware:
         ("selection", "inherit_main", "expected_model", "expected_params"),
         [
             (None, True, "openai:gpt-5.5", {"temperature": 0.2}),
+            (42, True, "openai:gpt-5.5", {"temperature": 0.2}),
+            ("  ", True, "openai:gpt-5.5", {"temperature": 0.2}),
             ("anthropic:claude-sonnet-4-6", True, "anthropic:claude-sonnet-4-6", {}),
             (INHERIT_RUBRIC_MODEL, False, "openai:gpt-5.5", {"temperature": 0.2}),
         ],
     )
     def test_selects_request_local_grader_context(
         self,
-        selection: str | None,
+        selection: object | None,
         inherit_main: bool,
         expected_model: str,
         expected_params: dict[str, Any],

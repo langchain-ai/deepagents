@@ -19,7 +19,10 @@ from langchain.agents.middleware.types import (
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.goal_state_notice import is_conversation_control_message
-from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
+from deepagents_code.resume_state import (
+    INHERIT_RUBRIC_MODEL,
+    coerce_rubric_model_spec,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -148,7 +151,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
             Request-local grader context carrying the selected model and params.
         """
         grader_context = self._context(context)
-        selected = state.get("_rubric_model_spec")
+        selected = coerce_rubric_model_spec(state.get("_rubric_model_spec"))
         inherit = selected == INHERIT_RUBRIC_MODEL or (
             selected is None and self._inherit_main_model
         )

@@ -1,33 +1,23 @@
 ---
 type: integration
 title: MCP Integration
-description: How dcode and talon discover, configure, authenticate, and load Model Context Protocol (MCP) servers into the agent's tool surface, including config precedence, trust gating, OAuth flows, and approval interaction.
+description: How dcode and Talon discover, trust-filter, authenticate, load, and expose Model Context Protocol (MCP) tools. Covers configuration precedence, project-MCP trust boundaries, OAuth login, and UI-agnostic login resolution.
 tags: [mcp, tools, oauth, configuration, trust, talon, dcode]
 verified:
-  - by: openwiki/0.4.0
-    at: 2026-08-26T21:35:57.774Z
+  - by: openwiki/0.4.2
+    at: 2026-08-27T11:19:20.720Z
 sources:
-  - id: openwiki-source-f5a489e5822d87c0b8fc66ef
-    resource: repo://.mcp.json
-  - id: openwiki-source-18abc7e59899514f067032b2
-    resource: repo://libs/code/deepagents_code/auto_mode.py
+  - id: openwiki-source-cf199a6eaab544ebe004462c
+    resource: repo://libs/code/deepagents_code/client/commands/mcp.py
   - id: openwiki-source-a97cce048cd7efd394ae7dca
     resource: repo://libs/code/deepagents_code/mcp_auth.py
-  - id: openwiki-source-216ca680d81dc35eb4d3e76e
-    resource: repo://libs/code/deepagents_code/mcp_config.py
-  - id: openwiki-source-20b5bbd05beabea1df7e2b53
-    resource: repo://libs/code/deepagents_code/mcp_disabled.py
   - id: openwiki-source-71cf5dd9cb185a031e8f6442
     resource: repo://libs/code/deepagents_code/mcp_login_service.py
-  - id: openwiki-source-beed8c79cb357e3d2be2cf07
-    resource: repo://libs/code/deepagents_code/mcp_oauth_ui.py
-  - id: openwiki-source-f6d553e7afdf54acac36e7d3
-    resource: repo://libs/code/deepagents_code/mcp_tools.py
-  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
-    resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-82cac27adeecff8a900a40fa
-    resource: repo://libs/talon/deepagents_talon/mcp.py
-generated: {by: "openwiki/0.4.0", at: "2026-08-26T21:35:57.774Z"}
+  - id: openwiki-source-26017a12b2a7ce9851b888a4
+    resource: repo://libs/code/tests/unit_tests/test_mcp_auth.py
+  - id: openwiki-source-1ce25590f75ba42bdd04fce2
+    resource: repo://libs/code/tests/unit_tests/test_mcp_tools.py
+generated: { by: "openwiki/0.4.2", at: "2026-08-27T11:19:20.720Z" }
 ---
 
 # MCP Integration
@@ -50,9 +40,11 @@ HTTP servers, `docs-langchain` and `reference-langchain`, each with a `type` of
 Server entries support both stdio and remote transports. `McpServerSpec`
 documents the accepted shape: `type`/`transport` (`stdio`, `http`, or `sse`),
 `url` and `headers` for remote servers, `command`/`args`/`env` for stdio servers,
-and `auth: oauth` to opt a remote server into OAuth login. The MCP spec's
-`streamable_http`/`streamable-http` transport names normalize to the app's `http`
-so pasted upstream configs validate.
+and `auth: oauth` to opt a remote server into OAuth login. `auth: oauth` is
+valid only for remote HTTP/SSE servers and cannot be combined with a static
+`Authorization` header. The MCP spec's `streamable_http`/`streamable-http`
+transport names normalize to the app's `http` so pasted upstream configs
+validate.
 
 `mcp_config.resolve_mcp_server_env` expands `${VAR}` and `${VAR:-default}`
 references in the `command`, `url`, `args`, `env`, and `headers` fields; every
@@ -228,13 +220,20 @@ concurrent processes don't fight over rotating refresh tokens.
 loopback callback server if the provider policy supports one — reusing a prior
 DCR port so the registered `redirect_uri` stays valid — or a paste-back handler
 otherwise; when non-interactive it installs handlers that surface a re-auth
-requirement instead of prompting. `login` (`dcode mcp login <server>`) drives the
-full handshake, resolving env vars, running the provider policy's login (loopback,
-paste-back, or RFC 8628 device flow), and persisting tokens on success. During
-discovery, a token-refresh failure is classified as `unauthenticated`, and a
-remote 401 OAuth challenge (RFC 9728) on a server not opted into OAuth is also
-surfaced as `unauthenticated` with a `dcode mcp login` hint rather than an opaque
-error.
+requirement instead of prompting.
+
+`login` (`dcode mcp login <server>`) is discovery-based: it can authenticate any
+remote `http` or `sse` server, including one that was discovered from an RFC 9728
+401 challenge and did not declare `auth: oauth`. It rejects `stdio`, resolves
+config environment references, invokes the selected provider policy (loopback,
+paste-back, or RFC 8628 device flow), and drives a one-shot MCP handshake. A
+completed provider login reports success; a fresh-login storage wrapper keeps an
+existing stored credential intact if re-authorization aborts. Static headers are
+passed to that handshake, so the project-config trust gate must run before this
+point. During discovery, a token-refresh failure is classified as
+`unauthenticated`, and a remote 401 OAuth challenge on a server not opted into
+OAuth is likewise surfaced as `unauthenticated` with a `dcode mcp login` hint
+rather than an opaque connection error.
 
 Token material is never logged: `mcp_auth` deliberately passes only structural
 facts ("refreshed token for server X"), and expected re-auth log records from the
@@ -244,12 +243,22 @@ SDK are filtered out because the app replaces them with an actionable hint.
 
 `mcp_oauth_ui` defines the `OAuthInteraction` protocol — display the authorize
 URL, accept a pasted callback URL, show device-code instructions, and report
-success or failure — so the CLI (`print`/`input`) and the TUI widgets satisfy the
-same interface. Implementations must never embed token material in user-facing
-messages. `mcp_login_service` extracts config discovery, trust gating, and shape
-validation for a login target into pure functions that return structured results
-(`ConfigResolution`, `ServerSelection`, and a typed `ConfigResolutionError`) so
-both the CLI and TUI can render the outcome instead of relying on `print`.
+success, notices, or failure — so the CLI (`print`/`input`) and TUI widgets
+satisfy the same interface. Implementations must never embed token material in
+user-facing messages.
+
+`mcp_login_service` is the UI-agnostic boundary before the handshake. Its pure
+`resolve_mcp_config` and `select_server` functions perform discovery, project
+trust filtering, merge, and selected-entry validation without printing, and
+return `ConfigResolution`/`ServerSelection` or a typed `ConfigResolutionError`.
+The error discriminator distinguishes an explicit-load failure, no discovered
+config, no usable config, an unknown server, and an invalid selected server.
+Auto-discovery reports skipped untrusted project paths and load/policy migration
+notices as structured fields; an explicit `--mcp-config` is loaded by itself.
+The CLI maps only `NO_CONFIG_FOUND` to exit code 2 and other resolution failures
+to 1, while the TUI turns the same results into in-app status. This separation
+keeps login target resolution and its fail-closed trust behavior consistent
+without making either UI parse terminal output.
 
 ## Talon
 

@@ -1,0 +1,14 @@
+CLAUDE.md
+  h_f78d33d4280f3f 1-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "236e1994aecc9abec9c2c1f0eb7354cf19db2ae9",
+  "prompts": {},
+  "humans": {
+    "h_f78d33d4280f3f": {
+      "author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

@@ -1,0 +1,138 @@
+.github/workflows/openwiki-update.yml
+  h_f78d33d4280f3f 26
+openwiki/.claims/architecture/code-agent.json
+  h_f78d33d4280f3f 1-228
+openwiki/.claims/architecture/middleware-stack.json
+  h_f78d33d4280f3f 1-240
+openwiki/.claims/architecture/overview.json
+  h_f78d33d4280f3f 1-198
+openwiki/.claims/architecture/sdk-construction-execution.json
+  h_f78d33d4280f3f 1-190
+openwiki/.claims/architecture/source-map.json
+  h_f78d33d4280f3f 1-340
+openwiki/.claims/concepts/backends.json
+  h_f78d33d4280f3f 1-324
+openwiki/.claims/concepts/config-layering.json
+  h_f78d33d4280f3f 1-304
+openwiki/.claims/concepts/context-management.json
+  h_f78d33d4280f3f 1-350
+openwiki/.claims/concepts/middleware-catalog.json
+  h_f78d33d4280f3f 1-218
+openwiki/.claims/concepts/permissions-hitl.json
+  h_f78d33d4280f3f 1-366
+openwiki/.claims/concepts/profiles-models.json
+  h_f78d33d4280f3f 1-370
+openwiki/.claims/concepts/state-persistence.json
+  h_f78d33d4280f3f 1-226
+openwiki/.claims/concepts/subagents-skills.json
+  h_f78d33d4280f3f 1-310
+openwiki/.claims/concepts/tools-filesystem.json
+  h_f78d33d4280f3f 1-246
+openwiki/.claims/integrations/acp.json
+  h_f78d33d4280f3f 1-282
+openwiki/.claims/integrations/mcp.json
+  h_f78d33d4280f3f 1-490
+openwiki/.claims/integrations/sandbox-partners.json
+  h_f78d33d4280f3f 1-272
+openwiki/.claims/integrations/talon.json
+  h_f78d33d4280f3f 1-500
+openwiki/.claims/operations/cost-and-sessions.json
+  h_f78d33d4280f3f 1-440
+openwiki/.claims/operations/development.json
+  h_f78d33d4280f3f 1-266
+openwiki/.claims/operations/security.json
+  h_f78d33d4280f3f 1-250
+openwiki/.claims/quickstart.json
+  h_f78d33d4280f3f 1-86
+openwiki/.claims/runtime-behavior.json
+  h_f78d33d4280f3f 1-90
+openwiki/.claims/testing/testing-guide.json
+  h_f78d33d4280f3f 1-234
+openwiki/.claims/workflows/build-a-deep-agent.json
+  h_f78d33d4280f3f 1-256
+openwiki/.claims/workflows/run-dcode-session.json
+  h_f78d33d4280f3f 1-348
+openwiki/.claims/workflows/run-evals.json
+  h_f78d33d4280f3f 1-372
+openwiki/.last-update.json
+  h_f78d33d4280f3f 2-5
+openwiki/architecture/code-agent.md
+  h_f78d33d4280f3f 1-170
+openwiki/architecture/index.md
+  h_f78d33d4280f3f 3-7
+openwiki/architecture/middleware-stack.md
+  h_f78d33d4280f3f 1-173
+openwiki/architecture/overview.md
+  h_f78d33d4280f3f 2-18,21,23,25-41,43-49,51,53,55,57-59,61,63,65,67,69,71,73,75-93
+openwiki/architecture/sdk-construction-execution.md
+  h_f78d33d4280f3f 1-215
+openwiki/architecture/source-map.md
+  h_f78d33d4280f3f 1-218
+openwiki/concepts/backends.md
+  h_f78d33d4280f3f 1-256
+openwiki/concepts/config-layering.md
+  h_f78d33d4280f3f 1-182
+openwiki/concepts/context-management.md
+  h_f78d33d4280f3f 1-225
+openwiki/concepts/index.md
+  h_f78d33d4280f3f 1-11
+openwiki/concepts/middleware-catalog.md
+  h_f78d33d4280f3f 1-108
+openwiki/concepts/permissions-hitl.md
+  h_f78d33d4280f3f 1-315
+openwiki/concepts/profiles-models.md
+  h_f78d33d4280f3f 1-313
+openwiki/concepts/state-persistence.md
+  h_f78d33d4280f3f 2-26,29-55,58-118,122-135,138-211,213-221,224-241
+openwiki/concepts/subagents-skills.md
+  h_f78d33d4280f3f 1-219
+openwiki/concepts/tools-filesystem.md
+  h_f78d33d4280f3f 1-243
+openwiki/index.md
+  h_f78d33d4280f3f 2,7-8,13-16
+openwiki/integrations/acp.md
+  h_f78d33d4280f3f 1-216
+openwiki/integrations/index.md
+  h_f78d33d4280f3f 1-6
+openwiki/integrations/mcp.md
+  h_f78d33d4280f3f 1-274
+openwiki/integrations/sandbox-partners.md
+  h_f78d33d4280f3f 1-254
+openwiki/integrations/talon.md
+  h_f78d33d4280f3f 1-294
+openwiki/operations/cost-and-sessions.md
+  h_f78d33d4280f3f 1-334
+openwiki/operations/development.md
+  h_f78d33d4280f3f 1-137
+openwiki/operations/index.md
+  h_f78d33d4280f3f 1-5
+openwiki/operations/security.md
+  h_f78d33d4280f3f 1-182
+openwiki/quickstart.md
+  h_f78d33d4280f3f 2-18,21,23-28,30,32-33,35-37,39,41,43-47,49-85,88-100,102,104,106-111,113,115-117,119,121-125
+openwiki/runtime-behavior.md
+  h_f78d33d4280f3f 1-234
+openwiki/testing/index.md
+  h_f78d33d4280f3f 3
+openwiki/testing/testing-guide.md
+  h_f78d33d4280f3f 1-209
+openwiki/workflows/build-a-deep-agent.md
+  h_f78d33d4280f3f 1-175
+openwiki/workflows/index.md
+  h_f78d33d4280f3f 3-5
+openwiki/workflows/run-dcode-session.md
+  h_f78d33d4280f3f 1-243
+openwiki/workflows/run-evals.md
+  h_f78d33d4280f3f 1-285
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "3e6240486d8bd5ebbe6b9bcc8a8cfa4fb905514d",
+  "prompts": {},
+  "humans": {
+    "h_f78d33d4280f3f": {
+      "author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

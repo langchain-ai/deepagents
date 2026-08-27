@@ -137,7 +137,7 @@ def test_nested_grader_output_is_not_rendered_or_transcribed(tmp_path: Path) -> 
         transcript=TranscriptRecorder(transcripts, "thread-1"),
     )
     chunk = (
-        ("ReliableRubricMiddleware.after_agent:grader",),
+        ("RubricMiddleware.after_agent:grader",),
         "messages",
         (AIMessage(id="grader-partial", content="partial verdict"), {}),
     )

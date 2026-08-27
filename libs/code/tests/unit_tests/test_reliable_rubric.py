@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.rubric import GraderResponse, RubricState
+from deepagents.middleware.rubric import GraderResponse, RubricMiddleware, RubricState
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.agents.middleware.human_in_the_loop import ApproveDecision
 from langchain.agents.middleware.types import AgentMiddleware
@@ -26,14 +26,18 @@ from langgraph.types import Command
 from pydantic import Field
 
 from deepagents_code._constants import SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
-from deepagents_code.reliable_rubric import (
-    ReliableRubricMiddleware,
+from deepagents_code.goal_rubric import (
     RubricGraderState,
-    _without_internal_control_messages,
+    _rubric_grader_messages,
+    _rubric_grader_state,
 )
 
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
+
+pytestmark = pytest.mark.filterwarnings(
+    r"ignore:The middleware `RubricMiddleware` is in beta\..*"
+)
 
 
 class _FixedGenericFakeChatModel(GenericFakeChatModel):
@@ -209,6 +213,15 @@ def _grader_payload(call: Any) -> str:  # noqa: ANN401
     return str(call.args[0]["messages"][0].content)
 
 
+def _rubric(**kwargs: Any) -> RubricMiddleware:
+    return RubricMiddleware(
+        grader_state_schema=RubricGraderState,
+        prepare_messages_for_grader=_rubric_grader_messages,
+        build_grader_state=_rubric_grader_state,
+        **kwargs,
+    )
+
+
 def _tool_satisfied_result() -> dict[str, Any]:
     return {
         **_satisfied_result(),
@@ -221,14 +234,14 @@ def _tool_satisfied_result() -> dict[str, Any]:
     }
 
 
-class TestReliableRubricMiddleware:
+class TestRubricMiddlewareIntegration:
     def test_displayed_max_iterations_default_matches_sdk(self) -> None:
         """Drift guard for the TUI-display duplicate of the SDK default.
 
         The constant must equal the `RubricMiddleware` default that the app
         actually instantiates.
         """
-        middleware = ReliableRubricMiddleware(model="fake-model")
+        middleware = _rubric(model="fake-model")
 
         assert middleware.max_iterations == SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
 
@@ -254,13 +267,13 @@ class TestReliableRubricMiddleware:
             },
         )
 
-        filtered = _without_internal_control_messages(state)
+        filtered = _rubric_grader_messages(state["messages"])
 
-        assert filtered["messages"] == [visible, summary]
+        assert filtered == [visible, summary]
         assert state["messages"] == [visible, state_notice, continuation, summary]
 
     async def test_grading_does_not_mutate_agent_transcript(self) -> None:
-        middleware = ReliableRubricMiddleware(model="fake-model")
+        middleware = _rubric(model="fake-model")
         grader = AsyncMock()
         grader.ainvoke.return_value = _satisfied_result()
         middleware._grader = grader
@@ -300,7 +313,7 @@ class TestReliableRubricMiddleware:
         )
         _RetryingGraderModel.attempts = 0
         grader_model = _RetryingGraderModel()
-        rubric = ReliableRubricMiddleware(
+        rubric = _rubric(
             model=grader_model,
             grader_middleware=[
                 CodeModelRetryMiddleware(
@@ -330,7 +343,7 @@ class TestReliableRubricMiddleware:
         ]
 
     async def test_does_not_apply_legacy_retry_async(self) -> None:
-        middleware = ReliableRubricMiddleware(model="fake-model")
+        middleware = _rubric(model="fake-model")
         grader = AsyncMock()
         grader.ainvoke.side_effect = TimeoutError("provider timed out")
         middleware._grader = grader
@@ -341,7 +354,7 @@ class TestReliableRubricMiddleware:
         grader.ainvoke.assert_awaited_once()
 
     def test_does_not_apply_legacy_retry_sync(self) -> None:
-        middleware = ReliableRubricMiddleware(model="fake-model")
+        middleware = _rubric(model="fake-model")
         grader = MagicMock()
         grader.invoke.side_effect = TimeoutError("provider timed out")
         middleware._grader = grader
@@ -355,7 +368,7 @@ class TestReliableRubricMiddleware:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        middleware = ReliableRubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        middleware = _rubric(model="anthropic:claude-sonnet-4-6")
         grader = MagicMock()
         grader.invoke.return_value = _tool_satisfied_result()
         middleware._grader = grader
@@ -399,7 +412,7 @@ class TestReliableRubricMiddleware:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        middleware = ReliableRubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        middleware = _rubric(model="anthropic:claude-sonnet-4-6")
         grader = AsyncMock()
         grader.ainvoke.return_value = _tool_satisfied_result()
         middleware._grader = grader
@@ -442,7 +455,7 @@ class TestReliableRubricMiddleware:
     def test_inherits_sdk_coverage_retry_sync(self) -> None:
         # The SDK's coverage retry still fires when the grader under-reports its
         # criteria; this is separate from model transport retries.
-        middleware = ReliableRubricMiddleware(model="fake-model")
+        middleware = _rubric(model="fake-model")
         grader = MagicMock()
         grader.invoke.side_effect = [
             _under_reported_result(),
@@ -457,7 +470,7 @@ class TestReliableRubricMiddleware:
         assert "1 of the 2 criteria" in _grader_payload(grader.invoke.call_args_list[1])
 
     async def test_inherits_sdk_coverage_retry_async(self) -> None:
-        middleware = ReliableRubricMiddleware(model="fake-model")
+        middleware = _rubric(model="fake-model")
         grader = AsyncMock()
         grader.ainvoke.side_effect = [
             _under_reported_result(),
@@ -492,12 +505,14 @@ class TestReliableRubricMiddleware:
             profile={"structured_output": True},
         )
         nested_middleware = AgentMiddleware()
-        monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.create_agent", fake_create_agent
+        )
         monkeypatch.setattr(
             "deepagents._models.resolve_model",
             lambda _model: resolved_model,
         )
-        middleware = ReliableRubricMiddleware(
+        middleware = _rubric(
             model="fake-model",
             grader_middleware=[nested_middleware],
             grader_context_schema=GraderContext,
@@ -517,7 +532,7 @@ class TestReliableRubricMiddleware:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        middleware = ReliableRubricMiddleware(model="fake-model")
+        middleware = _rubric(model="fake-model")
         grade = AsyncMock(side_effect=GraphInterrupt(()))
         monkeypatch.setattr(middleware, "_agrade", grade)
         context = {"approval_mode": "manual"}
@@ -569,7 +584,7 @@ class TestReliableRubricMiddleware:
                 ]
             )
         )
-        rubric = ReliableRubricMiddleware(
+        rubric = _rubric(
             model=grader_model,
             tools=[inspect_external],
             grader_middleware=[HumanInTheLoopMiddleware({"inspect_external": True})],

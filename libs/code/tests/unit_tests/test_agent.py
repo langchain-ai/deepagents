@@ -3073,11 +3073,11 @@ class TestMiddlewareStackConformance:
         This prevents runtime errors like 'has no attribute wrap_tool_call'
         when the agent framework iterates over the middleware list.
         """
+        from deepagents.middleware.rubric import RubricMiddleware
         from langchain.agents.middleware.types import AgentMiddleware
 
         from deepagents_code.cost_tracking import CostTrackingMiddleware
         from deepagents_code.goal_tools import GoalToolsMiddleware
-        from deepagents_code.reliable_rubric import ReliableRubricMiddleware
         from deepagents_code.resume_state import ResumeStateMiddleware
 
         agent_dir = tmp_path / "agent"
@@ -3150,7 +3150,7 @@ class TestMiddlewareStackConformance:
         # session's final turn. The two are registered ~460 lines apart in
         # different functions, so nothing but this assertion pins the order.
         assert middleware_types.index(CostTrackingMiddleware) < middleware_types.index(
-            ReliableRubricMiddleware
+            RubricMiddleware
         )
         # The main agent owns the thread's cumulative cost; only nested
         # instances opt out of writing it.
@@ -6195,7 +6195,7 @@ class TestCreateCliAgentInterpreterWiring:
             patch("deepagents_code.agent.credentials", mock_settings),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.ReliableRubricMiddleware") as mock_rubric,
+            patch("deepagents_code.agent.RubricMiddleware") as mock_rubric,
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,

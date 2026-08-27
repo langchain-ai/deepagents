@@ -19,6 +19,7 @@ from deepagents.middleware import (
     GRADER_SYSTEM_PROMPT,
     FilesystemMiddleware,
     MemoryMiddleware,
+    RubricMiddleware,
     SkillsMiddleware,  # noqa: F401
 )
 
@@ -131,7 +132,6 @@ from deepagents_code.offload_middleware import (
 )
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
-from deepagents_code.reliable_rubric import ReliableRubricMiddleware
 from deepagents_code.subagents import list_subagents
 from deepagents_code.unicode_security import (
     check_url_safety,
@@ -2819,7 +2819,7 @@ def create_cli_agent(
     # `after_model` — so thread-keyed draining makes that
     # coverage independent of position within the model loop. `after_agent`
     # hooks run in reverse list order, though, so this must stay *before*
-    # `ReliableRubricMiddleware`: otherwise the grading agent's spend lands in
+    # `RubricMiddleware`: otherwise the grading agent's spend lands in
     # the next turn's checkpoint, or is lost on a session's final turn.
     # The CLI reads these channels back from `state_values` on thread resume.
     # Goal tools: exposes the constrained write-side `update_goal` tool and
@@ -3232,8 +3232,11 @@ def create_cli_agent(
         fs_tools=fs_tools,
     )
     from deepagents_code.goal_rubric import (
+        RubricGraderState,
         _ContextToolCallBudgetMiddleware,
         _CriteriaContextBudgetMiddleware,
+        _rubric_grader_messages,
+        _rubric_grader_state,
         _rubric_interrupt_on,
         _WebSearchBudgetMiddleware,
     )
@@ -3305,10 +3308,13 @@ def create_cli_agent(
             "tools": grader_tools,
             "grader_middleware": grader_middleware,
             "grader_context_schema": CLIContextSchema,
+            "grader_state_schema": RubricGraderState,
+            "prepare_messages_for_grader": _rubric_grader_messages,
+            "build_grader_state": _rubric_grader_state,
         }
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations
-        agent_middleware.append(ReliableRubricMiddleware(**rubric_kwargs))
+        agent_middleware.append(RubricMiddleware(**rubric_kwargs))
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

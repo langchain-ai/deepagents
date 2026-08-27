@@ -5274,7 +5274,7 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
     async def test_nested_grader_output_is_not_mounted(self) -> None:
         """Rubric-grader tokens stay hidden with other nested message streams."""
         mount_message = AsyncMock(return_value=True)
-        grader_namespace = ("ReliableRubricMiddleware.after_agent:grader",)
+        grader_namespace = ("RubricMiddleware.after_agent:grader",)
         chunks = [
             (grader_namespace, "messages", (_text_message("partial verdict"), {}))
         ]

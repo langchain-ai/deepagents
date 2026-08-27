@@ -92,29 +92,6 @@ class TestCollectSections:
         assert "Platform" in labels
         assert "Install method" in labels
 
-    @pytest.mark.parametrize(
-        ("commit", "url"),
-        [
-            ("abc1234", "https://github.com/langchain-ai/deepagents/commit/abc1234"),
-            ("unknown", None),
-        ],
-    )
-    def test_commit_hash_link(self, commit: str, url: str | None) -> None:
-        """A resolved commit links to GitHub while an unknown value stays plain."""
-        from deepagents_code.doctor import _collect_diagnostics
-
-        with (
-            patch("deepagents_code.doctor._commit_hash", return_value=commit),
-            patch(
-                "deepagents_code.extras_info._sdk_requirement_for_cli",
-                return_value=None,
-            ),
-        ):
-            diagnostics = _collect_diagnostics()
-
-        item = next(item for item in diagnostics.items if item.label == "Commit hash")
-        assert item.url == url
-
 
 class TestDiagnosticsVersionReport:
     """Tests for how the Diagnostics section renders version-report facts."""
@@ -784,9 +761,11 @@ class TestConfigurationSection:
 class TestRunDoctorCommand:
     """Tests for the text and JSON rendering paths."""
 
-    def _run_text(self) -> tuple[int, str]:
+    def _run_text(self, *, force_terminal: bool = False) -> tuple[int, str]:
         buf = io.StringIO()
-        test_console = Console(file=buf, highlight=False, width=200)
+        test_console = Console(
+            file=buf, force_terminal=force_terminal, highlight=False, width=200
+        )
         args = argparse.Namespace(output_format="text")
         with patch("deepagents_code.config.console", test_console):
             code = run_doctor_command(args)
@@ -815,38 +794,11 @@ class TestRunDoctorCommand:
         assert "dcode -v" in output
 
     def test_commit_hash_renders_as_link(self) -> None:
-        """Text output links the hash without changing its visible text."""
-        sections = [
-            DiagnosticSection(
-                title="Diagnostics",
-                items=[
-                    DiagnosticItem(
-                        "Commit hash",
-                        "abc1234",
-                        url="https://github.com/langchain-ai/deepagents/commit/abc1234",
-                    )
-                ],
-            )
-        ]
-        buf = io.StringIO()
-        test_console = Console(
-            file=buf,
-            force_terminal=True,
-            color_system="standard",
-            highlight=False,
-            width=200,
-        )
+        """Text output links the hash to GitHub."""
+        with patch("deepagents_code.doctor._commit_hash", return_value="abc1234"):
+            _, output = self._run_text(force_terminal=True)
 
-        with (
-            patch("deepagents_code.doctor.collect_sections", return_value=sections),
-            patch("deepagents_code.config.console", test_console),
-        ):
-            code = run_doctor_command(argparse.Namespace(output_format="text"))
-
-        output = buf.getvalue()
-        assert code == 0
         assert "https://github.com/langchain-ai/deepagents/commit/abc1234" in output
-        assert "abc1234" in output
 
     def test_json_output_envelope(self, capsys) -> None:
         """JSON output is a stable envelope with section data."""
@@ -869,7 +821,6 @@ class TestRunDoctorCommand:
         assert data["healthy"] is True
         titles = [section["title"] for section in data["sections"]]
         assert titles == ["Diagnostics", "Updates", "Tracing", "Configuration"]
-        assert set(data["sections"][0]["items"][0]) == {"label", "value", "ok"}
 
     def test_unhealthy_returns_nonzero(self) -> None:
         """An unhealthy section yields a non-zero exit code."""

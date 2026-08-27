@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import platform
-import re
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -29,9 +28,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
-_REPOSITORY_URL = "https://github.com/langchain-ai/deepagents"
-
 
 @dataclass
 class DiagnosticItem:
@@ -44,7 +40,6 @@ class DiagnosticItem:
     label: str
     value: str
     ok: bool = True
-    url: str | None = None
 
 
 @dataclass
@@ -190,17 +185,12 @@ def _collect_diagnostics() -> DiagnosticSection:
         method = detect_install_method()
         path = sys.prefix
 
-    commit = _commit_hash(path)
-    commit_url = (
-        f"{_REPOSITORY_URL}/commit/{commit}" if _COMMIT_RE.fullmatch(commit) else None
-    )
-
     return DiagnosticSection(
         title="Diagnostics",
         items=[
             DiagnosticItem("deepagents-code", cli_value),
             DiagnosticItem("deepagents (SDK)", sdk_version, ok=sdk_ok),
-            DiagnosticItem("Commit hash", commit, url=commit_url),
+            DiagnosticItem("Commit hash", _commit_hash(path)),
             DiagnosticItem("Python", platform.python_version()),
             DiagnosticItem("Platform", _platform_tag()),
             DiagnosticItem("Install method", method),
@@ -804,11 +794,17 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
         for index, item in enumerate(section.items):
             connector = corner if index == len(section.items) - 1 else tee
             value_color = theme.MUTED if item.ok else "red"
-            line = Text.assemble(
-                f"  {connector} {item.label}: ",
-                (item.value, Style(color=value_color, link=item.url)),
+            url = (
+                f"https://github.com/langchain-ai/deepagents/commit/{item.value}"
+                if item.label == "Commit hash" and item.value != "unknown"
+                else None
             )
-            console.print(line, highlight=False)
+            console.print(
+                f"  {connector} {escape(item.label)}: ",
+                Text(item.value, style=Style(color=value_color, link=url)),
+                sep="",
+                highlight=False,
+            )
         console.print()
 
     console.print(

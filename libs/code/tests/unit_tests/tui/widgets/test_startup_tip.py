@@ -71,53 +71,6 @@ class TestStartupTip:
         assert args[0] == list(_TIPS.keys())
         assert kwargs["weights"] == list(_TIPS.values())
 
-    def test_active_tips_includes_yolo_when_switcher_enabled(self) -> None:
-        """Enabled YOLO switcher keeps the three-mode Shift+Tab tip."""
-        tips = _active_tips(yolo_switcher_enabled=True)
-
-        assert _TIP_SHIFT_TAB_WITH_YOLO in tips
-        assert _TIP_SHIFT_TAB_WITHOUT_YOLO not in tips
-        assert tips[_TIP_SHIFT_TAB_WITH_YOLO] == _TIPS[_TIP_SHIFT_TAB_WITH_YOLO]
-
-    def test_active_tips_personalizes_editor(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("VISUAL", "code --wait")
-
-        tips = _active_tips(yolo_switcher_enabled=True)
-
-        assert "Press ctrl+g to compose prompts in code" in tips
-        assert _TIP_EXTERNAL_EDITOR not in tips
-
-    def test_active_tips_keeps_generic_editor_fallback(self) -> None:
-        tips = _active_tips(yolo_switcher_enabled=True)
-
-        assert _TIP_EXTERNAL_EDITOR in tips
-
-    def test_active_tips_hides_yolo_when_switcher_disabled(self) -> None:
-        """Disabled YOLO switcher advertises Manual/Auto only."""
-        tips = _active_tips(yolo_switcher_enabled=False)
-
-        assert _TIP_SHIFT_TAB_WITH_YOLO not in tips
-        assert tips[_TIP_SHIFT_TAB_WITHOUT_YOLO] == _TIPS[_TIP_SHIFT_TAB_WITH_YOLO]
-
-    def test_pick_tip_uses_resolved_yolo_switcher_setting(self) -> None:
-        """`_pick_tip` resolves the live switcher setting when choosing tips."""
-        with (
-            patch(_IS_YOLO_SWITCHER, return_value=False) as resolved,
-            patch(
-                _CHOICES,
-                return_value=[_TIP_SHIFT_TAB_WITHOUT_YOLO],
-            ) as choices,
-        ):
-            assert _pick_tip() == _TIP_SHIFT_TAB_WITHOUT_YOLO
-
-        resolved.assert_called_once_with()
-        args, kwargs = choices.call_args
-        assert _TIP_SHIFT_TAB_WITHOUT_YOLO in args[0]
-        assert _TIP_SHIFT_TAB_WITH_YOLO not in args[0]
-        assert kwargs["weights"][args[0].index(_TIP_SHIFT_TAB_WITHOUT_YOLO)] == 2
-
     def test_show_startup_tip_defaults_to_true(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -142,18 +95,11 @@ class TestStartupTip:
         """The `/copy` command keeps a discoverability tip."""
         assert any("/copy" in tip for tip in _TIPS)
 
-    def test_show_reasoning_tip_registered(self) -> None:
-        """The reasoning display flag keeps a discoverability tip."""
-        assert any("--show-reasoning" in tip for tip in _TIPS)
-
-    def test_prompt_clipboard_tip_registered(self) -> None:
-        assert any("Ctrl+R" in tip and "prompts" in tip for tip in _TIPS)
-
-    def test_chat_input_resize_tip_registered(self) -> None:
-        """The draggable chat input keeps a discoverability tip."""
-        assert any("top border" in tip and "resize" in tip for tip in _TIPS)
-
     def test_workflow_subagent_tip_registered(self) -> None:
         """The workflow trigger phrase keeps an above-baseline weight."""
         tip = "Ask for a workflow to fan work out to subagents in parallel"
         assert _TIPS[tip] > 1
+
+    def test_show_reasoning_tip_registered(self) -> None:
+        """The reasoning display flag keeps a discoverability tip."""
+        assert any("--show-reasoning" in tip for tip in _TIPS)

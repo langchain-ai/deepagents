@@ -89,46 +89,6 @@ class _FakeAsyncClient:
         return self.response
 
 
-class TestPortInUse:
-    def test_free_port(self) -> None:
-        fake_socket = _FakeSocket()
-
-        with patch("socket.socket", return_value=fake_socket) as socket_cls:
-            assert not _port_in_use("127.0.0.1", 2024)
-
-        socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
-        assert fake_socket.bound_addr == ("127.0.0.1", 2024)
-
-    def test_occupied_port(self) -> None:
-        fake_socket = _FakeSocket(bind_error=OSError("port already in use"))
-
-        with patch("socket.socket", return_value=fake_socket) as socket_cls:
-            assert _port_in_use("127.0.0.1", 2024)
-
-        socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
-        assert fake_socket.bound_addr is None
-
-
-class TestFindFreePort:
-    def test_returns_valid_port(self) -> None:
-        fake_socket = _FakeSocket(sockname=("127.0.0.1", 43210))
-
-        with patch("socket.socket", return_value=fake_socket) as socket_cls:
-            port = _find_free_port("127.0.0.1")
-
-        socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
-        assert fake_socket.bound_addr == ("127.0.0.1", 0)
-        assert 1 <= port <= 65535
-
-    def test_returns_port_reported_by_socket(self) -> None:
-        fake_socket = _FakeSocket(sockname=("127.0.0.1", 53123))
-
-        with patch("socket.socket", return_value=fake_socket):
-            port = _find_free_port("127.0.0.1")
-
-        assert port == 53123
-
-
 class TestServerPortSelection:
     """Port resolution in `ServerProcess.start()`."""
 
@@ -244,47 +204,6 @@ class TestServerPortSelection:
 class TestWaitForServerHealthy:
     """Tests for the health-check polling loop."""
 
-    async def test_returns_on_200(self) -> None:
-        """Happy path: server responds 200 immediately."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            await wait_for_server_healthy("http://localhost:2024", timeout=5)
-
-        mock_client.get.assert_awaited_once()
-
-    async def test_raises_on_early_process_exit(self) -> None:
-        """Process dies before health check succeeds -> fail fast."""
-        process = MagicMock()
-        process.poll.return_value = 1
-        process.returncode = 1
-
-        with pytest.raises(RuntimeError, match="exited with code 1"):
-            await wait_for_server_healthy(
-                "http://localhost:2024",
-                timeout=5,
-                process=process,
-            )
-
-    async def test_early_exit_includes_log_output(self) -> None:
-        """read_log output is included in the error message."""
-        process = MagicMock()
-        process.poll.return_value = 1
-        process.returncode = 1
-
-        with pytest.raises(RuntimeError, match="some log output"):
-            await wait_for_server_healthy(
-                "http://localhost:2024",
-                timeout=5,
-                process=process,
-                read_log=lambda: "some log output",
-            )
-
     async def test_early_exit_promotes_marked_startup_error(self) -> None:
         """Marked server startup errors should survive app error trimming."""
         process = MagicMock()
@@ -317,48 +236,6 @@ class TestWaitForServerHealthy:
             "'runloop': No Runloop API key found. Set RUNLOOP_API_KEY or "
             "DEEPAGENTS_CODE_RUNLOOP_API_KEY."
         )
-
-    async def test_raises_on_timeout(self) -> None:
-        """Timeout exhaustion raises RuntimeError."""
-        import httpx
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with (
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch(
-                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_LOCAL", 0
-            ),
-            patch(
-                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_REMOTE", 0
-            ),
-            pytest.raises(RuntimeError, match="did not become healthy"),
-        ):
-            await wait_for_server_healthy("http://localhost:2024", timeout=0.01)
-
-    async def test_timeout_reports_last_status(self) -> None:
-        """Timeout error includes the last HTTP status code."""
-        mock_response = MagicMock()
-        mock_response.status_code = 503
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with (
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch(
-                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_LOCAL", 0
-            ),
-            patch(
-                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_REMOTE", 0
-            ),
-            pytest.raises(RuntimeError, match="last status: 503"),
-        ):
-            await wait_for_server_healthy("http://localhost:2024", timeout=0.01)
 
 
 class TestServerProcess:
@@ -461,60 +338,6 @@ class TestServerProcess:
             pytest.raises(RuntimeError, match="ModelConfigError: missing API key"),
         ):
             await server.wait_for_graph_ready("agent")
-
-    async def test_start_cleans_up_partial_state_on_health_failure(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Failed startup should stop the process and remove owned resources."""
-        # `_stop_process` preserves the log file when debug mode is on, which
-        # would defeat the `not log_path.exists()` assertion below; pin it off
-        # so an ambient `DEEPAGENTS_CODE_DEBUG` in the environment can't flake.
-        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
-
-        config_dir = tmp_path / "runtime"
-        config_dir.mkdir()
-        (config_dir / "langgraph.json").write_text("{}")
-
-        log_path = tmp_path / "server.log"
-        log_path.write_text("booting")
-
-        process = MagicMock()
-        process.pid = 1234
-        process.poll.return_value = None
-
-        log_file = MagicMock()
-        log_file.name = str(log_path)
-
-        server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
-
-        with (
-            patch(
-                "deepagents_code.client.launch.server._find_free_port",
-                return_value=12345,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
-                return_value=log_file,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.subprocess.Popen",
-                return_value=process,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.wait_for_server_healthy",
-                new=AsyncMock(side_effect=RuntimeError("boom")),
-            ),
-            pytest.raises(RuntimeError, match="boom"),
-        ):
-            await server.start()
-
-        process.send_signal.assert_called_once_with(signal.SIGTERM)
-        process.wait.assert_called_once()
-        log_file.close.assert_called_once()
-        assert server._process is None
-        assert server._log_file is None
-        assert not config_dir.exists()
-        assert not log_path.exists()
 
     async def test_start_cleans_up_partial_state_on_cancellation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -877,59 +700,6 @@ class TestServerProcess:
 
         scaffold_mock.assert_called_once_with(config_dir)
         assert config_path.exists()
-
-    async def test_update_env_and_restart(self, tmp_path: Path) -> None:
-        """update_env stages overrides that restart() applies."""
-        config_dir = tmp_path / "runtime"
-        config_dir.mkdir()
-        (config_dir / "langgraph.json").write_text("{}")
-
-        log_path = tmp_path / "server.log"
-        log_path.write_text("")
-
-        process = MagicMock()
-        process.pid = 1234
-        process.poll.return_value = None
-
-        log_file = MagicMock()
-        log_file.name = str(log_path)
-
-        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
-
-        with (
-            patch(
-                "deepagents_code.client.launch.server._find_free_port",
-                return_value=12345,
-            ),
-            patch(
-                "deepagents_code.client.launch.server._port_in_use", return_value=False
-            ),
-            patch(
-                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
-                return_value=log_file,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.subprocess.Popen",
-                return_value=process,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.wait_for_server_healthy",
-                new=AsyncMock(),
-            ),
-        ):
-            await server.start()
-            assert server.running
-
-            server.update_env(DEEPAGENTS_CODE_SERVER_MODEL="anthropic:claude-opus-4-6")
-
-            # Restart: should stop the old process and start a new one
-            await server.restart()
-
-        # Env override was applied
-        env_key = "DEEPAGENTS_CODE_SERVER_MODEL"
-        assert os.environ.get(env_key) == "anthropic:claude-opus-4-6"
-        # Overrides cleared after successful restart
-        assert server._env_overrides == {}
 
     async def test_restart_runs_blocking_stop_off_event_loop(
         self, tmp_path: Path

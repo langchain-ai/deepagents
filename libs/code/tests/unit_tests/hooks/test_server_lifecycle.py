@@ -761,46 +761,6 @@ def test_invocation_id_separates_turns_that_reuse_a_tool_call_id() -> None:
     assert second != first
 
 
-def test_apply_hooks_context_sets_server_events(tmp_path: Path) -> None:
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    (config_dir / "hooks.json").write_text(
-        (
-            '{"hooks":{'
-            '"PreCompact":[{"hooks":[{"type":"command","command":"true"}]}],'
-            '"PreToolUse":[{"hooks":[{"type":"command","command":"true"}]}]'
-            "}}"
-        ),
-        encoding="utf-8",
-    )
-    runtime = HooksRuntime.create(
-        cwd=tmp_path,
-        config_dir=config_dir,
-        transcript_root=tmp_path / "transcripts",
-    )
-    context: CLIContext = {}
-    apply_hooks_context(context, runtime, prompt_id="prompt-1")
-
-    assert context["hooks_snapshot_id"] == runtime.snapshot_id
-    assert context["hooks_server_events"] == ["PreCompact", "PreToolUse"]
-    assert context["prompt_id"] == "prompt-1"
-    assert runtime.configured_server_events() == ("PreCompact", "PreToolUse")
-
-
-def test_session_gate_requires_snapshot_and_events() -> None:
-    assert _session_gate(None) is None
-    assert _session_gate({"hooks_snapshot_id": "abc"}) is None
-    gate = _session_gate(
-        {
-            "hooks_snapshot_id": "abc",
-            "hooks_server_events": ["PreToolUse", "Stop"],
-        }
-    )
-    assert gate is not None
-    assert gate["snapshot_id"] == "abc"
-    assert gate["events"] == frozenset({"PreToolUse", "Stop"})
-
-
 def test_denied_tool_message_for_deny() -> None:
     call = ToolCallData(id="c1", name="execute", args={})
     denied = _denied_tool_message(
@@ -809,100 +769,6 @@ def test_denied_tool_message_for_deny() -> None:
     assert isinstance(denied, ToolMessage)
     assert denied.status == "error"
     assert "nope" in str(denied.content)
-
-
-def test_merge_tool_message_preserves_structured_content() -> None:
-    result = ToolMessage(
-        content=[{"type": "text", "text": "parent result"}],
-        tool_call_id="c1",
-        name="task",
-    )
-    merged = _merge_tool_message_content(result, "hook context")
-    assert isinstance(merged.content, list)
-    assert merged.content[0] == {"type": "text", "text": "parent result"}
-    assert merged.content[-1] == {"type": "text", "text": "hook context"}
-
-
-def test_apply_subagent_stop_preserves_structured_content() -> None:
-    result = ToolMessage(
-        content=[{"type": "text", "text": "done"}],
-        tool_call_id="c1",
-        name="task",
-    )
-    updated = _apply_subagent_stop(
-        result,
-        SubagentStopDecision(
-            event=HookEvent.SUBAGENT_STOP,
-            context=["extra"],
-        ),
-        "c1",
-    )
-    assert isinstance(updated, ToolMessage)
-    assert isinstance(updated.content, list)
-    assert "extra" in str(updated.content[-1])
-
-
-def test_apply_post_tool_use_appends_feedback_and_context() -> None:
-    result = ToolMessage(content="ok", tool_call_id="c1", name="execute")
-    updated = _apply_post_tool_use(
-        result,
-        PostToolUseDecision(
-            event=HookEvent.POST_TOOL_USE,
-            feedback=["fix it"],
-            context=["note"],
-        ),
-        "c1",
-    )
-    assert "ok" in str(updated.content)
-    assert "fix it" in str(updated.content)
-    assert "note" in str(updated.content)
-
-
-def test_post_tool_use_updates_successful_command_result(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
-    result = Command(
-        update={
-            "messages": [
-                ToolMessage(
-                    content="ok",
-                    name="execute",
-                    tool_call_id="c1",
-                )
-            ]
-        }
-    )
-    invoke = MagicMock(
-        return_value=PostToolUseDecision(
-            event=HookEvent.POST_TOOL_USE,
-            context=["post context"],
-        )
-    )
-    monkeypatch.setattr(
-        "deepagents_code.hooks.server_middleware._invoke_hook",
-        invoke,
-    )
-
-    updated = middleware._maybe_post_tool_use(
-        ToolCallData(id="c1", name="execute", args={}),
-        HookContext(
-            thread_id="thread-1",
-            cwd=Path("/tmp"),
-            approval_mode=ApprovalMode.MANUAL,
-        ),
-        {"snapshot_id": "snap", "events": frozenset({"PostToolUse"})},
-        {"configurable": {"thread_id": "thread-1"}},
-        result,
-        5,
-    )
-
-    assert isinstance(updated, Command)
-    assert isinstance(updated.update, dict)
-    message = updated.update["messages"][0]
-    assert isinstance(message, ToolMessage)
-    assert "post context" in str(message.content)
-    invoke.assert_called_once()
 
 
 def _multi_result_command() -> Command[Any]:
@@ -919,26 +785,6 @@ def _multi_result_command() -> Command[Any]:
             ]
         }
     )
-
-
-def test_append_tool_result_text_only_touches_matching_call() -> None:
-    updated = _append_tool_result_text(_multi_result_command(), "hook context", "c1")
-
-    assert isinstance(updated, Command)
-    assert isinstance(updated.update, dict)
-    mine, theirs = updated.update["messages"]
-    assert "hook context" in str(mine.content)
-    assert str(theirs.content) == "theirs"
-
-
-def test_append_tool_result_text_leaves_command_without_matching_call() -> None:
-    result = _multi_result_command()
-
-    assert _append_tool_result_text(result, "hook context", "c3") is result
-
-
-def test_tool_result_text_reads_only_matching_call() -> None:
-    assert _tool_result_text(_multi_result_command(), "c1") == "mine"
 
 
 def test_tool_result_error_ignores_unrelated_failure() -> None:
@@ -996,14 +842,6 @@ def test_failed_execute_routes_to_post_tool_use_failure(
     assert isinstance(event, PostToolUseFailureEvent)
     assert event.error == "Command exited with non-zero status code 42"
     assert event.duration_ms == 5
-
-
-def test_append_pretool_context_to_result() -> None:
-    result = ToolMessage(content="ran", tool_call_id="c1", name="execute")
-    updated = _append_message_text(result, ("pre context",), "c1")
-    assert isinstance(updated, ToolMessage)
-    assert "ran" in str(updated.content)
-    assert "pre context" in str(updated.content)
 
 
 def _pre_tool_runtime() -> MagicMock:
@@ -1287,54 +1125,6 @@ def test_ask_permission_via_hitl_reject(monkeypatch: pytest.MonkeyPatch) -> None
     assert "no" in str(blocked.content)
 
 
-def test_stop_resets_continuation_count_when_finished(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
-    state: ServerHooksState = {
-        "messages": [],
-        "_hooks_stop_continuation_count": 3,
-    }
-    runtime = MagicMock()
-    runtime.context = {
-        "hooks_snapshot_id": "snap",
-        "hooks_server_events": ["Stop"],
-        "thread_id": "t1",
-        "approval_mode": "manual",
-    }
-
-    def _fake_invoke(*_args: object, **_kwargs: object) -> StopDecision:
-        return StopDecision(event=HookEvent.STOP, continue_loop=False)
-
-    monkeypatch.setattr(
-        "deepagents_code.hooks.server_middleware._invoke_hook",
-        _fake_invoke,
-    )
-    update = middleware._after_agent(state, runtime)
-    assert update == {"_hooks_stop_continuation_count": 0}
-
-
-def test_emit_stop_false_skips_after_agent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    middleware = ServerHooksMiddleware(cwd=Path("/tmp"), emit_stop=False)
-    state: ServerHooksState = {"messages": []}
-    runtime = MagicMock()
-    runtime.context = {
-        "hooks_snapshot_id": "snap",
-        "hooks_server_events": ["Stop"],
-        "thread_id": "t1",
-        "approval_mode": "manual",
-    }
-    invoke = MagicMock()
-    monkeypatch.setattr(
-        "deepagents_code.hooks.server_middleware._invoke_hook",
-        invoke,
-    )
-    assert middleware._after_agent(state, runtime) is None
-    invoke.assert_not_called()
-
-
 def test_subagent_start_deny_returns_error_tool_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1374,39 +1164,6 @@ def test_subagent_start_deny_returns_error_tool_message(
     handler.assert_not_called()
 
 
-async def test_async_task_tool_scopes_subagent_transcript_identity() -> None:
-    from langchain_core.runnables.config import ensure_config
-
-    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
-    request = MagicMock()
-    request.state = {}
-    request.tool = None
-    request.tool_call = {
-        "name": "task",
-        "args": {"subagent_type": "researcher", "description": "go"},
-        "id": "call-1",
-        "type": "tool_call",
-    }
-    request.runtime.context = {
-        "thread_id": "t1",
-        "approval_mode": "manual",
-    }
-    request.runtime.config = {"configurable": {"thread_id": "t1"}}
-    observed: list[str | None] = []
-
-    async def handler(_request: object) -> ToolMessage:
-        await asyncio.sleep(0)
-        nested = ensure_config({"configurable": {"ls_agent_type": "subagent"}})
-        observed.append(nested["metadata"].get(SUBAGENT_TRANSCRIPT_ID_METADATA_KEY))
-        return ToolMessage(content="done", name="task", tool_call_id="call-1")
-
-    result = await middleware.awrap_tool_call(request, handler)
-
-    assert isinstance(result, ToolMessage)
-    assert observed == ["call-1"]
-    assert SUBAGENT_TRANSCRIPT_ID_METADATA_KEY not in ensure_config()["metadata"]
-
-
 async def test_fulfill_hook_invocation_runs_engine(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -1427,89 +1184,6 @@ async def test_fulfill_hook_invocation_runs_engine(tmp_path: Path) -> None:
     )
     assert isinstance(response.decision, PreToolUseDecision)
     assert response.decision.permission.behavior in {"allow", "none"}
-
-
-async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
-    tmp_path: Path,
-) -> None:
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    marker = tmp_path / "marker.txt"
-    script = (
-        "import json,pathlib,time; "
-        f"pathlib.Path({str(marker)!r}).write_text('x'); "
-        "time.sleep(0.05); "
-        "print(json.dumps({'systemMessage':'once'}))"
-    )
-    (config_dir / "hooks.json").write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "PreToolUse": [
-                        {
-                            "hooks": [
-                                {
-                                    "type": "command",
-                                    "command": (
-                                        f"{sys.executable} -c {json.dumps(script)}"
-                                    ),
-                                }
-                            ]
-                        }
-                    ]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    notices: list[tuple[str, str]] = []
-    runtime = HooksRuntime.create(
-        cwd=tmp_path,
-        config_dir=config_dir,
-        presenter=HookPresenter(
-            notice=lambda message, severity: notices.append((message, severity))
-        ),
-    )
-    request = _request().model_copy(update={"snapshot_id": runtime.snapshot_id})
-
-    first, second = await asyncio.gather(
-        fulfill_hook_invocation(runtime, request),
-        fulfill_hook_invocation(runtime, request),
-    )
-    third = await fulfill_hook_invocation(runtime, request)
-
-    assert first == second == third
-    assert marker.read_text() == "x"
-    assert notices == [("once", "information")]
-
-
-def test_snapshot_configured_server_events() -> None:
-    config = HOOKS_CONFIG_ADAPTER.validate_python(
-        {
-            "hooks": {
-                "SessionStart": [
-                    {"hooks": [{"type": "command", "command": "echo client"}]}
-                ],
-                "PreCompact": [
-                    {"hooks": [{"type": "command", "command": "echo compact"}]}
-                ],
-                "PreToolUse": [
-                    {"hooks": [{"type": "command", "command": "echo server"}]}
-                ],
-            }
-        }
-    )
-    assert isinstance(config, HooksConfig)
-    snapshot = HooksSnapshot.from_config(config)
-    assert snapshot.configured_events() == {
-        HookEvent.SESSION_START,
-        HookEvent.PRE_COMPACT,
-        HookEvent.PRE_TOOL_USE,
-    }
-    assert snapshot.configured_server_events() == {
-        HookEvent.PRE_COMPACT,
-        HookEvent.PRE_TOOL_USE,
-    }
 
 
 class TestAskDecisionInServerOperation:

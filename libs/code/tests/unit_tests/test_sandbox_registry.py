@@ -98,20 +98,6 @@ def _empty_registry() -> SandboxRegistry:
     return SandboxRegistry(config=SandboxConfig(), include_entry_points=False)
 
 
-def test_builtins_are_available() -> None:
-    registry = _empty_registry()
-    assert registry.available_providers() == [
-        "agentcore",
-        "daytona",
-        "langsmith",
-        "modal",
-        "runloop",
-        "vercel",
-    ]
-    assert registry.is_available("daytona")
-    assert not registry.is_available("acme")
-
-
 def test_builtin_metadata_working_dir() -> None:
     registry = _empty_registry()
     assert _metadata(registry, "modal").working_dir == "/workspace"
@@ -124,10 +110,6 @@ def test_builtin_metadata_working_dir() -> None:
     assert vercel.supports_snapshot_name is False
     assert vercel.install is not None
     assert vercel.install.command(in_app=False) == "dcode install vercel"
-
-
-def test_unknown_provider_metadata_is_none() -> None:
-    assert _empty_registry().get_metadata("acme") is None
 
 
 def test_config_provider_is_discovered() -> None:

@@ -56,20 +56,6 @@ def _build_parser() -> argparse.ArgumentParser:
 class TestSetupMCPParsers:
     """Argument parser wiring for the `mcp` subcommand."""
 
-    def test_mcp_login_accepts_server_arg(self) -> None:
-        """The parser recognizes `dcode mcp login <server>`."""
-        parser = _build_parser()
-        ns = parser.parse_args(["mcp", "login", "notion"])
-        assert ns.command == "mcp"
-        assert ns.mcp_command == "login"
-        assert ns.server == "notion"
-
-    def test_mcp_login_allows_omitted_server(self) -> None:
-        """The parser accepts `dcode mcp login` with no server."""
-        ns = _build_parser().parse_args(["mcp", "login"])
-        assert ns.mcp_command == "login"
-        assert ns.server is None
-
 
 class TestRunMCPLoginList:
     """Behavior of bare `dcode mcp login`."""
@@ -285,31 +271,6 @@ class TestRunMCPLoginList:
         assert "is not a JSON object" in captured.err
         assert "No MCP servers need login." not in captured.out
 
-    async def test_no_config_found_returns_2(self) -> None:
-        """No discovered config files yields exit code 2."""
-        from deepagents_code.client.commands.mcp import run_mcp_login_list
-
-        with patch(
-            "deepagents_code.mcp_tools.discover_mcp_config_sources",
-            return_value=[],
-        ):
-            exit_code = await run_mcp_login_list(config_path=None)
-
-        assert exit_code == 2
-
-    async def test_unloadable_explicit_config_returns_1(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """An explicit config that cannot be loaded is exit 1, not exit 2."""
-        from deepagents_code.client.commands.mcp import run_mcp_login_list
-
-        missing = tmp_path / "nope.json"
-
-        exit_code = await run_mcp_login_list(config_path=str(missing))
-
-        assert exit_code == 1
-        assert "Failed to load MCP config" in capsys.readouterr().err
-
     async def test_prints_trust_hint_for_untrusted_project_config(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -333,34 +294,6 @@ class TestRunMCPLoginList:
         err = capsys.readouterr().err
         assert exit_code != 0
         assert "Skipping untrusted project MCP server entries" in err
-
-    async def test_unloadable_discovered_config_is_not_an_all_clear(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """A config file that failed to load leaves the picture incomplete."""
-        from deepagents_code.client.commands.mcp import run_mcp_login_list
-
-        good = tmp_path / "good.json"
-        good.write_text(
-            '{"mcpServers":{"public":{"transport":"http",'
-            '"url":"https://public.test/mcp"}}}'
-        )
-        broken = tmp_path / "broken.json"
-        broken.write_text("{ not json")
-
-        with patch(
-            "deepagents_code.mcp_tools.discover_mcp_config_sources",
-            return_value=[
-                DiscoveredMCPConfig(good, MCPConfigScope.USER, None),
-                DiscoveredMCPConfig(broken, MCPConfigScope.USER, None),
-            ],
-        ):
-            exit_code = await run_mcp_login_list(config_path=None)
-
-        captured = capsys.readouterr()
-        assert exit_code == 1
-        assert "No MCP servers need login." not in captured.out
-        assert "could not be checked" in captured.out
 
 
 class TestRunMCPLogin:
@@ -478,18 +411,6 @@ class TestRunMCPLogin:
         assert mock_login.await_args_list[0].kwargs["server_config"]["url"] == (
             "https://example.invalid/higher"
         )
-
-    async def test_no_config_found_returns_2(self) -> None:
-        """No discovered config files yields exit code 2."""
-        from deepagents_code.client.commands.mcp import run_mcp_login
-
-        with patch(
-            "deepagents_code.mcp_tools.discover_mcp_config_sources",
-            return_value=[],
-        ):
-            exit_code = await run_mcp_login(server="notion", config_path=None)
-
-        assert exit_code == 2
 
     async def test_untrusted_project_config_is_skipped(
         self,

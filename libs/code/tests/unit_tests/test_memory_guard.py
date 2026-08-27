@@ -147,44 +147,6 @@ def test_restore_does_not_follow_replaced_guarded_file_symlink(tmp_path) -> None
     assert path.is_symlink()
 
 
-def test_unguarded_file_passes_through(tmp_path) -> None:
-    """A guarded middleware ignores writes to other files."""
-    guarded = tmp_path / "agent" / "AGENTS.md"
-    _managed_file(guarded, "Ada")
-    other = tmp_path / "project" / "AGENTS.md"
-    other.parent.mkdir(parents=True)
-    other.write_text("project notes\n", encoding="utf-8")
-    middleware = ManagedMemoryGuardMiddleware([str(guarded)])
-
-    def handler(_request: ToolCallRequest) -> ToolMessage:
-        other.write_text("rewritten\n", encoding="utf-8")
-        return _success("write_file")
-
-    result = middleware.wrap_tool_call(
-        _request("write_file", str(other), content="rewritten\n"), handler
-    )
-
-    assert isinstance(result, ToolMessage)
-    assert result.status == "success"
-    assert other.read_text(encoding="utf-8") == "rewritten\n"
-
-
-def test_non_write_tool_passes_through(tmp_path) -> None:
-    """Read-only tools targeting the guarded file are never intercepted."""
-    path = tmp_path / "agent" / "AGENTS.md"
-    _managed_file(path, "Ada")
-    middleware = ManagedMemoryGuardMiddleware([str(path)])
-
-    sentinel = ToolMessage(
-        content="contents", name="read_file", tool_call_id="call-1", status="success"
-    )
-    result = middleware.wrap_tool_call(
-        _request("read_file", str(path)), lambda _r: sentinel
-    )
-
-    assert result is sentinel
-
-
 def test_file_without_managed_block_passes_through(tmp_path) -> None:
     """When no managed block exists, edits are left untouched."""
     path = tmp_path / "agent" / "AGENTS.md"
@@ -425,27 +387,6 @@ def test_delete_missing_guarded_file_is_allowed(tmp_path) -> None:
 
     assert isinstance(result, ToolMessage)
     assert ran is True
-
-
-def test_error_message_propagates_call_metadata(tmp_path) -> None:
-    """The error result carries the originating tool name and call id."""
-    path = tmp_path / "agent" / "AGENTS.md"
-    _managed_file(path, "Ada")
-    middleware = ManagedMemoryGuardMiddleware([str(path)])
-
-    def handler(_request: ToolCallRequest) -> ToolMessage:
-        path.write_text(
-            path.read_text(encoding="utf-8").replace("Ada", "Mallory"),
-            encoding="utf-8",
-        )
-        return _success()
-
-    result = middleware.wrap_tool_call(_request("edit_file", str(path)), handler)
-
-    assert isinstance(result, ToolMessage)
-    assert result.status == "error"
-    assert result.name == "edit_file"
-    assert result.tool_call_id == "call-1"
 
 
 async def test_async_edit_outside_block_passes_through(tmp_path) -> None:

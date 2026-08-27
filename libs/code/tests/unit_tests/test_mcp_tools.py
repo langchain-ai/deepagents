@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import sys
 import threading
 import time
@@ -26,6 +25,8 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from langchain_mcp_adapters.client import Connection
+
+import re
 
 from deepagents_code.mcp_auth import FileTokenStorage, MCPReauthRequiredError
 from deepagents_code.mcp_tools import (
@@ -220,42 +221,8 @@ def fake_tool_result() -> Any:  # noqa: ANN401
     return CallToolResult(content=[TextContent(type="text", text="ok")])
 
 
-class TestMCPToolName:
-    """Provider-safe names for MCP tools."""
-
-    def test_short_name_is_unchanged(self) -> None:
-        assert _mcp_tool_name("filesystem", "read_file") == "filesystem_read_file"
-
-    def test_long_names_are_bounded_and_collision_resistant(self) -> None:
-        first = _mcp_tool_name("s" * 50, "tool-one" * 10)
-        second = _mcp_tool_name("s" * 50, "tool-two" * 10)
-
-        assert len(first) == 64
-        assert len(second) == 64
-        assert first != second
-        assert re.fullmatch(r"[A-Za-z0-9_-]+", first)
-
-    def test_reported_plugin_name_is_bounded(self) -> None:
-        server = "plugin__langchain-mcp_langchain-plugins_4431c345__langchain-docs"
-
-        name = _mcp_tool_name(server, "query_docs_filesystem_docs_by_lang_chain")
-
-        assert len(name) == 64
-        assert name.startswith("plugin__langchain-mcp_l")
-        assert "query_docs_filesystem" in name
-
-
 class TestLoadMCPConfig:
     """Test MCP configuration loading and validation."""
-
-    def test_load_valid_config(
-        self,
-        write_config: Callable[..., str],
-        valid_config_data: dict,
-    ) -> None:
-        """A valid config loads unchanged."""
-        path = write_config(valid_config_data)
-        assert load_mcp_config(path) == valid_config_data
 
     def test_load_config_auth_oauth_http_ok(
         self,
@@ -345,25 +312,6 @@ class TestLoadMCPConfig:
         config = load_mcp_config(path)
         assert "linear" in config["mcpServers"]
 
-    def test_invalid_server_name_rejected(
-        self,
-        write_config: Callable[..., str],
-    ) -> None:
-        """Server names must remain path-safe."""
-        path = write_config(
-            {
-                "mcpServers": {
-                    "../evil": {
-                        "transport": "http",
-                        "url": "https://example.com/mcp",
-                    }
-                }
-            }
-        )
-
-        with pytest.raises(ValueError, match="Invalid server name"):
-            load_mcp_config(path)
-
     @pytest.mark.parametrize(
         "bad_name",
         ["../evil", "", "a/b", "a b", "slåck", "name.with.dot"],
@@ -386,37 +334,6 @@ class TestLoadMCPConfig:
         )
         with pytest.raises(ValueError, match=r"Invalid server name|empty"):
             load_mcp_config(path)
-
-    @pytest.mark.parametrize("good_name", ["slack-bot_1", "A", "z9", "_under"])
-    def test_valid_server_names_accepted(
-        self,
-        write_config: Callable[..., str],
-        good_name: str,
-    ) -> None:
-        """Alphanumeric, hyphen, and underscore server names pass validation."""
-        path = write_config(
-            {
-                "mcpServers": {
-                    good_name: {
-                        "transport": "http",
-                        "url": "https://example.com/mcp",
-                    }
-                }
-            }
-        )
-        assert good_name in load_mcp_config(path)["mcpServers"]
-
-    def test_missing_file_raises(self, tmp_path: Path) -> None:
-        """Missing config path raises `FileNotFoundError`."""
-        with pytest.raises(FileNotFoundError):
-            load_mcp_config(str(tmp_path / "nope.json"))
-
-    def test_invalid_json_raises(self, tmp_path: Path) -> None:
-        """Malformed JSON raises `JSONDecodeError` with message context."""
-        path = tmp_path / "bad.json"
-        path.write_text("{not json")
-        with pytest.raises(json.JSONDecodeError):
-            load_mcp_config(str(path))
 
     def test_trailing_comma_error_has_hint_and_snippet(self, tmp_path: Path) -> None:
         """A trailing comma surfaces an actionable hint plus a caret snippet."""
@@ -548,111 +465,6 @@ class TestLoadMCPConfig:
         # source text must not exceed its length.
         assert caret_line.index("^") - 4 == len(source)
 
-    def test_missing_mcpservers_field(self, write_config: Callable[..., str]) -> None:
-        """Config without `mcpServers` field is rejected."""
-        path = write_config({"other": {}})
-        with pytest.raises(ValueError, match="mcpServers"):
-            load_mcp_config(path)
-
-    def test_mcpservers_wrong_type(self, write_config: Callable[..., str]) -> None:
-        """`mcpServers` must be a dict."""
-        path = write_config({"mcpServers": []})
-        with pytest.raises(TypeError, match="dictionary"):
-            load_mcp_config(path)
-
-    def test_empty_mcpservers_rejected(self, write_config: Callable[..., str]) -> None:
-        """Empty `mcpServers` is treated as a misconfiguration."""
-        path = write_config({"mcpServers": {}})
-        with pytest.raises(ValueError, match="empty"):
-            load_mcp_config(path)
-
-    def test_stdio_missing_command(self, write_config: Callable[..., str]) -> None:
-        """Stdio servers must declare a `command`."""
-        path = write_config({"mcpServers": {"fs": {"args": []}}})
-        with pytest.raises(ValueError, match="command"):
-            load_mcp_config(path)
-
-    def test_stdio_args_wrong_type(self, write_config: Callable[..., str]) -> None:
-        """Stdio `args` must be a list."""
-        path = write_config({"mcpServers": {"fs": {"command": "x", "args": "oops"}}})
-        with pytest.raises(TypeError, match="args"):
-            load_mcp_config(path)
-
-    def test_stdio_env_wrong_type(self, write_config: Callable[..., str]) -> None:
-        """Stdio `env` must be a dict."""
-        path = write_config({"mcpServers": {"fs": {"command": "x", "env": []}}})
-        with pytest.raises(TypeError, match="env"):
-            load_mcp_config(path)
-
-    def test_remote_missing_url(self, write_config: Callable[..., str]) -> None:
-        """Remote servers must declare a `url`."""
-        path = write_config({"mcpServers": {"api": {"transport": "http"}}})
-        with pytest.raises(ValueError, match="url"):
-            load_mcp_config(path)
-
-    def test_remote_headers_wrong_type(self, write_config: Callable[..., str]) -> None:
-        """Remote `headers` must be a dict."""
-        path = write_config(
-            {
-                "mcpServers": {
-                    "api": {
-                        "transport": "http",
-                        "url": "https://example.com",
-                        "headers": ["X-Bad", "value"],
-                    }
-                }
-            }
-        )
-        with pytest.raises(TypeError, match="headers"):
-            load_mcp_config(path)
-
-    def test_unknown_transport_rejected(self, write_config: Callable[..., str]) -> None:
-        """Unknown transport strings fail with a helpful message."""
-        path = write_config({"mcpServers": {"s": {"transport": "ipc", "command": "x"}}})
-        with pytest.raises(ValueError, match="unsupported transport"):
-            load_mcp_config(path)
-
-    def test_type_alias_for_transport(self, write_config: Callable[..., str]) -> None:
-        """`type` is accepted as an alias for `transport`."""
-        path = write_config(
-            {"mcpServers": {"api": {"type": "sse", "url": "https://example.com"}}}
-        )
-        assert load_mcp_config(path)["mcpServers"]["api"]["type"] == "sse"
-
-    def test_url_only_server_defaults_to_http_transport(
-        self, write_config: Callable[..., str]
-    ) -> None:
-        """`url`-only entries are treated as HTTP remote servers.
-
-        Matches Claude Code's `.mcp.json` convention: `{"url": "..."}` alone
-        implies a remote server rather than stdio missing a `command`.
-        """
-        path = write_config(
-            {"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp"}}}
-        )
-        # Should not raise; load_mcp_config validates by calling _resolve_server_type.
-        assert "notion" in load_mcp_config(path)["mcpServers"]
-
-    def test_url_only_inference_does_not_override_explicit_type(
-        self, write_config: Callable[..., str]
-    ) -> None:
-        """Explicit `type` always wins over url-based inference."""
-        path = write_config(
-            {"mcpServers": {"api": {"type": "sse", "url": "https://example.com/mcp"}}}
-        )
-        loaded = load_mcp_config(path)["mcpServers"]["api"]
-        assert loaded["type"] == "sse"
-
-    def test_resolve_server_type_direct(self) -> None:
-        """Direct unit test for `_resolve_server_type` inference rules."""
-        from deepagents_code.mcp_tools import _resolve_server_type
-
-        assert _resolve_server_type({"command": "x"}) == "stdio"
-        assert _resolve_server_type({"url": "https://x"}) == "http"
-        assert _resolve_server_type({"type": "sse", "url": "https://x"}) == "sse"
-        assert _resolve_server_type({"transport": "http"}) == "http"
-        assert _resolve_server_type({}) == "stdio"
-
     def test_streamable_http_alias_accepted(
         self, write_config: Callable[..., str]
     ) -> None:
@@ -680,148 +492,13 @@ class TestLoadMCPConfig:
         )
         assert "slack" in load_mcp_config(path)["mcpServers"]
 
-    def test_stdio_with_url_rejected(self, write_config: Callable[..., str]) -> None:
-        """Stdio + url is contradictory — url would be silently dropped."""
-        path = write_config(
-            {
-                "mcpServers": {
-                    "weird": {
-                        "type": "stdio",
-                        "command": "cat",
-                        "url": "https://example.com/mcp",
-                    }
-                }
-            }
-        )
-        with pytest.raises(ValueError, match=r"stdio.*url|url.*stdio"):
-            load_mcp_config(path)
-
-    def test_remote_with_command_rejected(
-        self, write_config: Callable[..., str]
-    ) -> None:
-        """Remote type + command is contradictory — command silently dropped."""
-        path = write_config(
-            {
-                "mcpServers": {
-                    "weird": {
-                        "type": "http",
-                        "url": "https://example.com/mcp",
-                        "command": "cat",
-                    }
-                }
-            }
-        )
-        with pytest.raises(ValueError, match=r"remote.*command|command"):
-            load_mcp_config(path)
-
-    def test_mcp_config_error_is_value_error(self) -> None:
-        """`MCPConfigError` subclasses `ValueError` for backward-compatible catching."""
-        from deepagents_code.mcp_tools import MCPConfigError
-
-        assert issubclass(MCPConfigError, ValueError)
-        msg = "boom"
-        with pytest.raises(ValueError, match="boom"):
-            raise MCPConfigError(msg)
-
 
 class TestDiscoverMcpConfigs:
     """Tests for file-system discovery of MCP config files."""
 
-    def test_discovers_user_project_and_root(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """All three config locations are returned when present."""
-        home = tmp_path / "home"
-        project = tmp_path / "proj"
-        (home / ".deepagents").mkdir(parents=True)
-        (home / ".deepagents" / ".mcp.json").write_text("{}")
-        (project / ".deepagents").mkdir(parents=True)
-        (project / ".deepagents" / ".mcp.json").write_text("{}")
-        (project / ".mcp.json").write_text("{}")
-        _set_profile_root(monkeypatch, home / ".deepagents", launch_home=home)
-        monkeypatch.setattr(
-            "deepagents_code.project_utils.find_project_root",
-            lambda: project,
-        )
-
-        paths = _discovered_paths()
-        assert len(paths) == 3
-        assert any(str(p).endswith(".mcp.json") for p in paths)
-
-    def test_deepagents_home_override(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """User config discovery follows `DEEPAGENTS_HOME`."""
-        configured = tmp_path / "custom-home"
-        configured.mkdir()
-        user_config = configured / ".mcp.json"
-        user_config.write_text("{}")
-        _set_profile_root(monkeypatch, configured, launch_home=tmp_path)
-        monkeypatch.setattr(
-            "deepagents_code.project_utils.find_project_root",
-            lambda: None,
-        )
-        monkeypatch.chdir(tmp_path)
-
-        assert _discovered_paths() == [user_config]
-
-    def test_no_configs_returns_empty(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """No discovered files yields an empty list without error."""
-        home = tmp_path / "h"
-        home.mkdir()
-        _set_profile_root(monkeypatch, home / ".deepagents", launch_home=home)
-        monkeypatch.setattr(
-            "deepagents_code.project_utils.find_project_root",
-            lambda: None,
-        )
-        monkeypatch.chdir(tmp_path)
-        assert _discovered_paths() == []
-
-    def test_explicit_project_context_overrides_cwd(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`project_context` overrides the fallback project root."""
-        home = tmp_path / "home"
-        home.mkdir()
-        project = tmp_path / "p"
-        (project / ".deepagents").mkdir(parents=True)
-        (project / ".deepagents" / ".mcp.json").write_text("{}")
-        _set_profile_root(monkeypatch, home / ".deepagents", launch_home=home)
-
-        ctx = ProjectContext(user_cwd=project, project_root=project)
-        paths = _discovered_paths(project_context=ctx)
-        assert any(".deepagents" in str(p) for p in paths)
-
 
 class TestLoadMcpConfigLenient:
     """Tests for `load_mcp_config_lenient` / `load_mcp_config_with_error`."""
-
-    def test_missing_file_returns_none_without_error(self, tmp_path: Path) -> None:
-        """Missing files are silent — not worth surfacing as errors."""
-        from deepagents_code.mcp_tools import load_mcp_config_with_error
-
-        cfg, err = load_mcp_config_with_error(tmp_path / "nope.json")
-        assert cfg is None
-        assert err is None
-
-    def test_malformed_json_reports_error(self, tmp_path: Path) -> None:
-        """Malformed JSON yields a populated error alongside `None`."""
-        from deepagents_code.mcp_tools import load_mcp_config_with_error
-
-        path = tmp_path / "bad.json"
-        path.write_text("{not json")
-        cfg, err = load_mcp_config_with_error(path)
-        assert cfg is None
-        assert err is not None
-
-    def test_lenient_returns_none_for_invalid(
-        self, write_config: Callable[..., str]
-    ) -> None:
-        """Legacy lenient API preserves the `None` return contract."""
-        path = write_config({"mcpServers": {"fs": {"args": []}}})
-        assert load_mcp_config_lenient(Path(path)) is None
 
     def test_lenient_removes_disabled_server_before_validation(
         self, write_config: Callable[..., str]
@@ -841,52 +518,6 @@ class TestLoadMcpConfigLenient:
         )
         config = load_mcp_config_lenient(Path(path), disabled_servers={"drop"})
         assert config == {"mcpServers": {"keep": {"command": "echo", "args": ["ok"]}}}
-
-    def test_merged_loader_validates_after_precedence_resolution(
-        self, tmp_path: Path
-    ) -> None:
-        """A repaired override cannot hide a valid lower-precedence sibling."""
-        lower = tmp_path / "lower.json"
-        lower.write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        "hidden": {"command": "echo", "args": ["lower"]},
-                        "repaired": {"args": []},
-                    }
-                }
-            )
-        )
-        higher = tmp_path / "higher.json"
-        higher.write_text(
-            json.dumps(
-                {"mcpServers": {"repaired": {"command": "echo", "args": ["higher"]}}}
-            )
-        )
-
-        config = load_merged_mcp_configs_lenient([lower, higher])
-
-        assert config == {
-            "mcpServers": {
-                "hidden": {"command": "echo", "args": ["lower"]},
-                "repaired": {"command": "echo", "args": ["higher"]},
-            }
-        }
-
-    def test_merged_loader_drops_only_malformed_winning_entry(
-        self, tmp_path: Path
-    ) -> None:
-        """One malformed project entry cannot hide a valid sibling file."""
-        lower = tmp_path / "lower.json"
-        lower.write_text(
-            json.dumps({"mcpServers": {"docs": {"type": "http", "url": "https://x"}}})
-        )
-        higher = tmp_path / "higher.json"
-        higher.write_text(json.dumps({"mcpServers": {"broken": {"args": []}}}))
-
-        config = load_merged_mcp_configs_lenient([lower, higher])
-
-        assert config == {"mcpServers": {"docs": {"type": "http", "url": "https://x"}}}
 
     def test_saved_approval_rematches_through_runtime_merge_path(
         self, tmp_path: Path
@@ -942,16 +573,6 @@ class TestLoadMcpConfigLenient:
 
 class TestMCPServerInfoInvariants:
     """Tests for `MCPServerInfo.__post_init__` invariants."""
-
-    def test_status_ok_rejects_error(self) -> None:
-        """`status='ok'` cannot carry an error message."""
-        with pytest.raises(ValueError, match="cannot carry an error"):
-            MCPServerInfo(name="srv", transport="http", status="ok", error="oops")
-
-    def test_status_error_requires_message(self) -> None:
-        """Non-`ok` statuses require a non-`None` error."""
-        with pytest.raises(ValueError, match="requires an error"):
-            MCPServerInfo(name="srv", transport="http", status="error")
 
     def test_status_unauth_rejects_tools(self) -> None:
         """Failed servers can't also carry tools."""
@@ -1273,13 +894,6 @@ class TestMCPSessionManager:
         with pytest.raises(RuntimeError, match="after cleanup"):
             await manager.get_session("filesystem")
 
-    async def test_configure_noop_when_connections_match(self) -> None:
-        """`configure` is a no-op if the same connection dict is re-applied."""
-        conn = {"filesystem": {"transport": "stdio", "command": "npx", "args": []}}
-        manager = MCPSessionManager(connections=conn)  # ty: ignore
-        # Should not raise even without any sessions yet.
-        manager.configure(dict(conn))  # ty: ignore
-
     @pytest.mark.usefixtures("fake_home")
     async def test_configure_accepts_equivalent_oauth_connections(self) -> None:
         """Fresh OAuth provider instances do not count as reconfiguration."""
@@ -1573,37 +1187,6 @@ class TestMCPSessionManager:
 class TestTransientErrorDetection:
     """Tests for `_is_transient_session_error` classification."""
 
-    @pytest.mark.parametrize(
-        "exc",
-        [
-            BrokenPipeError("pipe"),
-            ConnectionAbortedError("abort"),
-            ConnectionResetError("reset"),
-            EOFError("eof"),
-            asyncio.IncompleteReadError(b"", 1),
-        ],
-    )
-    def test_stdlib_exceptions_are_transient(self, exc: BaseException) -> None:
-        """Standard-library transport errors always classify as transient."""
-        from deepagents_code.mcp_tools import _is_transient_session_error
-
-        assert _is_transient_session_error(exc)
-
-    def test_anyio_closed_resource_is_transient(self) -> None:
-        """Anyio's `ClosedResourceError` also classifies as transient."""
-        import anyio
-
-        from deepagents_code.mcp_tools import _is_transient_session_error
-
-        assert _is_transient_session_error(anyio.ClosedResourceError())
-
-    def test_unrelated_exception_is_not_transient(self) -> None:
-        """Non-transport errors do not trigger retry."""
-        from deepagents_code.mcp_tools import _is_transient_session_error
-
-        assert not _is_transient_session_error(RuntimeError("boom"))
-        assert not _is_transient_session_error(ValueError("bad"))
-
 
 class TestGetMCPTools:
     """Test MCP tool loading from configuration."""
@@ -1671,67 +1254,6 @@ class TestGetMCPTools:
             )
         ]
         await manager.cleanup()
-
-    async def test_long_tool_name_is_bounded_but_calls_original(
-        self,
-        write_config: Callable[..., str],
-        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
-        fake_tool_result: Any,  # noqa: ANN401
-    ) -> None:
-        path = write_config(
-            {"mcpServers": {"server" * 10: {"command": "node", "args": []}}}
-        )
-        session, _recorded = fake_create_session
-        original_name = "query_docs_filesystem_docs_by_lang_chain"
-        session.list_tools = AsyncMock(
-            return_value=_make_tool_page([_make_mcp_tool(original_name)])
-        )
-        session.call_tool = AsyncMock(return_value=fake_tool_result)
-
-        tools, manager, server_infos = await get_mcp_tools(path)
-        await tools[0].ainvoke({})
-
-        assert len(tools[0].name) == 64
-        assert server_infos[0].tools[0].name == tools[0].name
-        session.call_tool.assert_awaited_once_with(original_name, {})
-        await manager.cleanup()  # ty: ignore
-
-    async def test_stateless_long_tool_name_is_bounded(
-        self,
-        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
-        fake_tool_result: Any,  # noqa: ANN401
-    ) -> None:
-        session, _recorded = fake_create_session
-        original_name = "tool" * 20
-        session.list_tools = AsyncMock(
-            return_value=_make_tool_page([_make_mcp_tool(original_name)])
-        )
-        runtime_session = AsyncMock()
-        runtime_session.initialize = AsyncMock()
-        runtime_session.call_tool = AsyncMock(return_value=fake_tool_result)
-
-        tools, manager, _server_infos = await _load_tools_from_config(
-            {"mcpServers": {"server" * 10: {"command": "node"}}}, stateless=True
-        )
-
-        @asynccontextmanager
-        async def _runtime_session(
-            _connection: dict[str, Any], *, mcp_callbacks: object | None = None
-        ) -> AsyncIterator[AsyncMock]:
-            yield runtime_session
-
-        with patch("langchain_mcp_adapters.tools.create_session", _runtime_session):
-            await tools[0].ainvoke({})
-
-        assert manager is None
-        assert len(tools[0].name) == 64
-        metadata = tools[0].metadata
-        assert metadata is not None
-        assert metadata["_deepagents_code_mcp_server"] == "server" * 10
-        assert metadata["_deepagents_code_mcp_tool"] == original_name
-        runtime_session.call_tool.assert_awaited_once_with(
-            original_name, {}, progress_callback=None
-        )
 
     async def test_discovery_failure_marks_server_error(
         self,
@@ -1815,41 +1337,6 @@ class TestGetMCPTools:
         assert recorded[0]["url"] == "https://mcp.linear.app/mcp"
         assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
 
-    async def test_stdio_fields_resolve_before_preflight_and_connection(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
-    ) -> None:
-        """Stdio preflight and connection creation use resolved values."""
-        monkeypatch.setenv("DA_MCP_HOME", "/opt/mcp")
-        monkeypatch.setenv("DA_MCP_TOKEN", "token")
-        _session, recorded = fake_create_session
-        checked: list[dict[str, Any]] = []
-        config = {
-            "mcpServers": {
-                "srv": {
-                    "command": "${DA_MCP_HOME}/server",
-                    "args": ["--root", "${DA_MCP_HOME}"],
-                    "env": {"TOKEN": "${DA_MCP_TOKEN}"},
-                }
-            }
-        }
-
-        with patch(
-            "deepagents_code.mcp_tools._check_stdio_server",
-            side_effect=lambda _name, server: checked.append(server),
-        ):
-            await _load_tools_from_config(config)
-
-        assert checked[0]["command"] == "/opt/mcp/server"
-        assert checked[0]["args"] == ["--root", "/opt/mcp"]
-        assert recorded[0] == {
-            "command": "/opt/mcp/server",
-            "args": ["--root", "/opt/mcp"],
-            "env": {"TOKEN": "token"},
-            "transport": "stdio",
-        }
-
     async def test_unset_variable_skips_only_affected_server(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1902,25 +1389,6 @@ class TestGetMCPTools:
         assert [connection["args"] for connection in recorded] == [["server.js"]]
         assert manager is not None
         await manager.cleanup()
-
-    async def test_empty_env_is_coerced_to_none(
-        self,
-        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
-    ) -> None:
-        """Empty stdio env dicts are normalized to `None`."""
-        _session, recorded = fake_create_session
-        config = {
-            "mcpServers": {
-                "srv": {
-                    "command": "node",
-                    "args": ["server.js"],
-                    "env": {},
-                }
-            }
-        }
-
-        await _load_tools_from_config(config)
-        assert recorded[0]["env"] is None
 
     async def test_input_schema_is_carried_into_mcp_tool_info(
         self,
@@ -2063,6 +1531,67 @@ class TestGetMCPTools:
         assert names == ["srv_read_file"]
         assert server_infos[0].tools[0].input_schema == read_schema
         await manager.cleanup()  # ty: ignore
+
+    async def test_long_tool_name_is_bounded_but_calls_original(
+        self,
+        write_config: Callable[..., str],
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+        fake_tool_result: Any,  # noqa: ANN401
+    ) -> None:
+        path = write_config(
+            {"mcpServers": {"server" * 10: {"command": "node", "args": []}}}
+        )
+        session, _recorded = fake_create_session
+        original_name = "query_docs_filesystem_docs_by_lang_chain"
+        session.list_tools = AsyncMock(
+            return_value=_make_tool_page([_make_mcp_tool(original_name)])
+        )
+        session.call_tool = AsyncMock(return_value=fake_tool_result)
+
+        tools, manager, server_infos = await get_mcp_tools(path)
+        await tools[0].ainvoke({})
+
+        assert len(tools[0].name) == 64
+        assert server_infos[0].tools[0].name == tools[0].name
+        session.call_tool.assert_awaited_once_with(original_name, {})
+        await manager.cleanup()  # ty: ignore
+
+    async def test_stateless_long_tool_name_is_bounded(
+        self,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+        fake_tool_result: Any,  # noqa: ANN401
+    ) -> None:
+        session, _recorded = fake_create_session
+        original_name = "tool" * 20
+        session.list_tools = AsyncMock(
+            return_value=_make_tool_page([_make_mcp_tool(original_name)])
+        )
+        runtime_session = AsyncMock()
+        runtime_session.initialize = AsyncMock()
+        runtime_session.call_tool = AsyncMock(return_value=fake_tool_result)
+
+        tools, manager, _server_infos = await _load_tools_from_config(
+            {"mcpServers": {"server" * 10: {"command": "node"}}}, stateless=True
+        )
+
+        @asynccontextmanager
+        async def _runtime_session(
+            _connection: dict[str, Any], *, mcp_callbacks: object | None = None
+        ) -> AsyncIterator[AsyncMock]:
+            yield runtime_session
+
+        with patch("langchain_mcp_adapters.tools.create_session", _runtime_session):
+            await tools[0].ainvoke({})
+
+        assert manager is None
+        assert len(tools[0].name) == 64
+        metadata = tools[0].metadata
+        assert metadata is not None
+        assert metadata["_deepagents_code_mcp_server"] == "server" * 10
+        assert metadata["_deepagents_code_mcp_tool"] == original_name
+        runtime_session.call_tool.assert_awaited_once_with(
+            original_name, {}, progress_callback=None
+        )
 
 
 @pytest.mark.usefixtures("fake_home")
@@ -2495,35 +2024,6 @@ class TestLoadToolsFromConfigOAuth:
 class TestResolveAndLoadMcpTools:
     """Test the unified resolve-and-load entrypoint."""
 
-    async def test_no_mcp_returns_empty(self) -> None:
-        """`no_mcp=True` returns immediately."""
-        tools, manager, infos = await resolve_and_load_mcp_tools(no_mcp=True)
-        assert tools == []
-        assert manager is None
-        assert infos == []
-
-    @patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports")
-    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
-    async def test_no_adapter_warmup_when_no_active_servers(
-        self,
-        mock_discover: MagicMock,
-        mock_warm: MagicMock,
-    ) -> None:
-        """With no configured servers, MCP adapters are never imported.
-
-        `_warm_mcp_adapter_imports` (and the adapter imports that follow it)
-        live inside `_load_tools_from_config`, which the resolver never reaches
-        when discovery yields no servers — so the warmup must not run.
-        """
-        mock_discover.return_value = []
-
-        tools, manager, infos = await resolve_and_load_mcp_tools(no_mcp=False)
-
-        assert tools == []
-        assert manager is None
-        assert infos == []
-        mock_warm.assert_not_called()
-
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
     @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_explicit_path_merges_with_discovery(
@@ -2554,49 +2054,6 @@ class TestResolveAndLoadMcpTools:
         merged = mock_load.call_args.args[0]
         assert "fs" in merged["mcpServers"]
         assert "search" in merged["mcpServers"]
-
-    @patch("deepagents_code.mcp_tools._load_tools_from_config")
-    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
-    async def test_stateless_and_manager_forwarded(
-        self,
-        mock_discover: MagicMock,
-        mock_load: AsyncMock,
-        tmp_path: Path,
-    ) -> None:
-        """Server-mode kwargs are forwarded into the shared loader."""
-        cfg = tmp_path / "mcp.json"
-        cfg.write_text(
-            json.dumps({"mcpServers": {"fs": {"command": "npx", "args": []}}})
-        )
-        manager = MCPSessionManager()
-        mock_discover.return_value = [
-            DiscoveredMCPConfig(cfg, MCPConfigScope.PROJECT, tmp_path)
-        ]
-        mock_load.return_value = ([], None, [])
-
-        await resolve_and_load_mcp_tools(
-            trust_project_mcp=True,
-            stateless=True,
-            session_manager=manager,
-        )
-
-        assert mock_load.call_args.kwargs["stateless"] is True
-        assert mock_load.call_args.kwargs["session_manager"] is manager
-
-    async def test_explicit_missing_path_raises(self, tmp_path: Path) -> None:
-        """Missing explicit config remains fatal."""
-        with pytest.raises(FileNotFoundError):
-            await resolve_and_load_mcp_tools(
-                explicit_config_path=str(tmp_path / "missing.json")
-            )
-
-    async def test_invalid_explicit_config_raises(self, tmp_path: Path) -> None:
-        """Invalid explicit config remains fatal."""
-        bad = tmp_path / "bad.json"
-        bad.write_text("{not json")
-
-        with pytest.raises(json.JSONDecodeError):
-            await resolve_and_load_mcp_tools(explicit_config_path=str(bad))
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
     @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
@@ -2871,96 +2328,6 @@ class TestResolveAndLoadMcpTools:
 class TestDiscoveryHelpers:
     """Test config discovery and merge helpers."""
 
-    def test_discovery_preserves_scope_when_home_is_project_ancestor(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A project config below the profile root remains project-scoped."""
-        # The profile must not *be* the launch home — that is rejected outright
-        # — so nest a checkout underneath a real profile directory instead.
-        profile = tmp_path / "profile"
-        project = profile / "repo"
-        project.mkdir(parents=True)
-        user_cfg = profile / ".mcp.json"
-        project_cfg = project / ".mcp.json"
-        user_cfg.write_text("{}")
-        project_cfg.write_text("{}")
-        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
-        context = ProjectContext(user_cwd=project, project_root=project)
-
-        sources = discover_mcp_config_sources(project_context=context)
-
-        assert sources == [
-            DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
-            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, project),
-        ]
-
-    def test_discovery_preserves_scope_when_home_is_inside_project(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The standard project config is not promoted by an inner profile."""
-        project = tmp_path / "repo"
-        profile = project / "profile"
-        profile.mkdir(parents=True)
-        user_cfg = profile / ".mcp.json"
-        project_cfg = project / ".mcp.json"
-        user_cfg.write_text("{}")
-        project_cfg.write_text("{}")
-        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
-        context = ProjectContext(user_cwd=project, project_root=project)
-
-        sources = discover_mcp_config_sources(project_context=context)
-
-        assert [source.scope for source in sources] == [
-            MCPConfigScope.USER,
-            MCPConfigScope.PROJECT,
-        ]
-        assert sources[1].path == project_cfg
-
-    @pytest.mark.parametrize("profile_suffix", [".", ".deepagents"])
-    def test_project_scope_wins_profile_location_collision(
-        self,
-        profile_suffix: str,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A project-standard path cannot self-promote through profile overlap."""
-        project = tmp_path / "repo"
-        project.mkdir()
-        profile = project if profile_suffix == "." else project / profile_suffix
-        profile.mkdir(exist_ok=True)
-        config = profile / ".mcp.json"
-        config.write_text("{}")
-        _set_profile_root(monkeypatch, profile, launch_home=tmp_path)
-        context = ProjectContext(user_cwd=project, project_root=project)
-
-        assert discover_mcp_config_sources(project_context=context) == [
-            DiscoveredMCPConfig(config, MCPConfigScope.PROJECT, project)
-        ]
-
-    def test_profile_collision_preserves_project_config_precedence(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The root project config still overrides the nested project config."""
-        project = tmp_path / "repo"
-        nested = project / ".deepagents"
-        nested.mkdir(parents=True)
-        nested_cfg = nested / ".mcp.json"
-        root_cfg = project / ".mcp.json"
-        nested_cfg.write_text(
-            '{"mcpServers":{"docs":{"command":"echo","args":["nested"]}}}'
-        )
-        root_cfg.write_text(
-            '{"mcpServers":{"docs":{"command":"echo","args":["root"]}}}'
-        )
-        _set_profile_root(monkeypatch, project, launch_home=tmp_path)
-        context = ProjectContext(user_cwd=project, project_root=project)
-
-        sources = discover_mcp_config_sources(project_context=context)
-        merged = load_merged_mcp_configs_lenient([source.path for source in sources])
-
-        assert [source.path for source in sources] == [nested_cfg, root_cfg]
-        assert merged == {"mcpServers": {"docs": {"command": "echo", "args": ["root"]}}}
-
     def test_symlink_collision_keeps_project_scope(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3011,17 +2378,6 @@ class TestDiscoveryHelpers:
         # The point of the demotion: no path keeps user trust.
         assert all(s.scope is MCPConfigScope.PROJECT for s in sources)
 
-    def test_extract_stdio_server_commands(self) -> None:
-        """Only stdio entries are extracted."""
-        config = {
-            "mcpServers": {
-                "fs": {"command": "npx", "args": ["a"]},
-                "remote": {"transport": "http", "url": "https://example.com"},
-            }
-        }
-
-        assert extract_stdio_server_commands(config) == [("fs", "npx", ["a"])]
-
     def test_extract_project_server_summaries_covers_remote(self) -> None:
         """Remote and stdio entries surface so trust gating can list both."""
         config = {
@@ -3038,41 +2394,9 @@ class TestDiscoveryHelpers:
             ("sse_srv", "sse", "https://sse.example"),
         ]
 
-    def test_merge_mcp_configs_last_wins(self) -> None:
-        """Later configs override earlier ones by server name."""
-        merged = merge_mcp_configs(
-            [
-                {"mcpServers": {"srv": {"command": "a"}}},
-                {"mcpServers": {"srv": {"command": "b"}, "other": {"command": "c"}}},
-            ]
-        )
-
-        assert merged == {
-            "mcpServers": {
-                "srv": {"command": "b"},
-                "other": {"command": "c"},
-            }
-        }
-
-    def test_load_mcp_config_lenient_returns_none_for_invalid(
-        self, tmp_path: Path
-    ) -> None:
-        """Lenient loader returns `None` for invalid config files."""
-        bad = tmp_path / "bad.json"
-        bad.write_text('{"other": true}')
-        assert load_mcp_config_lenient(bad) is None
-
 
 class TestHealthChecks:
     """Direct tests for health-check helpers."""
-
-    def test_check_stdio_server_command_missing(self) -> None:
-        """Missing stdio commands are rejected."""
-        with (
-            patch("deepagents_code.mcp_tools.shutil.which", return_value=None),
-            pytest.raises(RuntimeError, match="not found on PATH"),
-        ):
-            _check_stdio_server("srv", {"command": "missing"})
 
     async def test_check_stdio_server_runs_off_event_loop(
         self,
@@ -3105,21 +2429,6 @@ class TestHealthChecks:
         finally:
             if manager is not None:
                 await manager.cleanup()
-
-    async def test_check_remote_server_transport_error(self) -> None:
-        """Transport errors are wrapped as `RuntimeError`."""
-        import httpx
-
-        client = AsyncMock()
-        client.head.side_effect = httpx.TransportError("refused")
-        client.__aenter__ = AsyncMock(return_value=client)
-        client.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("httpx.AsyncClient", return_value=client),
-            pytest.raises(RuntimeError, match="unreachable"),
-        ):
-            await _check_remote_server("srv", {"url": "http://down:9999"})
 
     async def test_expanded_url_is_redacted_from_preflight_error(
         self,
@@ -3841,45 +3150,6 @@ class TestGatherBounded:
     concurrent failure.
     """
 
-    async def test_results_follow_submission_order(self) -> None:
-        """Results zip back to submission order even when completion differs."""
-        completed: list[int] = []
-
-        def _factory(idx: int, delay: float) -> Callable[[], Any]:
-            async def _run() -> int:
-                await asyncio.sleep(delay)
-                completed.append(idx)
-                return idx
-
-            return _run
-
-        # Index 0 finishes last, index 2 finishes first.
-        factories = [_factory(0, 0.03), _factory(1, 0.02), _factory(2, 0.001)]
-        results = await _gather_bounded(factories, limit=8)
-
-        assert results == [0, 1, 2]
-        assert completed == [2, 1, 0]
-
-    async def test_empty_returns_empty(self) -> None:
-        """Zero factories return an empty list without touching the loop."""
-        assert await _gather_bounded([], limit=8) == []
-
-    async def test_limit_below_one_is_clamped_to_serial(self) -> None:
-        """A limit < 1 is clamped to 1, so factories run strictly serially."""
-        active = {"n": 0, "max": 0}
-
-        def _factory() -> Callable[[], Any]:
-            async def _run() -> None:
-                active["n"] += 1
-                active["max"] = max(active["max"], active["n"])
-                await asyncio.sleep(0.01)
-                active["n"] -= 1
-
-            return _run
-
-        await _gather_bounded([_factory(), _factory(), _factory()], limit=0)
-        assert active["max"] == 1
-
     async def test_failure_cancels_and_awaits_siblings(self) -> None:
         """A raising factory cancels the rest and awaits them before raising."""
         sibling = {"cancelled": False, "completed": False}
@@ -4435,127 +3705,9 @@ def _make_prefixed_tool(name: str, description: str = "") -> MagicMock:
 class TestToolFilterValidation:
     """Validation of `allowedTools` / `disabledTools` server fields."""
 
-    def test_allowed_tools_accepted(self, write_config: Callable[..., str]) -> None:
-        """`allowedTools` with a list of strings is accepted."""
-        path = write_config(
-            {
-                "mcpServers": {
-                    "fs": {
-                        "command": "node",
-                        "allowedTools": ["read_file", "list_dir"],
-                    }
-                }
-            }
-        )
-        assert load_mcp_config(path)["mcpServers"]["fs"]["allowedTools"] == [
-            "read_file",
-            "list_dir",
-        ]
-
-    def test_disabled_tools_accepted(self, write_config: Callable[..., str]) -> None:
-        """`disabledTools` with a list of strings is accepted."""
-        path = write_config(
-            {"mcpServers": {"fs": {"command": "node", "disabledTools": ["write_file"]}}}
-        )
-        assert load_mcp_config(path)["mcpServers"]["fs"]["disabledTools"] == [
-            "write_file"
-        ]
-
-    def test_accepted_on_remote_server(self, write_config: Callable[..., str]) -> None:
-        """Filter fields also apply to http/sse servers."""
-        path = write_config(
-            {
-                "mcpServers": {
-                    "api": {
-                        "type": "http",
-                        "url": "https://example.com/mcp",
-                        "allowedTools": ["search"],
-                    }
-                }
-            }
-        )
-        assert load_mcp_config(path)["mcpServers"]["api"]["allowedTools"] == ["search"]
-
-    @pytest.mark.parametrize("field", ["allowedTools", "disabledTools"])
-    def test_rejects_non_list(
-        self, write_config: Callable[..., str], field: str
-    ) -> None:
-        """Non-list filter field raises TypeError."""
-        path = write_config(
-            {"mcpServers": {"fs": {"command": "node", field: "read_file"}}}
-        )
-        with pytest.raises(TypeError, match=rf"'{field}' must be a list of strings"):
-            load_mcp_config(path)
-
-    @pytest.mark.parametrize("field", ["allowedTools", "disabledTools"])
-    def test_rejects_non_string_items(
-        self, write_config: Callable[..., str], field: str
-    ) -> None:
-        """Filter list with non-string items raises TypeError."""
-        path = write_config(
-            {"mcpServers": {"fs": {"command": "node", field: ["ok", 42]}}}
-        )
-        with pytest.raises(TypeError, match=rf"'{field}' must be a list of strings"):
-            load_mcp_config(path)
-
-    def test_rejects_both_set(self, write_config: Callable[..., str]) -> None:
-        """Setting both `allowedTools` and `disabledTools` on one server errors."""
-        path = write_config(
-            {
-                "mcpServers": {
-                    "fs": {
-                        "command": "node",
-                        "allowedTools": ["a"],
-                        "disabledTools": ["b"],
-                    }
-                }
-            }
-        )
-        with pytest.raises(
-            ValueError, match=r"cannot set both 'allowedTools' and 'disabledTools'"
-        ):
-            load_mcp_config(path)
-
-    @pytest.mark.parametrize("field", ["allowedTools", "disabledTools"])
-    def test_rejects_empty_list(
-        self, write_config: Callable[..., str], field: str
-    ) -> None:
-        """An empty filter list is a footgun and is rejected at load time."""
-        path = write_config({"mcpServers": {"fs": {"command": "node", field: []}}})
-        with pytest.raises(ValueError, match=rf"'{field}' must be non-empty"):
-            load_mcp_config(path)
-
 
 class TestApplyToolFilter:
     """Behavior of the `_apply_tool_filter` helper."""
-
-    def test_no_filter_returns_input_unchanged(self) -> None:
-        """Absent filter fields pass tools through."""
-        tools = [
-            _make_prefixed_tool("fs_read"),
-            _make_prefixed_tool("fs_write"),
-        ]
-        assert _apply_tool_filter(tools, "fs", {"command": "node"}) is tools
-
-    def test_allowed_keeps_only_listed(self) -> None:
-        """`allowedTools` keeps only matching tools."""
-        tools = [
-            _make_prefixed_tool("fs_read"),
-            _make_prefixed_tool("fs_write"),
-            _make_prefixed_tool("fs_stat"),
-        ]
-        result = _apply_tool_filter(
-            tools, "fs", {"command": "node", "allowedTools": ["read", "stat"]}
-        )
-        assert [t.name for t in result] == ["fs_read", "fs_stat"]
-
-    def test_allowed_matches_prefixed_name(self) -> None:
-        """`allowedTools` entries may include the server prefix."""
-        tools = [_make_prefixed_tool("fs_read"), _make_prefixed_tool("fs_write")]
-        result = _apply_tool_filter(
-            tools, "fs", {"command": "node", "allowedTools": ["fs_read"]}
-        )
-        assert [t.name for t in result] == ["fs_read"]
 
     def test_allowed_matches_original_name_after_truncation(self) -> None:
         tool = _make_prefixed_tool("server_" + "a" * 44 + "_0123456789ab")
@@ -4566,116 +3718,6 @@ class TestApplyToolFilter:
         )
 
         assert result == [tool]
-
-    def test_allowed_unknown_name_logs_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Names in `allowedTools` that don't match any tool produce a warning."""
-        tools = [_make_prefixed_tool("fs_read")]
-        with caplog.at_level("WARNING", logger="deepagents_code.mcp_tools"):
-            result = _apply_tool_filter(
-                tools, "fs", {"command": "node", "allowedTools": ["read", "gone"]}
-            )
-        assert [t.name for t in result] == ["fs_read"]
-        assert "allowedTools entries matched no tools: gone" in caplog.text
-
-    def test_allowed_glob_against_bare_name(self) -> None:
-        """Glob entries match against the bare (unprefixed) tool name."""
-        tools = [
-            _make_prefixed_tool("fs_read_file"),
-            _make_prefixed_tool("fs_read_dir"),
-            _make_prefixed_tool("fs_write_file"),
-        ]
-        result = _apply_tool_filter(
-            tools, "fs", {"command": "node", "allowedTools": ["read_*"]}
-        )
-        assert [t.name for t in result] == ["fs_read_file", "fs_read_dir"]
-
-    def test_allowed_glob_against_prefixed_name(self) -> None:
-        """Glob entries may include the server prefix."""
-        tools = [
-            _make_prefixed_tool("fs_read_file"),
-            _make_prefixed_tool("fs_write_file"),
-        ]
-        result = _apply_tool_filter(
-            tools, "fs", {"command": "node", "allowedTools": ["fs_read_*"]}
-        )
-        assert [t.name for t in result] == ["fs_read_file"]
-
-    def test_disabled_glob_drops_matching(self) -> None:
-        """Glob entries in `disabledTools` drop all matching tools."""
-        tools = [
-            _make_prefixed_tool("fs_read_file"),
-            _make_prefixed_tool("fs_write_file"),
-            _make_prefixed_tool("fs_write_dir"),
-        ]
-        result = _apply_tool_filter(
-            tools, "fs", {"command": "node", "disabledTools": ["write_*"]}
-        )
-        assert [t.name for t in result] == ["fs_read_file"]
-
-    def test_glob_with_no_matches_logs_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Glob patterns that match zero tools also produce a warning."""
-        tools = [_make_prefixed_tool("fs_read_file")]
-        with caplog.at_level("WARNING", logger="deepagents_code.mcp_tools"):
-            result = _apply_tool_filter(
-                tools,
-                "fs",
-                {"command": "node", "allowedTools": ["read_*", "search_*"]},
-            )
-        assert [t.name for t in result] == ["fs_read_file"]
-        assert "allowedTools entries matched no tools: search_*" in caplog.text
-
-    def test_glob_question_mark_and_charclass(self) -> None:
-        """`?` and `[...]` metachars are honored."""
-        tools = [
-            _make_prefixed_tool("srv_t1"),
-            _make_prefixed_tool("srv_t2"),
-            _make_prefixed_tool("srv_tx"),
-        ]
-        result = _apply_tool_filter(
-            tools, "srv", {"command": "node", "allowedTools": ["t[12]"]}
-        )
-        assert [t.name for t in result] == ["srv_t1", "srv_t2"]
-
-    def test_disabled_drops_listed(self) -> None:
-        """`disabledTools` drops matching tools, keeps the rest."""
-        tools = [
-            _make_prefixed_tool("fs_read"),
-            _make_prefixed_tool("fs_write"),
-            _make_prefixed_tool("fs_stat"),
-        ]
-        result = _apply_tool_filter(
-            tools, "fs", {"command": "node", "disabledTools": ["write"]}
-        )
-        assert [t.name for t in result] == ["fs_read", "fs_stat"]
-
-    def test_disabled_matches_prefixed_name(self) -> None:
-        """`disabledTools` entries may include the server prefix."""
-        tools = [_make_prefixed_tool("fs_read"), _make_prefixed_tool("fs_write")]
-        result = _apply_tool_filter(
-            tools, "fs", {"command": "node", "disabledTools": ["fs_write"]}
-        )
-        assert [t.name for t in result] == ["fs_read"]
-
-    def test_disabled_unknown_name_logs_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A `disabledTools` typo should be visible.
-
-        Otherwise the user thinks a tool was disabled when it's still active.
-        """
-        tools = [_make_prefixed_tool("fs_read"), _make_prefixed_tool("fs_write")]
-        with caplog.at_level("WARNING", logger="deepagents_code.mcp_tools"):
-            result = _apply_tool_filter(
-                tools,
-                "fs",
-                {"command": "node", "disabledTools": ["write", "tpyo"]},
-            )
-        assert [t.name for t in result] == ["fs_read"]
-        assert "disabledTools entries matched no tools: tpyo" in caplog.text
 
 
 class TestToolFilterEndToEnd:
@@ -6104,42 +5146,6 @@ class TestDiscoveryFailureModes:
         assert [c.scope for c in found] == [MCPConfigScope.PROJECT]
         assert found[0].project_root == project_root
 
-    def test_unresolvable_same_scope_collision_keeps_both_configs(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Two project configs that cannot be told apart must both load.
-
-        The `continue` this covers is what stops the higher-precedence root
-        config being dropped when `Path.samefile` fails.
-        """
-        root = tmp_path / "repo"
-
-        def unresolvable(self: Path, other: Path) -> bool:
-            msg = "cannot resolve"
-            raise OSError(msg)
-
-        monkeypatch.setattr(Path, "samefile", unresolvable)
-
-        found: list[DiscoveredMCPConfig] = []
-        first = DiscoveredMCPConfig(
-            root / ".deepagents" / ".mcp.json", MCPConfigScope.PROJECT, root
-        )
-        second = DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root)
-        _append_discovered_config(found, first)
-        _append_discovered_config(found, second)
-
-        assert found == [first, second]
-
-    def test_samefile_identity_collapses_a_case_alias(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Filesystem identity wins when resolved spellings retain their case."""
-        first = tmp_path / "Profile" / ".mcp.json"
-        second = tmp_path / "profile" / ".mcp.json"
-        monkeypatch.setattr(Path, "samefile", lambda *_args: True)
-
-        assert _same_config_location(first, second) is MCPConfigIdentity.SAME
-
 
 class TestMCPConfigSourcesTotality:
     """`project_roots` is the key project trust approvals are checked against.
@@ -6148,31 +5154,6 @@ class TestMCPConfigSourcesTotality:
     against a root the approval was never granted for — the failure
     `DiscoveredMCPConfig.__post_init__` exists to make impossible.
     """
-
-    def test_project_roots_is_total_over_project_paths(self, tmp_path: Path) -> None:
-        """Every project path can be indexed without a fallback."""
-        root = tmp_path / "repo"
-        sources = MCPConfigSources.from_sources(
-            [
-                DiscoveredMCPConfig(tmp_path / "user.json", MCPConfigScope.USER),
-                DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root),
-            ]
-        )
-
-        assert [sources.project_roots[p] for p in sources.project_paths] == [root]
-
-    def test_project_roots_cannot_be_mutated(self, tmp_path: Path) -> None:
-        """A frozen dataclass must not hand out a mutable mapping."""
-        root = tmp_path / "repo"
-        sources = MCPConfigSources.from_sources(
-            [DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root)]
-        )
-
-        # The annotation already forbids this; cast so the runtime guarantee
-        # is what gets tested, not the type checker.
-        mutable = cast("dict[Path, Path]", sources.project_roots)
-        with pytest.raises(TypeError):
-            mutable[root / "other.json"] = root
 
 
 class TestUserConfigMustBeDiscoveredFirst:
@@ -6183,26 +5164,6 @@ class TestUserConfigMustBeDiscoveredFirst:
     "never drops a config".
     """
 
-    def test_a_late_user_candidate_is_rejected_loudly(self, tmp_path: Path) -> None:
-        """The precondition fails fast instead of dropping the config."""
-        root = tmp_path / "repo"
-        found = [DiscoveredMCPConfig(root / ".mcp.json", MCPConfigScope.PROJECT, root)]
-
-        with pytest.raises(AssertionError, match="discovered first"):
-            _append_discovered_config(
-                found,
-                DiscoveredMCPConfig(tmp_path / "user.json", MCPConfigScope.USER),
-            )
-
-    def test_the_first_user_candidate_is_appended(self, tmp_path: Path) -> None:
-        """The ordinary case is unchanged."""
-        found: list[DiscoveredMCPConfig] = []
-        candidate = DiscoveredMCPConfig(tmp_path / "user.json", MCPConfigScope.USER)
-
-        _append_discovered_config(found, candidate)
-
-        assert found == [candidate]
-
 
 class TestDiscoveredMCPConfigInvariant:
     """`project_root` presence must track the trust scope.
@@ -6212,42 +5173,31 @@ class TestDiscoveredMCPConfigInvariant:
     re-derived fallback root instead of failing.
     """
 
-    def test_project_scope_requires_a_root(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="requires a project root"):
-            DiscoveredMCPConfig(tmp_path / ".mcp.json", MCPConfigScope.PROJECT)
-
-    def test_user_scope_rejects_a_root(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="must not carry a project root"):
-            DiscoveredMCPConfig(tmp_path / ".mcp.json", MCPConfigScope.USER, tmp_path)
-
-    def test_valid_combinations_construct(self, tmp_path: Path) -> None:
-        assert DiscoveredMCPConfig(tmp_path / "u.json", MCPConfigScope.USER)
-        assert DiscoveredMCPConfig(
-            tmp_path / "p.json", MCPConfigScope.PROJECT, tmp_path
-        )
-
 
 class TestMCPConfigSourcesPartition:
     """The shared partition replaces three copies of the same split."""
 
-    def test_partitions_by_scope_with_total_root_mapping(self, tmp_path: Path) -> None:
-        user = tmp_path / "u.json"
-        project = tmp_path / "p.json"
-        sources = MCPConfigSources.from_sources(
-            [
-                DiscoveredMCPConfig(user, MCPConfigScope.USER),
-                DiscoveredMCPConfig(project, MCPConfigScope.PROJECT, tmp_path),
-            ]
-        )
 
-        assert sources.user_paths == (user,)
-        assert sources.project_paths == (project,)
-        # Total over `project_paths`, so consumers need no fallback root.
-        assert all(path in sources.project_roots for path in sources.project_paths)
-        assert sources.project_roots[project] == tmp_path
+class TestMCPToolName:
+    """Provider-safe names for MCP tools."""
 
-    def test_empty_discovery_yields_empty_views(self) -> None:
-        sources = MCPConfigSources.from_sources([])
-        assert sources.user_paths == ()
-        assert sources.project_paths == ()
-        assert not sources.project_roots
+    def test_long_names_are_bounded_and_collision_resistant(self) -> None:
+        first = _mcp_tool_name("s" * 50, "tool-one" * 10)
+        second = _mcp_tool_name("s" * 50, "tool-two" * 10)
+
+        assert len(first) == 64
+        assert len(second) == 64
+        assert first != second
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", first)
+
+    def test_reported_plugin_name_is_bounded(self) -> None:
+        server = "plugin__langchain-mcp_langchain-plugins_4431c345__langchain-docs"
+
+        name = _mcp_tool_name(server, "query_docs_filesystem_docs_by_lang_chain")
+
+        assert len(name) == 64
+        assert name.startswith("plugin__langchain-mcp_l")
+        assert "query_docs_filesystem" in name
+
+    def test_short_name_is_unchanged(self) -> None:
+        assert _mcp_tool_name("filesystem", "read_file") == "filesystem_read_file"

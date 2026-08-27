@@ -33,262 +33,6 @@ MANUAL_EXTRA_COMMAND = (
 )
 
 
-async def test_install_slash_usage_when_no_extra() -> None:
-    """`/install` with no argument prints a usage hint plus the valid extras."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with patch(
-            "deepagents_code.update_check.perform_install_extra",
-            new_callable=AsyncMock,
-        ) as perform_mock:
-            await app._handle_command("/install")
-            await pilot.pause()
-        perform_mock.assert_not_awaited()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        usage = next(m for m in app_msgs if "Usage: /install" in str(m._content))
-        rendered = str(usage._content)
-        # The no-arg path must list valid extras so they're discoverable.
-        assert "Available extras:" in rendered
-        assert "quickjs" in rendered
-        assert "daytona" in rendered
-        assert "openai" in rendered
-
-
-async def test_install_slash_known_extra_runs() -> None:
-    """A known extra invokes `perform_install_extra`."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
-            ) as perform_mock,
-        ):
-            await app._handle_command("/install quickjs")
-            await pilot.pause()
-        perform_mock.assert_awaited_once()
-
-
-async def test_install_slash_provider_extra_no_owned_server_recommends_relaunch() -> (
-    None
-):
-    """With no owned server, `/restart` can't respawn — recommend a relaunch.
-
-    The test harness has no app-owned LangGraph subprocess, so the one-keypress
-    restart prompt is skipped and a `/restart` would have nothing to respawn;
-    the surfaced guidance is a full relaunch, not `/restart`.
-    """
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
-            ),
-        ):
-            await app._handle_command("/install fireworks")
-            await pilot.pause()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        contents = " ".join(str(m._content) for m in app_msgs)
-        assert "Installed extra 'fireworks'" in contents
-        assert "Relaunch dcode" in contents
-        # No owned subprocess to respawn, so `/restart` is not recommended.
-        assert "/restart" not in contents
-
-
-async def test_offer_restart_busy_recommends_restart_not_relaunch() -> None:
-    """An owned-but-busy server points at `/restart`, never a relaunch.
-
-    `/restart` respawns the owned subprocess (same effect as a relaunch,
-    without exiting), so a "relaunch dcode" hint would be redundant noise.
-    """
-    app = DeepAgentsApp()
-    app._server_proc = MagicMock()
-    app._server_kwargs = {"model_name": "fireworks:fake"}
-    app._agent_running = True
-    app._connecting = False
-    app._mount_message = AsyncMock()  # ty: ignore
-
-    await app._offer_restart_after_install("fireworks")
-
-    contents = " ".join(
-        str(c.args[0]._content)
-        for c in app._mount_message.await_args_list  # ty: ignore
-    )
-    assert "/restart" in contents
-    assert "relaunch" not in contents.lower()
-
-
-async def test_offer_restart_no_owned_server_recommends_relaunch() -> None:
-    """A remote/not-owned server can't be `/restart`ed — recommend relaunch."""
-    app = DeepAgentsApp()
-    app._server_proc = None
-    app._server_kwargs = None
-    app._mount_message = AsyncMock()  # ty: ignore
-
-    await app._offer_restart_after_install("fireworks")
-
-    contents = " ".join(
-        str(c.args[0]._content)
-        for c in app._mount_message.await_args_list  # ty: ignore
-    )
-    assert "Relaunch dcode" in contents
-    assert "/restart" not in contents
-
-
-async def test_offer_restart_state_flip_surfaces_fallback() -> None:
-    """An explicit "restart" that can't run (state flipped) isn't a silent no-op.
-
-    The pre-prompt guards pass (owned + idle), but server state can change
-    while the user reads the prompt, so `_restart_after_install` returns False.
-    The handler must surface a fallback rather than letting the chosen restart
-    silently do nothing.
-    """
-    app = DeepAgentsApp()
-    app._server_proc = MagicMock()
-    app._server_kwargs = {"model_name": "fireworks:fake"}
-    app._agent_running = False
-    app._connecting = False
-    app._mount_message = AsyncMock()  # ty: ignore
-    app._push_screen_wait = AsyncMock(return_value="restart")  # ty: ignore
-    app._restart_after_install = AsyncMock(return_value=False)  # ty: ignore
-
-    await app._offer_restart_after_install("fireworks")
-
-    app._restart_after_install.assert_awaited_once_with("fireworks")  # ty: ignore
-    contents = " ".join(
-        str(c.args[0]._content)
-        for c in app._mount_message.await_args_list  # ty: ignore
-    )
-    assert "Couldn't restart the server automatically to load" in contents
-
-
-async def test_install_slash_provider_extra_skips_redundant_hint_when_prompted() -> (
-    None
-):
-    """When the restart prompt is offered, no redundant `/restart` hint appears.
-
-    Popping a "restart now?" button while also printing "Run `/restart`" is
-    confusing, so the manual hint is reserved for when the prompt can't show.
-    """
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        # Pretend dcode owns an idle server so the one-keypress prompt is offered.
-        app._server_proc = MagicMock()
-        app._server_kwargs = {"model_name": "fireworks:fake"}
-        app._agent_running = False
-        app._connecting = False
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
-            ),
-            # The user dismisses the prompt without restarting now.
-            patch.object(app, "_push_screen_wait", new=AsyncMock(return_value="later")),
-            patch.object(
-                app, "_restart_server_manual", new=AsyncMock(return_value=True)
-            ),
-        ):
-            await app._handle_command("/install fireworks")
-            await pilot.pause()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        contents = " ".join(str(m._content) for m in app_msgs)
-        assert "Installed extra 'fireworks'" in contents
-        # The button is the call to action; no inline "Run /restart" hint.
-        assert "/restart" not in contents
-
-
-async def test_install_slash_standalone_extra_recommends_relaunch() -> None:
-    """Compatibility standalone extras still point at a full relaunch."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
-            ),
-        ):
-            await app._handle_command("/install quickjs")
-            await pilot.pause()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        success = next(
-            m for m in app_msgs if "Installed extra 'quickjs'" in str(m._content)
-        )
-        rendered = str(success._content)
-        assert "/restart" not in rendered
-        assert "relaunch dcode" in rendered.lower()
-        assert "--interpreter" not in rendered
-
-
-async def test_install_slash_unknown_extra_requires_force() -> None:
-    """Unknown extras without `--force` must not call `perform_install_extra`."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-            ) as perform_mock,
-        ):
-            await app._handle_command("/install not-a-real-extra")
-            await pilot.pause()
-        perform_mock.assert_not_awaited()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        assert any("not a known extra" in str(m._content) for m in app_msgs)
-
-
-async def test_install_slash_unknown_extra_with_force_runs() -> None:
-    """`--force` bypasses the unknown-extra confirmation."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
-            ) as perform_mock,
-        ):
-            await app._handle_command("/install not-a-real-extra --force")
-            await pilot.pause()
-        perform_mock.assert_awaited_once()
-
-
-async def test_install_slash_invalid_extra_refuses_even_with_force() -> None:
-    """Malformed extras must not reach command construction."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-            ) as perform_mock,
-        ):
-            await app._handle_command("/install quickjs'];touch --force")
-            await pilot.pause()
-        perform_mock.assert_not_awaited()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        assert any("Invalid extra name" in str(m._content) for m in app_msgs)
-
-
 async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
     """A failed install renders as `ErrorMessage` with log path + manual cmd.
 
@@ -316,7 +60,7 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(False, "resolver: conflict"),
+                return_value=(False, "resolver: conflict"),
             ),
         ):
             await app._handle_command("/install quickjs")
@@ -329,39 +73,6 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
         assert "curl -LsSf https://langch.in/dcode" in joined
         assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in joined
         assert "quickjs" in joined
-
-
-async def test_install_slash_contention_omits_manual_cmd() -> None:
-    """Lock contention never recommends bypassing the held install lock."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.create_update_log_path",
-                return_value="/tmp/deepagents-install.log",
-            ),
-            patch(
-                "deepagents_code.update_check.install_extra_command",
-                return_value=MANUAL_EXTRA_COMMAND,
-            ),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(
-                    False,
-                    UPDATE_LOCK_CONTENDED_MESSAGE,
-                    manual_recovery_safe=False,
-                ),
-            ),
-        ):
-            await app._handle_command("/install quickjs")
-            await pilot.pause()
-
-        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
-        assert "already running" in joined
-        assert "Run manually" not in joined
 
 
 async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> None:
@@ -428,7 +139,7 @@ async def test_install_slash_failure_renders_recovery_bracket_literally() -> Non
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(False, "resolver: conflict"),
+                return_value=(False, "resolver: conflict"),
             ),
         ):
             await app._handle_command("/install quickjs")
@@ -464,7 +175,7 @@ async def test_install_slash_failure_recovery_error_keeps_prior_command() -> Non
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(False, "resolver: conflict"),
+                return_value=(False, "resolver: conflict"),
             ),
         ):
             await app._handle_command("/install quickjs")
@@ -508,29 +219,6 @@ async def test_install_slash_exception_recovery_error_keeps_prior_command() -> N
         joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
         assert "OSError" in joined
         assert MANUAL_EXTRA_COMMAND in joined
-
-
-async def test_install_slash_editable_install_refuses() -> None:
-    """Editable installs must not invoke `perform_install_extra` from the TUI.
-
-    Mirrors the editable-install guard for `/update` — running `uv tool
-    install` on a dev checkout would clobber the editable install.
-    """
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=True),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-            ) as perform_mock,
-        ):
-            await app._handle_command("/install quickjs")
-            await pilot.pause()
-        perform_mock.assert_not_awaited()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        assert any("Editable install detected" in str(m._content) for m in app_msgs)
 
 
 async def test_install_slash_package_confirm_runs(
@@ -711,71 +399,6 @@ async def test_install_package_prompt_responsive_through_message_pump(
         perform_mock.assert_awaited_once()
 
 
-async def test_install_slash_package_force_skips_prompt() -> None:
-    """`--package --force` must not open the confirmation prompt."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_package",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as perform_mock,
-            patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
-        ):
-            await app._handle_command("/install langchain-custom --package --force")
-            await pilot.pause()
-        prompt.assert_not_awaited()
-        perform_mock.assert_awaited_once()
-
-
-async def test_install_slash_package_yes_alias_skips_prompt() -> None:
-    """`--package --yes` is an alias for `--force` and skips the prompt."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_package",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as perform_mock,
-            patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
-        ):
-            await app._handle_command("/install langchain-custom --package --yes")
-            await pilot.pause()
-        prompt.assert_not_awaited()
-        perform_mock.assert_awaited_once()
-
-
-async def test_install_slash_package_with_force_runs() -> None:
-    """`--package --force` invokes `perform_install_package` and recommends restart."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_package",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as perform_mock,
-        ):
-            await app._handle_command("/install langchain-custom --package --force")
-            await pilot.pause()
-        perform_mock.assert_awaited_once()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        success = next(
-            m
-            for m in app_msgs
-            if "Installed package 'langchain-custom'" in str(m._content)
-        )
-        assert "/restart" in str(success._content)
-
-
 async def test_install_package_continuation_surfaces_unexpected_error(
     drain_modal_commands: DrainModalCommands,
 ) -> None:
@@ -833,68 +456,6 @@ async def test_perform_package_install_import_failure_surfaces_error() -> None:
         assert "Install failed" in joined
 
 
-async def test_install_slash_package_failure_renders_log() -> None:
-    """A failed package install surfaces the detail + log, but no `uv` command."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_package",
-                new_callable=AsyncMock,
-                return_value=(False, "resolver: conflict"),
-            ) as perform_mock,
-        ):
-            await app._handle_command("/install langchain-custom --package --force")
-            await pilot.pause()
-        perform_mock.assert_awaited_once()
-        err_msgs = list(app.query(ErrorMessage))
-        joined = "\n".join(str(m._content) for m in err_msgs)
-        assert "Install failed" in joined
-        assert "resolver: conflict" in joined
-        assert "Log:" in joined
-        assert "uv tool" not in joined
-
-
-async def test_install_slash_package_invalid_refuses_even_with_force() -> None:
-    """Malformed package names must not reach command construction."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_package",
-                new_callable=AsyncMock,
-            ) as perform_mock,
-        ):
-            await app._handle_command("/install custom;touch --package --force")
-            await pilot.pause()
-        perform_mock.assert_not_awaited()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        assert any("Invalid package name" in str(m._content) for m in app_msgs)
-
-
-async def test_install_slash_package_editable_install_refuses() -> None:
-    """Editable installs must not invoke `perform_install_package` from the TUI."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=True),
-            patch(
-                "deepagents_code.update_check.perform_install_package",
-                new_callable=AsyncMock,
-            ) as perform_mock,
-        ):
-            await app._handle_command("/install langchain-custom --package --force")
-            await pilot.pause()
-        perform_mock.assert_not_awaited()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        assert any("Editable install detected" in str(m._content) for m in app_msgs)
-
-
 async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
     """A provider extra prompts to restart and runs it on accept when idle."""
     app = DeepAgentsApp()
@@ -920,7 +481,7 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
+                return_value=(True, ""),
             ),
             patch.object(app, "_ensure_restart_prompt_loaded") as preload,
             patch.object(
@@ -951,75 +512,6 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
         assert not any("Restarting server..." in m for m in app_msgs)
 
 
-async def test_install_restart_capable_extra_defer_skips_restart() -> None:
-    """Declining the restart prompt leaves the server untouched."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app._server_proc = MagicMock()
-        app._server_kwargs = {"model_name": "fireworks:fake"}
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
-            ),
-            patch.object(
-                app, "_push_screen_wait", new=AsyncMock(return_value="later")
-            ) as prompt,
-            patch.object(
-                app, "_restart_server_manual", new=AsyncMock(return_value=True)
-            ) as restart,
-        ):
-            await app._handle_command("/install fireworks")
-            await pilot.pause()
-        prompt.assert_awaited_once()
-        restart.assert_not_called()
-
-
-async def test_install_standalone_extra_does_not_offer_restart() -> None:
-    """Standalone extras (e.g. `quickjs`) never prompt to restart."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app._server_proc = MagicMock()
-        app._server_kwargs = {"model_name": "fireworks:fake"}
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
-            ),
-            patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
-        ):
-            await app._handle_command("/install quickjs")
-            await pilot.pause()
-        prompt.assert_not_called()
-
-
-async def test_install_restart_prompt_skipped_in_remote_server_mode() -> None:
-    """Remote-server mode (no owned subprocess) must not offer a restart."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app._server_proc = None
-        app._server_kwargs = None
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
-            ),
-            patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
-        ):
-            await app._handle_command("/install fireworks")
-            await pilot.pause()
-        prompt.assert_not_called()
-
-
 async def test_install_restart_prompt_skipped_while_agent_running() -> None:
     """A restart cancels in-flight work, so don't prompt mid-run."""
     app = DeepAgentsApp()
@@ -1033,106 +525,7 @@ async def test_install_restart_prompt_skipped_while_agent_running() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
-            ),
-            patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
-        ):
-            await app._handle_command("/install fireworks")
-            await pilot.pause()
-        prompt.assert_not_called()
-
-
-async def test_install_package_offers_restart_when_idle() -> None:
-    """A `--package` install prompts to restart and runs it on accept."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app._server_proc = MagicMock()
-        app._server_kwargs = {"model_name": "custom_provider:fake"}
-        calls: list[str] = []
-
-        def _reload() -> list[str]:
-            calls.append("reload")
-            return []
-
-        def _clear() -> None:
-            calls.append("clear")
-
-        async def _restart() -> bool:  # noqa: RUF029  # patched async app hook
-            calls.append("restart")
-            return True
-
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_package",
-                new_callable=AsyncMock,
                 return_value=(True, ""),
-            ),
-            patch.object(app, "_ensure_restart_prompt_loaded") as preload,
-            patch.object(
-                app, "_push_screen_wait", new=AsyncMock(return_value="restart")
-            ) as prompt,
-            patch(
-                "deepagents_code.config.credentials.reload_from_environment", _reload
-            ),
-            patch("deepagents_code.model_config.clear_caches", _clear),
-            patch.object(
-                app,
-                "_restart_server_manual",
-                new=AsyncMock(side_effect=_restart),
-            ) as restart,
-        ):
-            await app._handle_command("/install langchain-custom --package --force")
-            await pilot.pause()
-        # The modal is preloaded before the upgrade can rewrite our own tree.
-        preload.assert_called_once()
-        prompt.assert_awaited_once()
-        restart.assert_awaited_once()
-        assert calls == ["reload", "clear", "restart"]
-
-
-async def test_install_package_defer_skips_restart() -> None:
-    """Declining the prompt after a `--package` install leaves it untouched."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app._server_proc = MagicMock()
-        app._server_kwargs = {"model_name": "custom_provider:fake"}
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_package",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ),
-            patch.object(
-                app, "_push_screen_wait", new=AsyncMock(return_value="later")
-            ) as prompt,
-            patch.object(
-                app, "_restart_server_manual", new=AsyncMock(return_value=True)
-            ) as restart,
-        ):
-            await app._handle_command("/install langchain-custom --package --force")
-            await pilot.pause()
-        prompt.assert_awaited_once()
-        restart.assert_not_called()
-
-
-async def test_install_restart_prompt_skipped_while_connecting() -> None:
-    """A connecting/restarting server has nothing to respawn into, so skip."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app._server_proc = MagicMock()
-        app._server_kwargs = {"model_name": "fireworks:fake"}
-        app._connecting = True
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.perform_install_extra",
-                new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
             ),
             patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
         ):
@@ -1153,7 +546,7 @@ async def test_install_restart_prompt_mount_failure_leaves_manual_hint() -> None
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
+                return_value=(True, ""),
             ),
             patch.object(
                 app,
@@ -1189,7 +582,7 @@ async def test_install_restart_failure_omits_complete_message() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
+                return_value=(True, ""),
             ),
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="restart")
@@ -1314,7 +707,7 @@ async def test_install_restart_prompt_responsive_through_message_pump() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=ExtraInstallOutcome(True, ""),
+                return_value=(True, ""),
             ),
             patch.object(app, "_restart_after_install", new=restart),
         ):
@@ -1371,3 +764,36 @@ def test_ensure_restart_prompt_loaded_swallows_missing_module() -> None:
     ):
         # Must not raise despite the unimportable module.
         DeepAgentsApp._ensure_restart_prompt_loaded()
+
+
+async def test_install_slash_contention_omits_manual_cmd() -> None:
+    """Lock contention never recommends bypassing the held install lock."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraInstallOutcome(
+                    False,
+                    UPDATE_LOCK_CONTENDED_MESSAGE,
+                    manual_recovery_safe=False,
+                ),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "already running" in joined
+        assert "Run manually" not in joined

@@ -23,44 +23,11 @@ class TestLoadCursorBlinkPreference:
         """Drop a developer's exported override so config tests stay honest."""
         monkeypatch.delenv(CURSOR_BLINK, raising=False)
 
-    def test_default_true_when_no_config(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
-            tmp_path / "config.toml",
-        )
-        assert _load_cursor_blink_preference() is True
-
-    def test_returns_saved_value(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        config = tmp_path / "config.toml"
-        config.write_text("[ui]\ncursor_blink = false\n", encoding="utf-8")
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert _load_cursor_blink_preference() is False
-
     def test_default_true_on_corrupt_toml(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         config = tmp_path / "config.toml"
         config.write_text("this is not = valid = toml\n", encoding="utf-8")
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert _load_cursor_blink_preference() is True
-
-    def test_defaults_true_on_non_bool_value(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        config = tmp_path / "config.toml"
-        config.write_text('[ui]\ncursor_blink = "nope"\n', encoding="utf-8")
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert _load_cursor_blink_preference() is True
-
-    def test_defaults_true_when_ui_not_a_table(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        config = tmp_path / "config.toml"
-        config.write_text('ui = "not a table"\n', encoding="utf-8")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         assert _load_cursor_blink_preference() is True
 

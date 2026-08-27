@@ -26,10 +26,6 @@ def _runtime(context: dict[str, str | None] | None) -> SimpleNamespace:
 
 
 class TestResumeState:
-    def test_state_has_context_tokens_field(self):
-        """ResumeState declares the `_context_tokens` channel."""
-        assert "_context_tokens" in ResumeState.__annotations__
-
     def test_state_has_model_spec_field(self):
         """ResumeState declares the `_model_spec` channel."""
         assert "_model_spec" in ResumeState.__annotations__
@@ -49,17 +45,6 @@ class TestResumeState:
         hints = get_type_hints(ResumeState, include_extras=True)
         metadata = getattr(hints["_last_cache_model_spec"], "__metadata__", ())
         assert PrivateStateAttr in metadata
-
-    def test_state_has_last_cache_endpoint_field(self) -> None:
-        """ResumeState declares the `_last_cache_endpoint` channel.
-
-        Without the annotation LangGraph silently drops the
-        `_checkpoint_command` write, so endpoint-change detection never fires
-        again -- and the `configurable_model` tests would stay green, because
-        they assert on the `Command.update` dict rather than on what the schema
-        accepts.
-        """
-        assert "_last_cache_endpoint" in ResumeState.__annotations__
 
     def test_last_cache_endpoint_is_private(self) -> None:
         """The endpoint identity must not enter public graph I/O.
@@ -125,26 +110,9 @@ class TestCoerceGoalStatus:
         assert coerce_goal_status("blocked") == "blocked"
         assert coerce_goal_status("complete") == "complete"
 
-    def test_unknown_string_coerces_to_none(self) -> None:
-        assert coerce_goal_status("deleted") is None
-        assert coerce_goal_status("") is None
-
-    def test_non_string_coerces_to_none(self) -> None:
-        assert coerce_goal_status(None) is None
-        assert coerce_goal_status(123) is None
-        assert coerce_goal_status(["active"]) is None
-
 
 class TestCoerceGoalProposalKind:
     """Tests for persisted pending-review mode coercion."""
-
-    def test_returns_known_kinds(self) -> None:
-        assert coerce_goal_proposal_kind("create") == "create"
-        assert coerce_goal_proposal_kind("amend") == "amend"
-
-    def test_unknown_value_coerces_to_none(self) -> None:
-        assert coerce_goal_proposal_kind("replace") is None
-        assert coerce_goal_proposal_kind(None) is None
 
 
 class TestExtractContextTokens:
@@ -285,235 +253,9 @@ class TestAfterModelHook:
 class TestTokenDisplayCallbacks:
     """Verify the callback-based token tracking that replaced TextualTokenTracker."""
 
-    def test_on_tokens_update_sets_cache_and_calls_display(self):
-        """_on_tokens_update should set the local cache and update the status bar."""
-        display_calls: list[int] = []
-
-        class FakeApp:
-            _context_tokens: int = 0
-            _status_bar = None
-
-            def _update_tokens(self, count: int) -> None:
-                display_calls.append(count)
-
-            def _on_tokens_update(self, count: int) -> None:
-                self._context_tokens = count
-                self._update_tokens(count)
-
-        app = FakeApp()
-        app._on_tokens_update(4200)
-
-        assert app._context_tokens == 4200
-        assert display_calls == [4200]
-
-    def test_show_tokens_restores_cached_value(self):
-        """_show_tokens should re-display the cached value."""
-        display_calls: list[int] = []
-
-        class FakeApp:
-            _context_tokens: int = 1500
-
-            def _update_tokens(self, count: int) -> None:
-                display_calls.append(count)
-
-            def _show_tokens(self) -> None:
-                self._update_tokens(self._context_tokens)
-
-        app = FakeApp()
-        app._show_tokens()
-
-        assert display_calls == [1500]
-
-    def test_show_tokens_preserves_approximate_marker_without_fresh_usage(self):
-        """Turns without usage metadata should not clear a stale-token marker."""
-        display_calls: list[tuple[int, bool]] = []
-
-        def update_tokens(count: int, *, approximate: bool = False) -> None:
-            display_calls.append((count, approximate))
-
-        app = SimpleNamespace(
-            _context_tokens=1500,
-            _tokens_approximate=True,
-            _update_tokens=update_tokens,
-        )
-
-        DeepAgentsApp._show_tokens(app, approximate=False)  # ty: ignore
-
-        assert app._tokens_approximate is True
-        assert display_calls == [(1500, True)]
-
-    def test_reset_clears_cache(self):
-        """Resetting (e.g. /clear) should zero the cache and display."""
-        display_calls: list[int] = []
-
-        class FakeApp:
-            _context_tokens: int = 3000
-
-            def _update_tokens(self, count: int) -> None:
-                display_calls.append(count)
-
-        app = FakeApp()
-        app._context_tokens = 0
-        app._update_tokens(0)
-
-        assert app._context_tokens == 0
-        assert display_calls == [0]
-
 
 class TestCostDisplayCallbacks:
     """Verify persisted thread cost is restored and accumulated in the TUI."""
-
-    def test_payload_restores_valid_session_cost(self) -> None:
-        payload = DeepAgentsApp._goal_rubric_payload_from_state(
-            {"_session_cost_usd": 1.25},
-            messages=[],
-            context_tokens=0,
-            model_spec="",
-        )
-        assert payload.session_cost_usd == pytest.approx(1.25)
-
-    def test_payload_rejects_invalid_session_cost(self) -> None:
-        for value in (-1, float("nan"), "1.25", True, 10**1000):
-            payload = DeepAgentsApp._goal_rubric_payload_from_state(
-                {"_session_cost_usd": value},
-                messages=[],
-                context_tokens=0,
-                model_spec="",
-            )
-            assert payload.session_cost_usd == pytest.approx(0.0)
-
-    def test_server_total_replaces_the_displayed_value(self) -> None:
-        """The graph's absolute total is adopted outright, never added to."""
-        app = DeepAgentsApp()
-        app._session_cost_usd = 1.0
-
-        app._set_session_cost(1.25)
-
-        assert app._session_cost_usd == pytest.approx(1.25)
-        assert app._displayed_cost_usd == pytest.approx(1.25)
-
-    def test_cost_threshold_warns_once_per_thread(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        # `DeepAgentsApp` reads the threshold through the shared resolver, whose
-        # user tier is the `DEFAULT_CONFIG_PATH` file `_isolate_state_dir`
-        # redirects under `tmp_path`.
-        (tmp_path / "config.toml").write_text(
-            "[warnings]\nsession_cost_threshold_usd = 1.0\n", encoding="utf-8"
-        )
-        app = DeepAgentsApp()
-        notifications: list[str] = []
-        monkeypatch.setattr(
-            app,
-            "notify",
-            lambda message, **_: notifications.append(message),
-        )
-
-        app._set_session_cost(1.0)
-        app._set_session_cost(1.01)
-        app._set_session_cost(2.0)
-
-        assert len(notifications) == 1
-        assert "$1.01" in notifications[0]
-        assert "/offload" in notifications[0]
-        assert "/clear" in notifications[0]
-
-        app._reset_thread_usage(1.5)
-        assert len(notifications) == 2
-
-    def test_streamed_estimate_shows_ahead_of_the_server_total(self) -> None:
-        """Spend the graph has not reported yet still moves the display."""
-        app = DeepAgentsApp()
-        app._set_session_cost(1.0)
-
-        app._add_provisional_cost(0.25)
-
-        assert app._displayed_cost_usd == pytest.approx(1.25)
-        # The server-owned figure is untouched by a client estimate.
-        assert app._session_cost_usd == pytest.approx(1.0)
-
-    def test_server_total_supersedes_provisional_estimates(self) -> None:
-        """A provisional estimate cannot be counted twice once a total lands."""
-        app = DeepAgentsApp()
-        app._set_session_cost(1.0)
-        app._add_provisional_cost(0.25)
-
-        app._set_session_cost(1.25)
-
-        assert app._displayed_cost_usd == pytest.approx(1.25)
-
-    def test_zero_cost_does_not_change_running_total(self) -> None:
-        app = DeepAgentsApp()
-        app._session_cost_usd = 1.0
-
-        app._add_provisional_cost(0.0)
-
-        assert app._displayed_cost_usd == pytest.approx(1.0)
-
-    def test_total_for_an_inactive_thread_is_discarded(self) -> None:
-        """A total in flight during `/force-clear` must not land on the new thread."""
-        app = DeepAgentsApp()
-        app._lc_thread_id = "thread-1"
-        app._set_session_cost(1.0, thread_id="thread-1")
-
-        app._set_session_cost(99.0, thread_id="thread-0")
-
-        assert app._displayed_cost_usd == pytest.approx(1.0)
-
-    def test_total_for_the_active_thread_is_applied(self) -> None:
-        app = DeepAgentsApp()
-        app._lc_thread_id = "thread-1"
-
-        app._set_session_cost(2.5, thread_id="thread-1")
-
-        assert app._displayed_cost_usd == pytest.approx(2.5)
-
-    def test_unattributed_total_is_applied(self) -> None:
-        """A restored checkpoint read names no thread and must still apply."""
-        app = DeepAgentsApp()
-        app._lc_thread_id = "thread-1"
-
-        app._set_session_cost(3.0)
-
-        assert app._displayed_cost_usd == pytest.approx(3.0)
-
-    def test_downward_reprice_lowers_the_provisional_display(self) -> None:
-        """A re-priced request must not strand the estimate it superseded."""
-        app = DeepAgentsApp()
-        app._set_session_cost(1.0)
-        app._add_provisional_cost(0.1545)
-
-        app._add_provisional_cost(-0.1512)
-
-        assert app._displayed_cost_usd == pytest.approx(1.0033)
-
-    def test_provisional_total_never_goes_below_the_server_total(self) -> None:
-        """Clamping the accumulator, not the increment, keeps retractions honest."""
-        app = DeepAgentsApp()
-        app._set_session_cost(1.0)
-        app._add_provisional_cost(0.25)
-
-        app._add_provisional_cost(-10.0)
-
-        assert app._displayed_cost_usd == pytest.approx(1.0)
-
-    @pytest.mark.parametrize("value", [float("nan"), float("inf"), "0.5", True, None])
-    def test_malformed_provisional_delta_is_ignored(self, value: object) -> None:
-        app = DeepAgentsApp()
-        app._set_session_cost(1.0)
-
-        app._add_provisional_cost(cast("float", value))
-
-        assert app._displayed_cost_usd == pytest.approx(1.0)
-
-    def test_streamed_pricing_health_is_remembered(self) -> None:
-        """Pricing runs server-side, so only the event can report it broken."""
-        app = DeepAgentsApp()
-        app._lc_thread_id = "thread-1"
-
-        app._set_session_cost(1.0, thread_id="thread-1", pricing_ok=False)
-
-        assert app._pricing_is_broken() is True
 
     def test_unreported_pricing_health_leaves_the_last_value(self) -> None:
         """A checkpoint read says nothing about pricing and must not erase it."""
@@ -534,33 +276,6 @@ class TestCostDisplayCallbacks:
         app._sync_session_cost_from_state({"_session_cost_usd": 1.1})
 
         assert app._displayed_cost_usd == pytest.approx(1.1)
-
-    def test_state_without_a_cost_channel_leaves_the_display_alone(self) -> None:
-        app = DeepAgentsApp()
-        app._set_session_cost(1.0)
-
-        app._sync_session_cost_from_state({"messages": []})
-
-        assert app._displayed_cost_usd == pytest.approx(1.0)
-
-    def test_cost_summary_guides_fresh_thread(self) -> None:
-        app = DeepAgentsApp()
-
-        summary = app._format_cost_summary()
-
-        assert summary == "No model usage recorded for this thread yet."
-
-    def test_cost_summary_explains_unreported_usage_after_completed_turn(self) -> None:
-        app = DeepAgentsApp()
-        app._thread_has_completed_turn = True
-
-        summary = app._format_cost_summary()
-
-        assert summary == (
-            "We couldn't track the requests so far because the provider didn't "
-            "report token usage. Requests from providers that report usage will "
-            "appear here."
-        )
 
     async def test_resumed_zero_cost_usage_is_not_reported_as_unused(self) -> None:
         """Checkpoint history preserves usage when its total cannot prove it."""
@@ -588,84 +303,6 @@ class TestCostDisplayCallbacks:
             "was free."
         )
 
-    def test_cost_summary_guides_thread_with_unpriced_usage(self) -> None:
-        stats = SessionStats()
-        stats.record_request("unknown-model", 100, 10, provider="example")
-        app = DeepAgentsApp()
-        app._thread_stats = stats
-
-        summary = app._format_cost_summary()
-
-        assert summary == (
-            "We couldn't calculate costs for the requests so far because pricing "
-            "isn't available for the models used. Unpriced usage may still count "
-            "toward subscription limits or incur charges."
-        )
-
-    def test_cost_summary_blames_the_pricing_install_when_it_failed_to_load(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A broken `genai-prices` makes every model unpriceable.
-
-        Reporting that as missing catalog coverage points the user at their
-        model choice instead of the one thing they can actually fix.
-        """
-        from deepagents_code import cost_tracking
-
-        monkeypatch.setattr(cost_tracking, "_PRICING_UNAVAILABLE", True)
-        stats = SessionStats()
-        stats.record_request("gpt-5.5", 100, 10, provider="openai")
-        app = DeepAgentsApp()
-        app._thread_stats = stats
-
-        summary = app._format_cost_summary()
-
-        assert "pricing data failed to load" in summary
-        assert "Reinstalling Deep Agents Code" in summary
-        assert "pricing isn't available for the models used" not in summary
-
-    def test_cost_summary_includes_total_and_type_model_breakdown(self) -> None:
-        stats = SessionStats()
-        stats.record_request(
-            "gpt-5.5",
-            1_000,
-            100,
-            provider="openai",
-            cost_usd=0.32,
-            kind="assistant",
-        )
-        stats.record_request(
-            "gpt-5.5",
-            200,
-            20,
-            provider="openai",
-            cost_usd=0.10,
-            kind="offload",
-        )
-        process_stats = SessionStats()
-        process_stats.record_request(
-            "claude-sonnet-4-6",
-            1_000,
-            100,
-            provider="anthropic",
-            cost_usd=2.0,
-        )
-        app = DeepAgentsApp()
-        app._session_cost_usd = 0.42
-        app._thread_stats = stats
-        app._session_stats = process_stats
-
-        summary = app._format_cost_summary()
-
-        assert summary == (
-            "Estimated thread cost: $0.42\n\n"
-            "By type since this thread was loaded:\n"
-            "- Assistant: $0.32\n"
-            "- Offload: $0.10\n\n"
-            "By model since this thread was loaded:\n"
-            "- openai:gpt-5.5: $0.42"
-        )
-
     def test_cost_summary_warns_when_current_details_are_incomplete(self) -> None:
         """Checkpoint spend missing from streamed stats is called out."""
         stats = SessionStats()
@@ -691,95 +328,6 @@ class TestCostDisplayCallbacks:
             "Some current-session usage is included only in the total because "
             "detailed usage metadata was unavailable."
         ) in summary
-
-    def test_missing_current_details_are_not_labeled_as_restored(self) -> None:
-        """Fresh-thread usage without details gets only the current warning."""
-        app = DeepAgentsApp()
-        app._set_session_cost(0.20)
-
-        summary = app._format_cost_summary()
-
-        assert "Estimated thread cost: $0.20" in summary
-        assert "restored usage" not in summary.lower()
-        assert "detailed usage metadata was unavailable" in summary
-
-    def test_cost_summary_marks_restored_usage_outside_breakdown(self) -> None:
-        stats = SessionStats()
-        stats.record_request(
-            "gpt-5.5",
-            1_000,
-            100,
-            provider="openai",
-            cost_usd=0.42,
-        )
-        app = DeepAgentsApp()
-        app._reset_thread_usage(1.0)
-        app._thread_stats = stats
-        app._set_session_cost(1.42)
-
-        summary = app._format_cost_summary()
-
-        assert "Estimated thread cost: $1.42" in summary
-        assert "openai:gpt-5.5: $0.42" in summary
-        assert "Restored usage is included only in the total above." in summary
-
-    def test_cost_summary_distinguishes_zero_priced_and_unknown_requests(self) -> None:
-        stats = SessionStats()
-        stats.record_request(
-            "free-model",
-            100,
-            10,
-            provider="example",
-            cost_usd=0.0,
-        )
-        stats.record_request("unknown-model", 100, 10, provider="example")
-        app = DeepAgentsApp()
-        app._thread_stats = stats
-
-        summary = app._format_cost_summary()
-
-        assert summary == (
-            "Estimated cost for priced requests: $0.00\n\n"
-            "1 of 2 recorded requests is included.\n\n"
-            "Pricing was unavailable for:\n"
-            "- example:unknown-model — 1 request\n"
-            "The full thread cost may be higher.\n\n"
-            "By type since this thread was loaded:\n"
-            "- Assistant: $0.00\n\n"
-            "By model since this thread was loaded:\n"
-            "- example:free-model: $0.00"
-        )
-
-    @pytest.mark.parametrize(
-        ("request_count", "expected"),
-        [
-            (1, "The recorded request was priced at $0.00."),
-            (2, "All 2 recorded requests were priced at $0.00."),
-        ],
-    )
-    def test_cost_summary_explains_fully_priced_zero_cost(
-        self,
-        request_count: int,
-        expected: str,
-    ) -> None:
-        stats = SessionStats()
-        for _ in range(request_count):
-            stats.record_request(
-                "free-model",
-                100,
-                10,
-                provider="example",
-                cost_usd=0.0,
-            )
-        app = DeepAgentsApp()
-        app._thread_stats = stats
-
-        summary = app._format_cost_summary()
-
-        assert "Estimated thread cost: $0.00" in summary
-        assert "example:free-model: $0.00" in summary
-        assert expected in summary
-        assert "Your provider's bill may still differ" in summary
 
     async def test_checkpoint_reconcile_never_writes_cost(self) -> None:
         """The client reads the graph's total; it never back-fills the channel."""

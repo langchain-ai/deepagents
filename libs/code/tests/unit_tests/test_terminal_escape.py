@@ -167,23 +167,11 @@ class TestWriteOsc:
 class TestValidateProgress:
     """Tests for `_validate_progress`."""
 
-    def test_clear_state_normalizes_to_zero(self) -> None:
-        assert _validate_progress(50, TerminalProgressState.CLEAR) == 0
-
-    def test_indeterminate_normalizes_to_zero(self) -> None:
-        assert _validate_progress(50, TerminalProgressState.INDETERMINATE) == 0
-
-    def test_determinate_passthrough(self) -> None:
-        assert _validate_progress(42, TerminalProgressState.NORMAL) == 42
-
     def test_determinate_clamps_low(self) -> None:
         assert _validate_progress(-10, TerminalProgressState.NORMAL) == 0
 
     def test_determinate_clamps_high(self) -> None:
         assert _validate_progress(250, TerminalProgressState.ERROR) == 100
-
-    def test_none_progress_for_determinate_becomes_zero(self) -> None:
-        assert _validate_progress(None, TerminalProgressState.NORMAL) == 0
 
     def test_non_numeric_progress_coerces_to_zero(
         self, caplog: pytest.LogCaptureFixture

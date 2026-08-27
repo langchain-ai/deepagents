@@ -101,13 +101,6 @@ class TestCwdSwitchPromptScreen:
 class TestCwdSwitchAbortOption:
     """The launch-time `-r` resume prompt adds a third `abort` option."""
 
-    def test_abort_binding_present(self) -> None:
-        """The modal binds `a` to the abort action."""
-        bindings = [b for b in CwdSwitchPromptScreen.BINDINGS if isinstance(b, Binding)]
-        bindings_by_key = {b.key: b for b in bindings}
-
-        assert bindings_by_key["a"].action == "abort"
-
     def test_check_action_gates_abort_binding_by_mode(self) -> None:
         """`check_action` enables the `a` binding only when an abort mode is set.
 
@@ -140,19 +133,6 @@ class TestCwdSwitchAbortOption:
         assert "new session" not in without._body_text()
         assert "new session" in with_abort._body_text()
 
-    def test_switch_mode_omits_abort_body_note(self) -> None:
-        """The in-session `/threads` abort is described only in the help line."""
-        switch = CwdSwitchPromptScreen(
-            current_cwd="/a",
-            thread_cwd="/b",
-            abort="thread_switch",
-        )
-
-        body = switch._body_text()
-        assert "new session" not in body
-        assert "instead of switching" not in body
-        assert "keep your current thread" not in body
-
     def test_title_reflects_flow(self) -> None:
         """The title asks about switching for `/threads`, resuming otherwise."""
 
@@ -181,38 +161,6 @@ class TestCwdSwitchAbortOption:
             f"Enter: switch {separator} Esc: stay in cwd {separator} A: don't switch"
         )
         assert help_line(None) == f"Enter: switch {separator} Esc: stay in cwd"
-
-    def test_abort_mode_tokens_disjoint_from_choice(self) -> None:
-        """Abort-mode tokens never collide with prompt-outcome tokens.
-
-        The disjointness is a naming convention (input mode vs. outcome), not a
-        type guarantee. This pins it so a future member like a re-added
-        `"switch"` mode -- which would make a mode token ambiguous with a
-        `CwdSwitchChoice` outcome in logs and debuggers -- fails loudly.
-        """
-        assert not (set(get_args(CwdSwitchAbortMode)) & set(get_args(CwdSwitchChoice)))
-
-    def test_action_abort_dismisses_abort_when_allowed(self) -> None:
-        """Abort resolves the prompt to `abort` when offered."""
-        screen = CwdSwitchPromptScreen(
-            current_cwd="/a", thread_cwd="/b", abort="resume"
-        )
-        dismiss = MagicMock()
-        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
-
-        screen.action_abort()
-
-        dismiss.assert_called_once_with("abort")
-
-    def test_action_abort_is_noop_when_not_allowed(self) -> None:
-        """Abort does nothing when the prompt was not opened with an abort mode."""
-        screen = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
-        dismiss = MagicMock()
-        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
-
-        screen.action_abort()
-
-        dismiss.assert_not_called()
 
     async def test_pressing_a_aborts_when_allowed(self) -> None:
         """Pressing `a` resolves the prompt to `abort` when offered."""

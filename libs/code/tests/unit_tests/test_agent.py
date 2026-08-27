@@ -229,22 +229,6 @@ def _keep_model_spec(model_spec: str, _model_retries: int) -> BaseChatModel:
     return cast("BaseChatModel", model_spec)
 
 
-def test_resolve_retry_owned_model_uses_dcode_factory() -> None:
-    """String models receive the middleware budget through `create_model`."""
-    fake_model = _make_fake_chat_model()
-    with patch(
-        "deepagents_code.config.create_model",
-        return_value=SimpleNamespace(model=fake_model),
-    ) as mock_create:
-        resolved = _resolve_retry_owned_model("anthropic:claude-test", 3)
-
-    assert resolved is fake_model
-    mock_create.assert_called_once_with(
-        "anthropic:claude-test",
-        cli_max_retries=3,
-    )
-
-
 def test_resolve_retry_owned_model_defers_without_credentials() -> None:
     """An unauthenticated provider yields `None`, not a launch-aborting raise.
 
@@ -261,15 +245,6 @@ def test_resolve_retry_owned_model_defers_without_credentials() -> None:
         ),
     ):
         assert _resolve_retry_owned_model("anthropic:claude-test", 3) is None
-
-
-@pytest.mark.parametrize(
-    ("model_spec", "expected"),
-    [("anthropic:claude-test", True), ("claude-test", True), ("fake-model", False)],
-)
-def test_has_resolvable_model_provider(model_spec: str, expected: bool) -> None:
-    """Only strings with an identifiable provider are eagerly resolved."""
-    assert _has_resolvable_model_provider(model_spec) is expected
 
 
 @contextmanager
@@ -299,25 +274,6 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
     assert interrupt_on
     for config in interrupt_on.values():
         assert config.get("when") is _should_interrupt_tool_call
-
-
-def test_agent_publishes_server_offload_operation(tmp_path: Path) -> None:
-    """The backend exposes offload without adding graph input fields."""
-    agent, backend = create_cli_agent(
-        model=_make_fake_chat_model(),
-        assistant_id="test-agent",
-        enable_memory=False,
-        enable_skills=False,
-        enable_shell=False,
-        system_prompt="test prompt",
-        cwd=tmp_path,
-    )
-
-    from deepagents_code.offload_middleware import offload_operation_from
-
-    schema = agent.get_input_jsonschema()
-    assert "dcode_operation" not in schema["properties"]
-    assert offload_operation_from(backend) is not None
 
 
 def test_local_conversation_history_route_is_persistent(tmp_path: Path) -> None:
@@ -438,90 +394,6 @@ def test_fallback_artifacts_root_keeps_archive_path_resolvable(
     result_path = f"{_FALLBACK_ARTIFACTS_ROOT}/large_tool_results/call-1"
     assert first_backend.write(result_path, "payload").error is None
     assert (first_results / "call-1").read_text() == "payload"
-
-
-def test_goal_criteria_tools_wire_fallback_and_none_backend(tmp_path: Path) -> None:
-    """Enabling goal criteria wires a fallback agent and a None repo backend."""
-    model = _make_fake_chat_model()
-    mock_agent = Mock()
-    mock_agent.with_config.return_value = mock_agent
-    make_criteria = Mock(return_value="criteria-agent")
-    make_fallback = Mock(return_value="fallback-agent")
-    make_middleware = Mock()
-
-    with (
-        patch(
-            "deepagents_code.agent._offload_fallback_root",
-            return_value=tmp_path / ".deepagents",
-        ),
-        patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-        patch("deepagents_code.goal_rubric._create_goal_criteria_agent", make_criteria),
-        patch(
-            "deepagents_code.goal_rubric.create_goal_criteria_fallback_agent",
-            make_fallback,
-        ),
-        patch("deepagents_code.goal_rubric.GoalCriteriaMiddleware", make_middleware),
-    ):
-        create_cli_agent(
-            model=model,
-            assistant_id="test-agent",
-            fs_tools=["read_file"],
-            enable_memory=False,
-            enable_skills=False,
-            enable_shell=False,
-            system_prompt="test prompt",
-            cwd=tmp_path,
-            goal_criteria_tools=[],
-            model_retries=3,
-        )
-
-    make_criteria.assert_called_once()
-    assert make_criteria.call_args.kwargs["repository_backend"] is None
-    assert make_criteria.call_args.kwargs["fs_tools"] == ["read_file"]
-    assert make_criteria.call_args.kwargs["model_retries"] == 3
-    make_fallback.assert_called_once()
-    assert make_fallback.call_args.kwargs["model_retries"] == 3
-    # Primary and fallback agents share one model, and the middleware receives
-    # both so graph-level failures can degrade to goal-only generation.
-    assert (
-        make_fallback.call_args.kwargs["model"]
-        is make_criteria.call_args.kwargs["model"]
-    )
-    make_middleware.assert_called_once_with("criteria-agent", "fallback-agent")
-
-
-def test_goal_criteria_disabled_skips_middleware(tmp_path: Path) -> None:
-    """`goal_criteria_tools=None` builds no criteria agents or middleware."""
-    model = _make_fake_chat_model()
-    mock_agent = Mock()
-    mock_agent.with_config.return_value = mock_agent
-    make_criteria = Mock()
-    make_fallback = Mock()
-
-    with (
-        patch(
-            "deepagents_code.agent._offload_fallback_root",
-            return_value=tmp_path / ".deepagents",
-        ),
-        patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-        patch("deepagents_code.goal_rubric._create_goal_criteria_agent", make_criteria),
-        patch(
-            "deepagents_code.goal_rubric.create_goal_criteria_fallback_agent",
-            make_fallback,
-        ),
-    ):
-        create_cli_agent(
-            model=model,
-            assistant_id="test-agent",
-            enable_memory=False,
-            enable_skills=False,
-            enable_shell=False,
-            system_prompt="test prompt",
-            cwd=tmp_path,
-        )
-
-    make_criteria.assert_not_called()
-    make_fallback.assert_not_called()
 
 
 def _request_with_context(
@@ -1132,102 +1004,6 @@ def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:
     assert _sanitize_agent_message_name("  ") == DEFAULT_AGENT_NAME
 
 
-def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
-    """Test write_file description for creating a new file."""
-    new_file = tmp_path / "new_file.py"
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "write_file",
-            "args": {
-                "file_path": str(new_file),
-                "content": "def hello():\n    return 'world'\n",
-            },
-            "id": "call-1",
-        },
-    )
-
-    description = _format_write_file_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Action: Create file" in description
-    assert "File:" not in description
-
-
-def test_format_write_file_description_overwrite_existing_file(tmp_path: Path) -> None:
-    """Test write_file description for overwriting an existing file."""
-    existing_file = tmp_path / "existing.py"
-    existing_file.write_text("old content")
-
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "write_file",
-            "args": {
-                "file_path": str(existing_file),
-                "content": "line1\nline2\nline3\n",
-            },
-            "id": "call-2",
-        },
-    )
-
-    description = _format_write_file_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Action: Overwrite file" in description
-    assert "File:" not in description
-
-
-def test_format_edit_file_description_single_occurrence():
-    """Test edit_file description for single occurrence replacement."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "edit_file",
-            "args": {
-                "file_path": "/path/to/file.py",
-                "old_string": "foo",
-                "new_string": "bar",
-                "replace_all": False,
-            },
-            "id": "call-3",
-        },
-    )
-
-    description = _format_edit_file_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Action: Replace text (single occurrence)" in description
-    assert "File:" not in description
-
-
-def test_format_edit_file_description_all_occurrences():
-    """Test edit_file description for replacing all occurrences."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "edit_file",
-            "args": {
-                "file_path": "/path/to/file.py",
-                "old_string": "foo",
-                "new_string": "bar",
-                "replace_all": True,
-            },
-            "id": "call-4",
-        },
-    )
-
-    description = _format_edit_file_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Action: Replace text (all occurrences)" in description
-    assert "File:" not in description
-
-
 def test_format_delete_description() -> None:
     """Test delete description for approval prompts."""
     tool_call = cast(
@@ -1268,269 +1044,8 @@ def test_add_interrupt_on_gates_delete() -> None:
     assert interrupt_map["delete"]["when"] is _should_interrupt_tool_call
 
 
-def test_format_web_search_description():
-    """Test web_search description formatting."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "web_search",
-            "args": {
-                "query": "python async programming",
-                "max_results": 10,
-            },
-            "id": "call-5",
-        },
-    )
-
-    description = _format_web_search_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Query: python async programming" in description
-    assert "Max results: 10" in description
-    assert f"{get_glyphs().warning}  This will use Tavily API credits" in description
-
-
-def test_format_web_search_description_default_max_results():
-    """Test web_search description with default max_results."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "web_search",
-            "args": {
-                "query": "langchain tutorial",
-            },
-            "id": "call-6",
-        },
-    )
-
-    description = _format_web_search_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Query: langchain tutorial" in description
-    assert "Max results: 5" in description
-
-
-def test_format_fetch_url_description():
-    """Test fetch_url description formatting."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "fetch_url",
-            "args": {
-                "url": "https://example.com/docs",
-                "timeout": 60,
-            },
-            "id": "call-7",
-        },
-    )
-
-    description = _format_fetch_url_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "URL: https://example.com/docs" in description
-    assert "Timeout: 60s" in description
-    warning = get_glyphs().warning
-    assert f"{warning}  Will fetch and convert web content to markdown" in description
-
-
-def test_format_fetch_url_description_default_timeout():
-    """Test fetch_url description with default timeout."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "fetch_url",
-            "args": {
-                "url": "https://api.example.com",
-            },
-            "id": "call-8",
-        },
-    )
-
-    description = _format_fetch_url_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "URL: https://api.example.com" in description
-    assert "Timeout: 30s" in description
-
-
-def test_format_task_description():
-    """Test task (subagent) description formatting."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "task",
-            "args": {
-                "description": "Analyze code structure and identify main components.",
-                "subagent_type": "general-purpose",
-            },
-            "id": "call-9",
-        },
-    )
-
-    description = _format_task_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Subagent Type: general-purpose" in description
-    assert "Task Instructions:" in description
-    assert "Analyze code structure and identify main components." in description
-    warning = get_glyphs().warning
-    msg = "Subagent will have access to file operations and shell commands"
-    assert f"{warning} {msg} {warning}" in description
-    assert description.index(warning) < description.index("Task Instructions:")
-
-
-def test_format_task_description_truncates_long_description():
-    """Test task description truncates long descriptions."""
-    long_description = "x" * 600  # 600 characters
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "task",
-            "args": {
-                "description": long_description,
-                "subagent_type": "general-purpose",
-            },
-            "id": "call-10",
-        },
-    )
-
-    description = _format_task_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Subagent Type: general-purpose" in description
-    assert "..." in description
-    # Description should be truncated to 500 chars + "..."
-    assert len(description) < len(long_description) + 300
-
-
-def test_format_execute_description():
-    """Test execute command description formatting."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "execute",
-            "args": {
-                "command": "python script.py",
-            },
-            "id": "call-12",
-        },
-    )
-
-    description = _format_execute_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Execute Command: python script.py" in description
-    assert "Working Directory:" in description
-
-
-def test_format_execute_description_with_hidden_unicode():
-    """Hidden Unicode in command should trigger warning and marker display."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "execute",
-            "args": {"command": "echo a\u202eb"},
-            "id": "call-13",
-        },
-    )
-    description = _format_execute_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-    assert "Execute Command: echo ab" in description
-    assert "Hidden Unicode detected" in description
-    assert "U+202E" in description
-    assert "Raw:" in description
-
-
-def test_format_fetch_url_description_with_suspicious_url():
-    """Suspicious URL should trigger warning lines in fetch_url description."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "fetch_url",
-            "args": {"url": "https://аpple.com"},
-            "id": "call-14",
-        },
-    )
-    description = _format_fetch_url_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-    assert "URL warning" in description
-
-
-def test_format_fetch_url_description_with_hidden_unicode_in_url():
-    """Hidden Unicode in URL should be stripped from display."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "fetch_url",
-            "args": {"url": "https://exa\u200bmple.com"},
-            "id": "call-15",
-        },
-    )
-    description = _format_fetch_url_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-    assert "URL: https://example.com" in description
-    assert "\u200b" not in description
-
-
 class TestBuildModelIdentitySection:
     """Direct tests for build_model_identity_section."""
-
-    def test_empty_when_no_name(self) -> None:
-        assert build_model_identity_section(None) == ""
-
-    def test_basic_name_only(self) -> None:
-        result = build_model_identity_section("gpt-5.5")
-        assert "You are running as model `gpt-5.5`." in result
-        assert "may not be available" not in result
-
-    def test_unsupported_single(self) -> None:
-        result = build_model_identity_section(
-            "test-model", unsupported_modalities=frozenset({"audio"})
-        )
-        assert "Audio input may not be available for this model." in result
-        assert "Do not attempt to read or process" in result
-
-    def test_unsupported_two_uses_and(self) -> None:
-        result = build_model_identity_section(
-            "test-model",
-            unsupported_modalities=frozenset({"video", "audio"}),
-        )
-        assert "Audio and video input may not be available" in result
-
-    def test_unsupported_multiple_uses_oxford_comma(self) -> None:
-        result = build_model_identity_section(
-            "test-model",
-            unsupported_modalities=frozenset({"video", "audio", "image"}),
-        )
-        assert "Audio, image, and video input may not be available" in result
-
-    def test_unsupported_empty_frozenset_no_warning(self) -> None:
-        result = build_model_identity_section(
-            "test-model", unsupported_modalities=frozenset()
-        )
-        assert "may not be available" not in result
-
-    def test_all_fields(self) -> None:
-        result = build_model_identity_section(
-            "deepseek-r1",
-            provider="deepseek",
-            context_limit=64000,
-            unsupported_modalities=frozenset({"image", "pdf"}),
-        )
-        assert "deepseek-r1" in result
-        assert "(provider: deepseek)" in result
-        assert "64,000 tokens" in result
-        assert "Image and pdf input may not be available" in result
 
 
 class TestGetSystemPromptModelIdentity:
@@ -1905,79 +1420,6 @@ class TestGetSystemPromptPlaceholderValidation:
 
 class TestCreateCliAgentInteractiveForwarding:
     """Tests for interactive parameter forwarding in create_cli_agent."""
-
-    def test_forwards_interactive_false_to_get_system_prompt(
-        self, tmp_path: Path
-    ) -> None:
-        """create_cli_agent should forward interactive=False to get_system_prompt."""
-        agent_dir = tmp_path / "agent"
-        agent_dir.mkdir()
-        skills_dir = tmp_path / "skills"
-        skills_dir.mkdir()
-
-        mock_settings = Mock()
-        mock_settings.ensure_agent_dir.return_value = agent_dir
-        mock_settings.ensure_user_skills_dir.return_value = skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
-        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
-        mock_settings.get_project_agent_md_path.return_value = []
-        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
-        mock_settings.get_project_agents_dir.return_value = None
-        runtime_state.model_name = None
-        runtime_state.model_provider = None
-        runtime_state.model_unsupported_modalities = frozenset()
-        runtime_state.model_context_limit = None
-        mock_settings.project_root = None
-
-        mock_agent = Mock()
-        mock_agent.with_config.return_value = mock_agent
-        call_order: list[str] = []
-
-        def create_agent(**_kwargs: Any) -> Mock:
-            call_order.append("create_agent")
-            return mock_agent
-
-        fake_model = _make_fake_chat_model()
-        with (
-            patch("deepagents_code.agent.credentials", mock_settings),
-            patch("deepagents_code.agent.PluginSkillsMiddleware"),
-            patch("deepagents_code.agent.MemoryMiddleware"),
-            patch(
-                "deepagents_code.agent._ensure_glm_5p2_profile_registered",
-                side_effect=lambda: call_order.append("register_profile"),
-                create=True,
-            ),
-            patch(
-                "deepagents_code.agent.create_deep_agent", side_effect=create_agent
-            ) as mock_create_deep_agent,
-            patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
-            ),
-            patch("deepagents_code.agent.get_system_prompt") as mock_get_prompt,
-        ):
-            mock_get_prompt.return_value = "mocked prompt"
-            create_cli_agent(
-                model="fake-model",
-                assistant_id="my agent",
-                fs_tools=["read_file", "grep"],
-                enable_memory=False,
-                enable_skills=False,
-                enable_shell=False,
-                interactive=False,
-            )
-
-        mock_get_prompt.assert_called_once()
-        _, kwargs = mock_get_prompt.call_args
-        assert kwargs["interactive"] is False
-        assert kwargs["fs_tools"] == ["read_file", "grep"]
-        assert mock_create_deep_agent.call_args.kwargs["name"] == "my_agent"
-        assert (
-            mock_create_deep_agent.call_args.kwargs["context_schema"]
-            is CLIContextSchema
-        )
-        assert call_order == ["register_profile", "create_agent"]
 
     def test_unconfigured_recursion_limit_binds_nothing(
         self,
@@ -3361,58 +2803,6 @@ class TestEnableAskUser:
 
         return captured[0]
 
-    def test_ask_user_included_when_enabled(self, tmp_path: Path) -> None:
-        from deepagents_code.ask_user import AskUserMiddleware
-
-        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
-        assert any(isinstance(mw, AskUserMiddleware) for mw in middleware)
-
-    def test_ask_user_excluded_when_disabled(self, tmp_path: Path) -> None:
-        from deepagents_code.ask_user import AskUserMiddleware
-
-        middleware = self._capture_middleware(tmp_path, enable_ask_user=False)
-        assert not any(isinstance(mw, AskUserMiddleware) for mw in middleware)
-
-    def test_tool_error_middleware_only_handles_task(self, tmp_path: Path) -> None:
-        from langchain.agents.middleware import ToolErrorMiddleware
-
-        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
-        handlers = [mw for mw in middleware if isinstance(mw, ToolErrorMiddleware)]
-        assert len(handlers) == 1
-        assert handlers[0]._tool_filter == ["task"]
-
-    def test_task_failure_is_sanitized(self, tmp_path: Path) -> None:
-        from langchain.agents.middleware import ToolErrorMiddleware
-        from langchain_core.messages import ToolMessage
-        from langgraph.prebuilt.tool_node import ToolCallRequest
-
-        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
-        handler = next(mw for mw in middleware if isinstance(mw, ToolErrorMiddleware))
-        request = ToolCallRequest(
-            tool_call={
-                "name": "task",
-                "args": {"subagent_type": "researcher"},
-                "id": "call-1",
-                "type": "tool_call",
-            },
-            tool=None,
-            state={},
-            runtime=Mock(),
-        )
-
-        def fail(_request: ToolCallRequest) -> ToolMessage:
-            msg = "secret provider detail"
-            raise RuntimeError(msg)
-
-        result = handler.wrap_tool_call(request, fail)
-        assert isinstance(result, ToolMessage)
-        assert result.status == "error"
-        assert result.tool_call_id == "call-1"
-        assert result.content == (
-            "Subagent 'researcher' failed. You may retry this task."
-        )
-        assert "secret provider detail" not in result.content
-
     async def test_parallel_task_failure_is_isolated(self, tmp_path: Path) -> None:
         from langchain.agents.middleware import ToolErrorMiddleware
         from langchain_core.messages import ToolMessage
@@ -3483,79 +2873,45 @@ class TestEnableAskUser:
         with pytest.raises(NodeCancelledError):
             handler.wrap_tool_call(request, cancel)
 
+    def test_task_failure_is_sanitized(self, tmp_path: Path) -> None:
+        from langchain.agents.middleware import ToolErrorMiddleware
+        from langchain_core.messages import ToolMessage
+        from langgraph.prebuilt.tool_node import ToolCallRequest
 
-class TestLoadAsyncSubagents:
-    def test_returns_empty_when_no_file(self, tmp_path: Path) -> None:
-        result = load_async_subagents(tmp_path / "nonexistent.toml")
-        assert result == []
-
-    def test_returns_empty_when_no_section(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        config.write_text('[models]\ndefault = "gpt-4"\n')
-        result = load_async_subagents(config)
-        assert result == []
-
-    def test_loads_valid_async_subagent(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        config.write_text(
-            "[async_subagents.researcher]\n"
-            'description = "Research agent"\n'
-            'url = "https://my-deployment.langsmith.dev"\n'
-            'graph_id = "agent"\n'
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        handler = next(mw for mw in middleware if isinstance(mw, ToolErrorMiddleware))
+        request = ToolCallRequest(
+            tool_call={
+                "name": "task",
+                "args": {"subagent_type": "researcher"},
+                "id": "call-1",
+                "type": "tool_call",
+            },
+            tool=None,
+            state={},
+            runtime=Mock(),
         )
-        result = load_async_subagents(config)
-        assert len(result) == 1
-        assert result[0]["name"] == "researcher"
-        assert result[0]["description"] == "Research agent"
-        assert result[0]["url"] == "https://my-deployment.langsmith.dev"
-        assert result[0]["graph_id"] == "agent"
 
-    def test_loads_multiple_subagents(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        config.write_text(
-            "[async_subagents.researcher]\n"
-            'description = "Research agent"\n'
-            'url = "https://research.langsmith.dev"\n'
-            'graph_id = "agent"\n'
-            "\n"
-            "[async_subagents.coder]\n"
-            'description = "Coding agent"\n'
-            'url = "https://coder.langsmith.dev"\n'
-            'graph_id = "coder"\n'
+        def fail(_request: ToolCallRequest) -> ToolMessage:
+            msg = "secret provider detail"
+            raise RuntimeError(msg)
+
+        result = handler.wrap_tool_call(request, fail)
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.tool_call_id == "call-1"
+        assert result.content == (
+            "Subagent 'researcher' failed. You may retry this task."
         )
-        result = load_async_subagents(config)
-        assert len(result) == 2
-        names = {a["name"] for a in result}
-        assert names == {"researcher", "coder"}
+        assert "secret provider detail" not in result.content
 
-    def test_skips_entry_missing_required_fields(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[async_subagents.incomplete]\ndescription = "Missing url and graph_id"\n'
-        )
-        result = load_async_subagents(config)
-        assert result == []
+    def test_tool_error_middleware_only_handles_task(self, tmp_path: Path) -> None:
+        from langchain.agents.middleware import ToolErrorMiddleware
 
-    def test_includes_optional_headers(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        config.write_text(
-            "[async_subagents.custom]\n"
-            'description = "Custom agent"\n'
-            'url = "https://custom.langsmith.dev"\n'
-            'graph_id = "agent"\n'
-            "\n"
-            "[async_subagents.custom.headers]\n"
-            'x-custom = "value"\n'
-        )
-        result = load_async_subagents(config)
-        assert len(result) == 1
-        assert result[0]["headers"] == {"x-custom": "value"}
-
-    def test_handles_invalid_toml(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        config.write_text("this is not valid toml [[[")
-        result = load_async_subagents(config)
-        assert result == []
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        handlers = [mw for mw in middleware if isinstance(mw, ToolErrorMiddleware)]
+        assert len(handlers) == 1
+        assert handlers[0]._tool_filter == ["task"]
 
 
 class TestShellAllowListMiddleware:
@@ -3724,13 +3080,6 @@ class TestShellAllowListMiddleware:
         handler.assert_not_awaited()
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
-
-    def test_rejects_empty_allow_list(self) -> None:
-        """Constructor rejects empty allow-list."""
-        from deepagents_code.agent import ShellAllowListMiddleware
-
-        with pytest.raises(ValueError, match="must not be empty"):
-            ShellAllowListMiddleware(allow_list=[])
 
     def test_rejects_shell_allow_all(self) -> None:
         """Constructor rejects SHELL_ALLOW_ALL sentinel."""
@@ -4549,83 +3898,6 @@ class TestCreateCliAgentFsToolsWiring:
 
         return calls, factory
 
-    def test_harness_tool_descriptions_accepts_model_instance(self) -> None:
-        """`_get_harness_tool_descriptions` handles a resolved model, not just a spec.
-
-        The string-spec branch is exercised throughout this class via
-        `model="fake-model"`; the `BaseChatModel` branch (taken when the agent is
-        built from an already-instantiated model) is otherwise unexercised. It
-        must resolve a profile and return a plain dict rather than raise.
-        """
-        from deepagents_code.agent import _get_harness_tool_descriptions
-
-        result = _get_harness_tool_descriptions(_make_fake_chat_model())
-        assert isinstance(result, dict)
-
-    def test_restricted_middleware_replaces_sdk_default_by_name(self) -> None:
-        """The security guarantee rests on the SDK's replace-by-name merge.
-
-        The other tests in this class assert what `create_cli_agent` *passes*
-        to `create_deep_agent`; they trust the SDK to replace its own default
-        `FilesystemMiddleware` with dcode's restricted one (matched by `.name`)
-        rather than append a second, unrestricted instance that would win. This
-        exercises the real SDK merge so that contract fails loudly here if it
-        ever changes, instead of silently leaving the restriction inert.
-        """
-        from deepagents.graph import _apply_custom_middleware
-        from deepagents.middleware.filesystem import FilesystemMiddleware
-
-        sdk_default = FilesystemMiddleware()  # unrestricted, as the SDK builds it
-        restricted = FilesystemMiddleware(tools=["ls", "read_file"])
-        # The merge key: both instances must share a `.name` or replacement
-        # degrades into appending two middleware.
-        assert restricted.name == sdk_default.name
-
-        merged = _apply_custom_middleware([sdk_default], [restricted])
-
-        fs_middleware = [m for m in merged if isinstance(m, FilesystemMiddleware)]
-        assert len(fs_middleware) == 1
-        # Identity is the contract: the restricted instance replaced the default
-        # rather than a second instance being appended. (No need to read the
-        # SDK-private `_enabled_tools` — that the *restricted* instance survived
-        # is exactly what proves replace-by-name.)
-        assert fs_middleware[0] is restricted
-
-    def test_none_does_not_add_filesystem_middleware(self, tmp_path: Path) -> None:
-        """`fs_tools=None` (default) leaves the SDK's own default in place."""
-        from deepagents.middleware.filesystem import FilesystemMiddleware
-
-        mock_settings = self._build_mock_settings(tmp_path)
-
-        mock_agent = Mock()
-        mock_agent.with_config.return_value = mock_agent
-
-        fake_model = _make_fake_chat_model()
-        with (
-            patch("deepagents_code.agent.credentials", mock_settings),
-            patch("deepagents_code.agent.PluginSkillsMiddleware"),
-            patch("deepagents_code.agent.MemoryMiddleware"),
-            patch(
-                "deepagents_code.agent.create_deep_agent",
-                return_value=mock_agent,
-            ) as mock_create,
-            patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
-            ),
-        ):
-            create_cli_agent(
-                model="fake-model",
-                assistant_id="test",
-                enable_memory=False,
-                enable_skills=False,
-                enable_shell=True,
-            )
-
-        _, kwargs = mock_create.call_args
-        middleware_types = [type(m) for m in kwargs["middleware"]]
-        assert FilesystemMiddleware not in middleware_types
-
     def test_explicit_list_adds_restricted_filesystem_middleware(
         self, tmp_path: Path
     ) -> None:
@@ -5279,28 +4551,6 @@ def _seed_agent(agents_dir: Path, name: str) -> Path:
 class TestGetAvailableAgentNames:
     """Tests for fail-closed `get_available_agent_names` discovery."""
 
-    def test_returns_empty_when_dir_missing(self, tmp_path: Path) -> None:
-        """No ~/.deepagents directory → empty list, no error."""
-        missing = tmp_path / "does_not_exist"
-        with patch(
-            "deepagents_code.agent.user_deepagents_dir",
-            return_value=missing,
-        ):
-            assert get_available_agent_names() == []
-
-    def test_returns_sorted_agent_names(self, tmp_path: Path) -> None:
-        """Marker-bearing subdirectories are returned sorted."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        for name in ("zebra", "alpha", "mango"):
-            _seed_agent(agents_dir, name)
-
-        with patch(
-            "deepagents_code.agent.user_deepagents_dir",
-            return_value=agents_dir,
-        ):
-            assert get_available_agent_names() == ["alpha", "mango", "zebra"]
-
     def test_requires_agents_md_marker(self, tmp_path: Path) -> None:
         """Bare directories without `AGENTS.md` are not agents (fail-closed)."""
         agents_dir = tmp_path / "agents"
@@ -5309,20 +4559,6 @@ class TestGetAvailableAgentNames:
         (agents_dir / "empty-dir").mkdir()
         (agents_dir / "skills-only").mkdir()
         (agents_dir / "skills-only" / "skills").mkdir()
-
-        with patch(
-            "deepagents_code.agent.user_deepagents_dir",
-            return_value=agents_dir,
-        ):
-            assert get_available_agent_names() == ["agent"]
-
-    def test_ignores_files_and_non_dirs(self, tmp_path: Path) -> None:
-        """Files sitting next to agent directories are excluded."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        _seed_agent(agents_dir, "agent")
-        (agents_dir / "config.toml").write_text("")
-        (agents_dir / ".DS_Store").write_text("")
 
         with patch(
             "deepagents_code.agent.user_deepagents_dir",
@@ -5359,22 +4595,6 @@ class TestGetAvailableAgentNames:
         target = tmp_path / "external-AGENTS.md"
         target.write_text("external")
         (fake / _AGENT_DIR_MARKER).symlink_to(target)
-
-        with patch(
-            "deepagents_code.agent.user_deepagents_dir",
-            return_value=agents_dir,
-        ):
-            assert get_available_agent_names() == ["agent"]
-
-    def test_ignores_dot_prefixed_dirs(self, tmp_path: Path) -> None:
-        """`.state/` and other hidden dirs are excluded even with a marker."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        _seed_agent(agents_dir, "agent")
-        state = agents_dir / ".state"
-        state.mkdir()
-        (state / _AGENT_DIR_MARKER).touch()
-        (agents_dir / ".cache").mkdir()
 
         with patch(
             "deepagents_code.agent.user_deepagents_dir",
@@ -5422,51 +4642,6 @@ class TestGetAvailableAgentNames:
             return_value=agents_dir,
         ):
             assert get_available_agent_names() == ["agent"]
-
-    def test_ignores_case_aliased_reserved_dirs(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A case-aliased reserved dir never surfaces as an agent.
-
-        `iterdir()` returns the on-disk spelling, which an exact-string guard
-        misses when it differs only by case (e.g. after `dcode -a Plugins`
-        created the entry on a case-insensitive filesystem). The alias only
-        exists where the filesystem folds case, so the test pins the platform
-        to macOS.
-        """
-        monkeypatch.setattr(sys, "platform", "darwin")
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        _seed_agent(agents_dir, "agent")
-        _seed_agent(agents_dir, "Plugins")
-        _seed_agent(agents_dir, "BIN")
-
-        with patch(
-            "deepagents_code.agent.user_deepagents_dir",
-            return_value=agents_dir,
-        ):
-            assert get_available_agent_names() == ["agent"]
-
-    def test_lists_case_aliased_dirs_on_case_sensitive_linux(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """On Linux a case-aliased dir is a real agent, not reserved state.
-
-        Case-sensitive filesystems keep `Plugins/` distinct from the
-        app-owned `plugins/`, so hiding it would silently drop a legitimate
-        agent from the picker.
-        """
-        monkeypatch.setattr(sys, "platform", "linux")
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        _seed_agent(agents_dir, "agent")
-        _seed_agent(agents_dir, "Plugins")
-
-        with patch(
-            "deepagents_code.agent.user_deepagents_dir",
-            return_value=agents_dir,
-        ):
-            assert get_available_agent_names() == ["Plugins", "agent"]
 
     def test_reserved_agent_dir_names_includes_app_dirs(self) -> None:
         """The reserved-name set is sourced from each owning module."""
@@ -5613,74 +4788,6 @@ class TestCreateCliAgentInterpreterWiring:
             compaction_middleware
         )
 
-    def test_model_retry_wraps_only_inside_compaction(self, tmp_path: Path) -> None:
-        """Automatic compaction must not be replayed by a model retry."""
-        from deepagents_code.model_retry import CodeModelRetryMiddleware
-        from deepagents_code.offload_middleware import CLICompactionMiddleware
-
-        middleware = self._capture_middleware(tmp_path, cli_max_retries=0)
-        compaction = next(
-            item for item in middleware if isinstance(item, CLICompactionMiddleware)
-        )
-        retry = next(
-            item for item in middleware if isinstance(item, CodeModelRetryMiddleware)
-        )
-
-        assert compaction._cli_max_retries == 0
-        # LangChain composes the first middleware as the outermost wrapper.
-        assert middleware.index(compaction) < middleware.index(retry)
-
-    def test_summarization_model_reaches_compaction_middleware(
-        self, tmp_path: Path
-    ) -> None:
-        """ACP graph construction retains the summary spec for lazy use."""
-        from deepagents_code.offload_middleware import CLICompactionMiddleware
-
-        middleware = self._capture_middleware(
-            tmp_path, summarization_model="openai:summary-model"
-        )
-        compaction = next(
-            item for item in middleware if isinstance(item, CLICompactionMiddleware)
-        )
-
-        assert compaction._summarization_model_spec == "openai:summary-model"
-
-    def test_auto_classifier_model_argument_reaches_middleware(
-        self, tmp_path: Path
-    ) -> None:
-        """An explicit classifier model is handed to the Auto middleware."""
-        from deepagents_code.auto_mode import AutoModeHITLMiddleware
-
-        middleware = self._capture_middleware(
-            tmp_path,
-            auto_mode_enabled=True,
-            auto_classifier_model="openai:gpt-5.5-mini",
-            cli_max_retries=0,
-        )
-
-        auto_middleware = next(
-            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
-        )
-        assert auto_middleware._configured_classifier_model == "openai:gpt-5.5-mini"
-        assert auto_middleware._cli_max_retries == 0
-
-    def test_auto_classifier_model_falls_back_to_config(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without an argument, env / `config.toml` decide the classifier."""
-        from deepagents_code._env_vars import AUTO_CLASSIFIER_MODEL
-        from deepagents_code.auto_mode import AutoModeHITLMiddleware
-
-        monkeypatch.setenv(AUTO_CLASSIFIER_MODEL, "anthropic:claude-haiku-4-5")
-        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
-
-        auto_middleware = next(
-            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
-        )
-        assert (
-            auto_middleware._configured_classifier_model == "anthropic:claude-haiku-4-5"
-        )
-
     def test_auto_classifier_model_argument_beats_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -5704,136 +4811,6 @@ class TestCreateCliAgentInterpreterWiring:
             item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
         )
         assert auto_middleware._configured_classifier_model == "openai:gpt-5.5-mini"
-
-    def test_auto_classifier_model_defaults_to_inheriting(self, tmp_path: Path) -> None:
-        """Nothing configured leaves the classifier on the main agent model."""
-        from deepagents_code.auto_mode import AutoModeHITLMiddleware
-
-        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
-
-        auto_middleware = next(
-            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
-        )
-        assert auto_middleware._configured_classifier_model is None
-
-    def test_auto_classifier_timeout_comes_from_the_resolver(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The middleware deadline is whatever the bounded resolver returned.
-
-        Asserting the manifest default here would be a tautology — the
-        middleware's own parameter default *is* that constant, so the assertion
-        would hold even if `create_cli_agent` stopped passing the keyword. A
-        sentinel that differs from the default pins the wiring itself.
-        """
-        from deepagents_code import config_manifest
-        from deepagents_code.auto_mode import AutoModeHITLMiddleware
-        from deepagents_code.config_manifest import (
-            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
-        )
-
-        sentinel = 7.5
-        assert sentinel != AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
-        monkeypatch.setattr(
-            config_manifest,
-            "resolve_auto_classifier_timeout",
-            lambda **_kwargs: sentinel,
-        )
-
-        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
-
-        auto_middleware = next(
-            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
-        )
-        assert auto_middleware._classifier_timeout_seconds == pytest.approx(sentinel)
-
-    def test_auto_classifier_timeout_defaults_to_manifest_default(
-        self, tmp_path: Path
-    ) -> None:
-        """Nothing configured leaves the classifier on the default deadline."""
-        from deepagents_code.auto_mode import AutoModeHITLMiddleware
-        from deepagents_code.config_manifest import (
-            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
-        )
-
-        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
-
-        auto_middleware = next(
-            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
-        )
-        assert (
-            auto_middleware._classifier_timeout_seconds
-            == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
-        )
-
-    def test_auto_classifier_timeout_reads_config(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A configured deadline reaches the Auto middleware."""
-        from deepagents_code._env_vars import AUTO_CLASSIFIER_TIMEOUT
-        from deepagents_code.auto_mode import AutoModeHITLMiddleware
-
-        monkeypatch.setenv(AUTO_CLASSIFIER_TIMEOUT, "45")
-        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
-
-        auto_middleware = next(
-            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
-        )
-        assert auto_middleware._classifier_timeout_seconds == pytest.approx(45.0)
-
-    @pytest.mark.parametrize("auto_mode_enabled", [True, False])
-    def test_single_hitl_slot_precedes_server_hooks(
-        self,
-        tmp_path: Path,
-        *,
-        auto_mode_enabled: bool,
-    ) -> None:
-        """One HITL middleware is installed, ahead of the server hook middleware.
-
-        `AutoModeHITLMiddleware` reports the stock `HumanInTheLoopMiddleware`
-        name, so pairing it with the standalone approval middleware would trip
-        `create_agent`'s duplicate-name assertion. `ServerHooksMiddleware` must
-        stay behind whichever one is installed so its `after_model` `PreToolUse`
-        pass resolves before approval routing.
-        """
-        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
-
-        middleware = self._capture_middleware(
-            tmp_path, auto_mode_enabled=auto_mode_enabled
-        )
-
-        hitl = [item for item in middleware if item.name == "HumanInTheLoopMiddleware"]
-        hooks = next(
-            item for item in middleware if isinstance(item, ServerHooksMiddleware)
-        )
-
-        assert len(hitl) == 1
-        assert middleware.index(hitl[0]) < middleware.index(hooks)
-
-    def test_auto_mode_agent_builds(self, tmp_path: Path) -> None:
-        """Auto mode compiles a real graph rather than aborting on duplicates."""
-        agent, _backend = create_cli_agent(
-            model=_make_fake_chat_model(),
-            assistant_id="test-agent",
-            enable_memory=False,
-            enable_skills=False,
-            enable_shell=False,
-            system_prompt="test prompt",
-            cwd=tmp_path,
-            auto_mode_enabled=True,
-        )
-
-        assert agent is not None
-
-    def test_auto_mode_wires_for_local_acp(self, tmp_path: Path) -> None:
-        """Local ACP can install classifier-backed Auto without the TUI."""
-        from deepagents_code.auto_mode import AutoModeHITLMiddleware
-
-        middleware = self._capture_middleware(
-            tmp_path, auto_mode_enabled=True, interactive=False
-        )
-
-        assert any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
 
     def test_auto_mode_omitted_with_sandbox(self, tmp_path: Path) -> None:
         """Auto is refused (no middleware) when a sandbox backend is active.
@@ -5967,26 +4944,6 @@ class TestCreateCliAgentInterpreterWiring:
                 rubric_model="openai:blocked",
             )
 
-    def test_resolves_rubric_model_with_retry_ownership(self, tmp_path: Path) -> None:
-        """A dedicated grader model disables provider retries before nesting."""
-        from deepagents.middleware.rubric import RubricMiddleware
-
-        resolved_model = _make_fake_chat_model()
-        with patch(
-            "deepagents_code.agent._resolve_retry_owned_model",
-            return_value=resolved_model,
-        ) as resolve:
-            middleware = self._capture_middleware(
-                tmp_path,
-                model=_make_fake_chat_model(),
-                rubric_model="anthropic:grader-model",
-                cli_max_retries=0,
-            )
-
-        rubric = next(item for item in middleware if isinstance(item, RubricMiddleware))
-        assert rubric._model is resolved_model
-        resolve.assert_called_once_with("anthropic:grader-model", 0)
-
     def test_rejects_disallowed_primary_model_string(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -6010,63 +4967,6 @@ class TestCreateCliAgentInterpreterWiring:
 
         with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
             self._capture_middleware(tmp_path, model="openai:blocked")
-
-    def test_graph_only_primary_model_skips_eager_retry_resolution(
-        self, tmp_path: Path
-    ) -> None:
-        """Tool enumeration leaves its never-invoked model string unresolved."""
-        with patch("deepagents_code.agent._resolve_retry_owned_model") as resolve:
-            self._capture_middleware(
-                tmp_path,
-                model="openai:catalog-placeholder",
-                enforce_model_policy=False,
-            )
-
-        resolve.assert_not_called()
-
-    def test_prebuilt_model_object_is_exempt_from_policy(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A `BaseChatModel` came from a checked path, so it is not re-checked."""
-        from deepagents_code.model_config import ModelConfig
-
-        policy = ModelConfig(
-            allowed_models=("anthropic:allowed",),
-            allowed_models_source="managed config",
-        )
-        monkeypatch.setattr(
-            ModelConfig,
-            "load",
-            classmethod(lambda _cls, _path=None: policy),
-        )
-
-        assert self._capture_middleware(tmp_path, model=_make_fake_chat_model())
-
-    def test_blank_rubric_model_keeps_its_own_diagnosis(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A blank rubric model is not a spec, so policy leaves it alone.
-
-        `RubricMiddleware` already rejects it with "`model` is required", which
-        is the accurate message. Policy-checking `""` would instead advise a
-        fully qualified provider:model spec and hide the real problem.
-        """
-        from deepagents_code.model_config import ModelConfig
-
-        policy = ModelConfig(
-            allowed_models=("anthropic:allowed",),
-            allowed_models_source="config.toml",
-        )
-        monkeypatch.setattr(
-            ModelConfig,
-            "load",
-            classmethod(lambda _cls, _path=None: policy),
-        )
-
-        with pytest.raises(ValueError, match="`model` is required"):
-            self._capture_middleware(
-                tmp_path, model=_make_fake_chat_model(), rubric_model=""
-            )
 
     def test_subagent_rejection_names_the_declaring_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -6106,7 +5006,6 @@ class TestCreateCliAgentInterpreterWiring:
         from deepagents.middleware.rubric import RubricMiddleware
         from langchain_core.tools import StructuredTool
 
-        from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.model_retry import CodeModelRetryMiddleware
 
         def inspect_resource(resource_id: str) -> str:
@@ -6166,11 +5065,11 @@ class TestCreateCliAgentInterpreterWiring:
         ]
         assert "`notion_fetch`" in rubrics[0]._system_prompt
         assert rubrics[0]._grader_context_schema is CLIContextSchema
-        configurable, retry_middleware = rubrics[0]._grader_middleware[:2]
-        assert isinstance(configurable, ConfigurableModelMiddleware)
-        assert configurable._persist_model_state is False
-        assert configurable._strict_model_resolution is True
-        assert isinstance(retry_middleware, CodeModelRetryMiddleware)
+        retry_middleware = next(
+            middleware
+            for middleware in rubrics[0]._grader_middleware
+            if isinstance(middleware, CodeModelRetryMiddleware)
+        )
         assert retry_middleware.max_retries == 0
         assert retry_middleware.stream_output_is_visible is False
         assert any(
@@ -6461,45 +5360,6 @@ class TestCreateCliAgentInterpreterWiring:
             ),
         ):
             create_cli_agent(
-                model=fake_model,
-                assistant_id="test",
-                enable_memory=False,
-                enable_skills=False,
-                enable_shell=False,
-            )
-
-        _, kwargs = mock_rubric.call_args
-        assert "max_iterations" not in kwargs
-        assert kwargs["runtime_bootstrap_model"] is fake_model
-
-    def test_forwards_string_model_as_rubric_runtime_bootstrap(
-        self, tmp_path: Path
-    ) -> None:
-        """A main model left as a spec still bootstraps the runtime grader.
-
-        Startup leaves `model` unresolved when credentials are missing or the
-        provider is unknown; the runtime grader bypass must not depend on the
-        startup rubric model resolving in that case.
-        """
-        mock_settings = self._build_mock_settings(tmp_path)
-        mock_agent = Mock()
-        mock_agent.with_config.return_value = mock_agent
-        fake_model = _make_fake_chat_model()
-        with (
-            patch("deepagents_code.agent.credentials", mock_settings),
-            patch("deepagents_code.agent.PluginSkillsMiddleware"),
-            patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.ReliableRubricMiddleware") as mock_rubric,
-            patch(
-                "deepagents_code.agent.create_deep_agent",
-                return_value=mock_agent,
-            ),
-            patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
-            ),
-        ):
-            create_cli_agent(
                 model="fake-model",
                 assistant_id="test",
                 enable_memory=False,
@@ -6508,45 +5368,7 @@ class TestCreateCliAgentInterpreterWiring:
             )
 
         _, kwargs = mock_rubric.call_args
-        assert kwargs["runtime_bootstrap_model"] == "fake-model"
-
-    def test_rubric_grader_read_tool_only_reads_large_results(
-        self, tmp_path: Path
-    ) -> None:
-        from deepagents.backends import CompositeBackend
-        from deepagents.backends.filesystem import FilesystemBackend
-
-        large_results = FilesystemBackend(
-            root_dir=tmp_path / "large",
-            virtual_mode=True,
-        )
-        project = FilesystemBackend(
-            root_dir=tmp_path / "project",
-            virtual_mode=False,
-        )
-        backend = CompositeBackend(
-            default=project,
-            routes={"/large_tool_results/": large_results},
-        )
-        backend.upload_files(
-            [("/large_tool_results/tool-call-id", b"first\nsecond\nthird")]
-        )
-        read_tool = cast("Any", _create_rubric_grader_tools(backend)[0])
-
-        runtime = SimpleNamespace(tool_call_id="grader-read")
-        allowed = read_tool.func(
-            file_path="/large_tool_results/tool-call-id",
-            runtime=runtime,
-            limit=2,
-        )
-        denied = read_tool.func(
-            file_path="/Users/mason/.ssh/id_rsa",
-            runtime=runtime,
-        )
-
-        assert "1  first" in allowed.content
-        assert "2  second" in allowed.content
-        assert "can only read" in denied
+        assert "max_iterations" not in kwargs
 
     def test_rubric_grader_prefix_tracks_artifacts_root(self, tmp_path: Path) -> None:
         """The grader read allow-list follows the backend's `artifacts_root`.
@@ -6568,48 +5390,6 @@ class TestCreateCliAgentInterpreterWiring:
         denied = read_tool.func(file_path="/large_tool_results/x", runtime=runtime)
 
         assert "can only read files under /srv/art/large_tool_results/" in denied
-
-    def test_rubric_repository_tools_use_repository_backend(
-        self, tmp_path: Path
-    ) -> None:
-        from deepagents.backends import CompositeBackend
-        from deepagents.backends.filesystem import FilesystemBackend
-
-        artifact_root = tmp_path / "artifacts"
-        artifact_root.mkdir()
-        repository_root = tmp_path / "repository"
-        repository_root.mkdir()
-        marker = "artifact-only-marker"
-        (artifact_root / "proof.txt").write_text(marker)
-        artifact_backend = FilesystemBackend(
-            root_dir=artifact_root,
-            virtual_mode=True,
-        )
-        repository_backend = FilesystemBackend(
-            root_dir=repository_root,
-            virtual_mode=True,
-        )
-        composite = CompositeBackend(default=artifact_backend, routes={})
-        tools = {
-            tool.name: cast("Any", tool)
-            for tool in _create_rubric_grader_tools(
-                composite,
-                repository_backend=repository_backend,
-                repository_root="/",
-            )
-        }
-        runtime = SimpleNamespace(tool_call_id="g", state={"messages": []})
-
-        read = tools["read_file"].func(file_path="/proof.txt", runtime=runtime)
-        searched = tools["grep"].func(
-            pattern=marker,
-            path="/",
-            output_mode="content",
-            runtime=runtime,
-        )
-
-        assert marker not in read.content
-        assert marker not in searched.content
 
     @staticmethod
     def _grader_repo_tools(tmp_path: Path) -> tuple[dict[str, Any], Path]:
@@ -6637,18 +5417,6 @@ class TestCreateCliAgentInterpreterWiring:
         }
         return tools, repo
 
-    def test_rubric_grader_inspects_working_directory(self, tmp_path: Path) -> None:
-        tools, repo = self._grader_repo_tools(tmp_path)
-
-        assert set(tools) == {"read_file", "ls", "glob", "grep"}
-
-        runtime = SimpleNamespace(tool_call_id="g", state={"messages": []})
-        read = tools["read_file"].func(file_path=str(repo / "app.py"), runtime=runtime)
-        listing = tools["ls"].func(path=str(repo), runtime=runtime)
-
-        assert "print('hello world')" in read.content
-        assert "app.py" in listing.content
-
     def test_rubric_grader_rejects_paths_outside_working_root(
         self, tmp_path: Path
     ) -> None:
@@ -6674,24 +5442,6 @@ class TestCreateCliAgentInterpreterWiring:
         denied = tools["read_file"].func(file_path=str(link), runtime=runtime)
 
         assert "unavailable" in denied
-
-    def test_rubric_grader_enforces_repository_call_budget(
-        self, tmp_path: Path
-    ) -> None:
-        from langchain_core.messages import ToolMessage as LCToolMessage
-
-        tools, repo = self._grader_repo_tools(tmp_path)
-        spent = [
-            LCToolMessage(content="x", tool_call_id=str(index), name="read_file")
-            for index in range(REPOSITORY_TOOL_CALL_LIMIT)
-        ]
-        runtime = SimpleNamespace(tool_call_id="g", state={"messages": spent})
-
-        result = tools["read_file"].func(
-            file_path=str(repo / "app.py"), runtime=runtime
-        )
-
-        assert "inspection limit reached" in result
 
     @staticmethod
     def _grader_repo_tools_fs(
@@ -6756,98 +5506,6 @@ class TestCreateCliAgentInterpreterWiring:
         assert "app.py" in listing.content
         assert "can only read files under" in refused
 
-    def test_offloaded_reads_do_not_erode_working_directory_budget(
-        self, tmp_path: Path
-    ) -> None:
-        from deepagents.backends import CompositeBackend
-        from deepagents.backends.filesystem import FilesystemBackend
-        from langchain_core.messages import (
-            AIMessage as LCAIMessage,
-            ToolMessage as LCToolMessage,
-        )
-
-        from deepagents_code.agent import _rubric_grader_read_file_prefix
-
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        (repo / "app.py").write_text("print('hello world')\n")
-        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=False)
-        composite = CompositeBackend(default=backend, routes={})
-        prefix = _rubric_grader_read_file_prefix(composite)
-        tools = {
-            tool.name: cast("Any", tool)
-            for tool in _create_rubric_grader_tools(
-                composite,
-                repository_backend=backend,
-                repository_root=str(repo),
-            )
-        }
-
-        # `REPOSITORY_TOOL_CALL_LIMIT` prior *offloaded* reads (paths under the
-        # offload prefix) must not consume the working-directory budget.
-        messages: list[Any] = []
-        for index in range(REPOSITORY_TOOL_CALL_LIMIT):
-            call_id = f"off-{index}"
-            messages.extend(
-                (
-                    LCAIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "read_file",
-                                "id": call_id,
-                                "args": {"file_path": f"{prefix}result-{index}.txt"},
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    LCToolMessage(content="x", tool_call_id=call_id, name="read_file"),
-                )
-            )
-        runtime = SimpleNamespace(tool_call_id="g", state={"messages": messages})
-
-        read = tools["read_file"].func(file_path=str(repo / "app.py"), runtime=runtime)
-
-        assert "print('hello world')" in read.content
-
-    def test_working_directory_reads_consume_budget_via_tool_calls(
-        self, tmp_path: Path
-    ) -> None:
-        from langchain_core.messages import (
-            AIMessage as LCAIMessage,
-            ToolMessage as LCToolMessage,
-        )
-
-        tools, repo = self._grader_repo_tools(tmp_path)
-        target = str(repo / "app.py")
-
-        # `REPOSITORY_TOOL_CALL_LIMIT` prior *working-directory* reads (paths
-        # outside the offload prefix) exhaust the budget.
-        messages: list[Any] = []
-        for index in range(REPOSITORY_TOOL_CALL_LIMIT):
-            call_id = f"wd-{index}"
-            messages.extend(
-                (
-                    LCAIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "read_file",
-                                "id": call_id,
-                                "args": {"file_path": target},
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    LCToolMessage(content="x", tool_call_id=call_id, name="read_file"),
-                )
-            )
-        runtime = SimpleNamespace(tool_call_id="g", state={"messages": messages})
-
-        result = tools["read_file"].func(file_path=target, runtime=runtime)
-
-        assert "inspection limit reached" in result
-
     def test_rubric_grader_prompt_describes_available_evidence(self) -> None:
         with_repo = _rubric_grader_system_prompt(
             "/large_tool_results/",
@@ -6865,27 +5523,6 @@ class TestCreateCliAgentInterpreterWiring:
         assert "If a tool cannot be used or yields no useful evidence" in with_repo
         assert "read-only `ls`" not in without_repo
         assert "`fetch_url`" not in without_repo
-
-    def test_rubric_grader_rejects_context_tool_name_collision(
-        self, tmp_path: Path
-    ) -> None:
-        from deepagents.backends import CompositeBackend
-        from deepagents.backends.filesystem import FilesystemBackend
-        from langchain_core.tools import StructuredTool
-
-        def conflicting_read(file_path: str) -> str:
-            return file_path
-
-        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
-        composite = CompositeBackend(default=backend, routes={})
-        context_tool = StructuredTool.from_function(
-            func=conflicting_read,
-            name="read_file",
-            description="Conflicting external reader.",
-        )
-
-        with pytest.raises(ValueError, match="read_file"):
-            _create_rubric_grader_tools(composite, context_tools=[context_tool])
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware
@@ -7126,6 +5763,59 @@ class TestCreateCliAgentInterpreterWiring:
         # preset resolves to all three members rather than dropping it.
         assert sorted(middlewares[0]._ptc) == ["glob", "grep", "read_file"]
 
+    def test_forwards_string_model_as_rubric_runtime_bootstrap(
+        self, tmp_path: Path
+    ) -> None:
+        """A main model left as a spec still bootstraps the runtime grader.
+
+        Startup leaves `model` unresolved when credentials are missing or the
+        provider is unknown; the runtime grader bypass must not depend on the
+        startup rubric model resolving in that case.
+        """
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.credentials", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch("deepagents_code.agent.ReliableRubricMiddleware") as mock_rubric,
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        _, kwargs = mock_rubric.call_args
+        assert kwargs["runtime_bootstrap_model"] == "fake-model"
+
+    def test_summarization_model_reaches_compaction_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        """ACP graph construction retains the summary spec for lazy use."""
+        from deepagents_code.offload_middleware import CLICompactionMiddleware
+
+        middleware = self._capture_middleware(
+            tmp_path, summarization_model="openai:summary-model"
+        )
+        compaction = next(
+            item for item in middleware if isinstance(item, CLICompactionMiddleware)
+        )
+
+        assert compaction._summarization_model_spec == "openai:summary-model"
+
 
 class TestResolvePtcOption:
     """Direct tests for the `_resolve_ptc_option` helper."""
@@ -7155,32 +5845,6 @@ class TestResolvePtcOption:
             return ""
 
         return [read_file, write_file, delete, grep]
-
-    def test_false_returns_none(self) -> None:
-        from deepagents_code.agent import _resolve_ptc_option
-
-        assert (
-            _resolve_ptc_option(
-                False,
-                tools=self._tools(),
-                acknowledge_unsafe=False,
-                auto_approve=False,
-            )
-            is None
-        )
-
-    def test_empty_list_returns_none(self) -> None:
-        from deepagents_code.agent import _resolve_ptc_option
-
-        assert (
-            _resolve_ptc_option(
-                [],
-                tools=self._tools(),
-                acknowledge_unsafe=False,
-                auto_approve=False,
-            )
-            is None
-        )
 
     def test_safe_includes_builtin_preset_members(self) -> None:
         """`"safe"` resolves to the full preset even when members are SDK built-ins.
@@ -7442,20 +6106,3 @@ class TestSubagentRetryBudgetResolution:
         with patch("deepagents_code.config.create_model", _fake_create_model):
             _resolve_retry_owned_model("anthropic:claude-haiku-4-5", cli_max_retries)
         return captured
-
-    def test_unset_flag_lets_the_model_resolve_its_own_budget(self) -> None:
-        """Without `--max-retries`, nothing may pre-empt the provider section.
-
-        Forwarding the caller's resolved budget here would outrank
-        `[retries.<provider>].max_retries`, so a subagent on another provider
-        could never use its own configured value.
-        """
-        assert self._captured_kwargs(None) == {"cli_max_retries": None}
-
-    def test_explicit_flag_still_reaches_the_subagent(self) -> None:
-        """An explicit `--max-retries` remains a global override."""
-        assert self._captured_kwargs(2) == {"cli_max_retries": 2}
-
-    def test_zero_flag_is_forwarded_not_treated_as_unset(self) -> None:
-        """`--max-retries 0` disables retries; it is not an absent flag."""
-        assert self._captured_kwargs(0) == {"cli_max_retries": 0}

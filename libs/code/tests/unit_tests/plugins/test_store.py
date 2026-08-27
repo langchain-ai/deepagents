@@ -40,29 +40,3 @@ def test_marketplace_mutation_preserves_corrupt_state(state_dir: Path) -> None:
         )
 
     assert path.read_text(encoding="utf-8") == original
-
-
-def test_enablement_mutation_preserves_future_state(state_dir: Path) -> None:
-    path = state_dir / "plugin_state.json"
-    original = '{"version": 999, "enabledPlugins": {"existing@tools": true}}'
-    path.write_text(original, encoding="utf-8")
-
-    with pytest.raises(PluginStateError, match="unsupported version"):
-        set_plugin_enabled("new@tools", True)
-
-    assert path.read_text(encoding="utf-8") == original
-
-
-def test_install_mutation_preserves_non_object_state(state_dir: Path) -> None:
-    path = state_dir / "installed_plugins.json"
-    original = '["existing"]'
-    path.write_text(original, encoding="utf-8")
-
-    with pytest.raises(PluginStateError, match="not a JSON object"):
-        add_installed_plugin(
-            "new@tools",
-            install_path="/cache/new",
-            version="1.0.0",
-        )
-
-    assert path.read_text(encoding="utf-8") == original

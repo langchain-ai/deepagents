@@ -1206,53 +1206,6 @@ class TestStartupAutoUpdate:
         assert "Updated to v9.9.9." in output
         assert "9.9.9" in output
 
-    def test_update_launch_status_rewrite_handles_narrow_terminal_wrap(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The status rewrite erases every row in narrow terminal panes."""
-        stream = StringIO()
-        console = Console(file=stream, force_terminal=True, no_color=True, width=10)
-        narrow_options = console.options.update_width(10)
-        monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
-
-        with (
-            patch.object(
-                type(console),
-                "options",
-                new_callable=PropertyMock,
-                return_value=narrow_options,
-            ),
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.is_update_check_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.is_installed_version_at_least",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.get_cached_update_available",
-                return_value=(False, "9.9.9"),
-            ),
-            patch("deepagents_code.update_check.perform_upgrade"),
-            patch("deepagents_code.main._restart_current_process"),
-            patch.object(console, "control", wraps=console.control) as control,
-        ):
-            launch_rows = _terminal_row_count(
-                console, "Updated to v9.9.9. Launching..."
-            )
-            _run_startup_auto_update(console)
-
-        output = stream.getvalue()
-        assert control.call_count == launch_rows
-        assert "Updated to" in output
-        assert "9.9.9" in output
-
     def test_restart_after_update_skips_rewrite_when_not_terminal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1434,33 +1387,6 @@ class TestStartupAutoUpdate:
         # ...and the newer version still goes through the upgrade path.
         assert "v9.9.9. Launching..." in output
 
-    def test_terminal_row_count_single_row(self) -> None:
-        """Text that fits on one line counts as a single row."""
-        console = Console(file=StringIO(), force_terminal=True, no_color=True, width=80)
-        assert _terminal_row_count(console, "abc") == 1
-
-    def test_terminal_row_count_wraps_to_multiple_rows(self) -> None:
-        """Text wider than the pane counts each wrapped row.
-
-        Deliberately left unmocked: this is the canary that should fail if a
-        future Rich version changes how it wraps text. Pin both constructor
-        dimensions so Rich honors the requested width even under `TERM=dumb`.
-        """
-        console = Console(
-            file=StringIO(),
-            force_terminal=True,
-            no_color=True,
-            width=10,
-            height=25,
-        )
-        # 20 characters at width 10 wraps to exactly 2 rows.
-        assert _terminal_row_count(console, "abcdefghijklmnopqrst") == 2
-
-    def test_terminal_row_count_floors_at_one(self) -> None:
-        """Empty text still reports one row, never zero."""
-        console = Console(file=StringIO(), force_terminal=True, no_color=True, width=80)
-        assert _terminal_row_count(console, "") == 1
-
     def test_startup_auto_update_wired_into_interactive_launch(self) -> None:
         """`cli_main` must invoke the startup auto-update on interactive launch.
 
@@ -1581,28 +1507,6 @@ class TestLaunchTermProgramSnapshot:
 
         assert os.environ[LAUNCH_TERM_PROGRAM] == "WezTerm"
 
-    def test_skips_snapshot_when_term_program_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without a launch `TERM_PROGRAM` no sentinel is written."""
-        monkeypatch.delenv("TERM_PROGRAM", raising=False)
-        monkeypatch.delenv(LAUNCH_TERM_PROGRAM, raising=False)
-
-        self._run_cli_main()
-
-        assert LAUNCH_TERM_PROGRAM not in os.environ
-
-    def test_inherited_snapshot_wins_over_launch_value(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The update re-exec's inherited sentinel is not overwritten."""
-        monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
-        monkeypatch.setenv(LAUNCH_TERM_PROGRAM, "iTerm.app")
-
-        self._run_cli_main()
-
-        assert os.environ[LAUNCH_TERM_PROGRAM] == "iTerm.app"
-
 
 class TestAutoUpdateDefaultMigration:
     """First-run consent/migration notice for the auto-update opt-out default."""
@@ -1615,227 +1519,6 @@ class TestAutoUpdateDefaultMigration:
             return_value=None,
         ):
             yield
-
-    def test_first_run_announces_and_skips_install(self) -> None:
-        """An implicit (default) opt-in announces once and skips the install."""
-        console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
-
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.is_update_check_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.get_cached_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.should_announce_auto_update_default",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.mark_auto_update_default_acknowledged",
-                return_value=True,
-            ) as mark,
-            patch("deepagents_code.update_check.perform_upgrade", upgrade),
-            patch("deepagents_code.main._restart_current_process") as restart,
-        ):
-            _run_startup_auto_update(console)
-
-        upgrade.assert_not_called()
-        restart.assert_not_called()
-        mark.assert_called_once_with()
-        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "updates automatically by default" in printed
-        # A successful persist must not warn about the notice repeating.
-        assert "could not be saved" not in printed
-
-    def test_first_run_persist_failure_warns_repeat(self) -> None:
-        """A failed acknowledgement persist surfaces that the notice may repeat."""
-        console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
-
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.is_update_check_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.get_cached_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.should_announce_auto_update_default",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.mark_auto_update_default_acknowledged",
-                return_value=False,
-            ),
-            patch("deepagents_code.update_check.perform_upgrade", upgrade),
-            patch("deepagents_code.main._restart_current_process") as restart,
-        ):
-            _run_startup_auto_update(console)
-
-        upgrade.assert_not_called()
-        restart.assert_not_called()
-        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "updates automatically by default" in printed
-        assert "could not be saved" in printed
-
-    def test_debug_update_does_not_suppress_first_run_notice(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The consent notice wins over the debug-skip branch on the first run.
-
-        `should_announce_auto_update_default` is checked before the
-        `DEBUG_UPDATE` short-circuit, so a first run in debug mode shows the
-        migration notice (and records the acknowledgement) rather than the
-        "Skipped update install (debug mode)" message.
-        """
-        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_UPDATE", "1")
-        console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
-
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.is_update_check_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.get_cached_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.should_announce_auto_update_default",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.mark_auto_update_default_acknowledged",
-                return_value=True,
-            ) as mark,
-            patch("deepagents_code.update_check.perform_upgrade", upgrade),
-            patch("deepagents_code.main._restart_current_process") as restart,
-        ):
-            _run_startup_auto_update(console)
-
-        upgrade.assert_not_called()
-        restart.assert_not_called()
-        mark.assert_called_once_with()
-        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "updates automatically by default" in printed
-        assert "debug mode" not in printed
-
-    def test_acknowledged_default_proceeds_with_install(self) -> None:
-        """Once acknowledged, the install proceeds normally on later launches."""
-        console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
-
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.is_update_check_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.get_cached_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.should_announce_auto_update_default",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.update_check.format_release_age_parenthetical",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.create_update_log_file",
-                return_value=Path("/tmp/dcode-update.log"),
-            ),
-            patch("deepagents_code.update_check.perform_upgrade", upgrade),
-            patch(
-                "deepagents_code.main._restart_current_process",
-                side_effect=SystemExit(0),
-            ),
-            pytest.raises(SystemExit),
-        ):
-            _run_startup_auto_update(console)
-
-        upgrade.assert_awaited_once()
-
-    def test_first_run_then_next_launch_end_to_end(self, tmp_path: Path) -> None:
-        """Drive the real consent state machine across two launches.
-
-        Unlike the other tests here, this does not patch
-        `should_announce_auto_update_default` / `mark_auto_update_default_acknowledged`
-        — it exercises the genuine implementations against temp config/state
-        files so the wiring (announce-and-skip, then proceed) is verified, not
-        just the orchestration around stubbed helpers.
-        """
-        config_path = tmp_path / "config.toml"
-        state_file = tmp_path / "update_state.json"
-        console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
-
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", config_path),
-            patch("deepagents_code.update_check.UPDATE_STATE_FILE", state_file),
-            patch(
-                "deepagents_code.update_check.get_cached_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.format_release_age_parenthetical",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.create_update_log_file",
-                return_value=Path("/tmp/dcode-update.log"),
-            ),
-            patch("deepagents_code.update_check.perform_upgrade", upgrade),
-        ):
-            # First launch: no explicit choice and no recorded acknowledgement,
-            # so the migration notice fires and the install is skipped.
-            _run_startup_auto_update(console)
-            upgrade.assert_not_called()
-            printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-            assert "updates automatically by default" in printed
-            assert state_file.exists()  # acknowledgement persisted
-
-            # Second launch: the acknowledgement is now on disk, so the install
-            # proceeds and the process re-execs (simulated via SystemExit).
-            with (
-                patch(
-                    "deepagents_code.main._restart_current_process",
-                    side_effect=SystemExit(0),
-                ),
-                pytest.raises(SystemExit),
-            ):
-                _run_startup_auto_update(console)
-
-        upgrade.assert_awaited_once()
 
 
 class TestResumeHintLogic:
@@ -1916,135 +1599,6 @@ class TestPrintSessionStats:
         buffer = StringIO()
         _print_session_stats(stats, Console(file=buffer, width=200))
         return buffer.getvalue()
-
-    @pytest.mark.parametrize(
-        ("config_toml", "expected_visible"),
-        [
-            ("", True),
-            ("[ui]\nshow_usage_stats = true\n", True),
-            ("[ui]\nshow_usage_stats = false\n", False),
-        ],
-    )
-    def test_respects_show_usage_stats(
-        self,
-        config_toml: str,
-        expected_visible: bool,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """`[ui].show_usage_stats` controls teardown table rendering."""
-        output = self._render(config_toml, tmp_path, monkeypatch)
-
-        if expected_visible:
-            assert "test-model" in output
-        else:
-            # Nothing at all, not merely a missing model row: a suppressed
-            # table must not leave a header or a stray blank line behind.
-            assert output == ""
-
-    def test_absent_config_file_keeps_stats(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A user with no `config.toml` at all still gets the table.
-
-        The other cases write an empty-but-present file, which exercises a
-        different branch of `load_config_toml` than a missing path does.
-        """
-        from deepagents_code._session_stats import SessionStats
-
-        monkeypatch.setattr(
-            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
-            tmp_path / "does_not_exist.toml",
-        )
-        stats = SessionStats(wall_time_seconds=2.0)
-        stats.record_request("test-model", 100, 50)
-        buffer = StringIO()
-
-        _print_session_stats(stats, Console(file=buffer, width=200))
-
-        assert "test-model" in buffer.getvalue()
-
-    def test_malformed_value_keeps_stats(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """A wrong-typed TOML value is rejected rather than coerced.
-
-        TOML has no truthy strings, so `show_usage_stats = "no"` is the
-        likeliest way to get this wrong, and `bool("no")` is `True` — naive
-        coercion would show the table to a user who meant to hide it.
-
-        The default is also `True`, so "rejected, fell through to the default"
-        and "coerced to `True`" render identically; `"test-model" in output`
-        cannot tell them apart. The log assertion is the one carrying the
-        weight here. The rejection happens in `_coerce_toml`, one layer below
-        the `OptionKind` guard; that guard is covered directly in
-        `test_config_manifest.py`.
-        """
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-            output = self._render(
-                '[ui]\nshow_usage_stats = "no"\n', tmp_path, monkeypatch
-            )
-
-        assert "test-model" in output
-        assert "show_usage_stats" in caplog.text
-        assert "expected bool" in caplog.text
-
-    def test_managed_config_overrides_user_preference(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Managed policy outranks the user's `config.toml`.
-
-        The resolver reads the managed tier by default. A refactor that passed
-        an isolated user source would drop admin policy with every other test
-        in this class still green.
-        """
-        from unit_tests.conftest import redirect_managed_config
-
-        managed = tmp_path / "managed_config.toml"
-        managed.write_text("[ui]\nshow_usage_stats = false\n", encoding="utf-8")
-        redirect_managed_config(monkeypatch, managed)
-
-        output = self._render("[ui]\nshow_usage_stats = true\n", tmp_path, monkeypatch)
-
-        assert output == ""
-
-    def test_non_stats_payload_warns_and_skips_config(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A non-`SessionStats` payload warns and never resolves the option.
-
-        `stats` is typed `Any`, so nothing stops a caller from passing something
-        else. `main` itself always passes a real `SessionStats`
-        (`AppResult.session_stats` has a `default_factory`), so if this branch
-        ever fires something upstream is broken — hence the warning, which is
-        what keeps "the payload was wrong" apart from "the user disabled it".
-
-        The spy records rather than raises: `usage_table_enabled` catches
-        exceptions and returns `True`, so a raising stub would make a regressed
-        guard order pass vacuously. `load_config_toml` is the read being
-        trapped; `load_bool_display_preference` loads it before resolving, so
-        no lookup can slip past it.
-        """
-        calls: list[object] = []
-
-        def _spy() -> dict[str, object]:
-            calls.append(None)
-            return {}
-
-        monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", _spy)
-        buffer = StringIO()
-
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.main"):
-            _print_session_stats(None, Console(file=buffer, width=200))
-
-        assert buffer.getvalue() == ""
-        assert not calls, "config must not be read for a non-stats payload"
-        assert "expected SessionStats" in caplog.text
 
 
 class TestTeardownThreadCheckpointLookup:
@@ -2684,23 +2238,9 @@ class TestLangSmithTeardownUrl:
         """Clear LangSmith URL cache before each test."""
         reset_langsmith_url_cache()
 
-    def test_thread_url_requires_all_components(self) -> None:
-        """LangSmith link requires thread_id, project_name, and project_url."""
-        thread_url = build_langsmith_thread_url("abc123")
-        # Without LangSmith configured, should return None
-        assert thread_url is None
-
 
 class TestAppResult:
     """Tests for the AppResult dataclass."""
-
-    def test_frozen(self) -> None:
-        """AppResult should be immutable."""
-        from dataclasses import FrozenInstanceError
-
-        result = AppResult(return_code=0, thread_id="tid")
-        with pytest.raises(FrozenInstanceError):
-            result.return_code = 1  # ty: ignore
 
 
 class TestRunTextualCliAsyncMcp:
@@ -2747,26 +2287,6 @@ class TestRunTextualCliAsyncMcp:
         assert captured_kwargs["model_kwargs"]["model_spec"] == "openai:gpt-5.5"
         assert captured_kwargs["model_kwargs"]["extra_kwargs"] is None
         assert captured_kwargs["initial_goal"] == "add refresh tokens"
-
-    async def test_no_mcp_kwargs_when_disabled(self) -> None:
-        """mcp_preload_kwargs should be None when no_mcp=True."""
-        app_result = AppResult(return_code=0, thread_id="thread-123")
-        captured_kwargs: dict[str, Any] = {}
-
-        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
-            captured_kwargs.update(kwargs)
-            await asyncio.sleep(0)
-            return app_result
-
-        with patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub):
-            await run_textual_cli_async(
-                "agent",
-                thread_id="thread-123",
-                model_name="openai:gpt-5.5",
-                no_mcp=True,
-            )
-
-        assert captured_kwargs["mcp_preload_kwargs"] is None
 
     def test_auto_classifier_problem_reports_model_policy(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2844,93 +2364,6 @@ class TestRunTextualCliAsyncMcp:
 
         assert _classifier_model_after_policy("openai:anything") == "openai:anything"
 
-    async def test_resolves_summarization_model_precedence(self) -> None:
-        app_result = AppResult(return_code=0, thread_id="thread-123")
-        captured_kwargs: dict[str, Any] = {}
-        config = ModelConfig(summarization_default_model="openai:config-summary")
-
-        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
-            captured_kwargs.update(kwargs)
-            await asyncio.sleep(0)
-            return app_result
-
-        with (
-            patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
-            patch.object(ModelConfig, "load", return_value=config),
-            patch(
-                "deepagents_code.config.create_model",
-                side_effect=AssertionError("summary model constructed before TUI"),
-            ) as create_model,
-        ):
-            await run_textual_cli_async(
-                "agent",
-                model_name="openai:gpt-5.5",
-                summarization_model="openai:flag-summary",
-            )
-
-        create_model.assert_not_called()
-        assert captured_kwargs["summarization_model"] == "openai:flag-summary"
-        assert (
-            captured_kwargs["server_kwargs"]["summarization_model"]
-            == "openai:flag-summary"
-        )
-
-    async def test_forwards_no_summarization_model_when_unset(self) -> None:
-        """An unset spec reaches the app as `None`.
-
-        `cli_main` resolves `[models].summarization_default` before any launch
-        mode, so this entry point forwards whatever it is given rather than
-        consulting the config itself.
-        """
-        app_result = AppResult(return_code=0, thread_id="thread-123")
-        captured_kwargs: dict[str, Any] = {}
-        config = ModelConfig(summarization_default_model="openai:config-summary")
-
-        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
-            captured_kwargs.update(kwargs)
-            await asyncio.sleep(0)
-            return app_result
-
-        with (
-            patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
-            patch.object(ModelConfig, "load", return_value=config),
-            patch(
-                "deepagents_code.config.create_model",
-                side_effect=AssertionError("summary model constructed before TUI"),
-            ) as create_model,
-        ):
-            await run_textual_cli_async("agent", model_name="openai:gpt-5.5")
-
-        create_model.assert_not_called()
-        assert captured_kwargs["summarization_model"] is None
-        assert captured_kwargs["server_kwargs"]["summarization_model"] is None
-
-    async def test_resolves_configured_auto_classifier_before_tui_launch(self) -> None:
-        """The TUI and server receive the same effective env/TOML classifier."""
-        app_result = AppResult(return_code=0, thread_id="thread-123")
-        captured_kwargs: dict[str, Any] = {}
-        classifier = "anthropic:claude-haiku-4-5"
-
-        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
-            captured_kwargs.update(kwargs)
-            await asyncio.sleep(0)
-            return app_result
-
-        with (
-            patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
-            patch(
-                "deepagents_code.config.resolve_auto_classifier_model_with_problem",
-                return_value=(classifier, None),
-            ) as resolve_classifier,
-        ):
-            await run_textual_cli_async(
-                "agent",
-                model_name="openai:gpt-5.5",
-            )
-
-        resolve_classifier.assert_called_once_with()
-        assert captured_kwargs["server_kwargs"]["auto_classifier_model"] == classifier
-
     async def test_explicit_auto_classifier_precedes_config(self) -> None:
         """The CLI classifier remains authoritative over env/TOML config."""
         app_result = AppResult(return_code=0, thread_id="thread-123")
@@ -2997,10 +2430,16 @@ class TestRunTextualCliAsyncMcp:
             == INHERIT_CLASSIFIER_MODEL
         )
 
-    async def test_onboarding_trigger_reaches_textual_app(self) -> None:
-        """First-run onboarding state should control the app launch flag."""
+    async def test_forwards_no_summarization_model_when_unset(self) -> None:
+        """An unset spec reaches the app as `None`.
+
+        `cli_main` resolves `[models].summarization_default` before any launch
+        mode, so this entry point forwards whatever it is given rather than
+        consulting the config itself.
+        """
         app_result = AppResult(return_code=0, thread_id="thread-123")
         captured_kwargs: dict[str, Any] = {}
+        config = ModelConfig(summarization_default_model="openai:config-summary")
 
         async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
             captured_kwargs.update(kwargs)
@@ -3009,17 +2448,48 @@ class TestRunTextualCliAsyncMcp:
 
         with (
             patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
+            patch.object(ModelConfig, "load", return_value=config),
             patch(
-                "deepagents_code.onboarding.should_run_onboarding", return_value=True
-            ),
+                "deepagents_code.config.create_model",
+                side_effect=AssertionError("summary model constructed before TUI"),
+            ) as create_model,
+        ):
+            await run_textual_cli_async("agent", model_name="openai:gpt-5.5")
+
+        create_model.assert_not_called()
+        assert captured_kwargs["summarization_model"] is None
+        assert captured_kwargs["server_kwargs"]["summarization_model"] is None
+
+    async def test_resolves_summarization_model_precedence(self) -> None:
+        app_result = AppResult(return_code=0, thread_id="thread-123")
+        captured_kwargs: dict[str, Any] = {}
+        config = ModelConfig(summarization_default_model="openai:config-summary")
+
+        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        with (
+            patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
+            patch.object(ModelConfig, "load", return_value=config),
+            patch(
+                "deepagents_code.config.create_model",
+                side_effect=AssertionError("summary model constructed before TUI"),
+            ) as create_model,
         ):
             await run_textual_cli_async(
                 "agent",
-                thread_id="thread-123",
                 model_name="openai:gpt-5.5",
+                summarization_model="openai:flag-summary",
             )
 
-        assert captured_kwargs["launch_init"] is True
+        create_model.assert_not_called()
+        assert captured_kwargs["summarization_model"] == "openai:flag-summary"
+        assert (
+            captured_kwargs["server_kwargs"]["summarization_model"]
+            == "openai:flag-summary"
+        )
 
 
 class TestServerCleanupLifecycle:
@@ -3033,27 +2503,6 @@ class TestServerCleanupLifecycle:
     the terminal is restored — even when startup failed and no `_server_proc`
     was ever tracked (PR #4999 review).
     """
-
-    async def test_server_proc_stopped_after_app_exits(self) -> None:
-        """run_textual_app must call server_proc.stop() in the finally block."""
-        server_proc = SimpleNamespace(stop=MagicMock())
-
-        guard = MagicMock(active=False)
-        with (
-            patch.object(DeepAgentsApp, "run_async", new_callable=AsyncMock),
-            patch(
-                "deepagents_code._terminal_stderr.TerminalStderrGuard.install",
-                return_value=guard,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.emit_preserved_log_notices",
-            ) as emit,
-        ):
-            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
-
-        guard.close.assert_called_once_with()
-        server_proc.stop.assert_called_once_with()
-        emit.assert_called_once_with()
 
     async def test_stdout_driver_installed_while_stderr_is_suppressed(self) -> None:
         """An active guard must redirect Textual to stdout before it renders.
@@ -3159,27 +2608,6 @@ class TestServerCleanupLifecycle:
         server_proc.stop.assert_called_once_with()
         emit.assert_called_once_with()
 
-    async def test_server_proc_stopped_even_on_crash(self) -> None:
-        """server_proc.stop() must fire even when run_async raises."""
-        server_proc = SimpleNamespace(stop=MagicMock())
-
-        with (
-            patch.object(
-                DeepAgentsApp,
-                "run_async",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("boom"),
-            ),
-            patch(
-                "deepagents_code.client.launch.server.emit_preserved_log_notices",
-            ) as emit,
-            pytest.raises(TextualAppError, match="boom"),
-        ):
-            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
-
-        server_proc.stop.assert_called_once_with()
-        emit.assert_called_once_with()
-
     async def test_crash_carries_app_state(self) -> None:
         """A run_async failure wraps the app's final thread ID and return code."""
         msg = "boom"
@@ -3204,32 +2632,6 @@ class TestServerCleanupLifecycle:
         # No clean exit was recorded, so the crash snapshot reports failure.
         assert exc_info.value.result.return_code == 1
         assert isinstance(exc_info.value.__cause__, RuntimeError)
-
-    async def test_deferred_server_proc_stopped_after_app_exits(self) -> None:
-        """server_proc set by the background worker must still be cleaned up."""
-        server_proc = SimpleNamespace(stop=MagicMock())
-
-        async def _fake_run_async(self: DeepAgentsApp) -> None:  # noqa: RUF029
-            # Simulate the background worker having set _server_proc
-            self._server_proc = server_proc
-
-        with (
-            patch.object(
-                DeepAgentsApp,
-                "run_async",
-                new=_fake_run_async,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.emit_preserved_log_notices",
-            ) as emit,
-        ):
-            await run_textual_app(
-                server_kwargs={"assistant_id": "a"},
-                thread_id="t-1",
-            )
-
-        server_proc.stop.assert_called_once_with()
-        emit.assert_called_once_with()
 
     async def test_notice_drained_when_startup_left_no_server_proc(self) -> None:
         """A failed startup queues a path but never tracks a `_server_proc`.
@@ -3273,45 +2675,6 @@ class TestCheckOptionalTools:
         ):
             yield
 
-    def test_returns_tool_name_when_rg_not_found(self) -> None:
-        """Returns `['ripgrep']` when `rg` is not on PATH."""
-        with patch("deepagents_code.main.shutil.which", return_value=None):
-            missing = check_optional_tools()
-
-        assert missing == ["ripgrep"]
-
-    def test_returns_empty_when_rg_found(self) -> None:
-        """Returns empty list when `rg` is found on PATH."""
-        with patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"):
-            missing = check_optional_tools()
-
-        assert missing == []
-
-    def test_managed_rg_still_requires_validation(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Treat the managed binary as missing so `ensure_ripgrep` validates it."""
-        managed = tmp_path / "bin" / "rg"
-        monkeypatch.setattr(
-            "deepagents_code.managed_tools.managed_rg_path",
-            lambda: managed,
-        )
-
-        with patch("deepagents_code.main.shutil.which", return_value=str(managed)):
-            missing = check_optional_tools()
-
-        assert missing == ["ripgrep"]
-
-    def test_warning_suppressed_via_config(self, tmp_path: Path) -> None:
-        """Returns empty list when ripgrep warning is suppressed in config."""
-        config_path = tmp_path / "config.toml"
-        config_path.write_text('[warnings]\nsuppress = ["ripgrep"]\n')
-
-        with patch("deepagents_code.main.shutil.which", return_value=None):
-            missing = check_optional_tools(config_path=config_path)
-
-        assert missing == []
-
     def test_malformed_config_does_not_suppress(self, tmp_path: Path) -> None:
         """Malformed TOML config degrades gracefully instead of crashing."""
         config_path = tmp_path / "config.toml"
@@ -3332,16 +2695,6 @@ class TestCheckOptionalTools:
 
         assert missing == ["ripgrep"]
 
-    def test_unrelated_suppress_key_does_not_suppress(self, tmp_path: Path) -> None:
-        """Suppressing a different key does not suppress the ripgrep warning."""
-        config_path = tmp_path / "config.toml"
-        config_path.write_text('[warnings]\nsuppress = ["something_else"]\n')
-
-        with patch("deepagents_code.main.shutil.which", return_value=None):
-            missing = check_optional_tools(config_path=config_path)
-
-        assert missing == ["ripgrep"]
-
     def test_returns_tavily_when_key_missing(self, tmp_path: Path) -> None:
         """Returns `'tavily'` when TAVILY_API_KEY is not set."""
         config_path = tmp_path / "config.toml"
@@ -3355,13 +2708,6 @@ class TestCheckOptionalTools:
             missing = check_optional_tools(config_path=config_path)
 
         assert missing == ["tavily"]
-
-    def test_omits_tavily_when_key_present(self) -> None:
-        """Does not include `'tavily'` when TAVILY_API_KEY is set."""
-        with patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"):
-            missing = check_optional_tools()
-
-        assert "tavily" not in missing
 
     def test_tavily_warning_suppressed_via_config(self, tmp_path: Path) -> None:
         """Returns empty list when tavily warning is suppressed in config."""
@@ -3383,60 +2729,9 @@ class TestCheckOptionalTools:
 class TestIsManagedRipgrepPath:
     """Tests for `_is_managed_ripgrep_path`."""
 
-    def test_none_is_not_managed(self) -> None:
-        """A missing `rg` (path `None`) is not the managed binary."""
-        assert _is_managed_ripgrep_path(None) is False
-
-    def test_managed_path_matches(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """The resolved managed path is recognized as managed."""
-        managed = tmp_path / "bin" / "rg"
-        managed.parent.mkdir(parents=True)
-        managed.write_bytes(b"x")
-        monkeypatch.setattr(
-            "deepagents_code.managed_tools.managed_rg_path", lambda: managed
-        )
-
-        assert _is_managed_ripgrep_path(str(managed)) is True
-
-    def test_system_path_is_not_managed(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """A system `rg` elsewhere on `PATH` is not the managed binary."""
-        managed = tmp_path / "bin" / "rg"
-        monkeypatch.setattr(
-            "deepagents_code.managed_tools.managed_rg_path", lambda: managed
-        )
-
-        assert _is_managed_ripgrep_path(str(tmp_path / "usr" / "bin" / "rg")) is False
-
 
 class TestAutoInstallRipgrepCli:
     """Tests for the headless `_auto_install_ripgrep_cli` helper."""
-
-    def test_success_drops_ripgrep_and_prepends(self) -> None:
-        """A successful install prepends `PATH` and drops `ripgrep`."""
-        console = MagicMock()
-        prepend = MagicMock()
-        with (
-            patch(
-                "deepagents_code.managed_tools.ensure_ripgrep",
-                AsyncMock(return_value=Path("/managed/rg")),
-            ),
-            patch(
-                "deepagents_code.managed_tools.managed_rg_path",
-                return_value=Path("/managed/rg"),
-            ),
-            patch(
-                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
-                prepend,
-            ),
-        ):
-            result = _auto_install_ripgrep_cli(console, ["ripgrep", "tavily"])
-
-        assert result == ["tavily"]
-        prepend.assert_called_once()
 
     def test_system_rg_drops_ripgrep_without_prepending(self) -> None:
         """A system `rg` is usable without prepending the managed binary dir."""
@@ -3460,40 +2755,6 @@ class TestAutoInstallRipgrepCli:
 
         assert result == ["tavily"]
         prepend.assert_not_called()
-
-    def test_install_returns_none_keeps_ripgrep(self) -> None:
-        """A skipped/failed install leaves `ripgrep` in the missing list."""
-        console = MagicMock()
-        prepend = MagicMock()
-        with (
-            patch(
-                "deepagents_code.managed_tools.ensure_ripgrep",
-                AsyncMock(return_value=None),
-            ),
-            patch(
-                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
-                prepend,
-            ),
-        ):
-            result = _auto_install_ripgrep_cli(console, ["ripgrep"])
-
-        assert result == ["ripgrep"]
-        prepend.assert_not_called()
-
-    def test_checksum_mismatch_keeps_ripgrep_and_reports(self) -> None:
-        """A checksum mismatch is reported loudly and is not swallowed silently."""
-        from deepagents_code.managed_tools import ChecksumMismatchError
-
-        console = MagicMock()
-        with patch(
-            "deepagents_code.managed_tools.ensure_ripgrep",
-            AsyncMock(side_effect=ChecksumMismatchError("bad")),
-        ):
-            result = _auto_install_ripgrep_cli(console, ["ripgrep"])
-
-        assert result == ["ripgrep"]
-        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "SHA-256" in printed
 
     def test_managed_tool_unavailable_keeps_ripgrep_and_reports(self) -> None:
         """Permanent managed-tool gaps report remediation and keep fallback active."""
@@ -3534,214 +2795,6 @@ class TestAutoInstallRipgrepCli:
 class TestRipgrepInstallHint:
     """Tests for platform-specific ripgrep install hints."""
 
-    def test_macos_brew(self) -> None:
-        """Returns brew command on macOS when brew is available."""
-
-        def _which(cmd: str) -> str | None:
-            return "/opt/homebrew/bin/brew" if cmd == "brew" else None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "darwin"
-            assert _ripgrep_install_hint() == "brew install ripgrep"
-
-    def test_macos_port(self) -> None:
-        """Falls back to MacPorts when brew is absent."""
-
-        def _which(cmd: str) -> str | None:
-            return "/opt/local/bin/port" if cmd == "port" else None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "darwin"
-            assert _ripgrep_install_hint() == "sudo port install ripgrep"
-
-    def test_linux_apt(self) -> None:
-        """Returns apt-get command on Debian/Ubuntu."""
-
-        def _which(cmd: str) -> str | None:
-            return "/usr/bin/apt-get" if cmd == "apt-get" else None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "linux"
-            assert _ripgrep_install_hint() == "sudo apt-get install ripgrep"
-
-    def test_linux_dnf(self) -> None:
-        """Returns dnf command on Fedora/RHEL."""
-
-        def _which(cmd: str) -> str | None:
-            return "/usr/bin/dnf" if cmd == "dnf" else None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "linux"
-            assert _ripgrep_install_hint() == "sudo dnf install ripgrep"
-
-    def test_linux_pacman(self) -> None:
-        """Returns pacman command on Arch."""
-
-        def _which(cmd: str) -> str | None:
-            return "/usr/bin/pacman" if cmd == "pacman" else None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "linux"
-            assert _ripgrep_install_hint() == "sudo pacman -S ripgrep"
-
-    def test_linux_zypper(self) -> None:
-        """Returns zypper command on openSUSE."""
-
-        def _which(cmd: str) -> str | None:
-            return "/usr/bin/zypper" if cmd == "zypper" else None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "linux"
-            assert _ripgrep_install_hint() == "sudo zypper install ripgrep"
-
-    def test_linux_apk(self) -> None:
-        """Returns apk command on Alpine."""
-
-        def _which(cmd: str) -> str | None:
-            return "/sbin/apk" if cmd == "apk" else None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "linux"
-            assert _ripgrep_install_hint() == "sudo apk add ripgrep"
-
-    def test_linux_nix(self) -> None:
-        """Returns nix-env command on NixOS."""
-
-        def _which(cmd: str) -> str | None:
-            if cmd == "nix-env":
-                return "/nix/var/nix/profiles/default/bin/nix-env"
-            return None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "linux"
-            assert _ripgrep_install_hint() == "nix-env -iA nixpkgs.ripgrep"
-
-    def test_win32_choco(self) -> None:
-        """Returns choco command on Windows when available."""
-
-        def _which(cmd: str) -> str | None:
-            if cmd == "choco":
-                return "C:\\ProgramData\\chocolatey\\bin\\choco.exe"
-            return None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "win32"
-            assert _ripgrep_install_hint() == "choco install ripgrep"
-
-    def test_win32_scoop(self) -> None:
-        """Returns scoop command on Windows when available."""
-
-        def _which(cmd: str) -> str | None:
-            if cmd == "scoop":
-                return "C:\\Users\\user\\scoop\\shims\\scoop.exe"
-            return None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "win32"
-            assert _ripgrep_install_hint() == "scoop install ripgrep"
-
-    def test_win32_winget(self) -> None:
-        """Returns winget command on Windows when available."""
-
-        def _which(cmd: str) -> str | None:
-            return "C:\\winget.exe" if cmd == "winget" else None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "win32"
-            assert _ripgrep_install_hint() == "winget install BurntSushi.ripgrep"
-
-    def test_darwin_no_manager_falls_through(self) -> None:
-        """Falls through to cross-platform on macOS without brew/port."""
-
-        def _which(cmd: str) -> str | None:
-            return "/usr/bin/cargo" if cmd == "cargo" else None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "darwin"
-            assert _ripgrep_install_hint() == "cargo install ripgrep"
-
-    def test_linux_no_manager_falls_through(self) -> None:
-        """Falls through to URL on Linux without any package manager."""
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", return_value=None),
-        ):
-            mock_sys.platform = "linux"
-            assert "github.com/BurntSushi/ripgrep" in _ripgrep_install_hint()
-
-    def test_cargo_fallback(self) -> None:
-        """Falls back to cargo when no system package manager found."""
-
-        def _which(cmd: str) -> str | None:
-            return "/usr/bin/cargo" if cmd == "cargo" else None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "freebsd"
-            assert _ripgrep_install_hint() == "cargo install ripgrep"
-
-    def test_conda_fallback(self) -> None:
-        """Falls back to conda when no other manager found."""
-
-        def _which(cmd: str) -> str | None:
-            return "/usr/bin/conda" if cmd == "conda" else None
-
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", side_effect=_which),
-        ):
-            mock_sys.platform = "freebsd"
-            assert _ripgrep_install_hint() == "conda install -c conda-forge ripgrep"
-
-    def test_url_fallback(self) -> None:
-        """Returns GitHub URL when nothing is detected."""
-        with (
-            patch("deepagents_code.main.sys") as mock_sys,
-            patch("deepagents_code.main.shutil.which", return_value=None),
-        ):
-            mock_sys.platform = "freebsd"
-            hint = _ripgrep_install_hint()
-            assert hint.startswith("https://")
-            assert "github.com/BurntSushi/ripgrep" in hint
-
 
 class TestFormatToolWarnings:
     """Tests for the CLI warning formatter and the notification builder."""
@@ -3756,27 +2809,11 @@ class TestFormatToolWarnings:
             msg = format_tool_warning_cli("ripgrep")
         assert "brew install ripgrep" in msg
 
-    def test_cli_format_wraps_url_in_rich_link(self) -> None:
-        """CLI format wraps URL fallback in Rich `[link]` markup."""
-        url = "https://github.com/BurntSushi/ripgrep#installation"
-        hint_patch = patch(
-            "deepagents_code.main._ripgrep_install_hint",
-            return_value=url,
-        )
-        with hint_patch:
-            msg = format_tool_warning_cli("ripgrep")
-        assert f"[link={url}]" in msg
-        assert "[/link]" in msg
-
     def test_cli_format_contains_config_hint(self) -> None:
         """CLI format references config.toml for suppression."""
         msg = format_tool_warning_cli("ripgrep")
         assert "config.toml" in msg
         assert 'suppress = \\["ripgrep"]' in msg
-
-    def test_cli_format_unknown_tool_fallback(self) -> None:
-        """Unknown tools get a generic CLI message."""
-        assert format_tool_warning_cli("foo") == "foo is not installed."
 
     def test_cli_format_tavily_contains_env_hint(self) -> None:
         """CLI format for tavily mentions the env var with Rich link."""
@@ -3793,80 +2830,6 @@ class TestFormatToolWarnings:
 
 class TestBuildMissingToolNotification:
     """Tests for `build_missing_tool_notification` registry factory."""
-
-    def test_ripgrep_with_package_manager_hint(self) -> None:
-        """Ripgrep with install command offers copy + open-website + suppress."""
-        from deepagents_code.main import _RIPGREP_URL
-        from deepagents_code.notifications import ActionId, MissingDepPayload
-
-        with patch(
-            "deepagents_code.main._ripgrep_install_hint",
-            return_value="brew install ripgrep",
-        ):
-            entry = build_missing_tool_notification("ripgrep")
-        assert entry.key == "dep:ripgrep"
-        assert isinstance(entry.payload, MissingDepPayload)
-        assert entry.payload.tool == "ripgrep"
-        assert entry.payload.install_command == "brew install ripgrep"
-        assert entry.payload.url == _RIPGREP_URL
-        action_ids = [a.action_id for a in entry.actions]
-        assert action_ids == [
-            ActionId.COPY_INSTALL,
-            ActionId.OPEN_WEBSITE,
-            ActionId.SUPPRESS,
-        ]
-        assert entry.actions[0].primary is True
-
-    def test_ripgrep_url_fallback_opens_website(self) -> None:
-        """Ripgrep with URL fallback offers open-website + suppress."""
-        from deepagents_code.notifications import ActionId, MissingDepPayload
-
-        url = "https://github.com/BurntSushi/ripgrep#installation"
-        with patch(
-            "deepagents_code.main._ripgrep_install_hint",
-            return_value=url,
-        ):
-            entry = build_missing_tool_notification("ripgrep")
-        assert isinstance(entry.payload, MissingDepPayload)
-        assert entry.payload.url == url
-        assert entry.payload.install_command is None
-        action_ids = [a.action_id for a in entry.actions]
-        assert action_ids == [ActionId.OPEN_WEBSITE, ActionId.SUPPRESS]
-
-    def test_tavily_offers_enter_key_website_and_suppress(self) -> None:
-        """Tavily entry offers entering a key, the website, and suppression."""
-        from deepagents_code.notifications import ActionId, MissingDepPayload
-
-        entry = build_missing_tool_notification("tavily")
-        assert entry.key == "dep:tavily"
-        assert isinstance(entry.payload, MissingDepPayload)
-        assert entry.payload.tool == "tavily"
-        assert entry.payload.url == "https://tavily.com"
-        assert entry.payload.install_command is None
-        action_ids = [a.action_id for a in entry.actions]
-        assert action_ids == [
-            ActionId.ENTER_API_KEY,
-            ActionId.OPEN_WEBSITE,
-            ActionId.SUPPRESS,
-        ]
-        assert entry.actions[0].primary is True
-        assert "Tavily API key" in entry.body
-
-    def test_unknown_tool_only_suppresses_and_logs(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Unknown tools fall back to a bare suppress action and log a warning."""
-        import logging
-
-        from deepagents_code.notifications import ActionId, MissingDepPayload
-
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.main"):
-            entry = build_missing_tool_notification("foo")
-        assert entry.key == "dep:foo"
-        assert isinstance(entry.payload, MissingDepPayload)
-        assert entry.payload.tool == "foo"
-        assert [a.action_id for a in entry.actions] == [ActionId.SUPPRESS]
-        assert any("No install hint" in record.message for record in caplog.records)
 
 
 class TestRunTextualCliAsyncModelConfigError:
@@ -3947,42 +2910,9 @@ class TestRunTextualCliAsyncModelConfigError:
         assert result.return_code == 1
         assert result.thread_id is None
 
-    async def test_no_error_when_model_name_provided(self) -> None:
-        """Explicit model_name bypasses _get_default_model_spec."""
-        app_result = AppResult(return_code=0, thread_id="t-1")
-
-        async def _stub(**_kwargs: Any) -> AppResult:  # noqa: RUF029  # must be async for run_textual_app signature
-            return app_result
-
-        with patch("deepagents_code.app.run_textual_app", new=_stub):
-            result = await run_textual_cli_async("agent", model_name="openai:gpt-5.5")
-
-        assert result.return_code == 0
-
 
 class TestNormalizeCwdFilter:
     """Tests for `_normalize_cwd_filter`."""
-
-    def test_none_returns_none(self) -> None:
-        """No flag → no filter."""
-        from deepagents_code.main import _normalize_cwd_filter
-
-        assert _normalize_cwd_filter(None) is None
-
-    def test_empty_string_uses_current_cwd(self) -> None:
-        """Bare `--cwd` (empty-string sentinel) resolves to current working dir."""
-        from deepagents_code.main import _normalize_cwd_filter
-
-        assert _normalize_cwd_filter("") == str(Path.cwd())
-
-    def test_explicit_path_is_made_absolute(self) -> None:
-        """A user-supplied path is expanduser'd and made absolute."""
-        from deepagents_code.main import _normalize_cwd_filter
-
-        result = _normalize_cwd_filter("~/foo/bar")
-        assert result is not None
-        assert result == str(Path("~/foo/bar").expanduser().absolute())
-        assert Path(result).is_absolute()
 
     def test_explicit_relative_parent_path_is_normalized(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4014,16 +2944,6 @@ class TestNormalizeCwdFilter:
         # Sanity: resolve() would have collapsed the symlink to `real`.
         assert result != str(link.resolve())
 
-    def test_cwd_unreadable_returns_none(self) -> None:
-        """A deleted/unreadable cwd degrades to no filter rather than crashing."""
-        from deepagents_code.main import _normalize_cwd_filter
-
-        with patch(
-            "deepagents_code.main.Path.cwd",
-            side_effect=FileNotFoundError("gone"),
-        ):
-            assert _normalize_cwd_filter("") is None
-
 
 class TestThreadsListCwdArgparse:
     """Tests for `--cwd` argparse semantics on `deepagents threads list`."""
@@ -4033,21 +2953,6 @@ class TestThreadsListCwdArgparse:
 
         with patch("sys.argv", ["deepagents", *argv]):
             return parse_args()
-
-    def test_cwd_omitted_yields_none(self) -> None:
-        """Omitting --cwd leaves the namespace value at `None`."""
-        ns = self._parse(["threads", "list"])
-        assert getattr(ns, "cwd", "MISSING") is None
-
-    def test_cwd_alone_yields_empty_string_const(self) -> None:
-        """Bare `--cwd` stores the `const=""` sentinel for downstream resolution."""
-        ns = self._parse(["threads", "list", "--cwd"])
-        assert ns.cwd == ""
-
-    def test_cwd_with_value_stores_value(self) -> None:
-        """`--cwd /some/path` stores the literal value as-is."""
-        ns = self._parse(["threads", "list", "--cwd", "/some/path"])
-        assert ns.cwd == "/some/path"
 
 
 class TestCheckMcpProjectTrustPrompt:
@@ -5168,41 +4073,6 @@ def _assert_all_controls_hide_cursor(layout: "Layout") -> None:
 class TestPromptYoloAcknowledgement:
     """Tests for the inline YOLO acknowledgement selector."""
 
-    def test_yolo_selector_hides_terminal_cursor(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The selector suppresses the stray first-character terminal cursor."""
-        from deepagents_code.main import _prompt_yolo_acknowledgement
-
-        captured: dict[str, Any] = {}
-
-        class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
-                return cls
-
-            def __init__(self, **kwargs: Any) -> None:
-                captured.update(kwargs)
-
-            def run(self) -> bool:
-                return False
-
-        monkeypatch.setattr(
-            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
-        )
-        monkeypatch.setattr(
-            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: True)
-        )
-        monkeypatch.setattr(
-            "prompt_toolkit.output.defaults.create_output",
-            lambda **_kwargs: SimpleNamespace(),
-        )
-        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
-
-        _prompt_yolo_acknowledgement(Console(file=StringIO()))
-
-        _assert_all_controls_hide_cursor(captured["layout"])
-
     @pytest.mark.parametrize("key", ["c-c", "c-d"])
     def test_yolo_selector_interrupt_keys_raise_keyboard_interrupt(
         self,
@@ -5271,47 +4141,6 @@ class TestSelectProjectServersToPersist:
             "deepagents_code.main._trust_picker_has_terminal",
             lambda: True,
         )
-
-    @pytest.mark.parametrize(
-        ("raw", "count", "expected"),
-        [
-            ("1,3", 3, [1, 3]),
-            ("1 3", 3, [1, 3]),
-            ("2, 2, 1", 3, [2, 1]),  # dedupe, preserve order
-            ("0,4,x", 3, []),  # out-of-range and non-numeric ignored
-            ("", 3, []),
-        ],
-    )
-    def test_parse_server_number_selection(
-        self, raw: str, count: int, expected: list[int]
-    ) -> None:
-        """The fallback index parser drops invalid tokens and keeps order."""
-        from deepagents_code.main import _parse_server_number_selection
-
-        assert _parse_server_number_selection(raw, count) == expected
-
-    def test_checkbox_rows_include_every_server(self) -> None:
-        """The inline picker renders each prompted server exactly once."""
-        from deepagents_code.config import ASCII_GLYPHS
-        from deepagents_code.main import _format_project_mcp_checkbox_rows
-
-        servers = [
-            ProjectServerSummary(
-                "docs-langchain", "http", "https://docs.langchain.com/mcp"
-            ),
-            ProjectServerSummary(
-                "reference-langchain", "http", "https://reference.langchain.com/mcp"
-            ),
-        ]
-
-        rows = _format_project_mcp_checkbox_rows(
-            servers, {"docs-langchain", "reference-langchain"}, 0, ASCII_GLYPHS
-        )
-
-        assert len(rows) == 2
-        rendered = "".join(text for _style, text in rows)
-        assert "docs-langchain" in rendered
-        assert "reference-langchain" in rendered
 
     def test_single_server_skips_picker(self) -> None:
         """A lone prompted server is returned without asking anything."""
@@ -5742,93 +4571,6 @@ class TestSelectProjectServersToPersist:
 
         assert result is None
 
-    def test_checkbox_picker_falls_back_when_stderr_is_redirected(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The follow-up selector also avoids hidden rendering to stderr."""
-        from rich.console import Console
-
-        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
-
-        monkeypatch.setattr(
-            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
-        )
-        monkeypatch.setattr(
-            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: False)
-        )
-
-        result = _run_project_mcp_server_checkbox_picker(
-            [ProjectServerSummary("docs", "stdio", "echo docs")],
-            Console(stderr=True),
-        )
-
-        assert result is None
-
-    @pytest.mark.usefixtures("_interactive_picker_terminal")
-    def test_inline_checkbox_picker_does_not_use_full_screen(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The checkbox picker stays inline rather than taking over the terminal."""
-        from rich.console import Console
-
-        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
-
-        captured: dict[str, Any] = {}
-
-        class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
-                return cls
-
-            def __init__(self, **kwargs: Any) -> None:
-                captured.update(kwargs)
-
-            def run(self) -> list[str]:
-                return ["reference"]
-
-        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
-
-        servers = [
-            ProjectServerSummary("docs", "stdio", "a"),
-            ProjectServerSummary("reference", "stdio", "b"),
-        ]
-        names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
-
-        assert names == ["reference"]
-        assert captured["full_screen"] is False
-
-    @pytest.mark.usefixtures("_interactive_picker_terminal")
-    def test_checkbox_picker_hides_terminal_cursor(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Both checkbox windows suppress the stray first-character cursor."""
-        from rich.console import Console
-
-        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
-
-        captured: dict[str, Any] = {}
-
-        class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
-                return cls
-
-            def __init__(self, **kwargs: Any) -> None:
-                captured.update(kwargs)
-
-            def run(self) -> list[str]:
-                return []
-
-        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
-
-        servers = [
-            ProjectServerSummary("docs", "stdio", "a"),
-            ProjectServerSummary("reference", "stdio", "b"),
-        ]
-        _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
-
-        _assert_all_controls_hide_cursor(captured["layout"])
-
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_navigation_wraps(
         self,
@@ -5878,109 +4620,6 @@ class TestSelectProjectServersToPersist:
                 rendered = "".join(text for _style, text in rows_control.text())
                 assert f"{cursor} [ ] docs" in rendered
                 return ["docs", "reference"]
-
-        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
-
-        servers = [
-            ProjectServerSummary("docs", "stdio", "a"),
-            ProjectServerSummary("reference", "stdio", "b"),
-        ]
-        names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
-
-        assert names == ["docs", "reference"]
-
-    @pytest.mark.usefixtures("_interactive_picker_terminal")
-    def test_checkbox_picker_space_toggle_derives_selection(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Space checks the cursor row and Enter confirms the explicit selection.
-
-        The picker starts with nothing selected, so confirming after one toggle
-        must return only that server rather than presuming the full list.
-        """
-        from rich.console import Console
-
-        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
-
-        captured: dict[str, Any] = {}
-
-        class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
-                return cls
-
-            def __init__(self, **kwargs: Any) -> None:
-                captured.update(kwargs)
-
-            def run(self) -> list[str]:
-                bindings = captured["key_bindings"].bindings
-                holder: dict[str, list[str]] = {}
-                event = SimpleNamespace(
-                    app=SimpleNamespace(
-                        exit=lambda *, result: holder.update(value=result)
-                    )
-                )
-
-                def _named(name: str) -> Callable[[Any], None]:
-                    return next(
-                        binding.handler
-                        for binding in bindings
-                        if binding.handler.__name__ == name
-                    )
-
-                # Cursor starts on row 0 ("docs"); Space explicitly selects it.
-                _named("_toggle")(event)
-                _named("_confirm")(event)
-                return holder["value"]
-
-        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
-
-        servers = [
-            ProjectServerSummary("docs", "stdio", "a"),
-            ProjectServerSummary("reference", "stdio", "b"),
-        ]
-        names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
-
-        assert names == ["docs"]
-
-    @pytest.mark.usefixtures("_interactive_picker_terminal")
-    def test_checkbox_picker_select_all_is_explicit(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The dedicated select-all key checks every server from an empty default."""
-        from rich.console import Console
-
-        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
-
-        captured: dict[str, Any] = {}
-
-        class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
-                return cls
-
-            def __init__(self, **kwargs: Any) -> None:
-                captured.update(kwargs)
-
-            def run(self) -> list[str]:
-                bindings = captured["key_bindings"].bindings
-                holder: dict[str, list[str]] = {}
-                event = SimpleNamespace(
-                    app=SimpleNamespace(
-                        exit=lambda *, result: holder.update(value=result)
-                    )
-                )
-
-                def _named(name: str) -> Callable[[Any], None]:
-                    return next(
-                        binding.handler
-                        for binding in bindings
-                        if binding.handler.__name__ == name
-                    )
-
-                _named("_select_all")(event)
-                _named("_confirm")(event)
-                return holder["value"]
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
 
@@ -6253,24 +4892,6 @@ class TestSelectProjectServersToPersist:
             names = _select_project_servers_to_persist(servers, Console(stderr=True))
 
         assert names == ["reference"]
-
-    def test_checkbox_empty_selection_returns_empty(self) -> None:
-        """Accepting no checked servers persists nothing."""
-        from rich.console import Console
-
-        from deepagents_code.main import _select_project_servers_to_persist
-
-        servers = [
-            ProjectServerSummary("docs", "stdio", "a"),
-            ProjectServerSummary("reference", "stdio", "b"),
-        ]
-        with patch(
-            "deepagents_code.main._run_project_mcp_server_checkbox_picker",
-            return_value=[],
-        ):
-            names = _select_project_servers_to_persist(servers, Console(stderr=True))
-
-        assert names == []
 
     def test_fallback_numbers_select_subset(self) -> None:
         """If the checkbox picker cannot run, numbers still select a subset."""

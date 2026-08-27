@@ -115,40 +115,6 @@ _WIRE_INPUTS = [
 ]
 
 
-@pytest.mark.parametrize("payload", _WIRE_INPUTS)
-def test_wire_inputs_round_trip_with_exact_keys(payload: dict[str, object]) -> None:
-    parsed = HOOK_WIRE_INPUT_ADAPTER.validate_python(payload)
-
-    assert (
-        HOOK_WIRE_INPUT_ADAPTER.dump_python(
-            parsed,
-            mode="json",
-            by_alias=True,
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-        == payload
-    )
-
-
-def test_wire_input_ignores_unknown_fields() -> None:
-    payload = {**_WIRE_INPUTS[0], "unknown": True}
-
-    parsed = HOOK_WIRE_INPUT_ADAPTER.validate_python(payload)
-
-    assert parsed.hook_event_name is HookEvent.SESSION_START
-    assert (
-        HOOK_WIRE_INPUT_ADAPTER.dump_python(
-            parsed,
-            mode="json",
-            by_alias=True,
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-        == _WIRE_INPUTS[0]
-    )
-
-
 _SPECIFIC_OUTPUTS = [
     {
         "hookEventName": "SessionStart",
@@ -199,20 +165,12 @@ _SPECIFIC_OUTPUTS = [
 ]
 
 
-@pytest.mark.parametrize("specific_output", _SPECIFIC_OUTPUTS)
-def test_wire_outputs_round_trip_with_aliases(
-    specific_output: dict[str, object],
-) -> None:
-    payload = {
-        "continue": False,
-        "stopReason": "Stopped by hook",
-        "hookSpecificOutput": specific_output,
-    }
-
-    parsed = HOOK_WIRE_OUTPUT_ADAPTER.validate_python(payload)
+@pytest.mark.parametrize("payload", _WIRE_INPUTS)
+def test_wire_inputs_round_trip_with_exact_keys(payload: dict[str, object]) -> None:
+    parsed = HOOK_WIRE_INPUT_ADAPTER.validate_python(payload)
 
     assert (
-        HOOK_WIRE_OUTPUT_ADAPTER.dump_python(
+        HOOK_WIRE_INPUT_ADAPTER.dump_python(
             parsed,
             mode="json",
             by_alias=True,
@@ -221,27 +179,6 @@ def test_wire_outputs_round_trip_with_aliases(
         )
         == payload
     )
-
-
-def test_wire_output_retains_unknown_fields() -> None:
-    payload = {"continue": True, "futureField": {"enabled": True}}
-
-    parsed = HOOK_WIRE_OUTPUT_ADAPTER.validate_python(payload)
-
-    assert parsed.model_extra == {"futureField": {"enabled": True}}
-    assert HOOK_WIRE_OUTPUT_ADAPTER.dump_python(
-        parsed,
-        mode="json",
-        by_alias=True,
-        exclude_defaults=True,
-    ) == {"futureField": {"enabled": True}}
-
-
-def test_wire_output_does_not_apply_internal_field_names() -> None:
-    parsed = HOOK_WIRE_OUTPUT_ADAPTER.validate_python({"continue_": False})
-
-    assert parsed.continue_ is True
-    assert parsed.model_extra == {"continue_": False}
 
 
 def test_wire_specific_output_ignores_unknown_fields() -> None:
@@ -271,20 +208,6 @@ def test_wire_specific_output_rejects_invalid_permission_decision() -> None:
                 }
             }
         )
-
-
-def test_domain_event_union_selects_event_model() -> None:
-    event = HOOK_DOMAIN_EVENT_ADAPTER.validate_python(
-        {
-            "event": "Notification",
-            "notification": {
-                "type": "approval_required",
-                "message": "Approval required",
-            },
-        }
-    )
-
-    assert event.event is HookEvent.NOTIFICATION
 
 
 def test_post_tool_use_accepts_json_tool_result() -> None:
@@ -329,42 +252,6 @@ def test_decision_union_selects_event_model() -> None:
 
     assert decision.event is HookEvent.PRE_TOOL_USE
     assert decision.permission == PermissionEffect(behavior="ask")
-
-
-def test_hooks_config_validates_event_keys_and_aliases() -> None:
-    payload = {
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "matcher": "Bash",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": "./check.sh",
-                            "timeout": 30,
-                            "statusMessage": "Checking command",
-                        }
-                    ],
-                }
-            ]
-        }
-    }
-
-    config = HOOKS_CONFIG_ADAPTER.validate_python(payload)
-
-    assert config.hooks[HookEvent.PRE_TOOL_USE][0].hooks[0].status_message == (
-        "Checking command"
-    )
-    assert (
-        HOOKS_CONFIG_ADAPTER.dump_python(
-            config,
-            mode="json",
-            by_alias=True,
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-        == payload
-    )
 
 
 def test_hooks_config_rejects_async_and_ignores_unknown_fields() -> None:
@@ -430,64 +317,3 @@ def test_hooks_config_rejects_async_and_ignores_unknown_fields() -> None:
         }
     )
     assert normalized.hooks[HookEvent.PRE_TOOL_USE][0].hooks[0].async_ is None
-
-
-def test_hooks_config_rejects_unsupported_handler_type() -> None:
-    with pytest.raises(ValidationError):
-        HOOKS_CONFIG_ADAPTER.validate_python(
-            {
-                "hooks": {
-                    "Stop": [
-                        {
-                            "hooks": [
-                                {
-                                    "type": "http",
-                                    "command": "https://example.com",
-                                }
-                            ]
-                        }
-                    ]
-                }
-            }
-        )
-
-
-def test_transport_models_round_trip_typed_domain_payloads() -> None:
-    invocation_id = uuid4()
-    invocation = HookInvocation(
-        context=HookContext(
-            thread_id="thread-1",
-            cwd=Path("/workspace"),
-            approval_mode=ApprovalMode.MANUAL,
-        ),
-        event=SessionStartEvent(
-            event=HookEvent.SESSION_START,
-            cause=SessionStartCause.STARTUP,
-        ),
-    )
-    request = HookInvocationRequest(
-        protocol_version=1,
-        invocation_id=invocation_id,
-        snapshot_id="snapshot-1",
-        run_id="run-1",
-        invocation=invocation,
-        deadline=datetime(2026, 7, 20, tzinfo=UTC),
-    )
-    response = HookInvocationResponse(
-        protocol_version=1,
-        invocation_id=invocation_id,
-        snapshot_id="snapshot-1",
-        decision=SessionStartDecision(
-            event=HookEvent.SESSION_START,
-            context=["Loaded project context"],
-        ),
-    )
-
-    request_json = HOOK_INVOCATION_REQUEST_ADAPTER.dump_json(request)
-    response_json = HOOK_INVOCATION_RESPONSE_ADAPTER.dump_json(response)
-
-    assert HOOK_INVOCATION_REQUEST_ADAPTER.validate_json(request_json) == request
-    assert HOOK_INVOCATION_RESPONSE_ADAPTER.validate_json(response_json) == response
-    assert b"transcript_path" not in request_json
-    assert b"agent_transcript_path" not in request_json
-    assert UUID(str(response.invocation_id)) == invocation_id

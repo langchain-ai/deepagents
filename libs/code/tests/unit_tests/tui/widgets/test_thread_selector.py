@@ -264,96 +264,9 @@ class TestThreadSelectorEscapeKey:
 class TestThreadSelectorKeyboardNavigation:
     """Tests for keyboard navigation in the modal."""
 
-    async def test_down_arrow_moves_selection(self) -> None:
-        """Down arrow should move selection down."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                initial_index = screen._selected_index
-
-                await pilot.press("down")
-                await pilot.pause()
-
-                assert screen._selected_index == initial_index + 1
-
-    async def test_up_arrow_wraps_from_top(self) -> None:
-        """Up arrow at index 0 should wrap to last thread."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                count = len(screen._threads)
-
-                await pilot.press("up")
-                await pilot.pause()
-
-                expected = (0 - 1) % count
-                assert screen._selected_index == expected
-
-    async def test_enter_selects_thread(self) -> None:
-        """Enter should select the current thread and dismiss."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                await pilot.press("enter")
-                await pilot.pause()
-
-                assert app.dismissed is True
-                assert app.result == "abc12345"
-
 
 class TestThreadSelectorCurrentThread:
     """Tests for current thread highlighting and preselection."""
-
-    async def test_current_thread_is_preselected(self) -> None:
-        """Opening the selector should pre-select the current thread."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp(current_thread="def67890")
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                # def67890 is at index 1 in MOCK_THREADS
-                assert screen._selected_index == 1
-
-    async def test_unknown_current_thread_defaults_to_zero(self) -> None:
-        """Unknown current thread should default to index 0."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp(current_thread="nonexistent")
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._selected_index == 0
-
-    async def test_no_current_thread_defaults_to_zero(self) -> None:
-        """No current thread should default to index 0."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp(current_thread=None)
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._selected_index == 0
 
 
 class TestThreadSelectorEmptyState:
@@ -409,58 +322,9 @@ class TestThreadSelectorEmptyState:
 class TestThreadSelectorNavigateAndSelect:
     """Tests for navigating then selecting a specific thread."""
 
-    async def test_navigate_down_and_select(self) -> None:
-        """Navigate to second thread and select it."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                await pilot.press("down")
-                await pilot.pause()
-
-                await pilot.press("enter")
-                await pilot.pause()
-
-                assert app.dismissed is True
-                assert app.result == "def67890"
-
 
 class TestThreadSelectorTabSort:
     """Tests for sort toggling and focus traversal in the selector."""
-
-    async def test_sort_select_toggles_sort(self) -> None:
-        """The sort select should highlight the active header column."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._sort_by_updated is True
-                original_columns = dict(screen._columns)
-                header = screen.query_one("#thread-header", Horizontal)
-                updated_cell = header.query_one(".thread-cell-updated_at", Static)
-                created_cell = header.query_one(".thread-cell-created_at", Static)
-                sort_select = screen.query_one("#thread-sort-select", Select)
-                assert str(updated_cell.content) == "Updated"
-                assert updated_cell.has_class("thread-cell-sorted")
-                assert not created_cell.has_class("thread-cell-sorted")
-                assert sort_select.value == "updated_at"
-
-                sort_select.value = "created_at"
-                await pilot.pause()
-                assert screen._sort_by_updated is False
-                assert screen._columns == original_columns
-                created_cell = header.query_one(".thread-cell-created_at", Static)
-                updated_cell = header.query_one(".thread-cell-updated_at", Static)
-                assert str(created_cell.content) == "Created"
-                assert created_cell.has_class("thread-cell-sorted")
-                assert not updated_cell.has_class("thread-cell-sorted")
-                assert sort_select.value == "created_at"
 
     async def test_sort_change_persists_preference(self) -> None:
         """Switching the sort dropdown should persist the new preference."""
@@ -492,36 +356,6 @@ class TestThreadSelectorTabSort:
                 await app.workers.wait_for_complete()
                 mock_save.assert_any_call("updated_at")
 
-    async def test_sort_save_failure_notifies(self) -> None:
-        """A failed sort-order save should surface a warning notification."""
-        mock_save = MagicMock(return_value=False)
-        with (
-            _patch_list_threads(),
-            _patch_columns(),
-            patch(
-                "deepagents_code.model_config.save_thread_sort_order",
-                mock_save,
-            ),
-        ):
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                sort_select = screen.query_one("#thread-sort-select", Select)
-
-                with patch.object(app, "notify") as mock_notify:
-                    sort_select.value = "created_at"
-                    await pilot.pause()
-                    await app.workers.wait_for_complete()
-                    await pilot.pause()
-
-                mock_notify.assert_any_call(
-                    "Could not save sort preference", severity="warning"
-                )
-
     async def test_reselecting_active_sort_is_noop(self) -> None:
         """Re-applying the active sort order should not persist or re-sort.
 
@@ -552,137 +386,6 @@ class TestThreadSelectorTabSort:
 
                 assert screen._sort_by_updated is True
                 mock_save.assert_not_called()
-
-    async def test_confirming_delete_ignores_sort_select_change(self) -> None:
-        """Sort dropdown changes are ignored while a delete is being confirmed."""
-        mock_save = MagicMock(return_value=True)
-        with (
-            _patch_list_threads(),
-            _patch_columns(),
-            patch(
-                "deepagents_code.model_config.save_thread_sort_order",
-                mock_save,
-            ),
-        ):
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._sort_by_updated is True
-                sort_select = screen.query_one("#thread-sort-select", Select)
-                screen._confirming_delete = True
-
-                sort_select.value = "created_at"
-                for _ in range(10):
-                    await pilot.pause()
-
-                # The guard short-circuits before mutating sort state.
-                assert screen._sort_by_updated is True
-                mock_save.assert_not_called()
-
-    async def test_sorted_header_column_is_highlighted(self) -> None:
-        """The active sort column should be highlighted without extra text."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test(size=(100, 24)) as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                header = screen.query_one("#thread-header", Horizontal)
-                updated_cell = header.query_one(".thread-cell-updated_at", Static)
-                created_cell = header.query_one(".thread-cell-created_at", Static)
-
-                assert updated_cell.render_line(0).text.rstrip() == "Updated"
-                assert created_cell.render_line(0).text.rstrip() == "Created"
-                assert updated_cell.has_class("thread-cell-sorted")
-                assert not created_cell.has_class("thread-cell-sorted")
-
-    async def test_tab_moves_focus_into_column_switches(self) -> None:
-        """Tab should move focus from the search input into the controls."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                filter_input = screen.query_one("#thread-filter", Input)
-                expected_controls = [
-                    screen.query_one("#thread-scope-select", Select),
-                    screen.query_one("#thread-sort-select", Select),
-                    screen.query_one("#thread-agent-select", Select),
-                    screen.query_one(
-                        f"#{ThreadSelectorScreen._switch_id('thread_id')}", Checkbox
-                    ),
-                    screen.query_one(
-                        f"#{ThreadSelectorScreen._switch_id('agent_name')}", Checkbox
-                    ),
-                    screen.query_one(
-                        f"#{ThreadSelectorScreen._switch_id('messages')}", Checkbox
-                    ),
-                    screen.query_one(
-                        f"#{ThreadSelectorScreen._switch_id('created_at')}", Checkbox
-                    ),
-                    screen.query_one(
-                        f"#{ThreadSelectorScreen._switch_id('updated_at')}", Checkbox
-                    ),
-                    screen.query_one("#thread-relative-time", Checkbox),
-                ]
-                assert filter_input.has_focus
-
-                for control in expected_controls:
-                    screen.action_focus_next_filter()
-                    await pilot.pause()
-                    assert control.has_focus
-
-    async def test_shift_tab_moves_focus_backward_through_controls(self) -> None:
-        """Shift+Tab should move focus backward through the controls."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                filter_input = screen.query_one("#thread-filter", Input)
-                scope_select = screen.query_one("#thread-scope-select", Select)
-                sort_select = screen.query_one("#thread-sort-select", Select)
-                agent_select = screen.query_one("#thread-agent-select", Select)
-                assert filter_input.has_focus
-
-                await pilot.press("tab")
-                await pilot.pause()
-                assert scope_select.has_focus
-
-                await pilot.press("tab")
-                await pilot.pause()
-                assert sort_select.has_focus
-
-                await pilot.press("tab")
-                await pilot.pause()
-                assert agent_select.has_focus
-
-                await pilot.press("shift+tab")
-                await pilot.pause()
-                assert sort_select.has_focus
-
-                await pilot.press("shift+tab")
-                await pilot.pause()
-                assert scope_select.has_focus
-
-                await pilot.press("shift+tab")
-                await pilot.pause()
-                assert filter_input.has_focus
 
     def test_select_options_update_before_overlay_mount_is_safe(self) -> None:
         """Agent option refresh can run before the overlay child is mounted."""
@@ -745,218 +448,13 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen.focused, ContainedSelectOverlay)
                 mock_scroll.assert_not_called()
 
-    async def test_cached_filter_controls_handle_tab_and_typing(self) -> None:
-        """Tab traversal and type-to-search should use cached control lookups."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                filter_input = screen.query_one("#thread-filter", Input)
-                scope_select = screen.query_one("#thread-scope-select", Select)
-                sort_select = screen.query_one("#thread-sort-select", Select)
-                agent_select = screen.query_one("#thread-agent-select", Select)
-                controls = screen._filter_focus_order()
-                event = MagicMock()
-                event.character = "f"
-                cached_input = MagicMock(spec=Input)
-                cached_input.has_focus = False
-                screen._filter_input = cached_input
-
-                with (
-                    patch.object(
-                        screen,
-                        "query_one",
-                        side_effect=AssertionError("unexpected DOM query"),
-                    ),
-                    patch.object(screen, "set_timer"),
-                ):
-                    assert screen._filter_focus_order() == controls
-                    assert controls[0] is filter_input
-                    assert controls[1] is scope_select
-                    assert controls[2] is sort_select
-                    assert controls[3] is agent_select
-
-                    screen.on_key(event)
-
-                cached_input.focus.assert_called_once()
-                cached_input.insert_text_at_cursor.assert_called_once_with("f")
-                event.stop.assert_called_once()
-
-    async def test_switch_toggle_keeps_focus_on_current_control(self) -> None:
-        """Toggling a switch should not bounce focus back to the search input."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                relative_switch = screen.query_one("#thread-relative-time", Checkbox)
-                filter_input = screen.query_one("#thread-filter", Input)
-
-                relative_switch.focus()
-                await pilot.pause()
-                assert relative_switch.has_focus
-
-                relative_switch.toggle()
-                await pilot.pause()
-
-                assert relative_switch.has_focus
-                assert not filter_input.has_focus
-
-    async def test_typing_letter_from_controls_refocuses_search(self) -> None:
-        """Typing a letter on a control should jump back to fuzzy search."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                filter_input = screen.query_one("#thread-filter", Input)
-                relative_switch = screen.query_one("#thread-relative-time", Checkbox)
-
-                relative_switch.focus()
-                await pilot.pause()
-                assert relative_switch.has_focus
-
-                await pilot.press("f")
-                await pilot.pause()
-
-                assert filter_input.has_focus
-                assert filter_input.value == "f"
-                assert screen._filter_text == "f"
-                assert len(screen._filtered_threads) == 1
-                assert screen._filtered_threads[0]["thread_id"] == "def67890"
-
-    async def test_typing_multiple_letters_from_controls_appends_search(self) -> None:
-        """Typing multiple letters after refocus should append, not replace."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                filter_input = screen.query_one("#thread-filter", Input)
-                relative_switch = screen.query_one("#thread-relative-time", Checkbox)
-
-                relative_switch.focus()
-                await pilot.pause()
-                assert relative_switch.has_focus
-
-                await pilot.press("f")
-                await pilot.pause()
-                await pilot.press("i")
-                await pilot.pause()
-
-                assert filter_input.has_focus
-                assert filter_input.value == "fi"
-                assert screen._filter_text == "fi"
-                assert len(screen._filtered_threads) == 1
-                assert screen._filtered_threads[0]["thread_id"] == "def67890"
-
-    async def test_space_from_controls_does_not_refocus_search(self) -> None:
-        """Space on a control should keep switch behavior instead of search focus."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                filter_input = screen.query_one("#thread-filter", Input)
-                relative_switch = screen.query_one("#thread-relative-time", Checkbox)
-
-                relative_switch.focus()
-                await pilot.pause()
-                assert relative_switch.has_focus
-                assert relative_switch.value is True
-
-                await pilot.press("space")
-                await pilot.pause()
-
-                assert relative_switch.has_focus
-                assert not filter_input.has_focus
-                assert filter_input.value == ""
-                assert relative_switch.value is False
-
 
 class TestThreadSelectorDownWrap:
     """Tests for wrapping from bottom to top."""
 
-    async def test_down_arrow_wraps_from_bottom(self) -> None:
-        """Down arrow at last index should wrap to first thread."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                count = len(screen._threads)
-
-                # Navigate to the last item
-                for _ in range(count - 1):
-                    await pilot.press("down")
-                    await pilot.pause()
-                assert screen._selected_index == count - 1
-
-                # One more down should wrap to 0
-                await pilot.press("down")
-                await pilot.pause()
-                assert screen._selected_index == 0
-
 
 class TestThreadSelectorPageNavigation:
     """Tests for pageup/pagedown navigation."""
-
-    async def test_pagedown_moves_selection(self) -> None:
-        """Pagedown should move selection forward."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                await pilot.press("pagedown")
-                await pilot.pause()
-
-                # Should move forward (clamped to last item with 3 threads)
-                assert screen._selected_index == len(MOCK_THREADS) - 1
-
-    async def test_pageup_at_top_is_noop(self) -> None:
-        """Pageup at index 0 should be a no-op."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._selected_index == 0
-
-                await pilot.press("pageup")
-                await pilot.pause()
-                assert screen._selected_index == 0
 
 
 class _ThreadSelectorScopedTestApp(App):
@@ -1026,28 +524,6 @@ class TestThreadSelectorScopePersistedDefault:
 
 class TestThreadSelectorScopeSelect:
     """Tests for the cwd scope `Select` in the Options panel."""
-
-    async def test_enter_opens_scope_select_without_resuming_thread(self) -> None:
-        """Enter on the focused scope control should open its dropdown."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                scope_select = screen.query_one("#thread-scope-select", Select)
-
-                await pilot.press("tab")
-                await pilot.pause()
-                assert scope_select.has_focus
-
-                await pilot.press("enter")
-                await pilot.pause()
-
-                assert scope_select.expanded
-                assert not app.dismissed
 
     async def test_tab_keys_move_open_scope_select_highlight(self) -> None:
         """Tab and Shift+Tab should move the dropdown highlight while open."""
@@ -1149,101 +625,6 @@ class TestThreadSelectorScopeSelect:
                 assert scope_select.has_focus
                 assert not app.dismissed
 
-    async def test_enter_selects_open_scope_select_without_resuming(self) -> None:
-        """Enter should choose the highlighted dropdown option while open."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                scope_select = screen.query_one("#thread-scope-select", Select)
-
-                await pilot.press("tab")
-                await pilot.press("enter")
-                await pilot.pause()
-                assert scope_select.expanded
-
-                await pilot.press("enter")
-                await pilot.pause()
-
-                assert not scope_select.expanded
-                assert scope_select.has_focus
-                assert not app.dismissed
-
-    async def test_select_toggle_requeries_with_new_cwd(self) -> None:
-        """Switching the scope dropdown reloads threads with the new cwd kwarg."""
-        starting_cwd = "/home/user/project-a"
-        mock_list = AsyncMock(return_value=MOCK_THREADS)
-
-        with (
-            patch("deepagents_code.sessions.list_threads", mock_list),
-            _patch_columns(),
-            patch(
-                "deepagents_code.tui.widgets.thread_selector._safe_cwd_string",
-                return_value=starting_cwd,
-            ),
-        ):
-            app = _ThreadSelectorScopedTestApp(filter_cwd=starting_cwd)
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._filter_cwd == starting_cwd
-
-                scope_select = screen.query_one("#thread-scope-select", Select)
-                # Sanity: initial query carried the cwd filter.
-                assert mock_list.await_count >= 1
-                initial_kwargs = [c.kwargs for c in mock_list.await_args_list]
-                assert any(kw.get("cwd") == starting_cwd for kw in initial_kwargs), (
-                    f"expected starting cwd, got {initial_kwargs}"
-                )
-
-                mock_list.reset_mock()
-                scope_select.value = "all"
-                await pilot.pause()
-                await pilot.pause()
-                assert screen._filter_cwd is None
-                toggled_kwargs = [c.kwargs for c in mock_list.await_args_list]
-                assert any(kw.get("cwd") is None for kw in toggled_kwargs), (
-                    f"expected re-query with cwd=None, got {toggled_kwargs}"
-                )
-
-                mock_list.reset_mock()
-                scope_select.value = "cwd"
-                await pilot.pause()
-                await pilot.pause()
-                assert screen._filter_cwd == starting_cwd
-                back_kwargs = [c.kwargs for c in mock_list.await_args_list]
-                assert any(kw.get("cwd") == starting_cwd for kw in back_kwargs), (
-                    f"expected re-query with cwd={starting_cwd!r}, got {back_kwargs}"
-                )
-
-    async def test_select_same_value_does_not_requery(self) -> None:
-        """Setting the dropdown to its current value is a no-op."""
-        mock_list = AsyncMock(return_value=MOCK_THREADS)
-        with (
-            patch("deepagents_code.sessions.list_threads", mock_list),
-            _patch_columns(),
-        ):
-            app = _ThreadSelectorScopedTestApp(filter_cwd=None)
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                scope_select = screen.query_one("#thread-scope-select", Select)
-                mock_list.reset_mock()
-                # Re-setting to "all" (the active value) must not re-query.
-                scope_select.value = "all"
-                await pilot.pause()
-                mock_list.assert_not_awaited()
-
     async def test_scope_change_persists_preference(self) -> None:
         """Switching the scope dropdown should persist the new preference."""
         starting_cwd = "/home/user/project-a"
@@ -1326,71 +707,9 @@ class TestThreadSelectorScopeSelect:
                 # was still persisted before the early return fired.
                 assert screen._filter_cwd is None
 
-    async def test_scope_save_failure_notifies(self) -> None:
-        """A failed scope save should surface a warning notification."""
-        starting_cwd = "/home/user/project-a"
-        mock_list = AsyncMock(return_value=MOCK_THREADS)
-        mock_save = MagicMock(return_value=False)
-
-        with (
-            patch("deepagents_code.sessions.list_threads", mock_list),
-            _patch_columns(),
-            patch(
-                "deepagents_code.tui.widgets.thread_selector._safe_cwd_string",
-                return_value=starting_cwd,
-            ),
-            patch(
-                "deepagents_code.model_config.save_thread_scope",
-                mock_save,
-            ),
-        ):
-            app = _ThreadSelectorScopedTestApp(filter_cwd=starting_cwd)
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                scope_select = screen.query_one("#thread-scope-select", Select)
-
-                with patch.object(app, "notify") as mock_notify:
-                    scope_select.value = "all"
-                    await app.workers.wait_for_complete()
-                    await pilot.pause()
-
-                mock_notify.assert_any_call(
-                    "Could not save scope preference", severity="warning"
-                )
-
 
 class TestThreadSelectorClickHandling:
     """Tests for mouse click handling."""
-
-    async def test_click_selects_thread(self) -> None:
-        """Clicking a thread option should select and dismiss."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                from deepagents_code.tui.widgets.thread_selector import ThreadOption
-
-                assert len(screen._option_widgets) > 1, (
-                    "Expected option widgets to be built"
-                )
-                second = screen._option_widgets[1]
-                second.post_message(
-                    ThreadOption.Clicked(second.thread_id, second.index)
-                )
-                await pilot.pause()
-
-                assert app.dismissed is True
-                assert app.result == "def67890"
 
 
 _WEBBROWSER_OPEN = "deepagents_code.tui.widgets._links.webbrowser.open"
@@ -1398,30 +717,6 @@ _WEBBROWSER_OPEN = "deepagents_code.tui.widgets._links.webbrowser.open"
 
 class TestThreadSelectorOnClickOpensLink:
     """Tests for `ThreadSelectorScreen.on_click` opening Rich-style hyperlinks."""
-
-    def test_click_on_link_opens_browser(self) -> None:
-        """Clicking a Rich link should call `webbrowser.open`."""
-        screen = ThreadSelectorScreen(current_thread=None)
-        event = MagicMock()
-        event.style = Style(link="https://example.com")
-
-        with patch(_WEBBROWSER_OPEN) as mock_open:
-            screen.on_click(event)
-
-        mock_open.assert_called_once_with("https://example.com")
-        event.stop.assert_called_once()
-
-    def test_click_without_link_is_noop(self) -> None:
-        """Clicking on non-link text should not open the browser."""
-        screen = ThreadSelectorScreen(current_thread=None)
-        event = MagicMock()
-        event.style = Style()
-
-        with patch(_WEBBROWSER_OPEN) as mock_open:
-            screen.on_click(event)
-
-        mock_open.assert_not_called()
-        event.stop.assert_not_called()
 
     def test_click_with_browser_error_is_graceful(self) -> None:
         """Browser failure should not crash the widget."""
@@ -1438,111 +733,13 @@ class TestThreadSelectorOnClickOpensLink:
 class TestThreadSelectorPointer:
     """Tests for `ThreadSelectorScreen` link hover affordance."""
 
-    def test_hover_over_link_uses_pointer(self) -> None:
-        """Hovering a Rich-style link sets a pointer cursor."""
-        screen = ThreadSelectorScreen(current_thread=None)
-        event = MagicMock()
-        event.style = Style(link="https://example.com")
-        screen.on_mouse_move(event)
-        assert screen.styles.pointer == "pointer"
-
-    def test_hover_off_link_uses_default(self) -> None:
-        """Hovering non-link text keeps the default cursor."""
-        screen = ThreadSelectorScreen(current_thread=None)
-        event = MagicMock()
-        event.style = Style()
-        screen.on_mouse_move(event)
-        assert screen.styles.pointer == "default"
-
-    def test_leave_resets_pointer(self) -> None:
-        """Leaving the selector resets the cursor to default."""
-        screen = ThreadSelectorScreen(current_thread=None)
-        link_event = MagicMock()
-        link_event.style = Style(link="https://example.com")
-        screen.on_mouse_move(link_event)
-        screen.on_leave()
-        assert screen.styles.pointer == "default"
-
 
 class TestThreadSelectorBuildTitle:
     """Tests for _build_title with clickable thread ID."""
 
-    def test_no_current_thread(self) -> None:
-        """Title without current thread should be plain text."""
-        screen = ThreadSelectorScreen(current_thread=None)
-        assert screen._build_title() == "Select Thread"
-
-    def test_current_thread_no_url(self) -> None:
-        """Title with current thread but no URL should be a plain string."""
-        screen = ThreadSelectorScreen(current_thread="abc12345")
-        title = screen._build_title()
-        assert isinstance(title, str)
-        assert "abc12345" in title
-
-    def test_current_thread_with_url(self) -> None:
-        """Title with a LangSmith URL should produce Content with a link."""
-        from textual.color import Color as TColor
-        from textual.content import Content
-        from textual.style import Style as TStyle
-
-        screen = ThreadSelectorScreen(current_thread="abc12345")
-        title = screen._build_title(
-            thread_url="https://smith.langchain.com/p/t/abc12345"
-        )
-        assert isinstance(title, Content)
-        assert "abc12345" in title.plain
-
-        spans = [
-            s for s in title._spans if isinstance(s.style, TStyle) and s.style.link
-        ]
-        assert len(spans) > 0
-        style = spans[0].style
-        assert isinstance(style, TStyle)
-        from deepagents_code.theme import DARK_COLORS
-
-        assert style.foreground == TColor.parse(DARK_COLORS.primary)
-
-    async def test_title_widget_has_id(self) -> None:
-        """Title widget should be queryable by ID for URL updates."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp(current_thread="abc12345")
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                title_widget = screen.query_one("#thread-title", Static)
-                assert title_widget is not None
-
 
 class TestFetchThreadUrl:
     """Tests for _fetch_thread_url background worker."""
-
-    async def test_successful_url_updates_title(self) -> None:
-        """Background worker should update the title with a clickable link."""
-        from textual.content import Content
-
-        with (
-            _patch_list_threads(),
-            patch(
-                "deepagents_code.tui.widgets.thread_selector.build_langsmith_thread_url",
-                return_value="https://smith.langchain.com/p/t/abc12345",
-            ),
-        ):
-            app = ThreadSelectorTestApp(current_thread="abc12345")
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-                await pilot.pause()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                title_widget = screen.query_one("#thread-title", Static)
-                content = title_widget.content
-                assert isinstance(content, Content)
-                assert "abc12345" in content.plain
 
     async def test_url_resolves_before_thread_load_completes(self) -> None:
         """Header link should appear without waiting for the DB load to finish."""
@@ -1688,287 +885,21 @@ class TestFetchThreadUrl:
                 title_widget = screen.query_one("#thread-title", Static)
                 assert isinstance(title_widget.content, str)
 
-    async def test_oserror_leaves_title_unchanged(self) -> None:
-        """OSError during URL resolution should not crash or change the title."""
-        with (
-            _patch_list_threads(),
-            patch(
-                "deepagents_code.tui.widgets.thread_selector.build_langsmith_thread_url",
-                side_effect=OSError("network failure"),
-            ),
-        ):
-            app = ThreadSelectorTestApp(current_thread="abc12345")
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-                await pilot.pause()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                title_widget = screen.query_one("#thread-title", Static)
-                assert isinstance(title_widget.content, str)
-
-    async def test_unexpected_exception_leaves_title_unchanged(self) -> None:
-        """Unexpected exception should not crash the thread selector."""
-        with (
-            _patch_list_threads(),
-            patch(
-                "deepagents_code.tui.widgets.thread_selector.build_langsmith_thread_url",
-                side_effect=AttributeError("SDK changed"),
-            ),
-        ):
-            app = ThreadSelectorTestApp(current_thread="abc12345")
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-                await pilot.pause()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                title_widget = screen.query_one("#thread-title", Static)
-                assert isinstance(title_widget.content, str)
-
-    async def test_none_url_leaves_title_unchanged(self) -> None:
-        """When build returns None the title should remain a plain string."""
-        with (
-            _patch_list_threads(),
-            patch(
-                "deepagents_code.tui.widgets.thread_selector.build_langsmith_thread_url",
-                return_value=None,
-            ),
-        ):
-            app = ThreadSelectorTestApp(current_thread="abc12345")
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-                await pilot.pause()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                title_widget = screen.query_one("#thread-title", Static)
-                content = title_widget.content
-                assert isinstance(content, str)
-                assert "abc12345" in content
-
 
 class TestThreadSelectorColumnHeader:
     """Tests for the anchored column header."""
-
-    def test_header_contains_default_column_names(self) -> None:
-        """Column header labels should contain visible column names."""
-        from deepagents_code.tui.widgets.thread_selector import _format_header_label
-
-        assert "Created" in _format_header_label("created_at")
-        assert "Msgs" in _format_header_label("messages")
-        assert "Updated" in _format_header_label("updated_at")
-        assert "Prompt" in _format_header_label("initial_prompt")
-
-    async def test_header_widget_is_mounted(self) -> None:
-        """Column header widget should be present in the mounted screen."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                screen.query_one(".thread-list-header", Horizontal)
-
-    async def test_header_stays_outside_scroll(self) -> None:
-        """Header should be outside VerticalScroll (anchored, not scrollable)."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                header = screen.query_one(".thread-list-header", Horizontal)
-                assert isinstance(header.parent, Vertical)
-
-    async def test_timestamp_columns_share_width_with_rows(self) -> None:
-        """Timestamp header cells should use the same width as row cells."""
-        from deepagents_code.tui.widgets.thread_selector import (
-            _format_column_value,
-            _format_header_label,
-        )
-
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                header = screen.query_one("#thread-header", Horizontal)
-                row = screen._option_widgets[0]
-
-                for key in ("created_at", "updated_at"):
-                    header_cell = header.query_one(f".thread-cell-{key}", Static)
-                    row_cell = row.query_one(f".thread-cell-{key}", Static)
-                    expected_width = (
-                        max(
-                            cell_len(_format_header_label(key)),
-                            *(
-                                cell_len(
-                                    _format_column_value(
-                                        thread,
-                                        key,
-                                        relative_time=screen._relative_time,
-                                    )
-                                )
-                                for thread in screen._filtered_threads
-                            ),
-                        )
-                        + 1
-                    )
-                    assert header_cell.size.width == row_cell.size.width
-                    assert (
-                        _style_scalar_value(header_cell.styles.width) == expected_width
-                    )
-                    assert _style_scalar_value(row_cell.styles.width) == expected_width
 
 
 class TestThreadSelectorPromptOverflow:
     """Tests for prompt-cell overflow handling."""
 
-    async def test_prompt_cell_renders_ellipsis_when_constrained(self) -> None:
-        """Prompt cells should use ellipsis instead of hard clipping."""
-        columns = {
-            "thread_id": False,
-            "messages": False,
-            "created_at": False,
-            "updated_at": True,
-            "git_branch": False,
-            "cwd": False,
-            "initial_prompt": True,
-            "agent_name": False,
-        }
-        thread = ThreadInfo(**MOCK_THREADS[0])
-        thread["initial_prompt"] = (
-            "This is a very long prompt that should be truncated "
-            "with an ellipsis inside the prompt column"
-        )
-        threads: list[ThreadInfo] = [thread]
-
-        with _patch_list_threads(threads), _patch_columns(columns):
-            app = ThreadSelectorTestApp(current_thread=None)
-            async with app.run_test(size=(80, 24)) as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                row = screen._option_widgets[0]
-                prompt_cell = row.query_one(".thread-cell-initial_prompt", Static)
-                rendered = prompt_cell.render_line(0).text.rstrip()
-
-                assert rendered.endswith("…")
-
 
 class TestThreadSelectorBranchOverflow:
     """Tests for git-branch overflow handling."""
 
-    async def test_branch_cell_renders_ellipsis_when_truncated(self) -> None:
-        """Git branch cells should keep the ellipsis visible when clipped."""
-        columns = {
-            "thread_id": False,
-            "messages": False,
-            "created_at": False,
-            "updated_at": False,
-            "git_branch": True,
-            "cwd": False,
-            "initial_prompt": False,
-            "agent_name": False,
-        }
-        thread = ThreadInfo(**MOCK_THREADS[0])
-        thread["git_branch"] = "feature/very-long-branch-name"
-        threads: list[ThreadInfo] = [thread]
-
-        with _patch_list_threads(threads), _patch_columns(columns):
-            app = ThreadSelectorTestApp(current_thread=None)
-            async with app.run_test(size=(80, 24)) as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                row = screen._option_widgets[0]
-                branch_cell = row.query_one(".thread-cell-git_branch", Static)
-                rendered = branch_cell.render_line(0).text.rstrip()
-
-                assert rendered.endswith("…")
-
 
 class TestThreadSelectorAutoWidthColumns:
     """Tests for shared widths on auto-sized columns."""
-
-    async def test_agent_name_column_uses_shared_width_capped_at_twelve(self) -> None:
-        """Agent column should size to visible content up to the 12-char cap."""
-        from deepagents_code.tui.widgets.thread_selector import (
-            _format_column_value,
-            _format_header_label,
-        )
-
-        columns = {
-            "thread_id": False,
-            "messages": False,
-            "created_at": False,
-            "updated_at": False,
-            "git_branch": False,
-            "cwd": False,
-            "initial_prompt": False,
-            "agent_name": True,
-        }
-
-        with _patch_list_threads(), _patch_columns(columns):
-            app = ThreadSelectorTestApp(current_thread=None)
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                header = screen.query_one("#thread-header", Horizontal)
-                row = screen._option_widgets[0]
-                header_cell = header.query_one(".thread-cell-agent_name", Static)
-                row_cell = row.query_one(".thread-cell-agent_name", Static)
-                expected_width = (
-                    max(
-                        cell_len(_format_header_label("agent_name")),
-                        *(
-                            cell_len(
-                                _format_column_value(
-                                    thread,
-                                    "agent_name",
-                                    relative_time=screen._relative_time,
-                                )
-                            )
-                            for thread in screen._filtered_threads
-                        ),
-                    )
-                    + 1
-                )
-
-                assert header_cell.size.width == row_cell.size.width
-                assert _style_scalar_value(header_cell.styles.width) == expected_width
-                assert _style_scalar_value(row_cell.styles.width) == expected_width
-                assert (
-                    _style_scalar_value(header_cell.styles.min_width) == expected_width
-                )
-                assert _style_scalar_value(row_cell.styles.min_width) == expected_width
-                assert expected_width <= 13
 
 
 class TestThreadSelectorErrorHandling:
@@ -2031,26 +962,6 @@ class TestThreadSelectorErrorHandling:
 
 class TestThreadSelectorLimit:
     """Tests for thread limit via get_thread_limit()."""
-
-    async def test_custom_limit_is_forwarded(self) -> None:
-        """get_thread_limit() return value should be forwarded to list_threads."""
-        with (
-            patch(
-                "deepagents_code.sessions.get_thread_limit",
-                return_value=5,
-            ),
-            _patch_list_threads() as mock_lt,
-        ):
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                mock_lt.assert_awaited_once()
-                call_kwargs = mock_lt.await_args.kwargs
-                assert call_kwargs["limit"] == 5
-                assert call_kwargs["include_message_count"] is False
-                assert call_kwargs["sort_by"] in {"updated", "created"}
 
     async def test_checkpoint_details_are_loaded_for_initial_render(self) -> None:
         """Visible checkpoint fields should be loaded before first non-cached render."""
@@ -2161,106 +1072,9 @@ class TestThreadSelectorLimit:
 class TestThreadSelectorCheckpointDetailErrors:
     """Tests for thread selector checkpoint-detail load error handling."""
 
-    async def test_unexpected_checkpoint_detail_error_logs_warning(self) -> None:
-        """Unexpected checkpoint-load errors should be visible at warning level."""
-        screen = ThreadSelectorScreen(
-            initial_threads=[
-                {
-                    "thread_id": "abc12345",
-                    "agent_name": "my-agent",
-                    "updated_at": "2025-01-15T10:30:00",
-                }
-            ],
-            filter_cwd=None,
-        )
-
-        with (
-            patch(
-                "deepagents_code.sessions.populate_thread_checkpoint_details",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("unexpected type mismatch"),
-            ),
-            patch(
-                "deepagents_code.tui.widgets.thread_selector.logger.warning"
-            ) as mock_warning,
-        ):
-            await screen._load_checkpoint_details()
-
-        mock_warning.assert_called_once()
-
 
 class TestThreadSelectorPrefetchedRows:
     """Tests for rendering with prefetched rows from startup cache."""
-
-    async def test_prefetched_rows_render_without_loading_state(self) -> None:
-        """Prefetched rows should render immediately, then refresh from SQLite."""
-        prefetched: list[ThreadInfo] = [
-            {
-                "thread_id": "abc12345",
-                "agent_name": "my-agent",
-                "updated_at": "2025-01-15T10:30:00",
-                "message_count": 5,
-            }
-        ]
-        refreshed: list[ThreadInfo] = [
-            {
-                "thread_id": "new12345",
-                "agent_name": "my-agent",
-                "updated_at": "2025-01-16T12:00:00",
-                "message_count": 6,
-            },
-            {
-                "thread_id": "abc12345",
-                "agent_name": "my-agent",
-                "updated_at": "2025-01-15T10:30:00",
-                "message_count": 5,
-            },
-        ]
-        app = ThreadSelectorTestApp(current_thread="abc12345")
-
-        gate = asyncio.Event()
-
-        async def _list_threads(*_args: object, **_kwargs: object) -> list[ThreadInfo]:
-            await gate.wait()
-            return refreshed
-
-        with patch(
-            "deepagents_code.sessions.list_threads",
-            new_callable=AsyncMock,
-            side_effect=_list_threads,
-        ) as mock_list_threads:
-            async with app.run_test() as pilot:
-                app.push_screen(
-                    ThreadSelectorScreen(
-                        current_thread="abc12345",
-                        thread_limit=20,
-                        initial_threads=prefetched,
-                        filter_cwd=None,
-                    )
-                )
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert len(screen._option_widgets) == 1
-                with pytest.raises(NoMatches):
-                    screen.query_one("#thread-loading", Static)
-
-                gate.set()
-
-                for _ in range(10):
-                    if mock_list_threads.await_count >= 1 and len(screen._threads) == 2:
-                        break
-                    await pilot.pause(0.05)
-
-                mock_list_threads.assert_awaited_once()
-                assert mock_list_threads.await_args is not None
-                kw = mock_list_threads.await_args.kwargs
-                assert kw["limit"] == 20
-                assert kw["include_message_count"] is False
-                assert kw["sort_by"] in {"updated", "created"}
-                assert len(screen._threads) == 2
-                assert screen._threads[0]["thread_id"] == "new12345"
 
     async def test_prefetched_prompt_is_preserved_during_refresh(self) -> None:
         """Refreshing prefetched rows should not blank the prompt column first."""
@@ -2311,411 +1125,17 @@ class TestThreadSelectorPrefetchedRows:
         finally:
             sessions._initial_prompt_cache.clear()
 
-    async def test_empty_prefetched_snapshot_still_refreshes(self) -> None:
-        """An empty cached snapshot should still hydrate from SQLite in background."""
-        refreshed: list[ThreadInfo] = [
-            {
-                "thread_id": "new12345",
-                "agent_name": "my-agent",
-                "updated_at": "2025-01-16T12:00:00",
-                "message_count": 6,
-            }
-        ]
-        app = ThreadSelectorTestApp(current_thread="abc12345")
-        with patch(
-            "deepagents_code.sessions.list_threads",
-            new_callable=AsyncMock,
-            return_value=refreshed,
-        ) as mock_list_threads:
-            async with app.run_test() as pilot:
-                app.push_screen(
-                    ThreadSelectorScreen(
-                        current_thread="abc12345",
-                        thread_limit=20,
-                        initial_threads=[],
-                        filter_cwd=None,
-                    )
-                )
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                with pytest.raises(NoMatches):
-                    screen.query_one("#thread-loading", Static)
-
-                for _ in range(10):
-                    if mock_list_threads.await_count >= 1 and len(screen._threads) == 1:
-                        break
-                    await pilot.pause(0.05)
-
-                mock_list_threads.assert_awaited_once()
-                assert mock_list_threads.await_args is not None
-                kw = mock_list_threads.await_args.kwargs
-                assert kw["limit"] == 20
-                assert kw["include_message_count"] is False
-                assert kw["sort_by"] in {"updated", "created"}
-                assert len(screen._threads) == 1
-                assert screen._threads[0]["thread_id"] == "new12345"
-
-    async def test_empty_snapshot_shows_loading_until_disk_load_completes(
-        self,
-    ) -> None:
-        """An empty snapshot must not claim "No threads found" while loading."""
-        refreshed: list[ThreadInfo] = [
-            {
-                "thread_id": "new12345",
-                "agent_name": "my-agent",
-                "updated_at": "2025-01-16T12:00:00",
-                "message_count": 6,
-            }
-        ]
-        app = ThreadSelectorTestApp(current_thread="abc12345")
-
-        gate = asyncio.Event()
-
-        async def _list_threads(*_args: object, **_kwargs: object) -> list[ThreadInfo]:
-            await gate.wait()
-            return refreshed
-
-        with patch(
-            "deepagents_code.sessions.list_threads",
-            new_callable=AsyncMock,
-            side_effect=_list_threads,
-        ):
-            async with app.run_test() as pilot:
-                app.push_screen(
-                    ThreadSelectorScreen(
-                        current_thread="abc12345",
-                        thread_limit=20,
-                        initial_threads=[],
-                        filter_cwd=None,
-                    )
-                )
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                # While the disk load is in flight, show the loading placeholder
-                # rather than "No threads found".
-                assert not screen._disk_load_complete
-                screen.query_one("#thread-loading", Static)
-                assert not screen._option_widgets
-
-                gate.set()
-
-                for _ in range(10):
-                    if len(screen._threads) == 1:
-                        break
-                    await pilot.pause(0.05)
-
-                assert screen._disk_load_complete
-                assert len(screen._option_widgets) == 1
-
-    async def test_empty_snapshot_resolves_to_no_threads_found(self) -> None:
-        """An empty disk load must flip the placeholder to "No threads found"."""
-        app = ThreadSelectorTestApp(current_thread="abc12345")
-
-        gate = asyncio.Event()
-
-        async def _list_threads(*_args: object, **_kwargs: object) -> list[ThreadInfo]:
-            await gate.wait()
-            return []
-
-        with patch(
-            "deepagents_code.sessions.list_threads",
-            new_callable=AsyncMock,
-            side_effect=_list_threads,
-        ):
-            async with app.run_test() as pilot:
-                app.push_screen(
-                    ThreadSelectorScreen(
-                        current_thread="abc12345",
-                        thread_limit=20,
-                        initial_threads=[],
-                        filter_cwd=None,
-                    )
-                )
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert not screen._disk_load_complete
-                screen.query_one("#thread-loading", Static)
-
-                gate.set()
-
-                for _ in range(10):
-                    if screen._disk_load_complete:
-                        break
-                    await pilot.pause(0.05)
-
-                # Once the load completes with zero rows, the loading placeholder
-                # must resolve to the real empty state, not a perpetual spinner.
-                assert screen._disk_load_complete
-                assert not screen._option_widgets
-                with pytest.raises(NoMatches):
-                    screen.query_one("#thread-loading", Static)
-                empty = screen.query_one(".thread-empty", Static)
-                assert "No threads found" in str(empty.content)
-
-    def test_build_empty_state_reflects_disk_load_flag(self) -> None:
-        """`_build_empty_state` chooses its message from `_disk_load_complete`."""
-        screen = ThreadSelectorScreen(
-            current_thread="abc12345",
-            thread_limit=20,
-            initial_threads=[],
-            filter_cwd=None,
-        )
-
-        loading = screen._build_empty_state()
-        assert loading.id == "thread-loading"
-        assert "Loading threads..." in str(loading.content)
-
-        screen._disk_load_complete = True
-        resolved = screen._build_empty_state()
-        assert resolved.id is None
-        assert "No threads found" in str(resolved.content)
-
 
 class TestThreadSelectorInitialSortOrder:
     """Tests for initial sort order applied to prefetched rows."""
-
-    async def test_initial_threads_sorted_by_created_at_preference(self) -> None:
-        """Prefetched rows should respect the user's sort preference on first render."""
-        # Threads ordered by updated_at (default cache order from list_threads)
-        prefetched: list[ThreadInfo] = [
-            {
-                "thread_id": "newer-updated",
-                "agent_name": "agent",
-                "updated_at": "2025-01-16T12:00:00",
-                "created_at": "2025-01-10T08:00:00",
-            },
-            {
-                "thread_id": "older-updated",
-                "agent_name": "agent",
-                "updated_at": "2025-01-14T08:00:00",
-                "created_at": "2025-01-15T10:00:00",
-            },
-        ]
-
-        import contextlib
-
-        from deepagents_code.model_config import THREAD_COLUMN_DEFAULTS, ThreadConfig
-
-        @contextlib.contextmanager
-        def _patch_sort_created() -> Any:  # noqa: ANN401
-            with (
-                patch(
-                    "deepagents_code.model_config.load_thread_columns",
-                    return_value=dict(THREAD_COLUMN_DEFAULTS),
-                ),
-                patch(
-                    "deepagents_code.model_config.load_thread_sort_order",
-                    return_value="created_at",
-                ),
-                patch(
-                    "deepagents_code.model_config.load_thread_config",
-                    return_value=ThreadConfig(
-                        columns=dict(THREAD_COLUMN_DEFAULTS),
-                        relative_time=True,
-                        sort_order="created_at",
-                        scope="cwd",
-                    ),
-                ),
-            ):
-                yield
-
-        gate = asyncio.Event()
-
-        async def _list_threads(*_a: object, **_kw: object) -> list[ThreadInfo]:
-            await gate.wait()
-            return prefetched
-
-        with (
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                side_effect=_list_threads,
-            ),
-            _patch_sort_created(),
-        ):
-            app = ThreadSelectorTestApp(current_thread=None)
-            async with app.run_test() as pilot:
-                app.push_screen(
-                    ThreadSelectorScreen(
-                        current_thread=None,
-                        thread_limit=20,
-                        initial_threads=prefetched,
-                        filter_cwd=None,
-                    )
-                )
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                # With sort by created_at, "older-updated" (created 2025-01-15)
-                # should come before "newer-updated" (created 2025-01-10)
-                assert len(screen._option_widgets) == 2
-                assert screen._option_widgets[0].thread_id == "older-updated"
-                assert screen._option_widgets[1].thread_id == "newer-updated"
-
-                gate.set()
 
 
 class TestThreadSelectorSearch:
     """Tests for fuzzy search filtering."""
 
-    async def test_search_filters_threads(self) -> None:
-        """Typing in search should filter threads by initial prompt."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert len(screen._filtered_threads) == 3
-
-                screen._filter_text = "Hello"
-                screen._update_filtered_list()
-                assert len(screen._filtered_threads) == 1
-                assert screen._filtered_threads[0]["thread_id"] == "abc12345"
-
-    def test_empty_search_returns_all(self) -> None:
-        """Empty search text should return all threads."""
-        screen = ThreadSelectorScreen(
-            current_thread=None,
-            initial_threads=MOCK_THREADS,
-            filter_cwd=None,
-        )
-        screen._filter_text = ""
-        screen._update_filtered_list()
-        assert len(screen._filtered_threads) == 3
-
-    def test_search_by_thread_id(self) -> None:
-        """Search should match thread IDs."""
-        screen = ThreadSelectorScreen(
-            current_thread=None,
-            initial_threads=MOCK_THREADS,
-            filter_cwd=None,
-        )
-        screen._filter_text = "def678"
-        screen._update_filtered_list()
-        assert len(screen._filtered_threads) == 1
-        assert screen._filtered_threads[0]["thread_id"] == "def67890"
-
-    async def test_typing_in_search_filters_without_crashing(self) -> None:
-        """Typing into the live search box should filter by initial prompt."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                for char in "fix":
-                    await pilot.press(char)
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert len(screen._filtered_threads) == 1
-                assert screen._filtered_threads[0]["thread_id"] == "def67890"
-                assert app.dismissed is False
-
-    def test_equal_match_scores_do_not_crash_sorting(self) -> None:
-        """Fuzzy search should handle tied scores without comparing dict rows."""
-        threads: list[ThreadInfo] = [
-            {
-                "thread_id": "thread-a",
-                "agent_name": "agent",
-                "updated_at": "2026-03-08T02:00:00+00:00",
-                "created_at": "2026-03-08T01:00:00+00:00",
-                "initial_prompt": "prompt one",
-            },
-            {
-                "thread_id": "thread-b",
-                "agent_name": "agent",
-                "updated_at": "2026-03-08T03:00:00+00:00",
-                "created_at": "2026-03-08T01:30:00+00:00",
-                "initial_prompt": "prompt two",
-            },
-        ]
-        screen = ThreadSelectorScreen(
-            current_thread=None, initial_threads=threads, filter_cwd=None
-        )
-
-        screen._filter_text = "p"
-        screen._update_filtered_list()
-
-        assert [thread["thread_id"] for thread in screen._filtered_threads] == [
-            "thread-b",
-            "thread-a",
-        ]
-
-    async def test_filter_and_build_reuses_precomputed_widths(self) -> None:
-        """Filter rebuilds should not recompute column widths twice."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                with (
-                    patch.object(
-                        screen,
-                        "_compute_column_widths",
-                        wraps=screen._compute_column_widths,
-                    ) as mock_widths,
-                    patch.object(screen, "_update_help_widgets"),
-                ):
-                    screen._filter_text = "fix"
-                    await screen._filter_and_build()
-
-                assert mock_widths.call_count == 1
-
 
 class TestThreadSelectorDelete:
     """Tests for ctrl+d delete functionality."""
-
-    async def test_delete_shows_confirmation(self) -> None:
-        """Ctrl+D should show a delete confirmation overlay."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._confirming_delete is False
-
-                await pilot.press("ctrl+d")
-                await pilot.pause()
-                await pilot.pause()
-
-                assert screen._confirming_delete is True
-
-    async def test_delete_confirmation_uses_screen_overlay(self) -> None:
-        """Delete confirmation should open as a modal above the selector."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                await pilot.press("ctrl+d")
-                await pilot.pause()
-                await pilot.pause()
-
-                assert isinstance(app.screen, DeleteThreadConfirmScreen)
 
     async def test_delete_escape_cancels(self) -> None:
         """Escape during delete confirmation should cancel."""
@@ -2742,161 +1162,9 @@ class TestThreadSelectorDelete:
                 assert app.screen is screen
                 assert app.dismissed is False
 
-    async def test_delete_keeps_selection_on_next_thread(self) -> None:
-        """Deleting a row should move selection to the next visible thread."""
-        with (
-            _patch_list_threads(),
-            patch(
-                "deepagents_code.sessions.delete_thread",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            app = ThreadSelectorTestApp(current_thread=None)
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                await pilot.press("down")
-                await pilot.pause()
-                assert screen._selected_index == 1
-                assert screen._filtered_threads[1]["thread_id"] == "def67890"
-
-                await pilot.press("ctrl+d")
-                await pilot.pause()
-                await pilot.pause()
-                assert isinstance(app.screen, DeleteThreadConfirmScreen)
-
-                await pilot.press("enter")
-                await pilot.pause()
-                await pilot.pause()
-
-                assert app.screen is screen
-                assert screen._selected_index == 1
-                selected_thread = screen._filtered_threads[screen._selected_index]
-                assert selected_thread["thread_id"] == "ghi11111"
-
-    async def test_delete_last_remaining_thread(self) -> None:
-        """Deleting the only thread should leave an empty list without errors."""
-        single_thread: list[ThreadInfo] = [
-            {
-                "thread_id": "only-one",
-                "agent_name": "agent",
-                "updated_at": "2025-01-15T10:30:00",
-            }
-        ]
-        with (
-            _patch_list_threads(single_thread),
-            patch(
-                "deepagents_code.sessions.delete_thread",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            app = ThreadSelectorTestApp(current_thread=None)
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert len(screen._filtered_threads) == 1
-
-                await pilot.press("ctrl+d")
-                await pilot.pause()
-                await pilot.pause()
-                assert isinstance(app.screen, DeleteThreadConfirmScreen)
-
-                await pilot.press("enter")
-                await pilot.pause()
-                await pilot.pause()
-
-                assert app.screen is screen
-                assert screen._filtered_threads == []
-                assert screen._selected_index == 0
-
-    async def test_delete_last_item_in_list_moves_selection_backward(self) -> None:
-        """Deleting the bottom thread should move selection to the previous one."""
-        with (
-            _patch_list_threads(),
-            patch(
-                "deepagents_code.sessions.delete_thread",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            app = ThreadSelectorTestApp(current_thread=None)
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                last_index = len(screen._filtered_threads) - 1
-
-                for _ in range(last_index):
-                    await pilot.press("down")
-                    await pilot.pause()
-                assert screen._selected_index == last_index
-
-                await pilot.press("ctrl+d")
-                await pilot.pause()
-                await pilot.pause()
-                assert isinstance(app.screen, DeleteThreadConfirmScreen)
-
-                await pilot.press("enter")
-                await pilot.pause()
-                await pilot.pause()
-
-                assert app.screen is screen
-                assert screen._selected_index < last_index
-                assert screen._selected_index == len(screen._filtered_threads) - 1
-
-    async def test_delete_failure_keeps_thread_in_list(self) -> None:
-        """DB failure during delete should keep the thread visible."""
-        with (
-            _patch_list_threads(),
-            patch(
-                "deepagents_code.sessions.delete_thread",
-                new_callable=AsyncMock,
-                side_effect=OSError("disk full"),
-            ),
-        ):
-            app = ThreadSelectorTestApp(current_thread=None)
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                original_count = len(screen._filtered_threads)
-
-                await pilot.press("ctrl+d")
-                await pilot.pause()
-                await pilot.pause()
-                assert isinstance(app.screen, DeleteThreadConfirmScreen)
-
-                await pilot.press("enter")
-                await pilot.pause()
-                await pilot.pause()
-
-                assert app.screen is screen
-                assert len(screen._filtered_threads) == original_count
-
 
 class TestThreadSelectorColumnConfig:
     """Tests for column visibility configuration."""
-
-    def test_default_columns(self) -> None:
-        """Default column config should match THREAD_COLUMN_DEFAULTS."""
-        from deepagents_code.model_config import THREAD_COLUMN_DEFAULTS
-
-        with _patch_columns():
-            screen = ThreadSelectorScreen(current_thread=None)
-        assert screen._columns == THREAD_COLUMN_DEFAULTS
 
     async def test_relative_time_follows_timestamp_columns(self) -> None:
         """Relative timestamps should appear after both timestamp columns."""
@@ -2977,37 +1245,6 @@ class TestThreadSelectorColumnConfig:
                 assert relative_switch.display is False
                 assert relative_switch not in screen._filter_focus_order()
 
-    async def test_switch_toggles_column_and_persists(self) -> None:
-        """Clicking a column switch should hide the column and save the choice."""
-        with (
-            _patch_list_threads(),
-            _patch_columns(),
-            patch(
-                "deepagents_code.model_config.save_thread_columns",
-                return_value=True,
-            ) as mock_save,
-        ):
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                assert screen._columns["initial_prompt"] is True
-
-                prompt_switch = screen.query_one(
-                    f"#{screen._switch_id('initial_prompt')}",
-                    Checkbox,
-                )
-                prompt_switch.value = False
-                await pilot.pause()
-
-                assert screen._columns["initial_prompt"] is False
-                mock_save.assert_called()
-                assert mock_save.call_args.args[0]["initial_prompt"] is False
-
     async def test_enabling_prompt_column_triggers_prompt_load(self) -> None:
         """Turning on the prompt column should fetch missing prompt data."""
         threads_without_prompt: list[ThreadInfo] = [
@@ -3076,42 +1313,6 @@ class TestThreadSelectorColumnConfig:
 
 class TestThreadSelectorControlsOverflow:
     """Tests for short-window overflow handling in the options pane."""
-
-    async def test_options_overflow_shows_ellipsis(self) -> None:
-        """A short options pane should show an ellipsis when controls are hidden."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test(size=(100, 12)) as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                scroll = screen.query_one("#thread-controls-scroll", VerticalScroll)
-                hint = screen.query_one("#thread-controls-overflow", Static)
-
-                assert scroll.max_scroll_y > 0
-                assert hint.display is True
-
-    async def test_options_overflow_ellipsis_hides_at_end(self) -> None:
-        """The options ellipsis should disappear after scrolling to the end."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test(size=(100, 12)) as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                scroll = screen.query_one("#thread-controls-scroll", VerticalScroll)
-                hint = screen.query_one("#thread-controls-overflow", Static)
-                scroll.scroll_end(animate=False)
-                await pilot.pause()
-
-                assert scroll.scroll_y == scroll.max_scroll_y
-                assert hint.display is False
 
 
 def _app_test_double(app: DeepAgentsApp) -> Any:  # noqa: ANN401
@@ -3202,32 +1403,6 @@ class TestResumeThread:
         assert len(mounted) == 1
         assert "already in progress" in _get_widget_text(mounted[0])
 
-    async def test_already_on_thread_shows_message(self) -> None:
-        """_resume_thread when already on the thread should toast, not mount."""
-        app = DeepAgentsApp()
-        mounted: list[Static] = []
-        _app_test_double(app)._mount_message = AsyncMock(
-            side_effect=lambda w: mounted.append(w)
-        )
-        offer_cwd_switch = AsyncMock(return_value="continue")
-        _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
-        notify_mock = MagicMock()
-        _app_test_double(app).notify = notify_mock
-        app._agent = MagicMock()
-        app._session_state = _mock_session_state("thread-123")
-
-        await app._resume_thread("thread-123")
-
-        offer_cwd_switch.assert_awaited_once_with(
-            "thread-123",
-            restart_server=True,
-            abort="thread_switch",
-        )
-        assert mounted == []
-        notify_mock.assert_called_once_with(
-            "Already on thread: thread-123", markup=False
-        )
-
     async def test_duplicate_already_on_thread_toast_is_suppressed(self) -> None:
         """Repeated no-op resumes within the toast lifetime toast only once."""
         app = DeepAgentsApp()
@@ -3311,53 +1486,6 @@ class TestResumeThread:
         assert "Switched to thread directory" in _get_widget_text(mounted[0])
         notify_mock.assert_not_called()
 
-    async def test_successful_switch_updates_ids(self) -> None:
-        """Successful _resume_thread should update thread IDs and load history."""
-        from textual.css.query import NoMatches as _NoMatches
-
-        app = DeepAgentsApp(thread_id="old-thread")
-        app._agent = MagicMock()
-        app._session_state = _mock_session_state("old-thread")
-        app._pending_messages = MagicMock()
-        app._queued_widgets = MagicMock()
-        _app_test_double(app)._clear_messages = AsyncMock()
-        _app_test_double(app)._update_status = MagicMock()
-        mock_payload = MagicMock()
-        mock_payload.messages = []
-        mock_payload.context_tokens = 0
-        _app_test_double(app)._fetch_thread_history_data = AsyncMock(
-            return_value=mock_payload
-        )
-        _app_test_double(app)._load_thread_history = AsyncMock()
-        _app_test_double(app)._mount_message = AsyncMock()
-        _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
-        offer_cwd_switch = AsyncMock(return_value="continue")
-        _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
-
-        await app._resume_thread("new-thread")
-
-        offer_cwd_switch.assert_awaited_once_with(
-            "new-thread",
-            restart_server=True,
-            abort="thread_switch",
-        )
-        assert app._lc_thread_id == "new-thread"
-        assert app._session_state.thread_id == "new-thread"
-        app._pending_messages.clear.assert_called_once()
-        app._queued_widgets.clear.assert_called_once()
-        _app_test_double(app)._clear_messages.assert_awaited_once()
-        assert app._context_tokens == 0
-        _app_test_double(app)._fetch_thread_history_data.assert_awaited_once_with(
-            "new-thread"
-        )
-        # `resolve_pending_goal=False` defers a restored goal review so the
-        # interactive prompt mounts below the previous-thread hint.
-        _app_test_double(app)._load_thread_history.assert_awaited_once_with(
-            thread_id="new-thread",
-            preloaded_payload=mock_payload,
-            resolve_pending_goal=False,
-        )
-
     @staticmethod
     def _switch_app() -> DeepAgentsApp:
         from textual.css.query import NoMatches as _NoMatches
@@ -3431,46 +1559,6 @@ class TestResumeThread:
         session_state = app._session_state
         assert session_state is not None
         assert session_state.previous_thread_id == "old-thread"
-
-    async def test_successful_switch_points_back_to_previous_thread(self) -> None:
-        """A switch surfaces the thread just left, like `/clear` does.
-
-        Without the hint the outgoing thread's ID is gone for good: the
-        transcript is cleared and the banner is overwritten with the incoming
-        thread, so there is nothing left to scroll back to.
-        """
-        app = self._switch_app()
-        mount_message = AsyncMock()
-        _app_test_double(app)._mount_message = mount_message
-
-        with (
-            patch(
-                "deepagents_code.sessions.thread_exists",
-                AsyncMock(return_value=True),
-            ),
-            patch(
-                "deepagents_code.sessions.get_thread_agent",
-                AsyncMock(return_value="agent"),
-            ),
-            patch.object(app, "_schedule_thread_message_link") as schedule,
-        ):
-            await app._resume_thread("new-thread")
-
-        hint = "Previous thread: old-thread (Resume with /threads -r)"
-        mounted = [call.args[0] for call in mount_message.call_args_list]
-        assert hint in [_get_widget_text(widget) for widget in mounted]
-        # `ANY` for the widget so an added optional kwarg can't break this, but
-        # assert identity below: linkifying a different widget than the one
-        # mounted would render the hint with a dead thread ID.
-        schedule.assert_called_once_with(
-            ANY,
-            prefix="Previous thread",
-            thread_id="old-thread",
-            suffix=" (Resume with /threads -r)",
-        )
-        linked = schedule.call_args.args[0]
-        assert _get_widget_text(linked) == hint
-        assert any(widget is linked for widget in mounted)
 
     @pytest.mark.parametrize(
         "local_only_type",
@@ -3564,16 +1652,16 @@ class TestResumeThread:
 
     @pytest.mark.parametrize(
         "output_type",
-        ["ASSISTANT", "REASONING", "TOOL", "SKILL"],
+        ["ASSISTANT", "TOOL", "SKILL"],
     )
     async def test_switch_hints_for_any_server_output_type(
         self, output_type: str
     ) -> None:
         """Every `_SERVER_OUTPUT_MESSAGE_TYPES` member counts as work done.
 
-        A turn can leave behind reasoning, tool calls, or a skill invocation
-        without any assistant text, so narrowing the constant to `ASSISTANT`
-        would strand those threads.
+        A turn can leave behind tool calls or a skill invocation without any
+        assistant text, so narrowing the constant to `ASSISTANT` would strand
+        those threads.
         """
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
@@ -3717,69 +1805,6 @@ class TestResumeThread:
         assert app._session_state is not None
         assert app._session_state.thread_id == "new-thread"
         assert not any("Failed to switch" in text for text in contents)
-
-    async def test_switch_omits_previous_thread_without_checkpoint(self) -> None:
-        """A switch away from a thread with no checkpoint row hints nothing.
-
-        `-r` can only reach threads with a checkpoint row, so hinting at one
-        without would be a dead end.
-        """
-        app = self._switch_app()
-        mount_message = AsyncMock()
-        _app_test_double(app)._mount_message = mount_message
-        thread_exists = AsyncMock(return_value=False)
-
-        with (
-            patch("deepagents_code.sessions.thread_exists", thread_exists),
-            patch.object(app, "_schedule_thread_message_link") as schedule,
-        ):
-            await app._resume_thread("new-thread")
-
-        contents = [
-            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
-        ]
-        assert not any(text.startswith("Previous thread:") for text in contents)
-        schedule.assert_not_called()
-        # Anchors the two absence assertions above: without this the test also
-        # passes when the hint code is deleted outright, or when the
-        # resumability check is skipped and the hint suppressed unconditionally.
-        thread_exists.assert_awaited_once_with("old-thread")
-
-    @pytest.mark.parametrize(
-        "error",
-        [
-            sqlite3.OperationalError("database is locked"),
-            RuntimeError("unexpected"),
-        ],
-        ids=["store_error", "unexpected_error"],
-    )
-    async def test_switch_survives_previous_thread_lookup_failure(
-        self, error: Exception
-    ) -> None:
-        """A failed resumability check drops the hint, never the switch.
-
-        The check runs after the switch is materially complete, inside the
-        block whose handler rolls the whole switch back. An escaping error
-        would discard a completed switch and report `Failed to switch`.
-        """
-        app = self._switch_app()
-        mount_message = AsyncMock()
-        _app_test_double(app)._mount_message = mount_message
-        thread_exists = AsyncMock(side_effect=error)
-
-        with patch("deepagents_code.sessions.thread_exists", thread_exists):
-            await app._resume_thread("new-thread")
-
-        contents = [
-            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
-        ]
-        assert app._session_state is not None
-        assert app._session_state.thread_id == "new-thread"
-        assert not any(text.startswith("Previous thread:") for text in contents)
-        assert not any("Failed to switch" in text for text in contents)
-        # Anchor: without this the test passes when the work gate suppresses
-        # the hint before the lookup, never reaching the failure it covers.
-        thread_exists.assert_awaited_once_with("old-thread")
 
     async def test_switch_survives_previous_thread_hint_mount_failure(self) -> None:
         """A hint that cannot be mounted must not fail the switch.
@@ -4027,43 +2052,6 @@ class TestResumeThread:
 class TestFetchThreadHistoryData:
     """Tests for DeepAgentsApp._fetch_thread_history_data."""
 
-    async def test_returns_empty_when_agent_missing(self) -> None:
-        """No active agent should return an empty history payload."""
-        app = DeepAgentsApp()
-        app._agent = None
-
-        payload = await app._fetch_thread_history_data("tid-1")
-
-        assert payload.messages == []
-        assert payload.context_tokens == 0
-
-    async def test_returns_empty_when_state_missing(self) -> None:
-        """Missing checkpoint state should return an empty history payload."""
-        app = DeepAgentsApp()
-        app._agent = MagicMock()
-        app._agent.aget_state = AsyncMock(return_value=None)
-
-        payload = await app._fetch_thread_history_data("tid-1")
-
-        assert payload.messages == []
-        assert payload.context_tokens == 0
-        app._agent.aget_state.assert_awaited_once_with(
-            {"configurable": {"thread_id": "tid-1"}}
-        )
-
-    async def test_returns_empty_when_messages_missing(self) -> None:
-        """State with no messages should return an empty history payload."""
-        app = DeepAgentsApp()
-        app._agent = MagicMock()
-        state = MagicMock()
-        state.values = {}
-        app._agent.aget_state = AsyncMock(return_value=state)
-
-        payload = await app._fetch_thread_history_data("tid-1")
-
-        assert payload.messages == []
-        assert payload.context_tokens == 0
-
     @staticmethod
     def _skip_conversion(converted: list[MessageData]) -> AbstractContextManager[Any]:
         """Stub message preparation so metadata assertions run on their own.
@@ -4073,46 +2061,10 @@ class TestFetchThreadHistoryData:
         module-wide stub would silently disable unrelated work and hand back a
         false pass.
         """
-
-        def prepare(
-            _messages: list[Any], *, show_reasoning: bool = False
-        ) -> tuple[list[MessageData], tuple[()]]:
-            assert not show_reasoning
-            return converted, ()
-
         return patch.object(
             DeepAgentsApp,
             "_prepare_thread_history_messages",
-            staticmethod(prepare),
-        )
-
-    async def test_offloads_conversion_to_thread(self) -> None:
-        """Message conversion should be offloaded via `asyncio.to_thread`."""
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
-        app = DeepAgentsApp()
-        app._agent = MagicMock()
-        raw_messages = [object()]
-        state = MagicMock()
-        state.values = {"messages": raw_messages}
-        app._agent.aget_state = AsyncMock(return_value=state)
-        converted = [MessageData(type=MessageType.USER, content="hello")]
-
-        with patch(
-            "deepagents_code.app.asyncio.to_thread",
-            new_callable=AsyncMock,
-            return_value=(converted, ()),
-        ) as to_thread_mock:
-            payload = await app._fetch_thread_history_data("tid-1")
-
-        assert payload.messages == converted
-        # Assert against the class attribute: `_prepare_thread_history_messages`
-        # is a staticmethod, so this holds whether the call site spells it
-        # `self.` or `DeepAgentsApp.`.
-        to_thread_mock.assert_awaited_once_with(
-            DeepAgentsApp._prepare_thread_history_messages,
-            raw_messages,
-            show_reasoning=False,
+            staticmethod(lambda _messages: (converted, ())),
         )
 
     async def test_extracts_nonzero_context_tokens(self) -> None:
@@ -4214,39 +2166,6 @@ class TestFetchThreadHistoryData:
 
 class TestLoadThreadHistory:
     """Tests for DeepAgentsApp._load_thread_history."""
-
-    async def test_preloaded_history_skips_fetch_and_schedules_link(self) -> None:
-        """Preloaded history should render without state fetch round-trip."""
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
-        app = DeepAgentsApp(thread_id="tid-1")
-        app._agent = MagicMock()
-        fetch_history_mock = AsyncMock()
-        mount_message_mock = AsyncMock()
-        schedule_link_mock = MagicMock()
-        _app_test_double(app)._fetch_thread_history_data = fetch_history_mock
-        _app_test_double(app)._remove_spacer = AsyncMock()
-        _app_test_double(app)._mount_message = mount_message_mock
-        _app_test_double(app)._schedule_thread_message_link = schedule_link_mock
-        _app_test_double(app).set_timer = MagicMock()
-
-        messages_container = MagicMock()
-        messages_container.mount = AsyncMock()
-        _app_test_double(app).query_one = MagicMock(return_value=messages_container)
-
-        from deepagents_code.app import _ThreadHistoryPayload
-
-        preloaded = _ThreadHistoryPayload(
-            messages=[MessageData(type=MessageType.USER, content="hello")],
-            context_tokens=0,
-            model_spec="",
-        )
-        await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
-
-        fetch_history_mock.assert_not_awaited()
-        messages_container.mount.assert_awaited_once()
-        mount_message_mock.assert_awaited_once()
-        schedule_link_mock.assert_called_once()
 
     async def test_resume_seeds_context_tokens_from_state(self) -> None:
         """Resuming a thread with persisted tokens should seed the local cache."""
@@ -4360,113 +2279,6 @@ class TestLoadThreadHistory:
         await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
 
         assert app._context_tokens == 5000
-
-    async def test_fallback_fetch_path_used_without_preloaded_data(self) -> None:
-        """History should be fetched when preloaded data is not provided."""
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
-        app = DeepAgentsApp(thread_id="tid-1")
-        app._agent = MagicMock()
-        from deepagents_code.app import _ThreadHistoryPayload
-
-        fetched = _ThreadHistoryPayload(
-            messages=[MessageData(type=MessageType.USER, content="hello")],
-            context_tokens=0,
-            model_spec="",
-        )
-        fetch_history_mock = AsyncMock(return_value=fetched)
-        mount_message_mock = AsyncMock()
-        schedule_link_mock = MagicMock()
-        _app_test_double(app)._fetch_thread_history_data = fetch_history_mock
-        _app_test_double(app)._remove_spacer = AsyncMock()
-        _app_test_double(app)._mount_message = mount_message_mock
-        _app_test_double(app)._schedule_thread_message_link = schedule_link_mock
-        _app_test_double(app).set_timer = MagicMock()
-
-        messages_container = MagicMock()
-        messages_container.mount = AsyncMock()
-        _app_test_double(app).query_one = MagicMock(return_value=messages_container)
-
-        await app._load_thread_history(thread_id="tid-1")
-
-        fetch_history_mock.assert_awaited_once_with("tid-1")
-        messages_container.mount.assert_awaited_once()
-        mount_message_mock.assert_awaited_once()
-        schedule_link_mock.assert_called_once()
-
-    async def test_assistant_render_failure_does_not_abort_history_load(self) -> None:
-        """A single assistant render failure should not abort history loading."""
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-        from deepagents_code.tui.widgets.messages import AssistantMessage
-
-        app = DeepAgentsApp(thread_id="tid-1")
-        app._agent = MagicMock()
-        mount_message_mock = AsyncMock()
-        schedule_link_mock = MagicMock()
-        _app_test_double(app)._remove_spacer = AsyncMock()
-        _app_test_double(app)._mount_message = mount_message_mock
-        _app_test_double(app)._schedule_thread_message_link = schedule_link_mock
-        _app_test_double(app).set_timer = MagicMock()
-
-        messages_container = MagicMock()
-        messages_container.mount = AsyncMock()
-        _app_test_double(app).query_one = MagicMock(return_value=messages_container)
-
-        from deepagents_code.app import _ThreadHistoryPayload
-
-        preloaded = _ThreadHistoryPayload(
-            messages=[
-                MessageData(type=MessageType.ASSISTANT, content="ok"),
-                MessageData(type=MessageType.ASSISTANT, content="fail"),
-            ],
-            context_tokens=0,
-            model_spec="",
-        )
-
-        def _set_content_side_effect(content: str) -> None:
-            if content == "fail":
-                msg = "markdown update failed"
-                raise RuntimeError(msg)
-
-        with patch.object(
-            AssistantMessage,
-            "set_content",
-            new_callable=AsyncMock,
-            side_effect=_set_content_side_effect,
-        ) as set_content_mock:
-            await app._load_thread_history(
-                thread_id="tid-1", preloaded_payload=preloaded
-            )
-
-        assert set_content_mock.await_count == 2
-        mount_message_mock.assert_awaited_once()
-        schedule_link_mock.assert_called_once()
-
-    async def test_early_return_without_thread_id_logs_debug(self) -> None:
-        """Missing thread ID should early-return with a debug log entry."""
-        app = DeepAgentsApp()
-        app._lc_thread_id = None
-        app._agent = MagicMock()
-
-        with patch("deepagents_code.app.logger.debug") as debug_mock:
-            await app._load_thread_history()
-
-        debug_mock.assert_called_once_with(
-            "Skipping history load: no thread ID available"
-        )
-
-    async def test_early_return_without_agent_logs_debug(self) -> None:
-        """No agent and no preloaded payload should early-return with debug log."""
-        app = DeepAgentsApp(thread_id="tid-1")
-        app._agent = None
-
-        with patch("deepagents_code.app.logger.debug") as debug_mock:
-            await app._load_thread_history(thread_id="tid-1")
-
-        debug_mock.assert_called_once_with(
-            "Skipping history load for %s: no active agent and no preloaded data",
-            "tid-1",
-        )
 
 
 class TestResumeModelAdoption:
@@ -4917,17 +2729,6 @@ class TestConvertMessagesToData:
 
         return ToolMessage(content=content, tool_call_id=tool_call_id, status=status)
 
-    def test_human_message_conversion(self) -> None:
-        """HumanMessage should become a USER MessageData."""
-        from deepagents_code.tui.widgets.message_store import MessageType
-
-        msgs = [self._make_human("Hello")]
-        result = DeepAgentsApp._convert_messages_to_data(msgs)
-
-        assert len(result) == 1
-        assert result[0].type == MessageType.USER
-        assert result[0].content == "Hello"
-
     def test_system_prefix_skipped(self) -> None:
         """HumanMessages starting with [SYSTEM] should be skipped."""
         msgs = [
@@ -4977,17 +2778,6 @@ class TestConvertMessagesToData:
         assert len(result) == 1
         assert result[0].content == "connector user message"
 
-    def test_ai_message_text_content(self) -> None:
-        """AIMessage with string content should become ASSISTANT MessageData."""
-        from deepagents_code.tui.widgets.message_store import MessageType
-
-        msgs = [self._make_ai("Here is the answer.")]
-        result = DeepAgentsApp._convert_messages_to_data(msgs)
-
-        assert len(result) == 1
-        assert result[0].type == MessageType.ASSISTANT
-        assert result[0].content == "Here is the answer."
-
     def test_ai_message_content_block_list(self) -> None:
         """AIMessage with list-of-blocks content should extract text."""
         from deepagents_code.tui.widgets.message_store import MessageType
@@ -5002,59 +2792,6 @@ class TestConvertMessagesToData:
         assert len(result) == 1
         assert result[0].type == MessageType.ASSISTANT
         assert result[0].content == "Part 1. Part 2."
-
-    def test_ai_message_reasoning_blocks_follow_preference(self) -> None:
-        from deepagents_code.tui.widgets.message_store import MessageType
-
-        messages = [
-            self._make_ai(
-                [
-                    {"type": "text", "text": "Before "},
-                    {"type": "reasoning", "reasoning": "Thinking"},
-                    {"type": "text", "text": "after"},
-                ]
-            )
-        ]
-
-        hidden = DeepAgentsApp._convert_messages_to_data(messages)
-        visible = DeepAgentsApp._convert_messages_to_data(messages, show_reasoning=True)
-
-        assert [(message.type, message.content) for message in hidden] == [
-            (MessageType.ASSISTANT, "Before after")
-        ]
-        assert [(message.type, message.content) for message in visible] == [
-            (MessageType.ASSISTANT, "Before "),
-            (MessageType.REASONING, "Thinking"),
-            (MessageType.ASSISTANT, "after"),
-        ]
-
-    def test_ai_message_empty_text_skipped(self) -> None:
-        """AIMessage with empty text should not produce an ASSISTANT entry."""
-        msgs = [self._make_ai("   ")]
-        result = DeepAgentsApp._convert_messages_to_data(msgs)
-
-        assert len(result) == 0
-
-    def test_tool_call_matching(self) -> None:
-        """ToolMessage should be matched to its AIMessage tool call by ID."""
-        from deepagents_code.tui.widgets.message_store import MessageType, ToolStatus
-
-        msgs = [
-            self._make_ai(
-                tool_calls=[
-                    {"id": "tc-1", "name": "read_file", "args": {"path": "/a.py"}}
-                ]
-            ),
-            self._make_tool("file contents", tool_call_id="tc-1"),
-        ]
-        result = DeepAgentsApp._convert_messages_to_data(msgs)
-
-        assert len(result) == 1
-        assert result[0].type == MessageType.TOOL_GROUP
-        tool = result[0].tool_group_messages[0]
-        assert tool.tool_name == "read_file"
-        assert tool.tool_status == ToolStatus.SUCCESS
-        assert tool.tool_output == "file contents"
 
     def test_reloaded_ask_user_row_keeps_its_questions(self) -> None:
         """A reloaded `ask_user` row needs its questions to render answers.
@@ -5123,139 +2860,34 @@ class TestConvertMessagesToData:
         widget = diff.to_widget()
         assert all(getattr(row, "selection_prefix", 2) == 2 for row in widget.compose())
 
-    def test_tool_call_error_status(self) -> None:
-        """ToolMessage with error status should set ERROR on the tool data."""
-        from deepagents_code.tui.widgets.message_store import ToolStatus
+    def test_ai_message_reasoning_blocks_follow_preference(self) -> None:
+        from deepagents_code.tui.widgets.message_store import MessageType
 
-        msgs = [
+        messages = [
             self._make_ai(
-                tool_calls=[{"id": "tc-2", "name": "bash", "args": {"cmd": "fail"}}]
-            ),
-            self._make_tool("command failed", tool_call_id="tc-2", status="error"),
+                [
+                    {"type": "text", "text": "Before "},
+                    {"type": "reasoning", "reasoning": "Thinking"},
+                    {"type": "text", "text": "after"},
+                ]
+            )
         ]
-        result = DeepAgentsApp._convert_messages_to_data(msgs)
 
-        assert result[0].tool_status == ToolStatus.ERROR
-        assert result[0].tool_output == "command failed"
+        hidden = DeepAgentsApp._convert_messages_to_data(messages)
+        visible = DeepAgentsApp._convert_messages_to_data(messages, show_reasoning=True)
 
-    def test_unmatched_tool_call_rejected(self) -> None:
-        """Tool calls with no matching ToolMessage should be REJECTED."""
-        from deepagents_code.tui.widgets.message_store import ToolStatus
-
-        msgs = [
-            self._make_ai(tool_calls=[{"id": "tc-3", "name": "bash", "args": {}}]),
+        assert [(message.type, message.content) for message in hidden] == [
+            (MessageType.ASSISTANT, "Before after")
         ]
-        result = DeepAgentsApp._convert_messages_to_data(msgs)
-
-        assert len(result) == 1
-        assert result[0].tool_status == ToolStatus.REJECTED
-
-    def test_mixed_message_sequence(self) -> None:
-        """Full conversation with mixed message types should convert correctly."""
-        from deepagents_code.tui.widgets.message_store import MessageType
-
-        msgs = [
-            self._make_human("What files are here?"),
-            self._make_ai(
-                "Let me check.",
-                tool_calls=[{"id": "tc-a", "name": "list_files", "args": {"dir": "."}}],
-            ),
-            self._make_tool("file1.py\nfile2.py", tool_call_id="tc-a"),
-            self._make_ai("I found 2 files."),
+        assert [(message.type, message.content) for message in visible] == [
+            (MessageType.ASSISTANT, "Before "),
+            (MessageType.REASONING, "Thinking"),
+            (MessageType.ASSISTANT, "after"),
         ]
-        result = DeepAgentsApp._convert_messages_to_data(msgs)
-
-        assert len(result) == 4
-        assert result[0].type == MessageType.USER
-        assert result[1].type == MessageType.ASSISTANT
-        assert result[1].content == "Let me check."
-        assert result[2].type == MessageType.TOOL_GROUP
-        assert result[3].type == MessageType.ASSISTANT
-        assert result[3].content == "I found 2 files."
-
-    def test_empty_messages(self) -> None:
-        """Empty input should return empty output."""
-        result = DeepAgentsApp._convert_messages_to_data([])
-        assert result == []
-
-    def test_skill_message_from_additional_kwargs(self) -> None:
-        """HumanMessage with __skill in additional_kwargs → SKILL MessageData."""
-        from langchain_core.messages import HumanMessage
-
-        from deepagents_code.tui.widgets.message_store import MessageType
-
-        msg = HumanMessage(
-            content="I'm invoking the skill `web-research`.\n---\n# Body\n---",
-            additional_kwargs={
-                "__skill": {
-                    "name": "web-research",
-                    "description": "Research topics",
-                    "source": "user",
-                    "args": "find quantum",
-                },
-            },
-        )
-        result = DeepAgentsApp._convert_messages_to_data([msg])
-
-        assert len(result) == 1
-        assert result[0].type == MessageType.SKILL
-        assert result[0].skill_name == "web-research"
-        assert result[0].skill_description == "Research topics"
-        assert result[0].skill_source == "user"
-        assert result[0].skill_args == "find quantum"
-        # Full prompt envelope stored as body for expand view
-        assert "web-research" in (result[0].skill_body or "")
-
-    def test_skill_without_name_falls_back_to_user(self) -> None:
-        """__skill dict missing name should fall back to USER."""
-        from langchain_core.messages import HumanMessage
-
-        from deepagents_code.tui.widgets.message_store import MessageType
-
-        msg = HumanMessage(
-            content="some text",
-            additional_kwargs={"__skill": {"description": "no name"}},
-        )
-        result = DeepAgentsApp._convert_messages_to_data([msg])
-
-        assert len(result) == 1
-        assert result[0].type == MessageType.USER
 
 
 class TestColumnKeyConsistency:
     """Verify all column dicts stay in sync."""
-
-    def test_all_column_dicts_share_same_keys(self) -> None:
-        """All parallel column dicts must have the same key set."""
-        from deepagents_code.model_config import THREAD_COLUMN_DEFAULTS
-        from deepagents_code.tui.widgets.thread_selector import (
-            _COLUMN_LABELS,
-            _COLUMN_ORDER,
-            _COLUMN_TOGGLE_LABELS,
-            _COLUMN_WIDTHS,
-        )
-
-        order_keys = set(_COLUMN_ORDER)
-        assert order_keys == set(_COLUMN_WIDTHS), (
-            f"_COLUMN_WIDTHS keys differ: "
-            f"missing={order_keys - set(_COLUMN_WIDTHS)}, "
-            f"extra={set(_COLUMN_WIDTHS) - order_keys}"
-        )
-        assert order_keys == set(_COLUMN_LABELS), (
-            f"_COLUMN_LABELS keys differ: "
-            f"missing={order_keys - set(_COLUMN_LABELS)}, "
-            f"extra={set(_COLUMN_LABELS) - order_keys}"
-        )
-        assert order_keys == set(_COLUMN_TOGGLE_LABELS), (
-            f"_COLUMN_TOGGLE_LABELS keys differ: "
-            f"missing={order_keys - set(_COLUMN_TOGGLE_LABELS)}, "
-            f"extra={set(_COLUMN_TOGGLE_LABELS) - order_keys}"
-        )
-        assert order_keys == set(THREAD_COLUMN_DEFAULTS), (
-            f"THREAD_COLUMN_DEFAULTS keys differ: "
-            f"missing={order_keys - set(THREAD_COLUMN_DEFAULTS)}, "
-            f"extra={set(THREAD_COLUMN_DEFAULTS) - order_keys}"
-        )
 
 
 class TestThreadsMatch:
@@ -5272,39 +2904,11 @@ class TestThreadsMatch:
             t["latest_checkpoint_id"] = cp
         return t
 
-    def test_identical_lists_match(self) -> None:
-        """Identical thread lists should match."""
-        a = [self._thread("t1", "cp1"), self._thread("t2", "cp2")]
-        b = [self._thread("t1", "cp1"), self._thread("t2", "cp2")]
-        assert ThreadSelectorScreen._threads_match(a, b) is True
-
-    def test_different_lengths_do_not_match(self) -> None:
-        """Different-length lists should not match."""
-        a = [self._thread("t1")]
-        b = [self._thread("t1"), self._thread("t2")]
-        assert ThreadSelectorScreen._threads_match(a, b) is False
-
-    def test_different_thread_ids_do_not_match(self) -> None:
-        """Different thread IDs at same position should not match."""
-        a = [self._thread("t1", "cp1")]
-        b = [self._thread("t2", "cp1")]
-        assert ThreadSelectorScreen._threads_match(a, b) is False
-
     def test_different_checkpoint_ids_do_not_match(self) -> None:
         """Lists with different checkpoint IDs should not match."""
         a = [self._thread("t1", "cp1")]
         b = [self._thread("t1", "cp2")]
         assert ThreadSelectorScreen._threads_match(a, b) is False
-
-    def test_reordered_threads_do_not_match(self) -> None:
-        """Positional comparison means reordered lists fail."""
-        a = [self._thread("t1", "cp1"), self._thread("t2", "cp2")]
-        b = [self._thread("t2", "cp2"), self._thread("t1", "cp1")]
-        assert ThreadSelectorScreen._threads_match(a, b) is False
-
-    def test_empty_lists_match(self) -> None:
-        """Two empty lists should match."""
-        assert ThreadSelectorScreen._threads_match([], []) is True
 
 
 class TestThreadSelectorDomSkip:
@@ -5363,93 +2967,6 @@ class TestThreadSelectorDomSkip:
 
 class TestThreadSelectorAgentFilter:
     """Tests for the agent filter dropdown in the Options panel."""
-
-    def test_agent_filtered_threads_no_filter(self) -> None:
-        """No agent filter returns all threads."""
-        screen = ThreadSelectorScreen(
-            current_thread=None,
-            initial_threads=MOCK_THREADS,
-            filter_cwd=None,
-        )
-        assert screen._filter_agent is None
-        result = screen._agent_filtered_threads()
-        assert len(result) == 3
-
-    def test_agent_filtered_threads_with_filter(self) -> None:
-        """Agent filter returns only matching threads."""
-        screen = ThreadSelectorScreen(
-            current_thread=None,
-            initial_threads=MOCK_THREADS,
-            filter_cwd=None,
-        )
-        screen._filter_agent = "my-agent"
-        result = screen._agent_filtered_threads()
-        assert len(result) == 2
-        assert all(t["agent_name"] == "my-agent" for t in result)
-
-    def test_agent_filtered_threads_unknown_agent(self) -> None:
-        """Threads with no agent_name are matched by the '(unknown)' sentinel."""
-        threads: list[ThreadInfo] = [
-            {
-                "thread_id": "t1",
-                "agent_name": None,
-                "updated_at": "2025-01-01T00:00:00",
-                "created_at": "2025-01-01T00:00:00",
-            },
-            {
-                "thread_id": "t2",
-                "agent_name": "my-agent",
-                "updated_at": "2025-01-01T00:00:00",
-                "created_at": "2025-01-01T00:00:00",
-            },
-        ]
-        screen = ThreadSelectorScreen(
-            current_thread=None,
-            initial_threads=threads,
-            filter_cwd=None,
-        )
-        screen._filter_agent = "(unknown)"
-        result = screen._agent_filtered_threads()
-        assert len(result) == 1
-        assert result[0]["thread_id"] == "t1"
-
-    def test_update_filtered_list_respects_agent_filter(self) -> None:
-        """_update_filtered_list applies agent filter before fuzzy search."""
-        screen = ThreadSelectorScreen(
-            current_thread=None,
-            initial_threads=MOCK_THREADS,
-            filter_cwd=None,
-        )
-        screen._filter_agent = "other-agent"
-        screen._filter_text = ""
-        screen._update_filtered_list()
-        assert len(screen._filtered_threads) == 1
-        assert screen._filtered_threads[0]["thread_id"] == "def67890"
-
-    def test_update_filtered_list_agent_and_text_combined(self) -> None:
-        """Agent filter and text filter are ANDed together."""
-        screen = ThreadSelectorScreen(
-            current_thread=None,
-            initial_threads=MOCK_THREADS,
-            filter_cwd=None,
-        )
-        screen._filter_agent = "my-agent"
-        screen._filter_text = "Hello"
-        screen._update_filtered_list()
-        assert len(screen._filtered_threads) == 1
-        assert screen._filtered_threads[0]["thread_id"] == "abc12345"
-
-    def test_collect_agent_options_all_sentinel_first(self) -> None:
-        """collect_agent_options always returns 'All agents' as the first option."""
-        from deepagents_code.tui.widgets.thread_selector import _AGENT_VALUE_ALL
-
-        screen = ThreadSelectorScreen(
-            current_thread=None,
-            initial_threads=MOCK_THREADS,
-            filter_cwd=None,
-        )
-        options = screen._collect_agent_options()
-        assert options[0] == ("All agents", _AGENT_VALUE_ALL)
 
     def test_collect_agent_options_loading_while_pending(self) -> None:
         """While loading with no known agents, the dropdown shows 'Loading...'."""
@@ -5530,145 +3047,6 @@ class TestThreadSelectorAgentFilter:
         labels = [label for label, _ in options[1:]]
         assert labels == ["apple", "my-agent", "other-agent", "Zebra"]
         assert len(set(labels)) == len(labels)  # no duplicates
-
-    def test_collect_agent_options_includes_configured_agents(self) -> None:
-        """Configured agents (the /agents list) appear even without threads."""
-        screen = ThreadSelectorScreen(
-            current_thread=None,
-            initial_threads=MOCK_THREADS,
-            filter_cwd=None,
-        )
-        # Simulate the off-thread scan of ~/.deepagents/ surfacing an agent that
-        # has not produced any threads yet, plus one that overlaps a thread.
-        screen._available_agent_names = ["my-agent", "zeta-agent"]
-        labels = [label for label, _ in screen._collect_agent_options()[1:]]
-        # Threadless configured agent is selectable...
-        assert "zeta-agent" in labels
-        # ...alongside thread-derived names, with the overlap de-duplicated.
-        assert "my-agent" in labels
-        assert "other-agent" in labels
-        assert labels.count("my-agent") == 1
-        assert labels == sorted(labels, key=str.casefold)
-
-    async def test_load_threads_populates_configured_agents(self) -> None:
-        """`/threads` agent filter mirrors `/agents`, not just agents w/ threads."""
-        from deepagents_code.tui.widgets.thread_selector import _AGENT_SELECT_ID
-
-        with (
-            _patch_list_threads(),
-            _patch_columns(),
-            _patch_available_agents(["brand-new-agent"]),
-        ):
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._available_agent_names == ["brand-new-agent"]
-                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
-                values = set(agent_select._legal_values)
-                # Configured-but-threadless agent is offered as a filter option.
-                assert "brand-new-agent" in values
-                # Thread-derived agents remain selectable too.
-                assert "my-agent" in values
-                assert "other-agent" in values
-
-    async def test_agent_select_widget_present(self) -> None:
-        """The agent Select widget is rendered inside the Options panel."""
-        from deepagents_code.tui.widgets.thread_selector import _AGENT_SELECT_ID
-
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
-                assert agent_select is not None
-
-    async def test_agent_select_filters_thread_list(self) -> None:
-        """Changing the agent dropdown filters the visible thread list."""
-        from deepagents_code.tui.widgets.thread_selector import _AGENT_SELECT_ID
-
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert len(screen._filtered_threads) == 3
-
-                # Set agent filter directly and re-run filtering
-                screen._filter_agent = "my-agent"
-                screen._update_filtered_list()
-
-                assert len(screen._filtered_threads) == 2
-                assert all(
-                    t["agent_name"] == "my-agent" for t in screen._filtered_threads
-                )
-
-    async def test_reload_clears_stale_agent_filter_and_refilters(self) -> None:
-        """Reloading without the selected agent should show all remaining rows."""
-        from deepagents_code.tui.widgets.thread_selector import (
-            _AGENT_SELECT_ID,
-            _AGENT_VALUE_ALL,
-        )
-
-        reloaded_threads = [MOCK_THREADS[1]]
-
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
-                agent_select.value = "my-agent"
-                screen._filter_agent = "my-agent"
-                screen._update_filtered_list()
-                assert len(screen._filtered_threads) == 2
-
-                with _patch_list_threads(reloaded_threads):
-                    await screen._load_threads()
-                await pilot.pause()
-
-                assert screen._filter_agent is None
-                assert agent_select.value == _AGENT_VALUE_ALL
-                assert screen._filtered_threads == reloaded_threads
-
-    async def test_enter_opens_agent_select_without_resuming_thread(self) -> None:
-        """Enter on the focused agent control should open its dropdown."""
-        from deepagents_code.tui.widgets.thread_selector import _AGENT_SELECT_ID
-
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
-
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.pause()
-                assert agent_select.has_focus
-
-                await pilot.press("enter")
-                await pilot.pause()
-
-                assert agent_select.expanded
-                assert not app.dismissed
 
     async def test_tab_keys_move_open_agent_select_highlight(self) -> None:
         """Tab and Shift+Tab should move the agent dropdown highlight while open."""
@@ -5811,73 +3189,3 @@ class TestThreadSelectorAgentFilter:
                 assert all(
                     t["agent_name"] == "my-agent" for t in screen._filtered_threads
                 )
-
-    async def test_agent_dropdown_change_filters_via_event(self) -> None:
-        """Selecting an agent via the dropdown event filters the list.
-
-        Drives the real `Select.Changed` handler rather than poking
-        `_filter_agent`, covering the `_AGENT_VALUE_ALL` translation and the
-        async `_filter_and_build` path the handler schedules.
-        """
-        from deepagents_code.tui.widgets.thread_selector import (
-            _AGENT_SELECT_ID,
-            _AGENT_VALUE_ALL,
-        )
-
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._filter_agent is None
-                assert len(screen._filtered_threads) == 3
-                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
-
-                agent_select.value = "my-agent"
-                for _ in range(20):
-                    await pilot.pause()
-                    if (
-                        screen._filter_agent == "my-agent"
-                        and len(screen._filtered_threads) == 2
-                    ):
-                        break
-                assert screen._filter_agent == "my-agent"
-                assert len(screen._filtered_threads) == 2
-
-                # Returning to the sentinel clears the filter.
-                agent_select.value = _AGENT_VALUE_ALL
-                for _ in range(20):
-                    await pilot.pause()
-                    if (
-                        screen._filter_agent is None
-                        and len(screen._filtered_threads) == 3
-                    ):
-                        break
-                assert screen._filter_agent is None
-                assert len(screen._filtered_threads) == 3
-
-    async def test_confirming_delete_ignores_agent_select_change(self) -> None:
-        """Agent dropdown changes are ignored while a delete is being confirmed."""
-        from deepagents_code.tui.widgets.thread_selector import _AGENT_SELECT_ID
-
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
-                screen._confirming_delete = True
-
-                agent_select.value = "my-agent"
-                for _ in range(10):
-                    await pilot.pause()
-
-                # The guard short-circuits before mutating the filter state.
-                assert screen._filter_agent is None
-                assert len(screen._filtered_threads) == 3

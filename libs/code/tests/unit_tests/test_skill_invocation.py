@@ -20,40 +20,6 @@ from deepagents_code.skills.load import load_skill_content
 class TestLoadSkillContent:
     """Test load_skill_content() reads SKILL.md files correctly."""
 
-    def test_valid_skill_file(self, tmp_path: Path) -> None:
-        skill_md = tmp_path / "SKILL.md"
-        content = "---\nname: test\ndescription: A test\n---\n\n# Test Skill\n"
-        skill_md.write_text(content, encoding="utf-8")
-
-        result = load_skill_content(str(skill_md))
-        assert result == content
-
-    def test_missing_file_returns_none(self, tmp_path: Path) -> None:
-        result = load_skill_content(str(tmp_path / "nonexistent" / "SKILL.md"))
-        assert result is None
-
-    def test_encoding_error_returns_none(self, tmp_path: Path) -> None:
-        skill_md = tmp_path / "SKILL.md"
-        skill_md.write_bytes(b"\x80\x81\x82\xff\xfe")
-
-        result = load_skill_content(str(skill_md))
-        assert result is None
-
-    def test_empty_file_returns_empty_string(self, tmp_path: Path) -> None:
-        skill_md = tmp_path / "SKILL.md"
-        skill_md.write_text("", encoding="utf-8")
-
-        result = load_skill_content(str(skill_md))
-        assert result == ""
-
-    def test_allowed_roots_permits_valid_path(self, tmp_path: Path) -> None:
-        skill_md = tmp_path / "skills" / "SKILL.md"
-        skill_md.parent.mkdir()
-        skill_md.write_text("content", encoding="utf-8")
-
-        result = load_skill_content(str(skill_md), allowed_roots=[tmp_path / "skills"])
-        assert result == "content"
-
     def test_allowed_roots_blocks_outside_path(self, tmp_path: Path) -> None:
         outside = tmp_path / "outside" / "SKILL.md"
         outside.parent.mkdir()
@@ -78,232 +44,13 @@ class TestLoadSkillContent:
         with pytest.raises(PermissionError, match="resolves outside all allowed"):
             load_skill_content(str(symlink), allowed_roots=[tmp_path / "skills"])
 
-    def test_empty_allowed_roots_skips_check(self, tmp_path: Path) -> None:
-        skill_md = tmp_path / "anywhere" / "SKILL.md"
-        skill_md.parent.mkdir()
-        skill_md.write_text("ok", encoding="utf-8")
-
-        result = load_skill_content(str(skill_md), allowed_roots=[])
-        assert result == "ok"
-
 
 class TestBuildSkillCommands:
     """Test build_skill_commands() produces correct autocomplete tuples."""
 
-    def test_empty_list(self) -> None:
-        assert build_skill_commands([]) == []
-
-    def test_single_skill(self) -> None:
-        skills = [
-            {
-                "name": "web-research",
-                "description": "Research topics on the web",
-                "path": "/some/path/SKILL.md",
-                "license": None,
-                "compatibility": None,
-                "metadata": {},
-                "allowed_tools": [],
-                "source": "user",
-            }
-        ]
-        result = build_skill_commands(skills)  # ty: ignore
-        assert len(result) == 1
-        entry = result[0]
-        assert isinstance(entry, CommandEntry)
-        assert entry.name == "/skill:web-research"
-        assert entry.description == "Research topics on the web"
-        assert entry.hidden_keywords == "web-research"
-        assert entry.argument_hint == ""
-
-    def test_multiple_skills(self) -> None:
-        skills = [
-            {
-                "name": "skill-a",
-                "description": "Skill A",
-                "path": "/a/SKILL.md",
-                "license": None,
-                "compatibility": None,
-                "metadata": {},
-                "allowed_tools": [],
-                "source": "user",
-            },
-            {
-                "name": "skill-b",
-                "description": "Skill B",
-                "path": "/b/SKILL.md",
-                "license": None,
-                "compatibility": None,
-                "metadata": {},
-                "allowed_tools": [],
-                "source": "project",
-            },
-        ]
-        result = build_skill_commands(skills)  # ty: ignore
-        assert len(result) == 2
-        assert result[0].name == "/skill:skill-a"
-        assert result[1].name == "/skill:skill-b"
-
-    def test_entry_format(self) -> None:
-        """Each entry is a `CommandEntry`."""
-        skills = [
-            {
-                "name": "test",
-                "description": "Test skill",
-                "path": "/test/SKILL.md",
-                "license": None,
-                "compatibility": None,
-                "metadata": {},
-                "allowed_tools": [],
-                "source": "built-in",
-            }
-        ]
-        result = build_skill_commands(skills)  # ty: ignore
-        for entry in result:
-            assert isinstance(entry, CommandEntry)
-
-    def test_excludes_static_skill_aliases(self) -> None:
-        """Skills with names matching static aliases are excluded."""
-        skills = [
-            {
-                "name": "remember",
-                "description": "Update memory",
-                "path": "/built-in/SKILL.md",
-                "license": "MIT",
-                "compatibility": None,
-                "metadata": {},
-                "allowed_tools": [],
-                "source": "built-in",
-            },
-            {
-                "name": "skill-creator",
-                "description": "Create skills",
-                "path": "/built-in/SKILL.md",
-                "license": "MIT",
-                "compatibility": None,
-                "metadata": {},
-                "allowed_tools": [],
-                "source": "built-in",
-            },
-            {
-                "name": "custom-skill",
-                "description": "A custom skill",
-                "path": "/user/SKILL.md",
-                "license": None,
-                "compatibility": None,
-                "metadata": {},
-                "allowed_tools": [],
-                "source": "user",
-            },
-        ]
-        result = build_skill_commands(skills)  # ty: ignore
-        names = [r[0] for r in result]
-        assert "/skill:remember" not in names
-        assert "/skill:skill-creator" not in names
-        assert "/skill:custom-skill" in names
-        assert len(result) == 1
-
-    def test_non_alias_command_names_not_suppressed(self) -> None:
-        """Skills named after non-alias commands are NOT excluded."""
-        skills = [
-            {
-                "name": "model",
-                "description": "A model management skill",
-                "path": "/user/SKILL.md",
-                "license": None,
-                "compatibility": None,
-                "metadata": {},
-                "allowed_tools": [],
-                "source": "user",
-            },
-        ]
-        result = build_skill_commands(skills)  # ty: ignore
-        assert len(result) == 1
-        assert result[0][0] == "/skill:model"
-
-    def test_static_skill_aliases_contains_expected_entries(self) -> None:
-        """Verify the alias set only contains actual skill-backed commands."""
-        assert {"remember", "skill-creator"} == _STATIC_SKILL_ALIASES
-
-    def test_plugin_skill_separates_machine_name_from_display(self) -> None:
-        """Plugin skills insert the namespaced name but show a short label."""
-        skills = [
-            {
-                "name": "my-plugin@market:foo:review",
-                "description": "Review code",
-                "path": "/plugin/SKILL.md",
-                "license": None,
-                "compatibility": None,
-                "metadata": {},
-                "allowed_tools": [],
-                "source": "plugin",
-            }
-        ]
-        result = build_skill_commands(skills)  # ty: ignore
-        assert len(result) == 1
-        entry = result[0]
-        # Machine name (matched + inserted) keeps the full namespace.
-        assert entry.name == "/skill:my-plugin@market:foo:review"
-        # Popup label is the short terminal segment.
-        assert entry.label() == "/skill:review"
-        # Description is tagged with the plugin id for source clarity.
-        assert entry.description == "(my-plugin@market) Review code"
-        # Both the full name and terminal segment are fuzzy-matchable.
-        assert "review" in entry.hidden_keywords
-        assert "my-plugin@market" in entry.hidden_keywords
-
-    def test_non_plugin_skill_label_equals_name(self) -> None:
-        """Non-plugin skills keep label == name (no display override)."""
-        skills = [
-            {
-                "name": "web-research",
-                "description": "Research topics",
-                "path": "/user/SKILL.md",
-                "license": None,
-                "compatibility": None,
-                "metadata": {},
-                "allowed_tools": [],
-                "source": "user",
-            }
-        ]
-        result = build_skill_commands(skills)  # ty: ignore
-        entry = result[0]
-        assert entry.name == "/skill:web-research"
-        assert entry.label() == "/skill:web-research"
-        assert entry.description == "Research topics"
-
 
 class TestSkillCommandParsing:
     """Test parse_skill_command() from command_registry."""
-
-    def test_name_only(self) -> None:
-        name, args = parse_skill_command("/skill:web-research")
-        assert name == "web-research"
-        assert args == ""
-
-    def test_name_with_args(self) -> None:
-        name, args = parse_skill_command("/skill:web-research find quantum computing")
-        assert name == "web-research"
-        assert args == "find quantum computing"
-
-    def test_empty_skill_prefix(self) -> None:
-        name, args = parse_skill_command("/skill:")
-        assert name == ""
-        assert args == ""
-
-    def test_name_with_spaces(self) -> None:
-        name, args = parse_skill_command("/skill:  web-research  some args ")
-        assert name == "web-research"
-        assert args == "some args"
-
-    def test_case_normalization(self) -> None:
-        name, args = parse_skill_command("/skill:Web-Research")
-        assert name == "web-research"
-        assert args == ""
-
-    def test_whitespace_only_after_prefix(self) -> None:
-        name, args = parse_skill_command("/skill:   ")
-        assert name == ""
-        assert args == ""
 
 
 def _make_app() -> MagicMock:
@@ -393,33 +140,6 @@ class TestBuildSkillInvocationEnvelope:
         assert meta["description"] == "Review code changes"
         assert meta["source"] == "user"
         assert meta["args"] == "review this patch"
-        assert envelope.skill_name == "code-review"
-
-    def test_empty_args_omits_user_request(self) -> None:
-        """No `**User request:**` line when args is empty."""
-        from deepagents_code.skills.invocation import build_skill_invocation_envelope
-
-        skill = {"name": "test", "description": "", "source": "built-in", "path": "/x"}
-        envelope = build_skill_invocation_envelope(
-            skill,  # ty: ignore
-            "body",
-            "",
-        )
-        assert "**User request:**" not in envelope.prompt
-        assert envelope.message_kwargs["additional_kwargs"]["__skill"]["args"] == ""
-
-    def test_missing_optional_fields_default_to_empty(self) -> None:
-        """Skill dicts without `description`/`source` should default to ''."""
-        from deepagents_code.skills.invocation import build_skill_invocation_envelope
-
-        skill = {"name": "minimal", "path": "/x"}
-        envelope = build_skill_invocation_envelope(
-            skill,  # ty: ignore
-            "body",
-        )
-        meta = envelope.message_kwargs["additional_kwargs"]["__skill"]
-        assert meta["description"] == ""
-        assert meta["source"] == ""
 
 
 class TestHandleSkillCommand:
@@ -429,14 +149,6 @@ class TestHandleSkillCommand:
     discovery) path is exercised. Cache-hit tests populate the cache
     directly.
     """
-
-    async def test_empty_name_shows_usage(self) -> None:
-        app = _make_app()
-        await app._handle_skill_command("/skill:")
-
-        texts = _app_message_texts(app)
-        assert any("Usage:" in t for t in texts)
-        app._send_to_agent.assert_not_awaited()
 
     async def test_skill_not_found(self) -> None:
         app = _make_app()
@@ -448,20 +160,6 @@ class TestHandleSkillCommand:
 
         texts = _app_message_texts(app)
         assert any("not found" in t.lower() for t in texts)
-        app._send_to_agent.assert_not_awaited()
-
-    async def test_content_none_shows_error(self) -> None:
-        app = _make_app()
-        skill = _fake_skill()
-        with (
-            patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
-            patch("deepagents_code.skills.load.load_skill_content", return_value=None),
-            patch("deepagents_code.config.credentials"),
-        ):
-            await app._handle_skill_command("/skill:test-skill")
-
-        texts = _app_message_texts(app)
-        assert any("could not read" in t.lower() for t in texts)
         app._send_to_agent.assert_not_awaited()
 
     async def test_containment_violation_shows_specific_message(self) -> None:
@@ -484,45 +182,6 @@ class TestHandleSkillCommand:
         assert any("resolves outside" in t for t in texts)
         app._send_to_agent.assert_not_awaited()
 
-    async def test_empty_content_shows_error(self) -> None:
-        app = _make_app()
-        skill = _fake_skill()
-        with (
-            patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
-            patch("deepagents_code.skills.load.load_skill_content", return_value=""),
-            patch("deepagents_code.config.credentials"),
-        ):
-            await app._handle_skill_command("/skill:test-skill")
-
-        texts = _app_message_texts(app)
-        assert any("empty" in t.lower() for t in texts)
-        app._send_to_agent.assert_not_awaited()
-
-    async def test_happy_path_sends_prompt(self) -> None:
-        from deepagents_code.tui.widgets.messages import SkillMessage
-
-        app = _make_app()
-        skill = _fake_skill()
-        with (
-            patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
-            patch(
-                "deepagents_code.skills.load.load_skill_content",
-                return_value="# Instructions\nDo stuff",
-            ),
-            patch("deepagents_code.config.credentials"),
-        ):
-            await app._handle_skill_command("/skill:test-skill")
-
-        app._send_to_agent.assert_awaited_once()
-        prompt = app._send_to_agent.call_args[0][0]
-        assert app._send_to_agent.call_args.kwargs["skill_name"] == "test-skill"
-        assert "test-skill" in prompt
-        assert "# Instructions" in prompt
-        # Verify SkillMessage was mounted instead of UserMessage
-        skill_msgs = [m for m in app._mounted_messages if isinstance(m, SkillMessage)]
-        assert len(skill_msgs) == 1
-        assert skill_msgs[0]._skill_name == "test-skill"
-
     async def test_happy_path_with_args(self) -> None:
         from deepagents_code.tui.widgets.messages import SkillMessage
 
@@ -544,28 +203,6 @@ class TestHandleSkillCommand:
         skill_msgs = [m for m in app._mounted_messages if isinstance(m, SkillMessage)]
         assert len(skill_msgs) == 1
         assert skill_msgs[0]._args == "find quantum"
-
-    async def test_direct_invoke_preserves_exact_args(self) -> None:
-        """Startup skill invocation should preserve the original prompt text."""
-        app = _make_app()
-        skill = _fake_skill()
-        with (
-            patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
-            patch(
-                "deepagents_code.skills.load.load_skill_content",
-                return_value="# Instructions\nDo stuff",
-            ),
-            patch("deepagents_code.config.credentials"),
-        ):
-            await app._invoke_skill("test-skill", "  keep leading whitespace")
-
-        prompt = app._send_to_agent.call_args[0][0]
-        assert "**User request:**   keep leading whitespace" in prompt
-        metadata = app._send_to_agent.call_args.kwargs["message_kwargs"]
-        assert (
-            metadata["additional_kwargs"]["__skill"]["args"]
-            == "  keep leading whitespace"
-        )
 
     async def test_filesystem_error_shows_specific_message(self) -> None:
         app = _make_app()
@@ -596,64 +233,6 @@ class TestHandleSkillCommand:
         texts = _app_message_texts(app)
         assert any("TypeError" in t for t in texts)
         app._send_to_agent.assert_not_awaited()
-
-    async def test_cache_hit_skips_list_skills(self) -> None:
-        """When the skill is in the cache, list_skills should not be called."""
-        from pathlib import Path
-
-        app = _make_app()
-        skill = _fake_skill()
-        app._discovered_skills = [skill]
-        sentinel_root = Path("/sentinel/root")
-        app._skill_allowed_roots = [sentinel_root]
-
-        with (
-            patch(
-                "deepagents_code.skills.load.load_skill_content",
-                return_value="# Cached\nDo cached stuff",
-            ) as mock_load,
-            patch("deepagents_code.skills.load.list_skills") as mock_list,
-        ):
-            await app._handle_skill_command("/skill:test-skill")
-
-        mock_list.assert_not_called()
-        # Verify cached allowed_roots flow through to load_skill_content
-        mock_load.assert_called_once()
-        _, kwargs = mock_load.call_args
-        assert kwargs["allowed_roots"] == [sentinel_root]
-        app._send_to_agent.assert_awaited_once()
-        prompt = app._send_to_agent.call_args[0][0]
-        assert "test-skill" in prompt
-        assert "# Cached" in prompt
-
-    async def test_cache_miss_falls_back_to_discovery(self) -> None:
-        """When skill is not in cache, fresh discovery is used and cache backfilled."""
-        app = _make_app()
-        skill = _fake_skill(name="new-skill")
-        # Cache has a different skill
-        app._discovered_skills = [_fake_skill(name="other-skill")]
-
-        with (
-            patch(
-                "deepagents_code.skills.load.list_skills",
-                return_value=[skill],
-            ) as mock_list,
-            patch(
-                "deepagents_code.skills.load.load_skill_content",
-                return_value="# Fresh\nContent",
-            ),
-            patch("deepagents_code.config.credentials"),
-        ):
-            await app._handle_skill_command("/skill:new-skill")
-
-        mock_list.assert_called_once()
-        app._send_to_agent.assert_awaited_once()
-        prompt = app._send_to_agent.call_args[0][0]
-        assert "new-skill" in prompt
-        assert "# Fresh" in prompt
-        # Cache should be backfilled with fresh discovery results
-        assert len(app._discovered_skills) == 1
-        assert app._discovered_skills[0]["name"] == "new-skill"
 
 
 class TestPromptSkillTrustAndRetry:

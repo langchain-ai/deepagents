@@ -21,6 +21,7 @@ from langgraph.runtime import Runtime
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.config import MODEL_RETRIES_ATTR
 from deepagents_code.offload_middleware import (
+    _SUMMARY_TRIM_FALLBACK,
     CLICompactionMiddleware,
     _ArchiveReadGuard,
     _install_summary_model_retries,
@@ -485,7 +486,9 @@ class TestCLICompactionMiddleware:
             "summarization_model": "provider:summary-model",
         }
         main_model = SimpleNamespace(profile={"max_input_tokens": 100_000})
-        summary_model = SimpleNamespace(profile={"max_input_tokens": 10_000})
+        summary_model = SimpleNamespace(
+            profile={"max_input_tokens": 10_000}, _llm_type="summary"
+        )
         selected = MagicMock()
         selected._lc_helper.trim_tokens_to_summarize = None
 
@@ -511,6 +514,46 @@ class TestCLICompactionMiddleware:
         assert selected._lc_helper._summary_model._model is summary_model
         assert selected._lc_helper.trim_tokens_to_summarize == 8_000
         assert middleware._summarization is startup
+
+    def test_runtime_summary_override_uses_summary_counter_and_fallback(self) -> None:
+        startup = self._summarization()
+        middleware = CLICompactionMiddleware(startup)
+        runtime = MagicMock()
+        runtime.context = {
+            "model": "provider:main-model",
+            "summarization_model": "provider:summary-model",
+        }
+        main_model = SimpleNamespace(profile={"max_input_tokens": 100_000})
+        summary_model = SimpleNamespace(profile=None)
+        selected = MagicMock()
+        counter = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.config.create_model",
+                side_effect=[
+                    SimpleNamespace(model=main_model),
+                    SimpleNamespace(model=summary_model),
+                ],
+            ),
+            patch(
+                "deepagents_code.offload_middleware.create_summarization_middleware",
+                return_value=selected,
+            ),
+            patch(
+                "deepagents_code.offload_middleware._get_approximate_token_counter",
+                return_value=counter,
+            ) as get_counter,
+        ):
+            middleware._summarization_for_runtime(runtime)
+
+        get_counter.assert_called_once_with(summary_model)
+        assert selected._lc_helper.token_counter is counter
+        assert selected._lc_helper._partial_token_counter.func is counter
+        assert selected._lc_helper._partial_token_counter.keywords == {
+            "use_usage_metadata_scaling": False
+        }
+        assert selected._lc_helper.trim_tokens_to_summarize == _SUMMARY_TRIM_FALLBACK
 
     def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:
         """Server-side offload uses the CLI's effective model profile."""

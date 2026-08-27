@@ -18,6 +18,9 @@ from deepagents.middleware.summarization import (
     create_summarization_middleware,
     create_summarization_tool_middleware,
 )
+from langchain.agents.middleware.summarization import (
+    _get_approximate_token_counter,  # noqa: PLC2701  # keep summary trimming aligned with LangChain
+)
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # inspected for runtime injection
 )
@@ -71,6 +74,9 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
 logger = logging.getLogger(__name__)
+
+_SUMMARY_TRIM_FALLBACK = 4_000
+"""Conservative history budget when a summary model exposes no context limit."""
 
 
 class _RetryingModelInvoker(Runnable[LanguageModelInput, AIMessage]):
@@ -139,23 +145,36 @@ def _install_summary_model_retries(
     helper._summary_model = _RetryingModelInvoker(model or summarization.model)
 
 
-def _summary_trim_limit(model: BaseChatModel) -> int | None:
+def _summary_trim_limit(model: BaseChatModel) -> int:
     """Reserve summary-model input space for the summary prompt and serialization.
 
     Returns:
-        The summary-history budget, or `None` when the profile has no limit.
+        The summary-history budget.
     """
     profile = getattr(model, "profile", None)
     if not isinstance(profile, dict):
-        return None
+        return _SUMMARY_TRIM_FALLBACK
     context_limit = profile.get("max_input_tokens")
     if (
         not isinstance(context_limit, int)
         or isinstance(context_limit, bool)
         or context_limit <= 0
     ):
-        return None
+        return _SUMMARY_TRIM_FALLBACK
     return max(1, context_limit * 4 // 5)
+
+
+def _install_summary_token_counter(
+    summarization: SummarizationMiddleware, model: BaseChatModel
+) -> None:
+    """Count dedicated-summary input with that model's provider tuning."""
+    helper = summarization._lc_helper
+    counter = _get_approximate_token_counter(model)
+    helper.token_counter = counter
+    helper._partial_token_counter = partial(
+        counter,
+        use_usage_metadata_scaling=False,  # ty: ignore[unknown-argument]
+    )
 
 
 class _OffloadState(CostState, SummarizationState, total=False):
@@ -1020,11 +1039,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             else model
         )
         _install_summary_model_retries(summarization, summary_model)
-        if (
-            config.summarization_model_spec
-            and (trim_limit := _summary_trim_limit(summary_model)) is not None
-        ):
-            summarization._lc_helper.trim_tokens_to_summarize = trim_limit
+        if config.summarization_model_spec:
+            _install_summary_token_counter(summarization, summary_model)
+            summarization._lc_helper.trim_tokens_to_summarize = _summary_trim_limit(
+                summary_model
+            )
         return summarization
 
     async def _aplan_forced_compaction_update(

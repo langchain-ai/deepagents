@@ -139,6 +139,25 @@ def _install_summary_model_retries(
     helper._summary_model = _RetryingModelInvoker(model or summarization.model)
 
 
+def _summary_trim_limit(model: BaseChatModel) -> int | None:
+    """Reserve summary-model input space for the summary prompt and serialization.
+
+    Returns:
+        The summary-history budget, or `None` when the profile has no limit.
+    """
+    profile = getattr(model, "profile", None)
+    if not isinstance(profile, dict):
+        return None
+    context_limit = profile.get("max_input_tokens")
+    if (
+        not isinstance(context_limit, int)
+        or isinstance(context_limit, bool)
+        or context_limit <= 0
+    ):
+        return None
+    return max(1, context_limit * 4 // 5)
+
+
 class _OffloadState(CostState, SummarizationState, total=False):
     """Checkpoint channels server-owned forced compaction reads and writes.
 
@@ -1001,6 +1020,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             else model
         )
         _install_summary_model_retries(summarization, summary_model)
+        if (
+            config.summarization_model_spec
+            and (trim_limit := _summary_trim_limit(summary_model)) is not None
+        ):
+            summarization._lc_helper.trim_tokens_to_summarize = trim_limit
         return summarization
 
     async def _aplan_forced_compaction_update(

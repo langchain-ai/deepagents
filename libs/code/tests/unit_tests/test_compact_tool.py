@@ -485,8 +485,9 @@ class TestCLICompactionMiddleware:
             "summarization_model": "provider:summary-model",
         }
         main_model = SimpleNamespace(profile={"max_input_tokens": 100_000})
-        summary_model = object()
+        summary_model = SimpleNamespace(profile={"max_input_tokens": 10_000})
         selected = MagicMock()
+        selected._lc_helper.trim_tokens_to_summarize = None
 
         with (
             patch(
@@ -508,6 +509,7 @@ class TestCLICompactionMiddleware:
         assert create_model.call_args_list[1].args == ("provider:summary-model",)
         assert create_summarization.call_args.args[0] is main_model
         assert selected._lc_helper._summary_model._model is summary_model
+        assert selected._lc_helper.trim_tokens_to_summarize == 8_000
         assert middleware._summarization is startup
 
     def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:

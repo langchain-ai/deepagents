@@ -5070,14 +5070,15 @@ def cli_main() -> None:
                 exc_info=True,
             )
 
-        # Import console/credentials AFTER arg parsing and after the bare-help
+        # Initialize credentials AFTER arg parsing and after the bare-help
         # fast path so neither argparse's `--help`/`-h` exit nor
-        # `deepagents <group>` pays the credentials bootstrap cost. `credentials`
-        # must be named here even though this scope does not read it: the
-        # import is what triggers `_ensure_bootstrap()` (dotenv loading), and
+        # `deepagents <group>` pays the credentials bootstrap cost. The explicit
+        # accessor triggers `_ensure_bootstrap()` (dotenv loading), and
         # commands dispatched below — notably `auth status` — resolve
         # credentials from the environment expecting `.env` to be loaded.
-        from deepagents_code.config import console, credentials  # noqa: F401
+        from deepagents_code.config import _get_credentials, console
+
+        _get_credentials()
 
         if command is None:
             # The health gate already ran above, for every command, so the

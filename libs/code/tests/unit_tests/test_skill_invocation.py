@@ -952,7 +952,7 @@ class TestDiscoverSkillsAndRoots:
 
         with (
             patch(
-                "deepagents_code.config.settings",
+                "deepagents_code.config.credentials",
                 SimpleNamespace(project_root=project_root),
             ),
             patch("deepagents_code.skills.load.list_skills", return_value=[]),

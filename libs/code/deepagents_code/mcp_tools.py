@@ -271,6 +271,40 @@ def _server_stderr_log(server_name: str) -> Path | TextIO:
     return path
 
 
+def _server_log_handler(server_name: str) -> Callable[[Any], Awaitable[None]]:
+    """Return a handler for the log messages `server_name` sends over MCP.
+
+    MCP servers report their own diagnostics in-band, as `notifications/message`.
+    Declaring a handler is what makes a server willing to send them, and routes
+    each one to this module's logger at the level the server chose — so a server
+    explaining *why* a tool failed reaches `--debug` output as a structured
+    record, instead of being scraped back out of its stderr.
+
+    Args:
+        server_name: MCP server name used in log records.
+
+    Returns:
+        An async handler suitable for `fastmcp.Client(log_handler=...)`.
+    """
+    _LEVELS = {
+        "debug": logging.DEBUG,
+        "info": logging.INFO,
+        "notice": logging.INFO,
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+        "critical": logging.CRITICAL,
+        "alert": logging.CRITICAL,
+        "emergency": logging.CRITICAL,
+    }
+
+    async def handle(message: Any) -> None:  # noqa: ANN401 - `LogMessage` is a FastMCP alias
+        level = _LEVELS.get(str(message.level).lower(), logging.INFO)
+        origin = f"{server_name}:{message.logger}" if message.logger else server_name
+        logger.log(level, "MCP server %s: %s", origin, message.data)
+
+    return handle
+
+
 class MCPSessionManager:
     """Per-server cache of connected FastMCP clients.
 
@@ -2005,7 +2039,10 @@ async def _load_tools_from_config(
                     keep_alive=not stateless,
                     log_file=_server_stderr_log(server_name),
                 )
-            return FastMCPClient(transport)
+            return FastMCPClient(
+                transport,
+                log_handler=_server_log_handler(server_name),
+            )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             if redact_failure_details:
                 error = (

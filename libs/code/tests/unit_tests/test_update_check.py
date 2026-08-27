@@ -3516,23 +3516,41 @@ class TestUpdateLogs:
         """Dry-run planning resolves against the running tool environment."""
         _write_uv_receipt(
             tmp_path,
-            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+            (
+                '{ name = "deepagents-code", extras = ["quickjs"] }, '
+                '{ name = "langchain-custom" }'
+            ),
         )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        assert dependency_refresh_dry_run_command(
+            version="1.2.3",
+            include_prereleases=True,
+            python="/opt/Dcode Python/bin/python",
+        ) == (
+            "uv pip install --dry-run --python "
+            "'/opt/Dcode Python/bin/python' -U "
+            "'deepagents-code[quickjs]==1.2.3' langchain-custom "
+            "--prerelease allow"
+        )
+
+    def test_dependency_refresh_dry_run_ignores_phantom_metadata_extras(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Base dependencies must not add unselected extras to the preview."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with patch(
             "deepagents_code.extras_info.installed_extra_names",
-            return_value=frozenset({"quickjs"}),
+            return_value=frozenset({"media", "nvidia"}),
         ):
-            assert dependency_refresh_dry_run_command(
-                version="1.2.3",
-                include_prereleases=True,
-                python="/opt/Dcode Python/bin/python",
-            ) == (
-                "uv pip install --dry-run --python "
-                "'/opt/Dcode Python/bin/python' -U "
-                "'deepagents-code[quickjs]==1.2.3' langchain-custom "
-                "--prerelease allow"
+            command = dependency_refresh_dry_run_command(
+                version="1.2.3", python="/opt/dcode/bin/python"
             )
+
+        assert command == (
+            "uv pip install --dry-run --python /opt/dcode/bin/python "
+            "-U deepagents-code==1.2.3"
+        )
 
     async def test_perform_dependency_refresh_dry_run_uses_pinned_uv_pip_command(
         self,
@@ -3545,7 +3563,7 @@ class TestUpdateLogs:
             ),
             patch("shutil.which", return_value="/usr/bin/uv"),
             patch(
-                "deepagents_code.extras_info.installed_extra_names",
+                "deepagents_code.update_check._uv_tool_selected_extras",
                 return_value=frozenset(),
             ),
             patch(

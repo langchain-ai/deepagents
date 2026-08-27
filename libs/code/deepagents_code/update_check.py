@@ -3409,13 +3409,11 @@ def dependency_refresh_dry_run_command(
         ToolRequirementIntrospectionError: If the target Python or uv tool receipt
             requirements cannot be determined safely.
     """
-    from deepagents_code.extras_info import installed_extra_names
-
     target_python = python or sys.executable
     if not target_python:
         msg = "Could not determine the running Python executable"
         raise ToolRequirementIntrospectionError(msg)
-    extras = installed_extra_names(distribution_name, strict=True)
+    extras = _uv_tool_selected_extras(distribution_name=distribution_name)
     requirement = _dcode_extras_requirement(extras, version=version)
     cmd = (
         "uv pip install --dry-run --python "

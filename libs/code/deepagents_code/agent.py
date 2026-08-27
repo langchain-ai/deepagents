@@ -85,7 +85,6 @@ from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     DEFAULT_MODEL_RETRIES,
     _ShellAllowAll,
-    config,
     console,
     get_default_coding_instructions,
     get_glyphs,
@@ -2478,8 +2477,9 @@ def create_cli_agent(
             `auto_mode_enabled` is `True`.
         recursion_limit: Explicit LangGraph `recursion_limit` (graph step budget)
             for the main agent. When `None`, it is resolved from the
-            `DEEPAGENTS_CODE_RECURSION_LIMIT` env var, `[runtime].recursion_limit`
-            in `config.toml`, then the default via `resolve_recursion_limit`.
+            `DEEPAGENTS_CODE_RECURSION_LIMIT` env var and
+            `[runtime].recursion_limit` in `config.toml`; LangGraph's default
+            applies when neither is set.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         store: Optional LangGraph Store for runtime approval state.
@@ -3289,5 +3289,7 @@ def create_cli_agent(
         store=store,
         subagents=all_subagents or None,
         name=_sanitize_agent_message_name(assistant_id),
-    ).with_config({**config, "recursion_limit": effective_recursion_limit})
+    )
+    if effective_recursion_limit is not None:
+        agent = agent.with_config({"recursion_limit": effective_recursion_limit})
     return agent, composite_backend

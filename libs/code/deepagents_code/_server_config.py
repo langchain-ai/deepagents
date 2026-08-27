@@ -355,7 +355,7 @@ class ServerConfig:
     """Explicit main-agent LangGraph `recursion_limit` (graph step budget).
 
     `None` means "resolve from `DEEPAGENTS_CODE_RECURSION_LIMIT` /
-    `[runtime].recursion_limit` / the default at agent-build time"
+    `[runtime].recursion_limit` at agent-build time, then use LangGraph's default"
     (`resolve_recursion_limit`). An explicit value from `--recursion-limit` wins
     over those layers. Must be a positive integer when set.
     """

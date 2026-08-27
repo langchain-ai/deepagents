@@ -100,20 +100,11 @@ effectively remove it. A resolved value above the ceiling is rejected and falls
 through to the next layer / default.
 """
 
-RECURSION_LIMIT_DEFAULT = 2000
-"""Default LangGraph `recursion_limit` for the main agent.
-
-Single source of truth shared by the `runtime.recursion_limit` option, the
-`config.config` runnable-config default, and `resolve_recursion_limit`. Raised
-above the LangGraph/SDK default (`25`) to accommodate deeply nested agent graphs
-in long-running sessions without hitting `GRAPH_RECURSION_LIMIT`.
-"""
-
 RECURSION_LIMIT_FLOOR = 25
-"""Smallest accepted `recursion_limit`; matches the LangGraph default ceiling.
+"""Smallest accepted configured `recursion_limit` outside the CLI.
 
 A value below this would break otherwise-valid runs, so a resolved value under
-the floor is rejected and falls through to the next layer / default.
+the floor is rejected and falls through to the next layer or LangGraph default.
 """
 
 RECURSION_LIMIT_CEILING = 100_000
@@ -1776,14 +1767,15 @@ def resolve_recursion_limit(
     *,
     toml_data: dict[str, Any] | None = None,
     managed_toml_data: dict[str, Any] | None = None,
-) -> int:
-    """Resolve the effective main-agent `recursion_limit`.
+) -> int | None:
+    """Resolve an explicit main-agent `recursion_limit`.
 
     Resolves `runtime.recursion_limit` through the standard managed → CLI → env →
-    `config.toml` → default precedence. Explicit CLI values retain the
-    documented `>= 1` contract. Other out-of-range values (below
-    `RECURSION_LIMIT_FLOOR` or above `RECURSION_LIMIT_CEILING`) are discarded
-    with a logged warning and the next lower-precedence layer is tried.
+    `config.toml` precedence. Explicit CLI values retain the documented `>= 1`
+    contract. Other out-of-range values (below `RECURSION_LIMIT_FLOOR` or above
+    `RECURSION_LIMIT_CEILING`) are discarded with a logged warning and the next
+    lower-precedence layer is tried. If no valid value is configured, LangGraph
+    applies its own default.
 
     Managed values remain subject to the launch-time managed-health gate.
 
@@ -1794,14 +1786,12 @@ def resolve_recursion_limit(
             described in `_resolve_option`.
 
     Returns:
-        The resolved recursion limit. CLI values are positive; values from all
-            other tiers are within
-            `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
+        The explicit recursion limit, or `None` to use LangGraph's default.
     """
     data = toml_data
     option = get_option("runtime.recursion_limit")
     if option is None:
-        return RECURSION_LIMIT_DEFAULT
+        return None
 
     resolver = _resolver_for_option_sources(
         toml_data=data,
@@ -1841,15 +1831,6 @@ def resolve_recursion_limit(
         )
         excluded.update(rejected_ranks)
 
-    if settled is None and source != "default":
-        logger.warning(
-            "Ignoring %s recursion_limit %r (expected int in [%d, %d]); using %d",
-            source,
-            value,
-            RECURSION_LIMIT_FLOOR,
-            RECURSION_LIMIT_CEILING,
-            RECURSION_LIMIT_DEFAULT,
-        )
     # Emitted once the loop settles, against the first resolution: only now is
     # it known whether the flag actually lost. `resolved` here is the winning
     # tier, so the masked CLI entry is not on it -- the first resolution is the
@@ -1860,7 +1841,7 @@ def resolve_recursion_limit(
         and CLI_RANK in first_resolved.masked_ranks
     ):
         _emit_ranked_diagnostics(option, first_resolved)
-    return RECURSION_LIMIT_DEFAULT if settled is None else settled
+    return settled
 
 
 # --- Option definitions -----------------------------------------------------
@@ -2847,7 +2828,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         group="Runtime",
         summary="Main agent LangGraph recursion_limit (graph step budget).",
         kind=OptionKind.INT,
-        default=RECURSION_LIMIT_DEFAULT,
         env_var=_env_vars.RECURSION_LIMIT,
         toml_keys=("runtime", "recursion_limit"),
         cli_flag="--recursion-limit",

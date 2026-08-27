@@ -1884,6 +1884,27 @@ class TestCreateCliAgentInteractiveForwarding:
             is CLIContextSchema
         )
         assert call_order == ["register_profile", "create_agent"]
+        mock_agent.with_config.assert_not_called()
+
+    def test_explicit_recursion_limit_is_applied(self, tmp_path: Path) -> None:
+        """An explicit recursion limit remains configurable."""
+        model = _make_fake_chat_model()
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        with patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent):
+            create_cli_agent(
+                model=model,
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                system_prompt="test prompt",
+                recursion_limit=3000,
+                cwd=tmp_path,
+            )
+
+        assert mock_agent.with_config.call_args.args == ({"recursion_limit": 3000},)
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
         """Explicit system_prompt should be used verbatim, ignoring interactive."""

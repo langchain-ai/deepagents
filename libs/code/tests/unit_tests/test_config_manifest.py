@@ -3939,17 +3939,15 @@ def test_recursion_limit_option_metadata() -> None:
     assert opt.env_var == _env_vars.RECURSION_LIMIT
     assert opt.toml_keys == ("runtime", "recursion_limit")
     assert opt.cli_flag == "--recursion-limit"
+    assert opt.default is None
     assert "runtime.recursion_limit" in option_keys()
 
 
 def test_resolve_recursion_limit_default() -> None:
-    """With no override, the resolver returns the manifest default."""
-    from deepagents_code.config_manifest import (
-        RECURSION_LIMIT_DEFAULT,
-        resolve_recursion_limit,
-    )
+    """With no override, the resolver leaves the limit to LangGraph."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
 
-    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_DEFAULT
+    assert resolve_recursion_limit(toml_data={}) is None
 
 
 def test_resolve_recursion_limit_env_wins(monkeypatch) -> None:
@@ -3976,14 +3974,11 @@ def test_resolve_recursion_limit_toml_when_env_unset(monkeypatch) -> None:
 
 @pytest.mark.parametrize("raw", ["0", "-5", "10", "999999999", "notanint"])
 def test_resolve_recursion_limit_out_of_range_falls_back(monkeypatch, raw) -> None:
-    """Non-positive, sub-floor, above-ceiling, or malformed values fall back."""
-    from deepagents_code.config_manifest import (
-        RECURSION_LIMIT_DEFAULT,
-        resolve_recursion_limit,
-    )
+    """Invalid values fall through to LangGraph's default."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
 
     monkeypatch.setenv(_env_vars.RECURSION_LIMIT, raw)
-    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_DEFAULT
+    assert resolve_recursion_limit(toml_data={}) is None
 
 
 def test_resolve_recursion_limit_invalid_env_falls_through_to_toml(

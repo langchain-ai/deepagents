@@ -48,7 +48,6 @@ from deepagents_code.config_manifest import (
     INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT,
     INTERPRETER_PTC_DEFAULT,
     INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
-    RECURSION_LIMIT_DEFAULT,
 )
 
 if TYPE_CHECKING:
@@ -1914,20 +1913,6 @@ MAX_ARG_LENGTH = 150
 
 Longer values are truncated with an ellipsis by `truncate_value`
 in `tool_display`.
-"""
-
-config: RunnableConfig = {
-    "recursion_limit": RECURSION_LIMIT_DEFAULT,
-}
-"""Default LangGraph runnable config for the main agent.
-
-Sets `recursion_limit` to `RECURSION_LIMIT_DEFAULT` (2000) to accommodate deeply
-nested agent graphs in long-running sessions without hitting the default
-LangGraph ceiling. The literal lives in `config_manifest` so the default is
-defined in exactly one place. This value is the fallback: `create_cli_agent`
-resolves the effective limit at agent-build time via `resolve_recursion_limit`,
-which honors the `--recursion-limit` CLI flag, the `DEEPAGENTS_CODE_RECURSION_LIMIT`
-env var, and `[runtime].recursion_limit` in `config.toml`.
 """
 
 _git_branch_cache: dict[str, str | None] = {}

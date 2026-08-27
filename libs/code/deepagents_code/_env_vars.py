@@ -487,10 +487,10 @@ repo file, so a project `.env` cannot disable itself.
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
 
-Parsed as an integer by the config manifest. Values below the LangGraph floor
+Parsed as an integer by the config manifest. Values below the configured floor
 (`25`) or above the manifest ceiling are ignored with a logged warning, falling
-back to `config.toml` then the default. See `[runtime].recursion_limit` and the
-`--recursion-limit` CLI flag.
+back to `config.toml` then LangGraph's default. See `[runtime].recursion_limit`
+and the `--recursion-limit` CLI flag.
 """
 
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"

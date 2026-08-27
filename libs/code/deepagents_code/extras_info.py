@@ -1059,6 +1059,39 @@ model-provider-drift checks; new extras must be added to the corresponding
 category frozenset above.
 """
 
+COMPOSITE_EXTRA_MEMBERS: dict[str, frozenset[str]] = {
+    "all-providers": MODEL_PROVIDER_EXTRAS,
+    "all-sandboxes": SANDBOX_EXTRAS,
+}
+"""Composite meta-extras mapped to the extras they expand to.
+
+Mirrors the `all-providers` / `all-sandboxes` definitions in `pyproject.toml`.
+Both are documented `DEEPAGENTS_CODE_EXTRAS` values (`scripts/install.sh`), so a
+uv receipt selecting only a composite is a supported install shape. Removal
+operates on receipt-selected extras, so it cannot take a single provider out of
+a composite — callers use this mapping to say so instead of reporting the member
+as "not installed", which is the opposite of the truth.
+
+Drift-protected by `test_extras_info.TestCompositeExtraMembers`.
+"""
+
+
+def composite_extras_providing(extra: str) -> frozenset[str]:
+    """Return the composite extras that expand to `extra`.
+
+    Args:
+        extra: Canonicalized extra name to look up.
+
+    Returns:
+        Names of the composite extras containing `extra`; empty when no
+            composite provides it.
+    """
+    return frozenset(
+        composite
+        for composite, members in COMPOSITE_EXTRA_MEMBERS.items()
+        if extra in members
+    )
+
 
 def format_known_extras() -> str:
     """Render the installable extras grouped by category as plain text.

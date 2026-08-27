@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
@@ -23,10 +24,13 @@ from deepagents_code.client.commands.extras import (
 from deepagents_code.tui.widgets.messages import AppMessage
 from deepagents_code.update_check import (
     ExtraNotInstalledError,
+    ExtraRemovalOutcome,
     ProtectedExtraError,
     ToolRequirementIntrospectionError,
+    _install_extra_uv_tool_command,
     perform_uninstall_extra,
     uninstall_extra_command,
+    upgrade_install_command,
 )
 
 
@@ -126,6 +130,91 @@ class TestUninstallExtraCommand:
         with pytest.raises(ProtectedExtraError, match="base dependency"):
             uninstall_extra_command(extra)
 
+    def test_removal_survives_a_later_rebuild(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A removed extra stays removed when the env is next rebuilt.
+
+        Regression guard. The rebuild used to derive its extra set from
+        `installed_extra_names`, which reports an extra as installed when *any*
+        one of its packages is present. `media` is satisfied by `pillow` and
+        `nvidia` by `aiohttp`, both of which arrive as base or transitive
+        dependencies, so those extras read as installed on every env — a removal
+        could not delete them and the next upgrade silently put them back.
+        """
+        _write_receipt(tmp_path, ("media", "ollama"))
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+
+        removal = uninstall_extra_command("media", version=__version__)
+        assert "media" not in removal
+        assert "ollama" in removal
+
+        # Simulate the receipt uv writes after running `removal`, then confirm
+        # the next upgrade and extra install both leave `media` deselected.
+        _write_receipt(tmp_path, ("ollama",))
+        assert "media" not in upgrade_install_command()
+        assert "media" not in _install_extra_uv_tool_command("daytona")
+
+    def test_composite_selection_names_the_providing_extra(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A member of a selected composite is not reported as absent.
+
+        `all-providers` installs `langchain-ollama`, so "not installed" would be
+        the opposite of the truth. The error names the composite instead.
+        """
+        _write_receipt(tmp_path, ("all-providers",))
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+
+        with pytest.raises(ExtraNotInstalledError, match="provided by all-providers"):
+            uninstall_extra_command("ollama", version=__version__)
+
+    def test_absent_extra_lists_what_is_selected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A genuinely absent extra reports the selected set for context."""
+        _write_receipt(tmp_path, ("nvidia", "ollama"))
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+
+        with pytest.raises(
+            ExtraNotInstalledError,
+            match=r"not installed\. Selected extras: nvidia, ollama",
+        ):
+            uninstall_extra_command("daytona", version=__version__)
+
+    @pytest.mark.parametrize(
+        ("receipt", "match"),
+        [
+            ("[tool]\n", "missing `\\[tool\\].requirements`"),
+            ('[tool]\nrequirements = ["bare-string"]\n', "non-table requirement"),
+            (
+                '[tool]\nrequirements = [{ version = "1.0" }]\n',
+                "without a package name",
+            ),
+            (
+                '[tool]\nrequirements = [{ name = "langchain-custom" }]\n',
+                "does not contain a 'deepagents-code' requirement",
+            ),
+        ],
+    )
+    def test_unusable_receipt_shapes_fail_closed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        receipt: str,
+        match: str,
+    ) -> None:
+        """Every receipt shape that cannot describe the selection fails closed.
+
+        Guessing an empty selection here would rebuild the tool as a plain
+        `deepagents-code`, deselecting everything the user installed.
+        """
+        tmp_path.joinpath("uv-receipt.toml").write_text(receipt, encoding="utf-8")
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+
+        with pytest.raises(ToolRequirementIntrospectionError, match=match):
+            uninstall_extra_command("ollama", version=__version__)
+
     def test_invalid_name_is_rejected_before_receipt_read(self) -> None:
         with pytest.raises(ValueError, match="Invalid extra name"):
             uninstall_extra_command("ollama']; touch /tmp/pwned; '")
@@ -136,6 +225,9 @@ class TestUninstallExtraCommand:
             '{ name = "deepagents-code", extras = "ollama" }',
             '{ name = "deepagents-code", extras = ["ollama;rm -rf /"] }',
             '{ name = "deepagents-code", extras = [1] }',
+            # Duplicate canonical spellings: silently collapsing them would make
+            # the rebuilt command disagree with the receipt it came from.
+            '{ name = "deepagents-code", extras = ["my-extra", "my_extra"] }',
         ],
     )
     def test_malformed_receipt_extras_fail_closed(
@@ -162,9 +254,9 @@ class TestPerformUninstallExtra:
             "deepagents_code.update_check._run_install_subprocess",
             new_callable=AsyncMock,
         ) as run:
-            success, output = await perform_uninstall_extra("bad;name")
-        assert success is False
-        assert "Invalid extra name" in output
+            outcome = await perform_uninstall_extra("bad;name")
+        assert outcome.success is False
+        assert "Invalid extra name" in outcome.output
         run.assert_not_awaited()
 
     @pytest.mark.parametrize(
@@ -188,9 +280,9 @@ class TestPerformUninstallExtra:
                 new_callable=AsyncMock,
             ) as run,
         ):
-            success, output = await perform_uninstall_extra("ollama")
-        assert success is False
-        assert message in output
+            outcome = await perform_uninstall_extra("ollama")
+        assert outcome.success is False
+        assert message in outcome.output
         run.assert_not_awaited()
 
     async def test_absent_extra_never_spawns(self) -> None:
@@ -210,9 +302,9 @@ class TestPerformUninstallExtra:
                 new_callable=AsyncMock,
             ) as run,
         ):
-            success, output = await perform_uninstall_extra("ollama")
-        assert success is False
-        assert "not installed" in output
+            outcome = await perform_uninstall_extra("ollama")
+        assert outcome.success is False
+        assert "not installed" in outcome.output
         run.assert_not_awaited()
 
     async def test_lock_wraps_command_generation_and_subprocess(self) -> None:
@@ -261,7 +353,9 @@ class TestPerformUninstallExtra:
         ):
             result = await perform_uninstall_extra("ollama", log_path=Path("/tmp/log"))
 
-        assert result == (True, "done")
+        assert result.success is True
+        assert result.output == "done"
+        assert result.manual_recovery_safe is True
         assert events == ["acquire", "version", "command", "run", "release"]
         run.assert_awaited_once_with(
             "uv tool install safe-command", progress=None, log_path=Path("/tmp/log")
@@ -285,10 +379,10 @@ class TestPerformUninstallExtra:
                 new_callable=AsyncMock,
             ) as run,
         ):
-            success, output = await perform_uninstall_extra("ollama")
+            outcome = await perform_uninstall_extra("ollama")
 
-        assert success is False
-        assert "Could not determine the installed" in output
+        assert outcome.success is False
+        assert "Could not determine the installed" in outcome.output
         command.assert_not_called()
         run.assert_not_awaited()
 
@@ -309,10 +403,13 @@ class TestPerformUninstallExtra:
             patch("deepagents_code.update_check.uninstall_extra_command", command),
             patch("deepagents_code.update_check._run_install_subprocess", run),
         ):
-            success, output = await perform_uninstall_extra("ollama")
+            outcome = await perform_uninstall_extra("ollama")
 
-        assert success is False
-        assert "Another dcode session" in output
+        assert outcome.success is False
+        assert "already running" in outcome.output
+        # Contention must not advertise the manual `--reinstall` command: running
+        # it by hand while the holder is mid-install is what corrupts the env.
+        assert outcome.manual_recovery_safe is False
         command.assert_not_called()
         run.assert_not_awaited()
 
@@ -335,6 +432,26 @@ class TestUninstallCli:
         ) as request:
             assert run_uninstall_command(args) == 0
         request.assert_called_once_with(name="ollama")
+
+    def test_help_renders_for_the_subcommand(self, capsys) -> None:
+        """`dcode uninstall --help` runs the real help function.
+
+        The subparser wires help through `_lazy_help("show_uninstall_help")`, a
+        string the type checker cannot verify — so exercise it rather than
+        patching it out.
+        """
+        from deepagents_code.main import parse_args
+
+        with (
+            patch.object(sys, "argv", ["dcode", "uninstall", "--help"]),
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            parse_args()
+
+        assert exit_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "dcode uninstall NAME" in out
+        assert "base dependencies" in out
 
     def test_missing_subcommand_name_shows_help(self) -> None:
         args = argparse.Namespace(uninstall_target=None)
@@ -434,7 +551,7 @@ class TestUninstallCli:
             patch(
                 "deepagents_code.update_check.perform_uninstall_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraRemovalOutcome(True, ""),
             ) as perform,
             patch(
                 "deepagents_code._invocation.invoked_name",
@@ -448,6 +565,214 @@ class TestUninstallCli:
         )
         assert "Uninstalled extra 'ollama'" in text
         assert "Relaunch deepagents-code" in text
+
+    def _console_text(self, console: MagicMock) -> str:
+        return " ".join(
+            str(arg) for call in console.print.call_args_list for arg in call.args
+        )
+
+    def test_editable_install_refuses_with_nonzero_exit(self) -> None:
+        """An editable install is refused before any environment mutation."""
+        console = MagicMock()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+            ) as perform,
+        ):
+            assert run_uninstall_request(name="ollama") == 1
+        perform.assert_not_awaited()
+        assert "editable installs" in self._console_text(console)
+
+    def test_protected_extra_exits_nonzero(self) -> None:
+        """A refused base-provider removal must not report shell success.
+
+        `dcode uninstall openai && echo removed` printing "removed" would tell a
+        script the extra is gone when the request was declined outright.
+        """
+        console = MagicMock()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.uninstall_extra_command",
+                side_effect=ProtectedExtraError(
+                    "Extra 'openai' is a base dependency and cannot be removed."
+                ),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+            ) as perform,
+        ):
+            assert run_uninstall_request(name="openai") == 1
+        perform.assert_not_awaited()
+        assert "base dependency" in self._console_text(console)
+
+    def test_invalid_name_exits_two(self) -> None:
+        """A malformed extra name is a usage error, not a failed removal."""
+        console = MagicMock()
+        with (
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+            ) as perform,
+        ):
+            assert run_uninstall_request(name="ollama; rm -rf /") == 2
+        perform.assert_not_awaited()
+        assert "Invalid extra name" in self._console_text(console)
+
+    @pytest.mark.parametrize(
+        ("method", "expected"),
+        [
+            ("brew", "Homebrew install detected"),
+            ("other", "Unsupported install method detected"),
+        ],
+    )
+    def test_unsupported_install_method_skips_receipt_read(
+        self, method: str, expected: str
+    ) -> None:
+        """Method-specific guidance wins over a raw receipt introspection error."""
+        console = MagicMock()
+        command = MagicMock()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value=method,
+            ),
+            patch("deepagents_code.update_check.uninstall_extra_command", command),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+            ) as perform,
+        ):
+            assert run_uninstall_request(name="ollama") == 1
+        command.assert_not_called()
+        perform.assert_not_awaited()
+        assert expected in self._console_text(console)
+
+    def test_receipt_failure_exits_one(self) -> None:
+        """An unreadable receipt is reported with its type, not swallowed."""
+        console = MagicMock()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.uninstall_extra_command",
+                side_effect=ToolRequirementIntrospectionError("receipt not found"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+            ) as perform,
+        ):
+            assert run_uninstall_request(name="ollama") == 1
+        perform.assert_not_awaited()
+        text = self._console_text(console)
+        assert "ToolRequirementIntrospectionError" in text
+        assert "receipt not found" in text
+
+    def test_failure_reports_log_and_recovery_command(self) -> None:
+        """A failed rebuild surfaces the tail of the output, log, and repair cmd."""
+        console = MagicMock()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.uninstall_extra_command",
+                return_value="uv tool install safe-command",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/uninstall.log"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraRemovalOutcome(False, "x" * 300 + "resolver boom"),
+            ),
+        ):
+            assert run_uninstall_request(name="ollama") == 1
+        text = self._console_text(console)
+        assert "resolver boom" in text
+        assert "/tmp/uninstall.log" in text
+        assert "uv tool install safe-command" in text
+        # Only the last 200 characters of output are echoed.
+        assert "x" * 250 not in text
+
+    def test_contention_withholds_manual_command(self) -> None:
+        """Contention must not advise hand-running the rebuild."""
+        console = MagicMock()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.uninstall_extra_command",
+                return_value="uv tool install safe-command",
+            ),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraRemovalOutcome(
+                    False,
+                    "Another dcode update or install is already running.",
+                    manual_recovery_safe=False,
+                ),
+            ),
+        ):
+            assert run_uninstall_request(name="ollama") == 1
+        text = self._console_text(console)
+        assert "already running" in text
+        assert "safe-command" not in text
+        assert "Run manually" not in text
+
+    def test_keyboard_interrupt_exits_130_with_repair_hint(self) -> None:
+        """`Ctrl+C` mid-rebuild reports the partial-rebuild risk."""
+        console = MagicMock()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.uninstall_extra_command",
+                return_value="uv tool install safe-command",
+            ),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+                side_effect=KeyboardInterrupt,
+            ),
+        ):
+            assert run_uninstall_request(name="ollama") == 130
+        text = self._console_text(console)
+        assert "Aborted" in text
+        assert "partially rebuilt" in text
+        assert "uv tool install safe-command" in text
+
+    def test_os_error_exits_one_with_repair_hint(self) -> None:
+        """An OSError from the performer is reported, not swallowed."""
+        console = MagicMock()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.uninstall_extra_command",
+                return_value="uv tool install safe-command",
+            ),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+                side_effect=OSError("no space left on device"),
+            ),
+        ):
+            assert run_uninstall_request(name="ollama") == 1
+        text = self._console_text(console)
+        assert "no space left on device" in text
+        assert "partially rebuilt" in text
 
     @pytest.mark.parametrize(
         ("argv", "command", "target"),
@@ -594,7 +919,142 @@ async def test_uninstall_slash_non_uv_install_skips_receipt_read() -> None:
     assert "Homebrew install detected" in text
 
 
-async def test_uninstall_slash_serializes_environment_mutation() -> None:
+async def test_uninstall_slash_editable_install_refuses() -> None:
+    """An editable install is refused before any environment mutation.
+
+    This guard is what stops a rebuild from replacing a developer's editable
+    checkout, so it must be exercised rather than only ever patched to `False`.
+    """
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()
+    command = MagicMock()
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=True),
+        # Report a uv install so only the editable check can refuse; otherwise
+        # `uninstall_extra_method_error` produces a near-identical message and
+        # this test would pass with the editable guard deleted.
+        patch("deepagents_code.update_check.detect_install_method", return_value="uv"),
+        patch("deepagents_code.update_check.uninstall_extra_command", command),
+        patch(
+            "deepagents_code.update_check.perform_uninstall_extra",
+            new_callable=AsyncMock,
+        ) as perform,
+    ):
+        await app._handle_uninstall_command("/uninstall ollama")
+
+    command.assert_not_called()
+    perform.assert_not_awaited()
+    text = " ".join(
+        str(call.args[0]._content) for call in app._mount_message.await_args_list
+    )
+    assert "Editable install detected — cannot remove extras." in text
+    assert "uv tool install --editable" in text
+
+
+@pytest.mark.parametrize(
+    ("method", "expected"),
+    [
+        ("brew", "Homebrew install detected"),
+        ("other", "Unsupported install method detected"),
+    ],
+)
+async def test_uninstall_slash_refuses_unsupported_install_methods(
+    method: str, expected: str
+) -> None:
+    """Brew and unknown installs get method-specific guidance, not a receipt error.
+
+    The method gate must run before `uninstall_extra_command` reads the uv
+    receipt; those installs have none, so reading first would surface a raw
+    `ToolRequirementIntrospectionError` instead of the tailored message.
+    """
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()
+    command = MagicMock()
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch(
+            "deepagents_code.update_check.detect_install_method", return_value=method
+        ),
+        patch("deepagents_code.update_check.uninstall_extra_command", command),
+        patch(
+            "deepagents_code.update_check.perform_uninstall_extra",
+            new_callable=AsyncMock,
+        ) as perform,
+    ):
+        await app._handle_uninstall_command("/uninstall ollama")
+
+    command.assert_not_called()
+    perform.assert_not_awaited()
+    text = " ".join(
+        str(call.args[0]._content) for call in app._mount_message.await_args_list
+    )
+    assert expected in text
+
+
+async def test_uninstall_slash_protected_extra_is_refused() -> None:
+    """A base-provider extra is refused, not reported as an ordinary no-op."""
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch("deepagents_code.update_check.detect_install_method", return_value="uv"),
+        patch(
+            "deepagents_code.update_check.uninstall_extra_command",
+            side_effect=ProtectedExtraError(
+                "Extra 'openai' is a base dependency and cannot be removed."
+            ),
+        ),
+        patch(
+            "deepagents_code.update_check.perform_uninstall_extra",
+            new_callable=AsyncMock,
+        ) as perform,
+    ):
+        await app._handle_uninstall_command("/uninstall openai")
+
+    perform.assert_not_awaited()
+    text = " ".join(
+        str(call.args[0]._content) for call in app._mount_message.await_args_list
+    )
+    assert "base dependency" in text
+
+
+async def test_uninstall_slash_reports_failure_with_recovery_command() -> None:
+    """A failed removal surfaces the log path and the repair command."""
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch("deepagents_code.update_check.detect_install_method", return_value="uv"),
+        patch(
+            "deepagents_code.update_check.uninstall_extra_command",
+            return_value="uv tool install safe-command",
+        ),
+        patch(
+            "deepagents_code.update_check.create_update_log_path",
+            return_value=Path("/tmp/uninstall.log"),
+        ),
+        patch(
+            "deepagents_code.update_check.perform_uninstall_extra",
+            new_callable=AsyncMock,
+            return_value=ExtraRemovalOutcome(False, "resolver exploded"),
+        ),
+    ):
+        await app._handle_uninstall_command("/uninstall ollama")
+
+    text = " ".join(
+        str(call.args[0]._content) for call in app._mount_message.await_args_list
+    )
+    assert "resolver exploded" in text
+    assert "/tmp/uninstall.log" in text
+    assert "uv tool install safe-command" in text
+
+
+async def test_uninstall_slash_contention_withholds_manual_command() -> None:
+    """Lock contention must not tell the user to hand-run `--reinstall`.
+
+    Running the rebuild by hand while another install holds the lock is how the
+    tool environment gets corrupted, so the hint has to be suppressed.
+    """
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()
     with (
@@ -607,7 +1067,145 @@ async def test_uninstall_slash_serializes_environment_mutation() -> None:
         patch(
             "deepagents_code.update_check.perform_uninstall_extra",
             new_callable=AsyncMock,
-            return_value=(True, ""),
+            return_value=ExtraRemovalOutcome(
+                False,
+                "Another dcode update or install is already running.",
+                manual_recovery_safe=False,
+            ),
+        ),
+    ):
+        await app._handle_uninstall_command("/uninstall ollama")
+
+    text = " ".join(
+        str(call.args[0]._content) for call in app._mount_message.await_args_list
+    )
+    assert "already running" in text
+    assert "safe-command" not in text
+    assert "Run manually" not in text
+
+
+async def test_uninstall_slash_cancellation_is_reported_and_reraised() -> None:
+    """Cancellation reports the partial-rebuild risk and stays uncaught.
+
+    The rebuild replaces the env before restoring it, so a cancelled removal can
+    leave dcode unable to start. Swallowing the cancellation would also break
+    task shutdown.
+    """
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch("deepagents_code.update_check.detect_install_method", return_value="uv"),
+        patch(
+            "deepagents_code.update_check.uninstall_extra_command",
+            return_value="uv tool install safe-command",
+        ),
+        patch(
+            "deepagents_code.update_check.perform_uninstall_extra",
+            new_callable=AsyncMock,
+            side_effect=asyncio.CancelledError,
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await app._handle_uninstall_command("/uninstall ollama")
+
+    text = " ".join(
+        str(call.args[0]._content) for call in app._mount_message.await_args_list
+    )
+    assert "Uninstall interrupted" in text
+    assert "partially rebuilt" in text
+    assert "uv tool install safe-command" in text
+
+
+async def test_uninstall_slash_os_error_is_reported() -> None:
+    """An OSError from the performer is surfaced with repair guidance."""
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch("deepagents_code.update_check.detect_install_method", return_value="uv"),
+        patch(
+            "deepagents_code.update_check.uninstall_extra_command",
+            return_value="uv tool install safe-command",
+        ),
+        patch(
+            "deepagents_code.update_check.perform_uninstall_extra",
+            new_callable=AsyncMock,
+            side_effect=OSError("no space left on device"),
+        ),
+    ):
+        await app._handle_uninstall_command("/uninstall ollama")
+
+    text = " ".join(
+        str(call.args[0]._content) for call in app._mount_message.await_args_list
+    )
+    assert "no space left on device" in text
+    assert "partially rebuilt" in text
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("/uninstall a b", "Got: a, b"),
+        ("/uninstall --force ollama", "takes no options"),
+    ],
+)
+async def test_uninstall_slash_rejects_bad_arguments(
+    command: str, expected: str
+) -> None:
+    """Extra names and stray flags are reported, never silently dropped."""
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()
+    with patch(
+        "deepagents_code.update_check.perform_uninstall_extra",
+        new_callable=AsyncMock,
+    ) as perform:
+        await app._handle_uninstall_command(command)
+
+    perform.assert_not_awaited()
+    text = " ".join(
+        str(call.args[0]._content) for call in app._mount_message.await_args_list
+    )
+    assert expected in text
+
+
+async def test_uninstall_slash_canonicalizes_the_extra_name() -> None:
+    """Mixed case and underscores resolve to the canonical extra name."""
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch("deepagents_code.update_check.detect_install_method", return_value="uv"),
+        patch(
+            "deepagents_code.update_check.uninstall_extra_command",
+            return_value="uv tool install safe-command",
+        ),
+        patch(
+            "deepagents_code.update_check.perform_uninstall_extra",
+            new_callable=AsyncMock,
+            return_value=ExtraRemovalOutcome(True, ""),
+        ) as perform,
+    ):
+        await app._handle_uninstall_command("/uninstall Google_GenAI")
+
+    assert perform.await_args is not None
+    assert perform.await_args.args[0] == "google-genai"
+
+
+async def test_uninstall_slash_reports_success() -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch("deepagents_code.update_check.detect_install_method", return_value="uv"),
+        patch(
+            "deepagents_code.update_check.uninstall_extra_command",
+            return_value="uv tool install safe-command",
+        ),
+        patch(
+            "deepagents_code.update_check.perform_uninstall_extra",
+            new_callable=AsyncMock,
+            return_value=ExtraRemovalOutcome(True, ""),
         ) as perform,
         patch("deepagents_code.app.invoked_name", return_value="dcode-worktree"),
     ):
@@ -617,4 +1215,64 @@ async def test_uninstall_slash_serializes_environment_mutation() -> None:
         str(call.args[0]._content) for call in app._mount_message.await_args_list
     )
     assert "Uninstalled extra 'ollama'" in text
+    assert "already gone" in text
     assert "relaunch dcode-worktree" in text
+
+
+async def test_uninstall_slash_serializes_environment_mutation() -> None:
+    """Two concurrent `/uninstall` runs never overlap inside the performer.
+
+    Asserting only `perform.assert_awaited_once()` would pass with the
+    `_environment_mutation_lock` deleted outright, so this drives two handlers at
+    once and records enter/exit ordering. A rebuild running against a receipt
+    another rebuild is midway through replacing is the race the lock exists for.
+    """
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()
+    events: list[str] = []
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def performer(extra: str, **_kwargs: object) -> ExtraRemovalOutcome:
+        events.append(f"enter:{extra}")
+        entered.set()
+        await release.wait()
+        events.append(f"exit:{extra}")
+        return ExtraRemovalOutcome(True, "")
+
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch("deepagents_code.update_check.detect_install_method", return_value="uv"),
+        patch(
+            "deepagents_code.update_check.uninstall_extra_command",
+            return_value="uv tool install safe-command",
+        ),
+        patch(
+            "deepagents_code.update_check.perform_uninstall_extra",
+            side_effect=performer,
+        ),
+        patch("deepagents_code.app.invoked_name", return_value="dcode"),
+    ):
+        first = asyncio.create_task(app._handle_uninstall_command("/uninstall ollama"))
+        second = asyncio.create_task(app._handle_uninstall_command("/uninstall nvidia"))
+        # Both handlers await `asyncio.to_thread` before the performer, so wait
+        # for the first to arrive rather than guessing a number of event-loop
+        # turns.
+        async with asyncio.timeout(5):
+            await entered.wait()
+        # Give the second task ample opportunity to slip through; the lock is the
+        # only thing that can still be holding it back.
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert events == ["enter:ollama"]
+
+        release.set()
+        await asyncio.gather(first, second)
+
+    # Strict alternation: the second removal starts only after the first returns.
+    assert events == [
+        "enter:ollama",
+        "exit:ollama",
+        "enter:nvidia",
+        "exit:nvidia",
+    ]

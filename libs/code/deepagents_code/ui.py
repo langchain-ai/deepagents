@@ -753,17 +753,28 @@ def show_uninstall_help() -> None:
     console.print("  dcode uninstall NAME")
     console.print()
     console.print("Remove an installed optional deepagents-code extra.")
-    console.print("The tool environment is rebuilt with the remaining selected extras.")
+    console.print("dcode rebuilds the tool environment with the remaining extras.")
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode uninstall ollama")
-    console.print("  dcode --uninstall ollama")
+    console.print()
+    console.print("[bold]Restrictions:[/bold]", style=theme.PRIMARY)
+    console.print(
+        "  The openai, anthropic, and google-genai extras are base dependencies."
+    )
+    console.print("  They cannot be removed.")
+    console.print("  Editable and Homebrew installs cannot remove extras in place.")
+    console.print(
+        "  An extra installed through all-providers or all-sandboxes cannot be"
+    )
+    console.print("  removed on its own. Remove the composite extra instead.")
     console.print()
     console.print(
-        "In-session equivalent: `/uninstall NAME`.",
+        "In-session equivalent: `/uninstall NAME`. Legacy CLI alias:",
         style=theme.MUTED,
         highlight=False,
     )
+    console.print("  dcode --uninstall ollama", style=theme.MUTED)
     console.print()
 
 

@@ -7548,36 +7548,107 @@ class DeepAgentsApp(App):
         return True
 
     async def _handle_uninstall_command(self, command: str) -> None:
-        """Handle `/uninstall <extra>` while serializing environment mutation."""
+        """Handle `/uninstall <extra>` while serializing environment mutation.
+
+        Args:
+            command: The full slash command line (e.g. `'/uninstall ollama'`).
+        """
         parts = command.split()
-        names = [part for part in parts[1:] if not part.startswith("-")]
+        args = parts[1:]
+        names = [part for part in args if not part.startswith("-")]
+        flags = [part for part in args if part.startswith("-")]
         if not names:
             await self._mount_message(
-                AppMessage("Usage: /uninstall <extra>\nExample: /uninstall ollama")
+                AppMessage(
+                    "Usage: /uninstall <extra>\nExample: /uninstall ollama\n\n"
+                    + await asyncio.to_thread(self._format_removable_extras)
+                )
             )
             return
-        if len(names) != 1:
+        if len(names) > 1:
             await self._mount_message(
-                AppMessage("Only one extra may be removed per /uninstall command.")
+                AppMessage(
+                    "Only one extra may be removed per /uninstall command. "
+                    f"Got: {', '.join(names)}"
+                )
             )
             return
+        # `/uninstall` takes no flags. Dropping them silently would accept
+        # `/uninstall --force ollama` and quietly ignore the user's intent.
+        if flags:
+            await self._mount_message(
+                AppMessage(
+                    f"/uninstall takes no options. Unrecognized: {', '.join(flags)}"
+                )
+            )
+            return
+        from packaging.utils import canonicalize_name
+
         await self._mount_message(UserMessage(command))
         async with self._environment_mutation_lock:
-            await self._uninstall_extra_unlocked(names[0].lower())
+            await self._uninstall_extra_unlocked(canonicalize_name(names[0]))
+
+    @staticmethod
+    def _format_removable_extras() -> str:
+        """Return the removable extras selected on this install, as plain text.
+
+        `/install` lists every *available* extra; the useful answer for removal is
+        the much shorter list of what this install actually selected. Falls back
+        to a hint when the receipt cannot be read (editable and brew installs have
+        none), since the no-argument help must never fail.
+
+        Returns:
+            A one-line listing, or a short explanatory message.
+        """
+        try:
+            from deepagents_code.update_check import (
+                _BASE_PROVIDER_EXTRAS,
+                _uv_tool_selected_extras,
+            )
+
+            selected = sorted(_uv_tool_selected_extras() - _BASE_PROVIDER_EXTRAS)
+        except Exception:
+            logger.debug("could not list selected extras", exc_info=True)
+            return "Could not read the selected extras for this install."
+        if not selected:
+            return "No removable extras are selected on this install."
+        return f"Removable extras: {', '.join(selected)}"
 
     async def _uninstall_extra_unlocked(self, extra: str) -> None:
-        """Remove a selected extra and report the required relaunch."""
-        from deepagents_code.config import _is_editable_install
-        from deepagents_code.update_check import (
-            ExtraNotInstalledError,
-            ProtectedExtraError,
-            create_update_log_path,
-            editable_extra_removal_hint,
-            is_valid_extra_name,
-            perform_uninstall_extra,
-            uninstall_extra_command,
-            uninstall_extra_method_error,
-        )
+        """Remove a selected extra and report the required relaunch.
+
+        Callers must hold `self._environment_mutation_lock`.
+
+        Args:
+            extra: Canonicalized extra name to remove.
+
+        Raises:
+            asyncio.CancelledError: Re-raised after reporting an interrupted
+                removal, so cancellation is never swallowed.
+        """
+        try:
+            from deepagents_code.config import _is_editable_install
+            from deepagents_code.update_check import (
+                ExtraNotInstalledError,
+                ProtectedExtraError,
+                ToolRequirementIntrospectionError,
+                create_update_log_path,
+                editable_extra_removal_hint,
+                is_valid_extra_name,
+                perform_uninstall_extra,
+                uninstall_extra_command,
+                uninstall_extra_method_error,
+            )
+        except ImportError as exc:
+            # A removal rebuilds the env this process imports from, so a second
+            # `/uninstall` in the same session can find the package tree already
+            # replaced. Mirror `_install_extra_unlocked`, which guards for the
+            # same reason.
+            logger.warning("/uninstall command import failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Uninstall failed: {type(exc).__name__}: {exc}")
+            )
+            return
 
         if not is_valid_extra_name(extra):
             await self._mount_message(AppMessage("Invalid extra name."))
@@ -7602,7 +7673,7 @@ class DeepAgentsApp(App):
         except ExtraNotInstalledError as exc:
             await self._mount_message(AppMessage(str(exc)))
             return
-        except Exception as exc:
+        except (ToolRequirementIntrospectionError, ValueError) as exc:
             logger.warning("/uninstall command generation failed", exc_info=True)
             await self._mount_message(
                 ErrorMessage(f"Uninstall failed: {type(exc).__name__}: {exc}")
@@ -7610,32 +7681,51 @@ class DeepAgentsApp(App):
             return
 
         log_path = create_update_log_path()
-        self._ensure_restart_prompt_loaded()
         await self._mount_message(AppMessage(f"Uninstalling extra '{extra}'..."))
+        # The rebuild tears the env down before restoring it, so an interrupted
+        # removal can leave dcode unable to start. Both handlers name that risk
+        # and hand over the command that repairs it;
+        # `_run_install_subprocess` kills the child and re-raises on
+        # cancellation, which must stay uncaught after being reported.
+        interrupted = (
+            "The tool environment may be partially rebuilt.\n"
+            f"Log: {log_path}\nRun manually to repair: {manual_cmd}"
+        )
         try:
-            success, output = await perform_uninstall_extra(extra, log_path=log_path)
+            outcome = await perform_uninstall_extra(extra, log_path=log_path)
+        except asyncio.CancelledError as exc:
+            logger.warning("/uninstall command cancelled", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Uninstall interrupted: {type(exc).__name__}\n{interrupted}"
+                )
+            )
+            raise
         except OSError as exc:
             logger.warning("/uninstall command failed", exc_info=True)
             await self._mount_message(
                 ErrorMessage(
-                    f"Uninstall failed: {type(exc).__name__}: {exc}\n"
-                    f"Log: {log_path}\nRun manually: {manual_cmd}"
+                    f"Uninstall failed: {type(exc).__name__}: {exc}\n{interrupted}"
                 )
             )
             return
-        if not success:
-            detail = f": {output[-200:]}" if output else ""
+        if not outcome.success:
+            detail = f": {outcome.output[-200:]}" if outcome.output else ""
+            recovery = (
+                f"\nRun manually: {manual_cmd}" if outcome.manual_recovery_safe else ""
+            )
             await self._mount_message(
-                ErrorMessage(
-                    f"Uninstall failed{detail}\nLog: {log_path}\n"
-                    f"Run manually: {manual_cmd}"
-                )
+                ErrorMessage(f"Uninstall failed{detail}\nLog: {log_path}{recovery}")
             )
             return
+        # The rebuild already replaced the env this process imports from, so the
+        # packages are gone now — not on next launch. Say that, rather than the
+        # install path's "relaunch to use the new dependencies".
         await self._mount_message(
             AppMessage(
-                f"Uninstalled extra '{extra}'. Exit and relaunch "
-                f"{invoked_name()} to apply."
+                f"Uninstalled extra '{extra}'. Its packages are already gone from "
+                f"this environment, so the current session may fail if it needs "
+                f"them — exit and relaunch {invoked_name()} now."
             )
         )
 

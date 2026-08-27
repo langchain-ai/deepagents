@@ -29,8 +29,11 @@ logger = logging.getLogger(__name__)
 def run_uninstall_command(args: argparse.Namespace) -> int:
     """Dispatch `dcode uninstall <name>`.
 
+    Args:
+        args: Parsed CLI namespace; `uninstall_target` names the extra.
+
     Returns:
-        Process exit code.
+        Process exit code. `2` when no extra was named.
     """
     name = getattr(args, "uninstall_target", None)
     if not isinstance(name, str) or not name:
@@ -44,8 +47,17 @@ def run_uninstall_command(args: argparse.Namespace) -> int:
 def run_uninstall_request(*, name: str) -> int:
     """Remove one selected optional extra from the dcode tool environment.
 
+    Shared by `dcode uninstall NAME` and the `dcode --uninstall NAME` alias.
+
+    Args:
+        name: Extra name to remove, as the user typed it.
+
     Returns:
-        Process exit code.
+        Process exit code: `0` on success and when the extra was already absent
+            (removal is idempotent, so a script re-running it does not fail),
+            `2` for an invalid extra name, `130` on `Ctrl+C`, and `1` for a
+            refused or failed removal — including a protected base-provider
+            extra, which is a refusal rather than a no-op.
     """
     from rich.markup import escape
 
@@ -54,6 +66,7 @@ def run_uninstall_request(*, name: str) -> int:
     from deepagents_code.update_check import (
         ExtraNotInstalledError,
         ProtectedExtraError,
+        ToolRequirementIntrospectionError,
         create_update_log_path,
         editable_extra_removal_hint,
         format_log_follow_command,
@@ -94,7 +107,7 @@ def run_uninstall_request(*, name: str) -> int:
     except ExtraNotInstalledError as exc:
         console.print(escape(str(exc)), highlight=False)
         return 0
-    except Exception as exc:
+    except (ToolRequirementIntrospectionError, ValueError) as exc:
         logger.warning("uninstall command generation failed", exc_info=True)
         console.print(
             f"[bold red]Error:[/bold red] {type(exc).__name__}: {escape(str(exc))}",
@@ -110,29 +123,42 @@ def run_uninstall_request(*, name: str) -> int:
         highlight=False,
         markup=False,
     )
+    # The rebuild replaces the environment before restoring it, so an interrupted
+    # removal can leave dcode unable to start. Both interrupt paths name that and
+    # point at the command that repairs it.
+    repair = (
+        f"The tool environment may be partially rebuilt.\n"
+        f"Log: {log_path}\nRun manually to repair: [cyan]{escape(manual_cmd)}[/cyan]"
+    )
     try:
-        success, output = asyncio.run(perform_uninstall_extra(name, log_path=log_path))
+        outcome = asyncio.run(perform_uninstall_extra(name, log_path=log_path))
     except KeyboardInterrupt:
-        console.print("\nAborted.", style="dim")
+        console.print(f"\nAborted.\n{repair}", highlight=False)
         return 130
-    except Exception as exc:
+    except OSError as exc:
         logger.warning("uninstall failed", exc_info=True)
         console.print(
-            f"[bold red]Error:[/bold red] {type(exc).__name__}: {escape(str(exc))}\n"
-            f"Log: {log_path}\nRun manually: [cyan]{escape(manual_cmd)}[/cyan]",
+            f"[bold red]Error:[/bold red] {type(exc).__name__}: "
+            f"{escape(str(exc))}\n{repair}",
             highlight=False,
         )
         return 1
-    if success:
+    if outcome.success:
         console.print(
-            f"[green]Uninstalled extra '{name}'.[/green] "
-            f"Relaunch {escape(invoked_name())} to apply."
+            f"[green]Uninstalled extra '{name}'.[/green] Its packages are already "
+            f"gone from this environment. Relaunch {escape(invoked_name())} to "
+            f"pick up the change."
         )
         return 0
-    detail = f": {output[-200:]}" if output else ""
+    detail = f": {outcome.output[-200:]}" if outcome.output else ""
+    recovery = (
+        f"\nRun manually: [cyan]{escape(manual_cmd)}[/cyan]"
+        if outcome.manual_recovery_safe
+        else ""
+    )
     console.print(
         f"[bold red]Uninstall failed[/bold red]{escape(detail)}\n"
-        f"Log: {log_path}\nRun manually: [cyan]{escape(manual_cmd)}[/cyan]",
+        f"Log: {log_path}{recovery}",
         highlight=False,
     )
     return 1

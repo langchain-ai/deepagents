@@ -11,6 +11,7 @@ from packaging.requirements import Requirement
 
 from deepagents_code.extras_info import (
     _COMPOSITE_EXTRAS,
+    COMPOSITE_EXTRA_MEMBERS,
     KNOWN_EXTRAS,
     MODEL_PROVIDER_EXTRAS,
     SANDBOX_EXTRAS,
@@ -29,6 +30,7 @@ from deepagents_code.extras_info import (
     collect_cli_version_info,
     collect_sdk_version_info,
     collect_version_report,
+    composite_extras_providing,
     extra_for_package,
     format_cli_version_annotation,
     format_extras_status,
@@ -392,6 +394,46 @@ def test_extras_taxonomy_covers_pyproject() -> None:
     assert not stale, (
         f"extras_info classifies extras not declared in pyproject.toml: {sorted(stale)}"
     )
+
+
+class TestCompositeExtraMembers:
+    """`COMPOSITE_EXTRA_MEMBERS` must mirror `pyproject.toml`."""
+
+    def test_mapping_covers_every_composite(self) -> None:
+        """Each composite declared in pyproject.toml has a member set."""
+        assert set(COMPOSITE_EXTRA_MEMBERS) == set(_COMPOSITE_EXTRAS)
+        assert set(_optional_dependencies()) >= set(COMPOSITE_EXTRA_MEMBERS)
+
+    def test_members_match_pyproject_expansion(self) -> None:
+        """The mapped members equal the extras the composite requirement selects.
+
+        Removal reports which composite provides an unremovable member, so a
+        composite that gained or lost providers in `pyproject.toml` without a
+        matching update here would name the wrong extra — or stay silent and
+        report an installed member as "not installed".
+        """
+        optional = _optional_dependencies()
+        for composite, members in COMPOSITE_EXTRA_MEMBERS.items():
+            requirements = optional[composite]
+            assert len(requirements) == 1, (
+                f"{composite} must expand through a single self-referencing "
+                f"requirement, got {requirements}"
+            )
+            declared = Requirement(requirements[0]).extras
+            assert declared == set(members), (
+                f"pyproject.toml {composite} selects {sorted(declared)}, "
+                f"COMPOSITE_EXTRA_MEMBERS has {sorted(members)}"
+            )
+
+    def test_lookup_finds_providing_composite(self) -> None:
+        """A member maps back to the composite that provides it."""
+        assert composite_extras_providing("ollama") == frozenset({"all-providers"})
+        assert composite_extras_providing("daytona") == frozenset({"all-sandboxes"})
+
+    def test_lookup_is_empty_for_unbundled_extras(self) -> None:
+        """Extras no composite expands to return an empty set."""
+        assert composite_extras_providing("media") == frozenset()
+        assert composite_extras_providing("all-providers") == frozenset()
 
 
 def test_known_extras_is_union_of_categories() -> None:

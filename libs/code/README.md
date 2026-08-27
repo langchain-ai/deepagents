@@ -28,8 +28,11 @@ dcode install ollama       # or /install ollama in the TUI
 dcode uninstall ollama     # or /uninstall ollama in the TUI
 ```
 
-Removal rebuilds the tool environment with the remaining selected extras. OpenAI,
-Anthropic, and Gemini are base dependencies and cannot be removed as extras.
+Removing an extra rebuilds the tool environment with the remaining extras. The
+`openai`, `anthropic`, and `google-genai` extras are base dependencies, so they
+cannot be removed. An extra that arrived through `all-providers` or
+`all-sandboxes` cannot be removed on its own either — remove the composite extra,
+then reinstall the extras you want individually.
 
 Run:
 

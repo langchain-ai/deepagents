@@ -3471,6 +3471,7 @@ class TestToolFilterEndToEnd:
     async def test_allowed_tools_filters_loaded_tools(
         self,
         write_config: Callable[..., str],
+        mcp_servers: MCPServerRegistry,
     ) -> None:
         """Only tools listed in `allowedTools` end up in the returned list."""
         path = write_config(
@@ -3485,23 +3486,9 @@ class TestToolFilterEndToEnd:
             }
         )
 
-        session = AsyncMock()
-        session.initialize = AsyncMock()
-        session.__aenter__ = AsyncMock(return_value=session)
-        session.__aexit__ = AsyncMock(return_value=None)
-        session.list_tools = AsyncMock(
-            return_value=(
-[_make_mcp_tool("read_file", "r"), _make_mcp_tool("write_file", "w")]
-            )
-        )
+        mcp_servers.register("fs", ("read_file", "r"), ("write_file", "w"))
 
-        recorded: list[Any] = []
-        def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
-            recorded.append(transport)
-            return session
-
-        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
-            tools, manager, server_infos = await get_mcp_tools(path)
+        tools, manager, server_infos = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["fs_read_file"]
         assert [t.name for t in server_infos[0].tools] == ["fs_read_file"]
@@ -3511,6 +3498,7 @@ class TestToolFilterEndToEnd:
     async def test_disabled_tools_removes_loaded_tools(
         self,
         write_config: Callable[..., str],
+        mcp_servers: MCPServerRegistry,
     ) -> None:
         """Tools listed in `disabledTools` are dropped from the returned list."""
         path = write_config(
@@ -3525,23 +3513,9 @@ class TestToolFilterEndToEnd:
             }
         )
 
-        session = AsyncMock()
-        session.initialize = AsyncMock()
-        session.__aenter__ = AsyncMock(return_value=session)
-        session.__aexit__ = AsyncMock(return_value=None)
-        session.list_tools = AsyncMock(
-            return_value=(
-[_make_mcp_tool("read_file", "r"), _make_mcp_tool("write_file", "w")]
-            )
-        )
+        mcp_servers.register("fs", ("read_file", "r"), ("write_file", "w"))
 
-        recorded: list[Any] = []
-        def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
-            recorded.append(transport)
-            return session
-
-        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
-            tools, manager, _ = await get_mcp_tools(path)
+        tools, manager, _ = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["fs_read_file"]
         assert manager is not None
@@ -3550,6 +3524,7 @@ class TestToolFilterEndToEnd:
     async def test_filter_applies_to_http_server(
         self,
         write_config: Callable[..., str],
+        mcp_servers: MCPServerRegistry,
     ) -> None:
         """`allowedTools` is honored for http (remote) servers, not just stdio."""
         path = write_config(
@@ -3564,23 +3539,9 @@ class TestToolFilterEndToEnd:
             }
         )
 
-        session = AsyncMock()
-        session.initialize = AsyncMock()
-        session.__aenter__ = AsyncMock(return_value=session)
-        session.__aexit__ = AsyncMock(return_value=None)
-        session.list_tools = AsyncMock(
-            return_value=(
-[_make_mcp_tool("search", "s"), _make_mcp_tool("delete", "d")]
-            )
-        )
+        mcp_servers.register("api", ("search", "s"), ("delete", "d"))
 
-        recorded: list[Any] = []
-        def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
-            recorded.append(transport)
-            return session
-
-        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
-            tools, manager, _ = await get_mcp_tools(path)
+        tools, manager, _ = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["api_search"]
         assert manager is not None
@@ -3774,7 +3735,7 @@ class TestNormalizeMCPArguments:
             {"q": {"type": "string"}, "ctx": {"type": "string"}},
             required=["q"],
         )
-        with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_middleware"):
             _normalize_mcp_arguments({"q": "x", "ctx": ""}, schema)
         assert any(
             "dropped empty-string keys" in r.message and "ctx" in r.message
@@ -5027,44 +4988,52 @@ class TestMCPConfigSourcesPartition:
 
 
 class TestSessionManagerLifecycle:
-    """The manager's surviving contract, now that FastMCP owns the sessions.
+    """The manager's contract, now that it owns the router rather than sessions.
 
-    Reconnection, dead-transport detection and retry moved into FastMCP's
-    transports, so what is left to verify here is ownership: the manager closes
-    what it holds, and refuses to hand out clients afterwards.
+    Reconnection and dead-transport detection live in FastMCP's transports, so
+    what is left to verify is ownership: the manager closes what it adopted, and
+    refuses to adopt anything afterwards.
     """
 
     @pytest.mark.asyncio
-    async def test_cleanup_closes_every_held_client(self) -> None:
+    async def test_cleanup_closes_client_and_backends(self) -> None:
         closed: list[str] = []
 
-        class _FakeClient:
-            def __init__(self, name: str) -> None:
-                self._name = name
+        client = AsyncMock()
+        client.close = AsyncMock(side_effect=lambda: closed.append("client"))
+        stack = AsyncMock()
+        stack.aclose = AsyncMock(side_effect=lambda: closed.append("backends"))
 
-            async def close(self) -> None:
-                closed.append(self._name)
-
-        manager = MCPSessionManager(
-            clients={"a": _FakeClient("a"), "b": _FakeClient("b")},  # type: ignore[dict-item]
-        )
+        manager = MCPSessionManager()
+        manager.adopt(client, stack)
         await manager.cleanup()
 
-        assert sorted(closed) == ["a", "b"]
+        assert closed == ["client", "backends"]
+        assert manager.client is None
 
     @pytest.mark.asyncio
-    async def test_configure_after_cleanup_is_rejected(self) -> None:
+    async def test_a_failing_close_does_not_strand_the_backends(self) -> None:
+        """The backend stack is still closed when the client's close blows up."""
+        closed: list[str] = []
+
+        client = AsyncMock()
+        client.close = AsyncMock(side_effect=RuntimeError("boom"))
+        stack = AsyncMock()
+        stack.aclose = AsyncMock(side_effect=lambda: closed.append("backends"))
+
+        manager = MCPSessionManager()
+        manager.adopt(client, stack)
+        await manager.cleanup()
+
+        assert closed == ["backends"]
+
+    @pytest.mark.asyncio
+    async def test_adopt_after_cleanup_is_rejected(self) -> None:
         manager = MCPSessionManager()
         await manager.cleanup()
 
         with pytest.raises(RuntimeError, match="closed MCP session manager"):
-            manager.configure({})
-
-    def test_unknown_server_names_the_configured_ones(self) -> None:
-        manager = MCPSessionManager(clients={"known": object()})  # type: ignore[dict-item]
-
-        with pytest.raises(ValueError, match=r"expected one of \['known'\]"):
-            manager.get_client("missing")
+            manager.adopt(AsyncMock(), AsyncMock())
 
 
 class TestStderrLogSink:

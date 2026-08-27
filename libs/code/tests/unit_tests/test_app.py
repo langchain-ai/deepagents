@@ -14815,6 +14815,38 @@ class TestRubricCommand:
             respawn.assert_not_awaited()
             app._server_proc.update_env.assert_not_called()
 
+    async def test_set_rubric_model_records_explicit_startup_model(self) -> None:
+        """Selecting the startup model explicitly must pin it to the thread."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"rubric_model": "openai:gpt-5.1"},
+            defer_server_start=True,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "t-1"
+
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as persist,
+            ):
+                await app._set_rubric_model("openai:gpt-5.1")
+            await pilot.pause()
+
+            assert app._rubric_model == "openai:gpt-5.1"
+            assert app._rubric_model_recorded is True
+            persist.assert_awaited_once_with()
+            assert app._goal_state_update()["_rubric_model_spec"] == "openai:gpt-5.1"
+
     async def test_set_rubric_model_rolls_back_on_failed_state_write(self) -> None:
         """A failed checkpoint write restores the previous grader selection."""
         app = DeepAgentsApp(agent=MagicMock())

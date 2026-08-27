@@ -15628,7 +15628,7 @@ class DeepAgentsApp(App):
             display = (
                 model_spec if parsed or not provider else f"{provider}:{model_name}"
             )
-            if display == self._rubric_model:
+            if display == self._rubric_model and self._rubric_model_recorded:
                 await self._mount_message(
                     AppMessage(f"{label} model already set to {display}.")
                 )

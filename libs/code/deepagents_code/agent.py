@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from langgraph.store.base import BaseStore
     from langgraph.types import Command
 
+    from deepagents_code.extensions.registry import ExtensionRegistry
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
     from deepagents_code.plugins.adapters.skills import CodeSkillSource
@@ -2390,6 +2391,7 @@ def create_cli_agent(
     model_retries: int = DEFAULT_MODEL_RETRIES,
     cli_max_retries: int | None = None,
     enforce_model_policy: bool = True,
+    extension_registry: ExtensionRegistry | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -2554,6 +2556,7 @@ def create_cli_agent(
             invoke (tool enumeration), so a blocked subagent model degrades the
             listing rather than raising. Any caller that can run the graph must
             leave this `True`.
+        extension_registry: Server-owned Python extension registrations.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -2573,7 +2576,12 @@ def create_cli_agent(
             checked before dcode resolves them with provider retries disabled;
             a prebuilt `BaseChatModel` came from a path that already checked.
     """  # noqa: DOC502 - propagates from `ModelConfig.require_model_allowed`
-    tools = tools or []
+    tools = list(tools or [])
+    if extension_registry is not None:
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        if not is_env_truthy(EXPERIMENTAL):
+            extension_registry = None
     mcp_tools = tuple(mcp_tools or ())
     if auto_mode_enabled and sandbox is not None:
         logger.warning(
@@ -2891,6 +2899,9 @@ def create_cli_agent(
         )
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
+    artifact_routes: dict[str, BackendProtocol] = {}
+    protected_extension_routes: set[str] = set()
+    artifacts_root: str | None = None
     if sandbox is None:
         # ========== LOCAL MODE ==========
         root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
@@ -3026,14 +3037,17 @@ def create_cli_agent(
         # recovers, so archive paths saved during fallback stay resolvable.
         artifacts_storage = _artifacts_root()
         artifacts_root = artifacts_storage.root
+        conversation_history_root = (
+            _offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME
+        )
         conversation_history_backend = FilesystemBackend(
-            root_dir=_offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME,
+            root_dir=conversation_history_root,
             virtual_mode=True,
         )
         fallback_history_root = (
             f"{_FALLBACK_ARTIFACTS_ROOT}/{CONVERSATION_HISTORY_DIRNAME}/"
         )
-        artifact_routes: dict[str, BackendProtocol] = {
+        artifact_routes = {
             f"{artifacts_root}/{CONVERSATION_HISTORY_DIRNAME}/": (
                 conversation_history_backend
             ),
@@ -3046,18 +3060,41 @@ def create_cli_agent(
                     virtual_mode=True,
                 )
             )
-        composite_backend = CompositeBackend(
-            default=backend,
-            routes=artifact_routes,
-            artifacts_root=artifacts_root,
-        )
-    else:
-        # Sandbox mode: No special routing needed
-        composite_backend = CompositeBackend(
-            default=backend,
-            routes={},
+        protected_extension_routes = {
+            f"{_FALLBACK_ARTIFACTS_ROOT.rstrip('/')}/",
+            f"{artifacts_root.rstrip('/')}/",
+            f"/{str(conversation_history_root).lstrip('/').rstrip('/')}/",
+        }
+    extension_routes: dict[str, BackendProtocol] = {}
+    if extension_registry is not None:
+        from deepagents_code.extensions.hosting import (
+            bind_runtime_host_policy,
+            validate_backend_route,
         )
 
+        for route in extension_registry.backend_routes:
+            validate_backend_route(
+                route,
+                protected_extension_routes,
+                sandbox_active=sandbox is not None,
+            )
+            extension_routes[route.name] = route.unit
+        bind_runtime_host_policy(
+            extension_registry,
+            protected_extension_routes,
+            sandbox_active=sandbox is not None,
+        )
+    if artifacts_root is None:
+        composite_backend = CompositeBackend(
+            default=backend,
+            routes=extension_routes,
+        )
+    else:
+        composite_backend = CompositeBackend(
+            default=backend,
+            routes={**extension_routes, **artifact_routes},
+            artifacts_root=artifacts_root,
+        )
     compaction_middleware = _create_cli_compaction_middleware(
         model,
         composite_backend,
@@ -3322,6 +3359,31 @@ def create_cli_agent(
     effective_recursion_limit = (
         recursion_limit if recursion_limit is not None else resolve_recursion_limit()
     )
+    if extension_registry is not None:
+        extension_tools = extension_registry.tool_units()
+        extension_tool_names = {registered.name for registered in extension_tools}
+        tools = [
+            item
+            for item in tools
+            if (getattr(item, "name", None) or getattr(item, "__name__", None))
+            not in extension_tool_names
+        ]
+        tools.extend(registered.unit for registered in extension_tools)
+        extension_middleware_names = {
+            registered.name for registered in extension_registry.middleware
+        }
+        agent_middleware = [
+            item
+            for item in agent_middleware
+            if getattr(item, "name", type(item).__name__)
+            not in extension_middleware_names
+        ]
+        agent_middleware.extend(
+            registered.unit for registered in extension_registry.middleware
+        )
+        from deepagents_code.extensions.hosting import ExtensionRuntimeMiddleware
+
+        agent_middleware.append(ExtensionRuntimeMiddleware(extension_registry))
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,

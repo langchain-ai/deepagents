@@ -61,7 +61,7 @@ from deepagents_code.config import (
     configure_langsmith_secret_redaction,
     consume_orphaned_tracing_disabled_notice,
     create_model,
-    credentials as settings,
+    credentials,
     detect_mode_prefix,
     detect_provider,
     fetch_langsmith_project_url,
@@ -2509,8 +2509,8 @@ class TestGetLangsmithProjectName:
         with patch.dict("os.environ", env, clear=True):
             assert get_langsmith_project_name() is None
 
-    def test_returns_project_from_settings(self) -> None:
-        """Should prefer settings.deepagents_langchain_project."""
+    def test_returns_project_from_credentials(self) -> None:
+        """Should prefer `credentials.deepagents_langchain_project`."""
         env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -2518,10 +2518,10 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config._credentials_instance") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = "settings-project"
-            assert get_langsmith_project_name() == "settings-project"
+            mock_credentials.deepagents_langchain_project = "credentials-project"
+            assert get_langsmith_project_name() == "credentials-project"
 
     def test_falls_back_to_env_project(self) -> None:
         """Should fall back to LANGSMITH_PROJECT env var."""
@@ -2532,9 +2532,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config._credentials_instance") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             assert get_langsmith_project_name() == "env-project"
 
     def test_falls_back_to_default(self) -> None:
@@ -2547,9 +2547,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config._credentials_instance") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_accepts_langchain_api_key(self) -> None:
@@ -2563,9 +2563,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config._credentials_instance") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_agrees_with_config_manifest_resolution(self) -> None:
@@ -2606,7 +2606,7 @@ class TestGetLangsmithProjectName:
                 .value
             )
 
-        # Bare `LANGSMITH_PROJECT` set, no prefixed override, no settings value.
+        # Bare `LANGSMITH_PROJECT` set, no prefixed override, no credential value.
         bare_env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -2615,9 +2615,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", bare_env, clear=False),
-            patch("deepagents_code.config._credentials_instance") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             manifest_value = resolve()
             assert get_langsmith_project_name() == manifest_value == "parity-bare"
 
@@ -2630,9 +2630,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", default_env, clear=False),
-            patch("deepagents_code.config._credentials_instance") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             manifest_value = resolve()
             assert (
                 get_langsmith_project_name()
@@ -6115,11 +6115,11 @@ class TestCreateModelEdgeCaseParsing:
         mock_model.profile = None
         mock_init_chat_model.return_value = mock_model
 
-        settings.anthropic_api_key = "test"
+        credentials.anthropic_api_key = "test"
         try:
             result = create_model(":claude-opus-4-6")
         finally:
-            settings.anthropic_api_key = None
+            credentials.anthropic_api_key = None
 
         # Should have detected 'anthropic' provider and used 'claude-opus-4-6'
         assert result.model_name == "claude-opus-4-6"
@@ -6537,60 +6537,60 @@ class TestDetectProvider:
         """detect_provider returns the correct provider for known patterns."""
         # Ensure both Anthropic and Google credentials are "available" so the
         # default paths are taken (not the Vertex AI fallbacks).
-        settings.anthropic_api_key = "test"
-        settings.google_api_key = "test"
+        credentials.anthropic_api_key = "test"
+        credentials.google_api_key = "test"
         try:
             assert detect_provider(model_name) == expected
         finally:
-            settings.anthropic_api_key = None
-            settings.google_api_key = None
+            credentials.anthropic_api_key = None
+            credentials.google_api_key = None
 
     def test_claude_falls_back_to_vertex_when_no_anthropic(self) -> None:
         """Claude models route to Anthropic Vertex when only Vertex is configured."""
-        settings.anthropic_api_key = None
-        settings.google_cloud_project = "my-project"
-        settings.google_api_key = None
+        credentials.anthropic_api_key = None
+        credentials.google_cloud_project = "my-project"
+        credentials.google_api_key = None
         try:
             assert detect_provider("claude-sonnet-4-5") == "google_anthropic_vertex"
         finally:
-            settings.google_cloud_project = None
+            credentials.google_cloud_project = None
 
     def test_gemini_falls_back_to_vertex_when_no_google(self) -> None:
         """Gemini models route to google_vertexai when only Vertex AI is configured."""
-        settings.google_api_key = None
-        settings.google_cloud_project = "my-project"
+        credentials.google_api_key = None
+        credentials.google_cloud_project = "my-project"
         try:
             assert detect_provider("gemini-3-pro") == "google_vertexai"
         finally:
-            settings.google_cloud_project = None
+            credentials.google_cloud_project = None
 
     def test_gemini_prefers_google_genai_when_both_available(self) -> None:
         """Gemini prefers google_genai when both Google and Vertex AI are configured."""
-        settings.google_api_key = "test"
-        settings.google_cloud_project = "my-project"
+        credentials.google_api_key = "test"
+        credentials.google_cloud_project = "my-project"
         try:
             # has_vertex_ai is False when google_api_key is set, so this
             # tests the google_genai path which is preferred.
             assert detect_provider("gemini-3-pro") == "google_genai"
         finally:
-            settings.google_api_key = None
-            settings.google_cloud_project = None
+            credentials.google_api_key = None
+            credentials.google_cloud_project = None
 
     def test_case_insensitive(self) -> None:
         """detect_provider is case-insensitive."""
-        settings.anthropic_api_key = "test"
+        credentials.anthropic_api_key = "test"
         try:
             assert detect_provider("Claude-Sonnet-4-5") == "anthropic"
             assert detect_provider("gpt-5.5") == "openai"
         finally:
-            settings.anthropic_api_key = None
+            credentials.anthropic_api_key = None
 
 
 class TestLazySingletons:
     """Tests for lazy process-wide state and console resolution."""
 
     def test_settings_surface_is_removed(self) -> None:
-        """The dissolved settings class and module hook stay absent."""
+        """The dissolved `Settings` class and module hook stay absent."""
         import deepagents_code.config as config_mod
 
         assert "Settings" not in config_mod.__dict__

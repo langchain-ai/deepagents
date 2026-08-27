@@ -3204,7 +3204,7 @@ class TestCheckOptionalTools:
 
     @pytest.fixture(autouse=True)
     def _tavily_available(self) -> Iterator[None]:
-        """Patch settings.has_tavily to True so ripgrep-only tests stay isolated."""
+        """Patch credentials.has_tavily so ripgrep-only tests stay isolated."""
         with patch(
             "deepagents_code.config.credentials",
             SimpleNamespace(has_tavily=True),

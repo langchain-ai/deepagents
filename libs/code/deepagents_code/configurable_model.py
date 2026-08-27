@@ -488,9 +488,9 @@ def _build_overrides(
 
     # Patch the Model Identity section in the system prompt so the new model
     # sees its own name/provider/context-limit, not the original's.
-    # We read metadata from model_result (not the app's settings singleton)
-    # because the middleware runs in the server subprocess where settings
-    # are never updated by /model.
+    # Read metadata from `model_result`, not the process-wide runtime state:
+    # the middleware runs in the server subprocess, whose state is not updated
+    # by `/model`.
     if model_result is not None and request.system_prompt:
         from deepagents_code.agent import (
             MODEL_IDENTITY_RE,

@@ -89,8 +89,8 @@ def _restore_runtime_state() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _resolve_shell_policy_from_patched_settings() -> Iterator[None]:
-    """Translate legacy settings mocks into the resolver-backed shell reader."""
+def _resolve_shell_policy_from_patched_credentials() -> Iterator[None]:
+    """Translate credential mocks into the resolver-backed shell reader."""
     import deepagents_code.agent as agent_module
 
     def resolve() -> list[str] | None:

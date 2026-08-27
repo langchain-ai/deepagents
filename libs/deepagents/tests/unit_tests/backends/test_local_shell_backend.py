@@ -1,11 +1,14 @@
 """Unit tests for LocalShellBackend."""
 
 import asyncio
+import os
+import shlex
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -19,6 +22,43 @@ from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="LocalShellBackend requires sh, not available on Windows")
+
+
+def _heartbeat_command(directory: Path) -> tuple[str, Path, Path]:
+    """Build a shell command whose background child updates a heartbeat."""
+    heartbeat = directory / "heartbeat"
+    pid_file = directory / "child.pid"
+    script = (
+        f'i=0; while :; do i=$((i + 1)); printf "%s" "$i" > {shlex.quote(str(heartbeat))}; '
+        f"sleep 0.02; done & echo $! > {shlex.quote(str(pid_file))}; wait"
+    )
+    return f"sh -c {shlex.quote(script)}", pid_file, heartbeat
+
+
+def _wait_for_file(path: Path, timeout: float = 2) -> bool:
+    """Wait for a subprocess to create a synchronization file."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.01)
+    return path.exists()
+
+
+def _assert_heartbeat_stopped(heartbeat: Path) -> None:
+    """Assert that a descendant is no longer updating its heartbeat."""
+    time.sleep(0.05)
+    stopped_value = heartbeat.read_text()
+    time.sleep(0.1)
+    assert heartbeat.read_text() == stopped_value
+
+
+def _stop_test_descendant(pid_file: Path) -> None:
+    """Best-effort cleanup if a descendant-reaping assertion fails."""
+    if not pid_file.exists():
+        return
+    with suppress(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), signal.SIGKILL)
 
 
 def test_local_shell_backend_initialization() -> None:
@@ -56,6 +96,32 @@ def test_local_shell_backend_execute_starts_new_session() -> None:
     assert popen.call_args.kwargs["start_new_session"] is True
 
 
+def test_local_shell_backend_execute_process_is_group_leader() -> None:
+    """Test the real shell process leads its detached process group."""
+    probe = "import os; parent = os.getppid(); print(parent, os.getpgid(parent))"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(probe)}; :"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = LocalShellBackend(root_dir=tmpdir, inherit_env=True).execute(command)
+
+    assert result.exit_code == 0
+    process_id, process_group = (int(value) for value in result.output.split())
+    assert process_id == process_group
+    assert process_group != os.getpgrp()
+
+
+def test_local_shell_backend_timeout_stops_descendant(tmp_path: Path) -> None:
+    """Test a real background descendant stops after command timeout."""
+    command, pid_file, heartbeat = _heartbeat_command(tmp_path)
+    try:
+        result = LocalShellBackend(root_dir=tmp_path, inherit_env=True).execute(command, timeout=1)
+        assert result.exit_code == 124
+        assert _wait_for_file(pid_file)
+        assert _wait_for_file(heartbeat)
+        _assert_heartbeat_stopped(heartbeat)
+    finally:
+        _stop_test_descendant(pid_file)
+
+
 def test_local_shell_backend_interrupt_kills_process_group() -> None:
     """Test that an interrupt cannot leave detached descendants running."""
     process = MagicMock(pid=1234)
@@ -69,6 +135,50 @@ def test_local_shell_backend_interrupt_kills_process_group() -> None:
         LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
 
     killpg.assert_called_once_with(1234, signal.SIGKILL)
+    process.wait.assert_called_once_with(timeout=5)
+
+
+def test_local_shell_backend_polling_interrupt_kills_process_group() -> None:
+    """Test an interrupt in the cancellation-aware polling loop cleans up."""
+    process = MagicMock(pid=1234)
+    process.communicate.side_effect = KeyboardInterrupt
+    with (
+        patch.object(local_shell_module, "_kill_and_reap") as kill_and_reap,
+        pytest.raises(KeyboardInterrupt),
+    ):
+        local_shell_module._communicate(
+            process,
+            10,
+            threading.Event(),
+            process_group=1234,
+        )
+
+    kill_and_reap.assert_called_once_with(process, 1234)
+
+
+def test_local_shell_backend_polling_deadline_kills_process_group() -> None:
+    """Test the cancellation-aware polling loop enforces its deadline."""
+    process = MagicMock(pid=1234)
+    with (
+        patch.object(local_shell_module.time, "monotonic", side_effect=[0, 2]),
+        patch.object(local_shell_module, "_kill_and_reap") as kill_and_reap,
+        pytest.raises(subprocess.TimeoutExpired),
+    ):
+        local_shell_module._communicate(
+            process,
+            1,
+            threading.Event(),
+            process_group=1234,
+        )
+
+    kill_and_reap.assert_called_once_with(process, 1234)
+
+
+def test_local_shell_backend_cleanup_without_process_group_kills_process() -> None:
+    """Test cleanup falls back to the direct process without a group."""
+    process = MagicMock(pid=1234)
+    local_shell_module._kill_and_reap(process, None)
+    process.kill.assert_called_once_with()
     process.wait.assert_called_once_with(timeout=5)
 
 
@@ -427,6 +537,37 @@ async def test_local_shell_backend_async_cancellation_kills_process_group() -> N
 
     killpg.assert_called_once_with(1234, signal.SIGKILL)
     process.wait.assert_called_once_with(timeout=5)
+
+
+async def test_local_shell_backend_async_cancellation_stops_descendant(tmp_path: Path) -> None:
+    """Test cancelling a real command stops its background descendant."""
+    command, pid_file, heartbeat = _heartbeat_command(tmp_path)
+    task = asyncio.create_task(LocalShellBackend(root_dir=tmp_path, inherit_env=True).aexecute(command))
+    try:
+        assert await asyncio.to_thread(_wait_for_file, pid_file)
+        assert await asyncio.to_thread(_wait_for_file, heartbeat)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.to_thread(_assert_heartbeat_stopped, heartbeat)
+    finally:
+        if not task.done():
+            task.cancel()
+        _stop_test_descendant(pid_file)
+
+
+def test_local_shell_backend_async_start_race_skips_execution() -> None:
+    """Test a worker observing cancellation before start skips execution."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir)
+        cancellation_event = threading.Event()
+        execution_started = threading.Event()
+        cancellation_event.set()
+        with patch.object(backend, "execute") as execute, pytest.raises(asyncio.CancelledError):
+            backend._execute_in_thread("echo skipped", None, cancellation_event, execution_started)
+
+    assert execution_started.is_set()
+    execute.assert_not_called()
 
 
 async def test_local_shell_backend_async_cancellation_preserves_cancelled_error() -> None:

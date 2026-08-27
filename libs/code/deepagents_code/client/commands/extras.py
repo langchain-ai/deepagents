@@ -52,6 +52,7 @@ def run_uninstall_request(*, name: str) -> int:
     from deepagents_code.config import _is_editable_install, console
     from deepagents_code.update_check import (
         ExtraNotInstalledError,
+        ProtectedExtraError,
         create_update_log_path,
         editable_extra_removal_hint,
         format_log_follow_command,
@@ -77,6 +78,11 @@ def run_uninstall_request(*, name: str) -> int:
 
     try:
         manual_cmd = uninstall_extra_command(name)
+    except ProtectedExtraError as exc:
+        console.print(
+            f"[bold red]Error:[/bold red] {escape(str(exc))}", highlight=False
+        )
+        return 1
     except ExtraNotInstalledError as exc:
         console.print(escape(str(exc)), highlight=False)
         return 0

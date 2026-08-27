@@ -3627,6 +3627,10 @@ class ExtraNotInstalledError(RuntimeError):
     """Raised when an uninstall targets an extra that is not selected."""
 
 
+class ProtectedExtraError(ExtraNotInstalledError):
+    """Raised when an uninstall targets a required base provider extra."""
+
+
 _BASE_PROVIDER_EXTRAS = frozenset({"anthropic", "google-genai", "openai"})
 
 
@@ -3645,7 +3649,8 @@ def uninstall_extra_command(
 
     Raises:
         ValueError: If `extra` is not a valid PEP 508 extra name.
-        ExtraNotInstalledError: If `extra` is not removable from this install.
+        ProtectedExtraError: If `extra` is a required base provider.
+        ExtraNotInstalledError: If `extra` is not selected in this install.
     """
     if not is_valid_extra_name(extra):
         msg = (
@@ -3656,7 +3661,7 @@ def uninstall_extra_command(
     selected_extra = canonicalize_name(extra)
     if selected_extra in _BASE_PROVIDER_EXTRAS:
         msg = f"Extra {extra!r} is a base dependency and cannot be removed."
-        raise ExtraNotInstalledError(msg)
+        raise ProtectedExtraError(msg)
 
     extras = _uv_tool_selected_extras(distribution_name=distribution_name)
     if selected_extra not in extras:

@@ -7570,6 +7570,7 @@ class DeepAgentsApp(App):
         from deepagents_code.config import _is_editable_install
         from deepagents_code.update_check import (
             ExtraNotInstalledError,
+            ProtectedExtraError,
             create_update_log_path,
             editable_extra_removal_hint,
             is_valid_extra_name,
@@ -7590,6 +7591,9 @@ class DeepAgentsApp(App):
             return
         try:
             manual_cmd = await asyncio.to_thread(uninstall_extra_command, extra)
+        except ProtectedExtraError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return
         except ExtraNotInstalledError as exc:
             await self._mount_message(AppMessage(str(exc)))
             return

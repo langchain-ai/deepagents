@@ -5680,7 +5680,7 @@ def cli_main() -> None:
                 )
                 sys.exit(1)
 
-        if args.uninstall:
+        if args.uninstall is not None:
             from deepagents_code.client.commands.extras import run_uninstall_request
 
             sys.exit(run_uninstall_request(name=args.uninstall))

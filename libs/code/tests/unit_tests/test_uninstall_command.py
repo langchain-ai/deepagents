@@ -719,7 +719,8 @@ class TestUninstallCli:
         perform.assert_awaited_once()
         assert "base dependency" in self._console_text(console)
 
-    def test_invalid_name_exits_two(self) -> None:
+    @pytest.mark.parametrize("name", ["ollama; rm -rf /", ""])
+    def test_invalid_name_exits_two(self, name: str) -> None:
         """A malformed extra name is a usage error, not a failed removal."""
         console = MagicMock()
         with (
@@ -729,7 +730,7 @@ class TestUninstallCli:
                 new_callable=AsyncMock,
             ) as perform,
         ):
-            assert run_uninstall_request(name="ollama; rm -rf /") == 2
+            assert run_uninstall_request(name=name) == 2
         perform.assert_not_awaited()
         assert "Invalid extra name" in self._console_text(console)
 
@@ -996,6 +997,27 @@ class TestUninstallCli:
             cli_main()
         assert exc_info.value.code == 7
         request.assert_called_once_with(name="ollama")
+
+    def test_cli_main_dispatches_empty_compatibility_value(self) -> None:
+        """An explicit empty alias value reaches invalid-name validation."""
+        from deepagents_code.main import cli_main
+
+        stdin = MagicMock()
+        stdin.isatty.return_value = False
+        stdin.read.return_value = ""
+        with (
+            patch.object(sys, "argv", ["dcode", "--uninstall", ""]),
+            patch.object(sys, "stdin", stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch(
+                "deepagents_code.client.commands.extras.run_uninstall_request",
+                return_value=2,
+            ) as request,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 2
+        request.assert_called_once_with(name="")
 
 
 async def test_uninstall_slash_usage_does_not_invoke_performer() -> None:

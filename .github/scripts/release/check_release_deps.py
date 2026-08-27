@@ -11,9 +11,10 @@ user install time.
 This module also owns the helpers shared with the dependency-freshness check:
 the PyPI JSON client (`fetch_pypi_json`, `PyPIRequestError`, `FetchPyPI`),
 manifest discovery (`changed_manifests`, `load_release_packages`), and the
-Actions output writers (`_write_output`, `_write_step_summary` — underscored but
-deliberately shared). The import direction is one-way (`check_dep_freshness`
-imports from here) to avoid a cycle.
+Actions output writers (`_write_output`, `_write_step_summary`,
+`_prepend_step_summary` — underscored but deliberately shared). The import
+direction is one-way (`check_dep_freshness` imports from here) to avoid a
+cycle.
 """
 
 from __future__ import annotations
@@ -516,6 +517,20 @@ def _write_step_summary(markdown: str) -> None:
     with Path(summary_path).open("a", encoding="utf-8") as summary:
         summary.write(markdown)
         summary.write("\n")
+
+
+def _prepend_step_summary(markdown: str) -> None:
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_file:
+        return
+    # GitHub appends each step's summary to one job-level Markdown file, so a
+    # later step cannot go first with `>>`; rewrite the file with the new block
+    # ahead of whatever earlier steps already wrote.
+    summary_path = Path(summary_file)
+    existing = (
+        summary_path.read_text(encoding="utf-8") if summary_path.exists() else ""
+    )
+    summary_path.write_text(f"{markdown}\n{existing}", encoding="utf-8")
 
 
 def _write_output(name: str, value: str) -> None:

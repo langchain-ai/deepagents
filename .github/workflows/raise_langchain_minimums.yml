@@ -212,10 +212,17 @@ jobs:
             pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
             echo "Open PR already exists for $BRANCH; skipping."
             echo "::notice::Open dependency minimums PR already exists: $pr_url"
-            # The "Raise dependency minimums" step already wrote its raised-bounds
-            # summary; append the outcome link so it is visible without digging
-            # through the step log for the ::notice:: annotation.
-            printf '\n**PR:** %s (already open; no new PR created)\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+            # The "Raise dependency minimums" step already wrote its
+            # raised-bounds table to the job summary, and the summary file is
+            # append-only across steps — prepend so the outcome link is the
+            # first line rather than buried below the table.
+            SUMMARY_LINE="**PR:** $pr_url (already open; no new PR created)" \
+              uv run --no-project --with packaging python -c "
+            import os, sys
+            sys.path.insert(0, '.github/scripts/release')
+            from check_release_deps import _prepend_step_summary
+            _prepend_step_summary(os.environ['SUMMARY_LINE'] + '\\n')
+            "
           fi
 
       - name: Generate GitHub App token
@@ -341,7 +348,16 @@ jobs:
             --body-file "$body_file")
           echo "Opened dependency minimums PR: $pr_url"
           echo "::notice::Opened dependency minimums PR: $pr_url"
-          printf '\n**PR:** %s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+          # Prepend rather than append: the job summary file is shared
+          # across steps and the raised-bounds table is already in it, so
+          # `>>` would bury the link below the table.
+          SUMMARY_LINE="**PR:** $pr_url" \
+            uv run --no-project --with packaging python -c "
+          import os, sys
+          sys.path.insert(0, '.github/scripts/release')
+          from check_release_deps import _prepend_step_summary
+          _prepend_step_summary(os.environ['SUMMARY_LINE'] + '\\n')
+          "
 
       - name: File a tracking issue on failure
         # Nobody watches a green cron, and nobody watches a red one either
